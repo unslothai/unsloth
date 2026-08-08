@@ -5,7 +5,7 @@ use regex::Regex;
 use std::collections::VecDeque;
 use std::io::BufRead;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -626,6 +626,13 @@ impl OwnedBackendHandle {
         }
     }
 
+    fn spawned_pid(&self) -> Option<u32> {
+        match self {
+            Self::Spawned { pid, .. } => Some(*pid),
+            Self::Adopted { .. } => None,
+        }
+    }
+
     fn spawned_child_mut(&mut self) -> Option<&mut Box<dyn ChildWrapper + Send>> {
         match self {
             Self::Spawned { child, .. } => Some(child),
@@ -863,6 +870,122 @@ pub(crate) fn trim_line_endings(bytes: &[u8]) -> &[u8] {
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+/// PID of the spawned backend, mirrored outside `BackendState` so the force-quit escape
+/// hatch can still find it.
+///
+/// `stop_backend_inner` takes the `Spawned` handle *out* of the state under the lock and
+/// only then blocks on the reap, so by the time a wedged shutdown paints the Force quit
+/// button the mutex says `owned: None` and the pid is sitting in a local on the stuck
+/// thread. A `try_lock` there would succeed and hand back nothing. A plain atomic answers
+/// "which tree is still ours to kill" with no lock to contend for and no way to block.
+///
+/// `0` means "nothing to kill": no pid, or the reap already finished.
+static SPAWNED_BACKEND_PID: AtomicU32 = AtomicU32::new(0);
+
+fn record_spawned_backend_pid(pid: u32) {
+    SPAWNED_BACKEND_PID.store(pid, Ordering::SeqCst);
+}
+
+/// Retire a pid once its process is known to be gone. Keyed on the pid so a stop that
+/// finishes late cannot clear the record of a backend that has since been restarted, and
+/// so the escape hatch never fires `taskkill` at a recycled pid.
+fn clear_spawned_backend_pid(pid: u32) {
+    let _ = SPAWNED_BACKEND_PID.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
+}
+
+pub(crate) fn spawned_backend_pid() -> Option<u32> {
+    match SPAWNED_BACKEND_PID.load(Ordering::SeqCst) {
+        0 => None,
+        pid => Some(pid),
+    }
+}
+
+/// Take the backend tree down on the way out of a force quit, for the case where no job
+/// object is holding it.
+///
+/// Called only from the force-quit path, which runs while `stop_backend` is already stuck,
+/// so it touches no shared state that the stuck reap could be holding: one atomic read and
+/// a detached `taskkill`. Off Windows this is a no-op; the force-quit path never reaches it
+/// there, because exiting without the reap would orphan the process group either way.
+pub(crate) fn force_kill_spawned_backend_tree() {
+    let Some(pid) = spawned_backend_pid() else {
+        info!("Force quit found no spawned backend pid to terminate");
+        return;
+    };
+
+    #[cfg(windows)]
+    force_kill_process_tree_by_pid(pid, "Backend");
+
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+    }
+}
+
+/// Force-kill a Windows process tree by pid alone, with no child handle to reap through.
+///
+/// The force-quit caller has no handle: the reap it is escaping owns it. `taskkill /T /F`
+/// needs only the pid, and the wait for it is bounded because the whole point of this path
+/// is that the caller is already done waiting. If taskkill outlives the budget it is left
+/// running: this process has no job object in the branch that calls this (that is *why* it
+/// is called), so the orphaned taskkill survives our exit and finishes the job.
+#[cfg(windows)]
+pub(crate) fn force_kill_process_tree_by_pid(pid: u32, label: &str) {
+    use std::os::windows::process::CommandExt;
+
+    const TASKKILL_BUDGET: Duration = Duration::from_secs(5);
+
+    let spawned = Command::new("taskkill.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    let mut taskkill = match spawned {
+        Ok(taskkill) => taskkill,
+        Err(e) => {
+            warn!(
+                "taskkill could not be launched for {} pid {}: {}",
+                label, pid, e
+            );
+            return;
+        }
+    };
+
+    let deadline = std::time::Instant::now() + TASKKILL_BUDGET;
+    loop {
+        match taskkill.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                info!("{} process tree force stopped (pid {})", label, pid);
+                return;
+            }
+            Ok(Some(status)) => {
+                warn!(
+                    "taskkill returned non-zero status for {} pid {}: {}",
+                    label, pid, status
+                );
+                return;
+            }
+            Err(e) => {
+                warn!("Error polling taskkill for {} pid {}: {}", label, pid, e);
+                return;
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    warn!(
+                        "taskkill for {} pid {} outlived its budget; leaving it running and \
+                         exiting anyway",
+                        label, pid
+                    );
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+    }
+}
+
 /// Force-kill a Windows process tree via hidden `taskkill /T /F`, falling
 /// back to `child.kill()` if taskkill itself fails.  Reaps the child afterward.
 #[cfg(windows)]
@@ -938,6 +1061,39 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    // The escape hatch reads this record instead of `BackendState`, because a wedged
+    // `stop_backend` has already moved the handle out of the state. A stale entry would
+    // point `taskkill /T /F` at whatever inherited the pid next, so the retire has to be
+    // keyed on the pid rather than being a blind reset.
+    //
+    // Sentinel pids, high enough not to collide with anything the other tests here spawn,
+    // so this stays sound while the suite runs in parallel.
+    #[test]
+    fn the_spawned_backend_pid_record_is_retired_only_by_its_own_pid() {
+        const PID: u32 = 4_000_000_001;
+        const LATER_PID: u32 = 4_000_000_002;
+
+        record_spawned_backend_pid(PID);
+        assert_eq!(spawned_backend_pid(), Some(PID));
+
+        clear_spawned_backend_pid(LATER_PID);
+        assert_eq!(
+            spawned_backend_pid(),
+            Some(PID),
+            "a stop that finished late must not retire the record of a backend that has \
+             since been restarted, or force quit would leave the live tree behind"
+        );
+
+        record_spawned_backend_pid(LATER_PID);
+        clear_spawned_backend_pid(LATER_PID);
+        assert_eq!(
+            spawned_backend_pid(),
+            None,
+            "once the process is confirmed gone the pid has to stop being a kill target, \
+             or a recycled pid gets a taskkill /T /F aimed at it"
+        );
+    }
 
     fn temp_studio_dir(test_name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -1268,6 +1424,9 @@ pub fn start_backend(
             backend_pid,
             generation,
         ));
+        // Mirrored out of the lock so force quit can reach the tree once a wedged
+        // `stop_backend` has taken this handle out of the state.
+        record_spawned_backend_pid(backend_pid);
         proc.diagnostics_session = Some(backend_log.clone());
         (generation, backend_log, stdout, stderr)
     };
@@ -1740,6 +1899,11 @@ fn read_output_stream<R: std::io::Read>(
 
             if exited {
                 if let Some(owned) = proc.owned.take() {
+                    // The process is confirmed gone, so retire the pid before it can be
+                    // recycled and force quit starts aiming taskkill at a stranger.
+                    if let Some(pid) = owned.spawned_pid() {
+                        clear_spawned_backend_pid(pid);
+                    }
                     owned.remove_owner_metadata();
                 }
                 proc.port = None;
@@ -2047,7 +2211,14 @@ fn stop_backend_inner(
             reported_port,
             pid,
             ..
-        })) => stop_spawned_backend(child, owner, reported_port, pid),
+        })) => {
+            let stopped = stop_spawned_backend(child, owner, reported_port, pid);
+            // Only once the reap has actually returned. While it is still running -- the
+            // wedge this whole path exists for -- the pid stays on record so force quit
+            // can take the tree down on its way out.
+            clear_spawned_backend_pid(pid);
+            stopped
+        }
         Some(StopTarget::Adopted {
             owner,
             port,

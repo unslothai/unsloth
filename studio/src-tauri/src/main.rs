@@ -853,16 +853,44 @@ impl<E: Fn(&str)> Drop for ClosingOverlay<E> {
 /// Split out with its cleanup injected, the same way `quit_sequence` is, so both platform
 /// shapes stay covered by tests on whichever one is running them.
 ///
-/// Windows only. There the app job object is kill-on-close and this process is a member, so
-/// exiting takes the backend tree down with it. Everywhere else the backend is spawned as
-/// its own process-group leader with nothing holding it, which is the whole reason
-/// `setup_unix_termination_signals` exists, and exiting here would orphan it.
-fn force_quit_sequence(windows: bool, cleanup: impl FnOnce()) -> bool {
+/// Windows only. Everywhere else the backend is spawned as its own process-group leader with
+/// nothing holding it, which is the whole reason `setup_unix_termination_signals` exists, and
+/// exiting here would orphan it.
+///
+/// On Windows the reaper is normally the kill-on-close app job object, which takes the
+/// backend tree down when this process leaves. But `windows_job::initialize` treats a failed
+/// job object as non-fatal: it logs that cleanup now rests on the explicit stop paths and
+/// carries on with no job. `process::exit` runs none of those paths, so trusting the target
+/// OS rather than the job would orphan the whole backend tree, port and GPU memory included,
+/// on exactly the machines where the job could not be created.
+///
+/// So the branch is on the reaper, not the platform, and the no-job branch terminates the
+/// tree itself instead of declining. Declining would be worse than the orphan: force quit is
+/// only ever offered after the reap has blown through its own timeouts, and a button that
+/// does nothing is the dead-control state this overlay work exists to remove.
+///
+/// `kill_tree` and `cleanup` come in injected, the way `quit_sequence` takes its blocking
+/// parts, so every branch stays testable on whichever platform is running the tests.
+fn force_quit_sequence(
+    windows: bool,
+    job_active: bool,
+    kill_tree: impl FnOnce(),
+    cleanup: impl FnOnce(),
+) -> bool {
     if !windows {
         warn!("Force quit ignored: exiting here would orphan the backend process group");
         return false;
     }
-    warn!("Force quit requested, exiting without waiting for the backend reap");
+    if job_active {
+        warn!("Force quit requested, exiting without waiting for the backend reap");
+    } else {
+        warn!(
+            "Force quit requested with no app job object; terminating the backend tree before \
+             exiting so it is not orphaned"
+        );
+        // First, so a cleanup that wedges in turn cannot cost us the kill as well.
+        kill_tree();
+    }
     // Before the exit, the way Tauri itself pairs them in `AppHandle::exit`. `process::exit`
     // runs no destructors, and the tray icon only sends its `NIM_DELETE` from `Drop`, so
     // skipping this leaves a ghost icon in the notification area until the user hovers it.
@@ -877,7 +905,15 @@ fn force_quit_sequence(windows: bool, cleanup: impl FnOnce()) -> bool {
 /// command nothing invokes costs nothing.
 #[tauri::command]
 fn force_quit(app: tauri::AppHandle) {
-    if force_quit_sequence(cfg!(target_os = "windows"), || app.cleanup_before_exit()) {
+    if force_quit_sequence(
+        cfg!(target_os = "windows"),
+        windows_job::has_active_job(),
+        // Reads a pid out of an atomic and shells out to taskkill. It deliberately does not
+        // go through `BackendState`: the reap being escaped has already taken the handle out
+        // of it, and waiting on anything that reap touches would hang the escape hatch.
+        process::force_kill_spawned_backend_tree,
+        || app.cleanup_before_exit(),
+    ) {
         std::process::exit(0);
     }
 }
@@ -1559,40 +1595,77 @@ mod tests {
     }
 
     #[test]
-    fn force_quit_cleans_up_before_it_exits_on_windows() {
-        let cleaned = std::cell::Cell::new(0);
+    fn force_quit_with_an_active_job_object_cleans_up_and_exits_without_killing_the_tree() {
+        let steps = std::cell::RefCell::new(Vec::new());
 
-        let exiting = force_quit_sequence(true, || cleaned.set(cleaned.get() + 1));
+        let exiting = force_quit_sequence(
+            true,
+            true,
+            || steps.borrow_mut().push("kill"),
+            || steps.borrow_mut().push("cleanup"),
+        );
 
         assert!(
             exiting,
             "the overlay's last resort has to actually reach the exit"
         );
         assert_eq!(
-            cleaned.get(),
-            1,
-            "process::exit runs no destructors, so the tray icon has to be cleared here or \
-             it outlives the process"
+            steps.into_inner(),
+            vec!["cleanup"],
+            "the job object is kill-on-close and this process is a member, so the exit \
+             already takes the tree down; a taskkill here would only add a stall to the one \
+             path the user reaches because they are done waiting"
         );
     }
 
     #[test]
-    fn force_quit_is_a_no_op_off_windows() {
-        let cleaned = std::cell::Cell::new(0);
+    fn force_quit_without_an_active_job_object_kills_the_tree_before_it_exits() {
+        let steps = std::cell::RefCell::new(Vec::new());
 
-        let exiting = force_quit_sequence(false, || cleaned.set(cleaned.get() + 1));
+        let exiting = force_quit_sequence(
+            true,
+            false,
+            || steps.borrow_mut().push("kill"),
+            || steps.borrow_mut().push("cleanup"),
+        );
 
         assert!(
-            !exiting,
-            "off Windows the backend is its own process-group leader with no job object \
-             holding it, so exiting without the reap would orphan it"
+            exiting,
+            "declining here would paint a Force quit button that does nothing, which is the \
+             dead control this overlay work exists to remove"
         );
         assert_eq!(
-            cleaned.get(),
-            0,
-            "nothing is exiting, so tearing the app's own state down would leave a live app \
-             with no tray icon"
+            steps.into_inner(),
+            vec!["kill", "cleanup"],
+            "job object creation can fail, and initialize() carries on with none; \
+             process::exit runs no explicit stop path, so nothing reaps the backend tree \
+             unless this does it first"
         );
+    }
+
+    #[test]
+    fn force_quit_is_a_no_op_off_windows_whatever_the_job_reports() {
+        for job_active in [true, false] {
+            let steps = std::cell::RefCell::new(Vec::new());
+
+            let exiting = force_quit_sequence(
+                false,
+                job_active,
+                || steps.borrow_mut().push("kill"),
+                || steps.borrow_mut().push("cleanup"),
+            );
+
+            assert!(
+                !exiting,
+                "off Windows the backend is its own process-group leader with no job object \
+                 holding it, so exiting without the reap would orphan it"
+            );
+            assert!(
+                steps.into_inner().is_empty(),
+                "nothing is exiting, so neither killing the backend out from under the \
+                 running app nor tearing down its tray icon is wanted"
+            );
+        }
     }
 
     #[test]
