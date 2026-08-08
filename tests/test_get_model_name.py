@@ -456,7 +456,6 @@ class TestGetModelName(unittest.TestCase):
                 legacy,
             )
 
-
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_offline_legacy_cache_uses_transformers_default(self):
         canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"

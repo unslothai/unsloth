@@ -605,7 +605,6 @@ class FastLanguageModel(FastLlamaModel):
                 require_processor = not text_only and cache_processor_name is None,
                 subfolder = kwargs.get("subfolder"),
                 variant = kwargs.get("variant"),
-
                 use_safetensors = kwargs.get("use_safetensors"),
                 return_mapper_changed = True,
             )
@@ -820,7 +819,6 @@ class FastLanguageModel(FastLlamaModel):
                     require_processor = not text_only and cache_processor_name is None,
                     subfolder = kwargs.get("subfolder"),
                     variant = kwargs.get("variant"),
-
                     use_safetensors = kwargs.get("use_safetensors"),
                 )
             # Check if pre-quantized models are allowed
@@ -1388,7 +1386,6 @@ class FastModel(FastBaseModel):
                 require_processor = not text_only and cache_processor_name is None,
                 subfolder = kwargs.get("subfolder"),
                 variant = kwargs.get("variant"),
-
                 use_safetensors = kwargs.get("use_safetensors"),
                 trust_remote_code = trust_remote_code,
                 return_mapper_changed = True,
@@ -1805,7 +1802,6 @@ class FastModel(FastBaseModel):
                     require_processor = not text_only and cache_processor_name is None,
                     subfolder = kwargs.get("subfolder"),
                     variant = kwargs.get("variant"),
-
                     use_safetensors = kwargs.get("use_safetensors"),
                     trust_remote_code = trust_remote_code,
                 )

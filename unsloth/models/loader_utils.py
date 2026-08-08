@@ -457,7 +457,6 @@ def get_model_name(
 
     mapper_changed_name = new_model_name is not None and new_model_name != model_name
 
-
     if new_model_name is not None:
         # A caller-supplied ref only survives case-only canonicalization. Cross-repo
         # mapper and BAD_MAPPINGS redirects are loaded from their default branch.
