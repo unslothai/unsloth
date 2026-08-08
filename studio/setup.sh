@@ -75,9 +75,13 @@ setup_fail() {
     [ "$exit_code" -ne 0 ] || exit_code=1
     local message
     message=$(printf '%s' "$*" | tr '\r\n' '  ')
-    case "${UNSLOTH_TAURI_MODE:-0}" in
-        1|true) printf '[TAURI:ERROR] %s\n' "$message" ;;
-    esac
+    # Match setup.ps1: update.rs sets UNSLOTH_TAURI_UPDATE everywhere and promotes
+    # this line over the generic "Update exited with code N". Test each variable
+    # separately: one joined subject lets a comma in either value alias the other arm.
+    local tauri_marker=0
+    case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) tauri_marker=1 ;; esac
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) tauri_marker=1 ;; esac
+    if [ "$tauri_marker" -eq 1 ]; then printf '[TAURI:ERROR] %s\n' "$message"; fi
     exit "$exit_code"
 }
 
@@ -979,6 +983,15 @@ _studio_owned_adoptable() {
 _studio_dir_unsearchable() {
     [ -d "$1" ] || return 1
     ( cd "$1" ) 2>/dev/null && return 1
+    return 0
+}
+
+# Also needs +r, for callers that list or replace the tree: mode 111 is searchable
+# but still fails install_llama_prebuilt.py.
+_studio_dir_unreadable() {
+    [ -d "$1" ] || return 1
+    _studio_dir_unsearchable "$1" && return 0
+    ls -A "$1" >/dev/null 2>&1 && return 1
     return 0
 }
 
@@ -1986,7 +1999,9 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         fi
         rm -rf "$LLAMA_CPP_DIR" || true
         if [ -e "$LLAMA_CPP_DIR" ]; then
-            if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+            # Unreadable, not just unsearchable: mode 111 defeats the rm above and
+            # would fall through to the generic message.
+            if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
                 _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
             fi
             step "llama.cpp" "the existing install could not be replaced with a link" "$C_ERR"
@@ -1998,6 +2013,18 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         _LOCAL_LLAMA_CPP_LINKED=true
         _NEED_LLAMA_SOURCE_BUILD=false
         _SKIP_PREBUILT_INSTALL=true
+    fi
+fi
+
+# Every branch below replaces $LLAMA_CPP_DIR or builds into it, and the source-build
+# swap only reaches its own guards after the whole build, so check here instead.
+# Local-link paths are excluded: they already replaced or reused the tree above.
+if [ "$_LOCAL_LLAMA_CPP_LINKED" != true ]; then
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    fi
+    if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
+        _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
 fi
 
@@ -2022,6 +2049,11 @@ else
     # ownership check below ever runs.
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
         _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    fi
+    # The ownership check above misses the default cache; stop before pathlib
+    # turns an unreadable one into a traceback.
+    if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
+        _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
     _PREBUILT_CMD=(
         python "$SCRIPT_DIR/install_llama_prebuilt.py"
@@ -2692,7 +2724,9 @@ else
             # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
             rm -rf "$LLAMA_CPP_DIR" || true
             if [ -e "$LLAMA_CPP_DIR" ]; then
-                if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                # Same probe as the other replace sites: the hoisted guard covers a
+                # tree already denied, this catches one denied mid-build.
+                if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
                     _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
                 fi
                 step "llama.cpp" "built, but the existing install could not be replaced" "$C_ERR"
