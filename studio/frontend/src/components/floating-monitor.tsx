@@ -3,10 +3,13 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { useChatRuntimeStore } from "@/features/chat";
 import { useMonitorOverlayStore } from "@/features/settings";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { useRouterState } from "@tanstack/react-router";
 import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -16,6 +19,8 @@ import {
   useRef,
   useState,
 } from "react";
+
+import { getFloatingMonitorLayout } from "./floating-monitor-layout";
 
 interface MonitorLayout {
   left: number;
@@ -325,11 +330,13 @@ function formatGiB(value: number): string {
 }
 
 interface FloatingMonitorPanelProps {
+  dockedBesideRunSettings: boolean;
   onClose: () => void;
   systemInfo: ReturnType<typeof useSystemInfo>;
 }
 
 function FloatingMonitorPanel({
+  dockedBesideRunSettings,
   onClose,
   systemInfo,
 }: FloatingMonitorPanelProps) {
@@ -383,7 +390,10 @@ function FloatingMonitorPanel({
   return (
     <div
       ref={setConstraintsElement}
-      className="pointer-events-none fixed inset-4 z-50"
+      className={cn(
+        "pointer-events-none fixed inset-y-4 left-4 z-40",
+        dockedBesideRunSettings ? "right-[18rem]" : "right-4",
+      )}
     >
       <motion.div
         ref={monitorRef}
@@ -521,7 +531,16 @@ function FloatingMonitorPanel({
 
 export function FloatingMonitor() {
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
-  const systemInfo = useSystemInfo({ enabled: isOpen, pollMs: 5000 });
+  const settingsPanelOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isMobile = useIsMobile();
+  const { visible, dockedBesideRunSettings } = getFloatingMonitorLayout({
+    isOpen,
+    isMobile,
+    isChatRoute: pathname === "/chat",
+    settingsPanelOpen,
+  });
+  const systemInfo = useSystemInfo({ enabled: visible, pollMs: 5000 });
   const [panelKey, setPanelKey] = useState(0);
   const wasOpenRef = useRef(isOpen);
 
@@ -536,9 +555,10 @@ export function FloatingMonitor() {
 
   return (
     <AnimatePresence>
-      {isOpen && (
+      {visible && (
         <FloatingMonitorPanel
-          key={panelKey}
+          key={`${panelKey}-${dockedBesideRunSettings ? "docked" : "floating"}`}
+          dockedBesideRunSettings={dockedBesideRunSettings}
           systemInfo={systemInfo}
           onClose={() => setIsOpen(false)}
         />
