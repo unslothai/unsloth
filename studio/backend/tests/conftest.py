@@ -357,9 +357,7 @@ def _outbound_network_guard():
     """
     import socket
 
-    real = _RealSocketCalls(
-        socket.socket.connect, socket.socket.connect_ex, socket.getaddrinfo
-    )
+    real = _RealSocketCalls(socket.socket.connect, socket.socket.connect_ex, socket.getaddrinfo)
     patch = pytest.MonkeyPatch()
 
     def blocked_connect(self, address, *args, **kwargs):
@@ -420,7 +418,6 @@ def _outbound_network_guard():
         hf_http = None
     if hf_http is not None and getattr(hf_http, "time", None) is not None:
         import time as _time
-
         class _NoBackoffClock:
             def __getattr__(self, name):
                 return getattr(_time, name)
