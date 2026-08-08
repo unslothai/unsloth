@@ -743,7 +743,7 @@ def test_image_train_rail_tracks_the_shared_header_breakpoint():
 
 def test_compact_media_page_link_keeps_an_accessible_name():
     source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
-    button = source.split('<button', 1)[1].split('</button>', 1)[0]
+    button = source.split("<button", 1)[1].split("</button>", 1)[0]
 
     assert "aria-label={label}" in button
 
