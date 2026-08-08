@@ -700,9 +700,8 @@ public static class UnslothStudioFinalPathV2
         }
     }
 
-    # ── Managed llama.cpp access check (shared with studio/setup.ps1) ──
-    # This standalone script cannot dot-source setup.ps1, so it carries
-    # byte-identical copies enforced by test_denied_llama_cpp_preflight.py.
+    # Managed llama.cpp access check. This script cannot dot-source setup.ps1, so
+    # it holds byte-identical copies; test_denied_llama_cpp_preflight.py enforces that.
     # ── BEGIN SHARED WITH studio/setup.ps1 ──
 
     # Recognize ERROR_ACCESS_DENIED through PowerShell's wrapper exceptions.
@@ -741,8 +740,7 @@ public static class UnslothStudioFinalPathV2
         }
     }
 
-    # Probe the directory, marker, and listing because no single Windows probe
-    # distinguishes readable, absent, and every denied-tree shape.
+    # Dir, marker and listing: no single probe separates readable/absent/denied.
     function Get-LlamaCppInstallReadState {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 
@@ -755,7 +753,7 @@ public static class UnslothStudioFinalPathV2
         try { $null = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1) }
         catch {
             if (Test-AccessDeniedError $_) { return "Denied" }
-            # Other unusable paths remain nonfatal at this early preflight.
+            # Nonfatal here: nothing has been installed yet.
         }
         return "Readable"
     }
@@ -777,7 +775,7 @@ public static class UnslothStudioFinalPathV2
         return " (it is a link)"
     }
 
-    # Print guidance and return the sole pipeline value used as the failure reason.
+    # Print guidance; returns the failure reason as its only pipeline output.
     function Write-PathAccessDenied {
         param(
             [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path,
@@ -812,8 +810,7 @@ public static class UnslothStudioFinalPathV2
         return "Access denied reading the existing $Label at $Path. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
     }
 
-    # Canonicalize existing directories for comparison. If an unreadable directory
-    # cannot be resolved, normalize its spelling without probing it again.
+    # Canonicalize a directory for comparison; unresolvable ones are only normalized.
     function Get-CanonicalDir {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 
@@ -832,8 +829,7 @@ public static class UnslothStudioFinalPathV2
             }
             try { $resolvedPath = [System.IO.Path]::GetFullPath($resolvedPath) } catch {}
         }
-        # Resolve-Path keeps a trailing separator, so both branches need this trim or
-        # "...\studio\" compares unequal to "...\studio". Never trim a path root.
+        # Resolve-Path keeps a trailing separator, so trim after both branches (never a root).
         try {
             $root = [System.IO.Path]::GetPathRoot($resolvedPath)
             if ($root -and $resolvedPath.Length -gt $root.Length) { return $resolvedPath.TrimEnd('\', '/') }
@@ -847,7 +843,7 @@ public static class UnslothStudioFinalPathV2
             (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
     }
 
-    # Resolve the shared default cache or the custom Studio home's llama.cpp tree.
+    # Shared default cache, or the custom Studio home's llama.cpp tree.
     function Get-ManagedLlamaCppDir {
         if (-not (Test-StudioHomeIsCustom)) {
             return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
@@ -855,7 +851,7 @@ public static class UnslothStudioFinalPathV2
         return (Join-Path (Get-CanonicalDir -Path $StudioHome) "llama.cpp")
     }
 
-    # Return a failure reason for a denied managed tree without changing its ACLs.
+    # Failure reason when the managed tree is denied; never touches its ACLs.
     function Invoke-ManagedLlamaCppPreflight {
         # Let the existing profile validation handle a missing USERPROFILE later.
         if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
@@ -1576,8 +1572,8 @@ exit 0
         }
     }
 
-    # ── Preflight: require a readable managed llama.cpp cache ──
-    # Run after System32 relocation but before package checks or downloads.
+    # ── Preflight the managed llama.cpp cache ──
+    # After System32 relocation (it picks the profile), before any download.
     $llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight
     if ($llamaPreflightFailure) {
         return (Exit-InstallFailure $llamaPreflightFailure)

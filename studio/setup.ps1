@@ -375,8 +375,7 @@ function Test-PathQuiet {
 
 # install.ps1 carries a verbatim copy because it cannot dot-source this file;
 # test_denied_llama_cpp_preflight.py enforces parity.
-# Probe the directory, marker, and listing because no single Windows probe
-# distinguishes readable, absent, and every denied-tree shape.
+# Dir, marker and listing: no single probe separates readable/absent/denied.
 function Get-LlamaCppInstallReadState {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 
@@ -389,7 +388,7 @@ function Get-LlamaCppInstallReadState {
     try { $null = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1) }
     catch {
         if (Test-AccessDeniedError $_) { return "Denied" }
-        # Other unusable paths remain nonfatal at this early preflight.
+        # Nonfatal here: nothing has been installed yet.
     }
     return "Readable"
 }
@@ -411,7 +410,7 @@ function Get-PathDenialDetail {
     return " (it is a link)"
 }
 
-# Print guidance and return the sole pipeline value used as the failure reason.
+# Print guidance; returns the failure reason as its only pipeline output.
 function Write-PathAccessDenied {
     param(
         [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path,
@@ -446,8 +445,7 @@ function Write-PathAccessDenied {
     return "Access denied reading the existing $Label at $Path. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
 }
 
-# Canonicalize existing directories for comparison. If an unreadable directory
-# cannot be resolved, normalize its spelling without probing it again.
+# Canonicalize a directory for comparison; unresolvable ones are only normalized.
 function Get-CanonicalDir {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 
@@ -466,8 +464,7 @@ function Get-CanonicalDir {
         }
         try { $resolvedPath = [System.IO.Path]::GetFullPath($resolvedPath) } catch {}
     }
-    # Resolve-Path keeps a trailing separator, so both branches need this trim or
-    # "...\studio\" compares unequal to "...\studio". Never trim a path root.
+    # Resolve-Path keeps a trailing separator, so trim after both branches (never a root).
     try {
         $root = [System.IO.Path]::GetPathRoot($resolvedPath)
         if ($root -and $resolvedPath.Length -gt $root.Length) { return $resolvedPath.TrimEnd('\', '/') }
@@ -481,7 +478,7 @@ function Test-StudioHomeIsCustom {
         (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
 }
 
-# Resolve the shared default cache or the custom Studio home's llama.cpp tree.
+# Shared default cache, or the custom Studio home's llama.cpp tree.
 function Get-ManagedLlamaCppDir {
     if (-not (Test-StudioHomeIsCustom)) {
         return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
@@ -489,7 +486,7 @@ function Get-ManagedLlamaCppDir {
     return (Join-Path (Get-CanonicalDir -Path $StudioHome) "llama.cpp")
 }
 
-# Return a failure reason for a denied managed tree without changing its ACLs.
+# Failure reason when the managed tree is denied; never touches its ACLs.
 function Invoke-ManagedLlamaCppPreflight {
     # Let the existing profile validation handle a missing USERPROFILE later.
     if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
@@ -1796,12 +1793,10 @@ function Clear-WebViewCaches {
     if ($wvCleared) { substep "cleared stale WebView caches (ai.unsloth.studio); settings and data kept" }
 }
 
-# Resolve and preflight the install root before phase 1 for direct setup/update.
-# Keep environment override precedence consistent with the other resolvers.
-# Every resolver below joins onto USERPROFILE; stop here so a blank one reports
-# through Exit-SetupFailure instead of throwing a raw binding error under "Stop".
-# Null or empty only: Join-Path accepts a whitespace-only value, and that used to
-# run to completion when UNSLOTH_STUDIO_HOME was fully qualified.
+# Resolve and preflight the install root before phase 1, with the same override
+# precedence as the other resolvers. Everything below joins onto USERPROFILE, so a
+# blank one must fail here instead of throwing a raw binding error under "Stop".
+# Null or empty only: Join-Path accepts whitespace, and those runs used to complete.
 if ([string]::IsNullOrEmpty($env:USERPROFILE)) {
     Write-Host "ERROR: USERPROFILE is not set." -ForegroundColor Red
     Exit-SetupFailure "USERPROFILE is not set"
@@ -1821,8 +1816,7 @@ if ($_studioOverride) {
     }
     if (Test-Path -LiteralPath $_studioOverride -PathType Container) {
         $StudioHome = (Resolve-Path -LiteralPath $_studioOverride).Path
-        # Mirror setup.sh and install.ps1: fail before any install work when a
-        # custom root cannot be written.
+        # Mirror setup.sh and install.ps1: fail before install work if it is read-only.
         $_setupWriteProbe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
         try {
             [System.IO.File]::WriteAllText($_setupWriteProbe, "")
@@ -3601,11 +3595,10 @@ if (-not $PythonCmd) {
 
 substep "Python found: $PythonCmd"
 
-# $StudioHome / $VenvDir are resolved and preflighted before phase 1 now, so only
-# the cache clear stays here. Venv-gated because a writable-but-empty override still
-# fails at the venv check below, and clearing first would cost the cache for a run
-# that then does nothing; a fresh install has neither venv nor cache. Still before
-# any install work.
+# $StudioHome / $VenvDir are resolved and preflighted before phase 1, so only the
+# cache clear stays here. Venv-gated: a writable-but-empty override still fails the
+# venv check below, and clearing first would cost the cache for a run that then does
+# nothing. Still before any install work.
 if (Test-Path -LiteralPath (Join-Path $VenvDir "Scripts\python.exe") -PathType Leaf) {
     Clear-WebViewCaches
 }

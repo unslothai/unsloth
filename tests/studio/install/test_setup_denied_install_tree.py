@@ -25,20 +25,18 @@ SETUP_PS1 = (ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
 
 
 def _denial_reporter() -> str:
-    """The body of the function that owns the denial wording.
+    """The body that owns the denial wording.
 
-    install.ps1's preflight has to print the same guidance, and it cannot
-    dot-source this file, so the reporting was split out of Exit-PathAccessDenied
-    into Write-PathAccessDenied, which returns the reason instead of exiting.
-    The copy is compared in tests/studio/install/test_denied_llama_cpp_preflight.py.
+    Split out of Exit-PathAccessDenied so install.ps1's preflight, which cannot
+    dot-source this file, can copy it; test_denied_llama_cpp_preflight.py compares
+    the copies.
     """
     assert "function Write-PathAccessDenied" in SETUP_PS1
     return SETUP_PS1.split("function Write-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
 
 
 def test_the_denial_exit_delegates_to_the_shared_reporter():
-    """Exit-PathAccessDenied must keep being the only stop, and must not grow a
-    second copy of the wording next to the shared one."""
+    """Exit-PathAccessDenied stays the only stop, with no second copy of the wording."""
     body = SETUP_PS1.split("function Exit-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
     assert "Exit-SetupFailure (Write-PathAccessDenied -Path $Path -Label $Label" in body
     assert "-UserSupplied:$UserSupplied -OwnershipUnverified:$OwnershipUnverified)" in body
@@ -56,9 +54,8 @@ def test_setup_defines_non_throwing_path_probes():
 
 
 def test_prebuilt_metadata_probe_cannot_terminate_setup():
-    """The bare probe of this file is what threw. Its denial is now decided one
-    level up: Get-LlamaCppInstallReadState reads the same file, so by the time
-    this line runs the tree is known readable and only presence is left."""
+    """The bare probe of this file is what threw. Get-LlamaCppInstallReadState now
+    decides denial one level up, so only presence is left here."""
     assert "if (Test-Path $existingMetaPath)" not in SETUP_PS1
     assert "Test-PathQuiet -Path $existingMetaPath -PathType Leaf" in SETUP_PS1
     assert "$llamaDirState = Get-LlamaCppInstallReadState -Path $LlamaCppDir" in SETUP_PS1

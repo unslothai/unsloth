@@ -37,8 +37,8 @@ assert_contains "the ownership guard checks readability before blaming ownership
 assert_contains "an unverifiable tree is never described as not ours" \
     "$SETUP_SH" "Unsloth cannot confirm this folder is its own install while it is unreadable"
 
-# The custom-home ownership guard does not cover the default cache, so verify
-# the prebuilt path rejects an unreadable default cache before Python runs.
+# The custom-home ownership guard misses the default cache, so check the prebuilt
+# path rejects an unreadable one before Python runs.
 PREBUILT_BLOCK="$(awk '/substep "installing prebuilt llama.cpp\.\.\."/,/_PREBUILT_CMD=\(/' "$SETUP_SH")"
 if printf '%s' "$PREBUILT_BLOCK" | grep -qF '_studio_dir_unreadable "$LLAMA_CPP_DIR"' &&
    printf '%s' "$PREBUILT_BLOCK" | grep -qF '_path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"'; then
@@ -46,8 +46,8 @@ if printf '%s' "$PREBUILT_BLOCK" | grep -qF '_studio_dir_unreadable "$LLAMA_CPP_
 else
     bad "the default-home prebuilt install stops on an unreadable tree"
 fi
-# The source build only reaches its own guards after building, so the access check
-# has to run before the prebuilt/source branch, and skip the local-link paths.
+# The source build only guards after building, so check before the prebuilt/source
+# branch, skipping the local-link paths.
 PRE_BRANCH="$(awk '/^if \[ "\$_LOCAL_LLAMA_CPP_LINKED" != true \]; then/,/^fi$/' "$SETUP_SH")"
 if printf '%s' "$PRE_BRANCH" | grep -qF '_studio_dir_unreadable "$LLAMA_CPP_DIR"' &&
    printf '%s' "$PRE_BRANCH" | grep -qF '_assert_studio_owned_or_absent "$LLAMA_CPP_DIR"'; then
@@ -63,8 +63,8 @@ else
     bad "the early guard precedes the branch it protects"
 fi
 
-# Run the custom-home ownership guard first to preserve its cautious wording.
-# Default the line numbers so a vanished grep fails loudly instead of erroring out.
+# Ownership guard first, to keep its cautious wording. Line numbers are checked for
+# emptiness so a vanished grep fails loudly.
 OWNED_LINE="$(printf '%s' "$PREBUILT_BLOCK" | grep -n '_assert_studio_owned_or_absent' | cut -d: -f1 | head -1)"
 UNREADABLE_LINE="$(printf '%s' "$PREBUILT_BLOCK" | grep -n '_studio_dir_unreadable' | cut -d: -f1 | head -1)"
 if [ -n "$OWNED_LINE" ] && [ -n "$UNREADABLE_LINE" ] && [ "$OWNED_LINE" -lt "$UNREADABLE_LINE" ]; then
@@ -89,8 +89,8 @@ if grep -q 'rm -rf "$LLAMA_CPP_DIR" 2>/dev/null' "$SETUP_SH"; then
 else
     ok "the failing rm keeps its stderr"
 fi
-# Mode 111 defeats the rm but stays searchable, so a replace postcondition on the
-# search-only probe falls through to the generic "could not be replaced" message.
+# Mode 111 defeats the rm but stays searchable, so a search-only postcondition falls
+# through to the generic "could not be replaced" message.
 if [ "$(grep -c '_studio_dir_unsearchable "\$LLAMA_CPP_DIR"' "$SETUP_SH")" = 0 ]; then
     ok "no replace site still uses the search-only probe"
 else
@@ -181,7 +181,7 @@ fi
 chmod 755 "$OURS"
 
 # setup_fail gates [TAURI:ERROR] on two variables. Test them separately: one joined
-# case subject would let a comma inside either value alias the other's arm.
+# case subject lets a comma in either value alias the other's arm.
 python3 - "$SETUP_SH" "$WORK/gate.sh" <<'PY'
 import sys, pathlib
 src = pathlib.Path(sys.argv[1]).read_text()

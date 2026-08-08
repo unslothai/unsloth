@@ -75,10 +75,9 @@ setup_fail() {
     [ "$exit_code" -ne 0 ] || exit_code=1
     local message
     message=$(printf '%s' "$*" | tr '\r\n' '  ')
-    # Match setup.ps1: update.rs sets UNSLOTH_TAURI_UPDATE on every platform, and
-    # promotes this line over the generic "Update exited with code N". Test each
-    # variable separately; one joined subject lets a comma inside either value
-    # alias the other's arm and print the marker on a plain CLI run.
+    # Match setup.ps1: update.rs sets UNSLOTH_TAURI_UPDATE everywhere and promotes
+    # this line over the generic "Update exited with code N". Test each variable
+    # separately: one joined subject lets a comma in either value alias the other arm.
     local tauri_marker=0
     case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) tauri_marker=1 ;; esac
     case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) tauri_marker=1 ;; esac
@@ -987,8 +986,8 @@ _studio_dir_unsearchable() {
     return 0
 }
 
-# Read (+r) as well, for callers that list or replace the tree rather than probe
-# a known child: mode 111 is searchable but still fails install_llama_prebuilt.py.
+# Also needs +r, for callers that list or replace the tree: mode 111 is searchable
+# but still fails install_llama_prebuilt.py.
 _studio_dir_unreadable() {
     [ -d "$1" ] || return 1
     _studio_dir_unsearchable "$1" && return 0
@@ -2000,8 +1999,8 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         fi
         rm -rf "$LLAMA_CPP_DIR" || true
         if [ -e "$LLAMA_CPP_DIR" ]; then
-            # Unreadable, not just unsearchable: mode 111 defeats the rm above but
-            # stays searchable, which would fall through to the generic message.
+            # Unreadable, not just unsearchable: mode 111 defeats the rm above and
+            # would fall through to the generic message.
             if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
                 _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
             fi
@@ -2017,10 +2016,9 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     fi
 fi
 
-# Every branch below either replaces $LLAMA_CPP_DIR or builds into it, and the
-# source-build swap only reaches its own guards after the whole build. Check here
-# so a denied cache fails before the work, not after. The local-link paths are
-# excluded: they already replaced or reused the tree above.
+# Every branch below replaces $LLAMA_CPP_DIR or builds into it, and the source-build
+# swap only reaches its own guards after the whole build, so check here instead.
+# Local-link paths are excluded: they already replaced or reused the tree above.
 if [ "$_LOCAL_LLAMA_CPP_LINKED" != true ]; then
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
         _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
@@ -2052,8 +2050,8 @@ else
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
         _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
-    # The custom-home ownership check above does not cover the default cache.
-    # Stop before pathlib turns an unreadable cache into a traceback.
+    # The ownership check above misses the default cache; stop before pathlib
+    # turns an unreadable one into a traceback.
     if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
         _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
@@ -2727,7 +2725,7 @@ else
             rm -rf "$LLAMA_CPP_DIR" || true
             if [ -e "$LLAMA_CPP_DIR" ]; then
                 # Same probe as the other replace sites: the hoisted guard covers a
-                # tree that was already denied, this catches one denied mid-build.
+                # tree already denied, this catches one denied mid-build.
                 if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
                     _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
                 fi

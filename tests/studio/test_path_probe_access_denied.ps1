@@ -130,8 +130,8 @@ try {
 }
 
 # ── A denied tree with NO metadata inside it ──
-# A missing child of a denied Windows directory can appear absent, so the
-# directory listing must catch it. POSIX mode 111 exercises the same shape.
+# A missing child of a denied Windows dir looks absent, so the listing must catch
+# it. POSIX mode 111 is the same shape.
 $bareRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_bare_" + [guid]::NewGuid().ToString("N"))
 $bareLocked = Join-Path $bareRoot "llama.cpp"
 New-Item -ItemType Directory -Force -Path (Join-Path $bareLocked "build") | Out-Null
@@ -160,8 +160,8 @@ foreach ($mode in $bareModes) {
 Remove-Item -Recurse -Force -LiteralPath $bareRoot -ErrorAction SilentlyContinue
 
 # ── A readable marker inside a tree that cannot be listed ──
-# The shape a marker-only probe calls Readable: attributes readable, listing denied.
-# Windows denies ReadData; POSIX mode 111 keeps the named child stat-able.
+# What a marker-only probe would call Readable. Windows denies ReadData; POSIX
+# mode 111 keeps the named child stat-able.
 $listRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_list_" + [guid]::NewGuid().ToString("N"))
 $listLocked = Join-Path $listRoot "llama.cpp"
 New-Item -ItemType Directory -Force -Path $listLocked | Out-Null
@@ -210,8 +210,8 @@ Check "Get-PathState matches bare Test-Path on every non-throwing probe ($probed
 Check "Denied never appears where the old probe did not throw" ($deniedWithoutThrow -eq 0)
 
 # ── A denied marker FILE under a readable directory ──
-# Windows only: POSIX keeps mode-000 files stat-able.
-# A denied marker must not be mistaken for an unrelated directory.
+# Windows only (POSIX keeps mode-000 files stat-able): a denied marker must not be
+# mistaken for an unrelated directory.
 $adoptRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_adopt_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $adoptRoot | Out-Null
 $adoptMarker = Join-Path $adoptRoot "UNSLOTH_PREBUILT_INFO.json"
@@ -408,8 +408,8 @@ if ($assertSrc -and $markSrc) {
             Check "-NonFatal hands back a tree whose parent is unreadable" (
                 -not $threw -and $out.Count -eq 1 -and $out[0] -eq "Denied")
 
-            # Cover a fresh custom home with no marker. Mode 111 permits child stat
-            # but denies listing, matching the relevant Windows behavior.
+            # A fresh custom home with no marker. Mode 111 allows child stat but
+            # denies listing, matching Windows here.
             $bareWho = "$env:USERDOMAIN\$env:USERNAME"
             $bareModes = if ($onWindows) { @("acl") } else { @("000", "111") }
             foreach ($mode in $bareModes) {
@@ -441,8 +441,8 @@ if ($assertSrc -and $markSrc) {
 }
 
 # ── install.ps1's preflight, run for real ──
-# Run install.ps1's copied helpers in a child so they do not shadow setup.ps1's.
-# The real preflight must return actionable guidance for a real denied tree.
+# Its copied helpers run in a child so they do not shadow setup.ps1's, and must
+# return actionable guidance for a real denied tree.
 $installPath = [System.IO.Path]::Combine($repoRoot, "install.ps1")
 $preflightFns = @("Test-AccessDeniedError", "Get-PathState", "Get-LlamaCppInstallReadState",
                   "Get-PathDenialDetail", "Write-PathAccessDenied", "Get-CanonicalDir",
@@ -546,8 +546,8 @@ else { chmod 755 `$dir }
 }
 
 # ── Complete install/setup/update entrypoints ──
-# Run every public entrypoint and trap network or expensive work.
-# Windows CI uses real ACLs; POSIX chmod supplies the local equivalent.
+# Run every public entrypoint with network and expensive work trapped. Windows CI
+# uses real ACLs; POSIX chmod is the local equivalent.
 $entrypointHarness = @'
 $ErrorActionPreference = "Stop"
 $repoRoot = $args[0]
