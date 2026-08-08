@@ -2773,6 +2773,17 @@ def _apply_host_overrides(
             # [gfx], so the driver-only host the forward exists for keeps auto-Vulkan.
             rocm_gfx_targets = list(dict.fromkeys([*_physical, gfx])),
         )
+    # The arch a previous install recorded, replayed by the updater. A remembered
+    # probe result, not an operator override, so it only fills a gap: a host whose
+    # GPU changed keeps whatever its own probe now reports.
+    remembered = _normalize_forwarded_gfx(os.environ.get("UNSLOTH_ROCM_GFX_REMEMBERED"))
+    if remembered and not _active_rocm_gfx_target(host):
+        return dataclasses_replace(
+            host,
+            has_rocm = True,
+            rocm_gfx_target = remembered,
+            rocm_gfx_targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), remembered])),
+        )
     if override_has_rocm and not host.has_rocm:
         return dataclasses_replace(host, has_rocm = True)
     return host
@@ -5736,6 +5747,7 @@ def write_prebuilt_metadata(
     prebuilt_fallback_used: bool,
     force_cpu: bool = False,
     llama_backend: str | None = None,
+    rocm_gfx: str | None = None,
 ) -> None:
     source_asset_name, source_sha256 = selected_source_archive_metadata(
         approved_checksums,
@@ -5754,6 +5766,7 @@ def write_prebuilt_metadata(
     )
     if fingerprint is None:
         raise PrebuiltFallback(f"cannot compute install fingerprint for {choice.name}")
+    _persisted_backend = persisted_llama_backend(llama_backend, choice)
     metadata = {
         "requested_tag": requested_tag,
         "tag": llama_tag,
@@ -5764,9 +5777,15 @@ def write_prebuilt_metadata(
         # so a forced CPU install is not re-routed to a GPU bundle (#7213). An automatic
         # --cpu-fallback (e.g. arm64 GPU-build recovery) stays False so it can heal to GPU.
         "force_cpu": force_cpu,
-        # Deliberate or auto-selected Vulkan backend (#7357); the updater re-asserts it so
-        # AMD hosts are not swapped back to HIP. Dropped if the winning attempt was not Vulkan.
-        "llama_backend": persisted_llama_backend(llama_backend, choice),
+        # Explicit Vulkan is recorded as "vulkan"; automatic Windows AMD routing is
+        # recorded as "auto" so runtime recovery can distinguish them.
+        "llama_backend": _persisted_backend,
+        # The AMD gfx an AUTOMATIC route was decided on. A Vulkan asset name carries
+        # no arch, and the Windows driver-only hosts that reach Vulkan automatically
+        # have no probe (hipinfo/amd-smi absent), so the updater would re-detect a
+        # ROCm-less host and drop to CPU. Automatic only: elsewhere the asset names
+        # the arch, and a stale copy would outlive its GPU.
+        **({"rocm_gfx": rocm_gfx} if rocm_gfx and _persisted_backend == "auto" else {}),
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
@@ -5904,6 +5923,31 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
         )
         return
     log(f"existing install reused; recorded llama_backend={llama_backend!r} from this run")
+
+
+def sync_marker_rocm_gfx(install_dir: Path, rocm_gfx: str | None) -> None:
+    """Sync the routing AMD arch when the bundle is reused unchanged. A Vulkan
+    asset name carries no arch, so a reuse that skipped write_prebuilt_metadata
+    would leave an automatic marker the next update cannot route from."""
+    if not rocm_gfx:
+        return
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    try:
+        marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(marker, dict) or marker.get("rocm_gfx") == rocm_gfx:
+        return
+    # Only the automatic route needs it: elsewhere the asset names the arch, and a
+    # stale one would outlive the GPU it describes.
+    if marker.get("llama_backend") != "auto":
+        return
+    marker["rocm_gfx"] = rocm_gfx
+    if not _write_marker(marker_path, marker):
+        log(
+            f"WARNING: could not record rocm_gfx={rocm_gfx!r} in {marker_path}; "
+            "a later update may not reproduce this GPU routing"
+        )
 
 
 def recorded_ggml_tree(
@@ -6258,6 +6302,7 @@ def validate_prebuilt_choice(
     quantized_path: Path,
     force_cpu: bool = False,
     llama_backend: str | None = None,
+    rocm_gfx: str | None = None,
 ) -> tuple[Path, Path]:
     source_repo, source_ref, source_archive, exact_source = preferred_source_archive(
         approved_checksums, llama_tag
@@ -6304,6 +6349,7 @@ def validate_prebuilt_choice(
         prebuilt_fallback_used = prebuilt_fallback_used,
         force_cpu = force_cpu,
         llama_backend = llama_backend,
+        rocm_gfx = rocm_gfx,
     )
     # Hashless external prebuilts are not in the approved-sha256
     # manifest and rely on the functional smoke test as their only integrity gate,
@@ -6392,6 +6438,7 @@ def validate_prebuilt_attempts(
     existing_install_dir: Path | None = None,
     force_cpu: bool = False,
     llama_backend: str | None = None,
+    rocm_gfx: str | None = None,
 ) -> tuple[AssetChoice, Path, bool]:
     attempt_list = list(attempts)
     if not attempt_list:
@@ -6454,6 +6501,7 @@ def validate_prebuilt_attempts(
                 quantized_path = quantized_path,
                 force_cpu = force_cpu,
                 llama_backend = llama_backend,
+                rocm_gfx = rocm_gfx,
             )
         except Exception as exc:
             remove_tree(staging_dir)
@@ -6701,11 +6749,12 @@ def _route_to_vulkan_prebuilt(
     the install marker when updates must re-assert Vulkan.
     """
     forced = force_vulkan_requested(llama_backend)
-    # Auto-fall back only when the run named no backend: an explicit hip/cpu is the opt-out.
     explicit_backend = resolved_llama_backend(llama_backend)
-    auto_no_hip = explicit_backend is None and _should_auto_vulkan_for_amd_windows(
-        host, published_repo
-    )
+    # Host-only test, so a forced Vulkan run can still tell this box would have
+    # routed itself to Vulkan anyway.
+    amd_no_hip_host = _should_auto_vulkan_for_amd_windows(host, published_repo)
+    # Auto-fall back only when the run named no backend: an explicit hip/cpu is the opt-out.
+    auto_no_hip = explicit_backend is None and amd_no_hip_host
     # No PHYSICAL NVIDIA, not merely no usable one: Vulkan ignores CUDA_VISIBLE_DEVICES, so
     # auto-routing a host that hides its NVIDIA card would let it grab the reserved GPU.
     auto_intel = (
@@ -6737,14 +6786,17 @@ def _route_to_vulkan_prebuilt(
             f"({active}); installing the Vulkan llama.cpp prebuilt instead"
         )
         host = _vulkan_only_host(host)
-        persist_backend = "vulkan"
+        persist_backend = "auto"
     elif forced:
         log(
             "Vulkan llama.cpp backend requested; installing the Vulkan "
             "prebuilt instead of the detected GPU backend"
         )
         host = _vulkan_only_host(host)
-        persist_backend = "vulkan"
+        # A host with no HIP-capable AMD GPU routes here anyway, so the bundle is the
+        # same. Persist it as automatic so pre-#8050 installs (and the --llama-backend
+        # vulkan every update re-asserts) stay eligible for the CPU crash recovery.
+        persist_backend = "auto" if amd_no_hip_host else "vulkan"
     else:
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
         persist_backend = None
@@ -6944,6 +6996,9 @@ def install_prebuilt(
     # An explicit Vulkan choice only. The Windows-AMD auto-fallback is a rescue
     # from a missing HIP arch, so it must keep the CPU plans it can still use.
     strict_vulkan = force_vulkan_requested(llama_backend) and not force_cpu and not host.is_macos
+    # Read before the route, which rewrites the host to Vulkan-only and drops the AMD
+    # arch. Kept in the marker so the next update forwards the same --rocm-gfx.
+    persist_rocm_gfx = _active_rocm_gfx_target(host)
     host, published_repo, published_release_tag, persist_llama_backend = _route_to_vulkan_prebuilt(
         host,
         published_repo,
@@ -7045,6 +7100,7 @@ def install_prebuilt(
                         install_dir,
                         recorded_ggml_tree(current.approved_checksums, current.attempts[0]),
                     )
+                    sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                     return
             with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
                 probe_path = work_dir / "stories260K.gguf"
@@ -7073,6 +7129,7 @@ def install_prebuilt(
                                 install_dir,
                                 recorded_ggml_tree(plan.approved_checksums, choice),
                             )
+                            sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                             return
                     log(
                         "selected "
@@ -7096,6 +7153,7 @@ def install_prebuilt(
                             # Persist only the deliberate choice, not a transient fallback.
                             force_cpu = persist_force_cpu,
                             llama_backend = persist_llama_backend,
+                            rocm_gfx = persist_rocm_gfx,
                         )
                     except ExistingInstallSatisfied as satisfied:
                         # Third reuse path: the reinstall was skipped, so
@@ -7104,6 +7162,7 @@ def install_prebuilt(
                             install_dir,
                             recorded_ggml_tree(plan.approved_checksums, satisfied.choice),
                         )
+                        sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                         return
                     except PrebuiltFallback as exc:
                         if _environment_fatal_reason(exc):

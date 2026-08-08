@@ -46,6 +46,7 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 logger = get_logger(__name__)
 from utils.child_stdio import utf8_child_env
 from utils.hardware import apply_gpu_ids
+from utils.hf_dataset_options import hf_dataset_split_instruction_names
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -525,9 +526,9 @@ def _load_hf_train_and_eval_datasets(
                     split_kwargs["token"] = token
                 available_splits = get_dataset_split_names(**split_kwargs)
 
-            excluded_split = train_split.partition("[")[0].strip()
+            excluded_splits = set(hf_dataset_split_instruction_names(train_split))
             for candidate in EVAL_SPLIT_CANDIDATES:
-                if candidate not in available_splits or candidate == excluded_split:
+                if candidate not in available_splits or candidate in excluded_splits:
                     continue
                 try:
                     if loaded_from_cache:
@@ -701,14 +702,15 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
     from utils.security import (
         evaluate_file_security,
         evaluate_remote_code_consent_for_targets,
+        load_scan_target,
         security_load_subdirs,
     )
 
-    targets = [load_target]
+    requested_targets = [load_target]
     try:
         base_model = get_base_model_from_lora_identifier(load_target, hf_token)
         if base_model:
-            targets.append(base_model)
+            requested_targets.append(base_model)
     except Exception as error:
         logger.debug("Could not resolve LoRA base for security scan: %s", error)
 
@@ -716,12 +718,20 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
 
     primary_name = config["model_name"]
     local_only_load = hf_env_offline()
-    for target in dict.fromkeys(targets):
-        load_subdirs = security_load_subdirs(target, hf_token)
-        if target == load_target and target != primary_name:
+    consent_load_subdirs: dict[str, tuple] = {}
+    targets: list[str] = []
+    for requested_target in dict.fromkeys(requested_targets):
+        load_subdirs = security_load_subdirs(requested_target, hf_token)
+        if requested_target == load_target and requested_target != primary_name:
             load_subdirs = tuple(
                 dict.fromkeys((*load_subdirs, *security_load_subdirs(primary_name, hf_token)))
             )
+        target, load_subdirs = load_scan_target(requested_target, load_subdirs)
+        if target not in consent_load_subdirs:
+            targets.append(target)
+            consent_load_subdirs[target] = ()
+        load_subdirs = tuple(dict.fromkeys((*consent_load_subdirs[target], *load_subdirs)))
+        consent_load_subdirs[target] = load_subdirs
         decision = evaluate_file_security(
             target,
             hf_token = hf_token,
@@ -744,6 +754,7 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
         trust_remote_code = True,
         approved_fingerprint = config.get("approved_remote_code_fingerprint"),
         subject = config.get("subject"),
+        load_subdirs_by_target = consent_load_subdirs,
     )
     if not decision.blocked:
         return None
@@ -760,6 +771,26 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
 
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
 _CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
+_CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
+    "qwen3.5",
+    "qwen3_5",
+    "qwen3.6",
+    "qwen3_6",
+    "qwen3-next",
+    "qwen3_next",
+    "nemotron_h",
+    "nemotron-h",
+    "nemotron-3-nano",
+    "falcon_h1",
+    "falcon-h1",
+    "granite-4.0-h",
+    "granitemoehybrid",
+    "lfm2",
+    "mamba",
+    "jamba",
+    "zamba",
+    "bamba",
+)
 _MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 _MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
 _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
@@ -904,25 +935,7 @@ if sys.platform == "win32":
 
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
-    return any(
-        key in name
-        for key in (
-            "qwen3.5",
-            "qwen3_5",
-            "qwen3.6",
-            "qwen3_6",
-            "qwen3-next",
-            "qwen3_next",
-            "nemotron_h",
-            "nemotron-h",
-            "nemotron-3-nano",
-            "falcon_h1",
-            "falcon-h1",
-            "granite-4.0-h",
-            "granitemoehybrid",
-            "lfm2",
-        )
-    )
+    return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
 
 
 def _hipcc_gcc_install_dir() -> str | None:
@@ -968,6 +981,10 @@ def _install_package_wheel_first(
         return True
     except ImportError:
         pass
+
+    if _model_offline_mode_enabled():
+        logger.info("Skipping %s installation while offline", display_name)
+        return False
 
     env = probe_torch_wheel_env(timeout = 30)
     if wheel_url_builder is not None:
@@ -1154,8 +1171,15 @@ def _install_package_wheel_first(
     return True
 
 
-def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
-    if not _model_wants_causal_conv1d(model_name):
+def _ensure_causal_conv1d_fast_path(
+    event_queue: Any,
+    model_name: str,
+    *,
+    required: bool | None = None,
+) -> None:
+    if required is None:
+        required = _model_wants_causal_conv1d(model_name)
+    if not required:
         return
     if sys.platform == "win32":
         logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
@@ -1254,6 +1278,10 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
     if already_importable and _flash_linear_attention_current(already_importable = True):
         logger.info("flash-linear-attention already importable at the pinned version")
         return True
+
+    if _model_offline_mode_enabled():
+        logger.info("Skipping flash-linear-attention installation while offline")
+        return False
 
     _send_status(
         event_queue,
@@ -1489,7 +1517,8 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
 
     if gcn_arch:
         # gfx1152 is Krackan Point: same shared GPU/system-RAM pool as gfx1150/gfx1151.
-        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151", "gfx1152"}
+        # Case-folded: the attribute is lowercase in practice but is not guaranteed.
+        return gcn_arch, gcn_arch.lower() in {"gfx1150", "gfx1151", "gfx1152"}
 
     # Arch attrs absent -- fall back to device-name matching. Only reached under _hw.IS_ROCM,
     # so the NVIDIA GeForce 840M cannot collide with the Krackan markers.
@@ -1587,6 +1616,16 @@ def _ensure_tilelang_backend_unconditional(event_queue: Any) -> bool:
         logger.info("tilelang + apache-tvm-ffi already installed")
         return True
 
+    if _model_offline_mode_enabled():
+        if needs_repair and os.environ.get("FLA_TILELANG") is None:
+            os.environ["FLA_TILELANG"] = "0"
+            logger.warning(
+                "Disabling TileLang while offline because apache-tvm-ffi %s is unsafe",
+                existing_tvm_ffi,
+            )
+        logger.info("Skipping TileLang installation while offline")
+        return False
+
     # Step 1: --no-deps keeps --force-reinstall off torch/CUDA via the dep graph.
     if needs_repair:
         logger.info(
@@ -1671,7 +1710,12 @@ def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj
     return count
 
 
-def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
+def _install_fast_path_hooks(
+    event_queue: Any,
+    model_name: str,
+    *,
+    install_causal_conv1d: bool | None = None,
+) -> None:
     """Hook transformers' is_*_available gates so the first call drives the install.
 
     Idempotent. UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring gate.
@@ -1773,10 +1817,15 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         )
         return bool(ok)
 
-    for gate_name, install_fn, post_fn in (
+    hooks = [
         ("is_flash_linear_attention_available", _fla_install, _fla_post_available),
-        ("is_causal_conv1d_available", _causal_conv1d_install, None),
-    ):
+    ]
+    if install_causal_conv1d is None:
+        install_causal_conv1d = _model_wants_causal_conv1d(model_name)
+    if install_causal_conv1d:
+        hooks.append(("is_causal_conv1d_available", _causal_conv1d_install, None))
+
+    for gate_name, install_fn, post_fn in hooks:
         original = getattr(_iu, gate_name, None)
         if original is None:
             logger.info(
@@ -2798,13 +2847,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # ── 7. Apply train_on_responses_only if requested ──
     # Auto-detect markers from the chat template first, manual table as fallback. Mirror the
-    # CUDA skips: raw/CPT text has no chat turns and Alpaca-rendered text lacks the markers.
+    # CUDA skips: raw/CPT text has no chat turns.
     # Check the resolved format too, since format_type="auto" can land on alpaca or raw.
     if (
         config.get("train_on_completions", False)
         and not raw_text_mode
-        and format_type != "alpaca"
-        and dataset_final_format not in ("alpaca", "raw_text")
+        and dataset_final_format != "raw_text"
     ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: the helper handles detection failures and double misses, so an exception here
@@ -2816,6 +2864,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             model_name,
             train_on_responses_only,
             notify = _completion_masking_notifier(_send),
+            dataset_template = "alpaca" if dataset_final_format == "alpaca" else None,
         )
         if not masking_applied:
             # Mirrors the CUDA path, which drops train_on_responses_enabled here so the run
@@ -3299,18 +3348,33 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         return
 
     # ── 1b. Install fast-path kernel libraries for the chosen model.
-    # 1) causal-conv1d ALWAYS runs eagerly via the substring path: some SSM modeling files
+    # 1) causal-conv1d runs eagerly for matching architectures: some SSM modeling files
     #    lazy_load it without calling is_causal_conv1d_available.
     # 2) FLA + tilelang: gated by the runtime hook on is_flash_linear_attention_available.
     # 3) mamba-ssm + flash-attn keep their substring / size gates.
     # 4) UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring path.
     try:
-        _ensure_causal_conv1d_fast_path(event_queue, model_name)
+        from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+
+        wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+            model_name,
+            model_load_target,
+            config.get("hf_token") or None,
+        )
+        _ensure_causal_conv1d_fast_path(
+            event_queue,
+            model_name,
+            required = wants_causal_conv1d,
+        )
         if os.getenv(_FAST_PATH_HOOKS_SKIP_ENV) == "1":
             _ensure_flash_linear_attention(event_queue, model_name)
             _ensure_tilelang_backend(event_queue, model_name)
         else:
-            _install_fast_path_hooks(event_queue, model_name)
+            _install_fast_path_hooks(
+                event_queue,
+                model_name,
+                install_causal_conv1d = wants_causal_conv1d,
+            )
         _ensure_mamba_ssm(event_queue, model_name)
         _ensure_flash_attn_for_long_context(
             event_queue,

@@ -75,9 +75,13 @@ setup_fail() {
     [ "$exit_code" -ne 0 ] || exit_code=1
     local message
     message=$(printf '%s' "$*" | tr '\r\n' '  ')
-    case "${UNSLOTH_TAURI_MODE:-0}" in
-        1|true) printf '[TAURI:ERROR] %s\n' "$message" ;;
-    esac
+    # Match setup.ps1: update.rs sets UNSLOTH_TAURI_UPDATE everywhere and promotes
+    # this line over the generic "Update exited with code N". Test each variable
+    # separately: one joined subject lets a comma in either value alias the other arm.
+    local tauri_marker=0
+    case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) tauri_marker=1 ;; esac
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) tauri_marker=1 ;; esac
+    if [ "$tauri_marker" -eq 1 ]; then printf '[TAURI:ERROR] %s\n' "$message"; fi
     exit "$exit_code"
 }
 
@@ -974,11 +978,18 @@ _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
-# Search (+x), not read (+r), is what the marker probes need: inside a directory
-# we cannot search every probe reports absent, so our own install reads as someone else's.
+# Marker probes need search (+x), not read (+r): in an unsearchable dir every probe reports absent, so our install looks foreign.
 _studio_dir_unsearchable() {
     [ -d "$1" ] || return 1
-    ( cd "$1" ) 2>/dev/null && return 1
+    ( cd -- "$1" ) 2>/dev/null && return 1
+    return 0
+}
+
+# Also needs +r for callers that list or replace the tree: mode 111 is searchable but still fails install_llama_prebuilt.py.
+_studio_dir_unreadable() {
+    [ -d "$1" ] || return 1
+    _studio_dir_unsearchable "$1" && return 0
+    ls -A -- "$1" >/dev/null 2>&1 && return 1
     return 0
 }
 
@@ -1003,6 +1014,41 @@ _path_access_denied() {
         setup_fail 1 "Permission denied reading $_pad_label at $_pad_dir. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access, or move it aside, then re-run setup."
     fi
     setup_fail 1 "Permission denied reading the existing $_pad_label at $_pad_dir. Delete or rename that folder (Unsloth reinstalls it) or restore access, then re-run setup. Reinstalling the app does not reset it."
+}
+
+# POSIX follows a final symlink when the path ends in /, so "link/" is never -L. Strip it, but never past the root.
+_studio_rstrip_slash() {
+    _srs_path="$1"
+    while [ "$_srs_path" != "/" ] && [ "${_srs_path%/}" != "$_srs_path" ]; do
+        _srs_path="${_srs_path%/}"
+    done
+    printf '%s' "$_srs_path"
+}
+
+# An unsearchable ancestor makes a real path read as missing. Walk up to the deepest
+# ancestor we can stat and report it as the blocker; stay quiet if the path is just absent.
+_report_denied_ancestor() {
+    _rda_probe="$(_studio_rstrip_slash "$1")"
+    _rda_hops=0
+    while [ ! -e "$_rda_probe" ] && [ "$_rda_probe" != "/" ] && [ "$_rda_probe" != "." ]; do
+        # An unfollowable symlink is the deepest name we have, so walk its target:
+        # the denied ancestor lives there. The hop cap breaks symlink cycles.
+        if [ -L "$_rda_probe" ] && [ "$_rda_hops" -lt 40 ]; then
+            _rda_hops=$((_rda_hops + 1))
+            _rda_target="$(readlink -- "$_rda_probe")" || break
+            case "$_rda_target" in
+                /*) _rda_probe="$_rda_target" ;;
+                *) _rda_probe="$(dirname -- "$_rda_probe")/$_rda_target" ;;
+            esac
+            _rda_probe="$(_studio_rstrip_slash "$_rda_probe")"
+            continue
+        fi
+        # -- keeps a leading-dash path an operand, not a dirname option.
+        _rda_probe="$(dirname -- "$_rda_probe")"
+    done
+    if _studio_dir_unsearchable "$_rda_probe"; then
+        _path_access_denied "$_rda_probe" "$2" owner-unverified
+    fi
 }
 
 _assert_studio_owned_or_absent() {
@@ -1935,10 +1981,17 @@ _has_local_llama_server() {
 _LOCAL_LLAMA_CPP_LINKED=false
 if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
+        # A build under an unsearchable ancestor cannot be stat'd, so report permissions
+        # rather than sending the user to fix a path that is already correct.
+        _report_denied_ancestor "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" "UNSLOTH_LOCAL_LLAMA_CPP_DIR"
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
         setup_fail 1 "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR"
     fi
-    _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd -P)"
+    # In an if condition so a denied dir reports instead of tripping errexit.
+    if ! _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" 2>/dev/null && pwd -P)"; then
+        # owner-unverified: this is the user's own tree, never advise deleting it.
+        _path_access_denied "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" "UNSLOTH_LOCAL_LLAMA_CPP_DIR" owner-unverified
+    fi
     # Canonicalize the install path the same way before comparing: _RESOLVED_LOCAL
     # is fully resolved, but LLAMA_CPP_DIR is textual ($UNSLOTH_HOME/llama.cpp). If
     # $HOME (or UNSLOTH_HOME) contains a symlink, the two never match even when the
@@ -1948,7 +2001,13 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     _CANON_LLAMA_CPP_DIR="$LLAMA_CPP_DIR"
     _LLAMA_CPP_PARENT="$(dirname "$LLAMA_CPP_DIR")"
     if [ -d "$_LLAMA_CPP_PARENT" ]; then
-        _CANON_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" && pwd -P)/$(basename "$LLAMA_CPP_DIR")"
+        # Nothing can be written under a parent we cannot search, so report here
+        # rather than let the link below abort raw a few lines later.
+        if _canon_parent="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" 2>/dev/null && pwd -P)"; then
+            _CANON_LLAMA_CPP_DIR="$_canon_parent/$(basename "$LLAMA_CPP_DIR")"
+        else
+            _path_access_denied "$_LLAMA_CPP_PARENT" "Unsloth install directory" owner-unverified
+        fi
     fi
     if [ "$_RESOLVED_LOCAL" = "$_CANON_LLAMA_CPP_DIR" ]; then
         # Points at the canonical install location itself: never delete-then-link
@@ -1986,7 +2045,9 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         fi
         rm -rf "$LLAMA_CPP_DIR" || true
         if [ -e "$LLAMA_CPP_DIR" ]; then
-            if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+            # Unreadable, not just unsearchable: mode 111 defeats the rm above and
+            # would fall through to the generic message.
+            if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
                 _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
             fi
             step "llama.cpp" "the existing install could not be replaced with a link" "$C_ERR"
@@ -1998,6 +2059,18 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         _LOCAL_LLAMA_CPP_LINKED=true
         _NEED_LLAMA_SOURCE_BUILD=false
         _SKIP_PREBUILT_INSTALL=true
+    fi
+fi
+
+# Every branch below replaces $LLAMA_CPP_DIR or builds into it, and the source-build
+# swap only reaches its own guards after the whole build, so check here instead.
+# Local-link paths are excluded: they already replaced or reused the tree above.
+if [ "$_LOCAL_LLAMA_CPP_LINKED" != true ]; then
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    fi
+    if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
+        _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
 fi
 
@@ -2022,6 +2095,11 @@ else
     # ownership check below ever runs.
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
         _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    fi
+    # The ownership check above misses the default cache; stop before pathlib
+    # turns an unreadable one into a traceback.
+    if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
+        _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
     _PREBUILT_CMD=(
         python "$SCRIPT_DIR/install_llama_prebuilt.py"
@@ -2692,7 +2770,9 @@ else
             # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
             rm -rf "$LLAMA_CPP_DIR" || true
             if [ -e "$LLAMA_CPP_DIR" ]; then
-                if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                # Same probe as the other replace sites: the hoisted guard covers a
+                # tree already denied, this catches one denied mid-build.
+                if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
                     _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
                 fi
                 step "llama.cpp" "built, but the existing install could not be replaced" "$C_ERR"

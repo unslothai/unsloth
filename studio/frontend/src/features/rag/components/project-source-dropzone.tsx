@@ -249,7 +249,7 @@ export function ProjectSourceDropzone({
           </button>
         ) : (
           <div className="flex flex-col gap-1 p-2">
-            <ul className="max-h-52 space-y-0.5 overflow-y-auto">
+            <ul className="overlay-scrollbar-gutter max-h-52 space-y-0.5 overflow-y-auto">
               {staged.map((entry) => (
                 <li
                   key={entry.id}
