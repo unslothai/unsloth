@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for _rocm_classify_unified_memory (ROCm OOM-guard classifier).
+"""Unit tests for the ROCm OOM guard: device classification and fraction selection.
 
-Three paths: (1) canonical gcnArchName, (2) alternate-spelling attr, (3) all
-arch attrs absent -> device-name substring match.
+Classification paths: (1) canonical gcnArchName, (2) alternate-spelling attr,
+(3) all arch attrs absent -> device-name substring match.
+
+Fraction selection: the unified-Linux reserve crossover, the discrete cap, the
+Windows budget-exact 1.0, and the UNSLOTH_ROCM_MEM_FRACTION override.
 
 Regression: Strix Halo (gfx1151) was misclassified as discrete on Radeon wheels
 that set props.name="Radeon 8060S Graphics" but no gcnArchName, applying the
@@ -20,6 +23,7 @@ import pytest
 
 from core.training.worker import (
     _UNIFIED_OS_RESERVE_BYTES,
+    _parse_mem_fraction_env,
     _rocm_classify_unified_memory,
     _rocm_memory_fraction,
 )
@@ -209,9 +213,9 @@ class TestDeviceNameFallback:
         props = _props(name = device_name)
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == ""
-        assert (
-            is_unified is False
-        ), f"discrete device {device_name!r} should NOT be classified as unified-memory"
+        assert is_unified is False, (
+            f"discrete device {device_name!r} should NOT be classified as unified-memory"
+        )
 
     def test_empty_name_returns_false(self) -> None:
         """Absent name must not crash and must default to discrete."""
@@ -312,3 +316,25 @@ class TestMemFractionEnvOverride:
 
     def test_one_is_accepted(self) -> None:
         assert _rocm_memory_fraction(128 * GIB, True, "linux", "1.0") == 1.0
+
+
+class TestParseMemFractionEnv:
+    """The guard's log line tags the fraction 'from <env>' off this parse, so a
+    rejected value has to be indistinguishable from an unset one -- otherwise the
+    log credits an override the user never got."""
+
+    @pytest.mark.parametrize("raw, expected", [("0.95", 0.95), ("1.0", 1.0), (" 0.5 ", 0.5)])
+    def test_usable_values_parse(self, raw: str, expected: float) -> None:
+        assert _parse_mem_fraction_env(raw) == pytest.approx(expected)
+
+    @pytest.mark.parametrize("raw", [None, "", "  ", "abc", "O.95", "0", "0.0", "-0.5", "1.5"])
+    def test_unusable_values_are_none(self, raw: str | None) -> None:
+        # None is what makes the log say "computed" instead of naming the env var.
+        assert _parse_mem_fraction_env(raw) is None
+
+    @pytest.mark.parametrize("raw", ["abc", "1.5", "0"])
+    def test_rejected_value_matches_the_unset_fraction(self, raw: str) -> None:
+        # The tag and the fraction must agree: both fall back to the computed path.
+        assert _rocm_memory_fraction(128 * GIB, True, "linux", raw) == _rocm_memory_fraction(
+            128 * GIB, True, "linux", None
+        )

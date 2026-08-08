@@ -1518,6 +1518,21 @@ _DISCRETE_MEM_FRACTION = 0.90
 _MEM_FRACTION_ENV = "UNSLOTH_ROCM_MEM_FRACTION"
 
 
+def _parse_mem_fraction_env(env_value: str | None) -> float | None:
+    """``UNSLOTH_ROCM_MEM_FRACTION`` as a float, or None when unset/unusable.
+
+    Shared with the OOM guard's log line so it can say whether the override was
+    actually honoured, rather than just whether the variable was set.
+    """
+    if not env_value:
+        return None
+    try:
+        override = float(env_value)
+    except (TypeError, ValueError):
+        return None
+    return override if 0.0 < override <= 1.0 else None
+
+
 def _rocm_memory_fraction(
     total_bytes: int,
     is_unified: bool,
@@ -1537,13 +1552,9 @@ def _rocm_memory_fraction(
       keeps small APUs at exactly the historical 0.80; only large pools relax.
     - Discrete: ``0.90``.
     """
-    if env_value:
-        try:
-            override = float(env_value)
-        except (TypeError, ValueError):
-            override = None
-        if override is not None and 0.0 < override <= 1.0:
-            return override
+    override = _parse_mem_fraction_env(env_value)
+    if override is not None:
+        return override
 
     if not is_unified:
         return _DISCRETE_MEM_FRACTION
@@ -3629,9 +3640,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 # uncapped default. On Linux the total spans nearly all RAM, so keep a bounded headroom
                 # (see _rocm_memory_fraction).
                 _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
-                _env_fraction = os.environ.get(_MEM_FRACTION_ENV)
+                _env_raw = os.environ.get(_MEM_FRACTION_ENV)
+                _env_fraction = _parse_mem_fraction_env(_env_raw)
                 _mem_fraction = _rocm_memory_fraction(
-                    _total_bytes, _is_unified, sys.platform, _env_fraction
+                    _total_bytes, _is_unified, sys.platform, _env_raw
                 )
                 _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
@@ -3643,7 +3655,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     _gcn_arch or "unknown arch",
                     _total_bytes * _mem_fraction / 1024**3,
                     _total_bytes / 1024**3,
-                    f"from {_MEM_FRACTION_ENV}" if _env_fraction else "computed",
+                    f"from {_MEM_FRACTION_ENV}" if _env_fraction is not None else "computed",
                 )
                 # Unified Windows APUs: the WDDM budget is user-raisable, but nothing on the box says so
                 # -- users see "48 GB VRAM" on a 96 GB machine. Say where the limit comes from.
