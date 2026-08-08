@@ -14,9 +14,8 @@ const trimmed = (value: string | null | undefined): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 
 /** The search params for a diffusion pick routed out of the chat picker. A pinned row carries only a label, so forwarding the
- *  filename alone dropped it at the URL boundary and the page saw a bare repo id: curated ones still resolved through the
- *  catalog, every other on-device GGUF repo read as a pipeline, which the backend rejects. The label rides its own param
- *  because `quant` is consumed as a filename. */
+ *  filename alone left the page a bare repo id: curated repos still resolved through the catalog, every other on-device GGUF
+ *  repo read as a pipeline. The label rides its own param because `quant` is consumed as a filename. */
 export function diffusionRouteSearch(
   model: string,
   meta: { ggufFilename?: string | null; ggufVariant?: string | null },

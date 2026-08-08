@@ -1192,9 +1192,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
   // A trained adapter awaiting deployment: applied once the base is loaded and LoRA-capable for its family.
   const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
-  // Which pick owns the page. Resolving a repo-level GGUF pick is a listing request and staging is a plan request, neither of
-  // which sets `busy`, so the user can pick again or switch pages mid-flight; the superseded pick must then do nothing.
-  // Lazy state, not a ref: the guard is created once per page and read from handlers, and a ref cannot be written during render.
+  // Which pick owns the page: resolving one is a listing request and staging is a plan request, and neither sets `busy`, so a
+  // pick can land on top of an awaiting one. Lazy state rather than a ref, which cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
   const dismissLoadToast = useCallback(() => {
@@ -1870,8 +1869,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [active]);
 
   // Stage a not-yet-downloaded hub pick, else load it directly. Returns true when the pick was accepted either way.
-  // `isCurrent` lets an awaiting caller drop out here too: the plan request below is a second window in which a newer pick can
-  // take the page, and loading anyway would evict the model that pick just asked for.
+  // `isCurrent` lets an awaiting caller drop out here too: the plan below is a second window for a newer pick to take the page.
   const loadOrStage = useCallback(
     async (
       repoId: string,
@@ -1898,7 +1896,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           // planned a quantized file set and staged too little. Same list handleLoad bakes.
           loras: advanced.loras,
         });
-        // Superseded while the plan was in flight: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
+        // Superseded mid-plan: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
         if (isCurrent && !isCurrent()) return false;
         if (plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts, advanced };
@@ -1931,7 +1929,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       isDownloaded?: boolean,
       localPath?: string | null,
     ): Promise<boolean> => {
-      // Claimed here, not by the caller, so every entry point is covered; the next pick's claim makes this one inert.
+      // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
       const isCurrent = () => isMounted.current && pickGuard.holds(token);
       const prevQuant = quant;
@@ -1965,8 +1963,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [loadOrStage, pickGuard, quant],
   );
 
-  // A hidden page owns nothing: both diffusion pages stay mounted, so a resolution started here must not fire a load after the
-  // user moved to the other one.
+  // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
   useEffect(() => {
     if (!active) pickGuard.release();
   }, [active, pickGuard]);
@@ -1995,8 +1992,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     void navigateSelf({ to: "/images", search: {}, replace: true });
-    // A label, so a GGUF repo whatever the catalog says: the picker only sends one for a pick it knows holds quants, and a
-    // label is not loadable, so it goes to the resolver rather than through the route classifier's filename slot.
+    // A label means a GGUF repo whatever the catalog says, and a label is not loadable, so resolve it rather than routing it
+    // through the classifier's filename slot.
     if (routedGgufQuant) {
       // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
       void Promise.resolve().then(() =>
@@ -2037,8 +2034,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     (id: string, meta: ModelSelectorChangeMeta) => {
       // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load with a 409.
       if (busy !== null) return;
-      // This pick now owns the page, so an earlier one still waiting on a listing or a download plan drops out. Claimed before
-      // any branch, because staging does not set `busy` and any pick can therefore land on top of an awaiting one.
+      // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any branch: staging does not
+      // set `busy`, so any pick can land on top of an awaiting one.
       const token = pickGuard.claim();
       const isCurrent = () => isMounted.current && pickGuard.holds(token);
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
@@ -2071,8 +2068,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           meta.isDownloaded,
           isCurrent,
         ).then((started) => {
-          // Only the pick that set the label may take it back: `quantRevert` is one slot, so a stale revert would restore this
-          // pick's old label over the newer one.
+          // `quantRevert` is one slot, so only the pick that set the label may take it back.
           if (!started && isCurrent()) {
             setQuant(prevQuant);
             quantRevert.current = null;
@@ -2087,8 +2083,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
         if (!filename.toLowerCase().endsWith(".gguf")) {
-          // A repo id or local directory, not a file. The listing names its .gguf; the label picks between siblings. A local
-          // pick passes its directory too: the listing enumerates that path instead of resolving the id as a hub repo.
+          // A repo id or local directory, not a file. The listing names its .gguf; the label picks between siblings, and a
+          // local pick passes its directory so the listing enumerates that path instead of a hub repo.
           void loadGgufRepoPick(
             id,
             meta.ggufVariant ?? null,
@@ -2184,7 +2180,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.error("Could not resolve the trained adapter's name.");
         return;
       }
-      // The deploy owns the page now: a pick still resolving its filename would load over the base this is about to load.
+      // The deploy owns the page now: a resolving pick would load over the base about to load.
       pickGuard.release();
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
@@ -2202,7 +2198,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   const handleUnload = useCallback(async () => {
     // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too, or the toast leaks forever.
-    // A pick still resolving its filename counts: it would load the model the user just ejected.
+    // A pick still resolving its filename counts: it would load the model just ejected.
     pickGuard.release();
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;

@@ -2652,10 +2652,8 @@ export function HubModelPicker({
         if (page) {
           void navigateToPage({
             to: `/${page}`,
-            // `quant` is used verbatim as the gguf filename, so only ggufFilename (an exact repo filename) may go there, never
-            // ggufVariant (a label like "Q4_K_M", which routed a file that does not exist). A pinned row has only the label, so
-            // it rides ggufQuant and the page resolves it against the listing; without that it arrived as a bare repo id and
-            // every non-curated GGUF repo read as a pipeline.
+            // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" cannot go there. A pinned row has only
+            // the label, so it rides ggufQuant; dropping it made every non-curated GGUF repo arrive as a bare repo id.
             search: diffusionRouteSearch(id, meta),
           });
           return;

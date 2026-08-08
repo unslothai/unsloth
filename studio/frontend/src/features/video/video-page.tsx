@@ -633,9 +633,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // The Reapply target (and its canReapply flag) to restore if the optimistic swap fails: handleLoad overwrites lastLoad at
   // load start, and a load failing AFTER that leaves the previous model resident, so the poll rolls it back.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current; canReapply: boolean } | null>(null);
-  // Which pick owns the page. Resolving a repo-level GGUF pick is a listing request and staging is a plan request, neither of
-  // which sets `busy`, so the user can pick again or switch pages mid-flight; the superseded pick must then do nothing.
-  // Lazy state, not a ref: the guard is created once per page and read from handlers, and a ref cannot be written during render.
+  // Which pick owns the page: resolving one is a listing request and staging is a plan request, and neither sets `busy`, so a
+  // pick can land on top of an awaiting one. Lazy state rather than a ref, which cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
   const dismissLoadToast = useCallback(() => {
@@ -1211,8 +1210,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   }, [active]);
 
   // Stage a not-yet-downloaded hub pick, else load it directly.
-  // `isCurrent` lets an awaiting caller drop out here too: the plan request below is a second window in which a newer pick can
-  // take the page, and loading anyway would evict the model that pick just asked for.
+  // `isCurrent` lets an awaiting caller drop out here too: the plan below is a second window for a newer pick to take the page.
   const loadOrStage = useCallback(
     async (
       repoId: string,
@@ -1229,7 +1227,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // Same token handleLoad sends: without it the metadata lookup fails on a gated base and the plan drops the companion entry, so the load pulls those files inline.
           hf_token: hfApiToken(getHfToken()),
         });
-        // Superseded while the plan was in flight: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
+        // Superseded mid-plan: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
         if (isCurrent && !isCurrent()) return false;
         if (plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts };
@@ -1262,7 +1260,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       isDownloaded?: boolean,
       localPath?: string | null,
     ): Promise<boolean> => {
-      // Claimed here, not by the caller, so every entry point is covered; the next pick's claim makes this one inert.
+      // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
       const isCurrent = () => isMounted.current && pickGuard.holds(token);
       const prevQuant = quant;
@@ -1297,8 +1295,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [loadOrStage, pickGuard, quant],
   );
 
-  // A hidden page owns nothing: both diffusion pages stay mounted, so a resolution started here must not fire a load after the
-  // user moved to the other one.
+  // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
   useEffect(() => {
     if (!active) pickGuard.release();
   }, [active, pickGuard]);
@@ -1326,8 +1323,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     void navigateSelf({ to: "/video", search: {}, replace: true });
-    // A label, so a GGUF repo whatever the catalog says: the picker only sends one for a pick it knows holds quants, and a
-    // label is not loadable, so it goes to the resolver rather than through the route classifier's filename slot.
+    // A label means a GGUF repo whatever the catalog says, and a label is not loadable, so resolve it rather than routing it
+    // through the classifier's filename slot.
     if (routedGgufQuant) {
       // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
       void Promise.resolve().then(() =>
@@ -1368,8 +1365,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     (id: string, meta: ModelSelectorChangeMeta) => {
       // Ignore picks while a load/generation/unload is in flight.
       if (busy !== null) return;
-      // This pick now owns the page, so an earlier one still waiting on a listing or a download plan drops out. Claimed before
-      // any branch, because staging does not set `busy` and any pick can therefore land on top of an awaiting one.
+      // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any branch: staging does not
+      // set `busy`, so any pick can land on top of an awaiting one.
       const token = pickGuard.claim();
       const isCurrent = () => isMounted.current && pickGuard.holds(token);
       // Curated non-GGUF model: load as a full pipeline.
@@ -1404,8 +1401,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           meta.isDownloaded,
           isCurrent,
         ).then((started) => {
-          // Only the pick that set the label may take it back: `quantRevert` is one slot, so a stale revert would restore this
-          // pick's old label over the newer one.
+          // `quantRevert` is one slot, so only the pick that set the label may take it back.
           if (!started && isCurrent()) {
             setQuant(prevQuant);
             quantRevert.current = null;
@@ -1420,8 +1416,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
         if (!filename.toLowerCase().endsWith(".gguf")) {
-          // A repo id or local directory, not a file. The listing names its .gguf; the label picks between siblings. A local
-          // pick passes its directory too: the listing enumerates that path instead of resolving the id as a hub repo.
+          // A repo id or local directory, not a file. The listing names its .gguf; the label picks between siblings, and a
+          // local pick passes its directory so the listing enumerates that path instead of a hub repo.
           void loadGgufRepoPick(
             id,
             meta.ggufVariant ?? null,
@@ -1491,7 +1487,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   );
 
   const handleUnload = useCallback(async () => {
-    // A pick still resolving its filename would load the model the user just ejected.
+    // A pick still resolving its filename would load the model just ejected.
     pickGuard.release();
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
