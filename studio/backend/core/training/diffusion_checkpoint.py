@@ -91,13 +91,16 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("lora_rank", "LoRA rank"),
     ("lora_alpha", "LoRA alpha"),
     ("lora_dropout", "LoRA dropout"),
+    ("cfg_dropout", "caption dropout"),
     ("precision", "mixed precision"),
     ("base_precision", "base precision"),
 )
 # Fields whose value can legitimately be unknown on one side (an uncached Hub repo has no
 # resolvable revision; the start route knows the dataset only after its own discovery pass).
 # Unknown on either side means "cannot tell", which must not be reported as a mismatch.
-_OPTIONAL_IDENTITY_FIELDS = frozenset({"base_revision", "dataset_fingerprint", "lora_dropout"})
+_OPTIONAL_IDENTITY_FIELDS = frozenset(
+    {"base_revision", "dataset_fingerprint", "lora_dropout", "cfg_dropout"}
+)
 # What source_revision() returns when it cannot resolve a revision offline.
 _UNRESOLVED_REVISION = "unresolved"
 
@@ -137,6 +140,12 @@ class CheckpointIdentity:
     base_revision: Optional[str] = None
     dataset_fingerprint: Optional[str] = None
     lora_dropout: Optional[float] = None
+    # Caption (classifier-free-guidance) dropout. The DiT loop asks rng.random() once per
+    # sample when it is above zero and swaps in the empty prompt on a hit, so changing it
+    # across a resume diverges the restored RNG stream on the very next step AND changes the
+    # objective, while the run reports a clean continue. A bundle from before this field
+    # existed reads None, which the optional rule skips rather than reporting as a mismatch.
+    cfg_dropout: Optional[float] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -153,6 +162,7 @@ class CheckpointIdentity:
             # rounded float: a manifest from before this field existed reads as None, which the
             # optional-field rule below skips rather than reporting as a mismatch.
             "lora_dropout": self.lora_dropout,
+            "cfg_dropout": self.cfg_dropout,
             "precision": self.precision,
             "base_precision": self.base_precision,
             # Recorded for the UI / debugging only; a resolution change is a different training
@@ -367,6 +377,7 @@ def identity_for_config(
         lora_rank = int(cfg.lora_rank),
         lora_alpha = int(cfg.lora_alpha if cfg.lora_alpha is not None else cfg.lora_rank),
         lora_dropout = round(float(getattr(cfg, "lora_dropout", 0.0) or 0.0), 6),
+        cfg_dropout = round(float(getattr(cfg, "cfg_dropout", 0.0) or 0.0), 6),
         # The EFFECTIVE precision, not the request: a pre-Ampere card resolves bf16 to fp16, and
         # recording the request let an fp16 bundle resume in bf16 on a newer card -- restored
         # moments continuing under different frozen-base numerics, reported as a clean resume.
@@ -1236,6 +1247,10 @@ _REQUIRED_STATE: tuple[tuple[str, str], ...] = (
     ("adapter", "the trained LoRA weights"),
     ("optimizer", "the optimizer moments"),
     ("scheduler", "the learning-rate schedule position"),
+    # Both image trainers draw the latent, the noise and the timestep from torch immediately
+    # after resume, so a bundle with no RNG file continues a different random stream while
+    # restore_rng_state leaves the generator at its fresh seed and says nothing.
+    ("rng", "the random-number generator state"),
 )
 
 
@@ -1248,9 +1263,14 @@ def _assert_required_state(path: Path, manifest: dict[str, Any]) -> None:
         for role, label in _REQUIRED_STATE
         if not isinstance(listed.get(role), str) or not listed.get(role)
     ]
-    # NOT the sampler: its permutation lives in the manifest rather than a file, and a run
-    # whose trainer had no sampler legitimately writes none. The trainer's own check is
-    # conditional on having one, so requiring it here would refuse bundles that resume fine.
+    # The sampler's permutation lives in the manifest rather than a file. Required for an
+    # image bundle, where both trainers always supply a sampler and the child refuses without
+    # it -- after the route has evicted the resident models. Left optional for any other kind,
+    # whose trainer may legitimately have none.
+    if str(manifest.get("kind") or "image") == "image" and not isinstance(
+        manifest.get("sampler"), dict
+    ):
+        missing.append("the dataset sampler position")
     if not missing:
         return
     raise ResumeError(
@@ -1284,7 +1304,17 @@ def _assert_loadable(path: Path, manifest: dict[str, Any]) -> None:
             if role in ("adapter", "ema"):
                 loaded.tensors(role)
             else:
-                loaded.torch_state(role)
+                state = loaded.torch_state(role)
+                if role == "rng" and not (
+                    isinstance(state, dict) and state.get("torch_cpu") is not None
+                ):
+                    # An rng file with no torch state restores nothing torch draws from, which
+                    # is every latent, noise and timestep the loop asks for.
+                    raise ResumeError(
+                        f"'{path.name}' carries no torch random-number state, so the run "
+                        "would continue on a different random stream. Resume from an earlier "
+                        "checkpoint, or start a new run."
+                    )
         except ResumeError:
             raise
         except Exception as error:  # noqa: BLE001 -- any unreadable state file is a refusal

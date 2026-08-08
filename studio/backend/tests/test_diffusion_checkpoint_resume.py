@@ -478,6 +478,9 @@ def test_resuming_reapplies_the_live_lr_schedule(run_dir):
         target_steps = 6,
         optimizer = optimizer,
         lr_scheduler = lr_sched,
+        # A real bundle carries both, and the preflight now insists on them.
+        rng = dc.capture_rng_state(),
+        sampler_state = {"n": 1, "order": [0], "pos": 0},
     )
 
     # Continue the same run with a raised target: the rate must come from the NEW 12-step curve.
@@ -760,6 +763,8 @@ def _write_bundle(run_dir: Path, step: int, identity: dc.CheckpointIdentity) -> 
         target_steps = 500,
         optimizer = optimizer,
         lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0),
+        rng = dc.capture_rng_state(),
+        sampler_state = {"n": 1, "order": [0], "pos": 0},
     )
 
 
@@ -1683,6 +1688,108 @@ def test_a_bundle_without_optimizer_state_is_refused(run_dir):
         dc.preflight_resume(path, identity = run.identity, target_steps = 10)
     with pytest.raises(ResumeError):
         resumed.restore()
+
+
+def test_a_shortened_or_repeating_permutation_is_refused(run_dir):
+    """An order that is in range and the right length is not necessarily a permutation.
+
+    A shortened or duplicate-carrying one makes the cycle reshuffle early or serve the same
+    image twice, while the RNG has already been restored to a point AFTER the original draw.
+    That is the silent reorder the boolean exists to prevent, arriving through a truncated
+    manifest instead of a missing one."""
+    rng = __import__("random").Random(0)
+    sampler = PermutationBatchSampler(4, rng)
+    assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2, 3], "pos": 2}) is True
+    assert sampler.load_state_dict({"n": 4, "order": [], "pos": 0}) is True
+    # Right size, wrong contents: index 1 twice and index 3 never.
+    assert sampler.load_state_dict({"n": 4, "order": [0, 1, 1, 2], "pos": 0}) is False
+    # Short: the cycle would reshuffle a batch early.
+    assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2], "pos": 0}) is False
+
+
+def test_optimizer_moments_with_no_class_beside_them_are_refused(run_dir):
+    """This writer records the class whenever it writes moments, so an optimizer file with
+    none is hand-edited -- and foreign moments load cleanly (shapes and counts match) then
+    die on the first step, in the child, after the route has evicted the resident models."""
+    from core.training.diffusion_checkpoint import ResumeError
+
+    run = _Run(run_dir)
+    path, error = run.save(4)
+    assert error is None and path is not None
+    manifest_path = Path(path) / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    manifest.pop("optimizer_class", None)
+    manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    resumed = _Run(run_dir, resume_from_checkpoint = path)
+    with pytest.raises(ResumeError, match = "does not record which optimizer"):
+        resumed.restore()
+
+
+def test_a_bundle_with_no_sampler_or_rng_state_is_refused_before_teardown(run_dir):
+    """Both are mandatory for an image run and both were checked only in the child: the
+    sampler by restore_resume_state, the RNG not at all (restore_rng_state silently leaves
+    the generator at its fresh seed, and every latent, noise and timestep comes from it)."""
+    from core.training.diffusion_checkpoint import ResumeError
+
+    for drop, expected in (
+        ("sampler", "dataset sampler position"),
+        ("rng", "random-number generator state"),
+    ):
+        run = _Run(run_dir)
+        path, error = run.save(4)
+        assert error is None and path is not None
+        manifest_path = Path(path) / dc.TRAINER_STATE_FILENAME
+        manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+        if drop == "sampler":
+            manifest["sampler"] = None
+        else:
+            manifest["files"].pop("rng", None)
+        manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
+
+        with pytest.raises(ResumeError, match = expected):
+            dc.preflight_resume(path, identity = run.identity, target_steps = 10)
+        dc.shutil.rmtree(path)
+
+
+def test_an_rng_file_with_no_torch_state_is_refused(run_dir):
+    from core.training.diffusion_checkpoint import ResumeError
+
+    run = _Run(run_dir)
+    path, error = run.save(4)
+    assert error is None and path is not None
+    rng_file = Path(path) / dc.RNG_FILENAME
+    torch.save({"cuda": {}}, rng_file)
+    # Keep the recorded size honest, so the bundle fails on its CONTENTS rather than on the
+    # cheap size check that would have caught this edit and hidden the real gap.
+    manifest_path = Path(path) / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    manifest["file_sizes"]["rng"] = rng_file.stat().st_size
+    manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    with pytest.raises(ResumeError, match = "no torch random-number state"):
+        dc.preflight_resume(path, identity = run.identity, target_steps = 10)
+
+
+def test_the_identity_covers_cfg_dropout(run_dir):
+    """The DiT loop asks rng.random() once per sample when caption dropout is on and swaps
+    in the empty prompt on a hit, so changing it across a resume diverges the restored RNG
+    stream on the next step and changes the objective, under a clean-looking continue."""
+    run = _Run(run_dir, cfg_dropout = 0.1)
+    changed = _Run(run_dir, cfg_dropout = 0.3)
+    reason = dc.identity_for_config(run.cfg).mismatch_reason(dc.identity_for_config(changed.cfg))
+    assert reason is not None and "caption dropout" in reason
+    # The same value still resumes.
+    same = _Run(run_dir, cfg_dropout = 0.1)
+    assert (
+        dc.identity_for_config(run.cfg).mismatch_reason(dc.identity_for_config(same.cfg)) is None
+    )
+    # An identity from before the field existed reads as unknown, not as a mismatch.
+    older = dc.CheckpointIdentity.from_dict(
+        {**dc.identity_for_config(run.cfg).as_dict(), "cfg_dropout": None}
+    )
+    assert older is not None
+    assert older.mismatch_reason(dc.identity_for_config(changed.cfg)) is None
 
 
 def test_the_identity_covers_lora_dropout(run_dir):

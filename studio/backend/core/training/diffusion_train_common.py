@@ -846,7 +846,13 @@ class PermutationBatchSampler:
             restored = [int(i) for i in order]
         except (TypeError, ValueError):
             return False
-        if any(not 0 <= i < self._n for i in restored):
+        # A FULL permutation, or the initial empty state. A shortened or duplicate-carrying
+        # order is in range and the same length as nothing in particular: the cycle then
+        # reshuffles early or serves the same image twice, while the RNG has already been
+        # restored to a point after the original draw. That is the silent reorder this
+        # boolean exists to prevent, arriving through a truncated or hand-edited manifest
+        # instead of a missing one.
+        if restored and sorted(restored) != list(range(self._n)):
             return False
         self._order = restored
         try:
@@ -1336,7 +1342,18 @@ def restore_resume_state(
         # accepts them and the first step dies on a bare KeyError. Refuse with a real reason.
         saved_optimizer = ckpt.optimizer_class
         live_optimizer = optimizer_key(optimizer)
-        if saved_optimizer and saved_optimizer != live_optimizer:
+        if not saved_optimizer:
+            # This writer records the class whenever it writes moments, so an optimizer file
+            # with no class beside it is a hand-edited or half-written bundle -- and letting it
+            # through is the same failure the check below exists for: foreign moments load
+            # cleanly (shapes and counts match) and die on the first step, in the child, after
+            # the route preflight has already evicted the resident models.
+            raise ResumeError(
+                "This checkpoint does not record which optimizer wrote its state, so its "
+                "moments cannot be safely restored. Resume from an earlier checkpoint, or "
+                "start a new run."
+            )
+        if saved_optimizer != live_optimizer:
             raise ResumeError(
                 f"This checkpoint's optimizer state was written by {saved_optimizer}, but this "
                 f"machine builds {live_optimizer}. Install the same optimizer backend (or unset "
