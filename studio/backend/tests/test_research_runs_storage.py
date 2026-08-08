@@ -3601,9 +3601,7 @@ def test_an_authorized_sync_still_reseats_a_research_row_it_omits(research_home)
     # so the reseat has to be derived from the research ids, not from `protected`.
     _ancestor_and_research_prompt()
 
-    studio_db.sync_chat_messages(
-        "thread-1", [], prune_missing = True, allow_research_update = True
-    )
+    studio_db.sync_chat_messages("thread-1", [], prune_missing = True, allow_research_update = True)
 
     assert studio_db.get_chat_message("thread-1", "ancestor") is None
     assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] is None

@@ -2527,9 +2527,7 @@ def sync_chat_messages(
         reseat_candidates = research_ids - {str(m["id"]) for m in messages}
         reseat_parents = {
             message_id: _surviving_parent_id(conn, thread_id, message_id, pruned)
-            for message_id, stored_parent in _parents_of(
-                conn, thread_id, reseat_candidates
-            ).items()
+            for message_id, stored_parent in _parents_of(conn, thread_id, reseat_candidates).items()
             if stored_parent is not None and stored_parent in pruned
         }
         _raise_if_chat_message_thread_conflicts(
