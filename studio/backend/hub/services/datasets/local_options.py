@@ -1307,7 +1307,9 @@ def _misparameterised_configs(collapsed: dict[str, dict[str, Any]], module: str)
     return {
         name
         for name, item in collapsed.items()
-        if any(key in rules and not _valid_parameter(rules[key], value) for key, value in item.items())
+        if any(
+            key in rules and not _valid_parameter(rules[key], value) for key, value in item.items()
+        )
     }
 
 
@@ -1511,11 +1513,17 @@ def _info_split_sets(payload: Any, declared: dict[str, Optional[set[str]]]) -> N
             continue
         splits = entry["splits"]
         sized = list(splits.values()) if isinstance(splits, dict) else splits
-        counted = all(
-            isinstance(item, dict) and isinstance(item.get("num_examples"), int)
-            and not isinstance(item.get("num_examples"), bool) and item["num_examples"] > 0
-            for item in sized
-        ) if isinstance(sized, list) else False
+        counted = (
+            all(
+                isinstance(item, dict)
+                and isinstance(item.get("num_examples"), int)
+                and not isinstance(item.get("num_examples"), bool)
+                and item["num_examples"] > 0
+                for item in sized
+            )
+            if isinstance(sized, list)
+            else False
+        )
         declared[config] = set(_split_names(splits)) if counted else None
 
 

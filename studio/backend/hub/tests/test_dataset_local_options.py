@@ -2077,8 +2077,11 @@ def test_snapshot_options_drop_a_missing_literal_when_the_walk_is_truncated(tmp_
 
 def test_snapshot_options_reject_a_class_label_with_gaps_in_its_ids(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
-                    "    dtype:\n      class_label:\n        names:\n          '0': a\n          '2': b\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+        "    dtype:\n      class_label:\n        names:\n          '0': a\n          '2': b\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
 
@@ -2087,8 +2090,11 @@ def test_snapshot_options_reject_a_class_label_with_gaps_in_its_ids(tmp_path):
 
 def test_snapshot_options_accept_a_class_label_numbered_from_zero(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
-                    "    dtype:\n      class_label:\n        names:\n          '0': a\n          '1': b\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+        "    dtype:\n      class_label:\n        names:\n          '0': a\n          '1': b\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
 
@@ -2097,8 +2103,11 @@ def test_snapshot_options_accept_a_class_label_numbered_from_zero(tmp_path):
 
 def test_snapshot_options_reject_a_class_label_whose_names_are_a_scalar(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
-                    "    dtype:\n      class_label:\n        names: 5\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+        "    dtype:\n      class_label:\n        names: 5\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
 
@@ -2116,8 +2125,11 @@ def test_snapshot_options_ignore_a_scalar_dataset_info(tmp_path):
 
 def test_snapshot_options_reject_an_unparsable_dataset_info_version(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n  version: bad\n"
-                    "  splits:\n  - name: train\n    num_examples: 1\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n  version: bad\n"
+        "  splits:\n  - name: train\n    num_examples: 1\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -2126,7 +2138,9 @@ def test_snapshot_options_reject_an_unparsable_dataset_info_version(tmp_path):
 
 def test_snapshot_options_reject_a_dataset_info_version_that_is_not_a_string(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "dataset_info:\n  version: 1.0\n  splits:\n  - name: train\n    num_examples: 1\n")
+    _card(
+        snapshot, "dataset_info:\n  version: 1.0\n  splits:\n  - name: train\n    num_examples: 1\n"
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == set()
@@ -2198,8 +2212,11 @@ def test_snapshot_options_keep_a_parameter_no_builder_recognises(tmp_path):
 
 def test_snapshot_options_drop_a_config_whose_dataset_info_promises_another_split(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "dataset_info:\n  splits:\n  - name: train\n    num_examples: 1\n"
-                    "  - name: test\n    num_examples: 1\n")
+    _card(
+        snapshot,
+        "dataset_info:\n  splits:\n  - name: train\n    num_examples: 1\n"
+        "  - name: test\n    num_examples: 1\n",
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == set()
@@ -2233,8 +2250,11 @@ def test_snapshot_options_keep_a_config_its_dataset_info_agrees_with(tmp_path):
 
 def test_snapshot_options_ignore_a_dataset_info_naming_an_undeclared_config(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n"
-                    "- config_name: other\n  splits:\n  - name: train\n    num_examples: 1\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n"
+        "- config_name: other\n  splits:\n  - name: train\n    num_examples: 1\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -2267,9 +2287,14 @@ def test_snapshot_options_rename_a_lone_legacy_dataset_infos_entry(tmp_path):
     assert local_options._snapshot_options(snapshot) == set()
 
 
-def test_snapshot_options_share_one_directory_listing_across_wildcard_data_dirs(tmp_path, monkeypatch):
+def test_snapshot_options_share_one_directory_listing_across_wildcard_data_dirs(
+    tmp_path, monkeypatch
+):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: a\n  data_dir: 'one*'\n- config_name: b\n  data_dir: 'two*'\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: a\n  data_dir: 'one*'\n- config_name: b\n  data_dir: 'two*'\n",
+    )
     for name in ("one", "two"):
         (snapshot / name).mkdir()
         (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
