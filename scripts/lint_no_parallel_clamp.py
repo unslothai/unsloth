@@ -18,7 +18,8 @@ Flagged inside `studio/backend` (tests excluded):
 3.  the same clamp spelled as an expression -- `min(n_parallel, 1)`, or a
     conditional with a literal 1 branch.
 
-Tuple unpacking is flattened, and the route's `_n_parallel` alias counts too.
+Tuple unpacking is flattened, and the aliases the same count travels under -- the
+route's `_n_parallel` and the server-wide `llama_parallel_slots` -- count too.
 
 Parameter defaults, class-body annotations, `self.<attr>` assignments and
 `max(1, ...)` / `getattr(..., 1)` floors are structurally distinct and pass.
@@ -40,9 +41,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCAN_DIR = REPO_ROOT / "studio" / "backend"
 
-# The route resolves the request into `_n_parallel` before handing it to the load
-# paths, so a clamp there reduces the user's slots under a different name.
-SLOT_NAMES = frozenset({"n_parallel", "_n_parallel"})
+# Aliases the same count travels under: the route resolves a request into `_n_parallel`,
+# and a request that names no count resolves to `llama_parallel_slots`, so a clamp on
+# either reduces the user's slots under a different name.
+SLOT_NAMES = frozenset({"n_parallel", "_n_parallel", "llama_parallel_slots"})
 ALLOW_MARKER = "# allow-slot-clamp:"
 SKIP_PARTS = frozenset({"tests", ".venv", "venv", "build", "dist", "node_modules", "__pycache__"})
 
@@ -165,6 +167,8 @@ _SELF_TEST_CASES: tuple[tuple[str, int], ...] = (
     ("def load(f):\n    gi, use_fit, n_parallel = f()\n", 0),
     ("def load():\n    _n_parallel = 1\n", 1),
     ("def load(r, s):\n    _n_parallel = _resolve(r, s)\n", 0),
+    ("def serve():\n    llama_parallel_slots = 1\n", 1),
+    ("def serve(a):\n    run(llama_parallel_slots = a.parallel)\n", 0),
     ("def load(n_parallel: int = 1):\n    return n_parallel\n", 0),
     ("class A:\n    n_parallel: int = 1\n", 0),
     ("def load():\n    self._requested_n_parallel = 1\n", 0),

@@ -36,6 +36,8 @@ CLAMPS = (
     "def load(gi):\n    gpu_indices, use_fit, n_parallel = gi, False, 1\n",
     # The route resolves the request into this alias before the load paths see it.
     "def load():\n    _n_parallel = 1\n",
+    # A request that names no count resolves to the server-wide default.
+    "def serve():\n    llama_parallel_slots = 1\n",
     "def load():\n    n_parallel = _mtp_clamped_slots\n",
     "async def load():\n    n_parallel = 1\n",
     "def load():\n    if mtp:\n        n_parallel = 1\n",
@@ -53,6 +55,7 @@ ALLOWED = (
     "def load(gi, s):\n    gpu_indices, use_fit, n_parallel = gi, False, s\n",
     "def load(f):\n    gi, use_fit, n_parallel = f()\n",
     "def load(r, s):\n    _n_parallel = _resolve(r, s)\n",
+    "def serve(a):\n    run(llama_parallel_slots = a.parallel)\n",
     "def load(x):\n    n_parallel: int = x\n",
     # Structurally distinct, so no marker is needed for any of these.
     "def load(n_parallel: int = 1):\n    return n_parallel\n",
