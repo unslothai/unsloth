@@ -4,13 +4,16 @@
 """MSVC-env gate for Triton on Windows (#7595).
 
 Platform-independent unit coverage: the header probe reads INCLUDE, and the
-public entrypoint is a no-op off win32 and when the CRT headers are already
+public entrypoints are no-ops off win32 and when the CRT headers are already
 present. The vcvarsall discovery/import path needs a real VS install, so it is
-exercised only through its observable outcomes here.
+exercised only through its observable outcomes here. The worker-facing gate is
+driven with a stubbed `triton` in sys.modules.
 """
 
 import os
 import sys
+import types
+import logging
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
@@ -80,3 +83,53 @@ def test_ensure_imports_env_then_rechecks(tmp_path, monkeypatch):
 
     monkeypatch.setattr(_msvc_env, "_import_vcvars_env", fake_import)
     assert _msvc_env.ensure_msvc_env_for_triton() is True
+
+
+# ── gate_torch_compile_on_windows: the arm the workers actually call ──
+
+
+def _gate(monkeypatch, *, triton_importable, msvc_ok):
+    """Drive the gate with a stubbed triton + MSVC outcome; return the log."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    # A None entry in sys.modules makes `import triton` raise ImportError.
+    monkeypatch.setitem(
+        sys.modules, "triton", types.ModuleType("triton") if triton_importable else None
+    )
+    monkeypatch.setattr(_msvc_env, "ensure_msvc_env_for_triton", lambda: msvc_ok)
+    records = []
+    logger = logging.getLogger("test_gate_7595")
+    monkeypatch.setattr(logger, "warning", lambda msg, *a: records.append(("warning", msg)))
+    monkeypatch.setattr(logger, "info", lambda msg, *a: records.append(("info", msg)))
+    _msvc_env.gate_torch_compile_on_windows(logger)
+    return records
+
+
+def test_gate_is_noop_off_win32(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.setattr(
+        _msvc_env,
+        "ensure_msvc_env_for_triton",
+        lambda: (_ for _ in ()).throw(AssertionError("gate ran off win32")),
+    )
+    _msvc_env.gate_torch_compile_on_windows(logging.getLogger("test_gate_7595"))
+    assert "TORCHDYNAMO_DISABLE" not in os.environ
+
+
+def test_gate_disables_when_triton_missing(monkeypatch):
+    records = _gate(monkeypatch, triton_importable = False, msvc_ok = True)
+    assert os.environ["TORCHDYNAMO_DISABLE"] == "1"
+    assert any("Triton not found" in msg for _, msg in records)
+
+
+def test_gate_disables_when_msvc_missing(monkeypatch):
+    records = _gate(monkeypatch, triton_importable = True, msvc_ok = False)
+    assert os.environ["TORCHDYNAMO_DISABLE"] == "1"
+    assert any("no MSVC toolchain" in msg for _, msg in records)
+
+
+def test_gate_enables_when_triton_and_msvc_present(monkeypatch):
+    records = _gate(monkeypatch, triton_importable = True, msvc_ok = True)
+    assert "TORCHDYNAMO_DISABLE" not in os.environ
+    assert records == [("info", "Triton available — torch.compile enabled")]

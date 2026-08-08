@@ -18,9 +18,12 @@ So we establish the env in-process, right before enabling torch.compile.
 `ensure_msvc_env_for_triton()` is a no-op off win32 and when the headers are
 already reachable. Otherwise it locates VS via `vswhere`, imports the x64
 `vcvarsall.bat` environment (INCLUDE / LIB / LIBPATH / PATH) into `os.environ`,
-and reports whether the CRT headers are now present. Callers disable
-torch.compile with a clear message when it returns False, mirroring the existing
-"Triton not found" gate instead of letting the first compile hard-crash.
+and reports whether the CRT headers are now present.
+
+`gate_torch_compile_on_windows()` is what the workers call: it folds that check
+into the pre-existing "is Triton importable" gate so a missing toolchain
+disables torch.compile with a clear message instead of hard-crashing on the
+first compile.
 """
 
 from __future__ import annotations
@@ -67,6 +70,8 @@ def _find_vcvarsall() -> str | None:
                 ],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 30,
             ).stdout.strip()
             if out:
@@ -92,18 +97,22 @@ def _find_vcvarsall() -> str | None:
                 )
                 if os.path.isfile(cand):
                     return cand
-        # Some layouts nest the year under the edition; glob as a last resort.
-        for cand in glob.glob(
-            os.path.join(
-                root,
-                "Microsoft Visual Studio",
-                "*",
-                "*",
-                "VC",
-                "Auxiliary",
-                "Build",
-                "vcvarsall.bat",
-            )
+        # Some layouts nest the year under the edition, and a VS newer than
+        # _VS_YEAR_DIRS lands here too; glob as a last resort, newest path first.
+        for cand in sorted(
+            glob.glob(
+                os.path.join(
+                    root,
+                    "Microsoft Visual Studio",
+                    "*",
+                    "*",
+                    "VC",
+                    "Auxiliary",
+                    "Build",
+                    "vcvarsall.bat",
+                )
+            ),
+            reverse = True,
         ):
             if os.path.isfile(cand):
                 return cand
@@ -114,10 +123,14 @@ def _import_vcvars_env(vcvarsall: str, arch: str = "x64") -> bool:
     """Run vcvarsall and copy the toolchain env keys into os.environ."""
     try:
         # `set` after the call dumps the fully-populated developer environment.
+        # errors="replace": cmd emits in the console codepage, and a mangled byte
+        # in some unrelated variable must not take down the whole probe.
         proc = subprocess.run(
             ["cmd", "/c", f'call "{vcvarsall}" {arch} >nul 2>&1 && set'],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 120,
         )
     except (OSError, subprocess.SubprocessError) as e:
@@ -148,5 +161,39 @@ def ensure_msvc_env_for_triton() -> bool:
     if not vcvarsall:
         return False
 
-    _import_vcvars_env(vcvarsall)
+    if not _import_vcvars_env(vcvarsall):
+        logger.warning("found %s but could not import its environment", vcvarsall)
+        return False
     return _have_crt_headers()
+
+
+def gate_torch_compile_on_windows(log: logging.Logger) -> None:
+    """Disable torch.compile unless Triton *and* its MSVC toolchain are usable.
+
+    No-op off win32. Workers call this before importing torch: Triton being
+    importable is necessary but not sufficient, because its clang-cl JIT still
+    needs the CRT headers (#7595).
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import triton  # noqa: F401
+    except ImportError:
+        os.environ["TORCHDYNAMO_DISABLE"] = "1"
+        log.warning(
+            "Triton not found on Windows — torch.compile disabled. "
+            'Install for better performance: pip install "triton-windows<3.7"'
+        )
+        return
+
+    if ensure_msvc_env_for_triton():
+        log.info("Triton available — torch.compile enabled")
+        return
+    os.environ["TORCHDYNAMO_DISABLE"] = "1"
+    log.warning(
+        "Triton is installed but no MSVC toolchain was found, so its clang-cl "
+        "JIT would fail on 'stdlib.h' (#7595). torch.compile disabled. Install "
+        "Visual Studio Build Tools (C++ workload) to enable it: winget install "
+        'Microsoft.VisualStudio.2022.BuildTools --override "--add '
+        'Microsoft.VisualStudio.Workload.VCTools".'
+    )

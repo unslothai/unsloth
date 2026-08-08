@@ -1083,30 +1083,11 @@ def run_inference_process(
 
     # ── Windows: check Triton availability ──
     # Ahead of the torchao stub below, matching the training and export workers' gate-then-stub order.
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC
+    # CRT headers, so the gate covers both (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-
-            # Triton importing isn't enough on AMD: its clang-cl JIT needs the MSVC
-            # CRT headers, or the first compile dies on 'stdlib.h' not found (#7595).
-            from core._msvc_env import ensure_msvc_env_for_triton
-            if ensure_msvc_env_for_triton():
-                logger.info("Triton available — torch.compile enabled")
-            else:
-                os.environ["TORCHDYNAMO_DISABLE"] = "1"
-                logger.warning(
-                    "Triton is installed but no MSVC toolchain was found, so its "
-                    "clang-cl JIT would fail on 'stdlib.h' (#7595). torch.compile "
-                    "disabled. Install Visual Studio Build Tools (C++ workload) to "
-                    "enable it: winget install Microsoft.VisualStudio.2022.BuildTools "
-                    '--override "--add Microsoft.VisualStudio.Workload.VCTools".'
-                )
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── Stub torchao on Windows ROCm before ANY transformers import ──
     # Must precede every path that pulls transformers, not just the ML imports in section 2:
