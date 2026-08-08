@@ -1698,7 +1698,12 @@ def test_a_foreign_tool_result_keeps_its_own_fields():
     sessionId is someone else's result and must not be reduced to its text."""
     adapter = (
         Path(__file__).resolve().parents[2]
-        / "frontend" / "src" / "features" / "chat" / "api" / "chat-adapter.ts"
+        / "frontend"
+        / "src"
+        / "features"
+        / "chat"
+        / "api"
+        / "chat-adapter.ts"
     ).read_text(encoding = "utf-8")
     predicate = adapter.split("export function isSandboxToolResult(", 1)[1].split("\n}", 1)[0]
     assert "Array.isArray(v.images)" in predicate, predicate
