@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -22,6 +22,7 @@ import type { ApiMonitorEntry } from "@/features/chat/types/api";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useSettingsDialogStore } from "@/features/settings";
+import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -80,6 +81,13 @@ function formatDuration(value?: number | null): string {
 
 function formatCount(value: number): string {
   return value.toLocaleString();
+}
+
+function formatTokPerSec(value?: number | null): string | null {
+  if (value == null || value <= 0) {
+    return null;
+  }
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} tok/s`;
 }
 
 function compactEndpoint(endpoint: string): string {
@@ -297,8 +305,11 @@ function RequestRow({
         <span className="truncate text-ui-11 text-muted-foreground">
           {entry.model}
         </span>
-        <span className="ml-auto shrink-0 text-ui-11 tabular-nums text-muted-foreground">
-          {formatTime(entry.started_at)}
+        <span className="ml-auto flex shrink-0 items-center gap-2 text-ui-11 tabular-nums text-muted-foreground">
+          {formatTokPerSec(entry.tok_per_sec) ? (
+            <span>{formatTokPerSec(entry.tok_per_sec)}</span>
+          ) : null}
+          <span>{formatTime(entry.started_at)}</span>
         </span>
       </div>
       <p
@@ -440,6 +451,18 @@ function RequestDetail({
                 ? formatCount(entry.context_length)
                 : "–",
           },
+          {
+            label: "First token",
+            value: entry.ttft_ms != null ? formatDuration(entry.ttft_ms) : "–",
+          },
+          {
+            label: "Speed",
+            value: formatTokPerSec(entry.tok_per_sec) ?? "–",
+          },
+          {
+            label: "Stop reason",
+            value: entry.stop_reason ?? "–",
+          },
         ].map((item) => (
           <div key={item.label} className="flex min-w-0 flex-col gap-0.5">
             <dt className="truncate text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
@@ -498,8 +521,18 @@ export function ApiMonitorPage(): ReactElement {
     requestDetail,
   } = useApiMonitor();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
+  const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const [unloading, setUnloading] = useState(false);
   const [unloadError, setUnloadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const refreshRemoteBase = () => {
+      void fetchDeviceType({ force: true });
+    };
+    refreshRemoteBase();
+    window.addEventListener("focus", refreshRemoteBase);
+    return () => window.removeEventListener("focus", refreshRemoteBase);
+  }, []);
 
   // Manual release so VRAM frees without the idle timer. /unload matches on the
   // internal id, which the monitor does not carry, so read status. unloadResident owns
@@ -620,7 +653,8 @@ export function ApiMonitorPage(): ReactElement {
   // The desktop webview's origin is tauri://, and the packaged app picks its port
   // dynamically. Same source as the Agents tab.
   const origin = typeof window === "undefined" ? "" : window.location.origin;
-  const baseUrl = `${isTauri ? (serverUrl ?? getApiBase()) : origin}/v1`;
+  const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
+  const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin)}/v1`;
   const serverStatus = data?.status ?? "idle";
   // Older backends omit the field; only an explicit `false` means recording is off.
   const loggingDisabled = data?.logging_enabled === false;
@@ -768,6 +802,22 @@ export function ApiMonitorPage(): ReactElement {
             {statusCopy}
           </span>
         </div>
+        {data?.queue ? (
+          <div className="flex min-w-0 flex-col">
+            <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
+              Slots
+            </span>
+            <span
+              className={cn(
+                "text-ui-12 tabular-nums text-foreground",
+                data.queue.queued > 0 && "text-amber-700 dark:text-amber-500",
+              )}
+            >
+              {data.queue.active}/{data.queue.capacity} busy
+              {data.queue.queued > 0 ? ` · ${data.queue.queued} queued` : ""}
+            </span>
+          </div>
+        ) : null}
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
             Loaded model

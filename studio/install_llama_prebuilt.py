@@ -92,6 +92,21 @@ WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
 # Family labels forwarded by update markers / --rocm-gfx (gfx110X.zip assets).
 WINDOWS_ROCM_FAMILY_GFX_LABELS = frozenset({"gfx103x", "gfx110x", "gfx120x"})
 
+# APUs that lead HIP enumeration and shadow a discrete card (#7776). Mirrors
+# install_python_stack.py / setup.ps1 (TestShadowingIntegratedGfxParity keeps them in step);
+# duplicated rather than imported because this module is vendored standalone into the backend.
+SHADOWING_INTEGRATED_GFX = frozenset(
+    {
+        "gfx90c",  # Renoir / Cezanne
+        "gfx1013",  # Cyan Skillfish
+        "gfx1033",  # Van Gogh
+        "gfx1035",  # Rembrandt
+        "gfx1036",  # Raphael / Mendocino
+        "gfx1103",  # Phoenix / Hawk Point
+        "gfx1153",  # Krackan Point 2
+    }
+)
+
 # Exactly ggml-org release.yml's windows-hip "radeon" gpu_targets. The set above adds the
 # fork-only bundles (gfx1034, gfx1103, gfx908, gfx90a), served only against the fork.
 UPSTREAM_WINDOWS_HIP_GFX_TARGETS = frozenset(
@@ -295,6 +310,13 @@ FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "m
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
 
+# CUDA 13 dropped every target below sm_75, so no cuda13 bundle can serve a
+# Maxwell, Pascal or Volta card (issue #7765).
+_TURING_MIN_SM = 75
+# Span of PyTorch's cu126 wheels, the build the remedy below points at.
+# Mirrors _CU126_SM_RANGE in install_python_stack.py.
+_CU126_SM_RANGE = (50, 90)
+
 # Blackwell floor is sm_100: data-center parts (B100/B200 sm_100, B300/GB300
 # sm_103) sit below consumer Blackwell (RTX 50 sm_120); the family needs toolkit
 # >= 12.8, except sm_103/sm_121 which need 12.9. (120 here wrongly excluded the
@@ -433,6 +455,9 @@ class ApprovedReleaseChecksums:
     resolved_source_ref: str | None = None
     source_commit: str | None = None
     source_commit_short: str | None = None
+    # git tree id of ggml/ in the built source: changes exactly when ggml does,
+    # so it is the ABI key for slim whisper bundles.
+    ggml_tree: str | None = None
     artifacts: dict[str, ApprovedArtifactHash] = field(default_factory = dict)
 
 
@@ -1430,6 +1455,7 @@ def parse_approved_release_checksums(
 
     source_commit = normalize_source_commit(payload.get("source_commit"))
     source_commit_short = payload.get("source_commit_short")
+    ggml_tree = payload.get("ggml_tree")
     source_repo = payload.get("source_repo")
     source_repo_url = payload.get("source_repo_url")
     source_ref_kind = normalize_source_ref_kind(payload.get("source_ref_kind"))
@@ -1454,6 +1480,7 @@ def parse_approved_release_checksums(
         source_commit_short = source_commit_short
         if isinstance(source_commit_short, str) and source_commit_short
         else None,
+        ggml_tree = ggml_tree if isinstance(ggml_tree, str) and ggml_tree else None,
         artifacts = artifacts,
     )
 
@@ -1508,6 +1535,59 @@ def iter_published_release_bundles(
 _artifact_covers_sms = _core.artifact_covers_sms
 _sm_range = _core.sm_range
 _blackwell_capable_linux_runtime_lines = _core.blackwell_capable_linux_runtime_lines
+
+
+_UNCOVERED_CUDA_HOST_WARNINGS: set[tuple[tuple[str, ...], ...]] = set()
+
+
+def _warn_uncovered_cuda_host(
+    host_sms: list[str],
+    detected_runtime_lines: list[str],
+    driver_runtime_lines: list[str],
+    artifacts: list[PublishedLlamaArtifact],
+    is_arm64: bool = False,
+) -> None:
+    """Log an uncovered CUDA host once, with cu126 advice only when it can help.
+
+    Selection logs cover only viable attempts, so this handles the no-attempt
+    path. The explicit pin remains valid when llama.cpp visibility differs from
+    the installer's physical inventory.
+    """
+    # Decided before the dedupe: `artifacts` varies per release, so the release walk-back
+    # could let an unhelpful release swallow the remedy. The cap is x86_64 only.
+    advise_cu126 = (
+        not is_arm64
+        and any(int(sm) < _TURING_MIN_SM for sm in host_sms)
+        and all(_CU126_SM_RANGE[0] <= int(sm) <= _CU126_SM_RANGE[1] for sm in host_sms)
+        and "cuda12" in driver_runtime_lines
+        and "cuda12" not in detected_runtime_lines
+        and any(
+            artifact.runtime_line == "cuda12" and _artifact_covers_sms(artifact, host_sms)
+            for artifact in artifacts
+        )
+    )
+    reason = (
+        tuple(host_sms),
+        tuple(detected_runtime_lines),
+        tuple(driver_runtime_lines),
+        advise_cu126,
+    )
+    if reason in _UNCOVERED_CUDA_HOST_WARNINGS:
+        return
+    _UNCOVERED_CUDA_HOST_WARNINGS.add(reason)
+    message = (
+        "no published CUDA bundle covers this host "
+        f"(GPUs={','.join(f'sm_{sm}' for sm in host_sms) if host_sms else 'unknown'}"
+        f", CUDA runtimes on disk={','.join(detected_runtime_lines) or 'none'}"
+        f", runnable by this driver={','.join(driver_runtime_lines) or 'none'})"
+        " -- GGUF inference will fall back to a source build or the CPU"
+    )
+    if advise_cu126:
+        message += (
+            ". CUDA 13 dropped pre-Turing GPUs, so the venv needs a CUDA 12 runtime:"
+            " re-run the Unsloth installer with UNSLOTH_TORCH_INDEX_FAMILY=cu126"
+        )
+    log(message)
 
 
 def linux_cuda_choice_from_release(
@@ -1569,6 +1649,13 @@ def linux_cuda_choice_from_release(
     if not runtime_lines:
         selection_log.append(
             "linux_cuda_selection: no Linux CUDA runtime line satisfied both runtime libraries and driver compatibility"
+        )
+        _warn_uncovered_cuda_host(
+            host_sms,
+            detected_runtime_lines,
+            driver_runtime_lines,
+            published_artifacts,
+            host.is_arm64,
         )
         return None
 
@@ -1718,6 +1805,13 @@ def linux_cuda_choice_from_release(
             add_attempt(artifact, url, "portable fallback for runtime line")
 
     if not attempts:
+        _warn_uncovered_cuda_host(
+            host_sms,
+            detected_runtime_lines,
+            driver_runtime_lines,
+            published_artifacts,
+            host.is_arm64,
+        )
         return None
 
     selection_log.append(
@@ -2635,9 +2729,9 @@ def _apply_host_overrides(
         )
     gfx = _normalize_forwarded_gfx(override_rocm_gfx)
     if gfx:
-        # setup.ps1's pick is not fully visible-device aware (neither branch reads
-        # CUDA_VISIBLE_DEVICES; amd-smi matches a bare integer only, so "1,0" falls back to
-        # GPU 0), while _pick_rocm_gfx_target() honours all three vars with HIP's semantics.
+        # setup.ps1 resolves all three masks via Resolve-VisibleGpuIndex, but also applies the
+        # shadowing-iGPU preference (#7776) that _pick_rocm_gfx_target() does not, so the two
+        # can name different GPUs on a mixed APU + dGPU host.
         # So keep a probed active arch when the forward is only advisory, else
         # _should_auto_vulkan_for_amd_windows() reads a HIP-supported GPU the user masked
         # off and installs an unusable HIP bundle instead of Vulkan. Advisory means:
@@ -2652,6 +2746,18 @@ def _apply_host_overrides(
         _physical = _host_rocm_gfx_targets(host)
         _active = _active_rocm_gfx_target(host)
         _advisory = gfx in _physical or gfx in WINDOWS_ROCM_FAMILY_GFX_LABELS
+        # Except when setup deliberately skipped a shadowing APU for the discrete card (#7776):
+        # unmasked, _pick_rocm_gfx_target() still reads that APU as device 0, so discarding the
+        # forward would give torch the dGPU and llama.cpp the iGPU bundle. Unmasked only, since
+        # the repick must never override a pin.
+        if (
+            _advisory
+            and _active in SHADOWING_INTEGRATED_GFX
+            and gfx in _physical
+            and gfx not in SHADOWING_INTEGRATED_GFX
+            and not _hip_visible_device_mask_set()
+        ):
+            _advisory = False
         if gfx != _manual and _active and gfx != _active and _advisory:
             return dataclasses_replace(host, has_rocm = True)
         return dataclasses_replace(
@@ -2666,6 +2772,17 @@ def _apply_host_overrides(
             # that card regardless of HIP_VISIBLE_DEVICES. An empty probe still yields
             # [gfx], so the driver-only host the forward exists for keeps auto-Vulkan.
             rocm_gfx_targets = list(dict.fromkeys([*_physical, gfx])),
+        )
+    # The arch a previous install recorded, replayed by the updater. A remembered
+    # probe result, not an operator override, so it only fills a gap: a host whose
+    # GPU changed keeps whatever its own probe now reports.
+    remembered = _normalize_forwarded_gfx(os.environ.get("UNSLOTH_ROCM_GFX_REMEMBERED"))
+    if remembered and not _active_rocm_gfx_target(host):
+        return dataclasses_replace(
+            host,
+            has_rocm = True,
+            rocm_gfx_target = remembered,
+            rocm_gfx_targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), remembered])),
         )
     if override_has_rocm and not host.has_rocm:
         return dataclasses_replace(host, has_rocm = True)
@@ -5630,6 +5747,7 @@ def write_prebuilt_metadata(
     prebuilt_fallback_used: bool,
     force_cpu: bool = False,
     llama_backend: str | None = None,
+    rocm_gfx: str | None = None,
 ) -> None:
     source_asset_name, source_sha256 = selected_source_archive_metadata(
         approved_checksums,
@@ -5648,6 +5766,7 @@ def write_prebuilt_metadata(
     )
     if fingerprint is None:
         raise PrebuiltFallback(f"cannot compute install fingerprint for {choice.name}")
+    _persisted_backend = persisted_llama_backend(llama_backend, choice)
     metadata = {
         "requested_tag": requested_tag,
         "tag": llama_tag,
@@ -5658,9 +5777,15 @@ def write_prebuilt_metadata(
         # so a forced CPU install is not re-routed to a GPU bundle (#7213). An automatic
         # --cpu-fallback (e.g. arm64 GPU-build recovery) stays False so it can heal to GPU.
         "force_cpu": force_cpu,
-        # Deliberate or auto-selected Vulkan backend (#7357); the updater re-asserts it so
-        # AMD hosts are not swapped back to HIP. Dropped if the winning attempt was not Vulkan.
-        "llama_backend": persisted_llama_backend(llama_backend, choice),
+        # Explicit Vulkan is recorded as "vulkan"; automatic Windows AMD routing is
+        # recorded as "auto" so runtime recovery can distinguish them.
+        "llama_backend": _persisted_backend,
+        # The AMD gfx an AUTOMATIC route was decided on. A Vulkan asset name carries
+        # no arch, and the Windows driver-only hosts that reach Vulkan automatically
+        # have no probe (hipinfo/amd-smi absent), so the updater would re-detect a
+        # ROCm-less host and drop to CPU. Automatic only: elsewhere the asset names
+        # the arch, and a stale copy would outlive its GPU.
+        **({"rocm_gfx": rocm_gfx} if rocm_gfx and _persisted_backend == "auto" else {}),
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
@@ -5678,6 +5803,8 @@ def write_prebuilt_metadata(
         "source_ref_kind": approved_checksums.source_ref_kind,
         "requested_source_ref": approved_checksums.requested_source_ref,
         "resolved_source_ref": approved_checksums.resolved_source_ref,
+        # Read back by install_whisper_prebuilt.py to pair slim bundles.
+        "ggml_tree": recorded_ggml_tree(approved_checksums, choice),
         "bundle_profile": choice.bundle_profile,
         "runtime_line": choice.runtime_line,
         "coverage_class": choice.coverage_class,
@@ -5798,6 +5925,73 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
     log(f"existing install reused; recorded llama_backend={llama_backend!r} from this run")
 
 
+def sync_marker_rocm_gfx(install_dir: Path, rocm_gfx: str | None) -> None:
+    """Sync the routing AMD arch when the bundle is reused unchanged. A Vulkan
+    asset name carries no arch, so a reuse that skipped write_prebuilt_metadata
+    would leave an automatic marker the next update cannot route from."""
+    if not rocm_gfx:
+        return
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    try:
+        marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(marker, dict) or marker.get("rocm_gfx") == rocm_gfx:
+        return
+    # Only the automatic route needs it: elsewhere the asset names the arch, and a
+    # stale one would outlive the GPU it describes.
+    if marker.get("llama_backend") != "auto":
+        return
+    marker["rocm_gfx"] = rocm_gfx
+    if not _write_marker(marker_path, marker):
+        log(
+            f"WARNING: could not record rocm_gfx={rocm_gfx!r} in {marker_path}; "
+            "a later update may not reproduce this GPU routing"
+        )
+
+
+def recorded_ggml_tree(
+    approved_checksums: ApprovedReleaseChecksums, choice: AssetChoice
+) -> str | None:
+    """The ggml tree to record, or None when it does not describe this install.
+
+    The tree comes from the fork release's own checkout. A fork plan can install
+    an approved ggml-org archive instead (choice.repo differs), built from
+    upstream ggml, so the fork tree must not be recorded for it.
+    """
+    tree = approved_checksums.ggml_tree
+    if not isinstance(tree, str) or not tree:
+        return None
+    return tree if choice.repo == approved_checksums.repo else None
+
+
+def sync_marker_ggml_tree(install_dir: Path, ggml_tree: str | None) -> None:
+    """Backfill the ggml tree id when the bundle is reused unchanged.
+
+    write_prebuilt_metadata only runs on a real install, so without this an
+    already-current install would keep a tree-less marker forever. Unlike
+    llama_backend, None means "the release declared none" (upstream ggml-org
+    tags), not "clear it".
+    """
+    if not isinstance(ggml_tree, str) or not ggml_tree:
+        return
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    try:
+        marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(marker, dict) or marker.get("ggml_tree") == ggml_tree:
+        return
+    marker["ggml_tree"] = ggml_tree
+    if not _write_marker(marker_path, marker):
+        log(
+            f"WARNING: could not record ggml_tree={ggml_tree!r} in {marker_path}; "
+            "slim whisper pairing will fall back to the tag suffix"
+        )
+        return
+    log(f"existing install reused; recorded ggml_tree={ggml_tree!r} from this run")
+
+
 def expected_install_fingerprint(
     *,
     llama_tag: str,
@@ -5892,6 +6086,17 @@ def installed_llama_runtime(install_dir: Path | None = None) -> tuple[Path, str,
         return None
     profile = metadata.get("bundle_profile")
     return bin_dir, release_tag, profile if isinstance(profile, str) else ""
+
+
+def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
+    """ggml tree id of the managed llama.cpp install; None for installs predating
+    it. Kept out of installed_llama_runtime() to keep that tuple's shape."""
+    root = install_dir if install_dir is not None else default_managed_llama_dir()
+    metadata = load_prebuilt_metadata(root)
+    if metadata is None:
+        return None
+    tree = metadata.get("ggml_tree")
+    return tree if isinstance(tree, str) and tree else None
 
 
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
@@ -6097,6 +6302,7 @@ def validate_prebuilt_choice(
     quantized_path: Path,
     force_cpu: bool = False,
     llama_backend: str | None = None,
+    rocm_gfx: str | None = None,
 ) -> tuple[Path, Path]:
     source_repo, source_ref, source_archive, exact_source = preferred_source_archive(
         approved_checksums, llama_tag
@@ -6143,6 +6349,7 @@ def validate_prebuilt_choice(
         prebuilt_fallback_used = prebuilt_fallback_used,
         force_cpu = force_cpu,
         llama_backend = llama_backend,
+        rocm_gfx = rocm_gfx,
     )
     # Hashless external prebuilts are not in the approved-sha256
     # manifest and rely on the functional smoke test as their only integrity gate,
@@ -6231,6 +6438,7 @@ def validate_prebuilt_attempts(
     existing_install_dir: Path | None = None,
     force_cpu: bool = False,
     llama_backend: str | None = None,
+    rocm_gfx: str | None = None,
 ) -> tuple[AssetChoice, Path, bool]:
     attempt_list = list(attempts)
     if not attempt_list:
@@ -6293,6 +6501,7 @@ def validate_prebuilt_attempts(
                 quantized_path = quantized_path,
                 force_cpu = force_cpu,
                 llama_backend = llama_backend,
+                rocm_gfx = rocm_gfx,
             )
         except Exception as exc:
             remove_tree(staging_dir)
@@ -6540,11 +6749,12 @@ def _route_to_vulkan_prebuilt(
     the install marker when updates must re-assert Vulkan.
     """
     forced = force_vulkan_requested(llama_backend)
-    # Auto-fall back only when the run named no backend: an explicit hip/cpu is the opt-out.
     explicit_backend = resolved_llama_backend(llama_backend)
-    auto_no_hip = explicit_backend is None and _should_auto_vulkan_for_amd_windows(
-        host, published_repo
-    )
+    # Host-only test, so a forced Vulkan run can still tell this box would have
+    # routed itself to Vulkan anyway.
+    amd_no_hip_host = _should_auto_vulkan_for_amd_windows(host, published_repo)
+    # Auto-fall back only when the run named no backend: an explicit hip/cpu is the opt-out.
+    auto_no_hip = explicit_backend is None and amd_no_hip_host
     # No PHYSICAL NVIDIA, not merely no usable one: Vulkan ignores CUDA_VISIBLE_DEVICES, so
     # auto-routing a host that hides its NVIDIA card would let it grab the reserved GPU.
     auto_intel = (
@@ -6576,14 +6786,17 @@ def _route_to_vulkan_prebuilt(
             f"({active}); installing the Vulkan llama.cpp prebuilt instead"
         )
         host = _vulkan_only_host(host)
-        persist_backend = "vulkan"
+        persist_backend = "auto"
     elif forced:
         log(
             "Vulkan llama.cpp backend requested; installing the Vulkan "
             "prebuilt instead of the detected GPU backend"
         )
         host = _vulkan_only_host(host)
-        persist_backend = "vulkan"
+        # A host with no HIP-capable AMD GPU routes here anyway, so the bundle is the
+        # same. Persist it as automatic so pre-#8050 installs (and the --llama-backend
+        # vulkan every update re-asserts) stay eligible for the CPU crash recovery.
+        persist_backend = "auto" if amd_no_hip_host else "vulkan"
     else:
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
         persist_backend = None
@@ -6783,6 +6996,9 @@ def install_prebuilt(
     # An explicit Vulkan choice only. The Windows-AMD auto-fallback is a rescue
     # from a missing HIP arch, so it must keep the CPU plans it can still use.
     strict_vulkan = force_vulkan_requested(llama_backend) and not force_cpu and not host.is_macos
+    # Read before the route, which rewrites the host to Vulkan-only and drops the AMD
+    # arch. Kept in the marker so the next update forwards the same --rocm-gfx.
+    persist_rocm_gfx = _active_rocm_gfx_target(host)
     host, published_repo, published_release_tag, persist_llama_backend = _route_to_vulkan_prebuilt(
         host,
         published_repo,
@@ -6880,6 +7096,11 @@ def install_prebuilt(
                         install_dir,
                         persisted_llama_backend(persist_llama_backend, current.attempts[0]),
                     )
+                    sync_marker_ggml_tree(
+                        install_dir,
+                        recorded_ggml_tree(current.approved_checksums, current.attempts[0]),
+                    )
+                    sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                     return
             with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
                 probe_path = work_dir / "stories260K.gguf"
@@ -6904,6 +7125,11 @@ def install_prebuilt(
                                 install_dir,
                                 persisted_llama_backend(persist_llama_backend, choice),
                             )
+                            sync_marker_ggml_tree(
+                                install_dir,
+                                recorded_ggml_tree(plan.approved_checksums, choice),
+                            )
+                            sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                             return
                     log(
                         "selected "
@@ -6927,8 +7153,16 @@ def install_prebuilt(
                             # Persist only the deliberate choice, not a transient fallback.
                             force_cpu = persist_force_cpu,
                             llama_backend = persist_llama_backend,
+                            rocm_gfx = persist_rocm_gfx,
                         )
-                    except ExistingInstallSatisfied:
+                    except ExistingInstallSatisfied as satisfied:
+                        # Third reuse path: the reinstall was skipped, so
+                        # write_prebuilt_metadata does not run here either.
+                        sync_marker_ggml_tree(
+                            install_dir,
+                            recorded_ggml_tree(plan.approved_checksums, satisfied.choice),
+                        )
+                        sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                         return
                     except PrebuiltFallback as exc:
                         if _environment_fatal_reason(exc):

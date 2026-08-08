@@ -34,6 +34,13 @@ class GgufVariantDetail(BaseModel):
         False,
         description = "Whether this variant has an in-progress (.incomplete) blob in cache",
     )
+    cleanable: bool = Field(
+        False,
+        description = (
+            "Row exists only to offer deleting an empty leftover <quant>/ folder; the "
+            "listing has no such weights, so it never proves a load would find any"
+        ),
+    )
     partial_transport: Optional[str] = Field(
         None,
         description = (
@@ -56,6 +63,21 @@ class GgufVariantsResponse(BaseModel):
     )
     default_variant: Optional[str] = Field(
         None, description = "Recommended default quantization variant"
+    )
+    resolved_locally: bool = Field(
+        False,
+        description = "Whether this answer came from resolving repo_id as a local path",
+    )
+    loadable_variants: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Quants the load resolver resolves for this identifier; None when unanswered "
+            "(remote answers, or a server that predates the field)"
+        ),
+    )
+    loadable: Optional[bool] = Field(
+        None,
+        description = "Whether a variantless load resolves GGUF weights; None when unanswered",
     )
 
 
@@ -102,6 +124,14 @@ class LocalModelInfo(BaseModel):
     active_cache: Optional[bool] = Field(
         None,
         description = "Whether this HF entry belongs to the current download cache.",
+    )
+    task: Optional[str] = Field(
+        None,
+        description = (
+            "Inferred pipeline task. The task-scoped pickers filter On Device rows on it and the "
+            "chat picker routes a diffusion pick by it, so a row without one is dropped from "
+            "those lists."
+        ),
     )
     base_model: Optional[str] = Field(
         None,
@@ -173,6 +203,9 @@ class CachedRepoBase(BaseModel):
     runtime: ModelRuntime = "unknown"
     format_variant: Optional[str] = None
     capabilities: LocalModelCapabilities = Field(default_factory = LocalModelCapabilities)
+    # Inferred pipeline task ("text-to-image" / "text-to-video" / a chat task / None). The task-scoped pickers filter On
+    # Device rows on it and the chat picker routes a diffusion pick by it, so a row without one is dropped from those lists.
+    task: Optional[str] = None
 
 
 class CachedGgufRepo(CachedRepoBase):
@@ -196,6 +229,13 @@ class CachedModelRepo(CachedRepoBase):
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
     tags: Optional[List[str]] = None
+    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint needing from_single_file
+    # + a filename. Pickers must not offer it as a pipeline load unless the catalog carries a curated artifact for it.
+    single_file: bool = False
+    # True for an sd.cpp companion mirror: a VAE / text-encoder repo with no denoiser, so it is
+    # never a pick on ANY page. It still gets a row, because these run to tens of GB and the row
+    # is how they are seen and deleted; the pickers filter on this instead.
+    companion: bool = False
 
 
 class CachedModelsResponse(BaseModel):

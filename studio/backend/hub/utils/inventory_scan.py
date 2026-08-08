@@ -13,14 +13,16 @@ layers built on top of these primitives live in download_registry.py.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
+import stat
 import threading
 import time
 from dataclasses import dataclass, replace
-from pathlib import Path, PurePosixPath
-from typing import Callable, NamedTuple, Optional
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Awaitable, Callable, Hashable, NamedTuple, Optional, TypeVar
 
 from loggers import get_logger
 
@@ -70,6 +72,28 @@ _hf_cache_scans_cached_at: float = 0.0
 # neither cached nor served to callers that arrived after the mutation.
 _hf_cache_scans_epoch: int = 0
 
+_T = TypeVar("_T")
+
+
+async def shared_scan(
+    flights: dict[Hashable, asyncio.Task[_T]], key: Hashable, factory: Callable[[], Awaitable[_T]]
+) -> _T:
+    """Shield same-loop callers behind one task for the same inventory key."""
+    flight_key = (asyncio.get_running_loop(), key)
+    flight = flights.get(flight_key)
+    if flight is None or flight.done():
+        flight = asyncio.create_task(factory())
+        flights[flight_key] = flight
+
+        def clear(task: asyncio.Task[_T]) -> None:
+            if flights.get(flight_key) is task:
+                flights.pop(flight_key, None)
+            if not task.cancelled():
+                task.exception()
+
+        flight.add_done_callback(clear)
+    return await asyncio.shield(flight)
+
 
 def invalidate_hf_cache_scans() -> None:
     global _hf_cache_scans_result, _hf_cache_scans_cached_at, _hf_cache_scans_epoch
@@ -77,6 +101,11 @@ def invalidate_hf_cache_scans() -> None:
         _hf_cache_scans_result = None
         _hf_cache_scans_cached_at = 0.0
         _hf_cache_scans_epoch += 1
+
+
+def hf_cache_scans_epoch() -> int:
+    with _hf_cache_scans_lock:
+        return _hf_cache_scans_epoch
 
 
 def all_hf_cache_scans() -> list:
@@ -634,23 +663,34 @@ def _repo_signal_applies_to_snapshot(
 
 
 def _gguf_variant_manifest_blob_hashes(
-    repo_id: str, repo_cache_dir: Optional[Path] = None
+    repo_id: str,
+    repo_cache_dir: Optional[Path] = None,
+    variant_state = None,
 ) -> frozenset[str]:
     from hub.utils import download_manifest
 
     hashes: set[str] = set()
     hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
-    for variant, _path in download_manifest.iter_variant_manifests(
-        "model",
-        repo_id,
-        hub_cache = hub_cache,
-    ):
-        manifest = download_manifest.read_manifest(
-            "model",
-            repo_id,
-            variant,
-            hub_cache = hub_cache,
+    if variant_state is not None:
+        manifests = variant_state.manifests()
+    else:
+        manifests = (
+            (
+                variant,
+                download_manifest.read_manifest(
+                    "model",
+                    repo_id,
+                    variant,
+                    hub_cache = hub_cache,
+                ),
+            )
+            for variant, _path in download_manifest.iter_variant_manifests(
+                "model",
+                repo_id,
+                hub_cache = hub_cache,
+            )
         )
+    for _variant, manifest in manifests:
         if manifest is None:
             continue
         for expected in manifest.expected_files:
@@ -682,10 +722,15 @@ def _snapshot_legacy_partial(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
     snapshot_dir: Optional[Path] = None,
+    variant_state = None,
 ) -> bool:
     if repo_type != "model":
         return _legacy_partial(repo_type, repo_id, repo_cache_dir)
-    ignored_hashes = _gguf_variant_manifest_blob_hashes(repo_id, repo_cache_dir)
+    ignored_hashes = _gguf_variant_manifest_blob_hashes(
+        repo_id,
+        repo_cache_dir,
+        variant_state,
+    )
     if repo_cache_dir is not None:
         return _repo_cache_dir_has_snapshot_legacy_partial(
             repo_cache_dir,
@@ -732,8 +777,12 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
             continue
         quant = extract_quant_label(rel)
-        # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the quant.
-        if is_big_endian_gguf_path(rel, quant):
+        # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the
+        # quant. Judged with the loader's label, since the two extractors disagree on
+        # F16-be-checkpoint-Q4_K_M and this file must not mark Q4_K_M complete.
+        from utils.models.model_config import _extract_quant_label as _loader_quant
+
+        if is_big_endian_gguf_path(rel, _loader_quant(rel)):
             continue
         if empty:
             # The resolver still opens this file, so a zero-byte first pick is unjudgeable.
@@ -1077,44 +1126,48 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
             return True
         with index_path.open(encoding = "utf-8") as handle:
             index = json.load(handle)
-    except (OSError, UnicodeDecodeError, ValueError):
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError (deeply nested json) escapes every caller's fail-open guard. The loader
+        # parses this index with the same json module, so one too deep to parse there cannot serve
+        # its shards here either.
         return True
     weight_map = index.get("weight_map") if isinstance(index, dict) else None
     if not isinstance(weight_map, dict) or not weight_map:
         return True
-    named = {
-        shard.replace("\\", "/").rsplit("/", 1)[-1]
-        for shard in weight_map.values()
-        if isinstance(shard, str)
-    }
-    # Coverage matters only for the family this index describes: one it names nothing of is stale
-    # content beside it, which the loader never reads because it opens weight_map and nothing else.
-    if not family_files <= named and not named.isdisjoint(family_files):
-        return True
+    shards: set[PurePosixPath] = set()
     for shard in weight_map.values():
         # Names are relative to the index: anything reaching outside is not a shard of this family.
         if not isinstance(shard, str) or not shard:
             return True
         parts = PurePosixPath(shard.replace("\\", "/"))
-        if parts.is_absolute() or ".." in parts.parts:
+        # is_absolute() is per flavour: PurePosixPath reads "C:/weights/x.safetensors" as a relative
+        # subdirectory called "C:", but the join below is a platform Path, so on Windows that name
+        # replaces the index directory outright. A drive is never part of a shard name.
+        windows = PureWindowsPath(shard)
+        if parts.is_absolute() or ".." in parts.parts or windows.is_absolute() or windows.drive:
             return True
+        shards.add(parts)
+    named = {shard.name for shard in shards}
+    # Coverage matters only for the family this index describes: one it names nothing of is stale
+    # content beside it, which the loader never reads because it opens weight_map and nothing else.
+    if not family_files <= named and not named.isdisjoint(family_files):
+        return True
+    for shard in shards:
         try:
-            named = index_path.parent / parts
-            if not named.is_file() or named.stat().st_size <= 0:
+            named = index_path.parent / shard
+            shard_stat = named.stat()
+            if not stat.S_ISREG(shard_stat.st_mode) or shard_stat.st_size <= 0:
                 return True
         except (OSError, ValueError):
             return True
     # A shard names its own total, so an index listing one of a set has to list the whole set: the
     # loader opens exactly what is mapped and silently drops whatever the map leaves out.
     declared: dict[tuple[str, str, int], set[int]] = {}
-    for shard in weight_map.values():
-        if not isinstance(shard, str):
-            continue
-        rel = PurePosixPath(shard.replace("\\", "/"))
-        match = _WEIGHT_SHARD_RE.search(rel.name)
+    for shard in shards:
+        match = _WEIGHT_SHARD_RE.search(shard.name)
         if match is None:
             continue
-        key = (str(rel.parent), rel.name[: match.start()], int(match.group(2)))
+        key = (str(shard.parent), shard.name[: match.start()], int(match.group(2)))
         declared.setdefault(key, set()).add(int(match.group(1)))
     return any(total <= 0 or len(seen) < total for (_d, _p, total), seen in declared.items())
 
@@ -1342,14 +1395,19 @@ def _manifest_partial(
     variant: Optional[str] = None,
     snapshot_dir: Optional[Path] = None,
     repo_cache_dir: Optional[Path] = None,
+    variant_state = None,
 ) -> bool:
     from hub.utils import download_manifest
 
-    manifest = download_manifest.read_manifest(
-        repo_type,
-        repo_id,
-        variant,
-        hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+    manifest = (
+        variant_state.manifest_for(variant)
+        if variant_state is not None and variant is not None
+        else download_manifest.read_manifest(
+            repo_type,
+            repo_id,
+            variant,
+            hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+        )
     )
     if manifest is None:
         return False
@@ -1414,6 +1472,7 @@ def is_snapshot_partial(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
     snapshot_dir: Optional[Path] = None,
+    variant_state = None,
 ) -> bool:
     """Repo-row partial flag for snapshot-style downloads (full-snapshot models, i.e.
     safetensors/adapter/checkpoint, and all datasets).
@@ -1435,24 +1494,310 @@ def is_snapshot_partial(
         repo_cache_dir, snapshot_dir, quants = False
     )
     return _compose_partial(
-        lambda: repo_signal_applies
-        and download_manifest.has_cancel_marker(
-            repo_type,
-            repo_id,
-            None,
-            hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+        lambda: (
+            repo_signal_applies
+            and download_manifest.has_cancel_marker(
+                repo_type,
+                repo_id,
+                None,
+                hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+            )
         ),
-        lambda: _snapshot_legacy_partial(repo_type, repo_id, repo_cache_dir, snapshot_dir),
-        lambda: repo_signal_applies
-        and _manifest_partial(
+        lambda: _snapshot_legacy_partial(
             repo_type,
             repo_id,
-            None,
-            snapshot_dir,
             repo_cache_dir,
+            snapshot_dir,
+            variant_state,
+        ),
+        lambda: (
+            repo_signal_applies
+            and _manifest_partial(
+                repo_type,
+                repo_id,
+                None,
+                snapshot_dir,
+                repo_cache_dir,
+            )
         ),
         lambda: _recovered_snapshot_cannot_serve(repo_cache_dir, snapshot_dir, quants = False),
     )
+
+
+def _current_revisions(repo_info):
+    """The revisions to judge a cached repo by: just the one the loader will actually open.
+
+    ``from_pretrained`` resolves the newest snapshot by mtime (:func:`latest_snapshot_dir`), so a
+    repo cached twice -- an older complete snapshot plus a newer companion-only scoped one -- must
+    be judged on the newer one. Scanning every revision let the old snapshot's denoiser satisfy the
+    completeness check, so the row read as complete while the snapshot the loader picks has no
+    transformer/unet: offline loads then fail and online loads silently pull the multi-GB weight.
+
+    Falls back to the newest revision by ``last_modified``, then to every revision, so a cache
+    layout this cannot resolve behaves as before rather than reporting nothing.
+    """
+    revisions = list(getattr(repo_info, "revisions", ()) or ())
+    if len(revisions) <= 1:
+        return revisions
+    repo_path = getattr(repo_info, "repo_path", None)
+    if repo_path is not None:
+        latest = latest_snapshot_dir(Path(repo_path))
+        if latest is not None:
+            scoped = [
+                rev
+                for rev in revisions
+                if getattr(rev, "snapshot_path", None) is not None
+                and Path(rev.snapshot_path) == latest
+            ]
+            if scoped:
+                return scoped
+    dated = [rev for rev in revisions if getattr(rev, "last_modified", None) is not None]
+    if dated:
+        return [max(dated, key = lambda rev: rev.last_modified)]
+    return revisions
+
+
+# One definition of "the denoiser is on disk", shared by the repo-wide and the snapshot-scoped
+# check so the two cannot drift into disagreeing about the same directory.
+_DENOISER_DIRS = ("transformer", "unet")
+_DENOISER_WEIGHT_SUFFIXES = (".safetensors", ".bin")
+# The two names a default load can end up opening at the component root: the safetensors one
+# _get_model_file is asked for first, and the .bin the pickle fallback under it drops to.
+_DEFAULT_DENOISER_WEIGHTS = frozenset(
+    f"diffusion_pytorch_model{suffix}" for suffix in _DENOISER_WEIGHT_SUFFIXES
+)
+# The one sharded index a default load resolves: use_safetensors unset coerces to True, and
+# _fetch_index_file then builds only _add_variant(SAFE_WEIGHTS_INDEX_NAME, variant), so with
+# variant unset this exact name. Our load path passes neither (core/inference/{diffusion,video}.py).
+_SELECTED_DENOISER_INDEX = "diffusion_pytorch_model.safetensors.index.json"
+
+
+def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
+    """Whether *snapshot* itself carries a ROOT ``model_index.json``.
+
+    The snapshot-scoped twin of :func:`repo_has_pipeline_index`, for callers that already know the
+    ONE directory their row loads from. ``from_pretrained`` reads the manifest at the root of the
+    revision it resolves, so a sibling revision's manifest says nothing about this row.
+    """
+    if snapshot is None:
+        return False
+    try:
+        return (Path(snapshot) / "model_index.json").is_file()
+    except OSError:
+        return False
+
+
+def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
+    """The denoiser subdirs this pipeline's own ``model_index.json`` declares, or None.
+
+    Read off the manifest rather than the fixed ``_DENOISER_DIRS`` pair because multi-DiT pipelines
+    carry more than one (Ideogram 4 adds ``unconditional_transformer/``, Wan 2.2's A14B experts
+    ``transformer_2/``) and would otherwise pass on whichever the loop reached first.
+
+    None means the manifest could not be READ and the caller keeps the fixed-pair rule. An EMPTY
+    tuple is the different answer that it read fine and names no denoiser under either spelling
+    (Stable Cascade and Wuerstchen call theirs ``decoder``/``prior``), so there is nothing here to
+    prove absent and the caller must not hunt for directories that layout never had.
+    """
+    try:
+        with (snapshot / "model_index.json").open("r", encoding = "utf-8") as fh:
+            manifest = json.load(fh)
+    except (OSError, ValueError, RecursionError):
+        # RecursionError (deeply nested json) would escape the caller's fail-open guard.
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    found = []
+    for key, value in manifest.items():
+        if not isinstance(key, str) or key.startswith("_"):
+            continue
+        name = key.lower()
+        if name != "unet" and "transformer" not in name:
+            continue
+        # A component is a [library, class] pair keyed by its directory; [null, null] means
+        # deliberately absent (Wan 2.2's 5B transformer_2). Anything else names no directory to
+        # infer (ACE-STEP maps "transformer" to a config dict), so leave it to the loader.
+        if not isinstance(value, (list, tuple)) or not any(v for v in value):
+            continue
+        found.append(key)
+    return tuple(found)
+
+
+def _denoiser_index_shards(index: Path) -> Optional[set[str]]:
+    """The shard names *index* maps, or None when it is absent, unparseable or maps nothing.
+
+    None is "no evidence" rather than "incomplete": an index we cannot read proves nothing either
+    way, so the caller keeps looking.
+    """
+    try:
+        with index.open("r", encoding = "utf-8") as fh:
+            weight_map = json.load(fh).get("weight_map")
+    except (OSError, ValueError, AttributeError, RecursionError):
+        # RecursionError (deeply nested json) would escape the caller's fail-open guard.
+        return None
+    if not isinstance(weight_map, dict):
+        return None
+    return {str(v) for v in weight_map.values() if v} or None
+
+
+def _component_weights_complete(component: Path) -> bool:
+    """Whether *component* holds a denoiser the loader could actually read.
+
+    Presence of ONE weight file is not enough: a sharded denoiser is described by an
+    ``*.index.json`` naming every shard, and a fetch that landed shard 1 of 2 alone satisfies a
+    first-match test while failing at load.
+
+    ``_SELECTED_DENOISER_INDEX`` settles the question on its own whenever it EXISTS: it is the only
+    sharded name diffusers resolves here, its presence alone makes the component sharded, and what
+    follows is unconditional -- ``_get_checkpoint_shard_files`` opens exactly what it maps, while
+    the ``except IOError`` branch and the pickle fallback under it are both gated on ``not
+    is_sharded``. So a short set fails, and so does an index too corrupt to parse.
+
+    Every OTHER index vouches for nothing, because a default load never opens it:
+    ``_fetch_index_file`` builds the safetensors name only, and the non-sharded fallback under it
+    asks for the UNSHARDED ``diffusion_pytorch_model.bin``, never a ``.bin.index.json`` set beside
+    it. Repos ship exactly that leftover (``stablediffusionapi/sdrealdream``), and our own download
+    plan manufactures it (``core/inference/diffusion.py``).
+
+    Nor does a dtype variant, whole or not. ``_add_variant`` inserts the variant before the last
+    part, so a bf16 set is ``diffusion_pytorch_model.safetensors.index.bf16.json`` over
+    ``diffusion_pytorch_model-00001-of-00002.bf16.safetensors`` -- the real names
+    ``genmo/mochi-1-preview`` ships beside its default weights. A load passing no ``variant`` asks
+    for the plain name and has no fallback the other way, and the download plan skips those files
+    for the same reason, so a cache holding only them was filled by something else.
+
+    So with no selected index there are exactly two names left, the pair ``_get_model_file`` is
+    handed, and every other weight in the directory is one ``from_pretrained`` never resolves.
+    """
+    # iterdir() raises on an unreadable dir, reaching the caller's fail-open guard; glob() would
+    # swallow that OSError and read as "no weights".
+    next(component.iterdir(), None)
+    # Existence alone makes the component sharded (``is_sharded`` comes from ``is_file()``), so an
+    # index we cannot read is not no-evidence here, it IS the failure. ``is_file()`` is also the
+    # loader's own test, so a dangling snapshot symlink is absent to both.
+    selected = component / _SELECTED_DENOISER_INDEX
+    if selected.is_file():
+        if _index_cannot_serve_its_shards(selected, set()):
+            return False
+        # The loader opens exactly what ``weight_map`` lists and reads each one as a checkpoint,
+        # so a map naming something that is not a weight file -- a ``config.json`` a corrupt fetch
+        # left behind -- fails at load however present that file is.
+        shards = _denoiser_index_shards(selected)
+        return bool(shards) and all(
+            name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES) for name in shards
+        )
+    # No index, so the component is not sharded to the loader either, and ``_get_model_file`` is
+    # asked for the safetensors default and then the ``.bin`` under it and opens nothing else. A
+    # weight under any other name is one ``from_pretrained`` never resolves: a numbered shard is
+    # reachable only THROUGH an index, a dtype twin only under a matching ``variant``, and a
+    # ``model.safetensors`` or adapter sidecar never at all.
+    return any((component / name).is_file() for name in _DEFAULT_DENOISER_WEIGHTS)
+
+
+def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
+    """The companion-only-prefetch check scoped to ONE snapshot dir.
+
+    Same signal as :func:`repo_pipeline_missing_denoiser` -- a root ``model_index.json`` with no
+    usable weights under the pipeline's denoiser component(s) -- but judged on the directory the
+    caller's row actually loads, not on whichever revision this module would have picked for
+    itself. Two snapshot selectors disagree: a row pinned to (or resolving through ``refs/main``
+    to) a complete revision would otherwise be marked partial by a newer companion-only one
+    sitting beside it.
+
+    Stricter than the repo-wide twin, since this decides whether a row is advertised as runnable:
+    EVERY denoiser the manifest declares must be present, each with every shard its index names.
+    Best-effort in the same direction: a read error reports not-missing.
+    """
+    if not snapshot_has_pipeline_index(snapshot):
+        return False
+    try:
+        root = Path(snapshot)
+        declared = _manifest_denoiser_components(root)
+        if declared is not None:
+            # all(()) is True: a manifest declaring no denoiser has none to prove absent, so it
+            # reads complete rather than being hunted for one it never had.
+            return not all(
+                (root / name).is_dir() and _component_weights_complete(root / name)
+                for name in declared
+            )
+        # Unreadable manifest: either fixed name will do, since a UNet pipeline has no
+        # transformer/ and a DiT one no unet/.
+        return not any(
+            (root / name).is_dir() and _component_weights_complete(root / name)
+            for name in _DENOISER_DIRS
+        )
+    except OSError:
+        return False
+
+
+def repo_has_pipeline_index(repo_info) -> bool:
+    """Whether the cached snapshot carries a ROOT model_index.json, i.e. is loadable
+    as a full diffusers pipeline (from_pretrained reads only the repo root). A nested
+    subdir/model_index.json does not count: loading the repo root still fails, so the
+    row must keep its single_file flag. CachedFileInfo.file_name is the basename, so
+    a name match alone would also claim nested copies -- scope by file_path when the
+    scan provides it."""
+    try:
+        for rev in _current_revisions(repo_info):
+            snapshot = getattr(rev, "snapshot_path", None)
+            for f in rev.files:
+                name = str(getattr(f, "file_name", "") or "")
+                path = getattr(f, "file_path", None)
+                if path is not None and snapshot is not None:
+                    p = Path(path)
+                    if p.name == "model_index.json" and p.parent == Path(snapshot):
+                        return True
+                elif name == "model_index.json":
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def repo_pipeline_missing_denoiser(repo_info) -> bool:
+    """True for a diffusers-pipeline snapshot (root ``model_index.json``) whose denoiser component
+    (``transformer/`` or ``unet/``) carries NO weight file -- the shape of a companion-only prefetch
+    where a GGUF image load pulled the base repo's VAE / text-encoder / manifest but skipped the
+    multi-GB transformer (the GGUF supplies it). :func:`is_snapshot_partial` misses this (every
+    file the manifest expected did arrive), so callers OR the two signals together and mark such
+    rows partial. Best-effort: any scan error reports not-missing so a glitch never hides a
+    genuinely complete pipeline.
+
+    Judged by :func:`snapshot_pipeline_missing_denoiser` on the revision the loader opens, so the
+    compatibility ``/api/models/cached-models`` listing and the Hub inventory agree on a row. The
+    walk below it is only for a scan that records no ``snapshot_path``: with no directory there is
+    no manifest to read and no shard index to check."""
+    if not repo_has_pipeline_index(repo_info):
+        return False
+    try:
+        revisions = list(_current_revisions(repo_info))
+        scoped = [getattr(rev, "snapshot_path", None) for rev in revisions]
+        scoped = [snapshot for snapshot in scoped if snapshot is not None]
+        if scoped:
+            return all(snapshot_pipeline_missing_denoiser(Path(snapshot)) for snapshot in scoped)
+        for rev in revisions:
+            snapshot = getattr(rev, "snapshot_path", None)
+            for f in rev.files:
+                name = str(getattr(f, "file_name", "") or "")
+                path = getattr(f, "file_path", None)
+                parts: tuple[str, ...] = ()
+                if path is not None and snapshot is not None:
+                    try:
+                        parts = Path(path).relative_to(Path(snapshot)).parts
+                    except ValueError:
+                        parts = ()
+                if not parts:
+                    # No snapshot scoping: fall back to the recorded name, which may itself carry the component subdir.
+                    parts = Path(name).parts
+                if (
+                    len(parts) >= 2
+                    and parts[0].lower() in _DENOISER_DIRS
+                    and parts[-1].lower().endswith(_DENOISER_WEIGHT_SUFFIXES)
+                ):
+                    return False
+        return True
+    except Exception:
+        return False
 
 
 def is_variant_partial(
@@ -1464,6 +1809,7 @@ def is_variant_partial(
     variant_blob_hashes: Optional[frozenset[str]] = None,
     repo_cache_dir: Optional[Path] = None,
     repo_signal_applies: bool = True,
+    variant_state = None,
 ) -> bool:
     """Per-variant partial detection. Owns its manifest, owns its marker.
 
@@ -1475,27 +1821,38 @@ def is_variant_partial(
     the per-variant endpoint still reports a cancelled quant as broken."""
     from hub.utils import download_manifest
     return _compose_partial(
-        lambda: repo_signal_applies
-        and download_manifest.has_cancel_marker(
-            "model",
-            repo_id,
-            variant,
-            hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+        lambda: (
+            repo_signal_applies
+            and (
+                variant_state.has_marker(variant)
+                if variant_state is not None
+                else download_manifest.has_cancel_marker(
+                    "model",
+                    repo_id,
+                    variant,
+                    hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+                )
+            )
         ),
         # blobs/ is repo-wide, so a retry's .incomplete belongs to the newest snapshot.
-        lambda: repo_signal_applies
-        and bool(
-            incomplete_blob_hashes
-            and variant_blob_hashes
-            and incomplete_blob_hashes.intersection(variant_blob_hashes)
+        lambda: (
+            repo_signal_applies
+            and bool(
+                incomplete_blob_hashes
+                and variant_blob_hashes
+                and incomplete_blob_hashes.intersection(variant_blob_hashes)
+            )
         ),
-        lambda: repo_signal_applies
-        and _manifest_partial(
-            "model",
-            repo_id,
-            variant,
-            snapshot_dir,
-            repo_cache_dir,
+        lambda: (
+            repo_signal_applies
+            and _manifest_partial(
+                "model",
+                repo_id,
+                variant,
+                snapshot_dir,
+                repo_cache_dir,
+                variant_state,
+            )
         ),
     )
 
@@ -1505,6 +1862,7 @@ def is_gguf_repo_partial(
     repo_cache_dir: Optional[Path] = None,
     *,
     snapshot_dir: Optional[Path] = None,
+    variant_state = None,
 ) -> bool:
     """Repo-row partial flag for a GGUF repo. The inventory shows ONE row per
     GGUF repo (requires_variant=True); per-variant detail lives in
@@ -1537,33 +1895,43 @@ def is_gguf_repo_partial(
     complete_here = _completed_gguf_variants(snapshot_dir)
     variants: set[str] = set(complete_here)
     hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
-    for variant, _path in download_manifest.iter_variant_manifests(
-        "model",
-        repo_id,
-        hub_cache = hub_cache,
-    ):
-        if (
-            download_manifest.read_manifest(
+    if variant_state is not None:
+        manifests = variant_state.manifests()
+    else:
+        manifests = (
+            (
+                variant,
+                download_manifest.read_manifest(
+                    "model",
+                    repo_id,
+                    variant,
+                    hub_cache = hub_cache,
+                ),
+            )
+            for variant, _path in download_manifest.iter_variant_manifests(
+                "model",
+                repo_id,
+                hub_cache = hub_cache,
+            )
+        )
+    for variant, manifest in manifests:
+        if manifest is not None:
+            variants.add(variant)
+    if variant_state is not None:
+        variants.update(variant_state.marker_variants())
+    else:
+        for variant, _path in download_manifest.iter_variant_markers(
+            "model",
+            repo_id,
+            hub_cache = hub_cache,
+        ):
+            if download_manifest.has_cancel_marker(
                 "model",
                 repo_id,
                 variant,
                 hub_cache = hub_cache,
-            )
-            is not None
-        ):
-            variants.add(variant)
-    for variant, _path in download_manifest.iter_variant_markers(
-        "model",
-        repo_id,
-        hub_cache = hub_cache,
-    ):
-        if download_manifest.has_cancel_marker(
-            "model",
-            repo_id,
-            variant,
-            hub_cache = hub_cache,
-        ):
-            variants.add(variant)
+            ):
+                variants.add(variant)
     if not variants:
         # Nothing named a quant: an interrupted attempt leaves only torn shards.
         return has_legacy_partial or _recovered_snapshot_cannot_serve(
@@ -1579,6 +1947,7 @@ def is_gguf_repo_partial(
             repo_cache_dir = repo_cache_dir,
             # A quant whole in the pinned snapshot loads whatever a newer attempt says.
             repo_signal_applies = repo_signal_applies or variant not in complete_here,
+            variant_state = variant_state,
         ):
             has_broken = True
         else:

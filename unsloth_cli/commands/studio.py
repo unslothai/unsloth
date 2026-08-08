@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import contextlib
 import importlib.util
 import hashlib
 import hmac
@@ -23,7 +24,8 @@ from pathlib import Path
 from typing import List, Literal, Optional, Sequence
 import typer
 
-from unsloth_cli import _studio_deps
+from unsloth_cli import _studio_deps, _studio_runtime_gate
+from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
@@ -109,11 +111,25 @@ DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 PBKDF2_ITERATIONS = 100_000
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
+_CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
 def _consume_start_api_key_marker_env() -> bool:
     """Consume the one-shot readiness marker passed across a Studio re-exec."""
     return os.environ.pop(_START_API_KEY_MARKER_ENV, None) == "1"
+
+
+def _preserve_cloudflare_intent(cloudflare: Optional[bool], secure: bool) -> None:
+    """Carry the user's tri-state choice across compatibility re-execs."""
+    if _CLOUDFLARE_INTENT_ENV in os.environ:
+        return
+    if secure or cloudflare is True:
+        intent = "enabled"
+    elif cloudflare is False:
+        intent = "disabled"
+    else:
+        intent = "unset"
+    os.environ[_CLOUDFLARE_INTENT_ENV] = intent
 
 
 # __file__ is unsloth_cli/commands/studio.py -- two parents up is the package root
@@ -151,6 +167,31 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
         kwargs["startupinfo"] = startupinfo
 
     return kwargs
+
+
+@contextlib.contextmanager
+def _studio_runtime_launch_guard(*, inherited: bool = False):
+    guard = _studio_runtime_gate.studio_runtime_launch_guard(
+        STUDIO_HOME,
+        inherited = inherited,
+    )
+    try:
+        acquired = guard.__enter__()
+    except _studio_runtime_gate.StudioRuntimeGateBusy:
+        typer.echo(
+            "Error: Unsloth installation is modifying the managed environment. "
+            "Wait for it to finish, then try again.",
+            err = True,
+        )
+        raise typer.Exit(1)
+    except OSError as exc:
+        typer.echo(f"Error: could not coordinate the Studio launch: {exc}", err = True)
+        raise typer.Exit(1)
+
+    try:
+        yield acquired
+    finally:
+        guard.__exit__(None, None, None)
 
 
 def _stream_for_subprocess(stream):
@@ -1228,6 +1269,8 @@ def _load_model_via_http(
     load_in_4bit: bool,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
 ) -> dict:
@@ -1250,6 +1293,10 @@ def _load_model_via_http(
         payload["gpu_layers"] = -1
     if tensor_parallel:
         payload["tensor_parallel"] = True
+    if speculative_type is not None:
+        payload["speculative_type"] = speculative_type
+    if spec_draft_n_max is not None:
+        payload["spec_draft_n_max"] = spec_draft_n_max
     if llama_extra_args:
         payload["llama_extra_args"] = list(llama_extra_args)
 
@@ -1351,7 +1398,9 @@ def studio_default(
         None,
         "--enable-tools/--disable-tools",
         help = "Force server-side tools (web search, code execution) on or off for "
-        "every request. Default: on for every bind, with the per-chat UI toggle honored.",
+        "every request. Default: on for every bind, with the per-chat UI toggle honored. "
+        "/v1/messages takes the on direction per request (enable_tools) because it has no "
+        "confirmation channel; the off direction still applies everywhere.",
     ),
     disable_dns_pinning: bool = typer.Option(
         False,
@@ -1458,6 +1507,9 @@ def studio_default(
             )
             raise typer.Exit(2)
         return
+
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    _preserve_cloudflare_intent(cloudflare, secure)
 
     # --secure requires the tunnel; force a loopback bind.
     if secure:
@@ -1596,7 +1648,18 @@ def studio_default(
             if sys.platform == "win32":
                 import subprocess as _sp
 
-                proc = _sp.Popen(args, **_windows_hidden_subprocess_kwargs())
+                # Hand our std handles to the child: without them CREATE_NO_WINDOW
+                # gives the backend its own hidden console and `unsloth studio > log`
+                # captures nothing -- the same trap noted at the setup.ps1 call below.
+                # Omitting stdin does not withhold it (subprocess still fills it from
+                # GetStdHandle); that would need stdin = DEVNULL.
+                with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+                    proc = _sp.Popen(
+                        args,
+                        stdout = _stream_for_subprocess(sys.stdout),
+                        stderr = _stream_for_subprocess(sys.stderr),
+                        **_windows_hidden_subprocess_kwargs(),
+                    )
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -1641,7 +1704,8 @@ def studio_default(
     # in-process server serves exactly the dist we vouched for.
     if resolved_frontend is not None:
         run_kwargs["frontend_path"] = resolved_frontend
-    run_server(**run_kwargs)
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        run_server(**run_kwargs)
 
     try:
         if run_mod._shutdown_event is not None:
@@ -1807,6 +1871,23 @@ def run(
             "delegates placement and sizing to llama.cpp --fit."
         ),
     ),
+    speculative_type: Optional[SpeculativeType] = typer.Option(
+        None,
+        "--speculative-type",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "Speculative decoding mode for GGUF models. DSpark automatically uses a "
+            "matching dspark-*.gguf sidecar when available. Default: unset (Studio auto)."
+        ),
+    ),
+    spec_draft_n_max: Optional[int] = typer.Option(
+        None,
+        "--spec-draft-n-max",
+        min = 1,
+        max = 16,
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = "Maximum draft tokens per step for MTP or DSpark (1..16).",
+    ),
     load_in_4bit: bool = typer.Option(
         True, "--load-in-4bit/--no-load-in-4bit", rich_help_panel = _RUN_PANEL_MODEL
     ),
@@ -1834,7 +1915,9 @@ def run(
         rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
             "Force server-side tools (web search, code execution) on or off for "
-            "every request. Default: on for every bind."
+            "every request. Default: on for every bind. /v1/messages takes the on "
+            "direction per request (enable_tools) because it has no confirmation "
+            "channel; the off direction still applies everywhere."
         ),
     ),
     disable_dns_pinning: bool = typer.Option(
@@ -2007,9 +2090,11 @@ def run(
     # env so an older child ignores it instead of treating it as a llama-server arg.
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
 
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
+    _preserve_cloudflare_intent(cloudflare, secure)
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
 
     # Tool-call healing/nudging are read from the env at backend import. Resolve here
@@ -2215,6 +2300,10 @@ def run(
             args.extend(["--gpu-memory-mode", gpu_memory_mode])
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
+        if speculative_type is not None:
+            args.extend(["--speculative-type", speculative_type])
+        if spec_draft_n_max is not None:
+            args.extend(["--spec-draft-n-max", str(spec_draft_n_max)])
         # Forward the explicit polarity; a future default flip on one
         # layer must not silently invert behaviour for the other.
         args.append("--load-in-4bit" if load_in_4bit else "--no-load-in-4bit")
@@ -2258,7 +2347,11 @@ def run(
             os.environ[_START_API_KEY_MARKER_ENV] = "1"
         try:
             if sys.platform == "win32":
-                proc = subprocess.Popen(args)
+                with _studio_runtime_launch_guard(inherited = runtime_gate_handoff) as gate_held:
+                    popen_kwargs = {}
+                    if gate_held:
+                        popen_kwargs["env"] = _studio_runtime_gate.runtime_gate_child_environment()
+                    proc = subprocess.Popen(args, **popen_kwargs)
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -2300,7 +2393,8 @@ def run(
     # Forward the frontend validated before the gate (in-venv path).
     if resolved_frontend is not None:
         run_kwargs["frontend_path"] = resolved_frontend
-    app = run_server(**run_kwargs)
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
 
     # Steps 3-5 can abort (health timeout, model-load error, or Ctrl+C during the
@@ -2336,6 +2430,8 @@ def run(
                 load_in_4bit = load_in_4bit,
                 gpu_memory_mode = gpu_memory_mode,
                 tensor_parallel = tensor_parallel,
+                speculative_type = speculative_type,
+                spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = extra_llama_args,
             )
         except RuntimeError as exc:
@@ -2694,6 +2790,35 @@ def stop():
 # ── unsloth studio setup / update ─────────────────────────────────────
 
 
+def _wait_for_windows_setup_process(process) -> int:
+    """Reap setup and its descendants before a runtime-gate owner can unwind."""
+
+    try:
+        return process.wait()
+    except BaseException:
+        if process.poll() is not None:
+            raise
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin = subprocess.DEVNULL,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                check = False,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except BaseException:
+            # taskkill interrupted or unavailable: hold the gate until setup
+            # exits naturally rather than exposing a live mutator.
+            pass
+        while process.poll() is None:
+            try:
+                process.wait()
+            except KeyboardInterrupt:
+                continue
+        raise
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     """Find and run the studio setup/update script."""
     script = _find_setup_script(repo_root)
@@ -2729,13 +2854,13 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
             ]
         )
         # Explicitly hand std handles to the child so CI tee sees setup.ps1's
-        # output. On Windows, subprocess.run defaults to close_fds=True
+        # output. On Windows, subprocess.Popen defaults to close_fds=True
         # (bInheritHandles=False); combined with CREATE_NO_WINDOW the child
         # has no console and no inherited handles, so Write-Host writes to
         # nothing. Passing stdout/stderr makes Python mark the std handles
         # inheritable via PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Empty update.log
         # on windows-latest CI was the smoking gun (runs 25533694490/25534292239).
-        result = subprocess.run(
+        process = subprocess.Popen(
             powershell_args,
             env = env,
             stdin = _stream_for_subprocess(sys.stdin),
@@ -2743,11 +2868,13 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
             stderr = _stream_for_subprocess(sys.stderr),
             **_windows_hidden_subprocess_kwargs(),
         )
+        returncode = _wait_for_windows_setup_process(process)
     else:
         result = subprocess.run(["bash", str(script)], env = env)
+        returncode = result.returncode
 
-    if result.returncode != 0:
-        raise typer.Exit(result.returncode)
+    if returncode != 0:
+        raise typer.Exit(returncode)
 
 
 _INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
@@ -2910,7 +3037,10 @@ def setup(
     ),
 ):
     """Run Unsloth setup (called by install.ps1 / install.sh)."""
-    _run_setup_script(verbose = verbose)
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
+        _run_setup_script(verbose = verbose)
 
 
 def _fail_if_install_damaged() -> None:
@@ -3079,21 +3209,20 @@ def update(
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
-    _release_self_exe_lock_windows()
-    try:
-        _run_setup_script(verbose = verbose, repo_root = repo_root)
-    except BaseException:
-        # Restore unsloth.exe from .deleteme if setup failed before pip
-        # produced a replacement; otherwise the user has no CLI for recovery.
-        _restore_self_exe_lock_windows()
-        raise
-    # On Windows clear the .deleteme orphan now that pip wrote a fresh
-    # unsloth.exe; on next update os.replace would overwrite it anyway,
-    # but leaving a stale binary around invites cross-version restore
-    # confusion from _restore_self_exe_lock_windows.
-    _cleanup_self_exe_lock_windows()
-    if verify:
-        _fail_if_install_damaged()
+    # main gained a runtime gate around setup; this branch replaced the
+    # rename-to-.deleteme helpers with the launcher transaction. Both apply:
+    # the gate keeps a second Studio process off the venv, the transaction
+    # keeps the launcher recoverable across the setup it wraps.
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
+        with _WindowsLauncherUpdateTransaction() as launcher_update:
+            _run_setup_script(verbose = verbose, repo_root = repo_root)
+            # This deliberately runs even with --no-verify: the broad package scan
+            # is optional, but a successful update must leave its own launcher usable.
+            launcher_update.validate_launcher()
+            if verify:
+                _fail_if_install_damaged()
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
     if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
@@ -3103,66 +3232,355 @@ def update(
     _refresh_desktop_shortcuts(verbose = verbose)
 
 
-def _release_self_exe_lock_windows() -> None:
-    """Rename running unsloth.exe so pip can replace it. setup.ps1 also retries."""
-    if platform.system() != "Windows":
-        return
-    try:
-        venv_scripts = Path(sys.executable).resolve().parent
-    except OSError:
-        return
-    exe = venv_scripts / "unsloth.exe"
-    if not exe.exists():
-        return
-    stale = exe.with_suffix(".exe.deleteme")
-    try:
-        # os.replace is atomic-overwrite on Windows; os.rename would raise
-        # FileExistsError if a prior aborted update left a .deleteme behind.
-        os.replace(exe, stale)
-    except OSError as e:
-        # Not fatal; setup.ps1 retries from a sibling process.
-        print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
+class _WindowsLauncherUpdateTransaction:
+    """Keep the managed Windows launcher recoverable during a Python update."""
 
+    _VERSION_TIMEOUT_SECONDS = 10
+    _RESTORE_ATTEMPTS = 3
 
-def _restore_self_exe_lock_windows() -> None:
-    """If setup failed before pip wrote a working unsloth.exe, restore .deleteme."""
-    if platform.system() != "Windows":
-        return
-    try:
-        venv_scripts = Path(sys.executable).resolve().parent
-    except OSError:
-        return
-    exe = venv_scripts / "unsloth.exe"
-    stale = exe.with_suffix(".exe.deleteme")
-    if not stale.exists():
-        return
-    # Treat a missing or zero-byte exe as "pip didn't produce a usable
-    # replacement"; otherwise leave the new binary alone.
-    if exe.exists():
+    def __init__(self) -> None:
+        self.enabled = platform.system() == "Windows"
+        self.launcher: Optional[Path] = None
+        self.backup: Optional[Path] = None
+        self.legacy_backup: Optional[Path] = None
+        self.stale: Optional[Path] = None
+        self.shim: Optional[Path] = None
+        self.lock_path: Optional[Path] = None
+        self._lock_file = None
+        self._validated = False
+
+    @staticmethod
+    def _is_valid_pe(path: Path) -> bool:
         try:
-            if exe.stat().st_size > 0:
-                return
+            if not path.is_file() or path.stat().st_size < 2:
+                return False
+            with path.open("rb") as handle:
+                return handle.read(2) == b"MZ"
         except OSError:
+            return False
+
+    @staticmethod
+    def _atomic_copy(source: Path, destination: Path) -> None:
+        """Publish a sibling copy without exposing a partial destination."""
+        fd, temporary_name = tempfile.mkstemp(
+            prefix = f".{destination.name}.",
+            suffix = ".tmp",
+            dir = str(destination.parent),
+        )
+        temporary = Path(temporary_name)
+        try:
+            with source.open("rb") as source_handle, os.fdopen(fd, "wb") as target_handle:
+                fd = -1
+                while True:
+                    chunk = source_handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    target_handle.write(chunk)
+                target_handle.flush()
+                os.fsync(target_handle.fileno())
+            os.replace(temporary, destination)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                temporary.unlink(missing_ok = True)
+            except OSError:
+                pass
+
+    def _acquire_lock(self) -> None:
+        import msvcrt
+
+        assert self.lock_path is not None
+        try:
+            self.lock_path.parent.mkdir(parents = True, exist_ok = True)
+        except OSError:
+            pass
+        lock_file = self.lock_path.open("a+b")
+        try:
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            lock_file.close()
+            typer.echo(
+                "Error: another Unsloth Studio update is already running for this environment.",
+                err = True,
+            )
+            raise typer.Exit(1)
+        self._lock_file = lock_file
+
+    def _release_lock(self) -> None:
+        if self._lock_file is None:
             return
-    try:
-        os.replace(stale, exe)
-    except OSError as e:
-        print(f"[update] could not restore {stale.name} -> {exe.name}: {e}")
+        try:
+            import msvcrt
+            self._lock_file.seek(0)
+            msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        finally:
+            self._lock_file.close()
+            self._lock_file = None
 
+    def _recover_missing_launcher(self) -> None:
+        assert self.launcher is not None
+        # Validity, not existence: a truncated or quarantined launcher is just as
+        # unusable, and the backup beside it can repair either.
+        if self._is_valid_pe(self.launcher):
+            return
+        for recovery in (self.backup, self.stale, self.legacy_backup, self.shim):
+            if recovery is not None and self._is_valid_pe(recovery):
+                try:
+                    self._atomic_copy(recovery, self.launcher)
+                except OSError as exc:
+                    typer.echo(
+                        f"Error: could not recover {self.launcher} from {recovery}: {exc}",
+                        err = True,
+                    )
+                    typer.echo(f"Manual recovery copy retained at: {recovery}", err = True)
+                    raise typer.Exit(1)
+                return
 
-def _cleanup_self_exe_lock_windows() -> None:
-    """Remove the .deleteme orphan after a successful update on Windows."""
-    if platform.system() != "Windows":
-        return
-    try:
-        venv_scripts = Path(sys.executable).resolve().parent
-    except OSError:
-        return
-    stale = (venv_scripts / "unsloth.exe").with_suffix(".exe.deleteme")
-    try:
-        stale.unlink(missing_ok = True)
-    except OSError:
-        pass
+    @staticmethod
+    def _files_match(left: Path, right: Path) -> bool:
+        try:
+            if left.stat().st_size != right.stat().st_size:
+                return False
+            with left.open("rb") as left_handle, right.open("rb") as right_handle:
+                while True:
+                    left_chunk = left_handle.read(1024 * 1024)
+                    if left_chunk != right_handle.read(1024 * 1024):
+                        return False
+                    if not left_chunk:
+                        return True
+        except OSError:
+            return False
+
+    def _move_launcher_aside(self) -> None:
+        """Free the canonical path so the installer can publish a replacement.
+
+        uv only self-replaces its OWN executable, so it deletes a third-party
+        console script outright and hard-errors when the file is in use, after
+        which the pip fallback no-ops on the already-satisfied bare unsloth and
+        the upgrade is silently skipped. Renaming a running image is allowed on
+        Windows: verified on windows-latest that renaming a live console-script
+        launcher succeeds and a replacement can then be written at the freed
+        path. Non-fatal, since failing to move it aside costs only the upgrade.
+        """
+        assert self.launcher is not None and self.stale is not None
+        if not self._is_valid_pe(self.launcher):
+            return
+        try:
+            os.replace(self.launcher, self.stale)
+        except OSError as exc:
+            # Not fatal: an antivirus hold must not make the environment
+            # unupdatable. But say what it costs, because uv cannot then replace
+            # the launcher and the pip fallback drops --upgrade-package, so
+            # unsloth is left at its old version while everything else updates.
+            typer.echo(f"Warning: could not move the Unsloth launcher aside: {exc}", err = True)
+            typer.echo(
+                "  unsloth itself may not be upgraded. Close anything holding "
+                f"{self.launcher} and re-run the update.",
+                err = True,
+            )
+
+    def _retained_backup(self) -> Optional[Path]:
+        """The backup, when it exists and is usable. Nothing to point users at otherwise."""
+        if self.backup is not None and self._is_valid_pe(self.backup):
+            return self.backup
+        return None
+
+    def _recovery_candidates(self) -> List[Path]:
+        """Copies that could stand in for the launcher, best first.
+
+        The backup is the last launcher known to run; the moved-aside copy is
+        only this run's unvalidated canonical file; the legacy .deleteme and the
+        PATH shim are what an install broken by the old updater still has. All
+        of them are kept, because passing the two-byte header check does not
+        make any one of them runnable and the next candidate has to be reachable.
+        """
+        seen: List[Path] = []
+        for path in (self.backup, self.stale, self.legacy_backup, self.shim):
+            if path is None or not self._is_valid_pe(path):
+                continue
+            if not any(os.path.normcase(str(path)) == os.path.normcase(str(p)) for p in seen):
+                seen.append(path)
+        return seen
+
+    def _restore_from(self, source: Path) -> bool:
+        assert self.launcher is not None
+        # The common setup-failure case leaves the original executable exactly
+        # where it was. Avoid replacing that running file on Windows when it
+        # already is the source byte-for-byte.
+        if self._is_valid_pe(self.launcher) and self._files_match(self.launcher, source):
+            return True
+        last_error: Optional[OSError] = None
+        for attempt in range(self._RESTORE_ATTEMPTS):
+            try:
+                self._atomic_copy(source, self.launcher)
+                return self._is_valid_pe(self.launcher)
+            except OSError as exc:
+                last_error = exc
+                if attempt + 1 < self._RESTORE_ATTEMPTS:
+                    time.sleep(0.1)
+        if last_error is not None:
+            typer.echo(f"Error: could not restore the Unsloth launcher: {last_error}", err = True)
+        return False
+
+    def _restore_runnable(self) -> bool:
+        """Put back the first copy that actually runs.
+
+        Passing the two-byte header check does not make a copy runnable, so a
+        candidate that fails --version must not stop the next one being tried,
+        and a launcher already in place and working must not be replaced by a
+        candidate that is merely PE-shaped.
+        """
+        if self._launcher_health_error() is None:
+            return True
+        candidates = self._recovery_candidates()
+        for source in candidates:
+            if self._restore_from(source) and self._launcher_health_error() is None:
+                return True
+        # Nothing ran. Leave the best candidate in place rather than whichever
+        # one happened to be tried last.
+        if candidates:
+            self._restore_from(candidates[0])
+        return False
+
+    def _launcher_health_error(self) -> Optional[str]:
+        assert self.launcher is not None
+        if not self._is_valid_pe(self.launcher):
+            return "the updated launcher is missing or is not a non-empty PE file"
+        try:
+            result = subprocess.run(
+                [str(self.launcher), "--version"],
+                check = False,
+                capture_output = True,
+                timeout = self._VERSION_TIMEOUT_SECONDS,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except subprocess.TimeoutExpired:
+            return f"the updated launcher timed out after {self._VERSION_TIMEOUT_SECONDS} seconds"
+        except OSError as exc:
+            return f"the updated launcher could not run --version ({exc})"
+        if result.returncode != 0:
+            return f"the updated launcher returned {result.returncode} for --version"
+        return None
+
+    @staticmethod
+    def _managed_scripts_dir() -> Path:
+        """Scripts dir of the venv setup actually updates.
+
+        setup.ps1 installs into STUDIO_HOME/unsloth_studio, which is not this
+        interpreter when a pip-installed or checkout CLI drives the update. Same
+        distinction _studio_deps._managed_root draws for the damage scan.
+        """
+        managed = STUDIO_HOME / "unsloth_studio"
+        if (managed / "pyvenv.cfg").is_file():
+            try:
+                foreign = managed.resolve() != Path(sys.prefix).resolve()
+            except OSError:
+                foreign = True
+            if foreign:
+                return managed / "Scripts"
+        return Path(sys.executable).resolve().parent
+
+    def __enter__(self):
+        if not self.enabled:
+            return self
+        try:
+            scripts = self._managed_scripts_dir()
+        except (OSError, RuntimeError) as exc:
+            typer.echo(f"Error: could not resolve the managed Python environment: {exc}", err = True)
+            raise typer.Exit(1)
+        self.launcher = scripts / "unsloth.exe"
+        self.backup = scripts / "unsloth.exe.update-backup"
+        self.legacy_backup = scripts / "unsloth.exe.deleteme"
+        # Under the Studio home, not the venv: setup.ps1 removes the whole
+        # $VenvDir to rebuild a stale torch, and an open handle inside it makes
+        # Windows refuse the recursive delete. One lock per Studio home is the
+        # right grain anyway, since that is what names the managed venv.
+        self.lock_path = STUDIO_HOME / "unsloth.exe.update-lock"
+        # install.ps1 hardlinks this to the launcher, so it survives the old
+        # updater's .deleteme unlink and is a valid recovery source.
+        self.shim = STUDIO_HOME / "bin" / "unsloth.exe"
+        self.stale = scripts / "unsloth.exe.update-stale"
+        self._acquire_lock()
+        try:
+            self._recover_missing_launcher()
+            if not self._is_valid_pe(self.launcher):
+                # Warn, do not exit. The previous updater could leave an install
+                # with no launcher and no .deleteme, and refusing here would stop
+                # exactly those users from ever updating again. Setup may well
+                # write a new launcher; validate_launcher still judges the result.
+                typer.echo(
+                    f"Warning: the managed Unsloth launcher is missing or invalid: {self.launcher}",
+                    err = True,
+                )
+                typer.echo("Continuing; setup may reinstall it.", err = True)
+                if self._retained_backup() is None:
+                    self.backup = None
+            elif self._retained_backup() is None:
+                # Only write a backup when there is no usable one already. A
+                # backup outlives __enter__ only when a previous run died before
+                # validating, so it holds the last launcher known to run, while
+                # the canonical file has passed nothing but the two-byte header
+                # check. Overwriting it here destroyed the only recovery copy.
+                try:
+                    self._atomic_copy(self.launcher, self.backup)
+                except OSError as exc:
+                    # A backup is a safety net, not a precondition. Antivirus or a
+                    # locked-down Scripts dir must not abort the update outright.
+                    typer.echo(f"Warning: could not back up the Unsloth launcher: {exc}", err = True)
+                    self.backup = None
+            self._move_launcher_aside()
+        except BaseException:
+            self._release_lock()
+            raise
+        return self
+
+    def validate_launcher(self) -> None:
+        if not self.enabled:
+            return
+        # Whether setup published anything decides how a bad result is read, so
+        # it has to be sampled before any restore puts a launcher back.
+        published = self.launcher.exists()
+        error = self._launcher_health_error()
+        if error is not None:
+            restored = self._restore_runnable()
+            # Setup publishing nothing is the case this transaction exists for:
+            # a no-op pip update leaves the freed path empty, and the old
+            # updater then deleted its own .deleteme, leaving no launcher at
+            # all. Putting the previous one back is success, not failure. A
+            # launcher setup DID write and that cannot run is still a failure,
+            # even though the previous one goes back.
+            if published or not restored:
+                typer.echo(f"Error: Unsloth Studio update failed because {error}.", err = True)
+                if restored:
+                    typer.echo("The previous launcher was restored.", err = True)
+                elif self._retained_backup() is not None:
+                    typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
+                raise typer.Exit(1)
+        self._validated = True
+        for orphan in (self.stale, self.backup, self.legacy_backup):
+            if orphan is None:
+                continue
+            try:
+                orphan.unlink(missing_ok = True)
+            except OSError:
+                pass
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        try:
+            if self.enabled and exc_type is not None and not self._validated:
+                if not self._restore_runnable() and self._retained_backup() is not None:
+                    typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
+        finally:
+            self._release_lock()
+        return False
 
 
 # ── unsloth studio reset-password ────────────────────────────────────

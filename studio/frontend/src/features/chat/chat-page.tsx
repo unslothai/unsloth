@@ -75,6 +75,10 @@ import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  CONVERSATION_MARKDOWN_FORMAT,
+  CONVERSATION_MARKDOWN_LABEL,
+} from "./utils/conversation-markdown";
+import {
   Archive03Icon,
   BubbleChatTemporaryIcon,
   Delete02Icon,
@@ -88,6 +92,7 @@ import {
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
+  PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -186,18 +191,19 @@ import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { syncExternalProvidersFromBackend } from "./sync-external-providers";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import { clearNewChatDraft } from "./utils/composer-draft";
 import {
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
 } from "@/features/rag/components/project-source-dropzone";
-
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
@@ -1002,7 +1008,11 @@ function createThreadNonce(): string {
 }
 
 // Chat export formats, mirroring the sidebar chat menu.
-type ProjectChatExportFormat = "raw-jsonl" | "csv" | "sharegpt-jsonl";
+type ProjectChatExportFormat =
+  | "raw-jsonl"
+  | "csv"
+  | "sharegpt-jsonl"
+  | typeof CONVERSATION_MARKDOWN_FORMAT;
 const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ProjectChatExportFormat;
@@ -1010,6 +1020,10 @@ const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
   { label: "Raw JSONL", format: "raw-jsonl" },
   { label: "CSV", format: "csv" },
   { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
+  {
+    label: CONVERSATION_MARKDOWN_LABEL,
+    format: CONVERSATION_MARKDOWN_FORMAT,
+  },
 ];
 
 async function exportProjectConversation(
@@ -1019,7 +1033,12 @@ async function exportProjectConversation(
   const exports = await import("./prompt-storage/prompt-storage-dialog");
   if (format === "raw-jsonl") return exports.exportConversationRawJsonl(threadId);
   if (format === "csv") return exports.exportConversationCsv(threadId);
-  return exports.exportConversationShareGPT(threadId);
+  if (format === CONVERSATION_MARKDOWN_FORMAT)
+    return exports.exportConversationMarkdown(threadId);
+  if (format === "sharegpt-jsonl") return exports.exportConversationShareGPT(threadId);
+  // Was a fallthrough return, so an unhandled format silently exported ShareGPT.
+  const unhandled: never = format;
+  throw new Error(`Unhandled export format: ${String(unhandled)}`);
 }
 
 async function exportProjectChatItem(
@@ -1816,6 +1835,7 @@ export function ChatPage({
     : "Turn on temporary chat";
   const toggleIncognito = useCallback(() => {
     const store = useChatRuntimeStore.getState();
+    const wasIncognito = store.incognito;
     store.setIncognito(!store.incognito);
     // On an empty scratch chat there's nothing to abandon, so flip in
     // place: navigating would remount the thread and bounce the composer
@@ -1827,6 +1847,9 @@ export function ChatPage({
       !search.compare &&
       !search.project &&
       store.activeThreadId == null;
+    if (wasIncognito) {
+      requestTemporaryPromptQueueStop();
+    }
     if (onEmptyScratchChat) return;
     // setActiveThreadId already clears contextUsage.
     store.setActiveThreadId(null);
@@ -1951,6 +1974,20 @@ export function ChatPage({
     },
     [navigate],
   );
+
+  const handleDesktopNewChat = useCallback(() => {
+    clearNewChatDraft();
+    const runtime = useChatRuntimeStore.getState();
+    runtime.setActiveThreadId(null);
+    runtime.setActiveProjectId(currentProjectId);
+    runtime.setIncognito(false);
+    navigate({
+      to: "/chat",
+      search: currentProjectId
+        ? { project: currentProjectId }
+        : { new: crypto.randomUUID() },
+    });
+  }, [currentProjectId, navigate]);
   const openProjectsList = useCallback(() => {
     navigate({ to: "/projects" });
   }, [navigate]);
@@ -2578,14 +2615,22 @@ export function ChatPage({
     },
     [artifactViewKey],
   );
+  const handleNativeImageDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore.getState().addImageAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const nativeModelDropState = useNativeModelDrop({
     enabled: active && view.mode === "single",
     attachmentScope,
+    attachmentTargetKey: artifactViewKey,
     nativePathLeasesSupported,
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
     onAutoLoad: handleNativeModelDropAutoLoad,
     onAttach: handleNativeAttachmentDrop,
+    onAttachImages: handleNativeImageDrop,
   });
 
   const handleCheckpointChange = useCallback(
@@ -3250,12 +3295,31 @@ export function ChatPage({
               ? "pl-12"
               : pinned
                 ? "pl-2"
-                : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+                : isTauri
+                  ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+                  : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
               "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">
+            {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                title="New chat"
+                aria-label="New chat"
+                onClick={handleDesktopNewChat}
+                className="!size-[30px] rounded-[10px] text-muted-foreground"
+              >
+                <HugeiconsIcon
+                  icon={PencilEdit02Icon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+              </Button>
+            )}
             {view.mode !== "compare" && (
               <ModelSelector
                 models={models}
@@ -3367,7 +3431,7 @@ export function ChatPage({
                     type="button"
                     onClick={toggleIncognito}
                     className={cn(
-                      "flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      "flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
@@ -3405,7 +3469,7 @@ export function ChatPage({
                       closeArtifactSurface();
                       openResearchPanel(latestResearchRun.id);
                     }}
-                    className="relative flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
+                    className="relative flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
                     aria-label="Open research activity"
                     aria-pressed={openResearchRunId === latestResearchRun.id}
                   >
@@ -3433,7 +3497,7 @@ export function ChatPage({
                       useResearchRunStore.getState().closePanel();
                       setSettingsOpen(true);
                     }}
-                    className="flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     aria-label="Open run settings"
                   >
                     <HugeiconsIcon

@@ -83,26 +83,57 @@ def is_mmproj_filename(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# Separate-file drafter kinds. dspark and dflash are the same DeepSeek V4 Flash
+# drafter: the folder it ships in and the architecture it reports.
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+
+# Directories only: mtp/ and dspark/ are always a publisher's companion folder,
+# while dflash/ is a family name a user picks for real weights.
+_DRAFTER_DIR_KINDS = ("mtp", "dspark")
+
+
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file MTP drafter (speculative head), a companion to
-    the main model rather than a selectable quant.
+    """True for a separate-file drafter, a companion to the main model rather than
+    a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships
+    for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4)
+    and the ``dspark/`` drafters (DeepSeek V4 Flash). Repos that bake the head
+    into the main GGUF (Qwen) have no such file, so this is False for them. Must
+    be excluded from main-model selection everywhere mmproj is.
 
-    Covers the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for
-    llama.cpp ``-hf`` auto-discovery) and the ``MTP/`` subdir copies (Gemma 4).
-    Repos that bake the head into the main GGUF (Qwen) have no such file, so
-    this is False for them. Must be excluded from main-model selection
-    everywhere mmproj is.
+    Matched by basename prefix, or by an exact parent dir for
+    ``_DRAFTER_DIR_KINDS``; never a substring, since the kind names double as
+    family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and
+    ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model.
 
-    CANONICAL COPY. Layering keeps two mirrors that must change in lockstep:
-    utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import
-    hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core
-    avoids hub imports; bundles the mmproj check).
+    CANONICAL COPY. Two mirrors must change in lockstep:
+    utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub)
+    and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub
+    imports; bundles the mmproj check).
     """
-    p = path.lower()
+    p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
-    name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    parts = [segment for segment in p.split("/") if segment]
+    name, parents = parts[-1], parts[:-1]
+    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
+        kind in parents for kind in _DRAFTER_DIR_KINDS
+    )
+
+
+def is_reclaimable_drafter_path(path: str) -> bool:
+    """Drafters a repo's last-variant delete may reclaim: MTP, fetched with every
+    variant, and DSpark, fetched on opt-in. Both are useless once no main GGUF is
+    left, and companion filtering hides them from the variant menu, so leaving one
+    behind is an invisible allocation (DSpark is ~11 GB). DFlash is excluded: the
+    name doubles as a family a user picks for real weights."""
+    p = path.replace("\\", "/").lower()
+    if not p.endswith(".gguf"):
+        return False
+    parts = [segment for segment in p.split("/") if segment]
+    name, parents = parts[-1], parts[:-1]
+    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_DIR_KINDS) or any(
+        kind in parents for kind in _DRAFTER_DIR_KINDS
+    )
 
 
 def is_gguf_filename(filename: str) -> bool:
@@ -268,11 +299,14 @@ def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
     )
     for repo_dir in repo_dirs:
         snapshots_dir = repo_dir / "snapshots"
-        if not snapshots_dir.is_dir():
-            continue
+        # is_dir() ignores only ENOENT/ENOTDIR/EBADF/ELOOP, so an unreadable root raised
+        # EACCES up to 3.13 (3.14 returns False, gh-101357). Skip it instead of 500ing.
         try:
+            if not snapshots_dir.is_dir():
+                continue
             snapshots.extend(snap for snap in snapshots_dir.iterdir() if snap.is_dir())
-        except OSError:
+        except OSError as e:
+            logger.debug("Skipping unreadable cache snapshots dir %s: %s", snapshots_dir, e)
             continue
 
     # Same key the inventory row selects with, so both name one snapshot.
@@ -312,14 +346,13 @@ def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> s
     return {label for key, label in empty.items() if key not in nonempty}
 
 
-def list_gguf_variants_from_hf_cache(
+def select_gguf_cache_snapshot(
     repo_id: str, root: Optional[Path] = None
-) -> Optional[tuple[list[GgufVariantInfo], bool, set]]:
-    """``(variants, has_vision, complete)`` for the snapshot a load would read.
+) -> Optional[tuple[list[GgufVariantInfo], bool, set, Path]]:
+    """``list_gguf_variants_from_hf_cache`` plus the snapshot it answered from.
 
-    Everything in that snapshot is listed, so a torn download stays visible to resume or delete;
-    *complete* is the subset whose shards are all present, so the caller marks the rest partial
-    rather than ready, as the snapshot-path form of this call does.
+    A repo dir holds every revision, so a caller that then reads metadata from wherever this
+    listing came from needs the snapshot, not the dir: the dir includes revisions it skipped.
     """
     # Local import: inventory_scan imports this module.
     from hub.utils.inventory_scan import complete_snapshot_variants
@@ -330,17 +363,30 @@ def list_gguf_variants_from_hf_cache(
         else iter_hf_cache_snapshots(repo_id)
     )
     # Pick the snapshot the inventory row does: newest holding a whole quant, else first non-empty.
-    fallback: Optional[tuple[list[GgufVariantInfo], bool, set]] = None
+    fallback: Optional[tuple[list[GgufVariantInfo], bool, set, Path]] = None
     for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
         complete = complete_snapshot_variants(str(snapshot)) if variants else set()
         if variants:
             # Selection only: an unlabelled quant cannot be judged, so it counts as usable.
             if any(not v.quant or v.quant in complete for v in variants):
-                return variants, has_vision, complete
+                return variants, has_vision, complete, snapshot
         if fallback is None and (variants or has_vision):
-            fallback = (variants, has_vision, complete)
+            fallback = (variants, has_vision, complete, snapshot)
     return fallback
+
+
+def list_gguf_variants_from_hf_cache(
+    repo_id: str, root: Optional[Path] = None
+) -> Optional[tuple[list[GgufVariantInfo], bool, set]]:
+    """``(variants, has_vision, complete)`` for the snapshot a load would read.
+
+    Everything in that snapshot is listed, so a torn download stays visible to resume or delete;
+    *complete* is the subset whose shards are all present, so the caller marks the rest partial
+    rather than ready, as the snapshot-path form of this call does.
+    """
+    selected = select_gguf_cache_snapshot(repo_id, root = root)
+    return selected[:3] if selected is not None else None
 
 
 def list_partial_gguf_variants_from_state(
@@ -532,7 +578,11 @@ def list_gguf_variants(
             has_vision = True
             continue
         quant = extract_quant_label(filename)
-        if is_big_endian_gguf_path(filename, quant):
+        # The two extractors disagree on F16-be-checkpoint-Q4_K_M shapes; judge with the
+        # loader's label so no row is advertised for a file the remote detector refuses.
+        from utils.models.model_config import _extract_quant_label as _loader_quant
+
+        if is_big_endian_gguf_path(filename, _loader_quant(filename)):
             continue
         quant_totals[quant] = quant_totals.get(quant, 0) + int(getattr(sibling, "size", 0) or 0)
         quant_first_file.setdefault(quant, filename)
@@ -602,7 +652,11 @@ def list_local_gguf_variants(
         if _is_local_mtp_drafter(file, custom_root, rel):
             continue
         quant = extract_quant_label(rel)
-        if is_big_endian_gguf_path(rel, quant):
+        # The two extractors disagree on F16-be-checkpoint-Q4_K_M shapes; judge with the
+        # loader's label so no row is listed for a file the local detector refuses.
+        from utils.models.model_config import _extract_quant_label as _loader_quant
+
+        if is_big_endian_gguf_path(rel, _loader_quant(rel)):
             continue
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         quant_first_file.setdefault(quant, rel)

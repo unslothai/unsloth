@@ -9,8 +9,10 @@ use tauri::{AppHandle, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_CHAT_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_TRAINING_CONFIG_BYTES: u64 = 1024 * 1024;
 const NATIVE_FILE_NAME_HEADER: &str = "x-unsloth-default-name";
 const CHAT_IMPORT_EXTENSIONS: &[&str] = &["jsonl", "ndjson", "csv"];
+const TRAINING_CONFIG_EXTENSIONS: &[&str] = &["yaml", "yml"];
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,8 +154,13 @@ fn save_selected_file(
     Ok(Some(file_name))
 }
 
-fn read_selected_import(
+fn read_selected_text_import(
     selected_path: Option<PathBuf>,
+    label: &str,
+    extensions: &[&str],
+    extension_description: &str,
+    fallback_name: &str,
+    max_bytes: u64,
 ) -> Result<Option<NativeImportedFile>, String> {
     let Some(path) = selected_path else {
         return Ok(None);
@@ -162,20 +169,20 @@ fn read_selected_import(
         .extension()
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase)
-        .ok_or_else(|| "Chat import must be a .jsonl, .ndjson, or .csv file.".to_string())?;
-    if !CHAT_IMPORT_EXTENSIONS.contains(&extension.as_str()) {
-        return Err("Chat import must be a .jsonl, .ndjson, or .csv file.".to_string());
+        .ok_or_else(|| format!("{label} must be a {extension_description} file."))?;
+    if !extensions.contains(&extension.as_str()) {
+        return Err(format!("{label} must be a {extension_description} file."));
     }
 
     let metadata = fs::metadata(&path)
         .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
     if !metadata.is_file() {
-        return Err(format!("Selected import is not a file: {}", path.display()));
+        return Err(format!("{label} is not a file: {}", path.display()));
     }
-    if metadata.len() > MAX_CHAT_IMPORT_BYTES {
+    if metadata.len() > max_bytes {
         return Err(format!(
-            "Chat import is too large (maximum {} MiB).",
-            MAX_CHAT_IMPORT_BYTES / 1024 / 1024
+            "{label} is too large (maximum {} MiB).",
+            max_bytes / 1024 / 1024
         ));
     }
 
@@ -184,23 +191,49 @@ fn read_selected_import(
     let file =
         File::open(&path).map_err(|error| format!("Failed to open {}: {error}", path.display()))?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(MAX_CHAT_IMPORT_BYTES + 1)
+    file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    if bytes.len() as u64 > MAX_CHAT_IMPORT_BYTES {
+    if bytes.len() as u64 > max_bytes {
         return Err(format!(
-            "Chat import is too large (maximum {} MiB).",
-            MAX_CHAT_IMPORT_BYTES / 1024 / 1024
+            "{label} is too large (maximum {} MiB).",
+            max_bytes / 1024 / 1024
         ));
     }
     let content = String::from_utf8(bytes)
-        .map_err(|_| format!("Chat import is not valid UTF-8: {}", path.display()))?;
+        .map_err(|_| format!("{label} is not valid UTF-8: {}", path.display()))?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("chat-import.{extension}"));
+        .unwrap_or_else(|| format!("{fallback_name}.{extension}"));
     Ok(Some(NativeImportedFile { name, content }))
+}
+
+fn read_selected_import(
+    selected_path: Option<PathBuf>,
+) -> Result<Option<NativeImportedFile>, String> {
+    read_selected_text_import(
+        selected_path,
+        "Chat import",
+        CHAT_IMPORT_EXTENSIONS,
+        ".jsonl, .ndjson, or .csv",
+        "chat-import",
+        MAX_CHAT_IMPORT_BYTES,
+    )
+}
+
+fn read_selected_training_config(
+    selected_path: Option<PathBuf>,
+) -> Result<Option<NativeImportedFile>, String> {
+    read_selected_text_import(
+        selected_path,
+        "Training config",
+        TRAINING_CONFIG_EXTENSIONS,
+        ".yaml or .yml",
+        "training-config",
+        MAX_TRAINING_CONFIG_BYTES,
+    )
 }
 
 #[tauri::command]
@@ -258,6 +291,28 @@ pub async fn pick_native_chat_import(
         .map(local_dialog_path)
         .transpose()?;
     read_selected_import(selected_path)
+}
+
+#[tauri::command]
+pub async fn pick_native_training_config(
+    window: WebviewWindow,
+    app: AppHandle,
+) -> Result<Option<NativeImportedFile>, String> {
+    crate::native_intents::ensure_main_window(&window)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Load training config")
+        .add_filter("YAML", TRAINING_CONFIG_EXTENSIONS)
+        .pick_file(move |path| {
+            let _ = tx.send(path);
+        });
+    let selected_path = rx
+        .await
+        .map_err(|_| "Import dialog closed unexpectedly.".to_string())?
+        .map(local_dialog_path)
+        .transpose()?;
+    read_selected_training_config(selected_path)
 }
 
 #[cfg(test)]
@@ -339,6 +394,12 @@ mod tests {
     }
 
     #[test]
+    fn training_configs_use_a_yaml_save_filter() {
+        assert_save_filter("training.yaml", "YAML", &["yaml", "yml"]);
+        assert_save_filter("training.YML", "YAML", &["yaml", "yml"]);
+    }
+
+    #[test]
     fn html_canvas_exports_use_an_html_save_filter() {
         assert_save_filter("canvas.html", "HTML", &["html", "htm"]);
         assert_save_filter("canvas.HTM", "HTML", &["html", "htm"]);
@@ -415,6 +476,28 @@ mod tests {
         let _ = fs::remove_file(jsonl_path);
         let _ = fs::remove_file(json_path);
         let _ = fs::remove_file(txt_path);
+    }
+
+    #[test]
+    fn reads_bounded_yaml_training_configs() {
+        let yaml_path = temp_path("training-config").with_extension("YAML");
+        fs::write(&yaml_path, "model_name: unsloth/test\n").unwrap();
+        let imported = read_selected_training_config(Some(yaml_path.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(imported.content, "model_name: unsloth/test\n");
+
+        let json_path = temp_path("training-config-invalid").with_extension("json");
+        fs::write(&json_path, "{}").unwrap();
+        assert!(read_selected_training_config(Some(json_path.clone())).is_err());
+        let directory = temp_path("training-config-directory").with_extension("yaml");
+        fs::create_dir(&directory).unwrap();
+        assert!(read_selected_training_config(Some(directory.clone()))
+            .unwrap_err()
+            .starts_with("Training config is not a file:"));
+        let _ = fs::remove_file(yaml_path);
+        let _ = fs::remove_file(json_path);
+        let _ = fs::remove_dir(directory);
     }
 
     #[test]

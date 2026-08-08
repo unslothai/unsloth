@@ -10,6 +10,13 @@ export {
 } from "./api/hugging-face-cache";
 export type { HuggingFaceCacheSettings } from "./api/hugging-face-cache";
 export {
+  formatUploadSize,
+  getCachedUploadLimitBytes,
+  getCachedUploadLimitLabel,
+  loadUploadLimitSettings,
+  subscribeUploadLimitSettings,
+} from "./api/upload-limit";
+export {
   loadPersonalization,
   savePersonalization,
 } from "./api/personalization";
@@ -24,6 +31,7 @@ export {
   DEFAULT_CUSTOMIZATION,
   applyCustomizationToDocument,
   isDefaultCustomization,
+  migrateShippedSidebarNavDefault,
   prefersReducedMotion,
   sanitizeCustomization,
   useAppearanceCustomStore,
@@ -32,6 +40,8 @@ export type {
   AppearanceCustomization,
   CustomModeColors,
   ReduceMotionSetting,
+  SidebarNavItemId,
+  SidebarNavItemPref,
 } from "./stores/appearance-custom-store";
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export type {

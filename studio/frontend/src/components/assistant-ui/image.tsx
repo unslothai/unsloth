@@ -308,7 +308,7 @@ function ImageZoom({ src, alt = "Image preview", children }: ImageZoomProps) {
               data-slot="image-zoom-content"
               src={src}
               alt={alt}
-              className="aui-image-zoom-content fade-in zoom-in-95 max-h-[90vh] max-w-[90vw] animate-in cursor-zoom-out object-contain duration-200"
+              className="aui-image-zoom-content fade-in zoom-in-95 max-h-[90dvh] max-w-[90vw] animate-in cursor-zoom-out object-contain duration-200"
             />
           </button>,
           document.body,

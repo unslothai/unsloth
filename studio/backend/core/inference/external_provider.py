@@ -19,6 +19,26 @@ from urllib.parse import urlparse
 import httpx
 import structlog
 
+# Local servers, not hosted APIs: each applies the model's own chat template on the way
+# in, so a prompt built here is templated just like an in-process one (#7066). "custom" is
+# a user-supplied OpenAI-compatible base_url (routes/providers.py:207-213), i.e. how a
+# self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume
+# a template applies: sweeping a hosted API costs a space in delimiter-like text, not
+# sweeping a local one costs a forged turn.
+_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
+
+# The subset documenting "continue_final_message" + "add_generation_prompt" on
+# /v1/chat/completions.
+_CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
+
+# The subset documenting stream_options.include_usage. An OAI-compatible stream omits
+# usage without it, and these providers report no llama.cpp timings either, so the
+# monitor has no token count to derive a speed from. Same caution as the flag above:
+# "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field.
+# "openai" is absent because it never reaches this body: it routes to /v1/responses,
+# which reports usage on its own.
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
+
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
@@ -833,6 +853,7 @@ class ExternalProviderClient:
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
+        continue_final_message: Optional[bool] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -946,6 +967,36 @@ class ExternalProviderClient:
                 yield line
             return
 
+        # A self-hosted server templates client text just like the in-process paths, so the
+        # same "</think>" or turn marker forges a turn (#7066). Hosted APIs are left alone:
+        # their prompt assembly is not this repo's template and not ours to rewrite.
+        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS:
+            from core.inference.chat_template_helpers import (
+                neutralize_control_markup_in_messages,
+                neutralize_tool_descriptions,
+                reconciled_tool_choice,
+            )
+            messages = neutralize_control_markup_in_messages(messages)
+            if tools:
+                safe_tools = neutralize_tool_descriptions(tools)
+                # A mixed catalog keeps safe_tools non-empty while dropping the one tool the
+                # client forced, so an empty check is not enough: without the passthrough
+                # builder's per-name reconciliation the body names an unadvertised function.
+                tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
+                if not safe_tools:
+                    tool_choice = None
+                tools = safe_tools
+
+        # Both are set because a server rejects continuing while a generation prompt is
+        # still asked for. Sent only to the two documenting the pair: "custom" is any
+        # user-supplied base_url, and a strict endpoint 400s on an unknown field, so it
+        # keeps the trailing assistant turn on its own as before.
+        _continue_body = (
+            {"continue_final_message": True, "add_generation_prompt": False}
+            if continue_final_message and self.provider_type in _CONTINUATION_FLAG_PROVIDERS
+            else {}
+        )
+
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -953,7 +1004,11 @@ class ExternalProviderClient:
             "temperature": temperature,
             "top_p": top_p,
             "presence_penalty": presence_penalty,
+            **_continue_body,
         }
+        # Only alongside stream=True: the field is rejected on a non-streaming request.
+        if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
+            body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
             # Newer OpenAI models (gpt-4o, gpt-5.x) reject max_tokens
             if self.provider_type == "openai":
@@ -1435,6 +1490,9 @@ class ExternalProviderClient:
             )
             fallback_body = dict(body)
             fallback_body.pop("tools", None)
+            # This path returns before the common body injection, and Kimi reports no
+            # engine timings, so without this the row has neither tokens nor a speed.
+            fallback_body["stream_options"] = {"include_usage": True}
             try:
                 async with _http_client.stream(
                     "POST",
