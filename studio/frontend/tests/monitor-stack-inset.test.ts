@@ -109,14 +109,41 @@ test("the cap never shrinks the stack below its floor", () => {
   assert.ok(stackGeometry(frame, W, H).maxHeight >= 120);
 });
 
-test("a monitor filling the height still leaves the stack room", () => {
+// Clamping the lift to the stack's floor was worse than not lifting: it put
+// the stack across the monitor's own top edge, which is where its Close and
+// collapse controls are. The chat UI suite maximises the monitor and then
+// clicks Close, and the card swallowed the click.
+test("a monitor too tall to lift over is left in the corner", () => {
   const frame: MonitorFrame = {
     left: W - 272,
     top: 16,
     right: W - 16,
     bottom: H - 16,
   };
-  assert.ok(stackBottomInset(frame, W, H) <= H - 120);
+  const inset = stackBottomInset(frame, W, H);
+  assert.equal(inset, 16, "no lift can clear it, so do not half-lift");
+  // The monitor's own controls sit just inside its top edge; the stack must
+  // stay well below them.
+  assert.ok(H - inset > frame.top + 64, "the stack stays off the top bar");
+});
+
+test("a monitor resized to fill the viewport is left in the corner", () => {
+  const frame: MonitorFrame = { left: 16, top: 16, right: W - 16, bottom: H - 16 };
+  assert.equal(stackBottomInset(frame, W, H), 16);
+});
+
+// The lift is dropped only when it cannot clear; one that fits still applies.
+test("a tall monitor that can still be cleared is lifted over", () => {
+  const frame: MonitorFrame = {
+    left: W - 272,
+    top: 200,
+    right: W - 16,
+    bottom: H - 16,
+  };
+  const inset = stackBottomInset(frame, W, H);
+  assert.ok(inset > 16, "the stack must move");
+  assert.ok(H - inset <= frame.top, "no vertical overlap remains");
+  assert.ok(H - inset - 16 >= 120, "and it keeps its floor");
 });
 
 // The union was the trap. A tall monitor and the wide docked composer share
@@ -154,7 +181,15 @@ test("two obstacles are folded one at a time, not as their bounding box", () => 
     unioned.bottom,
     "folding must not agree with the bounding box, or nothing was fixed",
   );
-  assert.ok(both.bottom < unioned.bottom, "and it must lift less, not more");
+  // The union is wrong in whichever direction the clamp happens to send it:
+  // it used to lift to the cap and land on the monitor, and now that a box too
+  // tall to clear is left alone it drops the composer's dodge instead, putting
+  // the card back over the Send button. Folding just gives each box its own.
+  assert.equal(
+    both.bottom,
+    composerOnly.bottom,
+    "the composer still gets the lift it asked for",
+  );
 });
 
 test("an empty list behaves exactly like nothing published", () => {

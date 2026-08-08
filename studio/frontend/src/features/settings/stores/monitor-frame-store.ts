@@ -97,10 +97,12 @@ export function stackBottomInset(
   const lowEnough = frame.bottom > viewportHeight / 2;
   if (!(inStackColumn(frame, viewportWidth) && lowEnough)) return STACK_INSET;
   const lifted = viewportHeight - frame.top + STACK_GAP;
-  return Math.max(
-    STACK_INSET,
-    Math.min(lifted, viewportHeight - MIN_STACK_ROOM),
-  );
+  // Too tall to lift over. Clamping the lift instead of dropping it parks the
+  // stack across the box's own top edge, over the controls it is dodging: a
+  // monitor resized to fill the viewport had its Close button swallowed by the
+  // loaded models card. Nothing above it is free, so stay in the corner.
+  if (lifted > viewportHeight - MIN_STACK_ROOM) return STACK_INSET;
+  return Math.max(STACK_INSET, lifted);
 }
 
 /**
