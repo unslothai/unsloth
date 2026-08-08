@@ -2459,10 +2459,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Mirror the Create workspace's 408px rail in the header. At roomy widths the
           divider continues through the header and the mode switch is centered over the
-          preview, not the whole page. Below 42rem the header becomes an intrinsic two-cell
+          preview, not the whole page. Below 50rem the header becomes an intrinsic two-cell
           row, so the selector yields space instead of colliding with the mode/media actions. */}
-      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,1fr)_auto] @[42rem]:grid-cols-[408px_minmax(0,1fr)]">
-        <div className="flex h-full min-w-0 items-start overflow-hidden pl-[var(--studio-media-header-left-inset,1.5rem)] pt-[var(--studio-chat-header-padding-top,11px)] @[46rem]:border-r @[46rem]:border-border/60">
+      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,1fr)_auto] @[50rem]:grid-cols-[408px_minmax(0,1fr)]">
+        <div className="flex h-full min-w-0 items-start overflow-hidden pl-[var(--studio-media-header-left-inset,1.5rem)] pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:border-r @[50rem]:border-border/60">
           <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden">
             {pageMode === "train" ? (
               <TrainBaseSelector
@@ -2493,8 +2493,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             )}
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[auto_auto] items-start gap-1 pt-[var(--studio-chat-header-padding-top,11px)] @[42rem]:grid-cols-[1fr_auto_1fr] @[42rem]:gap-0">
-          <div className="pointer-events-auto justify-self-center @[42rem]:col-start-2">
+        <div className="grid h-full min-w-0 grid-cols-[auto_auto] items-start gap-1 pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
+          <div className="pointer-events-auto justify-self-center @[50rem]:col-start-2">
             <PillTabs
               ariaLabel="Page mode"
               value={pageMode}
@@ -2522,7 +2522,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               ]}
             />
           </div>
-          <div className="pointer-events-auto justify-self-end pr-2 @[42rem]:col-start-3">
+          <div className="pointer-events-auto justify-self-end pr-2 @[50rem]:col-start-3">
             {/* Video is a separate page, so it sits out here rather than in the mode strip. */}
             <MediaPageLink
               to="/video"
@@ -2558,8 +2558,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
          px-10 puts the controls 40px from both edges and level with the model selector above.
          overflow-x-hidden because an unset overflow-x computes to auto beside overflow-y-auto,
          which would let a wide row pan the page sideways on a phone. */
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden md:flex-row md:overflow-hidden">
-        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 md:w-[408px] md:overflow-hidden md:border-r md:border-b-0">
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
+        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
@@ -2567,7 +2567,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               // pb-20 at every width: the floating Generate button below is absolutely
               // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
               // phone padding puts it on top of the last control.
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-20 md:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-20 @[50rem]:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -3121,9 +3121,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           </div>
         </div>
 
-        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden md:min-h-0">
+        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
           {/* Equal 40px side gutters. Desktop's extra top padding replaces the row-level pt-9 without shortening the divider. */}
-          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 md:pt-[60px]">
+          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[60px]">
             {selected && selectedSrc ? (
               <>
                 <img

@@ -632,10 +632,12 @@ def test_image_page_dividers_span_the_structural_panes():
         for token in row_tokens
     )
 
-    assert "gap-4 px-10 pt-9 pb-20 md:overflow-y-auto" in section
-    assert "overflow-hidden md:min-h-0" in section
+    assert "@[50rem]:flex-row" in section
+    assert "md:flex-row" not in section
+    assert "gap-4 px-10 pt-9 pb-20 @[50rem]:overflow-y-auto" in section
+    assert "overflow-hidden @[50rem]:min-h-0" in section
     assert "overflow-hidden pl-2 md:min-h-0" not in section
-    assert "p-6 px-10 md:pt-[60px]" in section
+    assert "p-6 px-10 @[50rem]:pt-[60px]" in section
     assert "border-t border-foreground/10 px-10 py-3" in section
 
 
@@ -654,11 +656,11 @@ def test_image_page_header_tracks_the_preview_and_compacts_before_collision():
 
     assert "@container" in shell
     assert "grid-cols-[minmax(0,1fr)_auto]" in header
-    assert "@[42rem]:grid-cols-[408px_minmax(0,1fr)]" in header
-    assert "@[46rem]:border-r" in header
-    assert "@[42rem]:grid-cols-[1fr_auto_1fr]" in header
-    assert "@[42rem]:col-start-2" in header
-    assert "@[42rem]:col-start-3" in header
+    assert "@[50rem]:grid-cols-[408px_minmax(0,1fr)]" in header
+    assert "@[50rem]:border-r" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
+    assert "@[50rem]:col-start-2" in header
+    assert "@[50rem]:col-start-3" in header
     assert "[&>button]:px-3" in header
     assert "@[68rem]:[&>button]:px-11" in header
     assert 'labelClassName="hidden @[50rem]:inline"' in header
