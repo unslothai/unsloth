@@ -1151,9 +1151,9 @@ def test_the_stack_geometry_is_checked_numerically():
     node one. Named here so deleting it does not quietly leave the cap unchecked."""
     geometry = REPO / "studio/frontend/tests/monitor-stack-inset.test.ts"
     src = geometry.read_text(encoding = "utf-8")
-    assert "stackGeometry(null, W, H).maxHeight, H - 32" in src, (
-        "nothing pins the no-obstacle cap to the 2rem the class used to spell"
-    )
+    assert (
+        "stackGeometry(null, W, H).maxHeight, H - 32" in src
+    ), "nothing pins the no-obstacle cap to the 2rem the class used to spell"
 
 
 def test_desktop_notes_are_looked_up_by_the_backend_version():

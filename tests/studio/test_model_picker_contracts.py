@@ -1075,9 +1075,9 @@ def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
         # once; the load-bearing part is the third, so do not pin the second.
         call = re.search(r"diffusionRoutePick\(\s*wanted,\s*(.*?),?\s*\);", src, re.S)
         assert call, f"{rel}: the routed pick does not go through diffusionRoutePick"
-        assert f"loadSpecFor(wanted, {catalog})" in call.group(1), (
-            f"{rel}: the routed pick passes no catalog spec"
-        )
+        assert f"loadSpecFor(wanted, {catalog})" in call.group(
+            1
+        ), f"{rel}: the routed pick passes no catalog spec"
 
 
 def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
@@ -1110,9 +1110,9 @@ def test_diffusion_pages_never_drop_a_gguf_pick_silently():
         )
         assert branch, f"{rel}: gguf extension guard not found"
         body = branch.group(0)
-        assert "toast.error(" in body or "loadGgufRepoPick(" in body, (
-            f"{rel}: guard returns silently"
-        )
+        assert (
+            "toast.error(" in body or "loadGgufRepoPick(" in body
+        ), f"{rel}: guard returns silently"
 
 
 def test_diffusion_pages_stage_downloads_through_the_manager():
@@ -1154,15 +1154,15 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         assert flush, f"{rel}: nothing flushes the deferred load when the page is shown"
         # Either the flush calls the loader itself or it calls the same helper the visible
         # path uses. What it may not do is clear the flag and stop there.
-        assert "runStagedLoad()" in flush.group(0) or "handleLoadRef.current(" in flush.group(0), (
-            f"{rel}: deferred load never runs"
-        )
+        assert "runStagedLoad()" in flush.group(0) or "handleLoadRef.current(" in flush.group(
+            0
+        ), f"{rel}: deferred load never runs"
         if "runStagedLoad()" in flush.group(0):
             runner = re.search(r"const runStagedLoad = useCallback\(.*?\n  \}, \[", src, re.S)
             assert runner, f"{rel}: runStagedLoad not found"
-            assert "handleLoadRef.current(" in runner.group(0), (
-                f"{rel}: runStagedLoad loads nothing"
-            )
+            assert "handleLoadRef.current(" in runner.group(
+                0
+            ), f"{rel}: runStagedLoad loads nothing"
 
 
 def test_staged_downloads_always_scope_their_files():
