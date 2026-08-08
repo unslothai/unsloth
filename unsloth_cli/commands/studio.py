@@ -2887,8 +2887,14 @@ def _probe_profile_proxy_defaults(powershell: str | list[str]) -> Optional[str]:
     for host in hosts:
         try:
             probe = subprocess.run(
-                [host, "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
-                 _PS_PROXY_PROBE],
+                [
+                    host,
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    _PS_PROXY_PROBE,
+                ],
                 capture_output = True,
                 text = True,
                 timeout = 20,

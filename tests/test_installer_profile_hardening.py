@@ -823,9 +823,9 @@ def test_the_handoff_is_published_only_around_the_setup_child():
     `unsloth studio update` from that console would then reapply stale proxy JSON."""
     source = _install_ps1()
     prologue = _extract_prologue()
-    assert "$env:_UNSLOTH_PS_PROXY_DEFAULTS =" not in prologue, (
-        "the prologue publishes the handoff into the session it was invoked from"
-    )
+    assert (
+        "$env:_UNSLOTH_PS_PROXY_DEFAULTS =" not in prologue
+    ), "the prologue publishes the handoff into the session it was invoked from"
     assert "$script:UnslothProxyHandoffJson" in prologue, "the prologue must hold it instead"
     # Set beside the other child-scoped variables, and restored with them.
     assert "$previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS" in source
@@ -847,7 +847,7 @@ def test_a_standalone_update_reconstructs_the_proxy_for_itself():
     noprofile = _locate(src[start:], '"-NoProfile"', "the -NoProfile flag")
     assert guard < noprofile, "the probe has to run while the profile is still reachable"
     # ...and only when the installer did not already hand one over.
-    assert '_UNSLOTH_PS_PROXY_DEFAULTS' in src[start : start + guard]
+    assert "_UNSLOTH_PS_PROXY_DEFAULTS" in src[start : start + guard]
 
 
 @requires_pwsh
@@ -871,7 +871,12 @@ def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_pa
         newline = "",
     )
     result = subprocess.run(
-        [shutil.which("pwsh") or "pwsh", "-NonInteractive", "-Command", namespace["_PS_PROXY_PROBE"]],
+        [
+            shutil.which("pwsh") or "pwsh",
+            "-NonInteractive",
+            "-Command",
+            namespace["_PS_PROXY_PROBE"],
+        ],
         capture_output = True,
         text = True,
         check = False,
@@ -932,9 +937,7 @@ def test_the_callers_edition_wins_where_the_two_profiles_disagree(monkeypatch):
         "pwsh.exe": '{"invoke-webrequest:proxy": "http://seven.corp:8080"}',
         "powershell.exe": '{"invoke-webrequest:proxy": "http://five.corp:8080"}',
     }
-    monkeypatch.setattr(
-        studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]])
-    )
+    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]]))
     merged = studio_cmd._probe_profile_proxy_defaults(["powershell.exe", "pwsh.exe"])
     assert json.loads(merged) == {"invoke-webrequest:proxy": "http://five.corp:8080"}
 
@@ -955,9 +958,7 @@ def test_two_spellings_of_one_key_are_one_key(monkeypatch):
         "pwsh.exe": '{"Invoke-WebRequest:Proxy": "http://seven.corp:8080"}',
         "powershell.exe": '{"invoke-webrequest:proxy": "http://five.corp:8080"}',
     }
-    monkeypatch.setattr(
-        studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]])
-    )
+    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]]))
     merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]))
 
     assert merged == {"Invoke-WebRequest:Proxy": "http://seven.corp:8080"}
@@ -998,7 +999,9 @@ def test_the_probe_host_order_follows_the_console_the_user_typed_into(monkeypatc
     assert studio_cmd._profile_probe_hosts()[0] == "powershell.exe"
 
     # A host that is not installed is not asked.
-    monkeypatch.setattr(studio_cmd.shutil, "which", lambda name: None if name == "pwsh.exe" else "x")
+    monkeypatch.setattr(
+        studio_cmd.shutil, "which", lambda name: None if name == "pwsh.exe" else "x"
+    )
     assert studio_cmd._profile_probe_hosts() == ["powershell.exe"]
 
 
@@ -1023,9 +1026,9 @@ def test_the_parity_workflow_runs_when_the_studio_command_changes():
         / "workflows"
         / "cross-platform-parity-ci.yml"
     ).read_text(encoding = "utf-8")
-    assert workflow.count("unsloth_cli/commands/studio.py") == 2, (
-        "both the pull_request and push path filters need the module"
-    )
+    assert (
+        workflow.count("unsloth_cli/commands/studio.py") == 2
+    ), "both the pull_request and push path filters need the module"
 
 
 def test_the_parity_job_installs_what_this_suite_imports():
@@ -1038,11 +1041,9 @@ def test_the_parity_job_installs_what_this_suite_imports():
         / "workflows"
         / "cross-platform-parity-ci.yml"
     ).read_text(encoding = "utf-8")
-    install = [
-        line for line in workflow.splitlines() if "pip install" in line and "pytest" in line
-    ]
+    install = [line for line in workflow.splitlines() if "pip install" in line and "pytest" in line]
     assert install, "the parity job's install step was not found"
     for package in ("typer", "pyyaml", "pydantic", "click"):
-        assert all(package in line for line in install), (
-            f"the parity job does not install {package}, which this suite's imports need"
-        )
+        assert all(
+            package in line for line in install
+        ), f"the parity job does not install {package}, which this suite's imports need"
