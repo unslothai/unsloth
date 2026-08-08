@@ -13,7 +13,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { isDetectionDeferred, isProvisionalVerdict, resolveVerdict } = await import(
+const { isDetectionDeferred, isProvisionalVerdict, resolveVerdict, videoNavHint } = await import(
   "../src/config/hardware-verdict.ts"
 );
 
@@ -400,8 +400,8 @@ test("the route guard waits out an unknown verdict on Train and Video", async ()
   );
 });
 
-// The tab is enabled on a healthy Apple Silicon host (chat_only is false there), and the
-// backend has no video path for it, so the page has to say so rather than fail at load.
+// The tab is reachable on hosts the backend still refuses — no GPU, no MPS device, no PyTorch —
+// so the page has to say which, rather than fail at load.
 test("the Video page gates on the backend's own capability answer", async () => {
   const { readFile } = await import("node:fs/promises");
   const src = await readFile(
@@ -415,8 +415,16 @@ test("the Video page gates on the backend's own capability answer", async () => 
   );
   assert.match(
     src,
-    /capabilitiesUnknown \|\| !hardware\.loaded/,
+    /if \(!hardware\.loaded\)/,
     "the page renders its generator before the verdict has landed",
+  );
+  // /api/health withholds the chat-only verdict for the whole MLX self-heal. Video does not use
+  // MLX, so waiting on it would spin this page through a reinstall that cannot change its answer.
+  // The whole store is forbidden, not just capabilitiesUnknown: any of its properties would put
+  // the training verdict back in front of an answer that is already authoritative.
+  assert.ok(
+    !/usePlatformStore/.test(src),
+    "the Video gate waits on the training verdict again",
   );
   // A backend that predates the field sends nothing, which arrives as null; only an explicit
   // false may hide the generator.
@@ -426,24 +434,79 @@ test("the Video page gates on the backend's own capability answer", async () => 
   );
 });
 
-// The hardcoded "needs an NVIDIA or AMD GPU" is wrong on Apple Silicon: no GPU the user can
-// add would help, because there is no Apple video path at all.
-test("the Video tooltip is derived, not hardcoded", async () => {
+// The hardcoded "needs an NVIDIA or AMD GPU" is wrong on a Mac: no GPU the user can add would
+// un-chat-only the host. The hint names the measured chat-only reason instead.
+test("the Video hint names the reason the host has no video device", () => {
+  assert.equal(videoNavHint(false, null), undefined, "a capable host is disabled");
+  // An unmeasured verdict can still carry a reason from a previous reply, and must not be read
+  // as one: the row would grey out on a host nothing has measured yet.
+  assert.equal(videoNavHint(false, "no_gpu"), undefined, "an unmeasured host is disabled");
+  assert.equal(videoNavHint(false, "intel_mac"), undefined, "an unmeasured host is disabled");
+  assert.equal(
+    videoNavHint(true, "no_gpu"),
+    "Video generation needs an NVIDIA or AMD GPU.",
+    "a GPU-less host is not told why",
+  );
+  assert.match(
+    videoNavHint(true, "intel_mac") ?? "",
+    /Apple Silicon/,
+    "an Intel Mac is not told what video actually needs",
+  );
+  // No wording may offer graphics hardware as the fix. An Intel Mac can have an AMD dGPU and it
+  // is still useless here: torch's only macOS backend is MPS, and MPS needs Apple Silicon.
+  assert.ok(
+    !/gpu|graphics|coming soon/i.test(videoNavHint(true, "intel_mac") ?? ""),
+    "an Intel Mac is pointed at graphics hardware that cannot run video",
+  );
+});
+
+// A broken MLX stack makes the host chat-only, but video runs on Metal and does not use MLX,
+// so the backend reports video_supported there. Disabling the row would strand the capability
+// behind a training dependency, reachable only by typing the URL.
+test("a chat-only Apple Silicon host keeps Video navigable", () => {
+  assert.equal(
+    videoNavHint(true, "mlx_unavailable"),
+    undefined,
+    "a repairable MLX stack disables video, which does not use MLX",
+  );
+  // Same for a probe that never produced a reason: VideoPage explains it, the sidebar cannot.
+  assert.equal(videoNavHint(true, "detection_failed"), undefined);
+  assert.equal(videoNavHint(true, null), undefined);
+});
+
+// The row's disabled state must follow the hint, not chatOnly: that is the wiring the two
+// tests above only describe.
+test("the Video row is disabled exactly when the hint has something to say", async () => {
   const { readFile } = await import("node:fs/promises");
   const src = await readFile(
     new URL("../src/components/app-sidebar.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(src, /const videoDisabledHint: string \| undefined/, "no derived video hint");
   assert.match(
     src,
-    /platformDeviceType === "mac"\s*\?\s*"Video generation on macOS is coming soon\."/,
-    "a Mac is still told to fit a GPU",
+    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason\)/,
+    "the Video hint no longer comes from the shared derivation",
   );
-  assert.ok(
-    !/tooltip: chatOnly\s*\n?\s*\? "Video generation needs an NVIDIA or AMD GPU\."/.test(src),
-    "the hardcoded tooltip is still wired to the row",
+  assert.match(
+    src,
+    /const videoDisabled = videoDisabledHint !== undefined/,
+    "the Video row's disabled state is no longer derived from its hint",
   );
+  // The train row keeps `disabled: chatOnlyMeasured`, so match inside the video row only.
+  const videoRow = src.slice(src.indexOf("    video: {"));
+  const videoBody = videoRow.slice(0, videoRow.indexOf("},"));
+  assert.match(
+    videoBody,
+    /disabled: videoDisabled,/,
+    "the Video row is gated on the training verdict again",
+  );
+  // Disabled without the hint is worse than either alone: a greyed row with nothing to explain it.
+  assert.match(
+    videoBody,
+    /tooltip: videoDisabledHint,/,
+    "the Video row is disabled with no reason shown",
+  );
+  assert.ok(!/coming soon/.test(src), "the Video row still promises macOS support that has shipped");
 });
 
 // The Video gate waits on useHardwareInfo's `loaded`, and a failed probe used to resolve to

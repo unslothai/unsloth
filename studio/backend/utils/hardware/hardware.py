@@ -235,6 +235,22 @@ def _has_torch() -> bool:
         return False
 
 
+def _torch_mps_available() -> bool:
+    """True when torch exposes a usable Metal (MPS) device.
+
+    Apple Silicon alone is not enough: a torch built without MPS, or one whose import is broken,
+    leaves the pipelines nowhere to run. Never raises -- a probe failure reads as "no MPS".
+    """
+    if not _has_torch():
+        return False
+    try:
+        import torch
+        mps = getattr(getattr(torch, "backends", None), "mps", None)
+        return bool(mps is not None and mps.is_available())
+    except Exception:
+        return False
+
+
 def _has_mlx() -> bool:
     """True if MLX is importable."""
     try:
@@ -267,10 +283,11 @@ def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
 
     Detection gets its answer before utils.mlx_repair gets its turn, so an Apple Silicon
     host whose MLX stack is missing or unreadable settles chat-only first and flips only
-    once the background reinstall lands. Published as final, that greys Train and Video
-    behind a "run `unsloth studio update`" tooltip the repair makes wrong a minute later,
-    and the rows then enable themselves on the frontend's recovery poll -- the reported
-    "greyed out, then they come out". Callers report it as still-detecting instead.
+    once the background reinstall lands. Published as final, that greys Train behind a
+    "run `unsloth studio update`" tooltip the repair makes wrong a minute later, and the row
+    then enables itself on the frontend's recovery poll -- the reported "greyed out, then
+    they come out". Callers report it as still-detecting instead. Video is unaffected either
+    way: it runs on Metal without MLX and reads its own capability verdict.
 
     The "mlx_unavailable" check is also what lets mlx_repair_in_flight() be cheap: that
     reason means this pass has just measured the stack as unusable, so the self-heal only
@@ -634,10 +651,10 @@ def export_capability() -> dict:
 def video_capability() -> dict:
     """Whether video generation can run here, with a torch-aware reason when it cannot.
 
-    Video runs through the diffusers pipelines in core/inference/video.py, which have no Apple
-    path: no MLX backend, and the families ship no MPS-tested route, so macOS is reported as
-    unsupported rather than left to fail at load. Supported iff ``get_device() in {CUDA, XPU}``.
-    Safe to call without torch.
+    Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device. The pipelines in
+    core/inference/video.py are device-neutral -- they resolve the device through the shared
+    diffusion device target, whose capability flags already decline the CUDA-only options -- so
+    Metal needs no branches of its own. Safe to call without torch.
 
     Returns {video_supported, video_unsupported_reason, video_unsupported_message}.
     """
@@ -655,14 +672,43 @@ def video_capability() -> dict:
             "Hardware detection failed on this host, so video generation is disabled. The server "
             "log records the underlying error; restart Unsloth Studio to retry detection."
         )
-    elif platform.system() == "Darwin" or get_device() == DeviceType.MLX:
-        # Every Mac, not just Apple Silicon. An Intel Mac detects as plain CPU, so an
-        # is_apple_silicon() test drops it into the branches below and tells the user to
-        # install PyTorch or add a GPU. Neither enables video here: the pipelines have no
-        # supported macOS path at all, so the honest answer is the same on both Macs.
+    elif is_apple_silicon() or get_device() == DeviceType.MLX:
         # The MLX arm covers an Apple host whose platform probe somehow disagrees.
+        if _torch_mps_available():
+            return {
+                "video_supported": True,
+                "video_unsupported_reason": None,
+                "video_unsupported_message": None,
+            }
+        if TORCH_IMPORT_ERROR is not None:
+            # Installed but broken reads as no torch below, and detect_hardware() records
+            # mlx_unavailable for this host, so neither the branch above nor the one below sees
+            # it -- and the host would be told to install the PyTorch it already has.
+            reason = "detection_failed"
+            message = (
+                "PyTorch is installed but fails to import on this host, so the video pipelines "
+                "cannot start. The server log records the error; reinstall PyTorch to fix it."
+            )
+        elif not _has_torch():
+            reason = "pytorch_not_installed"
+            message = (
+                "PyTorch is not installed. Video generation on Apple Silicon requires PyTorch "
+                "with Metal (MPS) support. Install PyTorch to enable video generation."
+            )
+        else:
+            reason = "mps_unavailable"
+            message = (
+                "This PyTorch build exposes no Metal (MPS) device, so the video pipelines have "
+                "nowhere to run. Reinstall PyTorch with MPS support to enable video generation."
+            )
+    elif platform.system() == "Darwin":
+        # Ahead of the torch/GPU branches below: neither installing torch nor adding a GPU
+        # enables video on an Intel Mac, so it must not be told to try either.
         reason = "macos_unsupported"
-        message = "Video generation on macOS is coming soon."
+        message = (
+            "Video generation requires Apple Silicon. This Intel Mac has no Metal (MPS) device "
+            "for the video pipelines to run on."
+        )
     elif not _has_torch():
         reason = "pytorch_not_installed"
         message = (

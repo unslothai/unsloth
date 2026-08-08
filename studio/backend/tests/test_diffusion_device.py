@@ -399,6 +399,10 @@ def test_the_video_loader_demotes_rope():
     # loader is not asserted -- the flag is read when a pipeline first builds its frequency
     # tables, after load_pipeline returns -- but reaching it unconditionally is, since the helper
     # already no-ops on a float64 device and a guard here could only ever get the polarity wrong.
+    #
+    # Asserted as "reached with no condition above it" rather than by rejecting `if`: a guard can
+    # equally be written `target.supports_float64 and force_float32_rope(...)` or as a ternary,
+    # and naming the shapes only rejects the ones already thought of.
     import ast
     from pathlib import Path
 
@@ -411,20 +415,25 @@ def test_the_video_loader_demotes_rope():
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "load_pipeline"
     )
 
-    def _calls_rope(node):
-        return any(
-            isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Name)
-            and n.func.id == "force_float32_rope"
-            for n in ast.walk(node)
+    def _is_rope_call(node):
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "force_float32_rope"
         )
 
-    assert _calls_rope(
-        loader
-    ), "load_pipeline no longer demotes the RoPE tables, so LTX-2 raises on Metal"
-    for node in ast.walk(loader):
-        if isinstance(node, ast.If):
-            assert not _calls_rope(node), (
-                "the demotion is behind a condition; if it is the wrong way round, LTX-2 keeps "
-                "float64 on Metal and every test above still passes"
-            )
+    # Everything a condition could skip, whatever syntax expresses it.
+    conditional = {
+        id(inner)
+        for node in ast.walk(loader)
+        if isinstance(node, (ast.If, ast.IfExp, ast.BoolOp))
+        for inner in ast.walk(node)
+    }
+    assert any(
+        isinstance(n, ast.Expr) and _is_rope_call(n.value) and id(n) not in conditional
+        for n in ast.walk(loader)
+    ), (
+        "load_pipeline does not reach force_float32_rope unconditionally, so the demotion is "
+        "either gone or behind a guard -- and a guard here can only be wrong, since the helper "
+        "already no-ops wherever float64 works"
+    )

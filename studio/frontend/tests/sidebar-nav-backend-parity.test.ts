@@ -57,7 +57,14 @@ test("Train and Video are still the capability-gated rows", async () => {
     assert.ok(bodies.has(id), `the backend ships a "${id}" row the sidebar does not define`);
   }
 
-  for (const id of ["train", "video"]) {
+  // Train reads the chat-only verdict; Video reads only the subset of its reasons that leave no
+  // video device, and that expression is pinned in provisional-hardware-verdict.test.ts, so it is
+  // not restated here. Video is still required to have a disabled state -- swapping it for
+  // Train's would pass there, and un-gate the row on a Mac whose only problem is MLX.
+  for (const [id, disabled] of [
+    ["train", /disabled: chatOnlyMeasured,/],
+    ["video", /disabled: (?!chatOnlyMeasured)\w+,/],
+  ] as const) {
     const body = bodies.get(id);
     assert.ok(body, `no ${id} row`);
     assert.match(
@@ -67,8 +74,8 @@ test("Train and Video are still the capability-gated rows", async () => {
     );
     assert.match(
       body,
-      /disabled: chatOnlyMeasured,/,
-      `the ${id} row disables on the browser-platform guess`,
+      disabled,
+      `the ${id} row is no longer capability-gated on its own verdict`,
     );
   }
 });

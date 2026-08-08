@@ -1460,9 +1460,10 @@ async def health_check(request: Request):
     await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()
-    # A chat-only verdict the MLX self-heal is about to overturn is not an answer yet. Hold
-    # it back and keep replying provisionally, or the Mac gets Train and Video greyed out
-    # under a tooltip the reinstall makes wrong minutes later.
+    # A chat-only verdict the MLX self-heal is about to overturn is not an answer yet. Hold it
+    # back and keep replying provisionally, or the Mac gets Train greyed out under a tooltip the
+    # reinstall makes wrong minutes later. Video does not wait on this: it runs on Metal without
+    # MLX, so it reads /api/system/hardware instead.
     mlx_repairing = _superseded_by_mlx_repair(snapshot)
     if mlx_repairing:
         snapshot = None
