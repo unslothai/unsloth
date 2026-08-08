@@ -2540,15 +2540,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           onFamiliesChange={setTrainFamilies}
         />
       ) : (
-      /* Settings column + preview canvas: both on the page background, split by a rule. Each pane pads its own content.
+      /* Settings column + preview canvas: both on the page background, split by a rule. Structural borders stay edge-to-edge;
+         spacing belongs to the pane contents so the divider and gallery rule meet cleanly.
          Full width, so the canvas grows with the window; the settings column stays fixed.
-         pl-8 puts its content 40px in, level with the model selector label above and
-         with pr-8 on the other side of the column.
+         px-10 puts the controls 40px from both edges and level with the model selector above.
          overflow-x-hidden because an unset overflow-x computes to auto beside overflow-y-auto,
          which would let a wide row pan the page sideways on a phone. */
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
-        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[408px] md:overflow-hidden md:border-r md:border-b-0">
-          {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden md:flex-row md:overflow-hidden">
+        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 md:w-[408px] md:overflow-hidden md:border-r md:border-b-0">
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
@@ -2556,7 +2555,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               // pb-20 at every width: the floating Generate button below is absolutely
               // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
               // phone padding puts it on top of the last control.
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-8 md:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-20 md:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -3096,7 +3095,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
           </div>
           {/* Floats over the settings so it needs no bar of its own. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-8">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-10 pb-7">
             <Button
               className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
               onClick={handleGenerate}
@@ -3110,9 +3109,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           </div>
         </div>
 
-        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 md:min-h-0">
-          {/* With the pane's pl-2, the 40px gutter the settings column has off the page edge. */}
-          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 pl-8">
+        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden md:min-h-0">
+          {/* Equal 40px side gutters. Desktop's extra top padding replaces the row-level pt-9 without shortening the divider. */}
+          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 md:pt-[60px]">
             {selected && selectedSrc ? (
               <>
                 <img
@@ -3211,8 +3210,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           {(images.length > 0 || busy === "generating") && (
             <div
               ref={stripRef}
-              // Same 40px gutter as the viewer above.
-              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 p-3 pl-8"
+              // The rule spans the pane; only the thumbnail contents receive the 40px gutter.
+              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 px-10 py-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;

@@ -610,6 +610,35 @@ def test_media_pages_clear_the_custom_titlebar():
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
 
 
+def test_image_page_dividers_span_the_structural_panes():
+    """Spacing belongs inside the pane contents, not around the bordered row.
+
+    Padding on the row made the vertical divider start 36px late. Padding on the
+    preview pane then left an 8px gap where its gallery rule met that divider, while
+    row padding stopped the same rule 32px before the right edge.
+    """
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    section = source.split("Settings column + preview canvas", 1)[1]
+
+    row_class = re.search(
+        r'<div className="([^"]*overflow-y-auto overflow-x-hidden[^"]*)">',
+        section,
+    )
+    assert row_class
+    row_tokens = row_class.group(1).split()
+    assert not any(
+        token.startswith(("pl-", "pr-", "pt-", "px-"))
+        or token.startswith(("sm:pr-", "md:pl-", "md:pr-", "md:pt-", "md:px-"))
+        for token in row_tokens
+    )
+
+    assert "gap-4 px-10 pt-9 pb-20 md:overflow-y-auto" in section
+    assert "overflow-hidden md:min-h-0" in section
+    assert "overflow-hidden pl-2 md:min-h-0" not in section
+    assert "p-6 px-10 md:pt-[60px]" in section
+    assert "border-t border-foreground/10 px-10 py-3" in section
+
+
 def test_media_page_headers_out_stack_the_mac_drag_region():
     """macOS insets the media pages 0px, so their 48px header overlaps the navbar's 34px drag
     strip: the band must out-stack it yet stay click-through (controls click, gaps drag)."""
