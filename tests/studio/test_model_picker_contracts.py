@@ -1312,9 +1312,9 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
         src = _read(f"features/{page}")
         entries = re.search(r"plan\.entries\.map\(\(e\) => \(\{.*?\}\)\)", src, re.S)
         assert entries, f"{page} does not map the plan entries into staged downloads"
-        assert "checkpoint: e.repo_id === repoId" in entries.group(0), (
-            f"{page} does not mark the picked repo's entry as the checkpoint"
-        )
+        assert "checkpoint: e.repo_id === repoId" in entries.group(
+            0
+        ), f"{page} does not mark the picked repo's entry as the checkpoint"
 
     staged = _read("features/hub/download-manager/use-staged-download.ts")
     assert "checkpoint?: boolean;" in staged
