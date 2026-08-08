@@ -111,9 +111,7 @@ def _fallback_presets() -> list[tuple[int, int]]:
     src = _VIDEO_PAGE.read_text(encoding = "utf-8")
     start = src.index("const FALLBACK_RESOLUTION_PRESETS")
     body = src[start : src.index("];", start)]
-    pairs = [
-        (int(w), int(h)) for w, h in re.findall(r"\[\s*(\d+)\s*,\s*(\d+)\s*\]", body)
-    ]
+    pairs = [(int(w), int(h)) for w, h in re.findall(r"\[\s*(\d+)\s*,\s*(\d+)\s*\]", body)]
     assert pairs, f"failed to parse FALLBACK_RESOLUTION_PRESETS out of {body!r}"
     return pairs
 
@@ -140,9 +138,9 @@ def test_the_frontend_fallback_is_a_usable_default_for_the_family_it_mirrors():
         for fam in (_family(name) for name in _FAMILY_NAMES)
         if fam.resolution_presets
     }
-    assert fallback[0] in firsts, (
-        f"the fallback leads with {fallback[0]}, which is not the default preset of any family"
-    )
+    assert (
+        fallback[0] in firsts
+    ), f"the fallback leads with {fallback[0]}, which is not the default preset of any family"
 
 
 def test_the_resolution_select_renders_the_backend_presets_not_a_hardcoded_list():

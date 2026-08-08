@@ -212,17 +212,13 @@ def _load(backend, tmp_path, monkeypatch, torch, **kwargs):
 
 
 def _generate(backend):
-    return backend.generate(
-        prompt = "a sloth", width = 512, height = 512, steps = 2, guidance = 1.0, seed = 7
-    )
+    return backend.generate(prompt = "a sloth", width = 512, height = 512, steps = 2, guidance = 1.0, seed = 7)
 
 
 # ── backend: generate() reports the committed load state ──────────────────────
 
 
-def test_a_declined_quant_request_is_not_reported_as_engaged(
-    stub_runtime, tmp_path, monkeypatch
-):
+def test_a_declined_quant_request_is_not_reported_as_engaged(stub_runtime, tmp_path, monkeypatch):
     """The user asked for fp8; the host has no dense source, so the GGUF loaded as-is.
     The recipe must say "GGUF, no quant", not "fp8"."""
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: False)
@@ -309,7 +305,6 @@ class _EngagedBackend:
 
     def validate_load_request(self, model_path, **kwargs):
         from core.inference.diffusion_families import detect_family
-
         return detect_family(model_path, kwargs.get("family_override"))
 
     def preflight_base_access(self, model_path, fam, **kwargs):
@@ -342,7 +337,15 @@ class _EngagedBackend:
             "error": None,
         }
 
-    def generate(self, *, seed = None, batch_size = 1, prompts = None, seeds = None, **kwargs):
+    def generate(
+        self,
+        *,
+        seed = None,
+        batch_size = 1,
+        prompts = None,
+        seeds = None,
+        **kwargs,
+    ):
         if not self.loaded:
             raise RuntimeError("No diffusion model is loaded.")
         return {

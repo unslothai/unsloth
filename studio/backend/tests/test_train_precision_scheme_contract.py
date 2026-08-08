@@ -73,7 +73,13 @@ _INFERENCE_ONLY: frozenset[str] = _INFERENCE_SCHEMES - _TRAIN_PRECISIONS
 _CAPABILITIES = ((7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0))
 
 
-def _probe(monkeypatch, capability, *, cuda = True, torchao = True) -> list[str]:
+def _probe(
+    monkeypatch,
+    capability,
+    *,
+    cuda = True,
+    torchao = True,
+) -> list[str]:
     """train_precision_modes() as it would answer on the given machine."""
     import torch
 
@@ -139,16 +145,14 @@ def test_the_advertisable_vocabulary_is_exactly_the_schema_vocabulary(monkeypatc
     assert _every_advertisable_mode(monkeypatch) == _TRAIN_PRECISIONS
 
 
-def test_family_train_infos_never_advertises_an_inference_only_scheme(
-    monkeypatch, dit_train_host
-):
+def test_family_train_infos_never_advertises_an_inference_only_scheme(monkeypatch, dit_train_host):
     """The /diffusion/info payload itself, on a Blackwell host where every scheme is live."""
     _probe(monkeypatch, (10, 0))
     for info in common.family_train_infos():
         modes = info["precision_modes"]
-        assert not _INFERENCE_ONLY.intersection(modes), (
-            f"family {info['name']!r} advertises {sorted(_INFERENCE_ONLY.intersection(modes))}"
-        )
+        assert not _INFERENCE_ONLY.intersection(
+            modes
+        ), f"family {info['name']!r} advertises {sorted(_INFERENCE_ONLY.intersection(modes))}"
         assert set(modes) <= _TRAIN_PRECISIONS
         assert info["recommended_precision"] in _TRAIN_PRECISIONS
 
