@@ -76,6 +76,7 @@ import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import {
   PRECISION_REFUSAL_TITLE,
+  denseTextEncoderBuildLabel,
   denseTransformerBuildLabel,
   formatResolvedValue,
   isPrecisionRefusal,
@@ -1109,7 +1110,8 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
         value={
           status.text_encoder_quant
             ? formatResolvedValue("text_encoder_quant", status.text_encoder_quant)
-            : "BF16"
+            // No runtime TE quant engaged, which on the native engine is not the same as bf16.
+            : denseTextEncoderBuildLabel(status)
         }
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
       />

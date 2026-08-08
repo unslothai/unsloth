@@ -203,3 +203,15 @@ export function denseTransformerBuildLabel(status: {
   if (status.model_kind === "single_file") return "As in checkpoint";
   return "BF16";
 }
+
+/**
+ * The Loaded-build panel's Text encoder row when no runtime text-encoder quant engaged.
+ *
+ * The native sd.cpp engine has no runtime TE quant at all, so its status always reports
+ * `text_encoder_quant: null` -- which is not evidence of a bf16 encoder. Its companion bundle is
+ * whatever the family's asset mapping names, and several are not bf16 (FLUX.1 loads
+ * `t5xxl_fp16.safetensors`). A null on that engine means "as stored", not BF16.
+ */
+export function denseTextEncoderBuildLabel(status: { dtype?: string | null }): string {
+  return status.dtype === "gguf" ? "As in checkpoint" : "BF16";
+}
