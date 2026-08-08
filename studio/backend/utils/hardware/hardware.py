@@ -235,6 +235,23 @@ def _has_torch() -> bool:
         return False
 
 
+def _torch_mps_available() -> bool:
+    """True when torch exposes a usable Metal (MPS) device.
+
+    Apple Silicon alone is not enough: a torch built without MPS, or one whose import is broken,
+    leaves the diffusion pipelines with nowhere to run. Never raises, so a probe failure reads as
+    "no MPS" rather than taking down the capability report.
+    """
+    if not _has_torch():
+        return False
+    try:
+        import torch
+        mps = getattr(getattr(torch, "backends", None), "mps", None)
+        return bool(mps is not None and mps.is_available())
+    except Exception:
+        return False
+
+
 def _has_mlx() -> bool:
     """True if MLX is importable."""
     try:
@@ -634,10 +651,13 @@ def export_capability() -> dict:
 def video_capability() -> dict:
     """Whether video generation can run here, with a torch-aware reason when it cannot.
 
-    Video runs through the diffusers pipelines in core/inference/video.py, which have no Apple
-    path: no MLX backend, and the families ship no MPS-tested route, so macOS is reported as
-    unsupported rather than left to fail at load. Supported iff ``get_device() in {CUDA, XPU}``.
-    Safe to call without torch.
+    Video runs through the diffusers pipelines in core/inference/video.py, which are
+    device-neutral: they resolve the device through the shared diffusion device target, so Apple
+    Silicon runs them on Metal (MPS). The CUDA-only options are already declined there by the
+    target's capability flags -- no torch.compile, no cuDNN/flash/sage attention, no torchao
+    quantisation, no CPU offload (a unified pool has nothing to offload to). Supported iff
+    ``get_device() in {CUDA, XPU}``, or the host is Apple Silicon with a usable MPS device. Intel
+    Macs have no MPS device and stay unsupported. Safe to call without torch.
 
     Returns {video_supported, video_unsupported_reason, video_unsupported_message}.
     """
@@ -655,14 +675,35 @@ def video_capability() -> dict:
             "Hardware detection failed on this host, so video generation is disabled. The server "
             "log records the underlying error; restart Unsloth Studio to retry detection."
         )
-    elif platform.system() == "Darwin" or get_device() == DeviceType.MLX:
-        # Every Mac, not just Apple Silicon. An Intel Mac detects as plain CPU, so an
-        # is_apple_silicon() test drops it into the branches below and tells the user to
-        # install PyTorch or add a GPU. Neither enables video here: the pipelines have no
-        # supported macOS path at all, so the honest answer is the same on both Macs.
+    elif is_apple_silicon() or get_device() == DeviceType.MLX:
         # The MLX arm covers an Apple host whose platform probe somehow disagrees.
+        if _torch_mps_available():
+            return {
+                "video_supported": True,
+                "video_unsupported_reason": None,
+                "video_unsupported_message": None,
+            }
+        if not _has_torch():
+            reason = "pytorch_not_installed"
+            message = (
+                "PyTorch is not installed. Video generation on Apple Silicon requires PyTorch "
+                "with Metal (MPS) support. Install PyTorch to enable video generation."
+            )
+        else:
+            reason = "mps_unavailable"
+            message = (
+                "This PyTorch build exposes no Metal (MPS) device, so the video pipelines have "
+                "nowhere to run. Reinstall PyTorch with MPS support to enable video generation."
+            )
+    elif platform.system() == "Darwin":
+        # Intel Mac: detects as plain CPU and has no MPS device, so it cannot reach the Apple
+        # path above. Say that, rather than sending it to the branches below to be told to
+        # install torch or add a GPU -- neither enables video on this machine.
         reason = "macos_unsupported"
-        message = "Video generation on macOS is coming soon."
+        message = (
+            "Video generation requires Apple Silicon. This Intel Mac has no Metal (MPS) device "
+            "for the video pipelines to run on."
+        )
     elif not _has_torch():
         reason = "pytorch_not_installed"
         message = (

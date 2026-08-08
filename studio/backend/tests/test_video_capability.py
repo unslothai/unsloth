@@ -37,11 +37,13 @@ def _patch(
     apple: bool,
     chat_only_reason = "no_gpu",
     system = None,
+    mps = None,
 ):
     monkeypatch.setattr(hw, "_has_torch", lambda: torch)
     monkeypatch.setattr(hw, "get_device", lambda: device)
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: apple)
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", chat_only_reason)
+    monkeypatch.setattr(hw, "_torch_mps_available", lambda: torch if mps is None else mps)
     # Pin the OS too. video_capability() asks platform.system() directly so an Intel Mac
     # is covered, which means the non-Mac cases below would flip to macos_unsupported
     # when this suite runs on a macOS runner. Default follows `apple` so existing callers
@@ -65,24 +67,38 @@ def test_xpu_supports_video(monkeypatch):
     assert hw.video_capability()["video_supported"] is True
 
 
-def test_apple_silicon_reports_coming_soon(monkeypatch):
-    """A healthy Apple Silicon host is not chat-only, so the tab is enabled and would just fail
-    at load. Say what is actually true instead: there is no Apple video path yet."""
+def test_apple_silicon_with_mps_supports_video(monkeypatch):
+    """Apple Silicon runs the same device-neutral diffusers pipelines on Metal. The host may
+    report MLX or plain CPU depending on what else is installed; neither changes the answer."""
     for device in (hw.DeviceType.MLX, hw.DeviceType.CPU):
         _patch(monkeypatch, torch = True, device = device, apple = True)
         cap = hw.video_capability()
-        assert cap["video_supported"] is False
-        assert cap["video_unsupported_reason"] == "macos_unsupported"
-        assert "coming soon" in cap["video_unsupported_message"].lower()
+        assert cap["video_supported"] is True
+        assert cap["video_unsupported_reason"] is None
+        assert cap["video_unsupported_message"] is None
 
 
-def test_mlx_device_is_unsupported_even_without_the_apple_probe(monkeypatch):
-    # MLX only exists on Apple, so an is_apple_silicon() that fails to answer must not
-    # reclassify the host as a CPU box missing a GPU.
-    _patch(monkeypatch, torch = False, device = hw.DeviceType.MLX, apple = False)
+def test_apple_silicon_without_torch_reports_pytorch_missing(monkeypatch):
+    _patch(monkeypatch, torch = False, device = hw.DeviceType.MLX, apple = True)
     cap = hw.video_capability()
     assert cap["video_supported"] is False
-    assert cap["video_unsupported_reason"] == "macos_unsupported"
+    assert cap["video_unsupported_reason"] == "pytorch_not_installed"
+
+
+def test_apple_silicon_without_a_metal_device_is_not_supported(monkeypatch):
+    # Apple Silicon alone does not imply MPS: a torch built without it leaves the pipelines
+    # with nowhere to run, and claiming support would fail at load instead of at the gate.
+    _patch(monkeypatch, torch = True, device = hw.DeviceType.MLX, apple = True, mps = False)
+    cap = hw.video_capability()
+    assert cap["video_supported"] is False
+    assert cap["video_unsupported_reason"] == "mps_unavailable"
+
+
+def test_mlx_device_is_apple_even_without_the_apple_probe(monkeypatch):
+    # MLX only exists on Apple, so an is_apple_silicon() that fails to answer must not
+    # reclassify the host as a CPU box missing a GPU. With torch + Metal it is supported.
+    _patch(monkeypatch, torch = True, device = hw.DeviceType.MLX, apple = False)
+    assert hw.video_capability()["video_supported"] is True
 
 
 def test_no_torch_non_apple_reports_pytorch_missing(monkeypatch):
@@ -134,9 +150,8 @@ def test_hardware_package_reexports_video_capability():
     assert '"video_capability"' in init
 
 
-def test_video_capability_excludes_the_apple_backends():
+def test_video_capability_separates_apple_silicon_from_intel_macs():
     cap = _func_src("utils/hardware/hardware.py", "video_capability")
-    # Supported set is CUDA + XPU only; MLX is named solely on the unsupported side.
     assert "DeviceType.CUDA, DeviceType.XPU" in cap
     assert "_has_torch()" in cap
     # Strip comments and docstrings before asserting on the gate. This assertion used to
@@ -145,9 +160,13 @@ def test_video_capability_excludes_the_apple_backends():
     code = "\n".join(
         line.split("#", 1)[0] for line in cap.splitlines() if not line.strip().startswith("#")
     )
+    assert "_torch_mps_available()" in code, (
+        "Apple Silicon must be admitted on a measured Metal device, not on the platform alone, "
+        "or a torch without MPS is promised video it cannot run"
+    )
     assert 'platform.system() == "Darwin"' in code, (
-        "the macOS branch must key on Darwin, not Apple Silicon, or an Intel Mac is told "
-        "to install PyTorch or buy a GPU for something macOS cannot do at all"
+        "the remaining macOS branch must key on Darwin, or an Intel Mac falls through to be "
+        "told to install PyTorch or buy a GPU for something it cannot do either way"
     )
     assert "DeviceType.MLX" in code
 
@@ -163,8 +182,8 @@ def test_frontend_reads_the_new_fields():
 def test_intel_mac_is_macos_unsupported_not_a_missing_gpu(monkeypatch):
     # An Intel Mac detects as plain CPU and is_apple_silicon() is False, so the reason
     # used to come out as pytorch_not_installed or no_accelerator. Both tell the user to
-    # install PyTorch or add a GPU, and neither enables video: the pipelines have no
-    # supported macOS path at all. Same answer on both Macs.
+    # install PyTorch or add a GPU, and neither enables video on a machine with no Metal
+    # device. Installing torch does not change that, so the answer holds either way.
     for torch_present in (True, False):
         _patch(
             monkeypatch,
@@ -172,13 +191,14 @@ def test_intel_mac_is_macos_unsupported_not_a_missing_gpu(monkeypatch):
             device = hw.DeviceType.CPU,
             apple = False,
             system = "Darwin",
+            mps = False,
         )
         cap = hw.video_capability()
         assert cap["video_supported"] is False
         assert cap["video_unsupported_reason"] == "macos_unsupported", (
             f"Intel Mac with torch={torch_present} reported " f"{cap['video_unsupported_reason']!r}"
         )
-        assert "coming soon" in cap["video_unsupported_message"].lower()
+        assert "Apple Silicon" in cap["video_unsupported_message"]
         assert "GPU" not in cap["video_unsupported_message"]
 
 
