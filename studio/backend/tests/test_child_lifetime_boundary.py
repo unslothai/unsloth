@@ -23,8 +23,9 @@ BACKEND = str(Path(__file__).resolve().parents[1])
 
 def _alive(pid: int) -> bool:
     if IS_WINDOWS:
-        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                             capture_output=True, text=True).stdout
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output = True, text = True
+        ).stdout
         return str(pid) in out
     try:
         os.kill(pid, 0)
@@ -36,7 +37,7 @@ def _alive(pid: int) -> bool:
 def _kill(pid: int) -> None:
     try:
         if IS_WINDOWS:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output = True)
         else:
             os.kill(pid, 9)
     except Exception:
@@ -86,10 +87,10 @@ def _run_case(tmp_path: Path, mode: str) -> bool:
 
         # Hard kill, no tree flag: exactly what "End Task" / a crash does.
         if IS_WINDOWS:
-            subprocess.run(["taskkill", "/PID", str(parent.pid), "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(parent.pid), "/F"], capture_output = True)
         else:
             os.kill(parent.pid, 9)
-        parent.wait(timeout=30)
+        parent.wait(timeout = 30)
         time.sleep(5)
         survived = _alive(payload_pid)
         print(f"\n[{sys.platform}] mode={mode}: payload {payload_pid} survived = {survived}")
@@ -102,13 +103,13 @@ def _run_case(tmp_path: Path, mode: str) -> bool:
         _kill(parent.pid)
 
 
-@pytest.mark.skipif(not IS_WINDOWS, reason="job objects are Windows-only")
+@pytest.mark.skipif(not IS_WINDOWS, reason = "job objects are Windows-only")
 def test_job_object_reaps_the_whole_tree(tmp_path):
     """With the guarantee in force, even a shell grandchild is reaped."""
     assert _run_case(tmp_path, "job") is False
 
 
-@pytest.mark.skipif(not IS_WINDOWS, reason="job objects are Windows-only")
+@pytest.mark.skipif(not IS_WINDOWS, reason = "job objects are Windows-only")
 def test_without_the_job_the_grandchild_is_orphaned(tmp_path):
     """This is the state the desktop updater leaves the app in: the job is
     still there but KILL_ON_JOB_CLOSE has been cleared and nothing restores
@@ -116,7 +117,7 @@ def test_without_the_job_the_grandchild_is_orphaned(tmp_path):
     assert _run_case(tmp_path, "nojob") is True
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="POSIX contrast")
+@pytest.mark.skipif(IS_WINDOWS, reason = "POSIX contrast")
 def test_posix_orphan_behaviour(tmp_path):
     """Linux reaps via PR_SET_PDEATHSIG on the direct child; macOS has no
     equivalent and relies entirely on the cooperative shutdown path."""

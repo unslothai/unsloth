@@ -23,7 +23,8 @@ def _alive(pid: int) -> bool:
     if IS_WINDOWS:
         out = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True, text=True,
+            capture_output = True,
+            text = True,
         ).stdout
         return str(pid) in out
     try:
@@ -36,7 +37,7 @@ def _alive(pid: int) -> bool:
 def _kill(pid: int) -> None:
     try:
         if IS_WINDOWS:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output = True)
         else:
             os.kill(pid, 9)
     except Exception:
@@ -73,7 +74,7 @@ def test_tool_kill_takes_the_shell_payload_with_it(tmp_path):
 
     try:
         _kill_process_tree(proc)
-        proc.wait(timeout=10)
+        proc.wait(timeout = 10)
         time.sleep(2.0)
         survived = _alive(grandchild)
         print(f"payload pid {grandchild} alive after _kill_process_tree: {survived}")
@@ -88,13 +89,13 @@ def test_tool_kill_takes_the_shell_payload_with_it(tmp_path):
 # ---------------------------------------------------------------------------
 # 2. One surviving venv process blocks `unsloth studio update` (Windows)
 # ---------------------------------------------------------------------------
-@pytest.mark.skipif(not IS_WINDOWS, reason="the update gate is Windows-only")
+@pytest.mark.skipif(not IS_WINDOWS, reason = "the update gate is Windows-only")
 def test_update_gate_blocks_on_a_single_orphan(tmp_path):
     from unsloth_cli import _studio_runtime_gate
 
     studio_home = tmp_path / "studio_home"
     venv = studio_home / "unsloth_studio"
-    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check = True)
     venv_python = venv / "Scripts" / "python.exe"
     assert venv_python.is_file()
 
@@ -113,11 +114,10 @@ def test_update_gate_blocks_on_a_single_orphan(tmp_path):
         _kill(orphan.pid)
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="contrast case for POSIX")
+@pytest.mark.skipif(IS_WINDOWS, reason = "contrast case for POSIX")
 def test_update_gate_is_a_noop_on_posix(tmp_path):
     """On Linux/macOS nothing checks for a running Studio before an update."""
     from unsloth_cli import _studio_runtime_gate
-
     _studio_runtime_gate.ensure_managed_environment_is_idle(tmp_path / "anything")
 
 
@@ -179,7 +179,7 @@ def test_macos_style_orphans_are_recorded_and_reaped(tmp_path, monkeypatch):
         print(f"\nreaped: {reaped}")
         assert child.pid in reaped
         # Reap our own zombie so the liveness check means something.
-        child.wait(timeout=10)
+        child.wait(timeout = 10)
         assert not _alive(child.pid)
         assert not record.exists(), "the record should be consumed"
     finally:
@@ -200,7 +200,7 @@ def test_liveness_probe_does_not_kill_what_it_probes():
         _kill(victim.pid)
 
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
-    dead.wait(timeout=30)
+    dead.wait(timeout = 30)
     assert pl._pid_alive(dead.pid) is False
 
 

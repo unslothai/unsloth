@@ -57,14 +57,17 @@ def _last_error(ctypes_module) -> int:
         return 0
 
 
-def _record_job_status(ok: bool, detail: str, last_error: int = 0) -> None:
+def _record_job_status(
+    ok: bool,
+    detail: str,
+    last_error: int = 0,
+) -> None:
     global _win_job_status
     if last_error:
         detail = f"{detail} (WinError {last_error})"
     _win_job_status = (ok, detail)
     try:
         import logging
-
         logger = logging.getLogger(__name__)
         if ok:
             logger.info("Child-process cleanup on abnormal exit: %s", detail)
@@ -432,7 +435,6 @@ def _breadcrumb_file():
         return Path(override)
     try:
         from utils.paths.storage_roots import studio_root
-
         return Path(studio_root()) / "run" / "child_processes.json"
     except Exception:
         return None
@@ -527,7 +529,6 @@ def reap_recorded_children(timeout: float = 5.0) -> "list[int]":
     killed: "list[int]" = []
     try:
         import json
-
         record = json.loads(path.read_text(encoding = "utf-8"))
     except Exception:
         try:
@@ -574,10 +575,10 @@ def reap_recorded_children(timeout: float = 5.0) -> "list[int]":
     if killed:
         try:
             import logging
-
             logging.getLogger(__name__).warning(
                 "Reaped %d orphaned child process(es) left by a previous Studio: %s",
-                len(killed), killed,
+                len(killed),
+                killed,
             )
         except Exception:
             pass
