@@ -4496,10 +4496,7 @@ class LlamaCppBackend:
             # must agree, else an inherited ROCR mask reads back as "no mask",
             # ordinal 0 is labelled physical 0, and the child's new ROCR pin
             # re-exposes the GPU the inherited mask was hiding.
-            is_rocm = (
-                getattr(torch.version, "hip", None) is not None
-                or "rocm" in getattr(torch, "__version__", "").lower()
-            )
+            is_rocm = LlamaCppBackend._torch_is_rocm(torch)
         except Exception:
             is_rocm = False
         if is_rocm:
@@ -4752,44 +4749,70 @@ class LlamaCppBackend:
         return requested > n_layers
 
     @staticmethod
-    def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
-        """True only for AMD unified-memory APUs (gfx1150/gfx1151/gfx1152), where
-        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM (it
-        hurts discrete GPUs). gpu_indices (PHYSICAL ids) scopes the check to the
-        selected GPUs, so a dGPU on a mixed host is not treated as unified-memory;
-        None means every visible GPU."""
+    def _torch_is_rocm(torch) -> bool:
+        """Whether this torch is a ROCm build. AMD SDK wheels leave
+        ``version.hip`` unset and only encode "rocm" in ``__version__``."""
+        return (
+            getattr(torch.version, "hip", None) is not None
+            or "rocm" in getattr(torch, "__version__", "").lower()
+        )
+
+    @staticmethod
+    def _rocm_unified_memory_gpu_ids() -> set[int]:
+        """PHYSICAL ids of visible ROCm GPUs whose "VRAM" is shared system RAM.
+
+        Delegates to the training worker's classifier so both paths agree on what
+        an APU is: it reads the driver's own ``is_integrated`` first, then the
+        arch-name spellings, then the Radeon name table, because AMD SDK wheels
+        may populate none of the arch attributes. Empty off ROCm and on error, so
+        every caller keeps its discrete-GPU default.
+        """
         try:
             import torch
 
-            if getattr(torch.version, "hip", None) is None:
-                return False
+            if not LlamaCppBackend._torch_is_rocm(torch):
+                return set()
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
-                return False
+                return set()
+            from core.training.worker import _rocm_classify_unified_memory
+
             # Map visible ordinal -> physical id via the active ROCm mask (HIP,
             # then ROCR, then CUDA), mirroring _get_gpu_memory's ROCm branch.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
-            arch_by_id: dict[int, str] = {}
+            unified: set[int] = set()
             for ordinal in range(torch.cuda.device_count()):
                 try:
-                    _arch = (
-                        getattr(torch.cuda.get_device_properties(ordinal), "gcnArchName", "") or ""
+                    _arch, is_unified = _rocm_classify_unified_memory(
+                        torch.cuda.get_device_properties(ordinal)
                     )
                 except Exception:
                     continue
-                pid = (
+                if not is_unified:
+                    continue
+                unified.add(
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                arch_by_id[pid] = _arch.split(":")[0].strip().lower()
-            for _i in list(gpu_indices) if gpu_indices is not None else list(arch_by_id):
-                # gfx1152 is Krackan Point (Radeon 860M/840M), the third RDNA 3.5
-                # APU: same shared GPU/system-RAM pool as Strix Point/Halo.
-                if arch_by_id.get(_i) in {"gfx1150", "gfx1151", "gfx1152"}:
-                    return True
+            return unified
+        except Exception:
+            return set()
+
+    @staticmethod
+    def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
+        """True only for AMD unified-memory APUs, where GGML_CUDA_ENABLE_UNIFIED_MEMORY
+        lets llama.cpp use shared system RAM (it hurts discrete GPUs). gpu_indices
+        (PHYSICAL ids) scopes the check, so a dGPU on a mixed host is not treated as
+        unified-memory; None means every visible GPU."""
+        # Guarded like the rest of this family: a bad gpu_indices (not iterable,
+        # unhashable members) answers False rather than failing the load.
+        try:
+            unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+            if gpu_indices is None:
+                return bool(unified)
+            return any(_i in unified for _i in gpu_indices)
         except Exception:
             return False
-        return False
 
     # Datacenter / professional NVIDIA parts that benefit from the llama.cpp
     # FP32-accum / P2P tunings. Whole-word (\b) so short markers don't match
@@ -5003,7 +5026,9 @@ class LlamaCppBackend:
         are ggml's compact Vulkan ordinals (the space the pin selects via
         ``--device Vulkan<i>``). It reports ``total`` for discrete cards and 0
         for an iGPU (shared RAM) so the fit falls back to free*frac there.
-        Otherwise nvidia-smi / torch cover NVIDIA + AMD ROCm.
+        Otherwise nvidia-smi / torch cover NVIDIA + AMD ROCm. The torch branch
+        gives an AMD unified-memory APU the same treatment by arch name, since
+        ROCm reports no iGPU flag of its own.
 
         Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
         supported GPU is reachable.
@@ -5078,6 +5103,9 @@ class LlamaCppBackend:
             # Empty mask (CVD="") yields an empty list -> no GPUs, consistent
             # with the nvidia-smi path.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            # Shared-pool APU: same as the Vulkan iGPU path. Hold back the host
+            # margin, and report total 0 since that "total" is system RAM.
+            unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
@@ -5086,7 +5114,23 @@ class LlamaCppBackend:
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                gpus.append((idx, free_bytes // (1024 * 1024), total_bytes // (1024 * 1024)))
+                shared = idx in unified_ids
+                raw_mib = free_bytes // (1024 * 1024)
+                if shared:
+                    # ROCm's free is unreliable on a shared pool (Windows HIP
+                    # reports free==total, #7072), and system RAM is the real
+                    # ceiling there, so cap before taking the reserve.
+                    avail = LlamaCppBackend._available_system_memory_mib()
+                    if avail is not None:
+                        raw_mib = min(raw_mib, avail)
+                free_mib = _apply_igpu_host_reserve_mib(raw_mib, shared)
+                if free_mib < raw_mib:
+                    logger.info(
+                        f"ROCm device {idx} is a unified-memory APU sharing system "
+                        f"RAM; reserving {raw_mib - free_mib}MiB host headroom "
+                        f"({raw_mib}->{free_mib}MiB usable)"
+                    )
+                gpus.append((idx, free_mib, 0 if shared else total_bytes // (1024 * 1024)))
             # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
             return sorted(gpus, key = lambda g: g[0])
         except Exception as e:
