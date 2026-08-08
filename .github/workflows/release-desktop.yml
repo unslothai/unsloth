@@ -1479,18 +1479,6 @@ jobs:
         with:
           egress-policy: audit
 
-      # This job publishes artifacts built elsewhere, so it historically needed no
-      # source tree. The VirusTotal step runs a repo script, so it does now. Sparse:
-      # a full checkout of this repo to fetch one file would be wasteful, and a
-      # missing script would be swallowed by that step's continue-on-error and
-      # publish the release with no scan at all.
-      - name: Check out the scan script
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-          sparse-checkout: scripts/virustotal_scan.py
-          sparse-checkout-cone-mode: false
-
       - name: Download signed release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -1596,48 +1584,6 @@ jobs:
           fi
           echo "create=true" >> "$GITHUB_OUTPUT"
 
-      # ── Advisory multi-engine scan of the bundles we are about to publish ──
-      # Defender (build job) is one vendor and gates only Windows. VirusTotal
-      # aggregates ~70 engines across all four bundles, which is how a false
-      # positive from some other vendor gets noticed here rather than in a user
-      # bug report. Advisory on purpose: installers routinely trip one or two
-      # obscure heuristics, so a hard gate here would block releases on noise.
-      # Defender stays the authoritative fail-closed check.
-      #
-      # The step never fails the job: a missing secret, a VirusTotal outage or a
-      # quota exhaustion must not be able to block a release.
-      - name: VirusTotal pre-flight scan
-        continue-on-error: true
-        # Free-tier keys allow 4 requests/minute, and the script paces itself to
-        # match, so four bundles of lookup + upload + polling can take a while.
-        timeout-minutes: 30
-        env:
-          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          # continue-on-error means a silent failure here would publish an unscanned
-          # release with only a terse "no summary" note, so name the cause loudly.
-          if [ ! -f scripts/virustotal_scan.py ]; then
-            echo "::error::scripts/virustotal_scan.py is missing; the checkout step in this job must provide it"
-            exit 1
-          fi
-          python3 scripts/virustotal_scan.py \
-            "$RUNNER_TEMP/desktop-release-assets" \
-            --output-markdown "$RUNNER_TEMP/virustotal-summary.md"
-
-      - name: Publish VirusTotal summary
-        if: always()
-        run: |
-          set -euo pipefail
-          summary="$RUNNER_TEMP/virustotal-summary.md"
-          if [ -f "$summary" ]; then
-            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '### VirusTotal pre-flight scan' >> "$GITHUB_STEP_SUMMARY"
-            echo '' >> "$GITHUB_STEP_SUMMARY"
-            echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
-          fi
-
       - name: Generate versioned updater metadata and provenance
         shell: bash
         run: |
@@ -1719,9 +1665,9 @@ jobs:
           } > "$body_file"
           cat "$body_file"
 
-      # Deferred until immediately before upload so public releases are not left
-      # empty during the VirusTotal scan. Repeat the absence checks here to close
-      # the race introduced by that scan before atomically reserving the tag.
+      # Kept immediately before upload so the release is never left empty for
+      # long, and the absence checks are repeated here to reserve the tag
+      # atomically.
       - name: Create versioned release
         if: steps.versioned_release_state.outputs.create == 'true'
         shell: bash
@@ -2041,3 +1987,73 @@ jobs:
           if actual_url != expected_url:
               sys.exit(f'desktop-latest latest.json URL mismatch: expected {expected_url}, got {actual_url}')
           PY
+
+  # ── Advisory multi-engine scan of the bundles just published ──
+  # Defender (build job) is one vendor and gates only Windows. VirusTotal
+  # aggregates ~70 engines across all four bundles, which is how a false
+  # positive from some other vendor gets noticed here rather than in a user bug
+  # report. Advisory on purpose: installers routinely trip one or two obscure
+  # heuristics, so a hard gate would block releases on noise. Defender stays the
+  # authoritative fail-closed check.
+  #
+  # Its own job, after publish-release, because the scan is rate-limit bound and
+  # not parallelisable: the free tier allows 4 requests/minute per key, so the
+  # four bundles share one budget however they are scheduled. Inside the publish
+  # job it was ~9 minutes of the ~9.5 the job took, delaying every release by its
+  # full length while being unable to block one.
+  virustotal-scan:
+    name: VirusTotal post-publish scan
+    needs: [publish-release]
+    runs-on: ubuntu-latest
+    # A missing secret, a VirusTotal outage or quota exhaustion must not fail
+    # the release that already published.
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      # Sparse: a full checkout to fetch one file would be wasteful.
+      - name: Check out the scan script
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/virustotal_scan.py
+          sparse-checkout-cone-mode: false
+
+      - name: Download published assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: desktop-release-*
+          path: ${{ runner.temp }}/desktop-release-assets
+          merge-multiple: true
+
+      - name: VirusTotal scan
+        env:
+          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Name the cause loudly: a silent failure here leaves the release
+          # scanned by nothing but a terse "no summary" note.
+          if [ ! -f scripts/virustotal_scan.py ]; then
+            echo "::error::scripts/virustotal_scan.py is missing; the checkout step in this job must provide it"
+            exit 1
+          fi
+          python3 scripts/virustotal_scan.py \
+            "$RUNNER_TEMP/desktop-release-assets" \
+            --output-markdown "$RUNNER_TEMP/virustotal-summary.md"
+
+      - name: Publish VirusTotal summary
+        if: always()
+        run: |
+          set -euo pipefail
+          summary="$RUNNER_TEMP/virustotal-summary.md"
+          if [ -f "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '### VirusTotal post-publish scan' >> "$GITHUB_STEP_SUMMARY"
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
+          fi
