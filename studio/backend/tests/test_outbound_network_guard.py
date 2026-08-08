@@ -159,27 +159,29 @@ def test_connect_ex_reports_the_block_the_way_it_reports_a_failure():
         sock.close()
 
 
-def test_a_fixture_can_ask_for_the_traffic_it_needs(allow_outbound_network):
+def test_a_fixture_can_ask_for_the_traffic_it_needs(
+    monkeypatch, allow_outbound_network, offbox_server, forget_resolved_servers
+):
     """The escape hatch for fixtures built before the per-test guard exists.
 
-    Checked at the resolver, which needs no listener and opens no connection. Inside
-    the block the guard must not be what refuses: a runner with no DNS at all is free
-    to refuse for its own reasons, and saying so is the point of reading the message.
+    Dialled by address, at a listener on this machine: no resolver is consulted and no
+    packet leaves the box. Checking the lift against a real hostname would have meant a
+    live lookup with the guard down, which on a runner with slow or blackholed DNS is
+    the stall this whole change exists to remove.
     """
-    with pytest.raises(socket.gaierror, match = "name resolution blocked"):
-        socket.getaddrinfo("huggingface.co", 443, socket.AF_INET, socket.SOCK_STREAM)
+    _hostname, address, port = offbox_server
+    # Undo what the fixture configured, so the address is a stranger again.
+    monkeypatch.delenv("UNSLOTH_E2E_BASE_URL", raising = False)
+    forget_resolved_servers()
+
+    with pytest.raises(OSError, match = "outbound network blocked"):
+        socket.create_connection((address, port), timeout = 10)
 
     with allow_outbound_network():
-        try:
-            assert socket.getaddrinfo("huggingface.co", 443, socket.AF_INET, socket.SOCK_STREAM)
-        except socket.gaierror as lifted:
-            assert "name resolution blocked" not in str(lifted), (
-                "allow_outbound() did not lift the guard: the lookup inside the block "
-                "was still refused by the guard rather than by the resolver"
-            )
+        socket.create_connection((address, port), timeout = 10).close()
 
-    with pytest.raises(socket.gaierror, match = "name resolution blocked"):
-        socket.getaddrinfo("huggingface.co", 443, socket.AF_INET, socket.SOCK_STREAM)
+    with pytest.raises(OSError, match = "outbound network blocked"):
+        socket.create_connection((address, port), timeout = 10)
 
 
 def test_the_proxy_bypass_covers_the_local_server_too(monkeypatch, no_proxy_bypass_value):
@@ -198,6 +200,21 @@ def test_the_proxy_bypass_covers_the_local_server_too(monkeypatch, no_proxy_bypa
     assert "studio.example.internal" in bypass, "the configured server must still be bypassed"
     assert bypass[:2] == ["corp.example", "10.0.0.1"], "an existing NO_PROXY must survive"
     assert len(bypass) == len(set(bypass)), "entries must not be duplicated on re-entry"
+
+
+def test_neither_no_proxy_spelling_loses_what_the_other_carried(no_proxy_bypass_value):
+    """A host that exports only one spelling must not have the other overwrite it.
+
+    Reading one variable and writing both drops the entries the developer set, and
+    clients generally read the lowercase one first -- so the bypass silently stops
+    applying to the host it was written for.
+    """
+    bypass = no_proxy_bypass_value("only-in-uppercase.example", "").split(",")
+    assert "only-in-uppercase.example" in bypass
+
+    both = no_proxy_bypass_value("upper.example", "lower.example").split(",")
+    assert "upper.example" in both and "lower.example" in both
+    assert len(both) == len(set(both))
 
 
 def test_loopback_stays_open():

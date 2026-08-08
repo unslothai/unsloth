@@ -209,11 +209,19 @@ _PROXY_ENV_VARS = (
 )
 
 
-def no_proxy_with_test_servers(existing) -> str:
-    """*existing* NO_PROXY, plus every server this suite has to reach directly."""
+def no_proxy_with_test_servers(*existing) -> str:
+    """Every *existing* NO_PROXY value, plus the servers this suite must reach directly.
+
+    Takes all the spellings at once rather than one at a time. A host that exports only
+    ``NO_PROXY`` would otherwise have its entries read for that variable and dropped
+    from the ``no_proxy`` written beside it, and most clients read the lowercase one
+    first -- so a bypass the developer had configured would quietly stop applying.
+    """
     bypass = list(_LOOPBACK_PROXY_BYPASS) + sorted(_configured_server_hosts())
-    parts = [part.strip() for part in (existing or "").split(",")]
-    return ",".join(dict.fromkeys([part for part in parts if part] + bypass))
+    parts = [
+        part.strip() for value in existing for part in (value or "").split(",") if part.strip()
+    ]
+    return ",".join(dict.fromkeys(parts + bypass))
 
 
 # Server URLs the suite is explicitly configured to talk to. Both documented external-server
@@ -375,6 +383,13 @@ def _outbound_network_guard():
     and module-scoped fixtures are setting up, and those are as able to dial out as any
     test body. A fixture that wants out says so with ``allow_outbound()``, since by then
     it is too late for a marker on the test to reach back and lift anything.
+
+    Reaches this interpreter only. A test that spawns a Python process gets a child with
+    ordinary sockets, which is deliberate for the one fixture that does it: ``studio_server``
+    starts a real server in managed mode, and that server is supposed to fetch the GGUF
+    it serves. Blocking the child would break the e2e tests this suite runs on rather
+    than remove a dependency they do not want. Those tests live in ``test_studio_api.py``,
+    which CI skips, and are the only place a child is spawned.
     """
     import socket
 
@@ -461,13 +476,22 @@ def _outbound_network_guard():
     # (test_providers_api's auth_headers and public_key_pem) are session-scoped, so a
     # per-test version would be set up long after they had already tried and failed.
     if any(os.environ.get(name) for name in _PROXY_ENV_VARS):
+        # Both spellings merged once and written back identically, so neither variable
+        # loses what the other one carried.
+        combined = no_proxy_with_test_servers(os.environ.get("NO_PROXY"), os.environ.get("no_proxy"))
         for name in ("NO_PROXY", "no_proxy"):
-            patch.setenv(name, no_proxy_with_test_servers(os.environ.get(name)))
+            patch.setenv(name, combined)
 
     try:
         yield real
     finally:
         patch.undo()
+
+
+@pytest.fixture
+def forget_resolved_servers():
+    """Drop the addresses resolved so far, so a test can check something is refused."""
+    return _RESOLVED_SERVER_ADDRESSES.clear
 
 
 @pytest.fixture(scope = "session")
