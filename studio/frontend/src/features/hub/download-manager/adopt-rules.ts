@@ -38,6 +38,11 @@ export function carriesOverSeed(
  * for this repo exists at all, and a dir it scanned and measured at zero still names itself. An
  * older backend that omits the field entirely is unknown rather than absent, so the job survives.
  *
+ * `cacheMeasured === false` is the backend saying the scan never happened (an unreadable root),
+ * which is unknown rather than absent. It is a field of its own because these readings are
+ * serialized through DownloadProgressResponse, whose `cache_path` defaults to None -- omitting
+ * the key was reinstated as an explicit null before the frontend ever saw it.
+ *
  * But the repo dir is the wrong granularity for a variant. Sibling quants share one, so deleting
  * a variant's files leaves the dir standing and this read "zero bytes, and a directory exists" as
  * resumable -- adopting a phantom that blocked a fresh download of that same variant until the
@@ -48,8 +53,10 @@ export function idleProbeVerdict(
   downloadedBytes: number,
   cachePath: string | null | undefined,
   targetPresent?: boolean | null,
+  cacheMeasured?: boolean,
 ): "active" | "gone" {
   if (downloadedBytes > 0) return "active";
+  if (cacheMeasured === false) return "active";
   if (targetPresent === false) return "gone";
   return cachePath === null ? "gone" : "active";
 }

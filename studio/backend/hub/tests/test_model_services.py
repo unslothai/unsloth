@@ -2703,7 +2703,7 @@ def test_purge_repo_cache_dirs_skips_top_level_symlink(monkeypatch, tmp_path):
     target.mkdir()
     link = root / "models--Org--Repo"
     link.symlink_to(target, target_is_directory = True)
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [root])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [root])
 
     removed = hf_cache_state.purge_repo_cache_dirs("model", "Org/Repo")
 
@@ -2757,12 +2757,15 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
     # cache_path is ABSENT, not null. Null means "no cache dir for this repo exists", which
     # hydration acts on by retiring the persisted job; a scan that threw is not evidence of
     # that, and dropping a job whose partial cache is still on disk costs the user the resume.
+    # cache_measured carries the same distinction through DownloadProgressResponse, which
+    # defaults cache_path to None and would otherwise turn the omission back into an "absent".
     assert result == {
         "downloaded_bytes": 0,
         "completed_bytes": 0,
         "complete_on_disk": False,
         "expected_bytes": 0,
         "progress": 0,
+        "cache_measured": False,
     }
     assert "cache_path" not in result
     assert logger.warnings
@@ -3825,7 +3828,7 @@ def test_running_job_never_reads_progress_from_a_remembered_cache(monkeypatch, t
     monkeypatch.setattr(
         hf_cache_state,
         "hf_cache_roots",
-        lambda: [previous],
+        lambda scan_errors = None: [previous],
     )
 
     dirs = hf_cache_state.preferred_repo_cache_dirs(

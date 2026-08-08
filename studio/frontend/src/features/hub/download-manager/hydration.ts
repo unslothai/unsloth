@@ -206,6 +206,7 @@ async function probeHydratedIdleProgress(
       progressResp.downloaded_bytes,
       progressResp.cache_path,
       progressResp.target_present,
+      progressResp.cache_measured,
     );
   } catch {
     return "active";

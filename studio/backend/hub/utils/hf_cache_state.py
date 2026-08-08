@@ -24,13 +24,20 @@ TRANSPORT_MARKER_NAME = ".transport"
 INCOMPLETE_SUFFIX = ".incomplete"
 
 
-def _safe_is_dir(path: Path) -> bool:
+def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:
     """``Path.is_dir()`` returning False instead of raising when the path or a
     parent is unreadable (e.g. a restricted ``~/.cache/huggingface/hub``), so
-    cache enumeration skips that root rather than 500ing."""
+    cache enumeration skips that root rather than 500ing.
+
+    ``scan_errors`` collects the swallowed error. A caller that only wants the dirs does not
+    care, but "we could not even stat the root" and "the root is not there" are different
+    answers to a hydrating job -- the first is not evidence the cache was deleted.
+    """
     try:
         return path.is_dir()
-    except OSError:
+    except OSError as exc:
+        if scan_errors is not None:
+            scan_errors.append(exc)
         return False
 
 
@@ -41,20 +48,27 @@ def same_existing_path(first: Path, second: Path) -> bool:
         return False
 
 
-def hf_cache_root(*, create: bool = False, root: Optional[Path] = None) -> Optional[Path]:
+def hf_cache_root(
+    *,
+    create: bool = False,
+    root: Optional[Path] = None,
+    scan_errors: Optional[list] = None,
+) -> Optional[Path]:
     from utils.hf_cache_settings import get_hf_cache_paths
 
     root = root or get_hf_cache_paths().hub_cache
     if create:
         try:
             root.mkdir(parents = True, exist_ok = True)
-        except OSError:
+        except OSError as exc:
+            if scan_errors is not None:
+                scan_errors.append(exc)
             return None
         return root
-    return root if _safe_is_dir(root) else None
+    return root if _safe_is_dir(root, scan_errors) else None
 
 
-def hf_cache_roots() -> list[Path]:
+def hf_cache_roots(scan_errors: Optional[list] = None) -> list[Path]:
     from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
     from utils.hf_cache_settings import known_hf_hub_caches
 
@@ -62,7 +76,7 @@ def hf_cache_roots() -> list[Path]:
     seen: set[str] = set()
 
     def _add(path: Optional[Path]) -> None:
-        if path is None or not _safe_is_dir(path):
+        if path is None or not _safe_is_dir(path, scan_errors):
             return
         try:
             key = str(path.resolve())
@@ -332,7 +346,7 @@ def iter_repo_cache_dirs(
     of that. A caller that passes a list can tell the two apart.
     """
     target = target_dir_name(repo_type, repo_id)
-    for root in hf_cache_roots():
+    for root in hf_cache_roots(scan_errors = scan_errors):
         try:
             for entry in root.iterdir():
                 if entry.name.lower() == target:
@@ -379,7 +393,8 @@ def iter_active_repo_cache_dirs(
     root: Optional[Path] = None,
     scan_errors: Optional[list] = None,
 ) -> Iterator[Path]:
-    root = hf_cache_root(root = root)
+    # The stat itself can fail on a restricted root, and that is not evidence of absence.
+    root = hf_cache_root(root = root, scan_errors = scan_errors)
     if root is None:
         return
     target = target_dir_name(repo_type, repo_id)

@@ -689,8 +689,8 @@ def test_an_unreadable_cache_root_is_unknown_rather_than_absent(monkeypatch, tmp
     def _explode(self):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [unreadable])
-    monkeypatch.setattr(hf_cache_state, "hf_cache_root", lambda root = None: None)
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [unreadable])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_root", lambda root = None, **kw: None)
     monkeypatch.setattr(type(unreadable), "iterdir", _explode)
 
     # The enumeration reports the skip rather than only swallowing it...
@@ -716,6 +716,15 @@ def test_an_unreadable_cache_root_is_unknown_rather_than_absent(monkeypatch, tmp
         metadata_resolver = lambda *a, **k: (33_000_000_000, frozenset()),
     )
     assert "cache_path" not in reading
+    # And it survives DownloadProgressResponse, which defaults cache_path to None and would
+    # otherwise reinstate the omission as an explicit "absent" before the frontend saw it.
+    assert reading["cache_measured"] is False
+    from hub.schemas.downloads import DownloadProgressResponse
+
+    # DECLARED on the response model, or FastAPI drops it before the frontend sees it: these
+    # readings are serialized through DownloadProgressResponse, whose cache_path defaults to
+    # None, so the omission alone was reinstated as an explicit "absent" on the wire.
+    assert "cache_measured" in DownloadProgressResponse.__annotations__
     assert reading["downloaded_bytes"] == 0
 
 
@@ -794,6 +803,11 @@ def test_a_variant_with_nothing_of_its_own_says_so(monkeypatch, tmp_path):
     assert ours["downloaded_bytes"] == 0
     assert ours["cache_path"] is not None, "the sibling keeps the directory alive"
     assert ours["target_present"] is False
+    # Through the response model, or FastAPI drops the field and the frontend never sees it.
+    from hub.schemas.downloads import DownloadProgressResponse
+
+    # Declared on the response model too, else FastAPI drops it on the way out.
+    assert "target_present" in DownloadProgressResponse.__annotations__
 
     # Unresolvable file set: nothing was established, so nothing is claimed either.
     unknown = _reading("Q4_K_M", frozenset())
@@ -801,3 +815,33 @@ def test_a_variant_with_nothing_of_its_own_says_so(monkeypatch, tmp_path):
 
     # And a whole-repo job owns the directory, so the repo-level answer already covers it.
     assert _reading(None, frozenset())["target_present"] is None
+
+
+def test_a_root_that_cannot_even_be_stat_ed_is_unknown(monkeypatch, tmp_path):
+    """The failure can happen one step earlier than the listing.
+
+    ``hf_cache_root`` calls ``_safe_is_dir``, which swallows the OSError from probing a
+    restricted configured cache and answers None -- so an inaccessible active root produced a
+    measured "no cache dir" answer with an empty scan_errors, and hydration retired the job as
+    deleted. Statting is part of the scan."""
+    from hub.utils import hf_cache_state
+
+    root = tmp_path / "hub"
+    root.mkdir()
+
+    def _explode(self):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(type(root), "is_dir", _explode)
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [])
+
+    errors: list = []
+    assert (
+        hf_cache_state.preferred_repo_cache_dirs(
+            "model", "unsloth/Model-GGUF", active_root = root, scan_errors = errors
+        )
+        == []
+    )
+    assert errors and isinstance(errors[0], OSError), (
+        "a root we could not stat is not evidence that the cache was deleted"
+    )

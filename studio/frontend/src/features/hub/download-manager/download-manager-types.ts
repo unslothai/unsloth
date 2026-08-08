@@ -107,6 +107,9 @@ export interface ProgressLike {
    *  cache dir. Null where it cannot say, absent from an older backend; both leave the
    *  repo-level cache_path rule in charge. */
   target_present?: boolean | null;
+  /** False when the cache could not be scanned at all: unknown, not empty. Absent from an
+   *  older backend, which is also unknown. */
+  cache_measured?: boolean;
 }
 
 export type Terminal = "complete" | "cancelled" | "error" | "gone";

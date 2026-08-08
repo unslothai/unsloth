@@ -64,3 +64,16 @@ test("a variant whose own files are gone does not survive on a sibling's cache d
   assert.equal(idleProbeVerdict(4096, "/hub/models--unsloth--x", false), "active");
   assert.equal(idleProbeVerdict(0, null, true), "gone", "no cache at all is still gone");
 });
+
+test("a scan that never happened does not retire a job", () => {
+  // The reading is unknown, not empty. It travels as its own flag because these responses go
+  // through DownloadProgressResponse, whose cache_path defaults to null -- so omitting the key
+  // was reinstated as an explicit null on the wire and the distinction died before the
+  // frontend saw it, on every route.
+  assert.equal(idleProbeVerdict(0, null, null, false), "active");
+  // It outranks the target answer too: nothing was established either way.
+  assert.equal(idleProbeVerdict(0, null, false, false), "active");
+  // A measured scan behaves exactly as before, and so does an older backend that omits it.
+  assert.equal(idleProbeVerdict(0, null, null, true), "gone");
+  assert.equal(idleProbeVerdict(0, null, null, undefined), "gone");
+});

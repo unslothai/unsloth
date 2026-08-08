@@ -71,15 +71,20 @@ def _empty_progress(expected_bytes: int, *, measured: bool = True) -> dict:
 
     ``measured`` is the difference between "there is no cache dir for this repo" and "the scan
     itself failed". Hydration retires a persisted job on the first and must not on the second: a
-    transient failure is not evidence that a partial cache was wiped. A null ``cache_path`` says
-    absent; omitting the key entirely says unknown, which is also what an older backend that
-    never sent the field looks like, so the frontend rule is the same for both."""
+    transient failure is not evidence that a partial cache was wiped.
+
+    Carried as its own flag, not by omitting ``cache_path``: these dicts are serialized through
+    DownloadProgressResponse, whose ``cache_path`` defaults to None, so the omission was
+    reinstated as an explicit null before the frontend ever saw it and the distinction was lost
+    on every route. An older backend sends neither field, which the frontend reads as unknown,
+    so the rule still covers it."""
     reading = {
         "downloaded_bytes": 0,
         "completed_bytes": 0,
         "complete_on_disk": False,
         "expected_bytes": max(expected_bytes, 0),
         "progress": 0,
+        "cache_measured": measured,
     }
     if measured:
         reading["cache_path"] = None
