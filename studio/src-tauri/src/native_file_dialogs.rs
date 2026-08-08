@@ -116,13 +116,8 @@ fn local_dialog_path(path: tauri_plugin_dialog::FilePath) -> Result<PathBuf, Str
         .map_err(|_| "Only local filesystem paths are supported.".to_string())
 }
 
-fn save_selected_file(
-    selected_path: Option<PathBuf>,
-    content: &[u8],
-) -> Result<Option<String>, String> {
-    let Some(path) = selected_path else {
-        return Ok(None);
-    };
+/// Stage the write beside the destination so a partial file never replaces a real one.
+fn staged_temp_file(path: &Path) -> Result<tempfile::NamedTempFile, String> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -131,15 +126,32 @@ fn save_selected_file(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let permissions = fs::metadata(&path)
+        let permissions = fs::metadata(path)
             .map(|metadata| metadata.permissions())
             .unwrap_or_else(|_| fs::Permissions::from_mode(0o666));
         builder.permissions(permissions);
     }
-    let mut temporary = builder
+    builder
         .prefix(".unsloth-export-")
         .tempfile_in(parent)
-        .map_err(|error| format!("Failed to prepare {}: {error}", path.display()))?;
+        .map_err(|error| format!("Failed to prepare {}: {error}", path.display()))
+}
+
+fn saved_file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("export")
+        .to_string()
+}
+
+fn save_selected_file(
+    selected_path: Option<PathBuf>,
+    content: &[u8],
+) -> Result<Option<String>, String> {
+    let Some(path) = selected_path else {
+        return Ok(None);
+    };
+    let mut temporary = staged_temp_file(&path)?;
     temporary
         .write_all(content)
         .and_then(|()| temporary.as_file().sync_all())
@@ -147,12 +159,26 @@ fn save_selected_file(
     temporary
         .persist(&path)
         .map_err(|error| format!("Failed to save {}: {}", path.display(), error.error))?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("export")
-        .to_string();
-    Ok(Some(file_name))
+    Ok(Some(saved_file_name(&path)))
+}
+
+/// Only the local backend. Without this the webview could aim the streaming save at any
+/// host and write the reply to disk.
+fn require_loopback_url(url: &str) -> Result<(), String> {
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or_else(|| "Only local http URLs can be saved.".to_string())?;
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit_once(':')
+        .map(|(host, _port)| host)
+        .unwrap_or_else(|| rest.split(['/', '?', '#']).next().unwrap_or(""));
+    match host {
+        "127.0.0.1" | "localhost" | "[::1]" => Ok(()),
+        _ => Err("Only local http URLs can be saved.".to_string()),
+    }
 }
 
 fn read_selected_text_import(
@@ -270,6 +296,75 @@ pub async fn save_native_file(
         .map(local_dialog_path)
         .transpose()?;
     save_selected_file(selected_path, content.as_ref())
+}
+
+/// Save a backend URL by streaming it to the chosen path.
+///
+/// `save_native_file` takes the bytes through IPC, so the caller must buffer the whole
+/// body first and the chooser only appears once that finishes. A gallery clip is capped
+/// at 2048x2048 x 1024 frames, so that is the wrong shape for video: this opens the
+/// chooser first and writes the response chunk by chunk, leaving nothing resident.
+#[tauri::command]
+pub async fn save_native_file_from_url(
+    window: WebviewWindow,
+    app: AppHandle,
+    url: String,
+    file_name: String,
+) -> Result<Option<String>, String> {
+    crate::native_intents::ensure_main_window(&window)?;
+    require_loopback_url(&url)?;
+    let file_name = default_file_name(&file_name);
+    let (filter_name, extensions) = save_filter(&file_name);
+    let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Save Unsloth export")
+        .set_file_name(file_name)
+        .add_filter(filter_name, &extension_refs)
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+    let selected_path = rx
+        .await
+        .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
+        .map(local_dialog_path)
+        .transpose()?;
+    let Some(path) = selected_path else {
+        return Ok(None);
+    };
+    stream_url_to_path(&url, &path).await?;
+    Ok(Some(saved_file_name(&path)))
+}
+
+async fn stream_url_to_path(url: &str, path: &Path) -> Result<(), String> {
+    let mut response = reqwest::get(url)
+        .await
+        .map_err(|error| format!("Download failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Download failed with status {}.",
+            response.status().as_u16()
+        ));
+    }
+    let mut temporary = staged_temp_file(path)?;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Download failed: {error}"))?
+    {
+        temporary
+            .write_all(&chunk)
+            .map_err(|error| format!("Failed to save {}: {error}", path.display()))?;
+    }
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("Failed to save {}: {error}", path.display()))?;
+    temporary
+        .persist(path)
+        .map_err(|error| format!("Failed to save {}: {}", path.display(), error.error))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -440,6 +535,83 @@ mod tests {
         assert_save_filter("shot.jpeg", "JPEG image", &["jpg", "jpeg"]);
         assert_save_filter("clip.wav", "WAV audio", &["wav"]);
         assert_save_filter("voice.webm", "WebM video or audio", &["webm"]);
+    }
+
+    /// A one-shot loopback server, so the streaming save is exercised over real HTTP.
+    fn serve_once(body: Vec<u8>, status: &'static str) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut discard = [0_u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut discard);
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: video/mp4\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(&body);
+        });
+        (format!("http://127.0.0.1:{port}/clip.mp4"), handle)
+    }
+
+    #[test]
+    fn streaming_save_writes_the_whole_body_without_buffering_it() {
+        // Larger than any single chunk, so the loop is what assembles the file.
+        let body: Vec<u8> = (0..3_000_000_u32).map(|i| (i % 251) as u8).collect();
+        let (url, server) = serve_once(body.clone(), "200 OK");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("clip.mp4");
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(stream_url_to_path(&url, &dest))
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), body);
+        // Nothing partial left beside it.
+        let strays: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name() != std::ffi::OsStr::new("clip.mp4"))
+            .collect();
+        assert!(strays.is_empty(), "staging file left behind");
+    }
+
+    #[test]
+    fn a_failed_download_leaves_no_file_behind() {
+        let (url, server) = serve_once(b"nope".to_vec(), "401 Unauthorized");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("clip.mp4");
+        let error = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(stream_url_to_path(&url, &dest))
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("401"), "{error}");
+        assert!(!dest.exists(), "a rejected link must not create the file");
+    }
+
+    #[test]
+    fn streaming_save_only_accepts_the_local_backend() {
+        for url in [
+            "http://127.0.0.1:8888/api/inference/video/gallery/abc/file-signed?token=t",
+            "http://localhost:8908/api/inference/video/gallery/abc/file-signed?token=t",
+            "http://[::1]:8888/api/inference/video/gallery/abc/file",
+            "http://127.0.0.1/api/inference/video/gallery/abc/file",
+        ] {
+            assert!(require_loopback_url(url).is_ok(), "should allow {url}");
+        }
+        // Anything else would let the webview write an arbitrary response to disk.
+        for url in [
+            "http://evil.test/x.mp4",
+            "https://127.0.0.1:8888/x.mp4",
+            "file:///etc/passwd",
+            "http://127.0.0.1.evil.test/x.mp4",
+            "http://user@evil.test/x.mp4",
+            "",
+        ] {
+            assert!(require_loopback_url(url).is_err(), "should reject {url}");
+        }
     }
 
     #[test]

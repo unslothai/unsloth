@@ -66,11 +66,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { cn } from "@/lib/utils";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
-import {
-  downloadFile,
-  downloadUrl,
-  isDownloadCancelled,
-} from "@/lib/native-files";
+import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 
 import {
@@ -174,20 +170,32 @@ function exportFilename(video: GalleryVideo, format: VideoExportFormat = "mp4"):
   return `Unsloth_video_${stamp}_${video.seed}.${format}`;
 }
 
-// MP4 saves the original file straight from its signed link; WebM / GIF are transcoded by the backend on demand (501 when the codec is absent).
-// Both go through the native-files helpers so desktop saves reach the OS chooser instead of an anchor the webview ignores.
+function saveLink(href: string, filename: string) {
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = filename;
+  link.click();
+}
+
+// MP4 streams straight from its signed link to the chosen path: the link is cross-origin under
+// Tauri, where an anchor no longer saves, and a clip is too big to hold in memory on the way past.
+// WebM / GIF are transcoded by the backend on demand (501 when the codec is absent).
 async function downloadVideo(
   src: string,
   video: GalleryVideo,
   format: VideoExportFormat = "mp4",
 ) {
-  const filename = exportFilename(video, format);
   if (format === "mp4") {
-    await downloadUrl(src, filename);
+    await downloadUrlStreaming(src, exportFilename(video, format));
     return;
   }
   const blob = await fetchGalleryVideoExport(video.id, format);
-  await downloadFile(blob, filename, blob.type || undefined);
+  const url = URL.createObjectURL(blob);
+  try {
+    saveLink(url, exportFilename(video, format));
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
 }
 
 function formatTimestamp(iso: string): string {

@@ -105,6 +105,31 @@ export async function urlToBlob(url: string): Promise<Blob> {
   return (await fetchDownload(url)).blob();
 }
 
+/**
+ * Save a local backend URL without ever holding it in memory.
+ *
+ * `downloadUrl` buffers the whole body to cross the IPC boundary, which is the wrong
+ * shape for a gallery clip. Here the desktop chooser opens first and Rust streams the
+ * response to the chosen path; the browser keeps its ordinary anchor.
+ */
+export async function downloadUrlStreaming(
+  url: string,
+  filename: string,
+): Promise<void> {
+  if (!isTauri) {
+    browserUrlDownload(url, filename);
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  const savedPath = await invoke<string | null>("save_native_file_from_url", {
+    url,
+    fileName: filename,
+  });
+  if (savedPath === null) {
+    throw new DownloadCancelledError();
+  }
+}
+
 /** Resolve media before crossing the native save boundary. */
 export async function downloadUrl(
   url: string,

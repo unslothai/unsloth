@@ -280,10 +280,15 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     # The same fix the RAG document preview already carries.
     assert "return apiUrl(data.url);" in rag_api
 
-    assert "downloadUrl(src, filename)" in video_page
-    assert "downloadFile(blob, filename" in video_page
-    assert 'document.createElement("a")' not in video_page
+    # An absolute link is cross-origin, where the download attribute stops saving, so the
+    # MP4 goes native. Streaming, not downloadUrl: a clip is capped at 2048x2048 x 1024
+    # frames, too big to buffer for IPC, and the chooser must not wait on the body.
+    helper = NATIVE_FILES.read_text(encoding = "utf-8")
+    assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
+    assert '"save_native_file_from_url"' in helper
     assert "isDownloadCancelled(err)" in video_page
+    # WebM / GIF keep the blob-and-anchor route they already had; nothing forced a change.
+    assert "URL.createObjectURL(blob)" in video_page
 
     # media-src, not just connect-src: the signed link is played by an element.
     tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
@@ -291,10 +296,18 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
         "media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*" in tauri_config
     )
 
-    # The save dialog now offers these to video, not just to the audio player.
+    # The save dialog now offers these to video, not just to the audio player, and the
+    # streaming command is registered and pinned to the local backend.
     dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
     assert '("MPEG-4 video or audio", filter_extensions(["m4a", "mp4"]))' in dialogs
     assert '("WebM video or audio", filter_extensions(["webm"]))' in dialogs
+    assert "async fn stream_url_to_path" in dialogs
+    assert "fn require_loopback_url" in dialogs
+    # The chooser has to come first, or the user waits on the body before being asked where.
+    streaming = dialogs[dialogs.index("pub async fn save_native_file_from_url") :]
+    assert streaming.index(".save_file(") < streaming.index("stream_url_to_path(&url")
+    main_rs = (REPO / "studio/src-tauri/src/main.rs").read_text(encoding = "utf-8")
+    assert "native_file_dialogs::save_native_file_from_url," in main_rs
 
 
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
