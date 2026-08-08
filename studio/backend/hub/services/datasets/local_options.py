@@ -255,14 +255,36 @@ def _normalized_dir(value: str) -> Optional[str]:
     return "/".join(parts)
 
 
-def _valid_dtype(dtype: Any) -> bool:
-    """One dtype, as Features reads it: a value alias, a feature class, or a nested one."""
-    if isinstance(dtype, dict):
-        return all(_valid_dtype(value) for value in dtype.values())
-    if not isinstance(dtype, str):
-        return True
+def _known_dtype(dtype: str) -> bool:
     base = re.split(r"[\[(]", dtype, maxsplit = 1)[0]
     return base in _VALUE_DTYPES or dtype.replace("_", "").lower() in _FEATURE_TYPE_NAMES
+
+
+def _valid_feature_node(node: Any) -> bool:
+    """One node of a card's feature tree, read the way Features._from_yaml_list reads it.
+
+    The first key names the node's role: dtype carries a value alias, the list forms and
+    struct carry a nested node, and anything else has to be a feature class whose value is
+    that class's parameters.
+    """
+    if isinstance(node, str):
+        return _known_dtype(node)
+    if isinstance(node, list):
+        return all(_valid_feature_node(item) for item in node)
+    if not isinstance(node, dict):
+        return False
+    keys = [key for key in node if key != "name"]
+    if not keys:
+        return True
+    role = keys[0]
+    if role == "dtype":
+        return _valid_feature_node(node["dtype"])
+    if role in {"large_list", "list", "sequence", "struct"}:
+        return _valid_feature_node(node[role])
+    if role == "class_label":
+        return isinstance(node["class_label"], dict)
+    # A feature class, with the mapping under it being its keyword arguments.
+    return role.replace("_", "").lower() in _FEATURE_TYPE_NAMES
 
 
 def _valid_features(features: Any) -> bool:
@@ -271,9 +293,7 @@ def _valid_features(features: Any) -> bool:
     if not isinstance(features, list):
         return False
     return all(
-        isinstance(field, dict)
-        and isinstance(field.get("name"), str)
-        and all(_valid_dtype(value) for key, value in field.items() if key != "name")
+        isinstance(field, dict) and isinstance(field.get("name"), str) and _valid_feature_node(field)
         for field in features
     )
 
@@ -420,17 +440,31 @@ def _add_dataset_info_options(options: set[tuple[str, str]], payload: Any) -> No
         _add_info_options(options, info, fallback_config = config)
 
 
+def _valid_dataset_info(payload: Any) -> bool:
+    """datasets walks this while it builds DatasetInfosDict, so a field of the wrong shape
+    raises there rather than when a split is chosen."""
+    entries = payload if isinstance(payload, list) else [payload]
+    return all(
+        isinstance(entry, dict)
+        and isinstance(entry.get("features", []), (list, dict))
+        and isinstance(entry.get("splits", []), (list, dict))
+        for entry in entries
+    )
+
+
 def _emptied_configs(payload: Any) -> set[str]:
     """Configs whose dataset_info records no splits at all. That set is authoritative, so
     the config is dropped rather than built from whatever the patterns find."""
     entries = payload if isinstance(payload, list) else [payload]
+    # datasets builds these into a dict keyed by config name, so a repeat is last-wins.
+    collapsed: dict[str, Any] = {}
+    for item in entries:
+        if isinstance(item, dict) and (name := _config_name(item.get("config_name"))) is not None:
+            collapsed[name] = item
     return {
         name
-        for item in entries
-        if isinstance(item, dict)
-        and isinstance(item.get("splits"), (list, dict))
-        and not item["splits"]
-        and (name := _config_name(item.get("config_name"))) is not None
+        for name, item in collapsed.items()
+        if isinstance(item.get("splits"), (list, dict)) and not item["splits"]
     }
 
 
@@ -708,11 +742,15 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
         dirnames[:] = [
             name
             for name in dirnames
-            if not name.startswith((".", "__")) and not (base / name).is_symlink()
+            # datasets exempts a component that is only dots from its hidden-directory rule.
+            if (not name.startswith((".", "__")) or set(name) == {"."})
+            and not (base / name).is_symlink()
         ]
         for filename in filenames:
             # datasets hides dot files and `__` directories, but not `__` filenames.
-            if filename.startswith(".") or filename in _IGNORED_DATA_FILENAMES:
+            if (filename.startswith(".") and set(filename) != {"."}) or (
+                filename in _IGNORED_DATA_FILENAMES
+            ):
                 continue
             if len(files) >= _MAX_SNAPSHOT_DATA_FILES:
                 return None
@@ -925,8 +963,12 @@ def _glob_matcher(pattern: str) -> "Optional[re.Pattern[str]]":
         elif character == "?":
             parts.append("[^/]")
             index += 1
-        elif character == "[" and "]" in pattern[index + 1 :]:
-            end = pattern.index("]", index + 1)
+        elif character == "[" and "]" in pattern[index + 2 :]:
+            # A ] straight after the opening bracket, or after its !, is a member not the end.
+            start = index + 1
+            if pattern[start : start + 1] == "!":
+                start += 1
+            end = pattern.index("]", start + 1)
             body = pattern[index + 1 : end]
             if body.startswith("!"):
                 body = "^" + body[1:]
@@ -961,14 +1003,31 @@ class _DeclaredFiles:
     def __init__(self, paths: list[PurePosixPath]) -> None:
         self.paths = paths
         self.index = {path.as_posix(): path for path in paths}
+        self.directories = {
+            "/".join(path.parts[:depth])
+            for path in paths
+            for depth in range(1, len(path.parts))
+        }
         self.budget = _MAX_RESOLUTION_WORK
         self.exhausted = False
 
-    def resolve(
-        self,
-        pattern: str,
-        root: str = "",
-    ) -> list[PurePosixPath]:
+    def collapse(self, pattern: str) -> Optional[str]:
+        """A pattern with its parent steps removed, or None when a step is not there."""
+        if ".." not in PurePosixPath(pattern).parts:
+            return pattern
+        parts: list[str] = []
+        for part in PurePosixPath(pattern).parts:
+            if part == ".":
+                continue
+            if part != "..":
+                parts.append(part)
+                continue
+            if not parts or "/".join(parts) not in self.directories:
+                return None
+            parts.pop()
+        return "/".join(parts)
+
+    def resolve(self, pattern: str, root: str = "") -> list[PurePosixPath]:
         """What a declared pattern resolves to, under its config's data_dir.
 
         The loader keeps a hidden or __ path only when the pattern names as many such parts
@@ -977,9 +1036,13 @@ class _DeclaredFiles:
         if pattern.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", pattern):
             # The loader resolves this off the snapshot entirely, so nothing can match it.
             return []
-        # The filesystem normalises ./x to x before it globs, so the matcher has to as well.
+        # The filesystem normalises ./x and x/../y before it globs, so the matcher has to
+        # as well, and every step it walks through still has to be a real directory.
         joined = f"{root}/{pattern}" if root else pattern
-        pattern = PurePosixPath(joined.strip("/")).as_posix()
+        collapsed = self.collapse(PurePosixPath(joined.strip("/")).as_posix())
+        if collapsed is None:
+            return []
+        pattern = collapsed
         ignored = _IGNORED_DATA_FILENAMES - {PurePosixPath(pattern).name}
         special = _explicit_parts(pattern, "__")
         hidden = _explicit_parts(pattern, ".")
@@ -1100,6 +1163,30 @@ def _snapshot_module(snapshot: Path, scans: dict[str, Optional[list]]) -> str:
     return (grouped and _grouped_module(grouped)) or _INDETERMINATE_MODULE
 
 
+def _resolved_data_dir(snapshot: Path, raw: str) -> Optional[str]:
+    """The directory a config is scoped to, or None when we cannot name exactly one.
+
+    The loader globs this string, so every step of it has to be there and a wildcard in it
+    is expanded. A wildcard matching several directories is a union we cannot represent, so
+    that config is left alone rather than half offered.
+    """
+    if not raw:
+        return ""
+    if any(character in raw for character in "*?["):
+        matcher = _glob_matcher(_normalized_dir(raw) or "")
+        if matcher is None:
+            return None
+        matched = sorted(
+            path.relative_to(snapshot).as_posix()
+            for path in snapshot.glob("*/")
+            if path.is_dir() and matcher.match(path.relative_to(snapshot).as_posix())
+        )
+        return matched[0] if len(matched) == 1 else None
+    if not (snapshot / raw).is_dir():
+        return None
+    return _normalized_dir(raw)
+
+
 def _inferred_snapshot_options(
     snapshot: Path,
     configs: Iterable[tuple[str, str]] = (("default", ""),),
@@ -1117,11 +1204,7 @@ def _inferred_snapshot_options(
     scans = {} if scans is None else scans
     for config, data_dir in configs:
         raw = data_dir.strip("/")
-        # The loader walks the string as written, so every step of it has to be there, and
-        # the cache resolver only takes the collapsed form.
-        if raw and not (snapshot / raw).is_dir():
-            continue
-        root = _normalized_dir(raw)
+        root = _resolved_data_dir(snapshot, raw)
         if root is None:
             continue
         if root not in scans:
@@ -1165,10 +1248,7 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         # datasets raises building MetadataConfigs, well before it ever looks at a file.
         return options
     info = card_data.get("dataset_info")
-    if info is not None and not (
-        isinstance(info, dict)
-        or (isinstance(info, list) and all(isinstance(entry, dict) for entry in info))
-    ):
+    if info is not None and not _valid_dataset_info(info):
         # DatasetInfosDict calls .get on each entry, so anything else raises before a split
         # could start.
         return options

@@ -1658,3 +1658,95 @@ def test_snapshot_options_keep_a_sibling_of_a_later_empty_data_files(tmp_path):
 
     # Only the first config's declaration is resolved while the builder is picked.
     assert local_options._snapshot_options(snapshot) == {("first", "train")}
+
+
+def test_snapshot_options_accept_a_feature_class_with_parameters(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype:\n      image:\n        mode: RGB\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_numeric_dtype(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: 123\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("field", ["features: 123", "splits: 123"])
+def test_snapshot_options_reject_a_dataset_info_field_of_the_wrong_shape(tmp_path, field):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"dataset_info:\n  {field}\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_read_a_declared_path_that_steps_back_inside(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: x/../train.jsonl\n")
+    (snapshot / "x").mkdir(parents = True)
+    (snapshot / "x" / "other.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_declared_path_stepping_through_nothing(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: x/../train.jsonl\n")
+    snapshot.mkdir(parents = True, exist_ok = True)
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_read_a_directory_named_only_with_dots(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "...").mkdir(parents = True)
+    (snapshot / "..." / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets exempts an all-dots component from its hidden-directory rule.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_read_a_glob_class_holding_a_closing_bracket(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: '[]].jsonl'\n")
+    (snapshot / "].jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_resolve_a_wildcard_data_dir(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: 'a*'\n")
+    (snapshot / "a1").mkdir()
+    (snapshot / "a1" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_leave_a_wildcard_data_dir_matching_several(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: 'a*'\n")
+    for name in ("a1", "a2"):
+        (snapshot / name).mkdir(parents = True)
+        (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # The loader unions them, which is not a scope this scan can represent.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_let_a_later_dataset_info_entry_win(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n- config_name: cfg\n  splits: []\n- config_name: cfg\n  splits:\n  - name: train\n    num_examples: 2\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
