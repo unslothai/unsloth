@@ -20,9 +20,15 @@ test("a native sd.cpp load is not labelled BF16", () => {
 
 test("the diffusers kinds keep their own labels", () => {
   assert.equal(denseTransformerBuildLabel({ model_kind: "gguf", dtype: "bfloat16" }), "GGUF (as-is)");
+  // A single-file fp8 checkpoint is upcast by from_single_file to the resolved torch_dtype, so
+  // the row states the dtype the transformer is actually running in, not how it was stored.
   assert.equal(
     denseTransformerBuildLabel({ model_kind: "single_file", dtype: "bfloat16" }),
-    "As in checkpoint",
+    "BF16",
+  );
+  assert.equal(
+    denseTransformerBuildLabel({ model_kind: "single_file", dtype: "float16" }),
+    "FP16",
   );
   // Only a full diffusers repo is genuinely bf16.
   assert.equal(denseTransformerBuildLabel({ model_kind: "pipeline", dtype: "bfloat16" }), "BF16");

@@ -1408,6 +1408,33 @@ def test_the_plan_refuses_an_impossible_precision_before_anything_is_staged(clie
     assert "transformer_quant='fp8' could not be used" in resp.json()["detail"]
 
 
+def test_the_plan_does_not_probe_the_gpu_while_training_holds_it(client, monkeypatch):
+    """An UNCACHED scheme sends assert_precision_available into a quantise-and-matmul smoke
+    probe, which initialises CUDA and allocates in the Studio process. /images/load refuses
+    outright while a trainer is running, for exactly that reason -- but the UI asks for the
+    plan first, so the probe ran before that guard had a say. Staging files needs no GPU, so
+    the plan is answered; the load still refuses the same pick afterwards."""
+    import routes.inference as inference_routes
+
+    backend = diffusion_module.get_diffusion_backend()
+    monkeypatch.setattr(inference_routes, "_training_is_active", lambda: True)
+    monkeypatch.setattr(
+        backend,
+        "assert_precision_available",
+        lambda *a, **k: pytest.fail("the precision probe must not touch the GPU during training"),
+    )
+
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+            "transformer_quant": "fp8",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
 def test_the_native_plan_refuses_the_same_request_the_native_load_would(client, monkeypatch):
     import core.inference.diffusion_engine_router as engine_router
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP

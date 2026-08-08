@@ -46,6 +46,13 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def _training_is_active() -> bool:
+    """The non-raising half of the load guard, for callers that must not take the GPU."""
+    from routes.inference import _training_is_active as _images_training_is_active
+
+    return _images_training_is_active()
+
+
 def _guard_video_load_against_training() -> None:
     """Refuse loading a video model while a training run is active. Unlike chat,
     a video pipeline's VRAM can't be cheaply estimated before the load, so the
@@ -112,7 +119,11 @@ async def video_download_plan(
         # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this
         # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
         # unsupported host paid for tens of GB of weights to be told afterwards. Network-free.
-        if fam is not None:
+        #
+        # Skipped while a trainer holds the GPU: an uncached scheme takes this into a
+        # quantise-and-matmul smoke probe that initialises CUDA in the Studio process, and the
+        # plan runs before the load's training guard can refuse. Staging needs no GPU.
+        if fam is not None and not await asyncio.to_thread(_training_is_active):
             await asyncio.to_thread(
                 assert_video_precision_available,
                 fam,

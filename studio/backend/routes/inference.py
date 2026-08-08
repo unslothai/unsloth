@@ -20058,6 +20058,18 @@ def _diffusion_training_admission():
         yield
 
 
+def _training_is_active() -> bool:
+    """The non-raising half of the load guard, for callers that must not take the GPU."""
+    from core.training import get_training_backend
+
+    try:
+        if get_training_backend().is_training_active():
+            return True
+    except Exception as e:  # noqa: BLE001 -- an unreadable LLM backend is not evidence of idle
+        logger.warning("Could not check training state: %s", e)
+    return _diffusion_training_active()
+
+
 def _guard_diffusion_load_against_training() -> None:
     """Refuse loading an image model while a training run is active. Unlike chat,
     a diffusion pipeline's VRAM can't be cheaply estimated before the load, so the
@@ -20129,7 +20141,13 @@ async def diffusion_download_plan(
         # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
         # unsupported host paid for the GGUF and its companions -- or tens of GB of video
         # weights -- and then got the predictable 409. Both checks are network-free.
-        if fam is not None:
+        # Not while a trainer holds the GPU. An UNCACHED scheme sends
+        # assert_precision_available into a quantise-and-matmul smoke probe, which initialises
+        # CUDA and allocates in the Studio process -- the very thing the load route's training
+        # guard exists to prevent, and the plan runs BEFORE that guard has had a say. Staging
+        # files during training is legitimate and needs no GPU, so the plan is answered without
+        # the precision check; /images/load still refuses the same pick afterwards.
+        if fam is not None and not await asyncio.to_thread(_training_is_active):
             if planner is backend:
                 await asyncio.to_thread(
                     backend.assert_precision_available,

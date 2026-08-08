@@ -1447,6 +1447,13 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           model_kind: opts.kind,
           // Same token handleLoad sends: without it the metadata lookup fails on a gated base and the plan drops the companion entry, so the load pulls those files inline.
           hf_token: hfApiToken(getHfToken()),
+          // And the same precision, for the same reason: the plan refuses a scheme this host
+          // cannot honour, so omitting it staged tens of GB of weights and left the refusal to
+          // the load afterwards. Sent under the identical pipeline-only rule handleLoad applies.
+          transformer_quant:
+            opts.kind === "pipeline" && transformerQuant !== "auto"
+              ? transformerQuant
+              : undefined,
         });
         // Superseded mid-plan: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
         if (!owns()) return false;

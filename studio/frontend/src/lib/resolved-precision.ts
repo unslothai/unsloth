@@ -205,19 +205,22 @@ export function isNativeEngineStatus(status: {
  *
  * Shared by the image and video pages because the mistake it prevents is the same on both: the
  * default arm is BF16, and only a full diffusers repo actually is. A GGUF pick runs the
- * checkpoint's own quantisation and a single-file safetensors runs whatever precision it was saved
- * in (FP8 checkpoints are explicitly supported), so the BF16 arm has to be the LAST resort.
+ * checkpoint's own quantisation, so the BF16 arm has to be the LAST resort.
  *
  * `dtype === "gguf"` is the native sd.cpp engine, which reports no `model_kind` at all -- without
  * that arm every native GGUF load, the default CPU path, was labelled BF16 in the one panel whose
  * whole job is to say what actually loaded.
+ *
+ * A single_file load is NOT "as in checkpoint": `from_single_file` is handed the resolved
+ * `torch_dtype`, so an fp8 safetensors is upcast on load (the memory planner budgets the ~2x for
+ * exactly that). Reporting the storage precision there hid the runtime dtype, which is the one
+ * thing this row exists to state, so it reads the dtype like any other dense load.
  */
 export function denseTransformerBuildLabel(status: {
   model_kind?: string | null;
   dtype?: string | null;
 }): string {
   if (status.model_kind === "gguf" || status.dtype === "gguf") return "GGUF (as-is)";
-  if (status.model_kind === "single_file") return "As in checkpoint";
   return denseDtypeLabel(status.dtype);
 }
 
