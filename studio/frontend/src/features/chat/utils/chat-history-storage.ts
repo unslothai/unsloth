@@ -82,13 +82,22 @@ const pendingThreadRecordByThreadId = new Map<string, Promise<void>>();
 // for the row again, and without this every later write to that thread would keep 404ing.
 const failedThreadRecordByThreadId = new Map<string, () => Promise<void>>();
 
+// Bumped by a history clear. A write in flight across one must not record its creator when it
+// later rejects, or a retry would recreate a thread the user just removed.
+let threadRecordClearEpoch = 0;
+
 /** Register an in-flight thread row write so later writes to that thread wait for it. */
 export function trackStoredChatThreadRecord(
   threadId: string,
   createRecord: () => Promise<void>,
 ): void {
+  const epoch = threadRecordClearEpoch;
   const create = createRecord();
-  create.catch(() => failedThreadRecordByThreadId.set(threadId, createRecord));
+  create.catch(() => {
+    if (epoch === threadRecordClearEpoch) {
+      failedThreadRecordByThreadId.set(threadId, createRecord);
+    }
+  });
   const inFlight = pendingThreadRecordByThreadId.get(threadId);
   // Overlapping initializations chain rather than replace: waiting on only the newest upsert lets
   // the slower one land afterwards and overwrite the row a caller has since corrected.
@@ -596,16 +605,15 @@ function awaitStoredChatThreadRecordBounded(threadId: string): Promise<void> {
 /** Delete again once a write that outran the bounded wait commits, so the row cannot come back. */
 function deleteLateThreadRecords(ids: string[]): void {
   for (const id of ids) {
-    const pending = pendingThreadRecordByThreadId.get(id);
-    if (!pending) {
+    if (!pendingThreadRecordByThreadId.has(id)) {
       continue;
     }
-    // A local tombstone only hides the row here; the backend keeps serving it to every
-    // other client until this lands.
-    pending.then(
-      () => deleteChatThreads([id]).catch(() => undefined),
-      () => undefined,
-    );
+    // Drains until the tracked entry stops changing, so a creator chained on after this point is
+    // covered too. A local tombstone only hides the row here; the backend keeps serving it to
+    // every other client until this lands.
+    awaitStoredChatThreadRecord(id)
+      .catch(() => undefined)
+      .then(() => deleteChatThreads([id]).catch(() => undefined));
   }
 }
 
@@ -619,7 +627,9 @@ async function drainPendingStoredChatThreadRecords(): Promise<void> {
       deadline - Date.now(),
     );
   }
-  // Retrying one of these later would recreate a thread the clear just removed.
+  // Retrying one of these later would recreate a thread the clear just removed. The epoch also
+  // retires writes still in flight, whose rejection would otherwise record a creator after this.
+  threadRecordClearEpoch += 1;
   failedThreadRecordByThreadId.clear();
 }
 
