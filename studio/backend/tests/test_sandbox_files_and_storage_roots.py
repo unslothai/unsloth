@@ -1980,8 +1980,7 @@ def test_the_delete_switch_does_not_promise_project_files():
     """A chat moved back to Recents wrote its earlier files into the project
     workspace, which chat deletion does not touch."""
     sidebar = (
-        Path(__file__).resolve().parents[2]
-        / "frontend" / "src" / "components" / "app-sidebar.tsx"
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "components" / "app-sidebar.tsx"
     ).read_text(encoding = "utf-8")
     assert "This chat's own sandbox folder is removed from disk." in sidebar
     assert "Anything this chat's tools wrote is removed from disk." not in sidebar
