@@ -552,6 +552,20 @@ def _estimate_message_tokens(msg: dict) -> int:
         return 1
 
 
+def _estimate_messages_tokens(messages: list) -> int:
+    """Char-estimate of a whole message list.
+
+    Counts ``reasoning_content`` unconditionally. Whether a template renders prior
+    reasoning is not knowable here: Qwen3.5 gates on ``loop.index0 >
+    ns.last_query_index``, gemma-4 on that index ``or preserve_thinking``, and
+    Kimi-K2-Thinking splits at ``ns.last_non_tool_call_assistant_msg`` instead, while a
+    GGUF can carry any template at all. Under-counting leaves the retry above ``n_ctx``
+    and burns the retry budget, so the estimate stays conservative and the caller clips
+    reasoning first to shrink what over-counting would otherwise hold onto.
+    """
+    return sum(_estimate_message_tokens(msg) for msg in messages)
+
+
 def _truncate_middle_messages(messages: list, keep_ratio: float):
     """Drop whole turn-groups from the middle of an OpenAI message list.
 
@@ -585,7 +599,10 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     if len(groups) <= 1 + protected_tail:
         return messages, 0
 
-    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    # Memoized because the drop loop re-sizes each victim. Sum over the list, not
+    # the memo, so a message object appearing twice still counts twice.
+    est_of = {id(msg): _estimate_message_tokens(msg) for msg in messages}
+    total_est = sum(est_of[id(m)] for m in messages)
     target_est = int(total_est * keep_ratio)
 
     anchor = groups[0]
@@ -599,7 +616,7 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     while kept_middle and current_est > target_est:
         victim = kept_middle.pop(0)
         dropped += len(victim)
-        current_est -= sum(_estimate_message_tokens(m) for m in victim)
+        current_est -= sum(est_of[id(m)] for m in victim)
 
     if dropped == 0:
         return messages, 0
@@ -615,6 +632,29 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
 _CLIP_MARKER = "\n[... truncated by context_overflow=truncate_middle ...]\n"
 # Generous head+tail first; cut harder if the estimate still misses the target.
 _CLIP_KEEP_CHARS = (1500, 400)
+
+
+def _clip_reasoning_contents(messages: list, keep: int = _CLIP_KEEP_CHARS[-1]) -> int:
+    """Clip every oversized assistant ``reasoning_content`` middle-out.
+
+    Runs before the prompt is sized, and unconditionally, for two reasons. Unlike
+    group-dropping it can shrink a protected turn, so a huge trace in the anchor or tail
+    stops forcing the whole middle out. And the overflow target is a fraction of the
+    estimate, so a giant trace inflates the target as well as the total and a
+    target-gated clip would stop while the trace still outweighed the conversation it is
+    competing with. Reasoning is the most expendable content on overflow, so on this
+    recovery path it goes to the tight budget straight away.
+    """
+    clipped = 0
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        rc = msg.get("reasoning_content")
+        if not isinstance(rc, str) or len(rc) <= 2 * keep + len(_CLIP_MARKER):
+            continue
+        msg["reasoning_content"] = rc[:keep] + _CLIP_MARKER + rc[-keep:]
+        clipped += 1
+    return clipped
 
 
 def _clip_long_contents(messages: list, target_est: int) -> int:
@@ -650,10 +690,22 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     to the generation headroom. Returns False when nothing could shrink."""
     counts = _parse_overflow_counts(err_text)
     messages = body.get("messages") or []
-    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    # Before sizing: see _clip_reasoning_contents for why this cannot wait for a target.
+    pre_clip_est = _estimate_messages_tokens(messages)
+    clipped = _clip_reasoning_contents(messages)
+    total_est = _estimate_messages_tokens(messages)
     if counts:
         n_prompt, n_ctx = counts
-        keep_ratio = min(0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt))
+        prompt_target = _OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx
+        # n_prompt sized the body as sent, i.e. before the clip. Rescale by the
+        # estimator's own pre/post-clip ratio (char-vs-token units cancel) so
+        # keep_ratio measures what is left, not what already went away.
+        if clipped:
+            n_prompt = n_prompt * total_est / max(1, pre_clip_est)
+        if clipped and n_prompt <= prompt_target:
+            keep_ratio = 1.0  # the clip alone fits; dropping history too is gratuitous
+        else:
+            keep_ratio = min(0.95, prompt_target / max(1.0, n_prompt))
     else:
         n_ctx = None
         keep_ratio = 0.6  # no counts in the error; cut conservatively
@@ -663,9 +715,8 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     new_messages, dropped = _truncate_middle_messages(messages, keep_ratio)
     if dropped:
         body["messages"] = new_messages
-    clipped = 0
-    if sum(_estimate_message_tokens(m) for m in body.get("messages") or []) > target_est:
-        clipped = _clip_long_contents(body.get("messages") or [], target_est)
+    if _estimate_messages_tokens(body.get("messages") or []) > target_est:
+        clipped += _clip_long_contents(body.get("messages") or [], target_est)
     if not dropped and not clipped:
         return False
     if n_ctx:
@@ -13050,7 +13101,9 @@ async def openai_chat_completions(
         # message (templates reject "developer") and clear prompt to avoid a dup.
         gen_kwargs["messages"] = _set_or_prepend_system_message(
             _structured_tool_history_for_local_template(
-                _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload))
+                _flatten_content_parts_for_local_template(
+                    _drop_reasoning_for_local_template(_openai_messages_for_passthrough(payload))
+                )
             ),
             system_prompt,
         )
@@ -18377,8 +18430,13 @@ def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
         if m.get("role") == "assistant":
             has_content = bool(m.get("content"))
             has_tool_calls = bool(m.get("tool_calls"))
-            if not has_content and not has_tool_calls:
+            has_reasoning = bool(m.get("reasoning_content"))
+            if not has_content and not has_tool_calls and not has_reasoning:
                 continue
+            if not has_content and not has_tool_calls:
+                # llama.cpp requires a content or tool_calls key and only reads
+                # reasoning_content after that check, so keep the turn but give it one.
+                m = {**m, "content": ""}
         out.append(m)
     return out
 
@@ -18506,7 +18564,11 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
         else:
             m_clean.pop("tool_calls", None)
         if not m_clean.get("content") and not m_clean.get("tool_calls"):
-            continue  # assistant turn now empty, drop
+            if not m_clean.get("reasoning_content"):
+                continue  # assistant turn now empty, drop
+            # Reasoning-only once the synthetic calls are gone. Pad it here:
+            # _drop_empty_assistant_sentinels ran before they were stripped.
+            m_clean["content"] = ""
         sanitized_assistant.append(m_clean)
 
     if not dropped_ids:
@@ -18630,6 +18692,22 @@ def _structured_tool_history_for_local_template(messages: list[dict]) -> list[di
             msg = {**msg, "tool_calls": new_calls}
         out.append(msg)
     return out
+
+
+def _drop_reasoning_for_local_template(messages: list[dict]) -> list[dict]:
+    """Drop ``reasoning_content`` before local (safetensors / MLX) templating.
+
+    On llama-server the trace is bounded twice: the template decides whether to
+    render it (Qwen3.x and GLM gate on the last user turn, Qwen3.6 and gemma-4
+    also on ``preserve_thinking``), and the body is swept for control markup
+    first. A local template is rendered here directly, with no ``preserve_thinking``
+    plumbed through, so passthrough stays llama-server-only until it is."""
+    return [
+        {k: v for k, v in msg.items() if k != "reasoning_content"}
+        if "reasoning_content" in msg
+        else msg
+        for msg in messages
+    ]
 
 
 def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict], bool]:

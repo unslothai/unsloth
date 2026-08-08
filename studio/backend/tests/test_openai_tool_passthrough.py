@@ -1864,6 +1864,189 @@ class TestDropEmptyAssistantSentinels:
         for m in out:
             assert m.get("content"), m
 
+    def test_keeps_reasoning_only_assistant_and_pads_content(self):
+        """A reasoning-only assistant turn (no content/tool_calls, reasoning_content set)
+        is preserved and gains ``content=\"\"`` so llama-server sees the key it requires.
+        A truly empty assistant turn (no content/tool_calls/reasoning_content) is still
+        dropped."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "reasoning_content": "I am thinking..."},
+            {"role": "assistant"},
+        ]
+        out = _drop_empty_assistant_sentinels(msgs)
+        assert len(out) == 2
+        # Kept turn got content="" so llama-server has the required key.
+        assert out[0]["role"] == "user"
+        assert out[1]["role"] == "assistant"
+        assert out[1]["reasoning_content"] == "I am thinking..."
+        assert out[1]["content"] == ""
+        # Truly empty sentinel was still dropped.
+        assert all(
+            m["role"] != "assistant"
+            or m.get("content")
+            or m.get("tool_calls")
+            or m.get("reasoning_content")
+            for m in out
+        )
+
+    def test_openai_messages_for_passthrough_forwards_reasoning_content(self):
+        """``reasoning_content`` on an assistant message must reach the wire
+        byte-identical: the Jinja template branches on it when
+        ``preserve_thinking=true``."""
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(
+                    role = "assistant",
+                    content = "answer",
+                    reasoning_content = "step-by-step trace \u00e9",
+                ),
+            ],
+        )
+        out = _openai_messages_for_passthrough(req)
+        assistant = [m for m in out if m["role"] == "assistant"][0]
+        assert assistant["reasoning_content"] == "step-by-step trace \u00e9"
+        assert assistant["content"] == "answer"
+
+    def test_openai_messages_for_gguf_chat_forwards_reasoning_content(self):
+        """GGUF chat path must also forward ``reasoning_content`` verbatim."""
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(
+                    role = "assistant",
+                    content = "answer",
+                    reasoning_content = "long thinking \u00e9",
+                ),
+            ],
+        )
+        messages, _has_image = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assistant = [m for m in messages if m["role"] == "assistant"][0]
+        assert assistant["reasoning_content"] == "long thinking \u00e9"
+        assert assistant["content"] == "answer"
+
+    def test_strip_provider_synthetic_tool_history_preserves_reasoning_content(self):
+        """``reasoning_content`` is a real field, not Gemini-synthetic garbage:
+        ``_strip_provider_synthetic_tool_history`` must NOT scrub it the way
+        it scrubs ``extra_content``."""
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning_content": "i thought about it",
+                "extra_content": {"google": {"thought_signature": "deadbeef"}},
+            }
+        ]
+        out = _strip_provider_synthetic_tool_history(msgs)
+        assert len(out) == 1
+        kept = out[0]
+        # Asymmetry lock: reasoning_content is real and survives, extra_content is
+        # Gemini-synthetic and is the actual target of the scrubber.
+        assert kept.get("reasoning_content") == "i thought about it"
+        assert "extra_content" not in kept
+
+    def test_strip_synthetic_tool_calls_keeps_reasoning_only_turn(self):
+        """A turn whose only tool_calls were provider-synthetic is reasoning-only once
+        they are stripped, and _drop_empty_assistant_sentinels ran before the strip,
+        so the padding has to happen here or the trace is lost."""
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        msgs = [
+            {"role": "user", "content": "search for it"},
+            {
+                "role": "assistant",
+                "reasoning_content": "i should search",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"_server_tool": true}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_0", "content": "results"},
+        ]
+        out = _strip_provider_synthetic_tool_history(msgs)
+        assistant = [m for m in out if m["role"] == "assistant"]
+        assert len(assistant) == 1
+        assert assistant[0]["reasoning_content"] == "i should search"
+        # llama.cpp needs a content or tool_calls key before it reads reasoning_content.
+        assert assistant[0]["content"] == ""
+        assert "tool_calls" not in assistant[0]
+        # The orphaned synthetic tool reply is still dropped.
+        assert not [m for m in out if m["role"] == "tool"]
+
+    def test_sentinel_and_scrub_compose_to_llama_cpp_message_contract(self):
+        """llama.cpp throws "Expected 'content' or 'tool_calls'" unless one of those
+        KEYS is present (common_chat_msgs_parse_oaicompat checks presence, not
+        truthiness, before it reads reasoning_content). Both passes run in sequence
+        on every local dispatch, so the contract has to hold on the composition."""
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        synthetic = [
+            {
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
+            }
+        ]
+        real = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q": "x"}'},
+            }
+        ]
+        cases = []
+        for content in (None, "", "text"):
+            for calls in (None, synthetic, real, synthetic + real):
+                for reasoning in (None, "", "trace"):
+                    m = {"role": "assistant"}
+                    if content is not None:
+                        m["content"] = content
+                    if calls is not None:
+                        m["tool_calls"] = calls
+                    if reasoning is not None:
+                        m["reasoning_content"] = reasoning
+                    cases.append(m)
+
+        out = _strip_provider_synthetic_tool_history(
+            _drop_empty_assistant_sentinels([{"role": "user", "content": "q"}] + cases)
+        )
+        for m in out:
+            assert "content" in m or "tool_calls" in m, m
+        # A surviving reasoning-only turn always carries the padded key.
+        for m in out:
+            if m["role"] == "assistant" and m.get("reasoning_content") and not m.get("tool_calls"):
+                assert m.get("content") == "" or m.get("content"), m
+
+    def test_strip_synthetic_tool_calls_still_drops_turn_without_reasoning(self):
+        from routes.inference import _strip_provider_synthetic_tool_history
+        msgs = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"_server_tool": true}',
+                        },
+                    }
+                ],
+            }
+        ]
+        assert _strip_provider_synthetic_tool_history(msgs) == []
+
 
 class TestGgufVisionMessages:
     _PNG_B64 = (

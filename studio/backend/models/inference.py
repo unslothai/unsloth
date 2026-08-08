@@ -1038,6 +1038,26 @@ class ChatMessage(BaseModel):
             "from assistant messages to replay text-part signatures."
         ),
     )
+    reasoning_content: Optional[str] = Field(
+        None,
+        description = (
+            "Reasoning/thinking trace carried on assistant messages (DeepSeek-"
+            "style field, used by llama.cpp templates that branch on "
+            "`message.reasoning_content`). Forwarded verbatim to the backend so "
+            "the Jinja template can render it back into <think>...</think> "
+            "blocks when `preserve_thinking=true` is set. Without this field "
+            "the proxy silently drops the value (Pydantic default "
+            '`extra="ignore"`), and multi-turn reasoning collapses to empty '
+            "thinking blocks."
+        ),
+    )
+
+    @field_validator("reasoning_content", mode = "before")
+    @classmethod
+    def _ignore_non_string_reasoning(cls, value):
+        # Gateways emit structured reasoning too. That used to be dropped by extra="ignore";
+        # declaring the field would turn it into a 422, so keep dropping it instead.
+        return value if isinstance(value, str) else None
 
     @model_validator(mode = "after")
     def _validate_role_shape(self) -> "ChatMessage":
