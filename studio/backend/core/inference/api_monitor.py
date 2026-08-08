@@ -56,6 +56,12 @@ class ApiMonitorEntry:
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
     finished_monotonic: Optional[float] = None
+    # First streamed chunk. Everything before it is queue wait, model load and prefill,
+    # so only the span after it is generation. None on a non-streamed reply.
+    first_token_monotonic: Optional[float] = None
+    # llama.cpp's timings.predicted_ms. Preferred over the streamed window: the engine's
+    # own measurement, and the only one available for a non-streamed reply.
+    reported_decode_ms: Optional[int] = None
     reply: str = ""
     finished_at: Optional[float] = None
     context_length: Optional[int] = None
@@ -86,6 +92,17 @@ class ApiMonitorEntry:
             )
         elif self.finished_at is not None:
             duration_ms = max(0, int((self.finished_at - self.started_at) * 1000))
+        # Time to first token, and the decode window after it. Needs the monotonic pair:
+        # finished_at/started_at are wall-clock and only stand in for a total.
+        ttft_ms = None
+        decode_ms = self.reported_decode_ms
+        if self.first_token_monotonic is not None:
+            ttft_ms = max(0, int((self.first_token_monotonic - self.started_monotonic) * 1000))
+            if decode_ms is None and self.finished_monotonic is not None:
+                decode_ms = max(
+                    0,
+                    int((self.finished_monotonic - self.first_token_monotonic) * 1000),
+                )
         context_usage = None
         if self.total_tokens is not None and self.context_length:
             context_usage = min(1.0, max(0.0, self.total_tokens / self.context_length))
@@ -106,6 +123,11 @@ class ApiMonitorEntry:
             "updated_at": self.updated_at,
             "finished_at": self.finished_at,
             "duration_ms": duration_ms,
+            "ttft_ms": ttft_ms,
+            "decode_ms": decode_ms,
+            # predicted_ms spans every predicted token; the streamed window opens at the
+            # first chunk and so covers one fewer. The reader needs to know which.
+            "decode_ms_authoritative": self.reported_decode_ms is not None,
             "context_length": self.context_length,
             "context_usage": context_usage,
             "prompt_tokens": self.prompt_tokens,
@@ -265,6 +287,9 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
+            # Ahead of the preview cap's early return, which skips long generations.
+            if entry.first_token_monotonic is None:
+                entry.first_token_monotonic = time.monotonic()
             # Preview is capped: once the "..." marker is present the head is
             # frozen, so skip the per-chunk re-concat (avoids O(n^2) on long
             # generations). A reply that landed exactly on the cap has no marker
@@ -295,6 +320,7 @@ class ApiMonitor:
         completion_tokens: Optional[int] = None,
         total_tokens: Optional[int] = None,
         context_length: Optional[int] = None,
+        decode_ms: Optional[float] = None,
     ) -> None:
         if not entry_id:
             return
@@ -302,6 +328,8 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
+            if decode_ms is not None and decode_ms >= 0:
+                entry.reported_decode_ms = int(decode_ms)
             if prompt_tokens is not None:
                 entry.prompt_tokens = prompt_tokens
             if completion_tokens is not None:

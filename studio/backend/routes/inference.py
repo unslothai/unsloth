@@ -3034,15 +3034,24 @@ def _monitor_usage(
     monitor_id: Optional[str],
     usage: Optional[dict],
     context_length = None,
+    timings: Optional[dict] = None,
 ):
     if not usage:
         return
+    # llama.cpp times the decode phase itself. Absent on external providers, which fall
+    # back to the streamed window.
+    decode_ms = None
+    if isinstance(timings, dict):
+        predicted = timings.get("predicted_ms")
+        if isinstance(predicted, (int, float)) and predicted >= 0:
+            decode_ms = float(predicted)
     api_monitor.set_usage(
         monitor_id,
         prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens"),
         completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens"),
         total_tokens = usage.get("total_tokens"),
         context_length = context_length,
+        decode_ms = decode_ms,
     )
 
 
@@ -13497,7 +13506,13 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         api_monitor.fail(monitor_id, resp.text[:500])
     else:
         try:
-            _monitor_usage(monitor_id, resp.json().get("usage"), _monitor_context_length())
+            _body = resp.json()
+            _monitor_usage(
+                monitor_id,
+                _body.get("usage"),
+                _monitor_context_length(),
+                timings = _body.get("timings"),
+            )
         except Exception:
             pass
         api_monitor.finish(monitor_id)

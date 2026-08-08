@@ -704,3 +704,69 @@ def test_monitor_route_disabled_still_hides_recorded_rows(monkeypatch):
 
     assert payload["logging_enabled"] is False
     assert payload["entries"] == []
+
+
+def test_decode_window_excludes_the_wait_before_the_first_token():
+    """The span before the first chunk is queue + load + prefill, not generation.
+
+    Regression guard for the API monitor reporting a model generating normally as
+    slow whenever it sat behind a busy slot: duration_ms carries that wait and
+    decode_ms must not.
+    """
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    # Stand in for a slow start (queue behind another request, then prefill).
+    # The live dataclass, not get()'s snapshot dict.
+    [entry] = list(monitor._entries)
+    entry.started_monotonic -= 9.0
+    monitor.append_reply(entry_id, "hi")
+    monitor.append_reply(entry_id, " there")
+    monitor.finish(entry_id)
+
+    [row] = monitor.snapshot()
+    assert row["ttft_ms"] >= 9000
+    assert row["decode_ms"] < row["duration_ms"]
+    assert row["decode_ms_authoritative"] is False
+
+
+def test_engine_reported_decode_ms_wins_over_the_streamed_window():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.append_reply(entry_id, "hi")
+    monitor.set_usage(entry_id, completion_tokens = 6, decode_ms = 1234)
+    monitor.finish(entry_id)
+
+    [row] = monitor.snapshot()
+    assert row["decode_ms"] == 1234
+    assert row["decode_ms_authoritative"] is True
+
+
+def test_non_streamed_reply_reports_no_decode_window():
+    """set_reply lands the whole reply at once, so there is no first chunk to
+    anchor on. Report nothing rather than a near-zero window, which would divide
+    into an absurd rate."""
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.set_reply(entry_id, "hi there")
+    monitor.finish(entry_id)
+
+    [row] = monitor.snapshot()
+    assert row["ttft_ms"] is None
+    assert row["decode_ms"] is None
+    assert row["decode_ms_authoritative"] is False
+    assert row["duration_ms"] is not None

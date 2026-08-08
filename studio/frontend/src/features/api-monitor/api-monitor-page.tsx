@@ -79,6 +79,12 @@ function formatDuration(value?: number | null): string {
   return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} s`;
 }
 
+// formatDuration reads a missing value as "running", which is wrong for the timing
+// split: it is absent on a non-streamed reply that has already finished.
+function formatOptionalDuration(value?: number | null): string {
+  return value == null ? "–" : formatDuration(value);
+}
+
 function formatCount(value: number): string {
   return value.toLocaleString();
 }
@@ -413,6 +419,10 @@ function RequestDetail({
         {[
           { label: "Started", value: formatTime(entry.started_at) },
           { label: "Duration", value: formatDuration(entry.duration_ms) },
+          // Splitting out the wait keeps a queue behind a busy slot from reading as a
+          // slow model.
+          { label: "To first token", value: formatOptionalDuration(entry.ttft_ms) },
+          { label: "Generating", value: formatOptionalDuration(entry.decode_ms) },
           {
             label: "Prompt tokens",
             value:
@@ -846,7 +856,7 @@ export function ApiMonitorPage(): ReactElement {
               ? "–"
               : `${stats.tokensPerSecond.toFixed(1)} tok/s`
           }
-          hint={`${formatCount(stats.totalTokens)} tokens`}
+          hint={`${formatCount(stats.totalTokens)} tokens · generation only`}
         />
       </section>
 

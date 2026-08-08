@@ -349,6 +349,13 @@ export interface ApiMonitorEntry {
   updated_at: number;
   finished_at?: number | null;
   duration_ms?: number | null;
+  // duration_ms covers the whole request, including queue wait and prefill. decode_ms is
+  // just the span spent generating. Null on a non-streamed reply.
+  ttft_ms?: number | null;
+  decode_ms?: number | null;
+  // True when decode_ms is llama.cpp's predicted_ms, which covers every predicted token.
+  // The streamed window starts at the first chunk and so covers one fewer.
+  decode_ms_authoritative?: boolean | null;
   context_length?: number | null;
   context_usage?: number | null;
   prompt_tokens?: number | null;
