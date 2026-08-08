@@ -735,7 +735,11 @@ def test_only_serializable_proxy_keys_reach_the_child(tmp_path):
         check = False,
     ).stdout
 
-    assert "http://proxy.corp:8080" in handoff
+    # Parsed, not substring-matched: the handoff IS JSON, so comparing the value exactly is
+    # both the stronger assertion and free of the "URL may sit anywhere in the string" reading
+    # a bare `in` invites.
+    carried = json.loads(handoff.strip().splitlines()[-1])
+    assert carried["Invoke-WebRequest:Proxy"] == "http://proxy.corp:8080"
     assert "ProxyUseDefaultCredentials" in handoff
     assert "ProxyCredential" not in handoff, "a credential must not be written to the environment"
     assert "WindowStyle" not in handoff, "only proxy keys are carried"
