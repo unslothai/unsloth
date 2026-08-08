@@ -897,3 +897,31 @@ def test_a_plain_message_whose_parent_is_pruned_is_never_guarded(tmp_path, monke
     synced = studio_db.sync_chat_messages("src", [*messages, relinked], prune_missing = True)
 
     assert next(m for m in synced if m["id"] == "plain-child")["parentId"] == "report"
+
+
+def test_a_corrupt_self_link_resolves_to_the_root_rather_than_itself(tmp_path, monkeypatch):
+    # A thread can only reach this shape by storing a cycle among its own unprotected rows, but
+    # the walk must still hand back a link the tree can hold rather than a message's own id.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    cyclic = [dict(m) for m in messages]
+    next(m for m in cyclic if m["id"] == "a0")["parentId"] = "prompt"
+    studio_db.sync_chat_messages("src", cyclic)
+
+    conn = studio_db.get_connection()
+    try:
+        assert studio_db._surviving_parent_id(conn, "src", "prompt", {"a0"}) is None
+    finally:
+        conn.close()
+
+
+def test_an_empty_stored_parent_reads_as_the_root(tmp_path, monkeypatch):
+    # parent_id is nullable, so '' is only reachable through a direct writer, but the helper and
+    # the caller's `or None` normalization must agree about it either way.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("UPDATE chat_messages SET parent_id = '' WHERE id = 'a0'")
+        conn.commit()
+        assert studio_db._surviving_parent_id(conn, "src", "a0", set()) is None
+    finally:
+        conn.close()

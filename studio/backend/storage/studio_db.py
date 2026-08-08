@@ -2058,7 +2058,7 @@ def _surviving_parent_id(
         (thread_id, message_id),
     ).fetchone()
     parent = row["parent_id"] if row is not None else None
-    while parent is not None and str(parent) in pruned:
+    while parent and str(parent) in pruned:
         if str(parent) in seen:
             # A cycle can only come from a corrupt thread; stop rather than spin.
             return None
@@ -2068,7 +2068,10 @@ def _surviving_parent_id(
             (thread_id, str(parent)),
         ).fetchone()
         parent = row["parent_id"] if row is not None else None
-    return str(parent) if parent is not None else None
+    # Normalized the way the caller reads parentId (`or None`), so an empty stored parent_id
+    # cannot make the two disagree, and a self-link left by a corrupt chain resolves to the root.
+    survivor = str(parent) if parent else None
+    return None if survivor == message_id else survivor
 
 
 def _research_message_would_change(
