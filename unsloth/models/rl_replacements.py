@@ -26,7 +26,6 @@ import torch
 import inspect
 import linecache
 from collections import defaultdict
-from contextlib import nullcontext
 from unsloth_zoo.rl_replacements import (
     RL_REPLACEMENTS,
     left_pack_padding,
