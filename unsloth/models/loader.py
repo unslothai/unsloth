@@ -585,6 +585,11 @@ class FastLanguageModel(FastLlamaModel):
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
+
+        cache_tokenizer_name = _resolve_checkpoint_tokenizer_name(old_model_name, dict(kwargs))
+        cache_processor_name = _resolve_checkpoint_tokenizer_name(
+            old_model_name, dict(kwargs), require_processor = True
+        )
         fp8_mode = None
         if not use_exact_model_name:
             new_model_name = get_model_name(
@@ -596,8 +601,10 @@ class FastLanguageModel(FastLlamaModel):
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = kwargs.get("local_files_only", False),
                 revision = revision,
-                require_tokenizer = kwargs.get("tokenizer_name") is None,
-                require_processor = kwargs.get("tokenizer_name") is None and not text_only,
+                require_tokenizer = cache_tokenizer_name is None,
+                require_processor = not text_only and cache_processor_name is None,
+                subfolder = kwargs.get("subfolder"),
+                variant = kwargs.get("variant"),
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -617,7 +624,7 @@ class FastLanguageModel(FastLlamaModel):
                 model_name = new_model_name
                 # If mapper resolved to a pre-quantized FP8 model, disable
                 # on-the-fly quantization to avoid double quantization
-                if load_in_fp8 != False and new_model_name != old_model_name:
+                if load_in_fp8 != False and new_model_name.lower() != old_model_name.lower():
                     load_in_fp8 = False
         # Only this block honours use_exact_model_name; the transforms below do not.
         mapper_moved_name = model_name != old_model_name
@@ -806,8 +813,10 @@ class FastLanguageModel(FastLlamaModel):
                     trust_remote_code = trust_remote_code,
                     cache_dir = kwargs.get("cache_dir"),
                     local_files_only = kwargs.get("local_files_only", False),
-                    require_tokenizer = kwargs.get("tokenizer_name") is None,
-                    require_processor = kwargs.get("tokenizer_name") is None and not text_only,
+                    require_tokenizer = cache_tokenizer_name is None,
+                    require_processor = not text_only and cache_processor_name is None,
+                    subfolder = kwargs.get("subfolder"),
+                    variant = kwargs.get("variant"),
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
@@ -1356,6 +1365,11 @@ class FastModel(FastBaseModel):
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
+
+        cache_tokenizer_name = _resolve_checkpoint_tokenizer_name(old_model_name, dict(kwargs))
+        cache_processor_name = _resolve_checkpoint_tokenizer_name(
+            old_model_name, dict(kwargs), require_processor = True
+        )
         fp8_mode = None
         if not use_exact_model_name:
             new_model_name = get_model_name(
@@ -1365,8 +1379,10 @@ class FastModel(FastBaseModel):
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = kwargs.get("local_files_only", False),
                 revision = revision,
-                require_tokenizer = kwargs.get("tokenizer_name") is None,
-                require_processor = kwargs.get("tokenizer_name") is None and not text_only,
+                require_tokenizer = cache_tokenizer_name is None,
+                require_processor = not text_only and cache_processor_name is None,
+                subfolder = kwargs.get("subfolder"),
+                variant = kwargs.get("variant"),
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -1386,7 +1402,7 @@ class FastModel(FastBaseModel):
                 model_name = new_model_name
                 # If mapper resolved to a pre-quantized FP8 model, disable
                 # on-the-fly quantization to avoid double quantization
-                if load_in_fp8 != False and new_model_name != old_model_name:
+                if load_in_fp8 != False and new_model_name.lower() != old_model_name.lower():
                     load_in_fp8 = False
         # Only this block honours use_exact_model_name; the transforms below do not.
         mapper_moved_name = model_name != old_model_name
@@ -1776,8 +1792,10 @@ class FastModel(FastBaseModel):
                     load_in_4bit,
                     cache_dir = kwargs.get("cache_dir"),
                     local_files_only = kwargs.get("local_files_only", False),
-                    require_tokenizer = kwargs.get("tokenizer_name") is None,
-                    require_processor = kwargs.get("tokenizer_name") is None and not text_only,
+                    require_tokenizer = cache_tokenizer_name is None,
+                    require_processor = not text_only and cache_processor_name is None,
+                    subfolder = kwargs.get("subfolder"),
+                    variant = kwargs.get("variant"),
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)

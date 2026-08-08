@@ -248,6 +248,8 @@ def _prefer_legacy_lowercase_cache(
     revision = None,
     require_tokenizer = True,
     require_processor = True,
+    subfolder = None,
+    variant = None,
 ):
     """Use a pre-fix lowercase cache only when offline and no canonical cache exists."""
     if (
@@ -319,21 +321,38 @@ def _prefer_legacy_lowercase_cache(
             )
         ):
             return False
+        weights_root = os.path.abspath(
+            os.path.join(snapshot, str(subfolder).strip("/\\")) if subfolder else snapshot
+        )
+        snapshot_root = os.path.abspath(snapshot)
+        try:
+            if os.path.commonpath((snapshot_root, weights_root)) != snapshot_root:
+                return False
+        except ValueError:
+            return False
+
+        def _variant_name(filename):
+            if not variant:
+                return filename
+            stem, extension = filename.rsplit(".", 1)
+            return f"{stem}.{variant}.{extension}"
+
         if any(
-            os.path.isfile(os.path.join(snapshot, filename))
+            os.path.isfile(os.path.join(weights_root, _variant_name(filename)))
             for filename in ("model.safetensors", "pytorch_model.bin")
         ):
             return True
         for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
-            index_path = os.path.join(snapshot, index_name)
+            index_path = os.path.join(weights_root, _variant_name(index_name))
             try:
                 import json
+
                 with open(index_path, encoding = "utf-8") as index_file:
                     shard_names = set(json.load(index_file).get("weight_map", {}).values())
             except (OSError, ValueError, TypeError):
                 continue
             if shard_names and all(
-                os.path.isfile(os.path.join(snapshot, shard_name)) for shard_name in shard_names
+                os.path.isfile(os.path.join(weights_root, shard_name)) for shard_name in shard_names
             ):
                 return True
         return False
@@ -385,6 +404,8 @@ def get_model_name(
     revision = None,
     require_tokenizer = True,
     require_processor = True,
+    subfolder = None,
+    variant = None,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -420,6 +441,8 @@ def get_model_name(
             cache_revision,
             require_tokenizer,
             require_processor,
+            subfolder,
+            variant,
         )
 
     if (

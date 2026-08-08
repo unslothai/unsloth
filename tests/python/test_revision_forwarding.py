@@ -274,6 +274,34 @@ def test_all_mapper_calls_receive_downstream_artifact_requirements():
             keywords = {keyword.arg for keyword in call.keywords}
             assert "require_tokenizer" in keywords
             assert "require_processor" in keywords
+            assert "subfolder" in keywords
+            assert "variant" in keywords
+
+
+def test_cache_artifact_requirements_are_resolved_before_mapper_calls():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        requirements = _calls(function, "_resolve_checkpoint_tokenizer_name")
+        mapper_calls = _calls(function, "get_model_name")
+        assert len(requirements) >= 2
+        assert max(call.lineno for call in requirements[:2]) < min(call.lineno for call in mapper_calls)
+
+
+def test_dynamic_fp8_survives_case_only_cache_rewrites():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        comparisons = [
+            ast.unparse(node.test).replace(" ", "")
+            for node in ast.walk(function)
+            if isinstance(node, ast.If) and "new_model_name.lower()" in ast.unparse(node.test)
+        ]
+        assert any(
+            "new_model_name.lower()!=old_model_name.lower()" in comparison
+            for comparison in comparisons
+        ), f"{class_name} must distinguish FP8 mirrors from case-only cache aliases"
+
 
 
 def test_all_config_probes_receive_the_explicit_cache_dir():

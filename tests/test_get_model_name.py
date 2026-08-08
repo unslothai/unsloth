@@ -387,6 +387,30 @@ class TestGetModelName(unittest.TestCase):
             )
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_legacy_cache_honors_weight_subfolder_and_variant(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            snapshot = _write_cached_model(legacy_cache, "legacy-main")
+            os.remove(os.path.join(snapshot, "model.safetensors"))
+            weights = os.path.join(snapshot, "weights")
+            os.makedirs(weights)
+            open(os.path.join(weights, "model.fp16.safetensors"), "w").close()
+
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    subfolder = "weights",
+                    variant = "fp16",
+                ),
+                legacy,
+            )
+
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_offline_legacy_cache_uses_transformers_default(self):
         canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
         legacy = canonical.lower()
