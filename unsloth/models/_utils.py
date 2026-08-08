@@ -2274,18 +2274,27 @@ def _announce_xformers_breakage(
     if _XFORMERS_BREAKAGE_ANNOUNCED:
         return
     _XFORMERS_BREAKAGE_ANNOUNCED = True
+    # What actually picks up the work. select_attention_backend puts FlashAttention ahead of
+    # xformers, so on a dual install a broken xformers costs nothing and "falling back to SDPA,
+    # it uses more memory" is simply false -- a performance warning about a run that is on the
+    # faster kernel of the two. The probe runs on that host anyway (it has to, to report the
+    # install honestly), so this is the common case, not a corner.
+    fallback = (
+        "FlashAttention is handling attention instead, so this costs no memory"
+        if HAS_FLASH_ATTENTION
+        else "Falling back to PyTorch SDPA attention - training still works, but it uses "
+        "more memory"
+    )
     if build_mismatch:
         print(
             "Unsloth: Xformers is installed but its optimized kernels cannot load.\n"
             f"{str(reason).strip().rstrip('.')}.\n"
-            "Falling back to PyTorch SDPA attention - training still works, but it uses "
-            "more memory.\n"
+            f"{fallback}.\n"
             f"{_xformers_fix_hint()}"
         )
     else:
         print(
-            "Unsloth: Xformers is installed but could not be used. Falling back to PyTorch "
-            "SDPA attention - training still works, but it uses more memory.\n"
+            f"Unsloth: Xformers is installed but could not be used. {fallback}.\n"
             f"{reason}"
         )
     if UNSLOTH_ENABLE_LOGGING and error is not None:

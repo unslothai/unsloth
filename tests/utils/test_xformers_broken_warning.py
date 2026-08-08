@@ -213,6 +213,31 @@ def test_warning_is_printed_once(capsys):
     assert "second" not in printed
 
 
+def test_a_live_flash_attention_is_not_reported_as_an_sdpa_fallback(capsys):
+    """select_attention_backend puts FlashAttention ahead of xformers, so on a dual install
+    a broken xformers costs nothing -- and "falling back to SDPA, it uses more memory" is a
+    performance warning about a run that is on the faster of the two kernels."""
+    from unsloth.models import _utils
+
+    for flash, expected, forbidden in (
+        (True, "FlashAttention is handling attention instead", "uses more memory"),
+        (False, "SDPA", "FlashAttention is handling attention instead"),
+    ):
+        _utils._XFORMERS_BREAKAGE_ANNOUNCED = False
+        original = _utils.HAS_FLASH_ATTENTION
+        try:
+            _utils.HAS_FLASH_ATTENTION = flash
+            _utils._announce_xformers_breakage("built for torch 2.9", build_mismatch = True)
+            printed = capsys.readouterr().out
+        finally:
+            _utils.HAS_FLASH_ATTENTION = original
+            _utils._XFORMERS_BREAKAGE_ANNOUNCED = False
+        assert expected in printed
+        assert forbidden not in printed
+        # The breakage itself is still reported either way; only the consequence changes.
+        assert "cannot load" in printed
+
+
 def test_a_non_mismatch_failure_is_not_relabelled_as_a_build_mismatch(capsys):
     # This arm also catches the sm_100/110/120 FA3 guard and the old-torch guards, whose
     # messages are multi-line, fenced and already actionable. Reflowing one of those into

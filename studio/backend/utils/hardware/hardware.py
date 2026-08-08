@@ -1272,12 +1272,22 @@ def _visible_compute_capability() -> Optional[str]:
     mask = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
     if not mask:
         return ",".join(dict.fromkeys(capability for _i, _u, capability in rows))
+    # A NUMERIC token is a CUDA ordinal in the current CUDA_DEVICE_ORDER, and nvidia-smi's
+    # index column is the PCI_BUS_ID ordering. main.py pins PCI_BUS_ID before torch loads, so
+    # the two agree on every ordinary host -- but it pins it with setdefault, so a user who
+    # exported FASTEST_FIRST keeps it, and there the ordinal is a speed rank we cannot invert
+    # without initialising CUDA. Answering anyway would hand the probe the wrong card: a false
+    # degraded warning, or worse, silence about an uncovered GPU. Unknown is the honest answer,
+    # and UUID tokens are unaffected because a UUID means the same device in any ordering.
+    ordinals_are_pci = (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper() == "PCI_BUS_ID"
     selected = []
     for token in mask.split(","):
         token = token.strip()
         if not token:
             # CUDA stops at the first invalid entry, and so does this.
             break
+        if token.isdigit() and not ordinals_are_pci:
+            return None
         for index, uuid, capability in rows:
             # The mask names either an ordinal or a GPU UUID, and a UUID may be abbreviated.
             if token == index or uuid == token or uuid.startswith(token):

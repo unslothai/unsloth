@@ -373,6 +373,32 @@ def test_pin_fallback_stays_quiet_when_the_pin_matches(monkeypatch):
     )
 
 
+def test_the_pin_fallback_honours_the_stable_abi_too(monkeypatch):
+    """Same exemption the build-metadata branch applies, on the path that has no metadata.
+
+    A source or editable 0.0.34+ build carries the 2.10 pin it was cut against, so without
+    this every later torch is reported as a mismatch -- turning an unrelated extension
+    failure into a torch-version diagnosis with reinstall instructions that fix nothing."""
+    monkeypatch.setattr(xc, "xformers_build_metadata", lambda: None)
+    monkeypatch.setattr(xc, "declared_torch_pin", lambda version = None: "2.10.0")
+    assert (
+        xc.describe_xformers_mismatch(torch_version = "2.11.0+cu130", xformers_version = "0.0.34")
+        is None
+    )
+    # One-directional, as ever: a 2.11-built pin on 2.10 is still a mismatch.
+    monkeypatch.setattr(xc, "declared_torch_pin", lambda version = None: "2.11.0")
+    assert (
+        xc.describe_xformers_mismatch(torch_version = "2.10.0+cu130", xformers_version = "0.0.35")
+        is not None
+    )
+    # And below the floor there is no guarantee to lean on.
+    monkeypatch.setattr(xc, "declared_torch_pin", lambda version = None: "2.9.1")
+    assert (
+        xc.describe_xformers_mismatch(torch_version = "2.10.0+cu128", xformers_version = "0.0.33")
+        is not None
+    )
+
+
 def test_declared_pin_falls_back_to_the_table_for_a_different_version():
     # Asking about a version other than the resident one must use the table, not the
     # resident METADATA, which describes a different wheel entirely.

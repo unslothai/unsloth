@@ -529,6 +529,24 @@ def test_the_capability_follows_the_mask_the_app_runs_under(monkeypatch, mask, e
     assert hw._visible_compute_capability() == expected
 
 
+def test_a_numeric_mask_is_unknown_under_a_non_pci_device_order(monkeypatch):
+    """A numeric CUDA_VISIBLE_DEVICES entry is a CUDA ordinal in the CURRENT
+    CUDA_DEVICE_ORDER, while nvidia-smi's index column is the PCI_BUS_ID ordering. The
+    backend pins PCI_BUS_ID with setdefault, so a user who exported FASTEST_FIRST keeps it,
+    and there "1" is a speed rank we cannot invert without initialising CUDA. Answering
+    anyway hands the probe the wrong card."""
+    _fake_smi(monkeypatch)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert hw._visible_compute_capability() is None
+    # A UUID names the same device in any ordering, so it still resolves.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-bbbbbbbb")
+    assert hw._visible_compute_capability() == "12.0"
+    # And the whole box is still readable when nothing is masked.
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    assert hw._visible_compute_capability() == "9.0,12.0"
+
+
 def test_no_nvidia_smi_is_unknown_rather_than_a_guess(monkeypatch):
     monkeypatch.setattr(hw.shutil, "which", lambda name: None)
     assert hw._visible_compute_capability() is None

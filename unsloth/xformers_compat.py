@@ -452,7 +452,16 @@ def describe_xformers_mismatch(
     # declared torch pin, which at least catches a wholesale torch-release mismatch.
     if built_release is None:
         pinned = declared_torch_pin(xformers_version)
-        if pinned is not None and pinned != running_release:
+        # Same stable-ABI exemption the build-metadata branch above applies. Without it a
+        # source or editable 0.0.34+ build, whose pin is the 2.10 it was cut against, reports
+        # every later torch as a mismatch -- so an unrelated extension failure (a missing
+        # runtime DLL) is diagnosed as a torch-version problem with reinstall instructions
+        # that fix nothing.
+        if (
+            pinned is not None
+            and pinned != running_release
+            and not stable_abi_covers(pinned, running_release)
+        ):
             return (
                 f"xformers {xformers_version or 'installed'} is built for torch {pinned} "
                 f"but you are running {running}; its C++/CUDA extensions cannot load, so "
