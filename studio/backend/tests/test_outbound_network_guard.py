@@ -182,6 +182,24 @@ def test_a_fixture_can_ask_for_the_traffic_it_needs(allow_outbound_network):
         socket.getaddrinfo("huggingface.co", 443, socket.AF_INET, socket.SOCK_STREAM)
 
 
+def test_the_proxy_bypass_covers_the_local_server_too(monkeypatch, no_proxy_bypass_value):
+    """A proxy swallows loopback requests as readily as remote ones.
+
+    With ``HTTP_PROXY`` set and no loopback entry in ``NO_PROXY``, a request to the
+    managed ``studio_server`` is sent to the proxy instead. The guard then refuses the
+    proxy, correctly, and the server on 127.0.0.1 is unreachable through no fault of
+    its own. Naming only the configured external servers left that case out.
+    """
+    monkeypatch.setenv("UNSLOTH_E2E_BASE_URL", "http://studio.example.internal:8000")
+    bypass = no_proxy_bypass_value("corp.example, 10.0.0.1").split(",")
+
+    assert "127.0.0.1" in bypass
+    assert "localhost" in bypass
+    assert "studio.example.internal" in bypass, "the configured server must still be bypassed"
+    assert bypass[:2] == ["corp.example", "10.0.0.1"], "an existing NO_PROXY must survive"
+    assert len(bypass) == len(set(bypass)), "entries must not be duplicated on re-entry"
+
+
 def test_loopback_stays_open():
     """The guard must not disturb the in-process servers most of the suite runs on."""
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

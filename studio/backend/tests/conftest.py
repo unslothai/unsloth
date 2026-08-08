@@ -195,6 +195,19 @@ def _assume_bare_metal(monkeypatch):
 
 _LOOPBACK_HOSTS = frozenset({"::1", "localhost", "localhost.localdomain", "0.0.0.0", "::", ""})
 
+# The spellings worth writing into NO_PROXY. Same set as above minus the wildcards and
+# the empty string, which mean "every interface" to bind() and nothing to a proxy rule.
+_LOOPBACK_PROXY_BYPASS = ("localhost", "localhost.localdomain", "127.0.0.1", "::1")
+
+_PROXY_ENV_VARS = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+
+
+def no_proxy_with_test_servers(existing) -> str:
+    """*existing* NO_PROXY, plus every server this suite has to reach directly."""
+    bypass = list(_LOOPBACK_PROXY_BYPASS) + sorted(_configured_server_hosts())
+    parts = [part.strip() for part in (existing or "").split(",")]
+    return ",".join(dict.fromkeys([part for part in parts if part] + bypass))
+
 # Server URLs the suite is explicitly configured to talk to. Both documented external-server
 # modes may name a remote host, and neither suite carries the allow_network marker, so
 # blocking them would make a deliberately configured integration run unusable.
@@ -428,10 +441,31 @@ def _outbound_network_guard():
 
         patch.setattr(hf_http, "time", _NoBackoffClock())
 
+    # A proxy, where one is configured, is dialled instead of the server the request
+    # names -- so the guard sees the proxy, which is not what the run was pointed at,
+    # refuses it, and the server is unreachable after all. That applies to the managed
+    # loopback server as much as to a configured remote one: a proxy with no loopback
+    # entry in NO_PROXY swallows localhost requests too.
+    #
+    # Bypassed rather than allowed, since allowing the proxy host would let that same
+    # proxy carry Hub traffic straight through, which is the thing being stopped here.
+    # Done at session scope with everything else: the fixtures that dial these servers
+    # (test_providers_api's auth_headers and public_key_pem) are session-scoped, so a
+    # per-test version would be set up long after they had already tried and failed.
+    if any(os.environ.get(name) for name in _PROXY_ENV_VARS):
+        for name in ("NO_PROXY", "no_proxy"):
+            patch.setenv(name, no_proxy_with_test_servers(os.environ.get(name)))
+
     try:
         yield real
     finally:
         patch.undo()
+
+
+@pytest.fixture(scope = "session")
+def no_proxy_bypass_value():
+    """Hand out the NO_PROXY builder, which is otherwise only reachable as a fixture."""
+    return no_proxy_with_test_servers
 
 
 @pytest.fixture(scope = "session")
@@ -450,20 +484,6 @@ def _no_outbound_network(request, monkeypatch, _outbound_network_guard):
     # Per test, so a name a test pointed the env vars at itself does not stay dialable
     # for the rest of the run.
     _RESOLVED_SERVER_ADDRESSES.clear()
-
-    # A proxy, where one is configured, is dialled instead of the server -- and it is
-    # not what the suite was pointed at, so the guard refuses it and the configured
-    # endpoint is unreachable after all. Bypass the proxy for those hosts rather than
-    # allowing it, since the same proxy would otherwise carry Hub traffic straight
-    # through. Only ever touches hosts the run named itself.
-    configured = _configured_server_hosts()
-    if configured and any(
-        os.environ.get(name) for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")
-    ):
-        for name in ("NO_PROXY", "no_proxy"):
-            existing = [part.strip() for part in (os.environ.get(name) or "").split(",")]
-            merged = [part for part in existing if part] + sorted(configured)
-            monkeypatch.setenv(name, ",".join(dict.fromkeys(merged)))
 
     if request.node.get_closest_marker("allow_network") is not None:
         import socket
