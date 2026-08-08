@@ -281,7 +281,11 @@ class ApiMonitor:
                 self._entries.remove(entry)
 
     def append_reply(
-        self, entry_id: Optional[str], text: str, *, streamed: bool = True
+        self,
+        entry_id: Optional[str],
+        text: str,
+        *,
+        streamed: bool = True,
     ) -> None:
         """``streamed = False`` for a whole reply landing at once: it arrives after
         generation ended, so dating the first token by it would report the request's
