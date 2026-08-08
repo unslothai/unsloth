@@ -5534,10 +5534,15 @@ def test_download_plan_declines_an_unrecognised_gguf_instead_of_raising(monkeypa
 
 def test_download_plan_still_plans_an_unrecognised_gguf_given_an_explicit_base(monkeypatch):
     # An explicit base_repo supplies what family detection could not, so the pick must still plan.
-    _fake_hf_api(monkeypatch, {
-        "someone/mixed-gguf-collection": [_FakeSibling("totally-unknown-thing-Q4_K_M.gguf", 4_000)],
-        "unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-    })
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "someone/mixed-gguf-collection": [
+                _FakeSibling("totally-unknown-thing-Q4_K_M.gguf", 4_000)
+            ],
+            "unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+        },
+    )
     _no_cache(monkeypatch)
 
     plan = DiffusionBackend().download_plan(
