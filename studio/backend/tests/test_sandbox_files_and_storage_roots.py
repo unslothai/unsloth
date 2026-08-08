@@ -535,5 +535,71 @@ def test_a_malformed_files_envelope_is_left_as_text(payload):
     assert strip_result_for_model(printed) == printed
 
 
+def test_a_dotfile_a_tool_creates_is_reported(tmp_path, monkeypatch):
+    """.gitignore is a real artifact and the route serves it; only the noisy
+    dot-DIRECTORIES stay out."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_dotfile"))
+    before = tools._snapshot_workdir_files(str(workdir))
+    (workdir / ".gitignore").write_text("*.pyc\n")
+    (workdir / ".env.example").write_text("KEY=\n")
+    noise = workdir / ".cache"
+    noise.mkdir()
+    (noise / "junk.bin").write_bytes(b"x")
+
+    reported = tools._snapshot_workdir_files(str(workdir))
+    assert ".gitignore" in reported and ".env.example" in reported
+    assert not any(name.startswith(".cache/") for name in reported), reported
+    assert ".gitignore" in tools._created_file_sentinels(str(workdir), before)
+
+
+def test_a_name_the_route_would_refuse_is_never_reported(tmp_path, monkeypatch):
+    """A backslash or control character is legal in a POSIX filename but the
+    download route rejects it, so the card must not offer it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_badname"))
+    before = tools._snapshot_workdir_files(str(workdir))
+    for name in ("back\\slash.csv", "bell\x07.csv", "ok.csv"):
+        try:
+            (workdir / name).write_text("x")
+        except OSError:
+            continue
+
+    reported = tools._snapshot_workdir_files(str(workdir))
+    assert "ok.csv" in reported
+    assert not any("\\" in name or any(ord(c) < 32 for c in name) for name in reported), reported
+    del before
+
+
+def test_deleting_a_chat_right_after_an_upgrade_finds_its_legacy_sandbox(tmp_path, monkeypatch):
+    """The first thing a user does may be a delete, before any tool has run."""
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_oldchat"
+    legacy.mkdir(parents = True)
+    (legacy / "sales.csv").write_text("a,b\n")
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    assert tools.remove_session_sandbox("__LOCALID_oldchat", delete_files = True) is True
+    assert not legacy.exists()
+    assert not (Path(tools.sandbox_root()) / "__LOCALID_oldchat").exists()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

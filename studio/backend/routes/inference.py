@@ -13533,7 +13533,7 @@ def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
 # A tool may write into a subdirectory, so a single segment is not enough. Taken
 # from the snapshot walk rather than restated, so the card can never advertise a
 # file this route would then refuse.
-from core.inference.tools import _MAX_SANDBOX_PATH_SEGMENTS
+from core.inference.tools import _MAX_SANDBOX_PATH_SEGMENTS, _servable_segment
 
 
 def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
@@ -13580,7 +13580,8 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
             else [d for d in sorted(dirs) if not d.startswith(".")]
         )
         for entry in sorted(entries):
-            if entry.startswith(".") or entry.startswith("studio_exec_"):
+            # Mirrors the snapshot: internal scratch out, dotfiles in.
+            if entry.startswith("studio_exec_") or not _servable_segment(entry):
                 continue
             path = os.path.join(base, entry)
             try:

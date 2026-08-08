@@ -7302,6 +7302,9 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
         return False
     if session_id.startswith(_PROJECT_SESSION_PREFIX):
         return False
+    # Deleting a chat can be the first thing that happens after an upgrade, and
+    # the folder to remove may still be at the legacy root.
+    _migrate_legacy_sandbox(sandbox_root())
     root = os.path.realpath(sandbox_root())
     target = os.path.realpath(os.path.join(root, session_id))
     if os.path.dirname(target) != root or not os.path.isdir(target):  # contained
@@ -10365,6 +10368,15 @@ _MAX_SANDBOX_PATH_SEGMENTS = 4
 _MAX_SNAPSHOT_FILES = 2000  # a shard-writing script must not blow up the result
 
 
+# The same allowlist the download route applies per segment, so a name that
+# route would refuse never reaches a file chip.
+_SERVABLE_SEGMENT_RE = re.compile(r"\A[^/\\\x00-\x1f]{1,255}\Z")
+
+
+def _servable_segment(name: str) -> bool:
+    return name not in (".", "..") and bool(_SERVABLE_SEGMENT_RE.match(name))
+
+
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     """relative path -> change key for every regular file, for the post-run diff.
 
@@ -10380,13 +10392,15 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     for base, dirs, names in os.walk(workdir):
         # depth 0 is the workdir itself, whose files are one segment.
         depth = base[len(workdir) :].count(os.sep)
+        # Dot-directories stay out: .git, .cache and friends are where the noise
+        # lives. Dot-FILES are reported, since .gitignore is a real artifact.
         dirs[:] = (
             []
             if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
-            else [d for d in dirs if not d.startswith(".")]
+            else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
         )
         for name in names:
-            if name.startswith(".") or name.startswith(_INTERNAL_FILE_PREFIXES):
+            if name.startswith(_INTERNAL_FILE_PREFIXES) or not _servable_segment(name):
                 continue
             path = os.path.join(base, name)
             try:
