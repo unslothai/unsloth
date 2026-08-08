@@ -2191,8 +2191,10 @@ const Composer: FC<{
 
     // A fresh chat re-keys from "single:new" to its thread id under the same
     // composer, so follow it; a real thread switch keeps the original target.
+    const stillThisComposer = () =>
+      composerIdentityRef.current === identityAtSetup;
     const requeueKey = () =>
-      composerIdentityRef.current === identityAtSetup
+      stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
         : targetKey;
 
@@ -2202,6 +2204,8 @@ const Composer: FC<{
       }
       draining = true;
       setMaterializingDroppedImages(true);
+      let readFailures = 0;
+      let lastReadError: unknown;
       try {
         while (!disposed) {
           const intents = useNativeIntentStore
@@ -2222,23 +2226,12 @@ const Composer: FC<{
             try {
               file = await nativeAttachmentIntentToFile(intent);
             } catch (error) {
-              toast.error("Could not attach dropped images", {
-                description:
-                  error instanceof Error ? error.message : String(error),
-              });
-              // Only the chat that owns this drop: the composer is reused
-              // across chat switches, so a late failure must not cancel a
-              // send parked by whoever is on screen now.
-              if (!disposed && nativeAttachmentTargetKeyRef.current === targetKey) {
-                cancelQueuedSendRef.current?.();
-              }
-              const remaining = intents.slice(index + 1);
-              if (remaining.length > 0) {
-                useNativeIntentStore
-                  .getState()
-                  .addImageAttachments(requeueKey(), remaining);
-              }
-              return;
+              // Carry on to the next image and report once below: a whole batch
+              // going unreadable at once (volume ejected, tokens expired) would
+              // otherwise be one toast per file.
+              readFailures += 1;
+              lastReadError = error;
+              continue;
             }
             if (
               disposed ||
@@ -2251,21 +2244,28 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
-            } catch (error) {
-              // Rejections here are about the chat, not the file: no vision model,
-              // or none loaded (Rust enforces the adapter's 20 MiB cap). The rest
-              // fails identically, so drop the batch rather than toast every file.
-              toast.error("Could not attach dropped images", {
-                description:
-                  error instanceof Error ? error.message : String(error),
-              });
-              cancelQueuedSendRef.current?.();
+            } catch {
+              // Chat-wide, not per file: no vision model, or none loaded. The
+              // adapter has already toasted, and the rest of the batch would
+              // fail the same way, so stop here quietly.
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
               return;
             }
           }
         }
       } finally {
         draining = false;
+        if (readFailures > 0) {
+          toast.error("Could not attach dropped images", {
+            description:
+              lastReadError instanceof Error
+                ? lastReadError.message
+                : String(lastReadError),
+          });
+          // A re-key is still this composer, so its parked send is ours to drop;
+          // a real thread switch is not.
+          if (stillThisComposer()) cancelQueuedSendRef.current?.();
+        }
         // A drain for a target the composer has already left must not touch the
         // flag: cleanup cleared it, and the live target may have set it again.
         if (disposed) {
