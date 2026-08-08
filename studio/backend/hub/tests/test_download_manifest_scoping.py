@@ -331,3 +331,40 @@ def test_normalize_hub_cache_degrades_when_resolve_refuses(monkeypatch, tmp_path
     monkeypatch.setattr(Path, "resolve", _refuse)
     expected = os.path.normcase(str(tmp_path / "hub"))
     assert state_dir.normalize_hub_cache(tmp_path / "hub") == expected
+
+
+def test_degraded_normalization_matches_its_own_recovery_probe(monkeypatch, tmp_path):
+    """The two halves of the resolve-failed pair have to agree on one spelling.
+
+    normalize_hub_cache degrades to the expanded spelling when ``resolve``
+    refuses, and legacy_cache_scope_name is what recovers state written in that
+    state. If the degraded branch skipped expanduser while the probe applied it,
+    a "~"-spelled cache would file state under a digest no reader could rebuild
+    -- and its recorded ownership is not absolute, so nothing else could
+    attribute it either.
+    """
+    spellings = ["~/hf-hub", str(tmp_path / "hub") + "/", str(tmp_path / "hub" / "." / "x")]
+
+    def _refuse(self, strict = False):
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(Path, "resolve", _refuse)
+    for spelling in spellings:
+        assert state_dir.cache_scope_name(spelling) == state_dir.legacy_cache_scope_name(spelling)
+
+
+def test_expanduser_failure_does_not_escape_a_plain_read(monkeypatch, tmp_path):
+    """A homeless "~" must not turn read_manifest into a RuntimeError.
+
+    legacy_cache_scope_name is fed the caller's raw spelling now, so it sees
+    values the canonical path had already expanded away.
+    """
+
+    def _refuse(self):
+        raise RuntimeError("Could not determine home directory")
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(Path, "expanduser", _refuse)
+
+    assert state_dir.cache_scope_names("~/hf-hub")
+    assert download_manifest.read_manifest("model", "Org/Model", hub_cache = "~/hf-hub") is None

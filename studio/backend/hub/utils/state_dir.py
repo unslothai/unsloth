@@ -259,9 +259,14 @@ def normalize_hub_cache(hub_cache: str | Path) -> str:
     except (OSError, RuntimeError, ValueError):
         # Windows can refuse to resolve a path it can still open (OneDrive
         # placeholders, a locked junction). Degrade to the expanded spelling
-        # rather than dropping the scope; legacy_cache_scope_name below is the
-        # read-side counterpart that recovers state written in this state.
-        resolved = str(hub_cache)
+        # rather than dropping the scope. It has to be exactly what
+        # legacy_cache_scope_name below builds, or that read-side counterpart
+        # would not recover the state this branch writes -- so expanduser here
+        # too, and fall back again if even that is unavailable.
+        try:
+            resolved = str(Path(hub_cache).expanduser())
+        except (OSError, RuntimeError, ValueError):
+            resolved = str(hub_cache)
     return os.path.normcase(resolved)
 
 
@@ -285,7 +290,13 @@ def legacy_cache_scope_name(hub_cache: str | Path) -> str:
     Must be given the caller's own spelling of the path: handed an already
     canonicalized one it returns the canonical digest and recovers nothing.
     """
-    normalized = os.path.normcase(str(Path(hub_cache).expanduser()))
+    try:
+        normalized = os.path.normcase(str(Path(hub_cache).expanduser()))
+    except (OSError, RuntimeError, ValueError):
+        # Guarded like normalize_hub_cache, and for the same reason: this is now
+        # fed the caller's raw spelling, so a homeless "~" that expanduser
+        # refuses would otherwise escape a plain read as a RuntimeError.
+        normalized = os.path.normcase(str(hub_cache))
     return _cache_scope_digest(normalized)
 
 

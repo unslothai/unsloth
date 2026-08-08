@@ -1618,11 +1618,15 @@ def _iter_variant_state_files(
                     variant_payload = None
                 variant = _variant_from_state_payload(variant_payload, fallback)
                 try:
+                    # Unscoped: only the basename is compared below, and that is
+                    # the same under every scope. Asking for a scoped path would
+                    # re-derive the digest -- and pay its ``resolve`` -- once per
+                    # candidate file, for a directory component never read.
                     canonical = path_factory(
                         repo_type,
                         repo_id,
                         variant,
-                        hub_cache = None if legacy else requested,
+                        hub_cache = None,
                         create = False,
                     )
                 except (UnicodeError, ValueError, OSError):
