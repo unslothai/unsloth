@@ -162,8 +162,6 @@ def _clean_scraped_text(text: str) -> str:
     return _BLANK_RUN.sub("\n\n", "\n".join(kept)).strip()
 
 
-
-
 class RunCancelled(Exception):
     pass
 
@@ -677,7 +675,6 @@ def _split_rag_result(result: str) -> tuple[str, list[dict[str, Any]]]:
     return text.rstrip(), sources
 
 
-
 def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     """A step that gathered no evidence failed, whether the tool errored or simply matched nothing.
 
@@ -687,7 +684,6 @@ def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     if rag_sources:
         return False
     return is_tool_error(web_result) or web_result.strip() in EMPTY_SEARCH_RESULTS
-
 
 
 def _update_assistant(
@@ -975,7 +971,11 @@ class ResearchSupervisor:
             raise RuntimeError("Research is waiting for the Studio server port")
         return f"http://127.0.0.1:{port}/v1/chat/completions"
 
-    async def _wait_for_local_model(self, run: dict, max_seconds: float | None = None) -> bool:
+    async def _wait_for_local_model(
+        self,
+        run: dict,
+        max_seconds: float | None = None,
+    ) -> bool:
         """Wait, up to the run's model timeout, for a model to be loaded again; True if one was.
 
         A durable run resumes after a Studio restart and is approved long after it was created,
@@ -1001,9 +1001,7 @@ class ResearchSupervisor:
                 return True
         return False
 
-    async def _wait_for_model_switch(
-        self, run: dict, response: httpx.Response, waits: int
-    ) -> None:
+    async def _wait_for_model_switch(self, run: dict, response: httpx.Response, waits: int) -> None:
         """Wait out an in-flight model switch before re-sending.
 
         A model is loaded, so ``_local_model_ready`` cannot tell this apart from success: only
@@ -1016,9 +1014,7 @@ class ResearchSupervisor:
         # for the refusal, or the enclosing wall clock fires first and reports a timeout instead.
         budget = float(run["config"]["budgets"]["modelTimeoutSeconds"]) / (_MAX_MODEL_WAITS + 1)
         remaining = min(step * waits, _NAMED_MODEL_WAIT_SECONDS, budget)
-        logger.info(
-            "research.waiting_for_model_switch run_id=%s seconds=%.0f", run_id, remaining
-        )
+        logger.info("research.waiting_for_model_switch run_id=%s seconds=%.0f", run_id, remaining)
         while remaining > 0:
             await self._check_active(run_id)
             await asyncio.sleep(min(_MODEL_WAIT_POLL_SECONDS, remaining))
@@ -1315,9 +1311,7 @@ class ResearchSupervisor:
                                 await response.aclose()
                                 response = None
                             if unloaded == "switching":
-                                await self._wait_for_model_switch(
-                                    run, exc.response, model_waits
-                                )
+                                await self._wait_for_model_switch(run, exc.response, model_waits)
                             elif unloaded:
                                 # Nothing loaded (restart, eject): wait for a model to come back,
                                 # without spending a transport attempt.
@@ -1434,12 +1428,7 @@ class ResearchSupervisor:
             await self._note_phase(run["id"], "phase.ended", phase, call_id, step_position)
 
     async def _emit_preview_labels(
-        self,
-        run_id: str,
-        phase: str,
-        call_id: str,
-        streamed: str,
-        already_emitted: int,
+        self, run_id: str, phase: str, call_id: str, streamed: str, already_emitted: int
     ) -> int:
         """Publish each plan step title as the planner finishes writing it, and return the
         running total. Turns a multi-minute silent JSON generation into visible progress."""
@@ -1461,12 +1450,7 @@ class ResearchSupervisor:
         return emitted
 
     async def _note_phase(
-        self,
-        run_id: str,
-        event_type: str,
-        phase: str,
-        call_id: str,
-        step_position: int | None,
+        self, run_id: str, event_type: str, phase: str, call_id: str, step_position: int | None
     ) -> None:
         """Bracket one model call with a timeline event.
 

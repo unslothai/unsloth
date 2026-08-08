@@ -151,7 +151,6 @@ def test_agent_uses_valid_action_json_from_reasoning_when_content_is_invalid():
 
 def test_agent_action_preserves_a_bounded_research_state():
     from core.research.parsing import _validate_agent_action
-
     action = _validate_agent_action(
         {
             "action": "search",

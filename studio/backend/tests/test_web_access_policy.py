@@ -271,7 +271,11 @@ def _search_with_raising_ddgs(monkeypatch, exc: Exception) -> str:
         def __init__(self, **_kwargs):
             pass
 
-        def text(self, query, max_results = 5):
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
             raise exc
 
     monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))

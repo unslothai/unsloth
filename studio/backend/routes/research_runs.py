@@ -52,9 +52,7 @@ _DELTA_ONLY_EVENTS = {
     "phase.ended",
 }
 # Dedicated to the blocking event wait so open streams cannot exhaust the default executor.
-_EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(
-    max_workers = 32, thread_name_prefix = "research-events"
-)
+_EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "research-events")
 
 
 class CreateResearchRun(BaseModel):

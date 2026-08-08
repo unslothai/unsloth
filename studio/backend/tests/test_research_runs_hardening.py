@@ -578,13 +578,10 @@ _NO_MODEL = "No model loaded. Call POST /inference/load first."
 
 
 def test_model_unloaded_only_matches_the_no_model_refusal():
-    assert (
-        asyncio.run(research_runs._model_unloaded(_response(400, detail = _NO_MODEL))) == "empty"
-    )
+    assert asyncio.run(research_runs._model_unloaded(_response(400, detail = _NO_MODEL))) == "empty"
     # Any other 400 is a real bad request and must stay non-retryable.
     assert (
-        asyncio.run(research_runs._model_unloaded(_response(400, detail = "Invalid 'tools'")))
-        is None
+        asyncio.run(research_runs._model_unloaded(_response(400, detail = "Invalid 'tools'"))) is None
     )
     assert asyncio.run(research_runs._model_unloaded(_response(500, body = _NO_MODEL))) is None
 
@@ -594,13 +591,9 @@ def test_model_unloaded_matches_the_model_not_found_refusal():
     not_found = json.dumps(
         {"error": {"message": "The model 'local' does not exist", "code": "model_not_found"}}
     )
-    assert (
-        asyncio.run(research_runs._model_unloaded(_response(404, body = not_found))) == "named"
-    )
+    assert asyncio.run(research_runs._model_unloaded(_response(404, body = not_found))) == "named"
     # A 404 that is not about the model stays non-retryable.
-    assert (
-        asyncio.run(research_runs._model_unloaded(_response(404, detail = "Not found"))) is None
-    )
+    assert asyncio.run(research_runs._model_unloaded(_response(404, detail = "Not found"))) is None
 
 
 def test_named_model_refusal_does_not_spend_the_whole_model_budget(monkeypatch):
@@ -649,9 +642,7 @@ def test_stream_completion_waits_out_a_model_not_found_refusal(monkeypatch):
 
     supervisor = _make_supervisor(_check_active)
     report, _reasoning, finish_reason, _usage = asyncio.run(
-        supervisor._stream_completion(
-            _waiting_run(30.0), [{"role": "user"}], report_progress = False
-        )
+        supervisor._stream_completion(_waiting_run(30.0), [{"role": "user"}], report_progress = False)
     )
     assert (report, finish_reason) == ("report", "stop")
     assert len(sent) == 2
@@ -1797,7 +1788,9 @@ def test_retry_after_seconds_reads_only_a_delay():
     assert research_runs._retry_after_seconds(_switch_failed()) == 5.0
     assert research_runs._retry_after_seconds(_switch_failed(None)) is None
     # HTTP-date form and non-positive delays carry no usable delay, so the default applies.
-    assert research_runs._retry_after_seconds(_switch_failed("Wed, 21 Oct 2026 07:28:00 GMT")) is None
+    assert (
+        research_runs._retry_after_seconds(_switch_failed("Wed, 21 Oct 2026 07:28:00 GMT")) is None
+    )
     assert research_runs._retry_after_seconds(_switch_failed("0")) is None
 
 

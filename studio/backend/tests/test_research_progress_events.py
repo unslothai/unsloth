@@ -69,9 +69,7 @@ def _stub_transport(monkeypatch, worker, body: str):
             return None
 
         async def aiter_lines(self):
-            chunk = json.dumps(
-                {"choices": [{"delta": {"content": body}, "finish_reason": "stop"}]}
-            )
+            chunk = json.dumps({"choices": [{"delta": {"content": body}, "finish_reason": "stop"}]})
             yield f"data: {chunk}"
             yield "data: [DONE]"
 
@@ -108,9 +106,7 @@ def test_planning_emits_a_phase_bracket(research_home, monkeypatch):
     _create()
     plan = {"title": "Plan", "steps": [{"title": "One", "query": "first query"}]}
     _stub_transport(monkeypatch, worker, json.dumps(plan))
-    supervisor = worker.ResearchSupervisor(
-        SimpleNamespace(state = SimpleNamespace(server_port = 1))
-    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     run = research_db.claim_next(supervisor.worker_id)
 
     asyncio.run(supervisor._plan(run))
@@ -150,9 +146,7 @@ def test_phase_bracket_closes_when_the_call_fails(research_home, monkeypatch):
         worker.auth_storage, "create_api_key", lambda **kwargs: ("token", {"id": 1})
     )
     monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: None)
-    supervisor = worker.ResearchSupervisor(
-        SimpleNamespace(state = SimpleNamespace(server_port = 1))
-    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     run = research_db.claim_next(supervisor.worker_id)
 
     with pytest.raises(RuntimeError):
@@ -178,17 +172,13 @@ def test_plan_titles_stream_before_the_plan_is_complete(research_home, monkeypat
         ],
     }
     _stub_transport(monkeypatch, worker, json.dumps(plan))
-    supervisor = worker.ResearchSupervisor(
-        SimpleNamespace(state = SimpleNamespace(server_port = 1))
-    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     run = research_db.claim_next(supervisor.worker_id)
 
     asyncio.run(supervisor._plan(run))
 
     labels = [
-        event["data"]["label"]
-        for event in _events("run-1")
-        if event["type"] == "phase.progress"
+        event["data"]["label"] for event in _events("run-1") if event["type"] == "phase.progress"
     ]
     assert labels == ["Overall plan", "Find the spec", "Check adoption"]
 
@@ -239,17 +229,13 @@ def test_titles_split_across_tokens_still_publish(research_home, monkeypatch):
         worker.auth_storage, "create_api_key", lambda **kwargs: ("token", {"id": 1})
     )
     monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: None)
-    supervisor = worker.ResearchSupervisor(
-        SimpleNamespace(state = SimpleNamespace(server_port = 1))
-    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     run = research_db.claim_next(supervisor.worker_id)
 
     asyncio.run(supervisor._plan(run))
 
     labels = [
-        event["data"]["label"]
-        for event in _events("run-1")
-        if event["type"] == "phase.progress"
+        event["data"]["label"] for event in _events("run-1") if event["type"] == "phase.progress"
     ]
     assert labels == ["Overall plan", "Find the spec"]
 
@@ -258,9 +244,7 @@ def test_partial_titles_are_not_published(research_home, monkeypatch):
     from core import research_runs as worker
 
     # Only closed JSON strings count, so a title still being written never reaches the UI.
-    assert worker._streamed_titles('{"title":"Complete","steps":[{"title":"Half') == [
-        "Complete"
-    ]
+    assert worker._streamed_titles('{"title":"Complete","steps":[{"title":"Half') == ["Complete"]
     assert worker._streamed_titles('{"title":"Escaped \\"quoted\\" title"}') == [
         'Escaped "quoted" title'
     ]
@@ -272,9 +256,7 @@ def test_decision_phase_bracket_carries_its_step_position(research_home, monkeyp
 
     _create()
     _stub_transport(monkeypatch, worker, "{}")
-    supervisor = worker.ResearchSupervisor(
-        SimpleNamespace(state = SimpleNamespace(server_port = 1))
-    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     run = research_db.claim_next(supervisor.worker_id)
 
     asyncio.run(
