@@ -314,7 +314,11 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
     tqz = types.ModuleType("torchao.quantization")
     calls = {"n": 0}
 
-    def _quantize(module, config, filter_fn = None):
+    def _quantize(
+        module,
+        config,
+        filter_fn = None,
+    ):
         calls["n"] += 1
 
     tqz.quantize_ = _quantize
@@ -389,7 +393,9 @@ def test_torchao_unavailable_reason_is_resolved_once_and_covers_the_stub(monkeyp
     assert tq.torchao_unavailable_reason() == reason
 
     monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", None)
-    monkeypatch.setitem(sys.modules, "torchao.quantization", types.ModuleType("torchao.quantization"))
+    monkeypatch.setitem(
+        sys.modules, "torchao.quantization", types.ModuleType("torchao.quantization")
+    )
     sys.modules["torchao.quantization"].quantize_ = lambda *a, **k: None
     assert tq.torchao_unavailable_reason() is None
 

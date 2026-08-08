@@ -413,7 +413,6 @@ def _is_out_of_memory(exc: BaseException) -> bool:
     backstop (a CUDA OOM surfaced through another wrapper still says "out of memory")."""
     try:
         import torch
-
         named = tuple(
             t
             for t in (
