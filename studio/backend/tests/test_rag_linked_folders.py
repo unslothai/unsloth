@@ -1071,21 +1071,58 @@ def test_project_rag_cleanup_runs_off_the_event_loop(monkeypatch):
         "createdAt": 1,
         "updatedAt": 1,
     }
-    cleanup_threads = []
+    calls = []
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: project)
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
-    monkeypatch.setattr(chat_history, "delete_chat_project", lambda *args, **kwargs: project)
+    monkeypatch.setattr(
+        chat_history,
+        "_retire_project_rag_sources",
+        lambda project_id: (calls.append(("retire", threading.get_ident())), [dict(id = "f1")])[1],
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "delete_chat_project",
+        lambda *args, **kwargs: (calls.append(("delete", threading.get_ident())), project)[1],
+    )
     monkeypatch.setattr(
         chat_history,
         "_delete_project_rag_sources",
-        lambda project_id: cleanup_threads.append(threading.get_ident()),
+        lambda project_id, folders: calls.append(("cleanup", threading.get_ident(), folders)),
     )
     event_loop_thread = threading.get_ident()
     result = asyncio.run(
         chat_history.delete_project("p1", SimpleNamespace(), current_subject = "test")
     )
     assert result.id == "p1"
-    assert cleanup_threads and cleanup_threads[0] != event_loop_thread
+    assert [call[0] for call in calls] == ["retire", "delete", "cleanup"]
+    assert calls[0][1] != event_loop_thread
+    assert calls[1][1] == event_loop_thread
+    assert calls[2][1] != event_loop_thread
+    assert calls[2][2] == [dict(id = "f1")]
+
+
+def test_project_rag_retirement_failure_prevents_project_deletion(monkeypatch):
+    from routes import chat_history
+
+    deleted = []
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: dict(id = project_id))
+    monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
+    monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
+    monkeypatch.setattr(
+        chat_history,
+        "_retire_project_rag_sources",
+        lambda project_id: (_ for _ in ()).throw(sqlite3.OperationalError("database is busy")),
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "delete_chat_project",
+        lambda *args, **kwargs: deleted.append(True),
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match = "database is busy"):
+        asyncio.run(chat_history.delete_project("p1", SimpleNamespace(), current_subject = "test"))
+    assert deleted == []
 
 
 @requires_sqlite_vec

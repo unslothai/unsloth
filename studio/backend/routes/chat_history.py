@@ -550,8 +550,19 @@ async def patch_project(
     return ChatProject(**project)
 
 
-def _delete_project_rag_sources(project_id: str) -> None:
-    """Synchronously remove project RAG state; callers run this in a worker thread."""
+def _retire_project_rag_sources(project_id: str) -> list[dict]:
+    """Prevent new RAG sources from being linked while a project is deleted."""
+    from storage import rag_db
+
+    if not rag_db.RAG_AVAILABLE:
+        return []
+    from core.rag import folder_sync, store as rag_store
+
+    return folder_sync.retire_scope(rag_store.project_scope(project_id))
+
+
+def _delete_project_rag_sources(project_id: str, folders: list[dict] | None = None) -> None:
+    """Synchronously remove retired project RAG state; callers run this in a worker thread."""
     import os
 
     from storage import rag_db
@@ -563,7 +574,8 @@ def _delete_project_rag_sources(project_id: str) -> None:
 
     uploads = os.path.realpath(str(rag_uploads_root()))
     scope = rag_store.project_scope(project_id)
-    folders = folder_sync.retire_scope(scope)
+    if folders is None:
+        folders = folder_sync.retire_scope(scope)
     for folder in folders:
         try:
             folder_sync.delete_folder(folder["id"])
@@ -591,9 +603,15 @@ async def delete_project(
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
+    if get_chat_project(project_id) is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Project {project_id} not found",
+        )
     _cancel_active_research(
         request, [thread["id"] for thread in list_chat_threads(project_id = project_id)]
     )
+    retired_folders = await asyncio.to_thread(_retire_project_rag_sources, project_id)
     project = delete_chat_project(project_id, delete_files = delete_files)
     if project is None:
         raise HTTPException(
@@ -602,7 +620,7 @@ async def delete_project(
         )
     # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
     try:
-        await asyncio.to_thread(_delete_project_rag_sources, project_id)
+        await asyncio.to_thread(_delete_project_rag_sources, project_id, retired_folders)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     return ChatProject(**project)
