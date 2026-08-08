@@ -14,6 +14,7 @@ the console install this is about; setup.ps1 itself is not otherwise covered her
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
@@ -883,3 +884,98 @@ def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_pa
     import json as _json
 
     assert isinstance(_json.loads(payload), dict), "the probe must emit parseable JSON"
+
+
+def test_the_probe_asks_both_powershell_editions(monkeypatch):
+    """pwsh and powershell.exe keep SEPARATE profiles.
+
+    `unsloth studio update` is typed into whichever host the user has open, and probing only
+    powershell.exe missed a proxy living in the PowerShell 7 profile -- the likelier place on
+    a machine that has pwsh at all. The -NoProfile child then had no proxy and setup.ps1's
+    downloads failed.
+    """
+    from unsloth_cli.commands import studio as studio_cmd
+
+    asked: list[str] = []
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    answers = {
+        "pwsh.exe": '{"invoke-webrequest:proxy": "http://seven.corp:8080"}',
+        "powershell.exe": '{"invoke-restmethod:proxy": "http://five.corp:8080"}',
+    }
+
+    def _run(argv, **kwargs):
+        asked.append(argv[0])
+        return _Result(answers[argv[0]])
+
+    monkeypatch.setattr(studio_cmd.subprocess, "run", _run)
+    merged = studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"])
+
+    assert asked == ["pwsh.exe", "powershell.exe"]
+    assert json.loads(merged) == {
+        "invoke-webrequest:proxy": "http://seven.corp:8080",
+        "invoke-restmethod:proxy": "http://five.corp:8080",
+    }
+
+
+def test_the_callers_edition_wins_where_the_two_profiles_disagree(monkeypatch):
+    from unsloth_cli.commands import studio as studio_cmd
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    answers = {
+        "pwsh.exe": '{"invoke-webrequest:proxy": "http://seven.corp:8080"}',
+        "powershell.exe": '{"invoke-webrequest:proxy": "http://five.corp:8080"}',
+    }
+    monkeypatch.setattr(
+        studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]])
+    )
+    merged = studio_cmd._probe_profile_proxy_defaults(["powershell.exe", "pwsh.exe"])
+    assert json.loads(merged) == {"invoke-webrequest:proxy": "http://five.corp:8080"}
+
+
+def test_the_probe_host_order_follows_the_console_the_user_typed_into(monkeypatch):
+    from unsloth_cli.commands import studio as studio_cmd
+
+    monkeypatch.setattr(studio_cmd.shutil, "which", lambda name: f"C:/{name}")
+
+    monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
+    assert studio_cmd._profile_probe_hosts()[0] == "pwsh.exe"
+
+    monkeypatch.setenv("PSModulePath", r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules")
+    assert studio_cmd._profile_probe_hosts()[0] == "powershell.exe"
+
+    # A host that is not installed is not asked.
+    monkeypatch.setattr(studio_cmd.shutil, "which", lambda name: None if name == "pwsh.exe" else "x")
+    assert studio_cmd._profile_probe_hosts() == ["powershell.exe"]
+
+
+def test_the_uv_alias_is_resolved_before_the_path_candidates():
+    """PowerShell resolves an alias ahead of PATH, so `uv` in a profile that aliases it means
+    that binary -- and checking PATH first made the alias branch unreachable on any machine
+    that also has some uv on PATH."""
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    start = _locate(src, "function Resolve-UvExecutable {", "the uv resolver")
+    body = src[start : start + 2500]
+    alias = _locate(body, "Get-Command uv -CommandType Alias", "the alias lookup")
+    apps = _locate(body, "Get-Command uv -CommandType Application", "the PATH lookup")
+    assert alias < apps, "the PATH candidates are consulted before the alias"
+
+
+def test_the_parity_workflow_runs_when_the_studio_command_changes():
+    """The suite asserts unsloth_cli/commands/studio.py's behaviour directly, so a PR touching
+    only that module has to run it. No other workflow invokes this file."""
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "cross-platform-parity-ci.yml"
+    ).read_text(encoding = "utf-8")
+    assert workflow.count("unsloth_cli/commands/studio.py") == 2, (
+        "both the pull_request and push path filters need the module"
+    )

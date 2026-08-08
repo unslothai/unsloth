@@ -25,6 +25,9 @@ on:
       - 'install.sh'
       - 'install.ps1'
       - 'unsloth_cli/__init__.py'
+      # test_installer_profile_hardening.py asserts this module's behaviour directly
+      # (unconditional -NoProfile, the proxy handoff), so a change to it has to run here.
+      - 'unsloth_cli/commands/studio.py'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/test_installer_interactive_prompts.py'
@@ -69,6 +72,9 @@ on:
       - 'install.sh'
       - 'install.ps1'
       - 'unsloth_cli/__init__.py'
+      # test_installer_profile_hardening.py asserts this module's behaviour directly
+      # (unconditional -NoProfile, the proxy handoff), so a change to it has to run here.
+      - 'unsloth_cli/commands/studio.py'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/test_installer_interactive_prompts.py'

@@ -2385,17 +2385,15 @@ exit 0
         # -All: without it Get-Command's ordering across several matches is incidental
         # rather than documented, and picking the wrong one would silently change which
         # uv runs on a machine that has two.
-        $apps = @(
-            Get-Command uv -CommandType Application -All -ErrorAction SilentlyContinue |
-                Where-Object { $_.Source }
-        )
-        # Applications come back in PATH order (PATHEXT deciding within a directory), so
-        # on a console with no profile overrides this is the uv the bare token would run.
-        if ($apps.Count -gt 0) { return $apps[0].Source }
-        # Nothing on PATH under that name. An ALIAS pointing at a real executable is
-        # still a legitimate way to have uv, so follow it -- but only as far as an
-        # Application, and return the resolved path rather than the alias name so the
-        # rest of the script is not going back through command discovery.
+        # An ALIAS pointing at a real executable FIRST, because that is what the bare token
+        # `uv` would actually run: PowerShell resolves aliases ahead of PATH. Deferring to the
+        # PATH list made the alias branch unreachable on any machine that also has some uv on
+        # PATH, and then every install in this script went through a uv the user had
+        # deliberately pointed away from -- possibly a stale one, and possibly one whose
+        # version gate triggers a needless replacement.
+        #
+        # Followed only as far as an Application, and the resolved path is returned rather than
+        # the alias name, so the rest of the script is not going back through command discovery.
         $alias = Get-Command uv -CommandType Alias -ErrorAction SilentlyContinue
         while ($alias -and $alias.ResolvedCommand) {
             $target = $alias.ResolvedCommand
@@ -2403,6 +2401,13 @@ exit 0
             if ($target.CommandType -ne 'Alias') { break }
             $alias = $target
         }
+        $apps = @(
+            Get-Command uv -CommandType Application -All -ErrorAction SilentlyContinue |
+                Where-Object { $_.Source }
+        )
+        # Applications come back in PATH order (PATHEXT deciding within a directory), so
+        # on a console with no profile overrides this is the uv the bare token would run.
+        if ($apps.Count -gt 0) { return $apps[0].Source }
         # Anything else named uv is a function, a cmdlet, or an alias to one. Do NOT
         # hand back the bare token here: a wrapper that answers `--version` with a
         # plausible number would pass the version gate and then receive every install

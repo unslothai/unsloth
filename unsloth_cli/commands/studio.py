@@ -11,6 +11,7 @@ import platform
 import re
 import secrets
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -2843,7 +2844,26 @@ _PS_PROXY_PROBE = (
 )
 
 
-def _probe_profile_proxy_defaults(powershell: str) -> Optional[str]:
+def _profile_probe_hosts() -> list[str]:
+    r"""The PowerShell hosts whose profile to ask, most likely caller first.
+
+    The two editions keep SEPARATE profiles, and `unsloth studio update` is typed into
+    whichever one the user has open. Probing only powershell.exe missed a proxy that lives in
+    the PowerShell 7 profile -- the likelier place on a machine that has pwsh at all -- and the
+    -NoProfile child then downloaded nothing. Both are asked; the caller's edition goes first so
+    its value wins where they disagree.
+
+    The caller is inferred from PSModulePath, which every host exports: Windows PowerShell's
+    points at ``...\WindowsPowerShell\v1.0\Modules`` and pwsh's at ``...\PowerShell\7\Modules``.
+    """
+    hosts = ["pwsh.exe", "powershell.exe"]
+    module_path = os.environ.get("PSModulePath", "").lower()
+    if "windowspowershell" in module_path and "powershell\\7" not in module_path:
+        hosts = ["powershell.exe", "pwsh.exe"]
+    return [host for host in hosts if shutil.which(host)]
+
+
+def _probe_profile_proxy_defaults(powershell: str | list[str]) -> Optional[str]:
     """The caller's profile proxy defaults as JSON, or None.
 
     install.ps1 hands these over in the environment, but a standalone `unsloth studio update`
@@ -2851,31 +2871,41 @@ def _probe_profile_proxy_defaults(powershell: str) -> Optional[str]:
     PowerShell variable does not reach this Python process, let alone the -NoProfile child
     below it. So ask for it, in a throwaway process whose only job is to print the table.
 
+    Several hosts may be given: their answers are MERGED, earlier hosts winning per key, so a
+    machine whose proxy lives in only one of the two profiles is still covered.
+
     Entirely best effort. A profile that is slow, interactive or broken costs one timeout and
     the child proceeds exactly as it does today."""
-    try:
-        probe = subprocess.run(
-            [powershell, "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
-             _PS_PROXY_PROBE],
-            capture_output = True,
-            text = True,
-            timeout = 20,
-            **_windows_hidden_subprocess_kwargs(),
-        )
-    except (OSError, subprocess.SubprocessError):
+    hosts = [powershell] if isinstance(powershell, str) else list(powershell)
+    merged: dict = {}
+    for host in hosts:
+        try:
+            probe = subprocess.run(
+                [host, "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+                 _PS_PROXY_PROBE],
+                capture_output = True,
+                text = True,
+                timeout = 20,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        payload = (probe.stdout or "").strip()
+        if not payload:
+            continue
+        try:
+            # Validated rather than trusted: a profile that prints a banner would otherwise have
+            # us hand the child a string ConvertFrom-Json throws on.
+            parsed = json.loads(payload)
+        except ValueError:
+            continue
+        if not isinstance(parsed, dict) or not parsed:
+            continue
+        for key, value in parsed.items():
+            merged.setdefault(key, value)
+    if not merged:
         return None
-    payload = (probe.stdout or "").strip()
-    if not payload:
-        return None
-    try:
-        # Validated rather than trusted: a profile that prints a banner would otherwise have us
-        # hand the child a string ConvertFrom-Json throws on.
-        parsed = json.loads(payload)
-    except ValueError:
-        return None
-    if not isinstance(parsed, dict) or not parsed:
-        return None
-    return json.dumps(parsed)
+    return json.dumps(merged)
 
 
 _PS_PROXY_DEFAULTS_PRELUDE = (
@@ -2907,7 +2937,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         # it, because -NoProfile below drops the profile that holds it and setup.ps1 downloads
         # the VC++ runtime and the uv installer on its own.
         if not os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS"):
-            probed = _probe_profile_proxy_defaults("powershell.exe")
+            probed = _probe_profile_proxy_defaults(_profile_probe_hosts() or ["powershell.exe"])
             if probed:
                 env = {**(env or os.environ), "_UNSLOTH_PS_PROXY_DEFAULTS": probed}
         # -NoProfile unconditionally, not just on the hidden branch. setup.ps1 wants
