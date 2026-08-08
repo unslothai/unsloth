@@ -8648,11 +8648,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 # only unloaded the ACTIVE one, so a model cached behind it is
                 # still in VRAM and was invisible to every client reading this.
                 loaded = ([_display_model_id] if _display_model_id else [])
-                + [
-                    name
-                    for name in _standard_models_still_held()
-                    if name != _display_model_id
-                ],
+                + [name for name in _standard_models_still_held() if name != _display_model_id],
                 inference = _inference_cfg,
                 **_runtime_fields,
                 requested_context_length = llama_backend.requested_n_ctx,
