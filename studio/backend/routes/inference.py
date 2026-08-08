@@ -13572,9 +13572,11 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
     names: "list[str]" = []
     for base, dirs, entries in os.walk(sandbox_dir):
         depth = base[len(sandbox_dir) :].count(os.sep)
-        dirs[:] = [] if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1 else [
-            d for d in sorted(dirs) if not d.startswith(".")
-        ]
+        dirs[:] = (
+            []
+            if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
+            else [d for d in sorted(dirs) if not d.startswith(".")]
+        )
         for entry in sorted(entries):
             if entry.startswith(".") or entry.startswith("studio_exec_"):
                 continue

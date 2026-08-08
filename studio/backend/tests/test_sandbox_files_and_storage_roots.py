@@ -114,10 +114,7 @@ def test_sandbox_listing_route_exists():
     sandbox_routes = sorted(r.path for r in router.routes if "sandbox" in r.path)
     print(f"\nsandbox routes = {sandbox_routes}")
     # :path so a file written into a subdirectory is reachable.
-    assert sandbox_routes == [
-        "/sandbox/{session_id}",
-        "/sandbox/{session_id}/{filename:path}",
-    ]
+    assert sandbox_routes == ["/sandbox/{session_id}", "/sandbox/{session_id}/{filename:path}"]
 
     import inspect
     from routes import inference
@@ -401,8 +398,7 @@ def test_clearing_all_chats_cleans_up_their_sandboxes(tmp_path, monkeypatch):
 
     import routes.chat_history as chat_history
 
-    monkeypatch.setattr(chat_history, "list_chat_threads",
-                        lambda: [{"id": "__LOCALID_bulk111"}])
+    monkeypatch.setattr(chat_history, "list_chat_threads", lambda: [{"id": "__LOCALID_bulk111"}])
     monkeypatch.setattr(chat_history, "clear_chat_history", lambda: None)
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
 
