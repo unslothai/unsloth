@@ -194,3 +194,39 @@ class TestSlotsThatFitOnGpu:
         assert _fit(ubatch_for_slots = ubatch_for_slots) == (([0], False, 3), [3])
         # held at the requested count's micro-batch, the same card loses a slot
         assert _fit() == (([0], False, 2), [64, 64])
+
+
+class TestMtpReserveIsRepricedPerCandidate:
+    """The MTP reserve is not slot-independent: compact SWA scales its window allowance by
+    the slot count under kv_unified, and an MLA target with recurrent (KDA) layers charges
+    per slot. Holding it at the requested count over-charged every candidate, so a smaller
+    one that fits was rejected and the load kept --fit and offloaded to host (PR #8172)."""
+
+    def _fit(self, mtp_for_slots, base_mib = 22000):
+        return _backend()._slots_that_fit_on_gpu(
+            4,
+            CTX,
+            [(0, 24576)],
+            {0: 24576},
+            int(base_mib * MIB),
+            "q8_0",
+            FRAC,
+            0,
+            1,
+            n_ubatch = 512,
+            mtp_bytes_for_slots = mtp_for_slots,
+        )
+
+    def test_a_slot_scaled_reserve_shrinks_with_the_candidate(self):
+        # 500 MiB per slot: par3 (22000+1162+1500) over 23839, par2 (22000+604+1000) fits.
+        gi, use_fit, slots = self._fit(lambda s: int(500 * s * MIB))
+        assert use_fit is False and gi == [0] and slots == 2
+
+    def test_holding_the_reserve_at_the_requested_count_would_reject_them_all(self):
+        # The old behaviour: every candidate charged the 4-slot reserve, so even one slot
+        # (22000+46+2000) looked too big and the load stayed on --fit.
+        gi, use_fit, slots = self._fit(lambda _s: int(500 * 4 * MIB))
+        assert use_fit is True and gi is None and slots == 4
+
+    def test_no_reserve_callable_matches_a_zero_reserve(self):
+        assert self._fit(None) == self._fit(lambda _s: 0)

@@ -6437,11 +6437,12 @@ class LlamaCppBackend:
         flash_attn: bool = True,
         split_extra_bytes: int = 0,
         ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
+        mtp_bytes_for_slots: Optional[Callable[[int], int]] = None,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
         so Unsloth keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
         to host and collapses decode ~3x (oobabooga #6718). ``base_footprint_bytes`` is the
-        slot-independent footprint (weights + soft overhead + MTP + context-linear compute,
+        slot-independent footprint (weights + soft overhead + context-linear compute,
         minus the folded compute buffer); each candidate re-adds the slot-sized compute buffer
         and KV, then re-selects GPUs like the explicit-context path -- ``split_extra_bytes``
         included, so a multi-GPU candidate is re-checked at the split rate. Returns
@@ -6451,7 +6452,12 @@ class LlamaCppBackend:
         --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
         against it, so a batch below the requested slot count shrinks as the candidates
         do. Holding it at the requested count made a fitting candidate look too big and
-        dropped the load to --fit offload."""
+        dropped the load to --fit offload.
+        ``mtp_bytes_for_slots`` does the same for the MTP reserve, which is NOT
+        slot-independent: compact SWA scales its window allowance by the slot count under
+        kv_unified, and an MLA target with recurrent (KDA) layers charges per slot. Holding
+        the reserve at the requested count over-charged every candidate, so a smaller one
+        that fits could be rejected and the load kept --fit."""
         for slots in range(n_parallel - 1, 0, -1):
             _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
@@ -6462,6 +6468,7 @@ class LlamaCppBackend:
             total = (
                 base_footprint_bytes
                 + cb
+                + (mtp_bytes_for_slots(slots) if mtp_bytes_for_slots else 0)
                 + self._estimate_kv_cache_bytes(
                     effective_ctx,
                     cache_type_kv,
@@ -10218,8 +10225,15 @@ class LlamaCppBackend:
                                 )
                                 return v if v is not None else 0
 
-                    def _mtp_bytes(ctx: int) -> int:
-                        return mtp_overhead_fn(ctx) if mtp_overhead_fn is not None else 0
+                    def _mtp_bytes(ctx: int, slots: Optional[int] = None) -> int:
+                        # slots overrides the closure's requested count: the reserve is
+                        # slot-scaled for compact SWA and MLA+recurrent, so the slot fit
+                        # has to re-price it per candidate rather than reuse this one.
+                        if mtp_overhead_fn is None:
+                            return 0
+                        if slots is None:
+                            return mtp_overhead_fn(ctx)
+                        return mtp_overhead_fn(ctx, _np = slots)
 
                     def _kv_bytes(ctx: int) -> int:
                         return self._estimate_kv_cache_bytes(
@@ -10767,13 +10781,10 @@ class LlamaCppBackend:
                         and self._can_estimate_kv()
                         and effective_ctx > 0
                     ):
-                        # Slot-independent footprint (folded compute buffer swapped out so the
-                        # helper re-adds a slot-sized one per candidate).
+                        # Slot-independent footprint (folded compute buffer and the MTP
+                        # reserve swapped out so the helper re-prices both per candidate).
                         _base_footprint = (
-                            model_size_fit
-                            - _compute_buffer_pipeline
-                            + _mtp_bytes(effective_ctx)
-                            + _cc_bytes(effective_ctx)
+                            model_size_fit - _compute_buffer_pipeline + _cc_bytes(effective_ctx)
                         )
                         _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
                             n_parallel,
@@ -10791,6 +10802,7 @@ class LlamaCppBackend:
                             flash_attn = planned_flash_attn,
                             split_extra_bytes = _cc_split_extra(effective_ctx),
                             ubatch_for_slots = _ubatch_for_slots,
+                            mtp_bytes_for_slots = lambda s: _mtp_bytes(effective_ctx, s),
                         )
                         if not _uf_slots:
                             logger.info(

@@ -15,6 +15,8 @@ Flagged inside `studio/backend` (tests excluded):
     default.
 2.  `n_parallel = <name>` where the name is a saved pre-clamp count, which is
     how a clamp hands slots back to itself across a retry.
+3.  the same clamp spelled as an expression -- `min(n_parallel, 1)`, or a
+    conditional with a literal 1 branch.
 
 Parameter defaults, class-body annotations, `self.<attr>` assignments and
 `max(1, ...)` / `getattr(..., 1)` floors are structurally distinct and pass.
@@ -51,6 +53,23 @@ def _restores_a_saved_count(value: ast.AST) -> bool:
     return isinstance(value, ast.Name) and value.id.endswith("_clamped_slots")
 
 
+def _is_one(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value == 1
+
+
+def _forces_one(value: ast.AST) -> bool:
+    """A clamp spelled as an expression rather than a literal: `min(n_parallel, 1)`
+    or `1 if mtp else n_parallel`. Both pin the count to 1 on some path."""
+    if isinstance(value, ast.IfExp):
+        return _is_one(value.body) or _is_one(value.orelse)
+    return (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Name)
+        and value.func.id == "min"
+        and any(_is_one(a) for a in value.args)
+    )
+
+
 def _findings_for_tree(
     tree: ast.AST, lines: list[str], filename: str
 ) -> list[tuple[str, int, str]]:
@@ -73,6 +92,8 @@ def _findings_for_tree(
                 what = "clamped to a single slot"
             elif _restores_a_saved_count(node.value):
                 what = f"restores the pre-clamp count `{node.value.id}`"
+            elif _forces_one(node.value):
+                what = "pinned to a single slot by an expression"
             else:
                 continue
             if ALLOW_MARKER in lines[node.lineno - 1]:
@@ -114,6 +135,11 @@ _SELF_TEST_CASES: tuple[tuple[str, int], ...] = (
     ("def load(x):\n    n_parallel: int = x\n", 0),
     ("def load():\n    n_parallel = 1  # allow-slot-clamp: no --kv-unified\n", 0),
     ("def load():\n    n_parallel = _mtp_clamped_slots\n", 1),
+    ("def load(n):\n    n_parallel = min(n, 1)\n", 1),
+    ("def load(n, mtp):\n    n_parallel = 1 if mtp else n\n", 1),
+    ("def load(n):\n    n_parallel = min(n, 1)  # allow-slot-clamp: ok\n", 0),
+    ("def load(n, cap):\n    n_parallel = min(n, cap)\n", 0),
+    ("def load(n, hi):\n    n_parallel = n if n < hi else hi\n", 0),
     ("def load(n_parallel: int = 1):\n    return n_parallel\n", 0),
     ("class A:\n    n_parallel: int = 1\n", 0),
     ("def load():\n    self._requested_n_parallel = 1\n", 0),

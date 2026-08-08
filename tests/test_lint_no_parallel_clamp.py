@@ -29,6 +29,9 @@ CLAMPS = (
     # The annotated spelling of the same clamp: a different AST node, same regression.
     "def load():\n    n_parallel: int = 1\n",
     "async def load():\n    n_parallel: int = 1\n",
+    # Spelled as an expression rather than a literal.
+    "def load(n):\n    n_parallel = min(n, 1)\n",
+    "def load(n, mtp):\n    n_parallel = 1 if mtp else n\n",
     "def load():\n    n_parallel = _mtp_clamped_slots\n",
     "async def load():\n    n_parallel = 1\n",
     "def load():\n    if mtp:\n        n_parallel = 1\n",
@@ -39,6 +42,10 @@ ALLOWED = (
     "def load():\n    n_parallel = 1  # allow-slot-clamp: no --kv-unified\n",
     "def load():\n    n_parallel: int = 1  # allow-slot-clamp: no --kv-unified\n",
     "def load(fit):\n    n_parallel = fit.slots\n",
+    "def load(n):\n    n_parallel = min(n, 1)  # allow-slot-clamp: no --kv-unified\n",
+    # A real bound, and a conditional between two live counts: neither pins to 1.
+    "def load(n, cap):\n    n_parallel = min(n, cap)\n",
+    "def load(n, hi):\n    n_parallel = n if n < hi else hi\n",
     "def load(x):\n    n_parallel: int = x\n",
     # Structurally distinct, so no marker is needed for any of these.
     "def load(n_parallel: int = 1):\n    return n_parallel\n",
