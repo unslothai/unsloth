@@ -323,7 +323,13 @@ def test_rocm_is_detected_off_disk_without_importing_torch(
     assert "torch" not in sys.modules
 
 
-def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch):
+# The two ways a ROCm wheel identifies itself: hip set (pytorch.org), or version tag only
+# (AMD SDK / Radeon wheels, per worker.py::_torch_has_hip).
+_ROCM_WHEELS = [("7.2.1", "2.9.1+rocm7.2.1"), (None, "2.10.0a0+rocm7.10.0a20251116")]
+
+
+@pytest.mark.parametrize("hip,version", _ROCM_WHEELS)
+def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch, hip, version):
     """The one check standing between an API-supplied attention_backend="xformers" and a stub
     that returns None mid-denoise. diffusers' own probe is metadata-based, so with xformers
     installed it believes the stub is usable and will not refuse the backend itself."""
@@ -331,8 +337,11 @@ def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch):
 
     from core.inference.diffusion_attention import select_attention_backend
 
-    monkeypatch.setattr(torch.version, "hip", "7.2.1", raising = False)  # ROCm build
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setattr(torch, "__version__", version)
     rocm = _target()
     for speed in (True, False):
         assert select_attention_backend(rocm, "xformers", speed_active = speed) is None
-        assert select_attention_backend(rocm, "auto", speed_active = speed) != "xformers"
+        assert select_attention_backend(rocm, "auto", speed_active = speed) != "_native_cudnn"
+    # aiter is the AMD kernel: misreading the wheel as NVIDIA drops the one that works here.
+    assert select_attention_backend(rocm, "aiter", speed_active = True) == "aiter"
