@@ -223,6 +223,65 @@ def test_snapshot_options_keep_a_declared_config_name_when_inferring(tmp_path):
     assert local_options._snapshot_options(snapshot) == {("foo", "train")}
 
 
+def test_snapshot_options_infer_under_a_declared_data_dir(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "foo").mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: foo\n  data_dir: foo\n---\ncard\n", encoding = "utf-8"
+    )
+    (snapshot / "foo" / "records.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "test.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets runs inference under foo/ for that config, so the root test file is not its split.
+    assert local_options._snapshot_options(snapshot) == {("foo", "train")}
+
+
+@pytest.mark.parametrize("other", ["test.txt", "test.JPG", "test/notes.bin"])
+def test_snapshot_options_do_not_infer_when_another_split_cannot_build(tmp_path, other):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    path = snapshot / other
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text("row\n", encoding = "utf-8")
+
+    # datasets picks its split patterns over every file, then fails on the split it cannot
+    # build or on the module mismatch, so the advertised train would not have loaded either.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_do_not_infer_across_csv_and_tsv_splits(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+    (snapshot / "test.tsv").write_text("text\nrow\n", encoding = "utf-8")
+
+    # Both build with csv, but tsv carries sep="\t" and datasets compares the whole result.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_do_not_infer_when_an_archive_decides_a_split(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    for index in range(2):
+        (snapshot / f"train{index}.zip").write_bytes(b"zip")
+
+    # datasets reads the archives to pick the module. We do not, so we cannot claim a match.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_suppressed_when_the_scan_is_truncated(tmp_path, monkeypatch):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    for index in range(4):
+        (snapshot / f"records{index}.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    monkeypatch.setattr(local_options, "_MAX_SNAPSHOT_DATA_FILES", 2)
+
+    # A truncated scan cannot see the split datasets would, so it offers nothing at all.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
 def test_snapshot_options_do_not_infer_when_a_loader_only_file_forms_a_split(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
     snapshot.mkdir(parents = True)
@@ -234,12 +293,22 @@ def test_snapshot_options_do_not_infer_when_a_loader_only_file_forms_a_split(tmp
 
 
 def test_split_module_samples_only_the_first_files_datasets_would(tmp_path):
-    csv = [(local_options.PurePosixPath(f"train/{i:04d}.csv"), None) for i in range(200)]
+    csv = [(local_options.PurePosixPath(f"train/{i:04d}.csv"), "csv") for i in range(200)]
     parquet = [
-        (local_options.PurePosixPath(f"train/{i:04d}.parquet"), None) for i in range(1000, 1201)
+        (local_options.PurePosixPath(f"train/{i:04d}.parquet"), "parquet")
+        for i in range(1000, 1201)
     ]
 
     assert local_options._split_module(csv + parquet) == "csv"
+
+
+def test_split_module_ranks_folder_metadata_last(tmp_path):
+    entries = [
+        (local_options.PurePosixPath("train/data.csv"), "csv"),
+        (local_options.PurePosixPath("train/metadata.parquet"), "parquet"),
+    ]
+
+    assert local_options._split_module(entries) == "csv"
 
 
 def test_snapshot_options_infer_undeclared_splits_from_loadable_files(tmp_path):

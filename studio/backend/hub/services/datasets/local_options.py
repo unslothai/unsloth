@@ -34,7 +34,9 @@ _MAX_PROCESSED_METADATA_FILES = 256
 _MAX_PROCESSED_WALK_DEPTH = 4
 _MAX_OPTIONS = 2048
 _MAX_OPTION_LENGTH = 128
-_MAX_SNAPSHOT_DATA_FILES = 10_000
+# Only names are read during the scan, so this can sit well above any real snapshot. Past it
+# the scan is truncated and cannot be compared with the loader, so nothing is offered.
+_MAX_SNAPSHOT_DATA_FILES = 200_000
 _COMPRESSION_EXTENSIONS = ("", ".gz", ".bz2", ".xz", ".zst", ".zip")
 _SPLIT_KEYWORDS = {
     "train": frozenset({"train", "training"}),
@@ -58,54 +60,48 @@ _IGNORED_DATA_FILENAMES = frozenset(
 _EXTENSION_MODULES = {".parquet": "parquet", ".jsonl": "json", ".json": "json", ".csv": "csv"}
 # Its tie-break when a split mixes extensions: most files, then this order.
 _EXTENSION_PRIORITY = {ext: rank for rank, ext in enumerate(reversed(list(_EXTENSION_MODULES)))}
-# Extensions datasets loads but training does not. They never become an option; they are here
-# because they still join a split and pick its module, and a snapshot whose splits disagree
-# loads nothing at all. Media collapse to one name since none of them is ever offerable.
-_LOADER_EXTENSION_MODULES = {
-    ".txt": "text",
-    ".tsv": "csv",
-    ".ndjson": "json",
+# datasets' own extension table. Structured names are case-sensitive; the media builders are
+# the only ones registered in both cases, so they collapse to one name (no media split is ever
+# offerable, so telling image from audio would change nothing) and match case-insensitively.
+_STRUCTURED_MODULES = {
     ".arrow": "arrow",
-    ".xml": "xml",
+    ".csv": "csv",
     ".geoparquet": "parquet",
     ".gpq": "parquet",
-    ".tar": "webdataset",
-    ".zip": "archive",
     ".h5": "hdf5",
     ".hdf5": "hdf5",
-    ".pdf": "pdf",
-    **dict.fromkeys(
-        (
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".bmp",
-            ".tif",
-            ".tiff",
-            ".webp",
-            ".wav",
-            ".mp3",
-            ".flac",
-            ".ogg",
-            ".opus",
-            ".m4a",
-            ".mp4",
-            ".mkv",
-            ".mov",
-            ".avi",
-            ".webm",
-        ),
-        "media",
-    ),
+    ".json": "json",
+    ".jsonl": "json",
+    ".ndjson": "json",
+    ".parquet": "parquet",
+    ".tar": "webdataset",
+    ".txt": "text",
+    ".xml": "xml",
+    # datasets compares the whole builder result, and tsv carries sep="\t", so it is not csv.
+    ".tsv": "csv+tab",
 }
+_MEDIA_EXTENSIONS = frozenset(
+    ".3g2 .3gp .aiff .apng .asf .au .avi .avr .blp .bmp .bufr .bw .caf .cur .dcx .dds .dib .emf"
+    " .eps .f4v .fit .fits .flac .flc .fli .flv .ftc .ftu .gbr .gif .grib .htk .icb .icns .ico"
+    " .iim .im .ircam .j2c .j2k .jfif .jp2 .jpc .jpe .jpeg .jpf .jpg .jpx .m4v .mat4 .mat5 .mkv"
+    " .mov .mp3 .mp4 .mpc2k .mpeg .mpg .msp .mxf .nist .nut .ogg .ogm .opus .paf .pbm .pcd .pcx"
+    " .pdf .pgm .png .pnm .ppm .ps .psd .pvf .pxr .ras .raw .rf64 .rgb .rgba .sd2 .sds .sgi .svx"
+    " .tga .tif .tiff .vda .voc .vst .w64 .wav .wavex .webm .webp .wma .wmf .wmv .wve .xbm .xi"
+    " .xpm".split()
+)
+# datasets reads a zip's contents to pick its module. We do not open archives, so a split a
+# zip would decide is unknowable and the snapshot is left alone.
+_INDETERMINATE_MODULE = "?"
+# Folder-builder metadata loses every tie-break in datasets, so it never picks a split's
+# module. This is the pinned 4.3 list; 3.4 flagged only the csv and jsonl names.
+_METADATA_FILENAMES = frozenset({"metadata.csv", "metadata.jsonl", "metadata.parquet"})
 # datasets infers a split's module from its first 200 files, in resolved (sorted) order.
 _MAX_MODULE_INFERENCE_FILES = 200
 # _read_card_metadata returns this when a card exists but its YAML does not parse. datasets
 # lets that error out of DatasetCard.load, so nothing in the snapshot is loadable.
 _UNPARSABLE_METADATA = object()
 _STANDALONE_YAML = ".huggingface.yaml"
-# A snapshot file, with the module datasets builds it with when training cannot use it.
+# A snapshot file and the module datasets would build it with, None when it is not data.
 _DataFile = tuple[PurePosixPath, Optional[str]]
 _CONFIG_RE = re.compile(r"[^<>:/\\|?*\x00-\x1f\x7f]+")
 # Also datasets' own _split_re, so a sharded name it would reject never reaches the picker.
@@ -148,16 +144,22 @@ def _split_names(value: Any) -> list[str]:
     ]
 
 
-def _declared_config_names(payload: Any) -> list[str]:
+def _declared_configs(payload: Any) -> list[tuple[str, str]]:
+    """Declared (config, data_dir) pairs. datasets infers each config under its own data_dir."""
     if not isinstance(payload, list):
         return []
-    names = [
-        name
-        for item in payload[:_MAX_OPTIONS]
-        if isinstance(item, dict)
-        and (name := _valid_option(item.get("config_name"), _CONFIG_RE)) is not None
-    ]
-    return list(dict.fromkeys(names))
+    declared = []
+    for item in payload[:_MAX_OPTIONS]:
+        if not isinstance(item, dict):
+            continue
+        name = _valid_option(item.get("config_name"), _CONFIG_RE)
+        if name is None:
+            continue
+        data_dir = item.get("data_dir")
+        if not isinstance(data_dir, str) or "\\" in data_dir or ".." in data_dir:
+            data_dir = ""
+        declared.append((name, data_dir))
+    return list(dict.fromkeys(declared))
 
 
 def _config_name(value: Any, fallback: Any = None) -> Optional[str]:
@@ -357,22 +359,27 @@ def _has_snapshot_data_extension(filename: str) -> bool:
     )
 
 
-def _loader_only_module(filename: str) -> Optional[str]:
-    """The module datasets builds for a file training cannot use, or None if it is not data."""
+def _file_module(filename: str) -> Optional[str]:
+    """The module datasets would build this file with, or None if it is not data to it."""
     for suffix in filename.split(".")[1:]:
-        module = _LOADER_EXTENSION_MODULES.get("." + suffix)
-        if module is not None:
-            return module
+        extension = "." + suffix
+        if extension in _STRUCTURED_MODULES:
+            return _STRUCTURED_MODULES[extension]
+        if extension.lower() in _MEDIA_EXTENSIONS:
+            return "media"
+        if extension == ".zip":
+            return _INDETERMINATE_MODULE
     return None
 
 
-def _snapshot_data_files(snapshot: Path) -> list[tuple[PurePosixPath, Optional[str]]]:
-    """Every file datasets would resolve, paired with its module when training cannot use it.
+def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
+    """Every file datasets would see, or None when the snapshot is too large to judge.
 
-    Loader-only files are matched by name and never resolved: they can only suppress an
-    option, never become one, so a hostile entry among them costs nothing.
+    Nothing is resolved here. datasets picks a split pattern over all non-ignored files and
+    only then drops the unsupported ones, so a `test/notes.bin` decides which stage wins even
+    though it can never be trained on. Resolution is deferred to the files actually offered.
     """
-    files: list[tuple[PurePosixPath, Optional[str]]] = []
+    files: list[_DataFile] = []
     try:
         root = snapshot.resolve(strict = True)
     except (OSError, RuntimeError):
@@ -394,17 +401,9 @@ def _snapshot_data_files(snapshot: Path) -> list[tuple[PurePosixPath, Optional[s
             # datasets hides dot files and `__` directories, but not `__` filenames.
             if filename.startswith(".") or filename in _IGNORED_DATA_FILENAMES:
                 continue
-            source_path = (relative / filename).as_posix()
-            if _has_snapshot_data_extension(filename):
-                if resolved_dataset_snapshot_file(snapshot, source_path) is None:
-                    continue
-                files.append((PurePosixPath(source_path), None))
-            elif (module := _loader_only_module(filename)) is not None:
-                files.append((PurePosixPath(source_path), module))
-            else:
-                continue
             if len(files) >= _MAX_SNAPSHOT_DATA_FILES:
-                return files
+                return None
+            files.append((PurePosixPath((relative / filename).as_posix()), _file_module(filename)))
     return files
 
 
@@ -437,65 +436,90 @@ def _keyword_split_files(
     return grouped
 
 
-def _file_module(entry: _DataFile) -> tuple[Optional[str], Optional[str]]:
-    """The (counting key, module) datasets would use for one file."""
-    path, loader_module = entry
-    if loader_module is not None:
-        return loader_module, loader_module
-    for suffix in path.name.lower().split(".")[1:]:
-        extension = "." + suffix
-        if extension in _EXTENSION_MODULES:
-            return extension, _EXTENSION_MODULES[extension]
-    return None, None
+def _module_key(entry: _DataFile) -> Optional[tuple[bool, str, str]]:
+    """(is folder metadata, counting key, module) for one file, or None if it is not data."""
+    path, module = entry
+    if module is None:
+        return None
+    key = next(
+        (
+            "." + suffix
+            for suffix in path.name.lower().split(".")[1:]
+            if "." + suffix in _EXTENSION_MODULES
+        ),
+        module,
+    )
+    return path.name in _METADATA_FILENAMES, key, module
 
 
 def _split_module(files: Iterable[_DataFile]) -> Optional[str]:
-    counts: dict[str, int] = {}
-    modules: dict[str, str] = {}
+    """The one module datasets would build this split with, mirroring its tie-break."""
+    counts: dict[tuple[bool, str], int] = {}
+    modules: dict[tuple[bool, str], str] = {}
     for entry in sorted(files)[:_MAX_MODULE_INFERENCE_FILES]:
-        key, module = _file_module(entry)
-        if key is None:
+        keyed = _module_key(entry)
+        if keyed is None:
             continue
-        counts[key] = counts.get(key, 0) + 1
-        modules[key] = module
+        is_metadata, key, module = keyed
+        counts[(is_metadata, key)] = counts.get((is_metadata, key), 0) + 1
+        modules[(is_metadata, key)] = module
     if not counts:
         return None
-    return modules[max(counts, key = lambda key: (counts[key], _EXTENSION_PRIORITY.get(key, -1)))]
+    best = max(
+        counts,
+        key = lambda key: (not key[0], counts[key], _EXTENSION_PRIORITY.get(key[1], -1)),
+    )
+    return modules[best]
+
+
+def _offerable_split(entries: Iterable[_DataFile], snapshot: Path, root: str) -> bool:
+    """True when a split holds a trainable file that still passes the cache-safety resolver."""
+    return any(
+        _has_snapshot_data_extension(path.name)
+        and resolved_dataset_snapshot_file(snapshot, root + path.as_posix()) is not None
+        for path, _module in entries
+    )
 
 
 def _inferred_snapshot_options(
-    snapshot: Path, configs: Iterable[str] = ("default",)
+    snapshot: Path, configs: Iterable[tuple[str, str]] = (("default", ""),)
 ) -> set[tuple[str, str]]:
     """Mirror datasets' default local-file split inference without importing it.
 
-    Known gaps, all of which hide an option rather than offer a dead one: names longer
-    than _MAX_OPTION_LENGTH are dropped because the picker cannot start them, splits made
-    only of files outside TRAINING_DATA_EXTS are not offered, and external symlinks stay
-    rejected for cache safety.
+    Known gaps, all of which hide an option rather than offer a dead one: names longer than
+    _MAX_OPTION_LENGTH are dropped because the picker cannot start them, splits made only of
+    files outside TRAINING_DATA_EXTS are not offered, a zip's module is left unknown rather
+    than read out of the archive, and external symlinks stay rejected for cache safety.
     """
-    files = _snapshot_data_files(snapshot)
-    if not files:
-        return set()
+    options: set[tuple[str, str]] = set()
+    for config, data_dir in configs:
+        root = data_dir.strip("/")
+        files = _snapshot_data_files(snapshot / root if root else snapshot)
+        if not files:
+            continue
 
-    grouped = _sharded_split_files(files)
-    if grouped is None:
-        return set()
-    if not grouped:
-        grouped = _keyword_split_files(files, lambda path: path.parent.parts)
-    if not grouped:
-        grouped = _keyword_split_files(files, lambda path: (path.name,))
-    if not grouped:
-        grouped = {"train": files}
+        grouped = _sharded_split_files(files)
+        if grouped is None:
+            continue
+        if not grouped:
+            grouped = _keyword_split_files(files, lambda path: path.parent.parts)
+        if not grouped:
+            grouped = _keyword_split_files(files, lambda path: (path.name,))
+        if not grouped:
+            grouped = {"train": files}
 
-    modules = {_split_module(entries) for entries in grouped.values()}
-    if len(modules) > 1 or modules == {None}:
-        return set()
-    return {
-        (config, split)
-        for config in configs
-        for split, entries in grouped.items()
-        if any(loader_module is None for _path, loader_module in entries)
-    }
+        # A split with no data at all makes datasets raise, and one whose module we cannot
+        # pin down could disagree with the others, so neither leaves anything to offer.
+        modules = {_split_module(entries) for entries in grouped.values()}
+        if len(modules) != 1 or modules & {None, _INDETERMINATE_MODULE}:
+            continue
+        prefix = root + "/" if root else ""
+        options.update(
+            (config, split)
+            for split, entries in grouped.items()
+            if _offerable_split(entries, snapshot, prefix)
+        )
+    return options
 
 
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
@@ -505,7 +529,7 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     if card_data is _UNPARSABLE_METADATA:
         # datasets raises out of DatasetCard.load, so no option here would ever start.
         return options
-    declared_configs = _declared_config_names(card_data.get("configs"))
+    declared_configs = _declared_configs(card_data.get("configs"))
     _add_config_options(options, card_data.get("configs"))
     _add_dataset_info_options(options, card_data.get("dataset_info"))
 
@@ -521,7 +545,7 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     if not options:
         # A card that names configs but gives no data_files still builds those configs in
         # datasets, over the same inferred patterns, so "default" would not be startable.
-        options.update(_inferred_snapshot_options(snapshot, declared_configs or ("default",)))
+        options.update(_inferred_snapshot_options(snapshot, declared_configs or (("default", ""),)))
     return options
 
 
