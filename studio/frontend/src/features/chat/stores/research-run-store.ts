@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { create } from "zustand";
-import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
+// eslint-disable-next-line no-restricted-imports -- Avoid the auth barrel's React login page.
+import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session";
 import { followResearchRun, type ResearchRunUpdate } from "../api/research-api";
 import type {
   ResearchAction,
@@ -31,6 +32,10 @@ export interface ResearchActivity {
   state?: "running" | "complete" | "failed" | "cancelled" | "action";
   phase?: ResearchPhase;
   reasoning?: string;
+  /** Plan step titles published as the planner writes them, before the plan is parseable. */
+  previewLabels?: string[];
+  /** True when a phase.started opened this row, so phase.ended is what closes it. */
+  bracketed?: boolean;
   plan?: ResearchPlan;
   stepPosition?: number;
   action?: ResearchAction;
@@ -79,7 +84,12 @@ interface ResearchRunState {
   setPlanReviewDraft: (runId: string, draft: ResearchPlan) => void;
 }
 
-const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
+export const terminalResearchStatuses: ReadonlySet<string> = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+]);
+const terminalStatuses = terminalResearchStatuses;
 
 export function isSettledResearchRun(
   run: ResearchRun,
@@ -148,6 +158,88 @@ function findLastActivityIndex(
   return -1;
 }
 
+export function researchPhaseTitle(phase: ResearchPhase | undefined): string {
+  switch (phase) {
+    case "planning":
+      return "Planning an approach";
+    case "synthesis_audit":
+      return "Checking the evidence";
+    case "synthesis":
+    case "synthesis_recovery":
+      return "Writing the report";
+    case "decision":
+      return "Choosing the next step";
+    default:
+      return "Working";
+  }
+}
+
+/** Rows for one model call are keyed by its callId so the phase bracket and any streamed
+ * reasoning for that call land on the same activity. */
+function phaseActivityId(attempt: number, callId: string): string {
+  return `reasoning-${attempt}-${callId}`;
+}
+
+/** What the run is doing right now, for the collapsed card: the live activity, qualified by
+ * the latest thing it has produced so a long call still shows movement. */
+export function runningResearchActivityTitle(
+  activities: ResearchActivity[] | undefined,
+): string | null {
+  if (!activities) return null;
+  const index = findLastActivityIndex(
+    activities,
+    (activity) => activity.state === "running",
+  );
+  if (index < 0) return null;
+  const activity = activities[index];
+  const latestLabel = activity.previewLabels?.at(-1);
+  return latestLabel ? `${activity.title} · ${latestLabel}` : activity.title;
+}
+
+export function stepResultDetail(sourceCount: number, action?: string): string {
+  if (sourceCount > 0) {
+    return `${sourceCount} ${sourceCount === 1 ? "source" : "sources"} found`;
+  }
+  // A fetch records an excerpt of one page and never collects sources, so a count would read
+  // as a failure. A search that returns nothing is a real outcome, not a styled success.
+  return action === "fetch" ? "Page read" : "No usable results";
+}
+
+/** Header summary. Counts are omitted until they exist, so a run that has not searched yet
+ * reads as the work it is doing rather than "0 sources · 0 actions". */
+export function researchProgressSummary(
+  run: ResearchRun,
+  elapsed: string,
+): string {
+  const documentCount = new Set(
+    (run.documentSources ?? []).map(
+      (source) => source.documentId ?? source.filename,
+    ),
+  ).size;
+  const sourceCount = run.sources.length + documentCount;
+  const finishedSteps = run.steps.filter(
+    (step) => step.status === "completed" || step.status === "failed",
+  ).length;
+  const activeStep = run.steps.find((step) => step.status === "running");
+  const parts = [elapsed];
+  if (sourceCount > 0) {
+    parts.push(`${sourceCount} ${sourceCount === 1 ? "source" : "sources"}`);
+  }
+  // No fraction: run.steps only holds actions already started, and the agent stops when the
+  // evidence is enough rather than at the plan's length, so any denominator would be invented.
+  if (activeStep) {
+    parts.push(`step ${activeStep.position + 1}`);
+  } else if (finishedSteps > 0) {
+    parts.push(`${finishedSteps} ${finishedSteps === 1 ? "step" : "steps"}`);
+  } else if (run.status === "planning") {
+    parts.push("building the plan");
+  } else if (run.status === "awaiting_approval") {
+    parts.push("waiting for you");
+  }
+  return parts.join(" · ");
+}
+
+
 function syncPlanReviewState(
   current: ResearchPlanReviewState | undefined,
   run: ResearchRun,
@@ -172,33 +264,86 @@ function reduceActivity(
   // the stream attaches the live snapshot to replayed history, so run.steps
   // only describes its own attempt.
   const snapshotIsSameAttempt = attempt === (event.run.retryCount ?? 0);
-  if (event.event !== "reasoning.updated") {
-    const activeReasoningIndex = findLastActivityIndex(
+
+  // runs recorded before phase events carry no phase.ended, so close their rows as before.
+  if (!event.event.startsWith("phase.") && event.event !== "reasoning.updated") {
+    const unbracketed = findLastActivityIndex(
       next,
       (activity) =>
-        activity.kind === "reasoning" && activity.state === "running",
+        activity.kind === "reasoning" &&
+        activity.state === "running" &&
+        !activity.bracketed,
     );
-    if (activeReasoningIndex >= 0) {
-      next[activeReasoningIndex] = {
-        ...next[activeReasoningIndex],
-        state: "complete",
-      };
+    if (unbracketed >= 0) {
+      next[unbracketed] = { ...next[unbracketed], state: "complete" };
     }
   }
+
+  if (
+    event.event === "phase.started" ||
+    event.event === "phase.progress" ||
+    event.event === "phase.ended"
+  ) {
+    const phase = event.data.phase ?? "unknown";
+    const callId = event.data.callId ?? `${phase}-${event.id}`;
+    const id = phaseActivityId(attempt, callId);
+    const existingIndex = next.findIndex((activity) => activity.id === id);
+    if (event.event === "phase.progress") {
+      const label = event.data.label?.trim();
+      if (existingIndex < 0 || !label) return next;
+      const existing = next[existingIndex];
+      if (existing.previewLabels?.includes(label)) return next;
+      next[existingIndex] = {
+        ...existing,
+        seq: event.id,
+        previewLabels: [...(existing.previewLabels ?? []), label],
+      };
+      return next;
+    }
+    if (event.event === "phase.ended") {
+      if (existingIndex >= 0) {
+        next[existingIndex] = {
+          ...next[existingIndex],
+          seq: event.id,
+          state: "complete",
+        };
+      }
+      return next;
+    }
+    if (existingIndex >= 0) return next;
+    // phase.ended is best-effort (_note_phase swallows append failures), so a new phase also
+    // closes the previous one; otherwise a dropped end leaves that row spinning all run.
+    const stale = findLastActivityIndex(
+      next,
+      (activity) =>
+        activity.kind === "reasoning" &&
+        activity.state === "running" &&
+        activity.id !== id,
+    );
+    if (stale >= 0) {
+      next[stale] = { ...next[stale], state: "complete" };
+    }
+    next.push({
+      id,
+      seq: event.id,
+      attempt,
+      kind: "reasoning",
+      createdAt: event.createdAt,
+      title: researchPhaseTitle(phase),
+      phase,
+      state: "running",
+      bracketed: true,
+      stepPosition: event.data.stepPosition,
+    });
+    return next;
+  }
+
   if (event.event === "reasoning.updated") {
     const phase = event.data.phase ?? "unknown";
     const callId = event.data.callId ?? `${phase}-${event.id}`;
-    const id = `reasoning-${attempt}-${callId}`;
+    const id = phaseActivityId(attempt, callId);
     const existingIndex = next.findIndex((activity) => activity.id === id);
     const delta = event.data.reasoningDelta ?? "";
-    const title =
-      phase === "planning"
-        ? "Planning an approach"
-        : phase === "synthesis_audit"
-          ? "Checking the evidence"
-          : phase === "synthesis" || phase === "synthesis_recovery"
-            ? "Connecting the findings"
-            : "Choosing the next step";
     if (existingIndex >= 0) {
       const existing = next[existingIndex];
       next[existingIndex] = {
@@ -208,16 +353,16 @@ function reduceActivity(
         state: "running",
       };
     } else {
-      const activeReasoningIndex = findLastActivityIndex(
+      // a new unbracketed call ends the previous one; phase.ended closes bracketed rows.
+      const stale = findLastActivityIndex(
         next,
         (activity) =>
-          activity.kind === "reasoning" && activity.state === "running",
+          activity.kind === "reasoning" &&
+          activity.state === "running" &&
+          !activity.bracketed,
       );
-      if (activeReasoningIndex >= 0) {
-        next[activeReasoningIndex] = {
-          ...next[activeReasoningIndex],
-          state: "complete",
-        };
+      if (stale >= 0) {
+        next[stale] = { ...next[stale], state: "complete" };
       }
       next.push({
         id,
@@ -225,7 +370,7 @@ function reduceActivity(
         attempt,
         kind: "reasoning",
         createdAt: event.createdAt,
-        title,
+        title: researchPhaseTitle(phase),
         phase,
         reasoning: delta,
         state: "running",
@@ -338,7 +483,10 @@ function reduceActivity(
         detail:
           event.event === "step.failed"
             ? (event.data.error ?? "The tool could not complete this action.")
-            : `${event.data.sourceCount ?? activity.sources?.length ?? 0} sources found`,
+            : stepResultDetail(
+                event.data.sourceCount ?? activity.sources?.length ?? 0,
+                event.data.action ?? activity.action,
+              ),
         evidenceSources:
           snapshot?.result?.evidenceSources ?? activity.evidenceSources,
         excerpt: snapshot?.result?.excerpt ?? activity.excerpt,
@@ -348,6 +496,23 @@ function reduceActivity(
   }
 
   if (event.event === "report.updated") {
+    // a live synthesis row already says this; only pre-phase-event runs need their own.
+    const synthesisIndex = findLastActivityIndex(
+      next,
+      (activity) =>
+        activity.kind === "reasoning" &&
+        activity.attempt === attempt &&
+        (activity.phase === "synthesis" || activity.phase === "synthesis_recovery"),
+    );
+    if (synthesisIndex >= 0) {
+      const existing = next[synthesisIndex];
+      next[synthesisIndex] = {
+        ...existing,
+        seq: event.id,
+        state: existing.bracketed ? existing.state : "running",
+      };
+      return next;
+    }
     const id = `report-${attempt}`;
     const index = next.findIndex((activity) => activity.id === id);
     if (index >= 0) {
@@ -392,6 +557,15 @@ function reduceActivity(
   ) {
     for (let index = next.length - 1; index >= 0; index -= 1) {
       const activity = next[index];
+      // A worker killed mid-call never wrote its phase.ended; the resume closes that row.
+      if (
+        activity.kind === "reasoning" &&
+        activity.attempt === attempt &&
+        activity.state === "running"
+      ) {
+        next[index] = { ...activity, seq: event.id, state: "complete" };
+        continue;
+      }
       if (activity.kind !== "step" || activity.attempt !== attempt) continue;
       const snapshot = event.run.steps.find(
         (step) => step.position === activity.stepPosition,
@@ -758,24 +932,63 @@ export function beginExternalResearchFollow(
   ingestResearchUpdate(run);
   useResearchRunStore.getState().openPanel(run.id);
   useResearchRunStore.getState().setConnectionError(run.id, null);
-  useResearchRunStore.getState().setFollowing(run.id, true, "connected");
   const stops = externalFollowerStops.get(run.id) ?? new Set();
   stops.add(stop);
   externalFollowerStops.set(run.id, stops);
+  // the store owns the stream, so a caller that stops reading cannot stall ingestion.
+  ensureResearchRunFollowed(run.id, run);
+  // The caller handed us the run it just created, so there is no history to restore.
+  useResearchRunStore.getState().setFollowing(run.id, true, "connected");
   return () => {
     const currentStops = externalFollowerStops.get(run.id);
     currentStops?.delete(stop);
     if (currentStops?.size === 0) externalFollowerStops.delete(run.id);
-    flushPendingStreamEvent(run.id);
-    const latest = useResearchRunStore.getState().sessions[run.id]?.run;
-    useResearchRunStore
-      .getState()
-      .setFollowing(
-        run.id,
-        false,
-        terminalStatuses.has(latest?.status ?? "") ? "idle" : "disconnected",
-      );
   };
+}
+
+/** Yield the run each time the store applies something to it, until it settles or *signal*
+ * aborts. Independent of the event stream, so a slow consumer cannot stall ingestion. */
+export async function* watchResearchRun(
+  runId: string,
+  options: { signal?: AbortSignal } = {},
+): AsyncGenerator<ResearchRun> {
+  const { signal } = options;
+  let notify: (() => void) | null = null;
+  let dirty = true;
+  const wake = () => {
+    dirty = true;
+    notify?.();
+  };
+  const unsubscribe = useResearchRunStore.subscribe(wake);
+  signal?.addEventListener("abort", wake, { once: true });
+  try {
+    while (!signal?.aborted) {
+      const session = useResearchRunStore.getState().sessions[runId];
+      // a follower that gave up never restarts, so surface it rather than park forever.
+      if (session?.error && !ownedFollowers.has(runId)) {
+        throw new Error(session.error);
+      }
+      // Nothing to watch: returning beats spinning the microtask queue on an absent session.
+      if (!session) return;
+      if (dirty) {
+        dirty = false;
+        yield session.run;
+        if (isSettledResearchRun(session.run, session.lastAppliedSeq)) return;
+        continue;
+      }
+      await new Promise<void>((resolve) => {
+        if (dirty || signal?.aborted) {
+          resolve();
+          return;
+        }
+        notify = resolve;
+      });
+      notify = null;
+    }
+  } finally {
+    unsubscribe();
+    signal?.removeEventListener("abort", wake);
+  }
 }
 
 export function ensureResearchRunFollowed(
@@ -878,12 +1091,6 @@ export function ensureResearchRunFollowed(
       }
     }
   })();
-}
-
-export function stopResearchRunFollower(runId: string): void {
-  flushPendingStreamEvent(runId);
-  ownedFollowers.get(runId)?.abort();
-  ownedFollowers.delete(runId);
 }
 
 export function resetResearchRunState(): void {

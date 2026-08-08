@@ -166,13 +166,11 @@ import {
 import {
   beginExternalResearchFollow,
   ingestResearchUpdate,
+  terminalResearchStatuses,
   useResearchRunStore,
+  watchResearchRun,
 } from "../stores/research-run-store";
-import {
-  cancelResearchRun,
-  createResearchRun,
-  followResearchRun,
-} from "./research-api";
+import { cancelResearchRun, createResearchRun } from "./research-api";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
@@ -3570,27 +3568,20 @@ export function createOpenAIStreamAdapter(
             }
             return;
           }
-          for await (const update of followResearchRun(createdRun.id, {
-            initialRun: createdRun,
+          // read the store, not the stream: a stalled reader here must not freeze ingestion.
+          let yieldedStatus: string | null = null;
+          for await (const run of watchResearchRun(createdRun.id, {
             signal: researchFollowController.signal,
-            replayFrom: 0,
           })) {
-            const run = update.run;
-            ingestResearchUpdate(run, update.event);
-            // The activity store coalesces these high-frequency events. Yielding them
-            // through assistant-ui would replace the whole hidden message content per
-            // token, making long planning turns progressively more expensive.
-            if (
-              update.event?.event === "reasoning.updated" ||
-              update.event?.event === "report.updated"
-            ) {
+            if (typeof run.report === "string") {
+              report = run.report;
+            }
+            const settled = terminalResearchStatuses.has(run.status);
+            // per-delta yields would rewrite the message and drive an autosave the server rejects.
+            if (run.status === yieldedStatus && !settled) {
               continue;
             }
-            if (run.status === "completed" && typeof run.report === "string") {
-              report = run.report;
-            } else if (typeof run.report === "string") {
-              report = run.report;
-            }
+            yieldedStatus = run.status;
             yield {
               content: [{ type: "text" as const, text: report }],
               metadata: {

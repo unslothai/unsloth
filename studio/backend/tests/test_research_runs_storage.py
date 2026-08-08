@@ -150,8 +150,8 @@ def test_agent_uses_valid_action_json_from_reasoning_when_content_is_invalid():
 
 
 def test_agent_action_preserves_a_bounded_research_state():
-    from core import research_runs as worker
-    action = worker._validate_agent_action(
+    from core.research.parsing import _validate_agent_action
+    action = _validate_agent_action(
         {
             "action": "search",
             "title": "Close the evidence gap",
@@ -425,8 +425,10 @@ def test_streamed_reasoning_is_batched_before_database_writes(research_home, mon
 
     assert report == ""
     assert reasoning == "x" * 1000
-    assert len(writes) == 2
-    assert "".join(write[1]["reasoningDelta"] for write in writes) == reasoning
+    # Count only the reasoning writes: the phase brackets around the call are not per-token.
+    reasoning_writes = [data for event_type, data in writes if event_type == "reasoning.updated"]
+    assert len(reasoning_writes) == 2
+    assert "".join(write["reasoningDelta"] for write in reasoning_writes) == reasoning
     assert payloads[0]["max_tokens"] == 16384
     assert payloads[0]["enable_thinking"] is False
     assert payloads[0]["reasoning_effort"] == "none"
@@ -1150,12 +1152,50 @@ def test_research_prompts_define_quality_and_citation_contracts():
     assert '"action":"finish"' in _AGENT_SYSTEM_PROMPT
 
 
+def test_agent_action_queries_are_redacted_before_they_leave_the_supervisor():
+    from core.research.parsing import _validate_agent_action
+
+    long_action = _validate_agent_action(
+        {
+            "action": "search",
+            "query": "public evidence " * 30
+            + 'password="'
+            + "private phrase " * 60
+            + '" useful sources',
+        },
+        set(),
+    )
+    assert "private" not in long_action["query"]
+
+    assert len(long_action["query"]) <= 500
+
+    assert _validate_agent_action(
+        {"action": "search", "title": "Verify", "query": "primary source"},
+        set(),
+    ) == {
+        "action": "search",
+        "title": "Verify",
+        "query": "primary source",
+    }
+    assert (
+        _validate_agent_action(
+            {"action": "fetch", "title": "Read", "url": "https://example.com"},
+            {"https://example.com"},
+        )["action"]
+        == "fetch"
+    )
+    with pytest.raises(ValueError, match = "unknown URL"):
+        _validate_agent_action(
+            {"action": "fetch", "url": "https://invented.example"},
+            {"https://example.com"},
+        )
+
+
 def test_research_agent_actions_are_model_directed_and_url_bounded():
     from core.research_runs import (
         _normalize_synthesis_audit,
         _sanitize_public_query,
         _shield_untrusted,
-        _validate_agent_action,
     )
 
     assert (
@@ -1177,18 +1217,6 @@ def test_research_agent_actions_are_model_directed_and_url_bounded():
             "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
             "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
         )
-    long_action = _validate_agent_action(
-        {
-            "action": "search",
-            "query": "public evidence " * 30
-            + 'password="'
-            + "private phrase " * 60
-            + '" useful sources',
-        },
-        set(),
-    )
-    assert "private" not in long_action["query"]
-
     allowed_urls = [f"https://example.com/source-{index}" for index in range(10)]
     audit = _normalize_synthesis_audit(
         {
@@ -1262,28 +1290,6 @@ def test_research_agent_actions_are_model_directed_and_url_bounded():
     assert "<query_history_json>" not in shielded
     assert "<untrusted_synthesis_audit_json>" not in shielded
     assert "<synthesis_audit_json>" not in shielded
-    assert len(long_action["query"]) <= 500
-
-    assert _validate_agent_action(
-        {"action": "search", "title": "Verify", "query": "primary source"},
-        set(),
-    ) == {
-        "action": "search",
-        "title": "Verify",
-        "query": "primary source",
-    }
-    assert (
-        _validate_agent_action(
-            {"action": "fetch", "title": "Read", "url": "https://example.com"},
-            {"https://example.com"},
-        )["action"]
-        == "fetch"
-    )
-    with pytest.raises(ValueError, match = "unknown URL"):
-        _validate_agent_action(
-            {"action": "fetch", "url": "https://invented.example"},
-            {"https://example.com"},
-        )
 
 
 def test_rag_evidence_makes_failed_web_search_recoverable():
@@ -1292,6 +1298,18 @@ def test_rag_evidence_makes_failed_web_search_recoverable():
     blocked = "Blocked: website access policy disallows example.com."
     assert _research_step_failed(blocked, []) is True
     assert _research_step_failed(blocked, [{"chunkId": "doc-1:0"}]) is False
+
+
+def test_search_that_matched_nothing_counts_as_a_failed_step():
+    # It ran without erroring, so it used to be recorded as completed and the panel showed a
+    # green step for evidence the report never got.
+    from core.inference.tools import EMPTY_SEARCH_RESULTS
+    from core.research_runs import _research_step_failed
+
+    for empty in EMPTY_SEARCH_RESULTS:
+        assert _research_step_failed(empty, []) is True
+        assert _research_step_failed(empty, [{"chunkId": "doc-1:0"}]) is False
+    assert _research_step_failed("Title: A\nURL: https://example.com\nSnippet: s", []) is False
 
 
 def test_research_budget_defaults_support_long_runs():
@@ -1503,14 +1521,6 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
         )
     )
 
-    async def fake_completion(
-        run,
-        messages,
-        *,
-        json_mode = False,
-    ):
-        raise AssertionError("Planning and agent decisions must use the streaming path")
-
     async def fake_stream_completion(
         run,
         messages,
@@ -1605,7 +1615,6 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
             return "Full page evidence."
         return "Title: Example\nURL: https://example.com\nSnippet: Evidence snippet."
 
-    monkeypatch.setattr(supervisor, "_completion", fake_completion)
     monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
     monkeypatch.setattr(worker, "execute_tool", fake_tool)
 
@@ -3086,7 +3095,10 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def post(self, *args, **kwargs):
+        def build_request(self, *args, **kwargs):
+            return object()
+
+        async def send(self, request, *, stream):
             try:
                 await asyncio.Event().wait()
             finally:
@@ -3102,7 +3114,7 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
 
     async def scenario():
         task = asyncio.create_task(
-            supervisor._completion(run, [{"role": "user", "content": "question"}])
+            supervisor._stream_completion(run, [{"role": "user", "content": "question"}])
         )
         await asyncio.sleep(0.05)
         supervisor.cancel("run-1")

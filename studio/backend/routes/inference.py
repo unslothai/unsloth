@@ -2056,16 +2056,18 @@ from core.inference.anthropic_compat import (
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
+from auth import storage as auth_storage
 from auth.authentication import API_KEY_PREFIX, get_current_subject
 from state import active_generations
 
 
 def _request_used_api_key(request: Any) -> bool:
-    """True when this request authenticated with an sk-unsloth key.
+    """True when this request authenticated with a third party's sk-unsloth key.
 
     Studio's own chat hits these same endpoints with a session JWT, so this is
     what separates "someone is using Unsloth as an API server" from "someone is
-    using Unsloth".
+    using Unsloth". Internal workflow keys (Deep Research, data recipes) are Studio
+    itself and are excluded, or every research step would pop the API monitor open.
     """
     # Total by construction: this only decides a monitor label and must never fail a
     # load. Only a real Request hands back a string; the load routes take stand-ins too.
@@ -2076,7 +2078,13 @@ def _request_used_api_key(request: Any) -> bool:
     if not isinstance(header, str):
         return False
     scheme, _, token = header.partition(" ")
-    return scheme.lower() == "bearer" and token.startswith(API_KEY_PREFIX)
+    if scheme.lower() != "bearer" or not token.startswith(API_KEY_PREFIX):
+        return False
+    try:
+        return not auth_storage.is_internal_api_key(token)
+    except Exception:
+        logger.debug("api_monitor.internal_key_probe_failed", exc_info = True)
+        return True
 
 
 from state.tool_approvals import resolve_tool_decision
