@@ -7,7 +7,13 @@ scikit-learn==1.7.1
 # Additional extras
 jiwer                            # WER/CER metrics for vision OCR save-merge benchmarks
 omegaconf
-einx
+# einx 0.4.3 ships a top-level test/conftest.py. On Windows, pip can remove
+# that shared path while replacing another wheel, and the updater embedded in
+# desktop 0.1.901 then rejects the otherwise healthy install. 0.4.2 has the
+# same runtime package without the colliding test tree. Keep this bridge for
+# the 0.1.901 upgrade hop; newer verifiers ignore non-runtime wheel fixtures.
+einx<0.4.3; sys_platform == "win32"
+einx; sys_platform != "win32"
 pyloudnorm
 openai-whisper
 av                               # PyAV: decode dictation audio (webm/opus/mp3/…) for the Whisper STT sidecar

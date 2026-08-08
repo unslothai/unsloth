@@ -18,6 +18,7 @@ import pytest
 
 # install_python_stack.py lives at repo_root/studio/install_python_stack.py
 _INSTALL_SCRIPT = Path(__file__).resolve().parents[2] / "install_python_stack.py"
+_EXTRAS_REQUIREMENTS = Path(__file__).resolve().parent.parent / "requirements" / "extras.txt"
 
 
 def _load_module(monkeypatch):
@@ -77,6 +78,19 @@ def test_default_spec_matches_table(monkeypatch):
     mod = _load_module(monkeypatch)
     assert mod._TORCHAO_DEFAULT_SPEC == "torchao==0.14.0"
     assert mod._select_torchao_spec("2.9.0") == mod._TORCHAO_DEFAULT_SPEC
+
+
+def test_matching_torchao_pin_does_not_need_force_reinstall(monkeypatch):
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: "0.17.0")
+    assert mod._exact_distribution_spec_is_installed("torchao==0.17.0")
+    assert not mod._exact_distribution_spec_is_installed("torchao==0.16.0")
+
+
+def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():
+    requirements = _EXTRAS_REQUIREMENTS.read_text(encoding = "utf-8")
+    assert 'einx<0.4.3; sys_platform == "win32"' in requirements
+    assert 'einx; sys_platform != "win32"' in requirements
 
 
 @pytest.mark.parametrize(
