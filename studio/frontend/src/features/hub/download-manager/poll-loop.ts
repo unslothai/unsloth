@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { carriesOverSeed } from "./adopt-rules";
 import { invalidateGgufVariantsCache } from "../inventory/api";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
@@ -586,9 +587,14 @@ export async function startJob(
     teardownRuntime(key);
     throw error;
   }
-  const seedDownloaded = opts.adopt ? (existing?.downloadedBytes ?? 0) : 0;
-  const seedCompleted = opts.adopt ? (existing?.completedBytes ?? 0) : 0;
-  const seedFraction = opts.adopt ? (existing?.fraction ?? 0) : 0;
+  const carryOverSeed = carriesOverSeed(
+    opts.adopt === true,
+    existing?.serverGeneration,
+    opts.generation,
+  );
+  const seedDownloaded = carryOverSeed ? (existing?.downloadedBytes ?? 0) : 0;
+  const seedCompleted = carryOverSeed ? (existing?.completedBytes ?? 0) : 0;
+  const seedFraction = carryOverSeed ? (existing?.fraction ?? 0) : 0;
   // An adopted job never called apiStart, so it learns the run's generation from
   // the probe (or persisted value) to scope a later cancel to this exact run.
   const seedGeneration = opts.adopt

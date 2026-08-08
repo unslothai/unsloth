@@ -100,6 +100,9 @@ export interface ProgressLike {
   complete_on_disk?: boolean;
   expected_bytes: number;
   progress: number;
+  /** The scanned cache dir, or null when no cache for this repo exists at all. Optional so an
+   *  older backend's response still satisfies this shape; hydration treats absent as unknown. */
+  cache_path?: string | null;
 }
 
 export type Terminal = "complete" | "cancelled" | "error" | "gone";

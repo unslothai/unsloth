@@ -512,6 +512,7 @@ def _variant_manifest_in_any_cache(
     # the common case preferred_repo_cache_dirs returns only that entry and this
     # loop does no work at all.
     active = download_manifest._canonical_hub_cache()
+    found: list[download_manifest.Manifest] = []
     for entry in preferred_repo_cache_dirs("model", repo_id):
         if active is not None and download_manifest._canonical_hub_cache(entry.parent) == active:
             continue
@@ -522,8 +523,29 @@ def _variant_manifest_in_any_cache(
             hub_cache = entry.parent,
         )
         if manifest is not None:
-            return manifest
-    return None
+            found.append(manifest)
+    if not found:
+        return None
+    # One answer, or several that agree: safe to apply to every scanned entry, which is what
+    # snapshot_progress does with the hash set this produces.
+    #
+    # Several that DISAGREE is the case worth refusing. snapshot_progress picks its reading by
+    # bytes, across all the preferred cache dirs, but the hashes come from this single lookup --
+    # so handing it the first cache's older revision filters out every blob of a LATER cache that
+    # holds the complete variant, and reports 0 or partial for a finished download. That is the
+    # exact failure this fallback exists to prevent, just sourced from the wrong cache. Returning
+    # None instead degrades to the name-based fallback, which stays attributable per entry.
+    first = _manifest_hashes(found[0])
+    if any(_manifest_hashes(m) != first for m in found[1:]):
+        return None
+    return found[0]
+
+
+def _manifest_hashes(manifest: download_manifest.Manifest) -> frozenset[str]:
+    """The manifest's expected-file identity, for comparing two caches' answers."""
+    return frozenset(
+        f"{f.sha256 or ''}:{f.path}:{f.size}" for f in (manifest.expected_files or ())
+    )
 
 
 async def get_gguf_download_progress_response(

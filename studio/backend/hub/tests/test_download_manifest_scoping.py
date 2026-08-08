@@ -480,3 +480,48 @@ def test_the_configured_spelling_is_only_borrowed_for_the_SAME_directory(monkeyp
 
     assert not victim.is_file()
     assert active_legacy.is_file()
+
+
+def test_disagreeing_manifests_across_caches_are_refused(monkeypatch, tmp_path):
+    """snapshot_progress picks its READING by bytes across every preferred cache dir, but the
+    expected-file hashes come from one manifest lookup. Handing it the first cache's older
+    revision filters out every blob of a later cache that holds the complete variant, so a
+    finished download reports 0 or partial -- the exact failure this fallback exists to prevent,
+    just sourced from the wrong cache. Two caches that disagree therefore yield no manifest, and
+    the name-based fallback (which stays attributable per entry) takes over.
+    """
+    from hub.services.models import downloads
+    from hub.utils import download_manifest
+
+    old = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "unsloth/Model-GGUF",
+        variant = "Q4_K_M",
+        started_at = "2026-01-01T00:00:00Z",
+        expected_files = (download_manifest.ExpectedFile("old.gguf", 10, "aaa"),),
+    )
+    new = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "unsloth/Model-GGUF",
+        variant = "Q4_K_M",
+        started_at = "2026-02-01T00:00:00Z",
+        expected_files = (download_manifest.ExpectedFile("new.gguf", 20, "bbb"),),
+    )
+    first, second = tmp_path / "a" / "repo", tmp_path / "b" / "repo"
+    served = {first.parent: old, second.parent: new}
+
+    monkeypatch.setattr(downloads, "preferred_repo_cache_dirs", lambda *a, **k: [first, second])
+    monkeypatch.setattr(download_manifest, "_canonical_hub_cache", lambda *a, **k: None)
+    monkeypatch.setattr(
+        download_manifest,
+        "read_manifest",
+        lambda repo_type, repo_id, variant = None, *, hub_cache = None: (
+            served.get(Path(hub_cache)) if hub_cache is not None else None
+        ),
+    )
+
+    assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is None
+
+    # Agreement is still answered: the point is the ambiguity, not the multiplicity.
+    served[second.parent] = old
+    assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is old

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { idleProbeVerdict } from "./adopt-rules";
 import { disposableTimeoutSignal } from "../lib/abort-signals";
 import {
   getActiveDatasetDownloads,
@@ -194,7 +195,14 @@ async function probeHydratedIdleProgress(
     // The reason the resolved figure holds a zero over -- an unresolvable
     // variant file set -- is answered on the backend now, so a finished
     // download does not reach this line reading zero in the first place.
-    return progressResp.downloaded_bytes > 0 ? "active" : "gone";
+    //
+    // A zero alone is still not proof, though: a transient measurement failure comes back as a
+    // perfectly successful all-zero response, and calling that "gone" drops a job whose partial
+    // cache is sitting right there. cache_path is the discriminator -- the backend only answers
+    // null when no cache dir for this repo exists at all, and a dir it scanned and measured at
+    // zero still names itself. So the cache being absent is what retires the card, not the
+    // counter being zero.
+    return idleProbeVerdict(progressResp.downloaded_bytes, progressResp.cache_path);
   } catch {
     return "active";
   }
