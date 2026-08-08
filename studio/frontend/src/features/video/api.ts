@@ -22,8 +22,10 @@ export interface VideoGenerationDefaults {
   guidance: number;
   num_frames: number;
   fps: number;
-  // Temporal lattice: valid frame counts are k * frame_step + 1.
+  // Temporal lattice: valid frame counts are k * frame_step + frame_offset.
   frame_step: number;
+  frame_offset: number;
+  duration_presets: number[];
   // Width/height must be divisible by this.
   resolution_multiple: number;
   // (width, height) presets the UI offers, default first.
@@ -39,6 +41,7 @@ export interface VideoStatus {
   dtype: string | null;
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Null when not loaded.
   model_kind?: string | null;
+  engine?: "diffusers" | "sd_cpp" | null;
   // Resolved offload policy: none | group | model | sequential.
   offload_policy?: string | null;
   vae_tiling: boolean;
@@ -52,6 +55,7 @@ export interface VideoStatus {
   transformer_quant?: string | null;
   // Whether the loaded family produces a synchronized audio track.
   has_audio: boolean;
+  supports_cfg: boolean;
   // Per-family generation defaults + shape constraints; null when unloaded.
   defaults?: VideoGenerationDefaults | null;
   // Per-control provenance keyed by control name (memory_mode, speed_mode, attention_backend, transformer_cache), read by

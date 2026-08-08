@@ -312,6 +312,16 @@ def load_prequantized_transformer(
             transformer.load_state_dict(state_dict, strict = True, assign = True)
 
         transformer = transformer.to(device)
+        # Same small-M row padding the runtime quantise path applies, and for the same reason: a
+        # checkpoint built under the current exclusion set QUANTISES the family's small-M linears,
+        # so without the wrappers they would raise inside _int_mm the moment the compiled scope
+        # reaches them. After load_state_dict, since wrapping reparents the Linears; after .to()
+        # so the granularity probe reads the device tensors the GEMM will actually see.
+        from .diffusion_transformer_quant import apply_small_m_padding
+
+        apply_small_m_padding(
+            transformer, scheme, (ckpt.get("metadata") or {}).get("family"), logger = logger
+        )
         # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so train/eval-sensitive layers cannot make prequant inference diverge.
         try:
             transformer.eval()

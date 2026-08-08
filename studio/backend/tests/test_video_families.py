@@ -16,6 +16,18 @@ from core.inference.video_families import (
     snap_video_size,
     supported_video_family_names,
 )
+from core.inference.video_minimax_h3 import (
+    estimate_h3_diffusers_host_ram_gb,
+    estimate_h3_diffusers_vram_gb,
+)
+
+
+def test_h3_measured_diffusers_memory_estimates():
+    assert estimate_h3_diffusers_vram_gb(960, 544, 124) == pytest.approx(73.68, abs = 0.02)
+    assert estimate_h3_diffusers_vram_gb(1344, 768, 124) == pytest.approx(78.74, abs = 0.02)
+    assert estimate_h3_diffusers_vram_gb(1344, 768, 345) == pytest.approx(96.98, abs = 0.02)
+    assert estimate_h3_diffusers_host_ram_gb(126) == 150
+    assert estimate_h3_diffusers_host_ram_gb(132) == 85
 
 
 @pytest.mark.parametrize(
@@ -145,12 +157,27 @@ def test_generation_defaults_distilled_vs_dev():
 
 def test_supported_names():
     assert supported_video_family_names() == (
+        "minimax-h3",
         "ltx-2",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
     )
+
+
+def test_minimax_h3_family_and_frame_lattice():
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert fam is not None and fam.name == "minimax-h3"
+    assert fam.modular_workflow == "t2va"
+    assert fam.has_audio is True
+    assert fam.supports_cfg is False
+    assert fam.frame_step == 17
+    assert fam.frame_offset == 5
+    assert snap_num_frames(fam, 124) == 124
+    assert snap_num_frames(fam, 125) == 141
+    assert snap_num_frames(fam, 1) == 124
+    assert snap_num_frames(fam, 999) == 345
 
 
 def test_wan_snap_num_frames_4k_plus_1():

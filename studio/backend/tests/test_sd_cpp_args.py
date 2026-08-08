@@ -22,10 +22,12 @@ from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
     SdCppUpscaleParams,
+    SdCppVideoGenParams,
     build_img_gen_request,
     build_sd_cpp_command,
     build_sd_cpp_server_command,
     build_sd_cpp_upscale_command,
+    build_sd_cpp_video_command,
     is_ggml_unsupported_op_abort,
     metal_text_encoder_flags,
     native_speed_flags,
@@ -81,8 +83,19 @@ def test_metal_text_encoder_flag_reaches_both_command_builders(monkeypatch):
         params = SdCppGenParams(prompt = "x"),
         output_path = "/o/x.png",
     )
+    video = build_sd_cpp_video_command(
+        binary = "sd-cli",
+        files = SdCppModelFiles(
+            diffusion_model = "/m/h3.gguf",
+            vae = "/m/video.safetensors",
+            llm = "/m/qwen.gguf",
+        ),
+        params = SdCppVideoGenParams(prompt = "x", width = 960, height = 544, num_frames = 124),
+        output_path = "/o/x.webm",
+    )
     assert server.count("--clip-on-cpu") == 1
     assert cli.count("--clip-on-cpu") == 1
+    assert video.count("--clip-on-cpu") == 1
     # An offload policy that already pins the encoder must not emit it twice.
     dual = build_sd_cpp_server_command(
         binary = "sd-server",
@@ -137,6 +150,30 @@ def test_offload_model_pushes_everything_to_cpu_and_tiles():
         assert expected in flags
     # sequential maps the same as model
     assert offload_flags(OFFLOAD_SEQUENTIAL) == flags
+
+
+def test_offload_can_keep_the_vae_off_the_cpu_path():
+    """H3's audio VAE aborts on the CPU path, so `low_vram` has to drop just that flag.
+
+    `ggml_conv_1d` hardcodes an F16 im2col destination and
+    `ggml_compute_forward_im2col_f16` then asserts the kernel is F16, while sd.cpp's
+    `audio_conv_weight_type` maps only BF16 to F16 and lets F32 through:
+    `GGML_ASSERT(src0->type == GGML_TYPE_F16) failed`, SIGABRT, exit 134. Converting the
+    checkpoint to fp16 does not help, since the type is imposed inside sd.cpp.
+
+    Everything else the policy asks for still applies. The denoiser dominates, so
+    `--offload-to-cpu` is where the saving is; dropping the mode entirely would cost far
+    more than dropping this one flag.
+    """
+    for policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
+        flags = offload_flags(policy, vae_on_cpu = False)
+        assert "--vae-on-cpu" not in flags
+        for expected in ("--offload-to-cpu", "--clip-on-cpu", "--vae-tiling", "--diffusion-fa"):
+            assert expected in flags, f"{policy}: {expected} should survive"
+    # The default is unchanged for every other family.
+    assert "--vae-on-cpu" in offload_flags(OFFLOAD_MODEL)
+    # And it is a no-op where the policy never emitted it.
+    assert offload_flags(OFFLOAD_GROUP, vae_on_cpu = False) == offload_flags(OFFLOAD_GROUP)
 
 
 def test_offload_forced_flags_dedup():
@@ -557,3 +594,35 @@ def test_server_command_appends_extra_args_last():
     )
     assert cmd[-2:] == ["--backend", "cpu"]
     assert cmd[0] == "/x/sd-server"
+
+
+def test_minimax_h3_video_command_has_all_joint_av_components():
+    files = SdCppModelFiles(
+        diffusion_model = "/m/minimax_h3_fl2va-Q4_K_M.gguf",
+        vae = "/m/video.safetensors",
+        audio_vae = "/m/audio.safetensors",
+        llm = "/m/qwen.gguf",
+    )
+    cmd = build_sd_cpp_video_command(
+        "/bin/sd-cli",
+        files,
+        SdCppVideoGenParams(
+            prompt = "a fox runs through snow",
+            width = 960,
+            height = 544,
+            num_frames = 124,
+            fps = 24,
+            steps = 30,
+            seed = 42,
+        ),
+        output_path = "/out/result.webm",
+        offload = ["--diffusion-fa", "--offload-to-cpu"],
+    )
+    assert _pair(cmd, "--mode") == "vid_gen"
+    assert _pair(cmd, "--audio-vae") == "/m/audio.safetensors"
+    assert _pair(cmd, "--llm") == "/m/qwen.gguf"
+    assert _pair(cmd, "--video-frames") == "124"
+    assert _pair(cmd, "--fps") == "24"
+    assert _pair(cmd, "--cfg-scale") == "1"
+    assert "--rng" in cmd and _pair(cmd, "--rng") == "cpu"
+    assert cmd[-2:] == ["--diffusion-fa", "--offload-to-cpu"]

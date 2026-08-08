@@ -2618,6 +2618,22 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert not missing, f"diffusion archs would still show in chat: {missing}"
 
 
+def test_arch_to_task_tags_the_h3_gguf_bundle_as_video():
+    # The published MiniMax-H3 GGUFs carry kv_count 0, so general.architecture is absent and the
+    # arch read alone leaves the downloaded repo without a task -- dropped from the Video picker's
+    # On Device list and offered to chat instead. Both bundle repo ids must resolve to Video.
+    from core.inference.video_minimax_h3 import H3_GGUF_REPO
+
+    for repo in (H3_GGUF_REPO, "leejet/MiniMax-H3-GGUF"):
+        assert (
+            models_route._arch_to_task(None, (repo, "minimax_h3_fl2va-Q4_K_M.gguf"))
+            == models_route._VIDEO_GEN_TASK
+        )
+    # No hint is still unknown, and an unrelated repo is untouched.
+    assert models_route._arch_to_task(None) is None
+    assert models_route._arch_to_task(None, ("unsloth/Qwen3-GGUF", "q.gguf")) is None
+
+
 def test_arch_to_task_resolves_z_image_gguf_tagged_lumina2():
     # Z-Image's DiT is a Lumina2 derivative, so both Z-Image GGUF repos declare general.architecture = "lumina2". Reading
     # the arch alone tagged the whole line unsupported and hid it, even though validate_load_request loads it happily.

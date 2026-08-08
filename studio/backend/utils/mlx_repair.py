@@ -283,8 +283,8 @@ def _mlx_install_env() -> dict[str, str]:
     Unsloth secrets or be steered to a hostile index.
 
     Mirror the main installer (install_python_stack.py) by pointing UV_OVERRIDE at
-    overrides-darwin-arm64.txt, which relaxes mlx-vlm/mlx-lm's transformers>=5
-    requirement to >=4.57.6. Without it, uv keeps the Unsloth transformers pin only
+    overrides-darwin-arm64.txt, which keeps mlx-vlm/mlx-lm on the Studio
+    Transformers floor. Without it, uv keeps the Unsloth transformers pin only
     by silently backtracking mlx-vlm to an old, unsupported version (uv honours
     UV_OVERRIDE; plain pip ignores it, so the transformers constraint below is the
     pip-path safety net). We set UV_OVERRIDE ourselves, so a poisoned one in the
@@ -322,7 +322,7 @@ def _transformers_constraint_args() -> tuple[list[str], str | None]:
     """Pin transformers to the running version for the mlx install.
 
     The install must never upgrade transformers underneath a running Unsloth
-    (the single-env install pins transformers==4.57.6). With UV_OVERRIDE set this
+    (the single-env install pins a compatible default). With UV_OVERRIDE set this
     is belt-and-suspenders; on the plain-pip path (no UV_OVERRIDE support) it is
     the actual guard -- the resolver either finds an mlx build compatible with the
     pin or fails, leaving us chat-only rather than breaking Unsloth. Returns

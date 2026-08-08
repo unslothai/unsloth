@@ -52,16 +52,23 @@ class VideoFamily:
     cfg2_kwarg: Optional[str] = None
     # HunyuanVideo-1.5 guidance: __call__ takes NO guidance kwarg; CFG lives on a ``guider`` whose scale is set per request.
     guidance_via_guider: bool = False
-    # Generation defaults + shape. ``frame_step`` is the temporal compression: a valid frame count is k*frame_step + 1.
+    # Generation defaults + shape. A valid frame count is k*frame_step + frame_offset.
     default_steps: int = 40
     default_guidance: float = 4.0
     default_num_frames: int = 121
     default_fps: int = 24
     frame_step: int = 8
+    # Offset in the temporal lattice. Existing pipelines use k*step+1; MiniMax-H3 uses 17k+5.
+    frame_offset: int = 1
+    min_num_frames: int = 1
+    max_num_frames: Optional[int] = None
+    snap_frames_up: bool = False
     # Width/height must be divisible by this (LTX-2's pipeline rejects non-/32).
     resolution_multiple: int = 32
     # (width, height) UI presets, landscape first; the first is the default.
     resolution_presets: tuple[tuple[int, int], ...] = ((768, 512),)
+    # Clip lengths offered by the UI. Most families use short previews; H3 is trained for 5-15 seconds.
+    duration_presets: tuple[float, ...] = (1.0, 2.0, 3.0, 5.0)
     # Component bf16-RESIDENT sizes in decimal GB (denoiser(s), text encoder, VAE + audio): what sits on device after the cast.
     bf16_components_gb: Optional[tuple[float, float, float]] = None
     # True when the DiT compiles cleanly with regional torch.compile (declares _repeated_blocks).
@@ -74,9 +81,42 @@ class VideoFamily:
     gguf_repo: Optional[str] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as DiffusionFamily.te_prequant_repos.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Modular Diffusers workflow to load instead of a conventional DiffusionPipeline.
+    modular_workflow: Optional[str] = None
+    # Guidance-distilled families expose neither CFG nor a negative prompt.
+    supports_cfg: bool = True
 
 
 _FAMILIES: tuple[VideoFamily, ...] = (
+    # MiniMax-H3: a joint video/audio model integrated through Modular Diffusers. The released
+    # FL2VA transformer serves both text-only and first/last-frame generation; Studio initially
+    # loads the text-only workflow so the 61.7 GB Ref2VA transformer is not downloaded too.
+    VideoFamily(
+        name = "minimax-h3",
+        pipeline_class = "ModularPipeline",
+        transformer_class = "MiniMaxH3Transformer3DModel",
+        base_repo = "MiniMaxAI/MiniMax-H3",
+        aliases = ("minimax_h3", "minimaxh3", "h3"),
+        has_audio = True,
+        default_steps = 30,
+        default_guidance = 1.0,
+        default_num_frames = 124,
+        default_fps = 24,
+        frame_step = 17,
+        frame_offset = 5,
+        min_num_frames = 124,
+        max_num_frames = 345,
+        snap_frames_up = True,
+        resolution_multiple = 32,
+        resolution_presets = ((1344, 768), (768, 1344), (1024, 1024), (960, 544), (544, 960)),
+        duration_presets = (5.0, 10.0, 14.4),
+        # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.
+        bf16_components_gb = (66.3, 66.8, 11.1),
+        supports_torch_compile = False,
+        gguf_repo = "unsloth/MiniMax-H3-GGUF",
+        modular_workflow = "t2va",
+        supports_cfg = False,
+    ),
     # LTX-2 (diffusers >= 0.39): ~19B single-stream video DiT generating synchronized audio + video in one pass. The Gemma3-12B
     # encoder is stored fp32 on the hub (~49 GB download, ~24 GB resident bf16). The base repo carries the dev config (40 steps, CFG 4).
     VideoFamily(
@@ -253,14 +293,25 @@ def resolve_video_base_repo(fam: VideoFamily, base_repo: Optional[str]) -> str:
 
 
 def snap_num_frames(fam: VideoFamily, num_frames: int) -> int:
-    """The nearest valid frame count at or below the request (k * frame_step + 1).
+    """The nearest valid frame count at or below the request (k * step + offset).
 
     Video latents are allocated as (num_frames - 1) / temporal_compression + 1, so
     an off-lattice count wastes a partial latent frame at best and trips shape
     checks at worst; snapping mirrors the image path's silent /16 size snap.
     """
     step = max(1, fam.frame_step)
-    return max(1, ((max(1, num_frames) - 1) // step) * step + 1)
+    offset = max(1, fam.frame_offset)
+    requested = max(offset, fam.min_num_frames, num_frames)
+    if fam.max_num_frames is not None:
+        requested = min(requested, fam.max_num_frames)
+    delta = requested - offset
+    if fam.snap_frames_up:
+        snapped = ((delta + step - 1) // step) * step + offset
+    else:
+        snapped = (delta // step) * step + offset
+    if fam.max_num_frames is not None:
+        snapped = min(snapped, fam.max_num_frames)
+    return max(offset, fam.min_num_frames, snapped)
 
 
 def snap_video_size(fam: VideoFamily, width: int, height: int) -> tuple[int, int]:

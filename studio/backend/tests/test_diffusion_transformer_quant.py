@@ -697,3 +697,163 @@ def test_the_attention_trim_families_exclude_their_small_m_text_streams():
 
     assert exclude_tokens_for_scheme("fp8", "hunyuanvideo-1.5") == ()
     assert exclude_tokens_for_scheme(TQ_INT8, "ltx-2") == _INT8_EXCLUDE_NAME_TOKENS
+
+
+def test_minimax_h3_int8_excludes_its_adaln_projection():
+    """H3's adaLN projection is named ``adaln_proj``, which the generic token list does not match.
+
+    "norm" is the closest generic token and it does not appear in the name, so on the DENSE
+    checkpoint Linear(2688 -> 96768) clears min_features = 512, gets quantized, then runs at M = 1
+    and raises "self.size(0) needs to be greater than 16, but got 1" at the first denoise. Measured:
+    the offline builder bakes it and torch.compile dies on that module.
+
+    The pruned-modulation form hides this rather than fixing it, since there adaln_proj is
+    Linear(8 -> 96768) and falls under min_features anyway (verified on the fl2va_pruned build:
+    all 51 of them are rejected for min_features, in_features = 8). So this exclusion is what
+    makes the DENSE path correct and is a no-op on the pruned one.
+    """
+    from core.inference.diffusion_transformer_quant import TQ_INT8, exclude_tokens_for_scheme
+
+    assert "adaln_proj" in exclude_tokens_for_scheme(TQ_INT8, "minimax-h3")
+
+    # The generic list genuinely does not cover adaln_proj, which is why the entry is needed at all.
+    # If a future generic token starts matching it, this assertion fails and the family entry can
+    # be reconsidered rather than left as dead weight.
+    from core.inference.diffusion_transformer_quant import _INT8_EXCLUDE_NAME_TOKENS
+
+    assert not any(t in "adaln_proj" for t in _INT8_EXCLUDE_NAME_TOKENS)
+    # fp8 has no M floor, so it must not inherit any of this.
+    assert exclude_tokens_for_scheme("fp8", "minimax-h3") == ()
+
+
+def test_minimax_h3_pads_its_text_stream_instead_of_excluding_it():
+    """context_embedder and the two token_refiner blocks are QUANTIZED and padded, not skipped.
+
+    They run at M = text tokens (10..19 across the seven eval prompts), which straddles
+    ``_int_mm``'s floor of 16, so they used to be excluded. Padding the activation up to 32 rows
+    is bitwise exact under per-row activation scaling and recovers 0.80 GB of weights, so the
+    two names moved from the exclude list to the pad list. Both halves are asserted here: a
+    change that dropped one without the other would either crash under compile or silently
+    quantise nothing."""
+    from core.inference.diffusion_transformer_quant import (
+        TQ_INT8,
+        exclude_tokens_for_scheme,
+        pad_tokens_for_scheme,
+    )
+
+    pad = pad_tokens_for_scheme(TQ_INT8, "minimax-h3")
+    exclude = exclude_tokens_for_scheme(TQ_INT8, "minimax-h3")
+    for name in ("context_embedder", "token_refiner"):
+        assert name in pad, f"minimax-h3 int8 must pad {name}"
+        assert name not in exclude, f"{name} is padded, so excluding it would quantise nothing"
+
+
+def test_pad_and_exclude_sets_never_overlap():
+    """An excluded Linear is never quantized, so there would be nothing to pad. A name in both
+    lists means one of them is dead, and which one is dead is not visible at the call site."""
+    from core.inference.diffusion_transformer_quant import (
+        _INT8_FAMILY_PAD_NAME_TOKENS,
+        TQ_INT8,
+        exclude_tokens_for_scheme,
+        pad_tokens_for_scheme,
+    )
+    for family in _INT8_FAMILY_PAD_NAME_TOKENS:
+        exclude = exclude_tokens_for_scheme(TQ_INT8, family)
+        for pad_token in pad_tokens_for_scheme(TQ_INT8, family):
+            assert not any(
+                e in pad_token or pad_token in e for e in exclude
+            ), f"{family}: {pad_token!r} is both padded and excluded"
+
+
+def test_only_minimax_h3_pads_today():
+    """Scoped deliberately. qwen-image, qwen-image-edit and hunyuanvideo-1.5 have the same
+    small-M shape and could adopt this, but each has a PUBLISHED int8 prequant checkpoint whose
+    metadata bakes the current exclusion set, and ``_validate_checkpoint`` compares that set
+    against ``exclude_tokens_for_scheme``. Flipping one of them without rebuilding and
+    republishing its artifact turns every hosted int8 load into a silent fallback."""
+    from core.inference.diffusion_transformer_quant import TQ_INT8, pad_tokens_for_scheme
+
+    for family in ("qwen-image", "qwen-image-edit", "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
+        assert pad_tokens_for_scheme(TQ_INT8, family) == ()
+    assert pad_tokens_for_scheme(TQ_INT8, "z-image") == ()
+    assert pad_tokens_for_scheme(TQ_INT8, None) == ()
+
+
+def test_only_int8_pads():
+    """``_int_mm``'s row floor is int8's alone: scaled_mm and the MX/FP4 kernels have no
+    equivalent, so no other scheme should be paying for a pad-and-slice."""
+    from core.inference.diffusion_transformer_quant import pad_tokens_for_scheme
+    for scheme in ("fp8", "nvfp4", "mxfp8", "auto"):
+        assert pad_tokens_for_scheme(scheme, "minimax-h3") == ()
+
+
+def test_quantize_transformer_pads_after_quantising(monkeypatch):
+    """The padding runs on the RUNTIME dense-quantise path too, not only on the prequant one,
+    and it runs AFTER quantize_ (it reparents Linears that must already hold quantized weights).
+    """
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_INT8})
+    order = []
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: order.append("quantize_")
+    tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8-cfg"
+    tqz.Float8DynamicActivationFloat8WeightConfig = lambda **kw: "fp8-cfg"
+    tqz.PerRow = lambda: "per-row"
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    monkeypatch.setattr(
+        tq,
+        "apply_small_m_padding",
+        lambda transformer, scheme, family = None, logger = None: (
+            order.append(("pad", scheme, family)) or ()
+        ),
+    )
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    assert quantize_transformer(pipe, _target(), mode = "int8", family = "minimax-h3") == TQ_INT8
+    assert order == ["quantize_", ("pad", TQ_INT8, "minimax-h3")]
+
+
+def test_quantize_transformer_refuses_when_padding_cannot_be_proven(monkeypatch):
+    """A half-padded transformer compiles on the modules that were wrapped and crashes inside
+    ``_int_mm`` on the ones that were not, so a raise from the padding must fail the whole
+    quantise and send the caller to GGUF -- not be swallowed into a partially padded model."""
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_INT8})
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: None
+    tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8-cfg"
+    tqz.Float8DynamicActivationFloat8WeightConfig = lambda **kw: "fp8-cfg"
+    tqz.PerRow = lambda: "per-row"
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+
+    def _boom(
+        transformer,
+        scheme,
+        family = None,
+        logger = None,
+    ):
+        raise RuntimeError("cannot prove per-row granularity")
+
+    monkeypatch.setattr(tq, "apply_small_m_padding", _boom)
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    assert quantize_transformer(pipe, _target(), mode = "int8", family = "minimax-h3") is None
+    assert not hasattr(pipe.transformer, "_unsloth_runtime_quant")
+
+
+def test_apply_small_m_padding_is_inert_without_a_pad_list(monkeypatch):
+    """No pad list means the padding module is never even IMPORTED.
+
+    That matters beyond the wasted traversal: ``diffusion_transformer_quant`` deliberately keeps
+    torch out of its own import path (every probe imports lazily), while ``diffusion_quant_pad``
+    subclasses ``nn.Module`` and so must import torch at module scope. Shadowing the module with
+    an empty stub makes the import observable: it raises for the family that pads, and must not
+    be reached at all for anything else."""
+    from core.inference.diffusion_transformer_quant import TQ_INT8, apply_small_m_padding
+
+    stub = types.ModuleType("core.inference.diffusion_quant_pad")  # no names to import
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_quant_pad", stub)
+
+    assert apply_small_m_padding(object(), TQ_INT8, "z-image") == ()
+    assert apply_small_m_padding(object(), "fp8", "minimax-h3") == ()
+    assert apply_small_m_padding(object(), TQ_INT8, None) == ()
+    with pytest.raises(ImportError):
+        apply_small_m_padding(object(), TQ_INT8, "minimax-h3")

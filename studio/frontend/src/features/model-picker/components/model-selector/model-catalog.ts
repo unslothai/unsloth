@@ -20,6 +20,9 @@ export interface ModelArtifact {
   label: string;
   /** Curated resident-size estimate for routing. Omitted = unknown: never auto-picked unless downloaded. GGUF omits it too, since its quant ladder self-fits via pickDefaultQuant. */
   approxSizeGb?: number;
+  /** Measured CPU-offload fit tiers. Any tier whose GPU and available-RAM floors
+   * are both met can auto-route this artifact without applying the resident 70% rule. */
+  offloadFitTiers?: readonly { gpuGb: number; systemRamGb: number }[];
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
   /** Gated on the Hub (license + token). A bare group click skips it when not downloaded and falls through to an open artifact (e.g. the GGUF); an already-downloaded gated artifact is still returned. */
@@ -322,6 +325,25 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
 ];
 
 export const VIDEO_CATALOG: CatalogGroup[] = [
+  {
+    canonicalId: "MiniMaxAI/MiniMax-H3",
+    displayName: "MiniMax H3",
+    description: "Text-to-video with synchronized audio",
+    scope: "video",
+    aliases: ["Comfy-Org/MiniMax-H3"],
+    artifacts: [
+      bf16Pipeline("MiniMaxAI/MiniMax-H3", 145, {
+        // Cluster measurements at the default 1344x768, 124-frame preset. The
+        // lower-GPU tier holds one 66 GB component at a time and keeps the full
+        // model in RAM; the higher tier retains more weights on-device.
+        offloadFitTiers: [
+          { gpuGb: 74, systemRamGb: 140 },
+          { gpuGb: 123, systemRamGb: 80 },
+        ],
+      }),
+      gguf("unsloth/MiniMax-H3-GGUF"),
+    ],
+  },
   {
     // The distilled 2.3 release: Lightricks' own bf16/fp8 single-file DiT checkpoints (loaded against the already-trusted LTX-2
     // base for the VAE / Gemma3 encoder) plus the GGUF quants. The single-file ones keep the ~50 GB encoder in bf16, so consumer GPUs route to GGUF.
@@ -650,12 +672,17 @@ const FORMAT_QUALITY: Record<ArtifactFormat, number> = {
   gguf: 3,
 };
 
-function fitsResident(artifact: ModelArtifact, gpuGb: number): boolean {
+function fitsArtifactBudget(artifact: ModelArtifact, budget: DeviceBudget): boolean {
+  if (artifact.offloadFitTiers?.length) {
+    return artifact.offloadFitTiers.some(
+      (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+    );
+  }
   if (artifact.approxSizeGb === undefined) return false;
-  return artifact.approxSizeGb <= gpuGb * 0.7;
+  return artifact.approxSizeGb <= budget.gpuGb * 0.7;
 }
 
-/** The artifact a bare group click loads. Ladder: (1) highest-quality DOWNLOADED artifact within the 0.7 * GPU budget, else a downloaded GGUF, else the smallest downloaded; (2) no budget known -> the group GGUF, else the first artifact; (3) best sized artifact that fits, descending quality (BF16, FP8, bnb-4bit), unsized never auto-picked; (4) fallback GGUF, else the smallest. */
+/** The artifact a bare group click loads. Sized artifacts normally use the 0.7 * GPU budget; measured offload tiers can override that fit check. */
 export function pickDefaultArtifact(
   group: CatalogGroup,
   input: RoutingInput,
@@ -667,7 +694,7 @@ export function pickDefaultArtifact(
   const downloaded = artifacts.filter((a) => input.isDownloaded(a.repoId));
   if (downloaded.length > 0) {
     const fitting = downloaded.find(
-      (a) => a.format !== "gguf" && fitsResident(a, input.gpuGb),
+      (a) => a.format !== "gguf" && fitsArtifactBudget(a, input),
     );
     if (fitting) return fitting;
     const downloadedGguf = downloaded.find((a) => a.format === "gguf");
@@ -681,7 +708,7 @@ export function pickDefaultArtifact(
   }
   for (const artifact of artifacts) {
     // Skip a gated, NOT-downloaded artifact: auto-routing there fails the download without license/token access, so fall through to an open one. The downloaded branch above still returns gated artifacts.
-    if (artifact.format !== "gguf" && !artifact.gated && fitsResident(artifact, input.gpuGb)) {
+    if (artifact.format !== "gguf" && !artifact.gated && fitsArtifactBudget(artifact, input)) {
       return artifact;
     }
   }
@@ -691,7 +718,7 @@ export function pickDefaultArtifact(
   )[0];
 }
 
-/** Whether the "fit on device" toggle keeps a group: it stays when one artifact can run here (on disk, a GGUF, or sized within the 0.7*GPU + 0.7*RAM budget), so a bare click on a filtered list cannot start an OOM load. An unknown budget keeps everything. */
+/** Whether the "fit on device" toggle keeps a group, including measured offload tiers when an artifact provides them. */
 export function catalogGroupFitsDevice(
   group: CatalogGroup,
   budget: DeviceBudget,
@@ -705,6 +732,11 @@ export function catalogGroupFitsDevice(
     if (isDownloaded(a.repoId)) return true;
     // A GGUF quant ladder self-fits (llama-server offloads), so it is always a runnable fallback, matching pickDefaultArtifact.
     if (a.format === "gguf") return true;
+    if (a.offloadFitTiers?.length) {
+      return a.offloadFitTiers.some(
+        (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+      );
+    }
     return a.approxSizeGb !== undefined && a.approxSizeGb <= budgetGb;
   });
 }

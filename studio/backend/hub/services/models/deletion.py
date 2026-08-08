@@ -656,6 +656,11 @@ def _video_blocks_delete(repo_id: str) -> Optional[str]:
             held = status.get(key)
             if held and _loaded_id_matches_repo(str(held), repo_id):
                 return "Unload the model before deleting"
+    # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are
+    # neither of the two ids above, so refuse those as well, exactly as the Images guard does.
+    for lid in getattr(backend, "loaded_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "Unload the model before deleting"
     for lid in getattr(backend, "loading_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "A Video model load is using this repo; wait for it to finish"

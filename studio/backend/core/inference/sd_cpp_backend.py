@@ -159,6 +159,122 @@ def _usable_or_discard_managed(binary: str) -> bool:
     return False
 
 
+def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
+    """Combined stdout+stderr of ``binary <args>``, or None when it could not be read.
+
+    ``sd-cli`` prints ``--help`` on stdout and exits 0, and logs errors on stderr, so both
+    streams are folded together. None means "could not tell" -- cannot exec, timed out, or a
+    non-zero exit (which is how an older build rejects a flag it does not know) -- and is never
+    evidence that a feature is absent, so every caller has to stay conservative on it."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [binary, *args],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 20,
+            env = runtime_env(binary),
+            **windows_hidden_subprocess_kwargs(),
+        )
+    except Exception:  # noqa: BLE001 -- cannot exec / timeout: treated as "cannot tell"
+        return None
+    if proc.returncode != 0:
+        return None
+    return (proc.stdout or "") + (proc.stderr or "")
+
+
+# The ``--help`` token that marks a build carrying MiniMax-H3 support. Upstream added the mode's
+# own options (``--ref-video`` / ``--ref-audio``, and the "MiniMax-H3 Ref2VA" wording on
+# ``--ref-image``) in the very commit that added H3 upstream, released as
+# master-812-ea7f0c8, so their presence is exactly the capability signal. ``--version`` cannot
+# stand in for it: the release prebuilts are built without a .git dir and answer "stable-diffusion.cpp
+# version unknown, commit unknown", so there is no tag to compare.
+_H3_HELP_MARKER = "--ref-video"
+
+
+def sd_cpp_supports_minimax_h3(binary: str) -> bool:
+    """True unless ``binary``'s ``--help`` demonstrably predates MiniMax-H3 support.
+
+    Conservative by design: an unreadable ``--help`` returns True, because the load's existing
+    ``SdCppEngine.version()`` gate already refuses a binary that cannot run, and guessing "no H3"
+    from a probe failure would take native video away from a working build."""
+    text = _sd_cpp_probe_output(binary, "--help")
+    if text is None:
+        return True
+    return _H3_HELP_MARKER in text
+
+
+def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
+    """True unless ``binary`` demonstrably enumerates the CPU ggml device and nothing else.
+
+    ``sd-cli --list-devices`` prints one ``name<TAB>description`` line per available ggml backend
+    device and exits 0, a format its own help text documents, so a CPU-only prebuilt answers
+    ``CPU\t<cpu model>`` while a CUDA / ROCm / Vulkan / Metal build adds its own device. That is the
+    only way to tell the two apart after the fact: ``find_sd_cpp_binary`` returns whatever is
+    installed regardless of which accelerator it was asked for.
+
+    Conservative everywhere else -- unreadable output, or an older build that rejects the flag --
+    because neither is evidence that the accelerator is missing. A missing binary is False: there
+    is nothing to run on the GPU at all."""
+    if not binary:
+        return False
+    text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is None:
+        return True
+    names = [line.split("\t", 1)[0].strip() for line in text.splitlines() if "\t" in line]
+    if not names:
+        return True
+    return any(name.upper() != "CPU" for name in names)
+
+
+def ensure_h3_sd_cpp_binary(
+    *, allow_install: bool = True, accelerator: str = "cpu"
+) -> Optional[str]:
+    """``ensure_sd_cpp_binary`` for the MiniMax-H3 path, which additionally requires the binary to
+    ADVERTISE H3 support.
+
+    ``ensure_sd_cpp_binary`` hands back whatever ``find_sd_cpp_binary`` locates and only probes
+    runnability, so an install that predates H3 (an upgraded Studio still carrying an older managed
+    sd-cli) is returned unchanged, the H3 load reports ready on it, and the first generation fails
+    only AFTER the multi-tens-of-GB bundle has downloaded. Only this path is stricter: image
+    generation must keep working on any user-supplied build.
+
+    A stale copy we own is deleted so the installer puts the pinned prebuilt back; a user's own
+    build is left alone and the load fails with a message naming it, the same ownership split
+    ``_usable_or_discard_managed`` makes. Returns None when no H3-capable binary can be produced.
+    """
+    binary = ensure_sd_cpp_binary(allow_install = allow_install, accelerator = accelerator)
+    if not binary or sd_cpp_supports_minimax_h3(binary):
+        return binary
+    if not is_managed_binary(binary):
+        raise RuntimeError(
+            f"The stable-diffusion.cpp build at {binary} predates MiniMax-H3 support (its --help "
+            f"does not list the H3 options), so generation would fail after the whole H3 bundle "
+            f"has downloaded. Point SD_CLI_PATH / UNSLOTH_SD_CPP_PATH at a build from "
+            f"master-812-ea7f0c8 or newer, or remove that directory so Studio installs the "
+            f"pinned prebuilt."
+        )
+    if not allow_install:
+        # Ours, but replacing it is exactly what auto-install is switched off for.
+        logger.warning("managed sd.cpp binary %s predates MiniMax-H3 support", binary)
+        return None
+    logger.warning(
+        "managed sd.cpp binary %s predates MiniMax-H3 support; removing it so it reinstalls", binary
+    )
+    try:
+        Path(binary).unlink()
+    except OSError as exc:
+        logger.warning("could not remove the stale managed sd.cpp binary %s: %s", binary, exc)
+        return None
+    binary = ensure_sd_cpp_binary(allow_install = True, accelerator = accelerator)
+    if binary and not sd_cpp_supports_minimax_h3(binary):
+        return None
+    return binary
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Path to a usable ``sd-cli`` binary, installing the prebuilt once if needed.
 

@@ -31,8 +31,10 @@ from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
     SdCppUpscaleParams,
+    SdCppVideoGenParams,
     build_sd_cpp_command,
     build_sd_cpp_upscale_command,
+    build_sd_cpp_video_command,
     native_speed_flags,
 )
 
@@ -349,6 +351,39 @@ class SdCppEngine:
             self._require_binary(),
             params,
             output_path = str(self._prepare_out(output_path)),
+            verbose = verbose,
+            extra_args = extra_args,
+        )
+        return self._run(
+            cmd,
+            output_path,
+            timeout = timeout,
+            env = env,
+            on_log = on_log,
+            cancel_event = cancel_event,
+        )
+
+    def generate_video(
+        self,
+        files: SdCppModelFiles,
+        params: SdCppVideoGenParams,
+        *,
+        output_path: str,
+        offload: Optional[list[str]] = None,
+        verbose: bool = False,
+        extra_args: Optional[list[str]] = None,
+        timeout: Optional[float] = NATIVE_GENERATION_TIMEOUT_S,
+        env: Optional[dict[str, str]] = None,
+        on_log: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Path:
+        """Run one ``vid_gen`` generation and return its video container."""
+        cmd = build_sd_cpp_video_command(
+            self._require_binary(),
+            files,
+            params,
+            output_path = str(self._prepare_out(output_path)),
+            offload = offload,
             verbose = verbose,
             extra_args = extra_args,
         )

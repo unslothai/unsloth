@@ -104,6 +104,8 @@ const VIDEO_MODELS: ModelOption[] = catalogToModelOptions(VIDEO_CATALOG);
 const DEFAULT_GEN = { steps: 8, guidance: 1 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
+  { match: "minimax-h3", steps: 30, guidance: 1 },
+  { match: "minimax_h3", steps: 30, guidance: 1 },
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
@@ -127,7 +129,9 @@ const FALLBACK_RESOLUTION_PRESETS: Array<[number, number]> = [
 
 // Fallbacks for the duration presets before a model is loaded, so the select is populated and valid on first paint.
 const FALLBACK_FRAME_STEP = 8;
+const FALLBACK_FRAME_OFFSET = 1;
 const FALLBACK_FPS = 24;
+const FALLBACK_DURATION_TARGETS = [1, 2, 3, 5];
 
 // Module cache of the backend-persisted gallery, so a tab switch re-renders instantly. The srcById entries are short-lived
 // signed links, not object URLs: nothing is pinned in the webview, and the media element streams ranges as it plays.
@@ -569,8 +573,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [seed, setSeed] = useState("");
   // The chosen resolution preset index into the current preset list.
   const [resolutionIdx, setResolutionIdx] = useState(0);
-  // The chosen frame count (must lie on the family's temporal lattice: k*frame_step+1).
-  const [numFrames, setNumFrames] = useState(FALLBACK_FRAME_STEP * 3 + 1);
+  // The chosen frame count must lie on the family's temporal lattice.
+  const [numFrames, setNumFrames] = useState(
+    FALLBACK_FRAME_STEP * 3 + FALLBACK_FRAME_OFFSET,
+  );
   // Advanced options live in a right-docked panel, closed by default; a single fixed top-bar toggle opens it.
   // Sits inline under Seed; the open state is remembered across visits.
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
@@ -692,23 +698,25 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   }, [status?.defaults?.resolution_presets]);
 
   const frameStep = status?.defaults?.frame_step ?? FALLBACK_FRAME_STEP;
+  const frameOffset = status?.defaults?.frame_offset ?? FALLBACK_FRAME_OFFSET;
   const fps = status?.defaults?.fps ?? FALLBACK_FPS;
+  const durationTargets =
+    status?.defaults?.duration_presets ?? FALLBACK_DURATION_TARGETS;
 
-  // Duration presets: valid frame counts (k*frame_step+1) closest to ~1s/2s/3s/5s at the current fps, deduped.
+  // Duration presets: valid frame counts closest to ~1s/2s/3s/5s at the current fps, deduped.
   const durationOptions = useMemo<Array<{ frames: number; seconds: number }>>(() => {
-    const targets = [1, 2, 3, 5];
     const seen = new Set<number>();
     const out: Array<{ frames: number; seconds: number }> = [];
-    for (const t of targets) {
+    for (const t of durationTargets) {
       const desired = t * fps;
-      const k = Math.max(1, Math.round((desired - 1) / frameStep));
-      const frames = k * frameStep + 1;
+      const k = Math.max(1, Math.round((desired - frameOffset) / frameStep));
+      const frames = k * frameStep + frameOffset;
       if (seen.has(frames)) continue;
       seen.add(frames);
       out.push({ frames, seconds: frames / fps });
     }
     return out;
-  }, [frameStep, fps]);
+  }, [frameStep, frameOffset, fps, durationTargets]);
 
   // Keep the resolution / frame-count selections valid when the loaded family changes.
   useEffect(() => {
@@ -1613,13 +1621,16 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       await generateVideo({
         prompt: prompt.trim(),
         // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
-        negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
+        negative_prompt:
+          status?.supports_cfg !== false && guidance > 0
+            ? negativePrompt.trim() || undefined
+            : undefined,
         width: w,
         height: h,
         num_frames: numFrames,
         fps,
         steps,
-        guidance,
+        guidance: status?.supports_cfg !== false ? guidance : undefined,
         seed: resolvedSeed,
       });
     } catch (err) {
@@ -1641,6 +1652,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     numFrames,
     fps,
     steps,
+    status?.supports_cfg,
     startGenPoll,
   ]);
 
@@ -1768,6 +1780,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           {status?.loaded && (
             <div className="hidden items-center gap-3 text-ui-11 md:flex">
               {status.family && <StatusChip label="Family" value={status.family} />}
+              {status.engine && <StatusChip label="Engine" value={status.engine} />}
               {status.model_kind && <StatusChip label="Kind" value={status.model_kind} />}
               {status.offload_policy && (
                 <StatusChip label="Offload" value={status.offload_policy} />
@@ -1823,13 +1836,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             />
           </Field>
 
-          <NegativePromptField
-            value={negativePrompt}
-            onChange={setNegativePrompt}
-            open={negativeOpen}
-            onOpenChange={setNegativeOpen}
-            hint="What to steer the video away from. Only used when guidance is above 0."
-          />
+          {status?.supports_cfg !== false && (
+            <NegativePromptField
+              value={negativePrompt}
+              onChange={setNegativePrompt}
+              open={negativeOpen}
+              onOpenChange={setNegativeOpen}
+              hint="What to steer the video away from. Only used when guidance is above 0."
+            />
+          )}
 
           <Field
             label="Resolution"
@@ -1891,15 +1906,17 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             step={1}
             onChange={setSteps}
           />
-          <SliderField
-            label="Guidance"
-            hint="Classifier-free guidance scale. Keep low (1) for the distilled model; the base model uses real guidance (4)."
-            value={guidance}
-            min={0}
-            max={20}
-            step={0.5}
-            onChange={setGuidance}
-          />
+          {status?.supports_cfg !== false && (
+            <SliderField
+              label="Guidance"
+              hint="Classifier-free guidance scale. Keep low (1) for the distilled model; the base model uses real guidance (4)."
+              value={guidance}
+              min={0}
+              max={20}
+              step={0.5}
+              onChange={setGuidance}
+            />
+          )}
           {/* A slider row ends flush with its track, so the label below needs room. */}
           <Field
             label="Seed"
