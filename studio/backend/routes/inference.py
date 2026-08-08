@@ -2008,7 +2008,7 @@ from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
 from core.inference.model_ids import model_id_matches, public_model_id
-from core.inference.api_monitor import api_monitor
+from core.inference.api_monitor import _MAX_DECODE_MS, api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.tool_call_parser import (
     _strip_function_xml_calls,
@@ -3036,7 +3036,9 @@ def _timings_predicted_ms(timings: Optional[dict]) -> Optional[float]:
     if not isinstance(timings, dict):
         return None
     predicted = timings.get("predicted_ms")
-    if isinstance(predicted, (int, float)) and predicted >= 0:
+    # Bounded like set_usage: a bare Infinity or NaN survives json.loads, and treating
+    # one as present would suppress the streamed window for a reading we then drop.
+    if isinstance(predicted, (int, float)) and 0 <= predicted <= _MAX_DECODE_MS:
         return float(predicted)
     return None
 

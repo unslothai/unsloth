@@ -18,6 +18,9 @@ _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
+# A day of decode is already absurd, so anything past it is a bad reading rather than
+# a slow model. Doubles as the guard against a non-finite predicted_ms.
+_MAX_DECODE_MS = 24 * 60 * 60 * 1000
 
 # Opt-in startup kill switch for Studio's in-memory API monitor.
 _DISABLE_ENV = "UNSLOTH_STUDIO_DISABLE_API_MONITOR"
@@ -337,7 +340,9 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
-            if decode_ms is not None and decode_ms >= 0:
+            # Bounded, so a NaN (both comparisons false) or an Infinity cannot reach
+            # int() and raise on the request's own thread. json.loads accepts both.
+            if decode_ms is not None and 0 <= decode_ms <= _MAX_DECODE_MS:
                 entry.reported_decode_ms = int(decode_ms)
             if prompt_tokens is not None:
                 entry.prompt_tokens = prompt_tokens
