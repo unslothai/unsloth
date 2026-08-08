@@ -791,6 +791,10 @@ def _is_openai_usage_only_sse(line: str) -> bool:
     """
     if not isinstance(line, str) or not line.startswith("data:"):
         return False
+    # This runs on every relayed line, so keep the parse off the common path: a usage
+    # chunk always spells the key literally, and content deltas carry no usage at all.
+    if '"usage"' not in line:
+        return False
     body = line[len("data:") :].strip()
     if not body or body == "[DONE]":
         return False

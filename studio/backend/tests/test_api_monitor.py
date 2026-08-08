@@ -1466,6 +1466,9 @@ def test_a_stop_reason_written_after_finish_escapes_the_clearing():
         # A content chunk carrying inline usage still has to reach the client.
         ('data: {"choices":[{"delta":{"content":"x"}}],"usage":{"completion_tokens":9}}', False),
         ('data: {"choices":[{"delta":{"content":"x"}}]}', False),
+        # Content that quotes the key gets past the cheap prefilter, so only the parse
+        # can tell it apart from a real usage chunk.
+        ('data: {"choices":[{"delta":{"content":"\\"usage\\":1"}}]}', False),
         ("data: [DONE]", False),
         ("data: not json", False),
         (": keepalive comment", False),
