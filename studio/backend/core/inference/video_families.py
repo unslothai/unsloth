@@ -76,6 +76,22 @@ class VideoFamily:
     gguf_repo: Optional[str] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as DiffusionFamily.te_prequant_repos.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Hosted PRE-QUANTIZED DENOISER checkpoints as (scheme, repo_id). The DiT, NOT the text
+    # encoder that te_prequant_repos above covers: the two are separate artifacts because a load
+    # can take one without the other. Same semantics as DiffusionFamily.prequant_repos, so the
+    # shared diffusion_prequant resolver reads this table through plain attribute access.
+    prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # Per-variant overrides as (base_repo, scheme, repo_id), keyed on the LOWERCASED upstream base
+    # id. A pre-quantized checkpoint is baked from ONE base's weights and the loader refuses it for
+    # any other base, so a variant that ships its own denoiser needs its own entry; a variant
+    # without one falls through to prequant_repos and, if that checkpoint was baked elsewhere, the
+    # loader's base_model_id check sends the load back to the dense path.
+    prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Subdirectory inside the hosted prequant repo holding the checkpoint ("" = the repo root, which
+    # is where the image-side repos keep theirs). The video artifacts nest theirs one level down, so
+    # the filename the resolver builds needs this prefix or every lookup 404s and the load silently
+    # falls back to downloading the dense denoiser.
+    prequant_subfolder: str = ""
     # Modular Diffusers workflow to load instead of a conventional DiffusionPipeline.
     modular_workflow: Optional[str] = None
     # Guidance-distilled families expose neither CFG nor a negative prompt.
@@ -109,6 +125,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (66.3, 66.8, 11.1),
         supports_torch_compile = False,
         gguf_repo = "unsloth/MiniMax-H3-GGUF",
+        # Hosted pre-quantized FL2VA denoisers. The modular workflow builds each component through
+        # its own from_pretrained, so there is no dense module to quantise in place: these are the
+        # ONLY way to run the 66.3 GB transformer quantized, and seeding one also stops that
+        # download. Their checkpoints sit under prequant/ rather than at the repo root.
+        prequant_repos = (("int8", "unsloth/MiniMax-H3-INT8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
+        prequant_subfolder = "prequant",
         modular_workflow = "t2va",
         supports_cfg = False,
     ),
@@ -285,6 +307,63 @@ def resolve_video_base_repo(fam: VideoFamily, base_repo: Optional[str]) -> str:
     """The companion diffusers repo: caller-supplied if given, else the family fallback."""
     base = (base_repo or "").strip()
     return base or fam.base_repo
+
+
+def _prequant_base_key(repo_id: Optional[str]) -> str:
+    """The lookup key ``prequant_variant_repos`` is written against: trimmed and lowercased.
+
+    Deliberately local rather than reusing ``diffusion_families.canonical_base``: this module
+    header keeps the two registries apart so neither picker can reach the other's tables, and the
+    image mirror map holds image repos only, so importing it would buy nothing but the coupling.
+    """
+    return (repo_id or "").strip().lower()
+
+
+def video_family_prequant_repo(
+    fam: VideoFamily,
+    scheme: str,
+    base_repo: Optional[str] = None,
+) -> Optional[str]:
+    """The hosted pre-quantized DENOISER repo for ``scheme`` in this family, or None.
+
+    Mirrors ``diffusion_families.family_prequant_repo``: ``base_repo`` (when known) selects a
+    variant-specific checkpoint first, then the family default. Pure -- no IO, no torch -- so
+    validation and download planning can both ask before anything is downloaded.
+
+    Reads the tables through ``getattr`` and skips malformed rows instead of raising: this runs on
+    the refusal path of a load request, and a table typo must not turn a legitimate pick into a
+    500. A family object that predates these fields simply has no hosted checkpoint.
+    """
+    base = _prequant_base_key(base_repo)
+    if base:
+        for entry in getattr(fam, "prequant_variant_repos", ()) or ():
+            if not isinstance(entry, (tuple, list)) or len(entry) != 3:
+                continue
+            entry_base, entry_scheme, repo_id = entry
+            if _prequant_base_key(entry_base) == base and entry_scheme == scheme and repo_id:
+                return repo_id
+    for entry in getattr(fam, "prequant_repos", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        entry_scheme, repo_id = entry
+        if entry_scheme == scheme and repo_id:
+            return repo_id
+    return None
+
+
+def video_family_prequant_schemes(fam: VideoFamily) -> tuple[str, ...]:
+    """Every scheme this family has a hosted denoiser checkpoint for, in table order.
+
+    Used to name the workable schemes in a refusal message, so a rejected request tells the caller
+    what to pick instead of only what failed. Malformed rows are skipped, as above."""
+    schemes: list[str] = []
+    for entry in getattr(fam, "prequant_repos", ()) or ():
+        if isinstance(entry, (tuple, list)) and len(entry) == 2 and entry[0] not in schemes:
+            schemes.append(entry[0])
+    for entry in getattr(fam, "prequant_variant_repos", ()) or ():
+        if isinstance(entry, (tuple, list)) and len(entry) == 3 and entry[1] not in schemes:
+            schemes.append(entry[1])
+    return tuple(schemes)
 
 
 def snap_num_frames(fam: VideoFamily, num_frames: int) -> int:

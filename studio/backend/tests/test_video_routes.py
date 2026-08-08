@@ -971,3 +971,94 @@ def test_signed_video_link_rejects_tampering_and_other_ids(client):
 
 def test_signed_url_mint_is_bearer_gated_and_404s_for_an_unknown_clip(client):
     assert client.get("/api/inference/video/gallery/does-not-exist/signed-url").status_code == 404
+
+
+def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
+    # Same rule as the encoder policy above, for the denoiser: with a hosted pre-quantized
+    # checkpoint the plan must drop the dense transformer shards, and without this forwarding it
+    # stages ~66 GB the load then never opens.
+    backend = video_module.get_video_backend()
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen["model_path"] = model_path
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "transformer_quant": "int8",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert seen["transformer_quant"] == "int8"
+
+
+def test_video_download_plan_refuses_an_unsupported_combination_before_staging(client, monkeypatch):
+    # The whole point of moving the refusal into validation: this pick used to return a 200 plan,
+    # stage ~98.7 GB, and only then fail inside the loader. Runs the REAL validation rather than
+    # the fake backend's mirror of it, since the rule under test lives in the real one.
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(
+        backend,
+        "validate_load_request",
+        video_module.VideoBackend.validate_load_request.__get__(backend),
+        raising = False,
+    )
+
+    def _plan(model_path, **kwargs):  # pragma: no cover - reaching this IS the regression
+        raise AssertionError("download_plan must not be reached for a refused pick")
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "MiniMaxAI/MiniMax-H3",
+            "gguf_filename": "minimax_h3_fl2va_pruned_int8_rowwise.safetensors",
+            "model_kind": "single_file",
+        },
+    )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    # A refusal that does not name the alternative just moves the dead end earlier.
+    assert "MiniMaxAI/MiniMax-H3" in detail
+    assert "unsloth/MiniMax-H3-GGUF" in detail
+
+
+def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, monkeypatch):
+    # And the quant-keyed refusal has to fire on THIS route too, which needs the route to forward
+    # transformer_quant into validation: it is the route that stages the download.
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(
+        backend,
+        "validate_load_request",
+        video_module.VideoBackend.validate_load_request.__get__(backend),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be reached")),
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "MiniMaxAI/MiniMax-H3",
+            "model_kind": "pipeline",
+            "transformer_quant": "nvfp4",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "nvfp4" in resp.json()["detail"]

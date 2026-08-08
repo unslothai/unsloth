@@ -104,6 +104,10 @@ async def video_download_plan(
             family_override = request.family_override,
             model_kind = kind,
             base_repo = request.base_repo,
+            # Validation is quant-keyed: a scheme this family can serve only from a hosted
+            # pre-quantized checkpoint has to be refused HERE, on the route that stages the
+            # download, or the panel fetches ~98.7 GB before /video/load can say no.
+            transformer_quant = request.transformer_quant,
         )
         plan = await asyncio.to_thread(
             backend.download_plan,
@@ -115,6 +119,10 @@ async def video_download_plan(
             hf_token = request.hf_token,
             # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so staging the dense one wastes ~49 GB on LTX-2.
             text_encoder_quant = request.text_encoder_quant,
+            # And the denoiser policy, for the same reason: a scheme with a hosted pre-quantized
+            # checkpoint replaces the dense DiT, so without this the plan stages 66.3 GB of shards
+            # the load never opens.
+            transformer_quant = request.transformer_quant,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
