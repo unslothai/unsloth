@@ -7058,3 +7058,29 @@ def test_the_load_route_pins_and_other_load_surfaces_do_not(monkeypatch):
     import routes.preview as preview_route
 
     assert "user_initiated" not in inspect.getsource(preview_route._serve_chat)
+
+
+def test_api_only_turned_on_mid_save_still_spares_the_model(monkeypatch, tmp_path):
+    # A KV save can take seconds; the loop re-reads the TTL and keep-KV after it
+    # for exactly that reason, so provenance has to be re-read there too.
+    from core.inference import llama_keepwarm as kw
+
+    on = {"now": False}
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: on["now"])
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+
+    manifest = {"dir": str(tmp_path), "slots": [{"id": 0, "filename": "f.bin", "n_saved": 1}]}
+    deleted = []
+    monkeypatch.setattr(kw, "_delete_resume_files", lambda m: deleted.append(m))
+
+    def _save(should_abort = None):
+        on["now"] = True  # the user flips the toggle while the save runs
+        return manifest
+
+    backend.save_slots_for_resume = _save
+
+    _drive_idle_loop(kw)
+    assert backend.is_loaded is True
+    assert deleted == [manifest]  # nothing was unloaded, so nothing may be stashed
+    assert kw._kv_resume is None

@@ -376,6 +376,12 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
         get_auto_unload_keep_kv,
     )
 
+    def _user_pinned(b) -> bool:
+        """Whether the setting spares this model. Re-read like the other
+        settings: a KV save can outlive the user turning this on. getattr keeps
+        a foreign backend (tests, MLX) on the old unload-everything path."""
+        return get_auto_unload_api_only() and getattr(b, "_loaded_by_user_action", False)
+
     seen_model = None
     while True:
         await asyncio.sleep(poll_seconds)
@@ -397,14 +403,11 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     if current is not None:
                         _note_activity()
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
+                if backend.is_loaded and _user_pinned(backend):
+                    # Loaded from the UI, so the user wants it resident; only
+                    # models the API loaded are freed.
+                    continue
                 if backend.is_loaded and _is_idle(ttl):
-                    if get_auto_unload_api_only() and getattr(
-                        backend, "_loaded_by_user_action", False
-                    ):
-                        # Loaded from the UI, so the user wants it resident; only
-                        # models the API loaded are freed. getattr keeps a foreign
-                        # backend (tests, MLX) on the old unload-everything path.
-                        continue
                     freed = _loaded_identity(backend)
                     manifest = None
                     if get_auto_unload_keep_kv():
@@ -417,7 +420,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                             logger.debug("slot save before idle unload failed: %s", exc)
                     # Re-read settings: the save can outlive a settings change.
                     ttl = get_auto_unload_idle_seconds()
-                    if ttl <= 0 or not _is_idle(ttl):
+                    if ttl <= 0 or not _is_idle(ttl) or _user_pinned(backend):
                         if manifest:
                             _delete_resume_files(manifest)
                         continue
