@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import shutil
 import stat
 import threading
 import time
@@ -39,6 +38,10 @@ _TERMINAL = {"completed", "failed"}
 
 
 class _SyncStopped(Exception):
+    pass
+
+
+class _FolderChanged(RuntimeError):
     pass
 
 
@@ -192,7 +195,7 @@ def create_folder(
                 existing_key = _path_key(row["path"])
                 if existing_key == normalized_key or _same_file(row["path"], normalized):
                     conn.rollback()
-                    return dict(row)
+                    return _reauthorize_folder(row["id"], (root_device, root_inode))
                 if _paths_overlap(existing_key, normalized_key):
                     raise ValueError("Linked folders in the same scope cannot overlap")
             conn.execute(
@@ -213,6 +216,30 @@ def create_folder(
                     now,
                     now,
                 ),
+            )
+            conn.commit()
+            return dict(
+                conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
+            )
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def _reauthorize_folder(folder_id: str, identity: tuple[int, int]) -> dict:
+    with _folder_lock(folder_id):
+        conn = rag_db.get_connection()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                "SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)
+            ).fetchone() is None:
+                raise ValueError("Linked folder changed while it was reauthorized")
+            conn.execute(
+                "UPDATE linked_folders SET root_device=?, root_inode=?, updated_at=? WHERE id=?",
+                (*identity, _now(), folder_id),
             )
             conn.commit()
             return dict(
@@ -605,7 +632,7 @@ def _snapshot(root: str, metadata: dict) -> str:
         if config.MAX_UPLOAD_BYTES and before.st_size > config.MAX_UPLOAD_BYTES:
             raise RuntimeError("Linked source exceeds the RAG file size limit")
         with os.fdopen(fd, "rb", closefd = False) as src, open(target, "xb") as dst:
-            shutil.copyfileobj(src, dst, length = 1 << 20)
+            _copy_exact(src, dst, before.st_size)
         after = os.fstat(fd)
         if (after.st_size, after.st_mtime_ns, after.st_dev, after.st_ino) != expected:
             raise RuntimeError("Linked source changed while it was copied")
@@ -615,6 +642,18 @@ def _snapshot(root: str, metadata: dict) -> str:
         raise
     finally:
         os.close(fd)
+
+
+def _copy_exact(source, target, size: int) -> None:
+    remaining = size
+    while remaining:
+        block = source.read(min(1 << 20, remaining))
+        if not block:
+            raise RuntimeError("Linked source changed while it was copied")
+        target.write(block)
+        remaining -= len(block)
+    if source.read(1):
+        raise RuntimeError("Linked source changed while it was copied")
 
 
 def _wait_ingestion(job_id: str) -> dict:
@@ -638,6 +677,15 @@ def _check_running() -> None:
     stop_event = getattr(_worker_state, "stop_event", _stop)
     if stop_event.is_set():
         raise _SyncStopped
+
+
+def _check_root_identity(root: str, expected: tuple[int, int]) -> None:
+    try:
+        current = _root_identity(root)
+    except RuntimeError as exc:
+        raise _FolderChanged(str(exc)) from exc
+    if current != expected:
+        raise _FolderChanged("Linked folder root identity changed during reconciliation")
 
 
 def _set_job(job_id: str, **values) -> None:
@@ -881,15 +929,40 @@ def _reconcile_folder(job_id: str) -> None:
     renamed = 0
     extension_renames: dict[str, str] = {}
     by_identity: dict[tuple, list[str]] = {}
+    new_by_identity: dict[tuple, set[str]] = {}
     for rel in missing:
         old = known[rel]
         key = (old["device"], old["inode"])
         by_identity.setdefault(key, []).append(rel)
+    for rel in new:
+        meta = current[rel]
+        new_by_identity.setdefault((meta["device"], meta["inode"]), set()).add(rel)
+    ambiguous_dependencies = {
+        old_rel: set(new_by_identity[key])
+        for key, old_paths in by_identity.items()
+        if len(old_paths) > 1 and new_by_identity.get(key)
+        for old_rel in old_paths
+    }
+    replacement_succeeded: set[str] = set()
     for rel in sorted(list(new)):
         _check_running()
         meta = current[rel]
         key = (meta["device"], meta["inode"])
         candidates = by_identity.get(key, [])
+        if len(candidates) > 1:
+            snapshot = _snapshot(folder["path"], meta)
+            try:
+                content_hash = _hash_file(snapshot)
+            finally:
+                _remove_snapshot(snapshot)
+            matches = [
+                old_rel
+                for old_rel in candidates
+                if known[old_rel].get("content_hash") == content_hash
+            ]
+            if len(matches) == 1:
+                candidates.remove(matches[0])
+                candidates = matches
         if len(candidates) == 1:
             old_rel = candidates.pop()
             missing.discard(old_rel)
@@ -907,8 +980,10 @@ def _reconcile_folder(job_id: str) -> None:
                     _remove_snapshot(snapshot)
             _check_running()
             if same_content:
+                _check_root_identity(folder["path"], scanned_identity)
                 _rename_mapping(folder["id"], old_rel, rel)
                 renamed += 1
+                replacement_succeeded.add(rel)
             else:
                 extension_renames[rel] = old_rel
 
@@ -942,6 +1017,7 @@ def _reconcile_folder(job_id: str) -> None:
                 and rel in changed
                 and content_hash == known[rel].get("content_hash")
             ):
+                _check_root_identity(folder["path"], scanned_identity)
                 _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
                 _remove_snapshot(snapshot)
                 snapshot = None
@@ -962,6 +1038,7 @@ def _reconcile_folder(job_id: str) -> None:
             if result["status"] != "completed":
                 raise RuntimeError(result.get("error") or "Ingestion failed")
             _check_running()
+            _check_root_identity(folder["path"], scanned_identity)
             _install_mapping(
                 folder,
                 rel,
@@ -970,11 +1047,18 @@ def _reconcile_folder(job_id: str) -> None:
                 content_hash,
                 renamed_from = extension_renames.get(rel),
             )
+            replacement_succeeded.add(rel)
             if rel in new:
                 added += 1
             else:
                 changed_count += 1
         except _SyncStopped:
+            if document_id:
+                _discard_document(document_id)
+            else:
+                _remove_snapshot(snapshot)
+            raise
+        except _FolderChanged:
             if document_id:
                 _discard_document(document_id)
             else:
@@ -1008,6 +1092,10 @@ def _reconcile_folder(job_id: str) -> None:
     deleted = 0
     for rel in sorted(missing):
         _check_running()
+        dependencies = ambiguous_dependencies.get(rel)
+        if dependencies and not dependencies.issubset(replacement_succeeded):
+            continue
+        _check_root_identity(folder["path"], scanned_identity)
         _delete_mapping(folder["id"], rel)
         deleted += 1
         _set_job(

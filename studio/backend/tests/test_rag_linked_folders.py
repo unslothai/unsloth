@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import sqlite3
 import threading
@@ -311,6 +312,62 @@ def test_edited_rename_failure_retains_the_prior_mapping(rag_home, stub_embeddin
 
 
 @requires_sqlite_vec
+def test_ambiguous_rename_failure_retains_all_prior_mappings(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    for name, text in (("old-a.txt", "durable alpha"), ("old-b.txt", "durable bravo")):
+        (source / name).write_text(text, encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE linked_folder_files SET device=0, inode=0, content_hash=NULL WHERE folder_id=?",
+            (folder["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    (source / "old-a.txt").rename(source / "renamed-a.txt")
+    (source / "old-b.txt").rename(source / "renamed-b.txt")
+
+    original_scan = folder_sync._scan
+
+    def colliding_scan(*args, **kwargs):
+        found, identity = original_scan(*args, **kwargs)
+        for metadata in found.values():
+            metadata["device"] = 0
+            metadata["inode"] = 0
+        return found, identity
+
+    original_start = folder_sync.ingestion.start_ingestion
+
+    def fail_one(*args, **kwargs):
+        if args[3] == "renamed-b.txt":
+            raise RuntimeError("embed unavailable")
+        return original_start(*args, **kwargs)
+
+    monkeypatch.setattr(folder_sync, "_scan", colliding_scan)
+    monkeypatch.setattr(folder_sync.ingestion, "start_ingestion", fail_one)
+    result = _run(folder["id"])
+
+    assert result["status"] == "failed"
+    conn = rag_db.get_connection()
+    try:
+        paths = {
+            row["relative_path"]
+            for row in conn.execute(
+                "SELECT relative_path FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            )
+        }
+        assert paths == {"old-a.txt", "old-b.txt", "renamed-a.txt"}
+        assert store.search_lexical(conn, folder["scope"], "alpha", 5)
+        assert store.search_lexical(conn, folder["scope"], "bravo", 5)
+    finally:
+        conn.close()
+
+
+@requires_sqlite_vec
 def test_changed_file_failure_and_unavailable_scan_retain_prior_index(
     rag_home, stub_embeddings, monkeypatch
 ):
@@ -393,6 +450,66 @@ def test_replaced_empty_root_fails_and_retains_prior_index(rag_home, stub_embedd
         conn.close()
 
 
+@requires_sqlite_vec
+def test_reauthorizing_same_path_refreshes_root_identity_and_retains_mappings(
+    rag_home, stub_embeddings
+):
+    source, folder = _folder(rag_home)
+    (source / "notes.txt").write_text("retained after remount", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        mapping_before = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
+        conn.execute(
+            "UPDATE linked_folders SET root_device=-1, root_inode=-1 WHERE id=?", (folder["id"],)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    refreshed = {}
+    reauthorized = threading.Event()
+
+    def reauthorize():
+        refreshed.update(
+            folder_sync.create_folder(
+                scope_type = "knowledge_base",
+                scope_id = "scope-1",
+                path = str(source),
+            )
+        )
+        reauthorized.set()
+
+    with folder_sync._folder_lock(folder["id"]):
+        thread = threading.Thread(target = reauthorize)
+        thread.start()
+        assert not reauthorized.wait(0.1)
+    thread.join(timeout = 1)
+
+    source_stat = source.stat()
+    assert reauthorized.is_set()
+    assert refreshed["id"] == folder["id"]
+    assert (refreshed["root_device"], refreshed["root_inode"]) == (
+        source_stat.st_dev,
+        source_stat.st_ino,
+    )
+    conn = rag_db.get_connection()
+    try:
+        mapping_after = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
+        assert mapping_after["document_id"] == mapping_before["document_id"]
+        assert store.search_lexical(conn, folder["scope"], "remount", 5)
+    finally:
+        conn.close()
+
+
 def test_directory_lease_contract_is_purpose_bound_and_testable(rag_home):
     source = rag_home / "source"
     source.mkdir()
@@ -427,6 +544,13 @@ def test_validate_folder_rejects_symlink_root(rag_home):
         pytest.skip("directory symlinks are unavailable")
     with pytest.raises(ValueError, match = "Symbolic-link"):
         folder_sync.validate_folder_path(str(alias))
+
+
+def test_snapshot_copy_is_bounded_to_the_validated_size():
+    target = io.BytesIO()
+    with pytest.raises(RuntimeError, match = "changed while it was copied"):
+        folder_sync._copy_exact(io.BytesIO(b"validated-and-growing"), target, 9)
+    assert target.getvalue() == b"validated"
 
 
 @requires_sqlite_vec
