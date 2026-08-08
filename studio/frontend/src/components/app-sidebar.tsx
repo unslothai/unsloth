@@ -716,6 +716,45 @@ export function AppSidebar() {
   const [scrolled, setScrolled] = useState(false);
   // Bottom fade hides at the very bottom / for short lists so the last row isn't washed out.
   const [canScrollDown, setCanScrollDown] = useState(false);
+  // Rail width: 0 where scrollbars overlay (macOS default) or the list fits,
+  // the platform's thin rail where they are classic. Only rows inside the
+  // scroller lose it, so the rows outside pad by it to keep one edge. Written
+  // to the DOM, and only on a change: state here would loop (React #185).
+  const railWidthRef = useRef<number | null>(null);
+  const measureScrollRail = useCallback((el: HTMLDivElement) => {
+    const rail = el.offsetWidth - el.clientWidth;
+    if (rail === railWidthRef.current) return;
+    railWidthRef.current = rail;
+    el.parentElement?.style.setProperty("--sidebar-rail", `${rail}px`);
+  }, []);
+
+  // A callback ref, not an effect: the mobile Sheet unmounts its subtree on
+  // close and the breakpoint swaps it for the desktop one, so the scroller is a
+  // new node each time and an effect keyed on a stable callback never re-runs.
+  // Still runs before paint.
+  const railObserverRef = useRef<ResizeObserver | null>(null);
+  const attachScroller = useCallback(
+    (el: HTMLDivElement | null) => {
+      railObserverRef.current?.disconnect();
+      railObserverRef.current = null;
+      scrollRef.current = el;
+      // Per node: a new parent has no variable yet even at the same rail, and
+      // the cache would otherwise skip the write.
+      railWidthRef.current = null;
+      if (!el) return;
+      measureScrollRail(el);
+      // Watch the box, not renders: the Images disclosure and the project
+      // toggles change the row count without rendering this component, and a
+      // scrollbar appearing shrinks the content box by its own width. Safe
+      // where the earlier observer was not: it writes a variable, never state,
+      // so there is no render to feed back (React #185).
+      const observer = new ResizeObserver(() => measureScrollRail(el));
+      observer.observe(el);
+      railObserverRef.current = observer;
+    },
+    [measureScrollRail],
+  );
+
   // Driven only from onScroll + a content-change effect below. No
   // ResizeObserver: its callback-driven setState caused a render loop (React
   // #185). Both setters bail out when unchanged, so neither path can loop.
@@ -977,10 +1016,16 @@ export function AppSidebar() {
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
 
   // One box for every row pill, so a hover pill has the same edges wherever it
-  // lands. The list scroller hides its rail (index.css) instead of eating width.
+  // lands. Rows outside the list scroller add the rail width it does not lose,
+  // so both end on the same edge whether or not the scrollbar takes space.
+  // Logical sides, since the rail is on the inline end and moves under rtl.
   const rowPadding = usesDesktopTitlebar
-    ? "pl-[5px] pr-2"
-    : "pl-1.5 pr-1.75";
+    ? "ps-[5px] pe-[calc(var(--sidebar-rail,0px)+5px)]"
+    : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px)]";
+
+  // Inside it the rail already sits in that space, so this is just the gap
+  // between a pill and the scrollbar, matched to the gap on the other side.
+  const scrollRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
 
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
@@ -1991,7 +2036,7 @@ export function AppSidebar() {
       </SidebarGroup>
 
       <SidebarContent
-        ref={scrollRef}
+        ref={attachScroller}
         onScroll={(e) => syncScrollState(e.currentTarget)}
         // Collapsible groups animate their height; re-measure the fade once the animation settles.
         onAnimationEnd={(e) => {
@@ -2012,7 +2057,7 @@ export function AppSidebar() {
           data-tour="navbar"
           className={cn(
             "group-data-[collapsible=icon]:px-0 py-0 shrink-0",
-            rowPadding,
+            scrollRowPadding,
           )}
         >
 
@@ -2183,7 +2228,7 @@ export function AppSidebar() {
                   </CollapsibleTrigger>
                 </SidebarGroupLabel>
                 <CollapsibleContent>
-                  <SidebarGroupContent className={rowPadding}>
+                  <SidebarGroupContent className={scrollRowPadding}>
                     <SidebarMenu>
                       {pinnedProjectRecords.map((project) => {
                         const projectChats =
@@ -2333,7 +2378,7 @@ export function AppSidebar() {
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className={rowPadding}>
+                <SidebarGroupContent className={scrollRowPadding}>
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -2365,7 +2410,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className={rowPadding}>
+              <SidebarGroupContent className={scrollRowPadding}>
                 <SidebarMenu>
                   {runItems.map((run) => {
                     // Explicit selection wins. Otherwise highlight the active job only while the "Current Run"
@@ -2467,7 +2512,8 @@ export function AppSidebar() {
       >
         {/* Fade above the profile box, shown only when there's more list below
             the fold; at the bottom (or short lists) it fades so the last row
-            shows fully (Gemini-style). No scroll rail to clear, so full width. */}
+            shows fully (Gemini-style). Stops at the rail: the thumb ends its
+            travel in this band and a full-width gradient washed it out. */}
         <div
           aria-hidden="true"
           className={cn(
@@ -2475,7 +2521,7 @@ export function AppSidebar() {
             // ramp is still part-transparent there and slices the last row
             // mid-glyph. from-[8px] holds it opaque just across the clip, and
             // matches the list's pb-2 so the gap is the same once it hides.
-            "pointer-events-none absolute inset-x-0 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            "pointer-events-none absolute start-0 end-[var(--sidebar-rail,0px)] bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             // Shorter fade with the update card so the list reads closer to
             // it, but still tall enough to clear a row.
             showUpdateCard ? "h-7" : "h-10",

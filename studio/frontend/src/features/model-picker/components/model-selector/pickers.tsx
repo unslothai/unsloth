@@ -57,6 +57,7 @@ import {
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
+import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -3038,21 +3039,24 @@ export function HubModelPicker({
   const onSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
       if (!task) {
-        const page = mediaPageForTask(
-          taskForMediaPick(
-            meta.pipelineTag,
-            diffusionTaskById.get(id.toLowerCase()),
-          ),
+        const pickedTask = taskForMediaPick(
+          meta.pipelineTag,
+          diffusionTaskById.get(id.toLowerCase()),
         );
+        const page = mediaPageForTask(pickedTask);
         if (page) {
           void navigateToPage({
             to: `/${page}`,
-            // The target page uses this verbatim as the gguf filename, so it must be ggufFilename (an exact repo filename), never ggufVariant (a label like "Q4_K_M", which routed a file that does not exist). No filename means a curated non-GGUF pick.
-            search: {
-              model: id,
-              quant: meta.ggufFilename ?? undefined,
-              task: meta.pipelineTag ?? undefined,
-            },
+            // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant instead; dropping it
+            // made every non-curated GGUF repo arrive as a bare repo id.
+            search:
+              page === "audio"
+                ? {
+                    model: id,
+                    quant: meta.ggufFilename ?? undefined,
+                    task: meta.pipelineTag ?? undefined,
+                  }
+                : diffusionRouteSearch(id, meta),
           });
           return;
         }
@@ -4022,6 +4026,8 @@ export function HubModelPicker({
                 isLora: false,
                 ggufVariant: entry.quant,
                 isDownloaded: true,
+                // The row loads one quant, so it is a GGUF pick like the expander's; without this the pages asked for a
+                // pipeline, which a GGUF repo rejects. No filename: the pin stores a label, resolved against the listing.
                 isGguf: true,
                 pipelineTag:
                   diffusionTaskById.get(entry.repoId.toLowerCase()) ?? null,

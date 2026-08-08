@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
+from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
 
@@ -3243,18 +3244,28 @@ class VideoGenerateRequest(BaseModel):
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
     )
-    # Width/height/num_frames/fps default per loaded family (the backend snaps them to its lattice), so they are optional here.
+    # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds stay a COARSE outer
+    # guard only -- they are family-agnostic, and a request that clears them can still be one no checkpoint can render. The
+    # enforced rule is the LOADED family's own (its resolution presets and k * frame_step + 1 lattice), which the generate
+    # route checks with validate_video_request_shape and rejects with a 422 naming the supported shapes. Nothing tighter
+    # belongs here: with no model loaded there is no family to judge against, and that path must keep snapping as before.
     width: Optional[int] = Field(
-        None, ge = 32, le = 2048, description = "Frame width in pixels (family multiple)"
+        None,
+        ge = 32,
+        le = 2048,
+        description = "Frame width in pixels (a resolution preset of the loaded family)",
     )
     height: Optional[int] = Field(
-        None, ge = 32, le = 2048, description = "Frame height in pixels (family multiple)"
+        None,
+        ge = 32,
+        le = 2048,
+        description = "Frame height in pixels (a resolution preset of the loaded family)",
     )
     num_frames: Optional[int] = Field(
         None,
         ge = 1,
-        le = 1024,
-        description = "Number of frames; snapped to the family's temporal lattice",
+        le = MAX_VIDEO_NUM_FRAMES,
+        description = "Number of frames; must lie on the family's temporal lattice (k * frame_step + 1)",
     )
     fps: Optional[int] = Field(
         None, ge = 1, le = 120, description = "Playback frame rate (default per family)"

@@ -286,7 +286,7 @@ test("cached runnable community audio survives the Audio on-device trust gate", 
 test("Chat-to-Audio handoff preserves the live Hub task", () => {
   assert.match(
     pickerSource,
-    /search:\s*\{[\s\S]*task:\s*meta\.pipelineTag \?\? undefined/,
+    /page === "audio"[\s\S]*task:\s*meta\.pipelineTag \?\? undefined/,
   );
 });
 
