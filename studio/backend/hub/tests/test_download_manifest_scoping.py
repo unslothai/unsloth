@@ -772,9 +772,7 @@ def test_a_variant_with_nothing_of_its_own_says_so(monkeypatch, tmp_path):
     (entry / "blobs").mkdir(parents = True)
     (entry / "blobs" / "sibling").write_bytes(b"x" * 32)  # Q8_0's, not ours
 
-    monkeypatch.setattr(
-        snapshot_progress, "preferred_repo_cache_dirs", lambda *a, **k: [entry]
-    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *a, **k: [entry])
 
     class _Registry:
         def get_job(self, key):
