@@ -1196,6 +1196,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // and cleared the newer pick's pending revert on the way out. A rollback belongs to the
   // selection that armed it.
   const selectionToken = useRef(0);
+  // Did the user move the sliders since the pick that armed the pending revert? Staging an
+  // undownloaded model deliberately leaves `busy` unset for as long as the download takes, so
+  // the controls stay live the whole time -- and the revert holds the values from BEFORE the
+  // pick. Replaying those over an edit made since would silently undo the user's own change.
+  // The token cannot answer this: it moves on another pick, not on a slider.
+  const settingsEdited = useRef(false);
   // The Reapply target to restore if the optimistic swap fails: handleLoad overwrites lastLoad.current at load start, and a
   // load failing after that leaves the previous pipeline resident. Mirrors quantRevert.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
@@ -1585,8 +1591,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // A load that failed AFTER starting leaves the previous pipeline loaded, so roll the optimistic quant label back.
         if (quantRevert.current) {
           setQuant(quantRevert.current.prev);
-          setSteps(quantRevert.current.prevSteps);
-          setGuidance(quantRevert.current.prevGuidance);
+          if (!settingsEdited.current) {
+            setSteps(quantRevert.current.prevSteps);
+            setGuidance(quantRevert.current.prevGuidance);
+          }
           quantRevert.current = null;
         }
         // Same rollback for the Reapply target: the previous pipeline is still resident.
@@ -1606,8 +1614,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // Same optimistic-quant rollback as the error path: the swap did not take.
         if (quantRevert.current) {
           setQuant(quantRevert.current.prev);
-          setSteps(quantRevert.current.prevSteps);
-          setGuidance(quantRevert.current.prevGuidance);
+          if (!settingsEdited.current) {
+            setSteps(quantRevert.current.prevSteps);
+            setGuidance(quantRevert.current.prevGuidance);
+          }
           quantRevert.current = null;
         }
         // Restore the Reapply target too, so it never lingers on the failed pick after a cancel or eviction.
@@ -1967,6 +1977,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     void loadOrStage(pick.repoId, pick.opts, false);
   }, [active, routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
 
+  // A slider the user moves while a pick is still pending retires that pick's settings
+  // rollback: the captured values predate the edit, so replaying them would undo it. The
+  // quant label rollback stays -- that one is still about the pick, not about the sliders.
+  const handleStepsChange = useCallback((value: number) => {
+    settingsEdited.current = true;
+    setSteps(value);
+  }, []);
+  const handleGuidanceChange = useCallback((value: number) => {
+    settingsEdited.current = true;
+    setGuidance(value);
+  }, []);
+
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
@@ -1990,6 +2012,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const prevGuidance = guidance;
         const token = ++selectionToken.current;
         quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance, token };
+        settingsEdited.current = false;
         setQuant(null);
         const d = defaultsFor(id);
         setSteps(d.steps);
@@ -2001,8 +2024,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         ).then((started) => {
           if (!started && selectionToken.current === token) {
             setQuant(prevQuant);
-            setSteps(prevSteps);
-            setGuidance(prevGuidance);
+            if (!settingsEdited.current) {
+              setSteps(prevSteps);
+              setGuidance(prevGuidance);
+            }
             quantRevert.current = null;
           }
         });
@@ -2016,6 +2041,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const prevGuidance = guidance;
         const token = ++selectionToken.current;
         quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance, token };
+        settingsEdited.current = false;
         setQuant(meta.ggufVariant);
         const dq = defaultsFor(id);
         setSteps(dq.steps);
@@ -2029,8 +2055,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           // its own settings, and this one's rollback would overwrite them.
           if (!started && selectionToken.current === token) {
             setQuant(prevQuant);
-            setSteps(prevSteps);
-            setGuidance(prevGuidance);
+            if (!settingsEdited.current) {
+              setSteps(prevSteps);
+              setGuidance(prevGuidance);
+            }
             quantRevert.current = null;
           }
         });
@@ -2054,6 +2082,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const prevGuidance = guidance;
         const token = ++selectionToken.current;
         quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance, token };
+        settingsEdited.current = false;
         setQuant(filename);
         const dq2 = defaultsFor(id);
         setSteps(dq2.steps);
@@ -2063,8 +2092,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           // its own settings, and this one's rollback would overwrite them.
           if (!started && selectionToken.current === token) {
             setQuant(prevQuant);
-            setSteps(prevSteps);
-            setGuidance(prevGuidance);
+            if (!settingsEdited.current) {
+              setSteps(prevSteps);
+              setGuidance(prevGuidance);
+            }
             quantRevert.current = null;
           }
         });
@@ -2082,6 +2113,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const prevGuidance = guidance;
         const token = ++selectionToken.current;
         quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance, token };
+        settingsEdited.current = false;
         setQuant(filename);
         const dsf = defaultsFor(id);
         setSteps(dsf.steps);
@@ -2091,8 +2123,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           // its own settings, and this one's rollback would overwrite them.
           if (!started && selectionToken.current === token) {
             setQuant(prevQuant);
-            setSteps(prevSteps);
-            setGuidance(prevGuidance);
+            if (!settingsEdited.current) {
+              setSteps(prevSteps);
+              setGuidance(prevGuidance);
+            }
             quantRevert.current = null;
           }
         });
@@ -2109,6 +2143,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const prevGuidance = guidance;
       const token = ++selectionToken.current;
       quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance, token };
+        settingsEdited.current = false;
       setQuant(null);
       const d = defaultsFor(id);
       setSteps(d.steps);
@@ -2117,8 +2152,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // Only if this pick is still the current one; see the branches above.
         if (!started && selectionToken.current === token) {
           setQuant(prevQuant);
-          setSteps(prevSteps);
-          setGuidance(prevGuidance);
+          if (!settingsEdited.current) {
+            setSteps(prevSteps);
+            setGuidance(prevGuidance);
+          }
           quantRevert.current = null;
         }
       });
@@ -3121,7 +3158,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 min={1}
                 max={50}
                 step={1}
-                onChange={setSteps}
+                onChange={handleStepsChange}
               />
             </div>
             <SliderField
@@ -3131,7 +3168,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               min={0}
               max={15}
               step={0.5}
-              onChange={setGuidance}
+              onChange={handleGuidanceChange}
             />
             <SliderField
               label="Batch size"

@@ -68,3 +68,39 @@ test("every accepted selection advances the token, curated picks included", () =
   const armed = body.match(/quantRevert\.current = \{ prev: prevQuant/g) ?? [];
   assert.equal(armed.length, applied.length);
 });
+
+test("an edit made while a pick is pending survives that pick's rollback", () => {
+  // Staging an undownloaded model deliberately leaves `busy` unset for as long as the
+  // download takes, so Steps and Guidance stay live the whole time. The pending revert holds
+  // the values from BEFORE the pick, and every rollback path replayed them unconditionally,
+  // so a load that then failed or was cancelled silently undid the user's own edit. The
+  // selection token cannot cover this: it moves on another pick, not on a slider.
+  assert.ok(
+    /onChange=\{handleStepsChange\}/.test(source) &&
+      /onChange=\{handleGuidanceChange\}/.test(source),
+    "the sliders must go through handlers that retire the pending settings rollback",
+  );
+  assert.ok(
+    /const handleStepsChange = useCallback\(\(value: number\) => \{\s*\n\s*settingsEdited\.current = true;/.test(
+      source,
+    ),
+    "the steps handler must mark the settings as edited",
+  );
+  assert.ok(
+    /const handleGuidanceChange = useCallback\(\(value: number\) => \{\s*\n\s*settingsEdited\.current = true;/.test(
+      source,
+    ),
+    "the guidance handler must mark the settings as edited",
+  );
+
+  // Every settings restore is behind that flag, and no bare one is left.
+  const guarded = source.match(/if \(!settingsEdited\.current\) \{/g) ?? [];
+  const restores = source.match(/setSteps\((?:prevSteps|quantRevert\.current\.prevSteps)\)/g) ?? [];
+  assert.ok(restores.length >= 7, `expected every rollback site, found ${restores.length}`);
+  assert.equal(guarded.length, restores.length);
+
+  // And arming a fresh pick clears the flag, else one edit would disarm every later pick.
+  const armed = source.match(/quantRevert\.current = \{ prev: prevQuant/g) ?? [];
+  const cleared = source.match(/settingsEdited\.current = false;/g) ?? [];
+  assert.equal(cleared.length, armed.length);
+});
