@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 // Same plan shape as the images backend: both /download-plan routes share a response model.
 import type { DiffusionDownloadPlan } from "@/features/images/api";
+import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 // One Advanced control's resolved value + provenance for the "Auto: X" badges, same shape as the diffusion status.
@@ -245,7 +246,9 @@ export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
   if (!res.ok) throw new Error(await readFastApiError(res));
   const body = (await res.json()) as { url?: string };
   if (!body.url) throw new Error("The server returned no video link.");
-  return body.url;
+  // Absolute, for the same reason as the RAG document link: the consumers bypass authFetch
+  // and a relative path under Tauri resolves against the webview origin, not the backend.
+  return apiUrl(body.url);
 }
 
 /** Server-side transcode for the Download menu (WebM / GIF). The backend 501s with a readable message when the codec is unavailable. */
