@@ -204,7 +204,6 @@ def test_no_stub_survives_this_module():
 
 def _cuda_bf16_target():
     import torch
-
     return type("T", (), {"device": "cuda", "dtype": torch.bfloat16})()
 
 
@@ -239,6 +238,7 @@ def test_layerwise_fp8_te_still_works_under_the_stub(on_windows_rocm):
     target = _cuda_bf16_target()
     install_torchao_windows_rocm_stub()
     import torch
+
     assert te_quant_supported(target, "fp8") is hasattr(torch, "float8_e4m3fn")
 
 
