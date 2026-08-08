@@ -37,6 +37,7 @@ import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
@@ -73,6 +74,7 @@ import {
   exportConversationShareGPT,
   exportConversationRawJsonl,
   exportConversationCsv,
+  exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
@@ -1805,6 +1807,10 @@ export function SharedComposer({
             { label: "Raw JSONL", fn: exportConversationRawJsonl },
             { label: "CSV", fn: exportConversationCsv },
             { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+            {
+              label: CONVERSATION_MARKDOWN_LABEL,
+              fn: exportConversationMarkdown,
+            },
           ].map(({ label, fn }) => (
             <DropdownMenuItem
               key={label}

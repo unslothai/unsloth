@@ -3883,7 +3883,8 @@ export function HubModelPicker({
         >
           <div
             className={cn(
-              "pr-0",
+              // Keep row actions clear of overlay scrollbars, overflowing or not.
+              "overlay-scrollbar-gutter",
               // On Device pulls the heading block tight to the controls; Recommended
               // keeps a little more top room above its first row.
               showDownloaded ? "pt-0" : "pt-[4px]",
