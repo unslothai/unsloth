@@ -375,6 +375,7 @@ export function resolveLoadMaxSeqLength({
  */
 export function refreshedContextPin({
   isGguf,
+  isMlx,
   gpuMemoryMode,
   gpuLayers,
   requestedContextLength,
@@ -384,6 +385,7 @@ export function refreshedContextPin({
   rememberedPin,
 }: {
   isGguf: boolean;
+  isMlx?: boolean | null;
   gpuMemoryMode: "auto" | "manual";
   gpuLayers: number;
   requestedContextLength: number | null;
@@ -395,6 +397,12 @@ export function refreshedContextPin({
   if (isGguf) {
     const echoed = resolveManualAutoCtxPin(gpuMemoryMode, gpuLayers, requestedContextLength);
     return { pin: echoed, baseline: echoed };
+  }
+  // Only the two backends that size a window pin in this field. A transformers context
+  // lives in `maxSeqLength`, and adopting it here would leave the record pinned in both,
+  // which loads at a different length depending on which field the reader resolves first.
+  if (!isMlx) {
+    return { pin: null, baseline: null };
   }
   if (requestedContextLength != null) {
     const echoed = requestedContextLength > 0 ? requestedContextLength : null;
