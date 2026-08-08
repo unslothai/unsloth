@@ -19,7 +19,7 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
     extract_quant_label,
     extract_quant_token,
-    is_mtp_only_drafter_path as _is_mtp_only_drafter_path,
+    is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
@@ -82,13 +82,28 @@ def _path_exists_or_symlink(path: Path) -> bool:
 
 
 def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
+    """Files whose snapshot-relative path satisfies *predicate*.
+
+    Relative, not the bare ``file_name``: huggingface_hub sets that to
+    ``file_path.name`` (and our own recovery scan to ``entry.name``), so a
+    companion in ``dspark/`` or ``MTP/`` arrived here indistinguishable from a
+    root file. Every predicate below keys on the directory for at least one
+    supported layout, and the quant labels they extract are unchanged by the
+    prefix.
+    """
     matches: list[tuple[Path, Optional[Path], str]] = []
     for rev in getattr(target_repo, "revisions", ()):
+        snapshot = getattr(rev, "snapshot_path", None)
         for f in getattr(rev, "files", ()):
             name = str(getattr(f, "file_name", ""))
+            file_path = getattr(f, "file_path", None)
+            if snapshot and file_path:
+                try:
+                    name = Path(file_path).relative_to(Path(snapshot)).as_posix()
+                except ValueError:
+                    pass
             if not predicate(name):
                 continue
-            file_path = getattr(f, "file_path", None)
             if not file_path:
                 continue
             blob_path = getattr(f, "blob_path", None)
@@ -217,12 +232,11 @@ def _delete_gguf_variant_from_repos(
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
             companion_matches = _repo_file_matches(
                 target_repo,
-                # Companions: mmproj and the MTP drafter -- downloaded with
-                # every variant, so the last variant's delete reclaims them.
-                # MTP only: DSpark is opt-in and in no variant plan, so Studio
-                # never fetched it and must not reclaim it.
+                # Companions: mmproj and the drafters Studio downloads (MTP with
+                # every variant, DSpark on opt-in). No main GGUF is left, so they
+                # cannot be launched; reclaim them with the last variant.
                 lambda name: _is_gguf_filename(name)
-                and (_is_mmproj_filename(name) or _is_mtp_only_drafter_path(name)),
+                and (_is_mmproj_filename(name) or _is_reclaimable_drafter_path(name)),
             )
             for snap, _blob, name in companion_matches:
                 try:
@@ -595,6 +609,59 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     return bool(active_name) and _loaded_id_matches_repo(active_name, repo_id)
 
 
+def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
+    """The 400 detail if the Images backend holds *repo_id*, else None.
+
+    Queries the ACTIVE engine: on a native selection the diffusers singleton reports
+    unloaded while sd-cli still generates from the cached GGUF. Same
+    fail-open-on-acquire contract as :func:`_llama_cpp_blocks_delete`.
+    """
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        engine = get_active_diffusion_engine()
+    except Exception as e:
+        logger.debug(f"Diffusion engine unavailable during delete guard for {repo_id}: {e}")
+        return None
+    status = engine.status()
+    if status.get("loaded") and status.get("repo_id"):
+        if _loaded_id_matches_repo(str(status["repo_id"]), repo_id):
+            return "Unload the model before deleting"
+    # sd.cpp re-reads companion VAE / text-encoder files every generation and status().repo_id covers only the main GGUF, so refuse the companions too.
+    for lid in getattr(engine, "loaded_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "Unload the model before deleting"
+    # A downloading repo still reports loaded=False, but deleting would pull blobs from under the in-flight fetch.
+    for lid in getattr(engine, "loading_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "An Images model load is using this repo; wait for it to finish"
+    return None
+
+
+def _video_blocks_delete(repo_id: str) -> Optional[str]:
+    """The 400 detail if the Video backend holds or is fetching *repo_id*, else None.
+
+    Video repos share the On Device delete action, so a live Wan / LTX / Hunyuan
+    pipeline could otherwise lose its snapshot. Mirrors :func:`_diffusion_blocks_delete`.
+    """
+    try:
+        from core.inference.video import get_video_backend
+        backend = get_video_backend()
+    except Exception as e:
+        logger.debug(f"Video backend unavailable during delete guard for {repo_id}: {e}")
+        return None
+    status = backend.status()
+    if status.get("loaded"):
+        # repo_id names the checkpoint; for a GGUF / single-file load the companion base supplies the VAE and text encoders, so refuse it too.
+        for key in ("repo_id", "base_repo"):
+            held = status.get(key)
+            if held and _loaded_id_matches_repo(str(held), repo_id):
+                return "Unload the model before deleting"
+    for lid in getattr(backend, "loading_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "A Video model load is using this repo; wait for it to finish"
+    return None
+
+
 async def delete_cached_model_response(
     repo_id: str,
     variant: Optional[str] = None,
@@ -618,25 +685,28 @@ async def delete_cached_model_response(
 
     # Guard fails closed: if a live backend's load state can't be read, abort
     # with 503 rather than risk unlinking weights under a running process.
-    # Both guards are sync and the second reaches get_inference_backend(), whose cold
-    # build waits on hardware detection. One worker keeps the `or` short-circuit.
-    def _load_state_blocks_delete() -> bool:
-        return _llama_cpp_blocks_delete(repo_id, variant) or (
+    # Every guard is sync and the chat ones reach get_inference_backend(), whose cold build waits
+    # on hardware detection. One worker keeps the `or` short-circuit and keeps the event loop free.
+    def _load_state_blocks_delete() -> Optional[str]:
+        if _llama_cpp_blocks_delete(repo_id, variant) or (
             _inference_backend_blocks_delete(repo_id)
-        )
+        ):
+            return "Unload the model before deleting"
+        # The guards above are chat-only; Images / Video hold their own pipelines.
+        return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
 
     try:
-        blocks_delete = await asyncio.to_thread(_load_state_blocks_delete)
+        blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
     except Exception as e:
         logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")
         raise HTTPException(
             status_code = 503,
             detail = _LOAD_STATE_UNVERIFIABLE_DETAIL,
         )
-    if blocks_delete:
+    if blocks_detail:
         raise HTTPException(
             status_code = 400,
-            detail = "Unload the model before deleting",
+            detail = blocks_detail,
         )
 
     repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")

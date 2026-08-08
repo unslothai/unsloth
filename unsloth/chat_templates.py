@@ -39,13 +39,53 @@ import re
 from .ollama_template_mappers import OLLAMA_TEMPLATES
 try:
     from unsloth_zoo.dataset_utils import (
-        train_on_responses_only,
+        train_on_responses_only as _zoo_train_on_responses_only,
         standardize_data_formats,
     )
 except ImportError:
     # dataset_utils pulls torch; keep chat_templates importable on torch-free
     # (MLX) hosts, which expose these via the backend-specific wrappers instead.
-    train_on_responses_only = standardize_data_formats = None
+    _zoo_train_on_responses_only = standardize_data_formats = None
+
+if _zoo_train_on_responses_only is None:
+    train_on_responses_only = None
+else:
+    import functools as _functools
+    import inspect as _inspect
+
+    _ZOO_RESPONSES_ONLY_SIGNATURE = _inspect.signature(_zoo_train_on_responses_only)
+
+    @_functools.wraps(_zoo_train_on_responses_only)
+    def train_on_responses_only(*args, **kwargs):
+        # The zoo still auto-sizes its dataset.map() workers with the uncapped
+        # min(max(cpu_count + 4, 2), 64) heuristic (issue #2693) and is a
+        # separate package, so bound the count on the way in. See
+        # resolve_responses_only_num_proc; the local copy is only the fallback
+        # for a zoo predating it. Top level, not under unsloth.utils, whose
+        # __init__ imports torch: this path has to stay MLX-safe.
+        try:
+            from unsloth_zoo.dataset_num_proc import resolve_responses_only_num_proc
+        except ImportError:
+            from .dataset_num_proc import resolve_responses_only_num_proc
+
+        try:
+            bound = _ZOO_RESPONSES_ONLY_SIGNATURE.bind_partial(*args, **kwargs)
+        except TypeError:
+            # Signature drift, or a bad call. Let the zoo raise its own error.
+            return _zoo_train_on_responses_only(*args, **kwargs)
+
+        # The zoo returns the masking closure before reading num_proc.
+        if bound.arguments.get("return_function", False):
+            return _zoo_train_on_responses_only(*args, **kwargs)
+
+        arguments = dict(bound.arguments)
+        arguments["num_proc"] = resolve_responses_only_num_proc(
+            arguments.get("trainer"),
+            arguments.get("num_proc"),
+        )
+        trainer = arguments.pop("trainer", None)
+        return _zoo_train_on_responses_only(trainer, **arguments)
+
 standardize_sharegpt = standardize_data_formats
 CHAT_TEMPLATES = {}
 DEFAULT_SYSTEM_MESSAGE = {}
@@ -2662,6 +2702,7 @@ extra_eos_tokens = None,
             system_part = system_part.replace(tokenizer.bos_token, "", 1)
         partial_system = process(system_part, "{SYSTEM}", "messages[0]['content']")
         partial_system = partial_system.replace("{SYSTEM}", "")
+        system_expr = partial_system
 
         if "{SYSTEM}" in partial_system:
             if default_system_message is None:
@@ -2686,7 +2727,12 @@ extra_eos_tokens = None,
                 "{% set loop_messages = messages %}"\
             "{% endif %}"
         else:
-            partial_system += "{% endif %}"
+            # Emit a static prefix on both branches so the collapse below
+            # makes it unconditional.
+            partial_system += "{% else %}"\
+                "{{ " + system_expr + " }}"\
+                "{% set loop_messages = messages %}"\
+            "{% endif %}"
 
         jinja_template = partial_system + jinja_template
 
@@ -2703,7 +2749,7 @@ extra_eos_tokens = None,
 
     # Check if system part is the same!
     jinja_template = re.sub(
-        r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.+?)' \}\}"\
+        r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.*?)' \}\}"\
         r"\{\% set loop\_messages \= messages\[1\:\] \%\}"\
         r"\{\% else \%\}\{\{ '\1' \}\}\{\% set loop\_messages \= messages \%\}\{\% endif \%\}"\
         r"\{\% for message in loop\_messages \%\}",

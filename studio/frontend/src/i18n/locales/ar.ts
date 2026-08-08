@@ -5,6 +5,34 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ar = {
+  picker: {
+    onDevice: "على الجهاز",
+    huggingFace: "Hugging Face",
+    retry: "إعادة المحاولة",
+    loadMore: "تحميل المزيد",
+    offlineTitle: "أنت غير متصل بالإنترنت",
+    offlineBody:
+      "انتقل إلى «الجهاز» لاستخدام {noun} المحلية أو المخزّنة مؤقتًا.",
+    offlineSwitchDevice: "الجهاز",
+    searchAriaLabel: "البحث في {noun}",
+    modelSourceAriaLabel: "مصدر النموذج",
+    hubSectionAriaLabel: "قسم Hub",
+    pickModelFile: "اختيار ملف نموذج من القرص",
+    ejectLoadedModel: "إخراج النموذج المحمّل",
+    multipleMatches:
+      "توجد عدة نتائج مطابقة ضمن {noun}. اختر نتيجة من القائمة.",
+    rateLimitedTitle: "تم بلوغ حد طلبات Hugging Face",
+    rateLimitedBody: "انتظر قليلًا، ثم أعد البحث في {noun}.",
+    hfToken: {
+      label: "توكن HF",
+      saved: "محفوظ",
+      add: "إضافة",
+      savedAriaLabel: "تم حفظ توكن Hugging Face",
+      addAriaLabel: "تعيين توكن Hugging Face",
+      savedHint: "تم حفظ التوكن. سيُتحقق من الوصول عند استخدامه.",
+      addHint: "عيّن توكنًا للوصول إلى المستودعات الخاصة والمقيّدة.",
+    },
+  },
   common: {
     cancel: "إلغاء",
     close: "إغلاق",
@@ -53,8 +81,13 @@ export const ar = {
       projects: "المشاريع",
       train: "تدريب",
       recipes: "الوصفات",
+      images: "الصور",
+      video: "الفيديو",
+      more: "المزيد",
+      customizeSidebar: "تخصيص الشريط الجانبي",
+      newBadge: "جديد",
       export: "تصدير",
-      recents: "المحادثات الأخيرة",
+      recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
       settings: "الإعدادات",
       api: "API",
@@ -151,10 +184,20 @@ export const ar = {
         sttNotDownloaded: "لم يُنزَّل",
         sttDownloadStatusFailed: "تعذّر التحقق من حالة التنزيل",
         sttDownload: "تنزيل",
+        sttDownloadConfirmTitle: "تنزيل {model}؟",
+        sttDownloadConfirmBody:
+          "يعمل الإملاء المحلي دون اتصال تمامًا، لكنه يحتاج أولاً إلى نموذج الكلام {model}. حجمه {size} تقريبًا، ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
+        sttDownloadConfirmBodyUnsized:
+          "يعمل الإملاء المحلي دون اتصال تمامًا، لكنه يحتاج أولاً إلى نموذج الكلام {model}. ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
+        sttOpenVoiceSettings: "فتح إعدادات الصوت",
+        sttDownloadStarted: "جارٍ تنزيل {model}",
         sttDownloading: "جارٍ التنزيل… {progress}%",
         sttCancelDownload: "إلغاء",
         sttCancellingDownload: "جارٍ الإلغاء…",
+        sttCancelDownloadFailed: "تعذّر إلغاء التنزيل",
         sttDownloadComplete: "تم تنزيل نموذج التعرّف على الكلام",
+        sttModelReady: "{model} جاهز للإملاء",
+        sttRecommended: "موصى به",
         sttDownloadFailed: "تعذّر تنزيل نموذج التعرّف على الكلام",
         sttLoad: "تحميل",
         sttUnload: "تفريغ النموذج من الذاكرة",
@@ -274,6 +317,13 @@ export const ar = {
         title: "تغيير كلمة المرور",
         description:
           "أدخل كلمة المرور الحالية واختر كلمة مرور جديدة (بحد أدنى {minLength} حرفًا).",
+        setTrigger: "تعيين كلمة مرور الوصول عن بُعد",
+        setTitle: "تعيين كلمة مرور الوصول عن بُعد",
+        setDescription:
+          "اختر كلمة المرور التي تسجّل بها المتصفحات البعيدة الدخول باسم unsloth (بحد أدنى {minLength} حرفًا). سيواصل تطبيق Unsloth لسطح المكتب تسجيل الدخول تلقائيًا.",
+        setSubmit: "تعيين كلمة المرور",
+        setting: "جارٍ التعيين...",
+        setDone: "تم تعيين كلمة المرور.",
         currentPassword: "كلمة المرور الحالية",
         newPassword: "كلمة المرور الجديدة",
         confirmPassword: "تأكيد كلمة المرور الجديدة",
@@ -351,6 +401,14 @@ export const ar = {
         showLlamaUpdates: "إشعارات تحديث llama.cpp",
         showLlamaUpdatesDescription:
           "التنبيه عند توفر إصدار أحدث من llama.cpp لتشغيل نماذج جديدة. أوقف التشغيل إذا كنت تُدرّب فقط.",
+      },
+      startup: {
+        sectionTitle: "بدء التشغيل",
+        launchAtLogin: "تشغيل Unsloth عند تسجيل الدخول",
+        launchAtLoginDescription:
+          "يبدأ Unsloth في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
+        loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
+        saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
       gettingStarted: "البدء",
       startOnboarding: "بدء الإعداد التمهيدي",
@@ -600,6 +658,14 @@ export const ar = {
         compactSidebarDescription:
           "إبقاء الشريط الجانبي موسّعًا بدلاً من طيّه إلى أيقونات.",
       },
+      sidebarNav: {
+        title: "التنقّل في الشريط الجانبي",
+        description:
+          "ثبّت علامات تبويب الشريط الجانبي وأعد ترتيبها. تتجمّع العلامات غير المثبّتة في قائمة «المزيد»؛ وإذا بقيت علامة واحدة غير مثبّتة فتُخفى بدلاً من إنشاء قائمة بعنصر واحد. تبقى «محادثة جديدة» ثابتة.",
+        dragToReorder: "اسحب لإعادة الترتيب",
+        pinToSidebar: "تثبيت {name} في الشريط الجانبي",
+        moreHolds: "المزيد ({count})",
+      },
       sidebarMenu: {
         title: "قائمة الشريط الجانبي",
         description:
@@ -617,7 +683,7 @@ export const ar = {
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
-        summary: "الطلبات المباشرة والأخطاء واستخدام الرموز",
+        summary: "الطلبات المباشرة والأخطاء واستخدام التوكنات",
         status: "نشطة: {active} · حديثة: {recent} · {model}",
         noModelLoaded: "لا يوجد نموذج محمّل",
         autoOpen: "إظهار الشاشة العائمة تلقائيًا",
@@ -643,6 +709,23 @@ export const ar = {
         free: "{value} متاح",
         total: "{value} إجمالي",
       },
+      modelMemory: {
+        title: "ذاكرة النموذج",
+        keepResident: "إبقاء النموذج في ذاكرة كرت الرسوميات",
+        keepResidentDescription: "يبقى في ذاكرة كرت الرسوميات بين الرسائل.",
+        keepResidentHint: "لا تُعاد الأوزان إلى ذاكرة النظام ما دام النموذج محمَّلاً. يعطّل التفريغ التلقائي عند الخمول، وإذا كانت الأوزان موجودة فعلاً في ذاكرة المضيف (ذاكرة موحّدة أو تفريغ جزئي إلى المعالج الرسومي) فإنه يمرّر ‎--mlock‎ أيضاً حتى لا يُخرجها النظام من الذاكرة ويعيد رفعها عند رسالتك التالية.",
+        noRamReserve: "عدم حجز ذاكرة النظام للنموذج",
+        noRamReserveDescription: "لا يحتفظ بنسخة كاملة في ذاكرة النظام.",
+        noRamReserveHint: "ينقل الأوزان إلى ذاكرة كرت الرسوميات بدل الاحتفاظ بنسخة كاملة في ذاكرة النظام. يُبقي تحميل llama.cpp المعتمد على تعيين الذاكرة ويحذف ‎--no-mmap‎ و‎--mlock‎.",
+        mlockVetoed: "يبقى ‎--mlock‎ معطَّلاً: تثبيت النموذج سيحجز ذاكرة تكفي حجمه كاملاً. ولا يزال التفريغ التلقائي عند الخمول معطَّلاً.",
+        memlockCapped: "يحدّ هذا النظام الذاكرة المقفلة عند {limit}. لن يُثبَّت نموذج أكبر بالكامل؛ ارفع الحد باستخدام ulimit -l.",
+        reloadRequired: "أعد تحميل النموذج لتطبيق خيارات الذاكرة الجديدة.",
+        loadError: "تعذّر تحميل إعدادات ذاكرة النموذج",
+        saveError: "تعذّر حفظ إعدادات ذاكرة النموذج",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu ذاكرة رام مقيم تثبيت قفل إبقاء محمل تفريغ خامل mmap no-mmap load-mode تبديل ترحيل",
+      },
       storage: {
         title: "التخزين",
         systemDisk: "قرص النظام",
@@ -651,8 +734,8 @@ export const ar = {
         modelsFolder: "مجلد النماذج",
         modelsFolderKeywords:
           "النماذج مجلد دليل مسار موقع تنزيلات التنزيل ذاكرة التخزين المؤقت تخزين قرص محرك نقل تغيير models folder path hugging face",
-        modelsFolderDescription:
-          "المكان الذي تُخزَّن فيه النماذج المُنزَّلة. غيّره لإبقاء النماذج خارج قرص النظام.",
+        modelsFolderDescription: "مكان تخزين النماذج التي جرى تنزيلها.",
+        modelsFolderHint: "مكان تخزين النماذج التي جرى تنزيلها. غيّره لإبقاء النماذج بعيدًا عن قرص النظام. ينطبق على التنزيلات الجديدة فقط، أما النماذج الموجودة لديك فتبقى في مكانها.",
         openAction: "فتح",
         copyAction: "نسخ المسار",
         copied: "تم نسخ المسار",
@@ -783,10 +866,10 @@ export const ar = {
         title: "إعدادات اختيار النموذج",
         expandQuantizations: "توسيع خيارات التكميم",
         expandQuantizationsDescription:
-          "عند التفعيل: تعرض نماذج GGUF الموجودة على الجهاز خيارات التكميم الخاصة بها مباشرةً. عند التعطيل: انقر على نموذج لعرض خيارات التكميم الخاصة به.",
+          "عند التفعيل: تعرض نماذج GGUF ضمن «On Device» خيارات التكميم الخاصة بها مباشرةً. عند التعطيل: انقر على نموذج لعرض خيارات التكميم الخاصة به.",
         showAllQuantizations: "إظهار جميع خيارات التكميم",
         showAllQuantizationsDescription:
-          "عند التفعيل: تُدرج جميع خيارات التكميم الموجودة على الجهاز، بما فيها الخيارات غير المُنزَّلة. عند التعطيل: لا تظهر إلا خيارات التكميم المُنزَّلة.",
+          "عند التفعيل: تُدرج جميع خيارات التكميم ضمن «On Device»، بما فيها الخيارات غير المُنزَّلة. عند التعطيل: لا تظهر إلا خيارات التكميم المُنزَّلة.",
       },
       menu: {
         title: "قائمة المحادثة",
@@ -818,22 +901,22 @@ export const ar = {
       exportHistoryDescription: "تنزيل جميع المحادثات والرسائل بصيغة JSON.",
       exportAction: "تصدير",
       exportingAction: "جارٍ التصدير...",
-      exportConversations: "تصدير المحادثات الأخيرة والمشاريع",
+      exportConversations: "تصدير العناصر الأخيرة والمشاريع",
       exportConversationsDescription:
-        "نزّل المحادثات الأخيرة وحدها أو مع محادثات المشاريع بصيغة JSONL خام أو CSV أو ShareGPT JSONL، في ملف مجمّع أو في ملف لكل محادثة.",
+        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة JSONL خام أو CSV أو ShareGPT JSONL، في ملف مجمّع أو في ملف لكل محادثة.",
       exportConversationsAction: "تصدير",
-      exportScopeRecents: "المحادثات الأخيرة",
-      exportScopeAll: "المحادثات الأخيرة + المشاريع",
+      exportScopeRecents: "العناصر الأخيرة",
+      exportScopeAll: "العناصر الأخيرة + المشاريع",
       exportCombinedSuffix: "(مجمّعة)",
       exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
-        "استيراد ملف بصيغة JSONL أو NDJSON أو CSV إلى المحادثات الأخيرة.",
+        "استيراد ملف بصيغة JSONL أو NDJSON أو CSV إلى العناصر الأخيرة.",
       importChatsAction: "استيراد",
       importNoConversations: "لم يُعثر على محادثات في الملف.",
-      importedOneChat: "تم استيراد محادثة واحدة إلى المحادثات الأخيرة.",
+      importedOneChat: "تم استيراد محادثة واحدة إلى العناصر الأخيرة.",
       importedChatCount:
-        "تم استيراد المحادثات إلى المحادثات الأخيرة. العدد: {count}.",
+        "تم استيراد المحادثات إلى العناصر الأخيرة. العدد: {count}.",
       importFailed: "فشل الاستيراد.",
       clearHistory: "مسح سجل المحادثات",
       clearHistoryDescription: "حذف سجل المحادثات من هذا الجهاز.",
@@ -888,7 +971,7 @@ export const ar = {
       failedToExportArchivedChats: "تعذّر تصدير المحادثات المؤرشفة",
       archiveAllChats: "أرشفة جميع المحادثات",
       archiveAllChatsDescription:
-        "ينقل كل محادثة في «المحادثات الأخيرة» و«المشاريع» إلى الأرشيف.",
+        "ينقل كل محادثة في «العناصر الأخيرة» و«المشاريع» إلى الأرشيف.",
       noChatsToArchive: "لا توجد محادثات للأرشفة.",
       archiveAllAction: "أرشفة الكل",
       archivingAction: "جارٍ الأرشفة...",
@@ -954,7 +1037,7 @@ export const ar = {
       osWindows: "Windows",
       secureHttps: "HTTPS آمن",
       secureHttpsHint:
-        "لا يزال المنفذ على العنوان 0.0.0.0 متاحًا عبر جميع واجهات الشبكة. للحصول على أمان كامل، شغّل Unsloth باستخدام --secure لإتاحة رابط HTTPS هذا فقط.",
+        "لا يزال المنفذ على العنوان 0.0.0.0 متاحًا عالميًا. للحصول على أمان كامل، شغّل Unsloth باستخدام --secure لإتاحة رابط HTTPS هذا فقط.",
       copyTunnelUrl: "نسخ رابط النفق",
       copySnippet: "نسخ المقتطف",
       copy: "نسخ",
@@ -1078,8 +1161,193 @@ export const ar = {
     },
   },
   studio: {
+    imageTraining: "تدريب الصور",
+    goToImageTraining: "الانتقال إلى تدريب الصور",
     routeTitle: "تدريب",
-    title: "استوديو الضبط الدقيق",
+    wizard: {
+      modelTitle: "النموذج",
+      modelDescription: "اختر النموذج وطريقة التدريب",
+      datasetTitle: "مجموعة البيانات",
+      datasetDescription: "اختر بيانات التدريب أو حمّلها",
+      paramsTitle: "المعلمات",
+      paramsDescription: "اضبط معلمات التدريب",
+      configTitle: "التكوين",
+      configDescription: "احفظ التكوينات وحمّلها",
+      modelLabel: "النموذج",
+      methodLabel: "الطريقة",
+      datasetLabel: "مجموعة البيانات",
+      modelTooltip: "النموذج الأساسي الذي تريد ضبطه.",
+      methodTooltip: "طريقة تدريب النموذج. يحدّث LoRA وQLoRA محوّلات صغيرة بدلاً من جميع الأوزان.",
+      datasetTooltip: "بيانات التدريب المستخدمة لضبط النموذج.",
+      hfTokenLabel: "رمز Hugging Face",
+      hfTokenDescription:
+        "مطلوب للنماذج ومجموعات البيانات المقيّدة أو الخاصة.",
+      hfTokenGet: "الحصول على رمز",
+      hfTokenChecking: "جارٍ التحقق من الرمز…",
+      modelPickerDescription:
+        "ابحث في Hugging Face أو اختر نموذجًا قابلًا للتدريب موجودًا على هذا الجهاز.",
+      trainingMethod: "طريقة التدريب",
+      trainingMethodDescription: "اختر كيفية الضبط الدقيق لـ {model}",
+      trainingMethodTooltip:
+        "يستخدم QLoRA تكميم 4 بت لتقليل استخدام VRAM إلى الحد الأدنى. يستخدم LoRA أوزان 16 بت، بينما يحدّث الضبط الدقيق الكامل جميع الأوزان.",
+      datasetPickerDescription:
+        "ابحث في Hugging Face أو اختر مجموعة بيانات موجودة على هذا الجهاز.",
+      uploadDataset: "تحميل مجموعة بيانات",
+      uploadDatasetDescription: "يدعم CSV وJSONL وJSON وParquet.",
+      chooseFile: "اختيار ملف",
+      format: "التنسيق",
+      autoDetect: "اكتشاف تلقائي",
+      uploadLocalLabel: "أو حمّل ملفًا محليًا",
+      sourceBrowse: "استعراض",
+      releaseToUpload: "أفلت للتحميل",
+      loadYaml: "تحميل YAML",
+      saveYaml: "حفظ YAML",
+      resetDefaults: "إعادة التعيين إلى القيم الافتراضية",
+      cachedModelGoneTitle: "لم يعد النموذج المخزّن مؤقتًا متاحًا",
+      cachedModelGoneDescription:
+        "لم تعد ملفات النموذج موجودة على هذا الجهاز، لذا سيُعاد تنزيلها عند بدء التدريب.",
+      cachedDatasetGoneTitle:
+        "لم تعد مجموعة البيانات المخزّنة مؤقتًا متاحة",
+      cachedDatasetGoneDescription:
+        "لم تعد ملفات مجموعة البيانات موجودة على هذا الجهاز، لذا سيُعاد تنزيلها عند بدء التدريب.",
+    },
+    preview: {
+      title: "معاينة العملية",
+      ready: "جاهز",
+      notReady: "غير جاهز",
+      modelPending: "بانتظار النموذج",
+      datasetPending: "بانتظار مجموعة البيانات",
+      method: "الطريقة",
+      length: "الطول",
+      stepZero: "{count} خطوة",
+      step: "{count} خطوة",
+      stepTwo: "{count} خطوتان",
+      stepFew: "{count} خطوات",
+      stepMany: "{count} خطوة",
+      steps: "{count} خطوة",
+      epochZero: "{count} حقبة",
+      epoch: "{count} حقبة",
+      epochTwo: "{count} حقبتان",
+      epochFew: "{count} حقب",
+      epochMany: "{count} حقبة",
+      epochs: "{count} حقبة",
+      batch: "الدفعة",
+      context: "السياق",
+      lr: "معدل التعلّم",
+      hardware: "الأجهزة",
+      noGpu: "لم يتم اكتشاف GPU",
+      hfToken: "توكن HF",
+      saved: "محفوظ",
+      notSet: "غير معيّن",
+      files: "الملفات",
+      model: "النموذج",
+      dataset: "مجموعة البيانات",
+      downloadsOnStart: "سيتم التنزيل عند البدء",
+      continuesOnStart: "سيُستكمل عند البدء",
+      noticeModelDownload:
+        "هذا النموذج غير موجود على الجهاز بعد. سيُنزّله التدريب تلقائيًا.",
+      noticeModelPartial:
+        "سيُكمل التدريب التنزيل غير المكتمل للنموذج قبل تحميله.",
+      noticeDatasetDownload:
+        "مجموعة البيانات هذه غير موجودة على الجهاز بعد. سيُنزّلها التدريب تلقائيًا.",
+      noticeDatasetPartial:
+        "سيُكمل التدريب التنزيل غير المكتمل لمجموعة البيانات قبل قراءتها.",
+      advancedSettings: "الإعدادات المتقدمة",
+      defaultAdvancedSettings: "الإعدادات الافتراضية",
+      nonDefaultAdvancedSettings: "{count} غير افتراضي",
+    },
+    datasetPicker: {
+      noun: "مجموعات البيانات",
+      selectDataset: "اختر مجموعة بيانات",
+      hubPlaceholder: "ابحث في مجموعات بيانات Hugging Face...",
+      devicePlaceholder: "ابحث في مجموعات البيانات المحلية...",
+      useAsHubDataset: "استخدامها كمجموعة بيانات Hugging Face",
+      hfCacheLabel: "ذاكرة HF المؤقتة",
+      scanningLocal: "جارٍ فحص مجموعات البيانات على هذا الجهاز…",
+      couldntScan: "تعذّر فحص مجموعات البيانات المحلية",
+      someLocationsUnscanned:
+        "تعذّر فحص بعض مواقع مجموعات البيانات.",
+      noLocalDatasets:
+        "لا توجد بيانات على هذا الجهاز بعد. نزّل مجموعة بيانات من Hub أو أنشئ واحدة في الوصفات أو حمّل ملفًا.",
+      openDataRecipes: "فتح وصفات البيانات",
+      searchingHub: "جارٍ البحث في Hugging Face…",
+      noDatasetsFound: "لم يُعثر على مجموعات بيانات.",
+      tokenRejectedTitle: "رُفض توكن Hugging Face",
+      tokenRejectedBody:
+        "حدّث التوكن في الإعدادات ← عام، ثم أعد المحاولة.",
+      hubUnreachable: "تعذّر الوصول إلى Hugging Face",
+      cantUseDataset: "تعذّر استخدام مجموعة البيانات",
+      reasonInvalidHubId:
+        "أدخل معرّفًا صالحًا لمجموعة بيانات Hugging Face بصيغة مستودع أو مالك/مستودع، باستخدام الأحرف والأرقام و. و_ و- فقط (بحد أقصى 96 حرفًا لكل جزء).",
+      sourceRecipe: "وصفة",
+      sourceUpload: "رفع",
+      sourceLocal: "محلي",
+    },
+    modelPicker: {
+      noun: "النماذج",
+      selectModel: "اختر نموذجًا",
+      hubPlaceholder: "ابحث أو الصق معرّف Hugging Face...",
+      devicePlaceholder: "ابحث في النماذج المحلية أو الصق مسار مجلد...",
+      useAsHubModel: "استخدامه كنموذج Hugging Face",
+      useAsLocalPath: "استخدامه كمسار محلي",
+      hfCacheLabel: "ذاكرة HF المؤقتة",
+      scanningLocal: "جارٍ فحص النماذج المحلية…",
+      couldntScan: "تعذّر فحص النماذج المحلية",
+      someLocationsUnscanned: "تعذّر فحص بعض المواقع المحلية.",
+      noLocalModels: "لم يُعثر على نماذج محلية.",
+      noLocalModelsHint:
+        "الصق مسار مجلد أعلاه أو انتقل إلى Hugging Face.",
+      searchingHub: "جارٍ البحث في Hugging Face…",
+      noModelsFound: "لم يُعثر على نماذج.",
+      tokenRejectedTitle: "رُفض توكن Hugging Face",
+      tokenRejectedBody:
+        "حدّث التوكن في الإعدادات ← عام، ثم أعد المحاولة.",
+      hubUnreachable: "تعذّر الوصول إلى Hugging Face",
+      cantUseModel: "لا يمكن استخدام النموذج للتدريب",
+      reasonTypeMismatch:
+        "هذا النموذج لا يطابق نوع التدريب المحدد في الخطوة السابقة.",
+      reasonEmptyId: "أدخل معرّف نموذج أو مسار نموذج محلي.",
+      reasonInvalidHubId:
+        "أدخل معرّفًا صالحًا لنموذج Hugging Face بصيغة مستودع أو مالك/مستودع، باستخدام الأحرف والأرقام و. و_ و- فقط (بحد أقصى 96 حرفًا لكل جزء).",
+      reasonGguf: "لا يمكن استخدام نماذج GGUF للتدريب.",
+      reasonAdapter:
+        "لا يمكن استخدام مخرجات المهايئ كنماذج أساسية للتدريب.",
+      reasonNotTrainable: "هذا النموذج الموجود على الجهاز غير قابل للتدريب.",
+      reasonUnsupportedFormat: "تنسيق هذا النموذج غير مدعوم للتدريب.",
+      vramNeeds: "يحتاج إلى نحو {est}GB من VRAM (GPU: {total}GB)",
+      vramTight: "نحو {est}GB من VRAM (المساحة ضيقة على {total}GB)",
+      vramApprox: "نحو {est}GB من VRAM",
+      sourceModelsFolder: "مجلد النماذج",
+      sourceHfCache: "ذاكرة HF المؤقتة",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "مجلد مخصّص",
+      sourceLocalModel: "نموذج محلي",
+      vramOomBadge: "OOM",
+      vramTightBadge: "محدود",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "تكميم 4 بت. أقل استهلاكًا لـ VRAM وأسرع بدءًا.",
+        note: "4 بت",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "مهايئات 16 بت. توازن بين الجودة والذاكرة.",
+        note: "16 بت",
+      },
+      full: {
+        label: "ضبط دقيق كامل",
+        hint: "يدرّب جميع الأوزان. أعلى جودة ويتطلب أكبر قدر من VRAM.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "التدريب المسبق المستمر",
+        hint: "تدريب مسبق مستمر لمجالات أو لغات جديدة.",
+        note: "مستمر",
+      },
+    },
     subtitles: {
       configure: "إعداد التدريب وبدئه",
       trainingInProgress: "التدريب قيد التقدم",
@@ -1110,65 +1378,30 @@ export const ar = {
       checkingDataset: "جارٍ التحقق من مجموعة البيانات...",
       trainingConfig: "تكوين التدريب",
     },
-    model: {
-      title: "النموذج",
-      description: "اختر النموذج الأساسي وطريقة التدريب",
-      fasterTrainingBadge: "تدريب أسرع بمقدار الضعف",
-      baseModel: "النموذج الأساسي",
-      localModel: "نموذج محلي",
-      localModelTooltip:
-        "مسار إلى نموذج مُنزَّل محليًا أو مستودع HF مخصّص.",
-      scanningLocalAndCachedModels: "جارٍ فحص النماذج المحلية والمخزّنة مؤقتًا...",
-      scanning: "جارٍ الفحص...",
-      scanningLocalModels: "جارٍ فحص النماذج المحلية...",
-      noLocalModelsFound: "لم يُعثر على نماذج محلية",
-      noLocalModelsFoundManual: "لم يُعثر على نماذج محلية. أدخل المسار يدويًا.",
-      failedToLoadLocalModels: "فشل تحميل النماذج المحلية",
-      hfCache: "ذاكرة HF المؤقتة",
-      customFolders: "مجلدات مخصّصة",
-      localDir: "الدليل المحلي",
-      huggingFaceModel: "نموذج Hugging Face",
-      huggingFaceModelTooltip:
-        "ابحث في نماذج Hugging Face أو اختر من قائمتنا الموصى بها.",
-      searchModels: "بحث في النماذج...",
-      searching: "جارٍ البحث...",
-      noModelsFound: "لم يُعثر على نماذج",
-      needsVram: "يحتاج إلى ~{vram} جيجابايت VRAM (GPU: {gpu} جيجابايت)",
-      tightVram: "~{vram} جيجابايت من VRAM (تلائم سعة {gpu} جيجابايت بصعوبة)",
-      vramEstimate: "~{vram} جيجابايت VRAM",
-      method: "الطريقة",
-      methodTooltip:
-        "تستخدم QLoRA تكميم 4 بت لتقليل استهلاك VRAM إلى أدنى حد. تستخدم LoRA دقة 16 بت. يحدّث الضبط الكامل جميع الأوزان. تدرّب CPT (مواصلة التدريب المسبق) النموذج على نص خام لتكييفه مع مجال جديد دون تنسيق المحادثة.",
-      readMore: "اقرأ المزيد",
-      fullFineTune: "ضبط دقيق كامل",
-      checkingToken: "جارٍ التحقق من رمز الوصول...",
-      getOrUpdateToken: "الحصول على رمز الوصول أو تحديثه",
-      huggingFaceTokenOptional: "رمز وصول Hugging Face (اختياري)",
-      continuedPretraining: "مواصلة التدريب المسبق",
-      localModels: "النماذج المحلية",
-      localModelsFound:
-        "عدد النماذج المحلية/المخزّنة مؤقتًا التي عُثر عليها: {count}",
-      loadingLocalModels: "جارٍ تحميل النماذج المحلية...",
-    },
     dataset: {
-      title: "مجموعة البيانات",
-      description: "اختر بيانات التدريب أو ارفعها",
+      selectors: {
+        subset: "المجموعة الفرعية",
+        subsetTooltip:
+          "اختر المجموعة الفرعية (الإعداد) من مجموعة البيانات لاستخدامها.",
+        trainSplit: "قسم التدريب",
+        trainSplitTooltip: "اختر القسم الذي سيُستخدم للتدريب.",
+        evaluationSplit: "قسم التقييم",
+        evaluationSplitTooltip:
+          "اختر القسم الذي سيُستخدم للتقييم. يعني «بلا» عدم إجراء تقييم أثناء التدريب.",
+        selectSubset: "اختر مجموعة فرعية...",
+        selectSplit: "اختر قسمًا...",
+        none: "بلا",
+        loading: "جارٍ تحميل إعدادات مجموعة البيانات وأقسامها...",
+        manualTitle: "أدخل خيارات مجموعة البيانات يدويًا",
+        manualDescription:
+          "أدخل أسماء إعداد Hugging Face والأقسام الدقيقة المراد استخدامها.",
+        manualSubsetPlaceholder: "اسم الإعداد اختياري",
+        manualRequired: "قسم التدريب مطلوب.",
+        manualTooLong: "استخدم 128 حرفًا أو أقل.",
+        manualInvalid: "تحتوي هذه القيمة على أحرف غير مدعومة.",
+      },
       source: "مصدر مجموعة البيانات",
-      chooseDataset: "اختر مجموعة بيانات",
-      chooseDatasetTooltip:
-        "استخدم علامات التبويب المنبثقة للتبديل بين Hugging Face ومخرجات الوصفات المحلية.",
-      localTab: "محلي",
-      searchHuggingFaceDatasets: "بحث في مجموعات بيانات Hugging Face...",
-      searchLocalDatasets: "بحث في مجموعات البيانات المحلية...",
-      searching: "جارٍ البحث...",
-      noDatasetsFound: "لم يُعثر على مجموعات بيانات",
-      loadingLocalDatasets: "جارٍ تحميل مجموعات البيانات المحلية...",
-      failedToLoadLocalDatasets: "فشل تحميل مجموعات البيانات المحلية.",
-      noLocalDatasetsYet: "لا توجد مجموعات بيانات محلية بعد.",
-      noLocalDatasetsMatchSearch: "لا توجد مجموعات بيانات محلية تطابق البحث.",
-      openDataRecipes: "فتح Data Recipes",
-      browsingSource: "المصدر المعروض: {browsing}. يظل التحديد الحالي {current}.",
-      localDatasets: "مجموعات البيانات المحلية",
+      sourceAriaLabel: "مصدر مجموعة البيانات",
       localDataset: "مجموعة بيانات محلية",
       localDatasetRows: " / عدد الصفوف: {count}",
       huggingFaceDataset: "مجموعة بيانات Hugging Face",
@@ -1180,14 +1413,72 @@ export const ar = {
       updated: "آخر تحديث",
       evalDataset: "مجموعة بيانات التقييم",
       uploading: "جارٍ الرفع...",
-      upload: "رفع",
       uploadEvalFile: "رفع ملف التقييم",
+      fileTooLarge: "الملف كبير جدًا",
+      fileTooLargeDescription:
+        "حجم {file} هو {size}. تدعم عمليات تحميل بيانات التدريب حجمًا يصل إلى {limit}.",
+      uploadLimitsHint:
+        "CSV وJSONL وJSON وParquet · بحد أقصى {limit}؛ PDF/DOCX/TXT ← Learning Recipes",
+      documentRedirect: {
+        title: "يجب تحويل هذا الملف أولًا",
+        genericFile: "هذا الملف",
+        description:
+          "{file} مادة مصدر وليس مجموعة بيانات جاهزة للتدريب. استخدم Data Recipes لتحويل المستند إلى مجموعة بيانات، ثم عُد إلى هنا لإجراء الضبط الدقيق.",
+        nextStepTitle: "أفضل خطوة تالية",
+        nextStepDescription:
+          "افتح Learning Recipes وابدأ بوصفة قائمة على المستندات مثل PDF grounded QA.",
+        openAction: "فتح Learning Recipes",
+      },
       evalDatasetDescription:
         "اختياري. إذا لم يُقدَّم، سيتم فصل جزء صغير من بيانات التدريب.",
       advanced: "متقدم",
       targetFormat: "التنسيق المستهدف",
       targetFormatTooltip:
         "تنسيق بيانات التدريب الخاصة بك. يعمل الاكتشاف التلقائي مع معظم مجموعات البيانات.",
+      streamingInfoAriaLabel: "معلومات بث مجموعة البيانات",
+      streaming: {
+        label: "تفعيل البث",
+        description:
+          "بث مجموعات البيانات النصية من Hugging Face بدلًا من تنزيلها.",
+        unavailable: "البث غير متاح. لتفعيله:",
+        completionsUnavailable:
+          "غير متاح أثناء تفعيل بث مجموعة البيانات.",
+        blockers: {
+          source:
+            "استخدم مجموعة بيانات من Hugging Face (وليس تحميلًا محليًا أو مصدر S3).",
+          maxSteps:
+            "اضبط الحد الأقصى للخطوات على قيمة أكبر من 0 — لا تملك مجموعات البيانات المتدفقة طولًا معروفًا.",
+          trainOnCompletions: 'أوقف خيار "إكمالات المساعد فقط".',
+          evalSplit:
+            "اختر تقسيم تقييم منفصلًا — التقييم مفعّل، لكن لم يُعيّن تقسيم تقييم مميز.",
+          visionModel: "نماذج الرؤية لا تدعم البث.",
+          audioModel: "نماذج الصوت لا تدعم البث.",
+          embeddingModel:
+            "نماذج التضمين لا تدعم البث (يحتاج التدريب إلى مجموعة البيانات كاملة).",
+          imageDataset:
+            "يبدو أن مجموعة البيانات هذه تحتوي على صور، ولا يمكن بثها.",
+          audioDataset:
+            "يبدو أن مجموعة البيانات هذه تحتوي على صوت، ولا يمكن بثها.",
+          appleSilicon:
+            "البث غير مدعوم على Apple Silicon (MLX) حتى الآن.",
+        },
+        options: {
+          trainOnCompletions: "إكمالات المساعد فقط",
+          evaluation: "التقييم (يتطلب تقسيم تقييم منفصلًا)",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "تم إيقاف البث: يتطلب البث حدًا أقصى ثابتًا للخطوات أكبر من 0.",
+          adjusted:
+            "تم ضبط الإعدادات للبث. عُطّلت الخيارات غير المتوافقة: {options}.",
+          needsMaxSteps:
+            "يتطلب البث حدًا أقصى ثابتًا للخطوات (لا تملك مجموعات البيانات المتدفقة طولًا معروفًا). اضبط الحد الأقصى للخطوات على قيمة أكبر من 0 أولًا.",
+          enabledAdjusted:
+            "تم تفعيل البث. عُطّلت الخيارات غير المتوافقة: {options}.",
+          disabledForDetectedModality:
+            "تم إيقاف البث لأن مجموعات بيانات الصور والصوت تتطلب تنزيلًا كاملًا. راجع الإعداد، ثم ابدأ التدريب مجددًا.",
+        },
+      },
       auto: "تلقائي",
       rawText: "نص خام",
       trainSplitStart: "بداية تقسيم التدريب",
@@ -1199,6 +1490,9 @@ export const ar = {
       endPlaceholder: "النهاية",
       clear: "مسح",
       dropFileOrClick: "أفلت ملفًا واحدًا هنا أو انقر لرفعه",
+      uploadDetails: "تفاصيل التحميل",
+      uploadDetailsTooltip:
+        "حتى {limit} لكل ملف. ملفات PDF وDOCX وTXT ليست مجموعات بيانات جاهزة للتدريب، لذا حوّلها أولًا في وصفات التعلّم.",
       viewDataset: "عرض مجموعة البيانات",
       uploadFailed: "فشل الرفع",
       unknownError: "خطأ غير معروف",
@@ -1209,9 +1503,28 @@ export const ar = {
       uploadOneFileAtATime: "ارفع ملفًا واحدًا في كل مرة",
       uploadSingleFileDescription:
         "لا يمكن رفع أكثر من ملف واحد لمجموعة بيانات التدريب.",
-      checkingToken: "جارٍ التحقق من رمز الوصول...",
-      getOrUpdateToken: "الحصول على رمز الوصول أو تحديثه",
       preview: "معاينة مجموعة البيانات",
+      previewLoadingHuggingFace:
+        "جارٍ جلب معاينة مجموعة البيانات من Hugging Face...",
+      previewLoading: "جارٍ تحميل المعاينة...",
+      mappingRequirements: {
+        audioAndText: "الصوت والنص",
+        imageAndText: "الصورة والنص",
+        instructionAndOutput: "التعليمات والمخرجات",
+        humanAndGpt: "الإنسان وGPT",
+        userAndAssistant: "المستخدم والمساعد",
+      },
+      mappingStatus: {
+        heuristicTitle: "تعيين مكتشف بالاستدلال",
+        readyTitle: "التعيين جاهز",
+        requiredTitle: "تعيين أعمدة مجموعة البيانات",
+        heuristicDescription:
+          "اكتشفنا تلقائيًا تعيين الأعمدة أدناه باستخدام الاستدلال. راجعه وعدّله من القوائم المنسدلة في رؤوس الأعمدة، أو استخدم مساعدة الذكاء الاصطناعي للحصول على تعيين أدق.",
+        readyDescription:
+          "يبدو كل شيء جيدًا. سنحوّل مجموعة البيانات هذه تلقائيًا.",
+        requiredDescription:
+          "عيّن أدوارًا للأعمدة باستخدام القوائم المنسدلة في الرؤوس. يجب تعيين {required} على الأقل.",
+      },
       split: "التقسيم",
       subset: "المجموعة الفرعية",
       s3: {
@@ -1241,8 +1554,11 @@ export const ar = {
       },
     },
     params: {
-      title: "المعلمات",
-      description: "إعداد المعلمات الفائقة للتدريب",
+      mode: {
+        simple: "بسيط",
+        advanced: "متقدم",
+        ariaLabel: "وضع المعلمات",
+      },
       projectName: "اسم المشروع",
       optional: "اختياري",
       projectNameDescription:
@@ -1255,13 +1571,9 @@ export const ar = {
       useEpochs: "استخدام الحقب",
       maxStepsTooltip: "تجاوز إجمالي خطوات المُحسِّن.",
       epochsTooltip: "عدد المرات الكاملة للمرور على مجموعة البيانات.",
-      epochsDescription: "كل حقبة (epoch) هي مرور كامل واحد على مجموعة بياناتك.",
-      maxStepsDescription:
-        "يحدّ التدريب بعدد ثابت من خطوات المُحسِّن.",
       contextLength: "طول السياق",
       contextLengthTooltip: "الحد الأقصى لعدد التوكنات لكل عينة تدريب.",
       customContextLength: "أدخل قيمة مخصّصة",
-      contextLengthDescription: "الحد الأقصى لطول التسلسل لعينات التدريب",
       learningRate: "معدل التعلم",
       learningRateTooltip:
         "حجم الخطوة المستخدمة لتحديث الأوزان. تؤدي القيم الأقل إلى تدريب أبطأ وأكثر استقرارًا.",
@@ -1270,8 +1582,6 @@ export const ar = {
       embeddingLearningRate: "معدل تعلم التضمين (Embedding)",
       embeddingLearningRateTooltip:
         "يُستخدم فقط عندما تُدرّب CPT على embed_tokens. التضمينات أسهل في زعزعة استقرارها من أوزان LoRA، لذا تحتاج عادةً إلى معدل تعلم أصغر. اتركه فارغًا لاستخدام lr/10؛ النطاق المعتاد أصغر بمقدار 2x إلى 10x من معدل التعلم الرئيسي. زِده فقط إذا كان تكييف المفردات أو توكنات المجال بطيئًا جدًا.",
-      embeddingLearningRateDescription:
-        "اتركه فارغًا لاستخدام lr/10 (موصى به). النطاق المعتاد أصغر بمقدار 2x إلى 10x من معدل التعلم الرئيسي.",
       rank: "الرتبة",
       rankTooltip: "بُعد المصفوفات منخفضة الرتبة. تمنح القيم الأعلى سعة أكبر.",
       alpha: "Alpha",
@@ -1289,12 +1599,15 @@ export const ar = {
       stableRank: "رتبة مستقرة",
       memoryEfficient: "موفّر للذاكرة",
       weightDecomposed: "أوزان مُفكَّكة",
+      notSupportedAppleSilicon: "غير مدعوم على Apple Silicon",
       optimization: "التحسين",
       schedule: "الجدولة",
       memory: "الذاكرة",
       optimizer: "المُحسِّن",
       optimizerTooltip:
         "خوارزمية التحسين. تقلّل الخيارات ذات 8 بت استهلاك الذاكرة. يُنصح بخيار Fused لنماذج الرؤية.",
+      optimizerTooltipMlx:
+        "خوارزمية التحسين. AdamW هو الخيار الافتراضي. يستخدم Lion ذاكرة أقل، لكنه يحتاج عادةً إلى معدل تعلم أقل.",
       lrScheduler: "مُجدوِل معدل التعلم",
       lrSchedulerTooltip:
         "كيفية تغيّر معدل التعلم خلال التدريب. Linear يتناقص بثبات؛ Cosine يتناقص في منحنى.",
@@ -1337,29 +1650,65 @@ export const ar = {
       enablePacking: "تفعيل التعبئة (packing)",
       assistantCompletionsOnly: "إكمالات المساعد فقط",
       readMore: "اقرأ المزيد",
-      optimizerTooltipMlx:
-        "خوارزمية التحسين. AdamW هي الافتراضية. يستهلك Lion ذاكرة أقل لكنه يحتاج عادةً إلى معدّل تعلّم أدنى.",
     },
     training: {
-      title: "التدريب",
-      description: "مراقبة التدريب والتحكم فيه",
-      chartNoDataTitle: "لا توجد بيانات تدريب بعد",
-      chartNoDataDescription: "ابدأ التدريب لمتابعة تطور الخسارة",
       startTraining: "بدء التدريب",
       starting: "جارٍ البدء...",
       loadingModel: "جارٍ تحميل النموذج...",
       checkingDataset: "جارٍ التحقق من مجموعة البيانات...",
-      configLabel: "تكوين التدريب",
-      upload: "رفع",
+      chooseModel: "اختر نموذجًا",
+      chooseDataset: "اختر مجموعة بيانات",
+      chooseModelAndDataset: "اختر نموذجًا ومجموعة بيانات",
+      modelUnverified:
+        "تعذّر التحقق من إعدادات هذا النموذج. تحقق من اتصالك أو توكن Hugging Face، ثم أعد المحاولة.",
+      legacyDatasetScriptUnsupported:
+        "تعتمد مجموعة بيانات Hub هذه على برنامج نصي مخصص قديم، وهي غير مدعومة في مسار التدريب هذا.",
+      hfModelAccessDenied:
+        "رفض Hugging Face الوصول إلى هذا النموذج. أضف رمز Hugging Face صالحًا يملك صلاحية الوصول إلى المستودع، ووافق على أي شروط وصول مطلوبة، ثم أعد المحاولة.",
+      hfModelVerificationRateLimited:
+        "وصل التحقق من نموذج Hugging Face إلى حد معدل الطلبات. أعد المحاولة بعد قليل.",
+      hfModelVerificationFailed:
+        "تعذر التحقق من نموذج Hugging Face. تحقق من معرّف المستودع ورمز الوصول.",
+      hfModelMetadataUnavailable:
+        "بيانات تعريف نموذج Hugging Face غير متاحة مؤقتًا. أعد المحاولة قبل بدء التدريب.",
+      datasetUnverified:
+        "تعذّر التحقق من توافق مجموعة البيانات مع هذا النموذج. تحقق من اتصالك أو توكن Hugging Face — ستُعاد محاولة التحقق عند بدء التدريب.",
+      setupChanged:
+        "تغيّر إعداد التدريب أثناء التحقق منه. راجعه ثم ابدأ التدريب مجددًا.",
+      validation: {
+        s3MultimodalUnsupported:
+          "مجموعات بيانات S3 غير مدعومة بعد لتدريب الرؤية أو الصوت.",
+        s3BucketRequired: "أدخل اسم حاوية S3 أولًا.",
+        s3CredentialsRequired: "أدخل مفاتيح الوصول إلى S3 أو فعّل دور IAM.",
+        modelRequired: "اختر نموذجًا أساسيًا أولًا.",
+        learningRatePositive: "أدخل معدل تعلم أكبر من صفر.",
+        embeddingLearningRateRange:
+          "أدخل معدل تعلم تضمين أكبر من 0 وأقل من 1.",
+        hfDatasetRequired: "اختر مجموعة بيانات Hugging Face أولًا.",
+        hfDatasetSplitRequired: "اختر قسم التدريب أو أدخله أولًا.",
+        localDatasetRequired: "اختر مجموعة بيانات محلية أولًا.",
+        unsupportedDatasetSource: "مصدر مجموعة البيانات غير مدعوم.",
+      },
+      startFailed: "فشل بدء التدريب",
+      startUnconfirmed:
+        "تعذّر على Unsloth تأكيد بدء التدريب. جارٍ التحقق من الحالة في الخلفية.",
+      stopFailed: "فشل إيقاف التدريب",
+      trainingStillActiveTitle: "لا يزال التدريب نشطًا",
+      stopBeforeConfig: "أوقف التدريب أولًا، ثم عُد إلى التكوين.",
+      resumeFailed: "فشل استئناف التدريب",
+      resumeFailedTitle: "تعذّر استئناف التدريب",
+      resumeUnavailable:
+        "لا يمكن استئناف سوى عمليات التدريب المتوقفة أو التي انتهت بخطأ ولديها نقطة تحقق محفوظة.",
       uploadConfigTooltip: "تحميل تكوين YAML محفوظ",
-      save: "حفظ",
       saveConfigTooltip: "تنزيل التكوين الحالي بصيغة YAML",
-      reset: "إعادة تعيين",
       resetConfigTooltip: "إعادة التعيين إلى إعدادات النموذج الافتراضية",
       configLoaded: "تم تحميل التكوين",
       failedToLoadConfig: "فشل تحميل التكوين",
       invalidYamlFile: "ملف YAML غير صالح",
+      configTooLarge:
+        "ملف تكوين التدريب كبير جدًا (الحد الأقصى 1 MiB).",
       failedToReadFile: "فشلت قراءة الملف",
+      failedToSaveConfig: "فشل حفظ التكوين",
       parametersReset: "تمت إعادة تعيين المعلمات إلى إعدادات النموذج الافتراضية",
       audioIncompatible:
         "لا يدعم هذا النموذج الصوت. انتقل إلى نموذج قادر على معالجة الصوت أو اختر مجموعة بيانات غير صوتية.",
@@ -1371,7 +1720,7 @@ export const ar = {
       cancelAction: "إلغاء التدريب",
       stopTitle: "إيقاف التدريب",
       stopDescription:
-        "اختر طريقة إيقاف عملية التدريب الحالية. يؤدي «الإيقاف والحفظ» إلى إنشاء نقطة تحقق يمكنك استئناف التدريب منها لاحقًا، أما «الإيقاف» فلا يمكن استئناف التدريب بعده.",
+        "اختر طريقة إيقاف عملية التدريب الحالية. يؤدي «الإيقاف والحفظ» إلى إنشاء نقطة تحقق يمكنك استئناف التدريب منها لاحقًا، أما الإيقاف دون حفظ فلا يمكن استئناف التدريب بعده.",
       stopAction: "إيقاف",
       stopping: "جارٍ الإيقاف...",
       stopAndSave: "الإيقاف والحفظ",
@@ -1384,6 +1733,20 @@ export const ar = {
     },
     history: {
       title: "السجل",
+      filesDeleted: "تم حذف الملفات",
+      deleteArtifactsLabel: "حذف ملفات المهايئ من القرص أيضًا",
+      deleteArtifactsDescription:
+        "يزيل مجلد مخرجات العملية، بما في ذلك المهايئات ونقاط التحقق المحفوظة.",
+      deleteArtifactsSharedNote:
+        "تشارك عملية أخرى مجلد المخرجات هذا. ستبقى الملفات حتى تُحذف آخر عملية تستخدمها.",
+      artifactsKeptShared:
+        "تم حذف العملية. أُبقيت ملفات المهايئ لأن عملية أخرى تستخدم المجلد نفسه.",
+      deleteArtifactsActiveError:
+        "هذه الملفات قيد الاستخدام بواسطة عملية التدريب الجارية. أوقف التدريب قبل حذفها.",
+      deleteArtifactsFailed:
+        "تم حذف العملية، لكن تعذّرت إزالة ملفاتها.",
+      deleteArtifactsRetainedError:
+        "تعذّرت إزالة ملفات المحوّل، لذلك تم الاحتفاظ بعملية التدريب في السجل.",
       emptyTitle: "لا توجد عمليات تدريب بعد",
       emptyDescription:
         "لا توجد عمليات تدريب بعد. ابدأ أول عملية تدريب في علامة تبويب الإعداد.",
@@ -1511,6 +1874,7 @@ export const ar = {
         loadingDataset: "جارٍ تحميل مجموعة البيانات",
         configuring: "جارٍ الإعداد",
         training: "قيد التدريب",
+        finalizing: "جارٍ حفظ النموذج",
         completed: "مكتمل",
         error: "خطأ",
         stopped: "متوقف",

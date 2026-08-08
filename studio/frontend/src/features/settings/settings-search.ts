@@ -65,6 +65,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
+    "settings.appearance.sidebarNav.title",
     "settings.appearance.sidebarMenu.title",
     "settings.appearance.sidebarMenu.darkModeToggle",
   ],
@@ -75,6 +76,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.liveMonitor.vram",
     "settings.resources.liveMonitor.disk",
     "settings.resources.gpu.title",
+    "settings.resources.modelMemory.title",
+    "settings.resources.modelMemory.keepResident",
+    "settings.resources.modelMemory.noRamReserve",
     "settings.resources.storage.title",
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.futureDownloads",
@@ -156,6 +160,26 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
 };
 
+export function createSettingsSearchIndex(
+  desktop: boolean,
+): Record<SettingsTab, TranslationKey[]> {
+  if (!desktop) {
+    return SETTINGS_SEARCH_INDEX;
+  }
+  return {
+    ...SETTINGS_SEARCH_INDEX,
+    general: [
+      ...SETTINGS_SEARCH_INDEX.general,
+      "settings.about.updates",
+      "settings.general.startup.sectionTitle",
+      "settings.general.startup.launchAtLogin",
+    ],
+    about: SETTINGS_SEARCH_INDEX.about.filter(
+      (key) => key !== "settings.about.updates",
+    ),
+  };
+}
+
 /**
  * Extra terms a row matches on, beyond its own label. The value is a
  * translation key holding space-separated synonyms; it is never rendered.
@@ -166,4 +190,12 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  // mlock, vram, ulimit and pin are in none of these labels, so search
+  // missed the rows the feature is named after.
+  "settings.resources.modelMemory.title":
+    "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.resources.modelMemory.keepResident":
+    "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.resources.modelMemory.noRamReserve":
+    "settings.resources.modelMemory.modelMemoryKeywords",
 };

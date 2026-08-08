@@ -18,7 +18,7 @@ from loggers import get_logger
 
 from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils import download_registry
+from hub.utils import download_manifest, download_registry
 from hub.utils.hf_cache_state import snapshot_selection_key
 from hub.utils.snapshot_filters import (
     snapshot_download_blob_hashes,
@@ -30,6 +30,7 @@ from hub.services.models.common import (
     _gguf_variant_state_summary,
     _is_adapter_weight_name,
     _is_checkpoint_weight_name,
+    _local_transformers_can_chat,
     _is_training_artefact_name,
     _is_gguf_filename,
     _is_main_gguf_filename,
@@ -57,6 +58,17 @@ _REPO_SIZE_POS_TTL = 60.0
 _REPO_SIZE_NEG_TTL = 60.0
 _MODEL_METADATA_TIMEOUT_SECONDS = 5.0
 _repo_size_cache_lock = threading.Lock()
+
+
+_cached_inventory_flights: dict[
+    tuple[asyncio.AbstractEventLoop, tuple[str, int]], asyncio.Task[list[dict]]
+] = {}
+
+# Retrying a superseded scan is only worth it while invalidations are occasional;
+# past this the endpoint has to answer instead of restarting the walk forever.
+_INVENTORY_SCAN_MAX_ATTEMPTS = 8
+# Last scan per inventory name that confirmed its epoch, served when the cap is hit.
+_last_confirmed_inventory: dict[str, list[dict]] = {}
 
 # Identity for a cached file with no HF blob (Windows without Developer Mode: hf
 # moves the blob into snapshots/ and leaves blobs/ empty).
@@ -348,6 +360,7 @@ def _cache_inventory_fields(
     gguf_snapshot: Optional[Path] = None,
     repo_info = None,
     hidden_infra: bool = False,
+    companion: bool = False,
 ) -> dict:
     """Load identity plus the capability block for one cache row.
 
@@ -363,11 +376,21 @@ def _cache_inventory_fields(
             active_hub_cache = active_hub_cache,
             payload_snapshots = payload_snapshots,
         )
+    # The directory this row loads from: the non-GGUF scan passes only
+    # *identity*, so snapshot_path alone classified nothing.
+    classify_snapshot = identity.load_snapshot or snapshot_path
     capabilities = _capabilities_for_format(
         model_format,
         "hf_cache",
         partial = partial,
         requires_variant = requires_variant,
+        # Same classification the scan-folder rows get: a cached BERT or CLIP
+        # repo is chat-capable on format alone, and small enough to be tried first.
+        can_chat_override = (
+            _local_transformers_can_chat(classify_snapshot)
+            if model_format in {"safetensors", "checkpoint"} and classify_snapshot is not None
+            else None
+        ),
     ).model_dump()
     # The loader's companion search never leaves the quants' snapshot.
     if model_format == "gguf" and (
@@ -377,6 +400,12 @@ def _cache_inventory_fields(
     ):
         capabilities["supports_vision"] = True
     if hidden_infra:
+        capabilities["can_chat"] = False
+    # A VAE / text-encoder mirror holds no language model, so it cannot chat whatever its weight
+    # format says. Set HERE rather than left to the row's companion flag alone: startup auto-load
+    # filters on capabilities.can_chat (isChattableCachedRepo), not on that flag, so a row that
+    # only carried the flag was still auto-loadable as a chat model.
+    if companion:
         capabilities["can_chat"] = False
     return {
         "inventory_id": _local_inventory_id("cache", model_format, repo_id),
@@ -400,12 +429,70 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
     return is_hidden_model(*values)
 
 
-def _scan_cached_gguf() -> list[dict]:
-    """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
-    cache_scans = all_hf_cache_scans()
-    from utils.hf_cache_settings import get_hf_cache_paths
+def _cached_row_companion(repo_id: str) -> bool:
+    """Whether this row is an sd.cpp companion mirror (VAE / text encoders, no denoiser).
 
-    active_hub_cache = get_hf_cache_paths().hub_cache
+    Same classifier the models API uses. The chat picker is backed by THIS endpoint, so a flag set
+    only on the legacy route arrives as undefined here and the filter never fires -- the same trap
+    ``single_file`` fell into below. Best-effort: a classification failure never hides a row.
+    """
+    try:
+        from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+        return (repo_id or "").strip().lower() in sd_cpp_companion_only_repo_ids()
+    except Exception:  # noqa: BLE001 -- a classification failure never hides a row
+        return False
+
+
+def _cached_row_task(repo_info, *, gguf: bool) -> Optional[str]:
+    """Pipeline task for a cached row, from the same classifiers the models API uses.
+
+    The Images/Video pickers filter On Device rows on this and the chat picker routes a diffusion
+    pick by it, so a row that arrives without one is dropped from those lists entirely. Imported
+    lazily (routes.models imports this package) and best-effort: an unreadable repo just has no
+    task, exactly as before.
+    """
+    try:
+        from routes.models import _cached_repo_task, _repo_gguf_task
+        return _repo_gguf_task(repo_info) if gguf else _cached_repo_task(repo_info)
+    except Exception:  # noqa: BLE001 -- a classification failure never hides a row
+        return None
+
+
+def _variant_state_repositories(cache_scans):
+    for cache_scan in cache_scans:
+        for repo in cache_scan.repos:
+            try:
+                if str(repo.repo_type) == "model":
+                    yield "model", repo.repo_id, Path(repo.repo_path).parent
+            except Exception:
+                continue
+
+
+def _scan_cached_gguf(
+    *, cache_scans: Optional[list] = None, active_hub_cache: Optional[Path] = None
+) -> list[dict]:
+    """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
+    if cache_scans is None:
+        cache_scans = all_hf_cache_scans()
+    if active_hub_cache is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        active_hub_cache = get_hf_cache_paths().hub_cache
+    try:
+        variant_states = download_manifest.build_variant_state_index(
+            _variant_state_repositories(cache_scans),
+            active_hub_cache = active_hub_cache,
+        )
+    except Exception as e:
+        # Symmetric with _scan_cached_models below. The index is built once for the
+        # whole scan and outside the per-repository try, so one malformed repo
+        # identity anywhere in the cache took the endpoint with it: a cache
+        # directory name holding a byte the filesystem encoding cannot decode
+        # arrives as a lone surrogate, hashing it for the repo key raises, and
+        # /api/hub/cached-gguf answers 500 with every valid row hidden. Falling
+        # back to the per-repo reads this replaced costs speed on a broken cache
+        # and nothing else.
+        logger.warning("Could not build shared cached-GGUF state index: %s", e)
+        variant_states = None
 
     seen_lower: dict[str, dict] = {}
     for hf_cache in cache_scans:
@@ -415,11 +502,21 @@ def _scan_cached_gguf() -> list[dict]:
                     continue
                 repo_id = repo_info.repo_id
                 repo_path = Path(repo_info.repo_path)
+                variant_state = (
+                    variant_states.for_repo(
+                        "model",
+                        repo_id,
+                        hub_cache = repo_path.parent,
+                    )
+                    if variant_states is not None
+                    else None
+                )
                 snapshot_path = _cached_model_snapshot_path(repo_path)
                 total_size = _repo_gguf_size_bytes(repo_info)
                 has_variant_state, variant_state_size = _gguf_variant_state_summary(
                     repo_id,
                     hub_cache = repo_path.parent,
+                    variant_state = variant_state,
                 )
                 is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
@@ -438,6 +535,7 @@ def _scan_cached_gguf() -> list[dict]:
                     repo_id,
                     repo_path,
                     snapshot_dir = gguf_snapshot,
+                    variant_state = variant_state,
                 )
                 if total_size == 0 and not partial:
                     continue
@@ -448,6 +546,7 @@ def _scan_cached_gguf() -> list[dict]:
                     "repo_id": repo_id,
                     "size_bytes": max(total_size, variant_state_size),
                     "cache_path": str(repo_info.repo_path),
+                    "task": _cached_row_task(repo_info, gguf = True),
                     "partial": partial,
                     # A marker-only sibling moves neither size nor mtime.
                     "has_variant_state": has_variant_state,
@@ -487,10 +586,55 @@ def _scan_cached_gguf() -> list[dict]:
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
+class _CacheSourceChanged(RuntimeError):
+    pass
+
+
+def _scan_cached_inventory_snapshot(scanner, expected_epoch: int) -> list[dict]:
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    active_hub_cache = get_hf_cache_paths().hub_cache
+    cache_scans = all_hf_cache_scans()
+    if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+        raise _CacheSourceChanged
+    rows = scanner(cache_scans = cache_scans, active_hub_cache = active_hub_cache)
+    # The walk itself takes seconds, so a delete or a finished download landing
+    # during it supersedes these rows just as surely as one landing before it:
+    # without this a repo deleted mid-scan is still listed in the response.
+    if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+        raise _CacheSourceChanged
+    return rows
+
+
+async def _shared_cached_inventory_scan(name: str, scanner) -> list[dict]:
+    for _attempt in range(_INVENTORY_SCAN_MAX_ATTEMPTS):
+        epoch = hf_cache_scan.hf_cache_scans_epoch()
+        try:
+            rows = await hf_cache_scan.shared_scan(
+                _cached_inventory_flights,
+                (name, epoch),
+                lambda expected_epoch = epoch: asyncio.to_thread(
+                    _scan_cached_inventory_snapshot, scanner, expected_epoch
+                ),
+            )
+        except _CacheSourceChanged:
+            continue
+        _last_confirmed_inventory[name] = rows
+        return rows
+    # Invalidations are arriving faster than the walk completes, so no scan will
+    # confirm as current. Answer with the last one that did rather than spin a
+    # full cache walk per epoch forever.
+    logger.warning(
+        "Cached %s inventory kept racing cache invalidations; serving the last confirmed scan",
+        name,
+    )
+    return _last_confirmed_inventory.get(name, [])
+
+
 async def list_cached_gguf_response(hf_token: Optional[str] = None):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cached = await asyncio.to_thread(_scan_cached_gguf)
+        cached = await _shared_cached_inventory_scan("gguf", _scan_cached_gguf)
         return {"cached": cached}
     except Exception as e:
         logger.error(
@@ -629,6 +773,13 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         if snapshot is not None:
             for config_name, key in (
                 ("config.json", "has_config"),
+                # A diffusers pipeline's root manifest, which plays exactly the role config.json
+                # plays for transformers: from_pretrained reads it at the snapshot root to learn
+                # the component layout. Without it here no pure pipeline snapshot could classify
+                # (real repos ship model_index.json and per-component configs, never a root
+                # config.json), payload_snapshots came back empty, and every cached diffusion base
+                # pipeline was force-flagged partial and dropped from the On Device lists.
+                ("model_index.json", "has_config"),
                 ("adapter_config.json", "has_adapter_config"),
             ):
                 try:
@@ -777,12 +928,23 @@ def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = Non
     return result
 
 
-def _scan_cached_models() -> list[dict]:
+def _scan_cached_models(
+    *, cache_scans: Optional[list] = None, active_hub_cache: Optional[Path] = None
+) -> list[dict]:
     """Synchronous HF-cache disk walk for non-GGUF model repos; runs in a worker thread."""
-    cache_scans = all_hf_cache_scans()
-    from utils.hf_cache_settings import get_hf_cache_paths
-
-    active_hub_cache = get_hf_cache_paths().hub_cache
+    if cache_scans is None:
+        cache_scans = all_hf_cache_scans()
+    if active_hub_cache is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        active_hub_cache = get_hf_cache_paths().hub_cache
+    try:
+        variant_states = download_manifest.build_variant_state_index(
+            _variant_state_repositories(cache_scans),
+            active_hub_cache = active_hub_cache,
+        )
+    except Exception as e:
+        logger.warning("Could not build shared cached-model state index: %s", e)
+        variant_states = None
 
     seen_lower: dict[str, dict] = {}
     inspected = 0
@@ -830,20 +992,37 @@ def _scan_cached_models() -> list[dict]:
                     skipped_stt += 1
                     continue
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
-                snapshot_partial = hf_cache_scan.is_snapshot_partial(
+                download_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
                     repo_id,
                     repo_path,
                     snapshot_dir = load_snapshot,
+                    variant_state = (
+                        variant_states.for_repo(
+                            "model",
+                            repo_id,
+                            hub_cache = repo_path.parent,
+                        )
+                        if variant_states is not None
+                        else None
+                    ),
                 )
+                # A companion-only prefetch (pipeline manifest + VAE / text-encoder but no transformer shards, left by a GGUF load) passes
+                # the download check yet cannot from_pretrained, so mark it partial and the pickers stop advertising it as on-device.
+                # Scoped to the row's own snapshot, like the download check above it: the repo-wide twin picks the newest revision for
+                # itself, so a newer companion-only snapshot beside the complete one refs/main resolves to marked this row partial.
+                companion_only = hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
+                snapshot_partial = download_partial or companion_only
                 # Flags are OR-ed over revisions, so no payload snapshot means no directory
                 # serves the row and it would reach for the Hub.
                 if not payload.payload_snapshots:
                     snapshot_partial = True
+                row_task = _cached_row_task(repo_info, gguf = False)
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
+                    "task": row_task,
                     "partial": snapshot_partial,
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(
@@ -851,9 +1030,20 @@ def _scan_cached_models() -> list[dict]:
                             repo_id,
                             repo_cache_dir = repo_path,
                         )
-                        if snapshot_partial
+                        # Only a genuine download partial has a transport; a companion-only snapshot arrived intact and has no Resume story.
+                        if download_partial
                         else None
                     ),
+                    # Diffusion repos with no pipeline index load only via from_single_file, so the task pickers must not offer them as
+                    # pipeline loads. Without this the picker's single_file gate sees undefined on every hub-sourced row. Read from the
+                    # row's snapshot: the manifest a sibling revision carries is not the one this row's load_id opens.
+                    "single_file": bool(
+                        row_task is not None
+                        and not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
+                    ),
+                    # Listed so tens of GB of companion weights stay visible and deletable, but
+                    # flagged so no picker offers a denoiser-less repo as a load.
+                    "companion": _cached_row_companion(repo_id),
                     **local_metadata,
                 }
                 last_modified = max(
@@ -868,6 +1058,7 @@ def _scan_cached_models() -> list[dict]:
                         payload.model_format,
                         identity = identity,
                         partial = bool(row["partial"]),
+                        companion = bool(row["companion"]),
                     )
                 )
                 if _prefer_cache_row(row, existing):
@@ -894,7 +1085,7 @@ def _scan_cached_models() -> list[dict]:
 async def list_cached_models_response(hf_token: Optional[str] = None):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cached = await asyncio.to_thread(_scan_cached_models)
+        cached = await _shared_cached_inventory_scan("models", _scan_cached_models)
         return {"cached": cached}
     except Exception as e:
         logger.error(

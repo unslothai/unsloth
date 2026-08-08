@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -42,25 +43,17 @@ from utils.uv_path_safety import uv_safe_path
 logger = structlog.get_logger(__name__)
 
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_MLX_AUTOREPAIR"
+# uv's wording when --python names a path it will not install into. Matched on the
+# stable leading clause only: uv appends the offending path and a "run `uv venv`"
+# hint, and has reworded the tail across releases.
+_UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installation found"
 # Minimum versions unsloth-zoo requires on Apple Silicon (its pyproject darwin
 # deps). mlx-vlm especially must be >=0.4.4: an older one still imports but
 # breaks VLM Train/Export, so installing it would wrongly clear chat-only.
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.22.0", "mlx-vlm": "0.4.4"}
-# mlx-lm 0.31.3 regressed QK-norm archs (gemma4 / qwen3_5): strict load_weights
-# rejects q_norm/k_norm, so a self-heal must not pull it. mlx-lm #1242.
-_MLX_BAD_VERSIONS = {"mlx-lm": ("0.31.3",)}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-
-
-def _mlx_spec(name: str, version: str) -> str:
-    spec = f"{name}>={version}"
-    for bad in _MLX_BAD_VERSIONS.get(name, ()):
-        spec += f",!={bad}"
-    return spec
-
-
-MLX_PACKAGES = tuple(_mlx_spec(name, version) for name, version in _MLX_MIN_VERSIONS.items())
+MLX_PACKAGES = tuple(f"{name}>={version}" for name, version in _MLX_MIN_VERSIONS.items())
 _MLX_REINSTALL_ARGS = tuple(
     arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
 )
@@ -120,6 +113,22 @@ _REPAIR_TIMEOUT_S = 900
 # guard short-circuits on the next boot).
 _attempted = False
 _attempted_lock = threading.Lock()
+# The worker started by start_mlx_autorepair_if_needed, so callers can tell "still
+# installing" from "done, whichever way it went". Written under _attempted_lock together
+# with the latch above, since mlx_repair_in_flight() reads the pair as one state.
+_repair_thread: Optional[threading.Thread] = None
+# When that worker started, and the total it is allowed. attempt_mlx_repair times the uv
+# subprocess, but not the mlx_stack_available() imports that verify the install nor the
+# detect_hardware() pass after it -- and those import mlx.core, mlx_lm and mlx_vlm, the
+# imports this module already assumes can park indefinitely on a broken stack. An alive
+# thread was therefore an unbounded answer: a worker parked in them would hold the verdict
+# provisional for the whole session, spinning Train and Video instead of settling into the
+# chat-only state a broken stack has earned. The subprocess keeps its full timeout; this
+# adds the post-install work on top.
+_repair_started_at: Optional[float] = None
+_WORKER_BUDGET_S = _REPAIR_TIMEOUT_S + 300
+# Indirected so the tests can drive the budget without sleeping through it.
+_repair_clock = time.monotonic
 
 
 def is_apple_silicon() -> bool:
@@ -153,12 +162,7 @@ def _mlx_versions_satisfy_minimums() -> bool:
         return False
     for name, minimum in _MLX_MIN_VERSIONS.items():
         try:
-            installed = Version(_dist_version(name))
-            if installed < Version(minimum):
-                return False
-            # A known-broken build counts as unsatisfied so the self-heal
-            # reinstalls a good one; Version compare matches 0.31.3(.0/+local).
-            if any(installed == Version(bad) for bad in _MLX_BAD_VERSIONS.get(name, ())):
+            if Version(_dist_version(name)) < Version(minimum):
                 return False
         except PackageNotFoundError:
             return False
@@ -177,6 +181,57 @@ def mlx_stack_available() -> bool:
     return _mlx_runtime_imports_available()
 
 
+def mlx_repair_in_flight() -> bool:
+    """True while the one-time self-heal can still overturn a chat-only verdict.
+
+    Ask only about a host whose MLX stack has just been measured as unusable, which is
+    what detect_hardware's "mlx_unavailable" verdict means. This answers "has the repair
+    finished", not "does this host need one": the not-yet-started branch would otherwise
+    have to re-probe the stack, and on the host that matters that means re-running the
+    failing mlx imports on the event loop for every health poll.
+
+    Detection runs on the warm thread and the repair is scheduled after it, so such a host
+    settles chat-only first and only flips once the reinstall lands. Both halves of that
+    window count, since both publish an answer the repair is about to replace: the stretch
+    before the worker starts, and the worker itself. False the moment it has finished,
+    whichever way it went, so a host that genuinely cannot train still gets a final
+    verdict -- as it does when the self-heal is opted out of, or cannot apply at all, or
+    when a worker outlives _WORKER_BUDGET_S without finishing.
+
+    The not-yet-started half is unbounded here on purpose: this module cannot tell a
+    repair that is moments away from starting from one whose scheduler never arrives.
+    Callers holding a verdict back on the strength of it pair this with
+    mlx_repair_started() and bound that half themselves."""
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return False
+    if not is_apple_silicon():
+        return False
+    with _attempted_lock:
+        attempted, thread, started_at = _attempted, _repair_thread, _repair_started_at
+    if not attempted:
+        return True
+    if thread is None or not thread.is_alive():
+        return False
+    # Alive is not the same as making progress. See _WORKER_BUDGET_S: the uv call is timed,
+    # the imports that follow it are not, so a worker parked in them would otherwise answer
+    # True for the rest of the process.
+    if started_at is not None and _repair_clock() - started_at >= _WORKER_BUDGET_S:
+        return False
+    return True
+
+
+def mlx_repair_started() -> bool:
+    """True once start_mlx_autorepair_if_needed() has claimed the one-time latch.
+
+    Splits mlx_repair_in_flight()'s True into its two halves for callers that treat them
+    differently: a live worker is a reinstall that legitimately runs for many minutes,
+    while "not started yet" is a promise nothing has kept yet. Reads the latch rather
+    than the thread handle, so a worker whose start() blew up still counts as started and
+    falls through to in_flight's aliveness check."""
+    with _attempted_lock:
+        return _attempted
+
+
 def _uv_executable() -> str | None:
     """Find uv even when macOS GUI launchers start with a minimal PATH."""
     found = shutil.which("uv")
@@ -193,6 +248,21 @@ def _uv_executable() -> str | None:
                 return str(candidate)
         except OSError:
             continue
+    return None
+
+
+def _venv_root() -> str | None:
+    """The venv directory this interpreter runs from, or None outside a venv.
+
+    `sys.prefix` differs from `sys.base_prefix` exactly when a venv is active.
+    Confirm the marker file so a half-deleted tree is never named as the target."""
+    if sys.prefix == sys.base_prefix:
+        return None
+    try:
+        if (Path(sys.prefix) / "pyvenv.cfg").is_file():
+            return sys.prefix
+    except OSError:
+        pass
     return None
 
 
@@ -218,8 +288,24 @@ def _mlx_install_env() -> dict[str, str]:
     by silently backtracking mlx-vlm to an old, unsupported version (uv honours
     UV_OVERRIDE; plain pip ignores it, so the transformers constraint below is the
     pip-path safety net). We set UV_OVERRIDE ourselves, so a poisoned one in the
-    process env is ignored."""
+    process env is ignored.
+
+    VIRTUAL_ENV is set from sys.prefix rather than forwarded from os.environ, for
+    the same reason: it names the environment uv must install into, and taking it
+    from the process env would let a caller redirect the install elsewhere.
+
+    It does NOT rescue a venv whose bin/python has stopped resolving. An explicit
+    --python outranks VIRTUAL_ENV, so uv reports the same unresolved-interpreter
+    error either way; this once claimed otherwise, and named an interpreter-probe
+    helper that was deleted with it. Nothing passable to `uv pip install` recovers
+    that state -- --target and --prefix do exit 0, but resolve against whatever
+    ambient interpreter uv finds and write a wrong-ABI or off-sys.path install,
+    which is worse than staying chat-only because it defeats the
+    mlx_stack_available() gate. That case is detected and reported instead: see
+    the _UNRESOLVED_PYTHON_MARKER branch in attempt_mlx_repair."""
     env = {key: os.environ[key] for key in _MLX_ENV_ALLOWLIST if key in os.environ}
+    if (venv_root := _venv_root()) is not None:
+        env["VIRTUAL_ENV"] = venv_root
     override = (
         Path(__file__).resolve().parents[1]
         / "requirements"
@@ -309,6 +395,24 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
                 pass
     if result.returncode != 0:
         tail = (result.stdout or "")[-2000:]
+        if _UNRESOLVED_PYTHON_MARKER in (result.stdout or ""):
+            # uv will not install into this environment at all, so the venv is broken
+            # rather than merely missing MLX, and no install flag recovers it from in
+            # here: `--python <venv>/bin/python`, `--python <venv>` and a bare
+            # VIRTUAL_ENV all report the same error against an interpreter uv cannot
+            # resolve. Only rebuilding the environment fixes it, so name the command
+            # that does. uv's own text says to run `uv venv`, which would build an
+            # environment Unsloth does not manage.
+            logger.warning(
+                "MLX self-heal could not use the Unsloth environment at %s: uv did not "
+                "recognise it as a virtual environment. This usually means the venv's "
+                "bin/python points at an interpreter that has since been upgraded or "
+                "removed. Train/Export stay disabled until the environment is rebuilt: "
+                "run `unsloth studio update`. uv said:\n%s",
+                _venv_root() or sys.prefix,
+                tail,
+            )
+            return False
         logger.warning("MLX self-heal failed (staying chat-only):\n%s", tail)
         return False
     importlib.invalidate_caches()
@@ -352,31 +456,41 @@ def start_mlx_autorepair_if_needed() -> bool:
     on success. Returns True iff a repair thread was started. No-op (returns False)
     off Apple Silicon, when the stack is already adequate, when already attempted
     this process, or when disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1."""
-    global _attempted
+    global _attempted, _repair_thread, _repair_started_at
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
     if not is_apple_silicon():
         return False
     if mlx_stack_available():
         return False
+    from utils.hardware import hardware as _hw
+
     with _attempted_lock:
         if _attempted:
             return False
         _attempted = True
+        # Built and started inside the lock that claims the latch, so the pair is never
+        # half-published: a reader landing between the two sees "attempted, nothing alive"
+        # and settles the very verdict this repair is about to overturn. The worker never
+        # takes this lock, so the start() handshake cannot deadlock against it.
+        # The epoch is read here rather than in the thread: it may not run for a while, and
+        # reading it there would bind the pass to a later shutdown.
+        _repair_thread = threading.Thread(
+            target = _run_repair_and_redetect,
+            args = (_hw.current_detection_epoch(),),
+            daemon = True,
+            name = "mlx-autorepair",
+        )
+        # Stamped before start() so the budget covers the worker's whole life, and under the
+        # same lock as the pair above so a reader never sees a live thread with no deadline.
+        _repair_started_at = _repair_clock()
+        _repair_thread.start()
+    # Logged outside the lock: a blocked stdout must not hold up mlx_repair_in_flight(),
+    # which /api/health calls on the event loop.
     logger.warning(
         "Apple Silicon without a usable MLX stack; attempting a one-time background "
         "reinstall of mlx/mlx-lm/mlx-vlm to re-enable Train/Export. "
         "Set %s=1 to disable.",
         DISABLE_ENV_VAR,
     )
-    # Read before start(): the thread may not run for a while, so reading the epoch
-    # inside it would bind the pass to a later shutdown.
-    from utils.hardware import hardware as _hw
-
-    threading.Thread(
-        target = _run_repair_and_redetect,
-        args = (_hw.current_detection_epoch(),),
-        daemon = True,
-        name = "mlx-autorepair",
-    ).start()
     return True

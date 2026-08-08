@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 
 export function SettingsRow({
   label,
   description,
+  hint,
   icon,
   children,
   destructive,
@@ -15,6 +23,11 @@ export function SettingsRow({
 }: {
   label: string;
   description?: ReactNode;
+  /**
+   * Long-form explanation, shown on hover behind an info icon so `description`
+   * can stay to one line. Plain text: it doubles as the trigger's aria-label.
+   */
+  hint?: string;
   icon?: ReactNode;
   children?: ReactNode;
   destructive?: boolean;
@@ -26,7 +39,10 @@ export function SettingsRow({
     <div
       data-settings-label={label}
       className={cn(
-        "flex justify-between gap-6 py-3",
+        // Controls are fixed-width and shrink-0, so an unwrapped row starves the
+        // label. justify-end right-aligns a wrapped control without breaking
+        // items-stretch for flex-col callers.
+        "flex flex-wrap justify-end gap-x-6 gap-y-2 py-3",
         alignTop ? "items-start" : "items-center",
         destructive && "border-t border-border/60 mt-2 pt-4",
         className,
@@ -34,7 +50,8 @@ export function SettingsRow({
     >
       <div
         className={cn(
-          "flex min-w-0 gap-2.5",
+          // Widest floor that leaves already-fitting rows unchanged.
+          "flex min-w-[11rem] flex-1 basis-0 gap-2.5",
           alignTop ? "items-start" : "items-center",
         )}
       >
@@ -44,7 +61,37 @@ export function SettingsRow({
           </span>
         ) : null}
         <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="text-sm font-medium text-foreground">{label}</span>
+          {/* Flex only when hinted, so every other row's label renders exactly
+              as before. */}
+          <span
+            className={cn(
+              "text-sm font-medium text-foreground",
+              hint && "flex items-center gap-1.5",
+            )}
+          >
+            {label}
+            {hint ? (
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  {/* Focusable and labelled, so keyboard users reach the
+                      text too. Matches the secure-HTTPS hint. */}
+                  <button
+                    type="button"
+                    aria-label={hint}
+                    className="flex shrink-0 items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3.5"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-[300px] text-ui-11 leading-snug">
+                  {hint}
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+          </span>
           {description ? (
             <span className="text-xs text-muted-foreground leading-snug">
               {description}
@@ -55,9 +102,8 @@ export function SettingsRow({
       {children ? (
         <div
           className={cn(
-            "flex shrink-0",
-            // Drop the control past the label row so it lines up with the first
-            // description line instead of the label.
+            "flex max-w-full shrink-0",
+            // Line the control up with the first description line, not the label.
             alignTop ? "items-start pt-[21px]" : "items-center",
           )}
         >

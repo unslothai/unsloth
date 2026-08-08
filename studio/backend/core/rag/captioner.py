@@ -11,6 +11,7 @@ non-causally and abort otherwise); Unsloth's vision chat already requires this."
 from __future__ import annotations
 
 import base64
+import contextlib
 import logging
 
 from . import config
@@ -89,6 +90,16 @@ def _vision_auth_headers() -> dict | None:
         return None
 
 
+def _direct_llama_slot():
+    """Count this call against the chat backend's slots for its duration: it reaches
+    llama-server directly, so nothing else makes the slot readout show it as busy."""
+    try:
+        from routes.inference import _direct_llama_request
+        return _direct_llama_request()
+    except Exception:  # noqa: BLE001 - accounting must never break ingestion
+        return contextlib.nullcontext()
+
+
 def _vision_complete(
     base_url: str,
     model: str,
@@ -123,16 +134,17 @@ def _vision_complete(
         "chat_template_kwargs": {"enable_thinking": False},
     }
     try:
-        r = httpx.post(
-            f"{base_url}/v1/chat/completions",
-            json = payload,
-            timeout = timeout,
-            headers = _vision_auth_headers(),
-            # trust_env=False: base_url is the loopback backend; skip any HTTP(S)_PROXY.
-            trust_env = False,
-        )
-        r.raise_for_status()
-        text = r.json()["choices"][0]["message"]["content"]
+        with _direct_llama_slot():
+            r = httpx.post(
+                f"{base_url}/v1/chat/completions",
+                json = payload,
+                timeout = timeout,
+                headers = _vision_auth_headers(),
+                # trust_env=False: base_url is the loopback backend; skip any HTTP(S)_PROXY.
+                trust_env = False,
+            )
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"]
         return text.strip() or None
     except Exception:  # noqa: BLE001 - a failed vision call is non-fatal
         logger.debug("vision request failed", exc_info = True)
