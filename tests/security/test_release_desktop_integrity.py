@@ -268,6 +268,7 @@ def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path
     create = next(line for line in commands if line.startswith("gh release create"))
     assert RELEASE_TAG in create
     assert "--target" not in create
+    assert "--verify-tag" in create
     assert any("git/refs" in line and f"sha={SOURCE_SHA}" in line for line in commands)
 
     body_file = tmp_path / "desktop-release-body.md"

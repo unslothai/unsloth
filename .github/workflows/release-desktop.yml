@@ -1776,6 +1776,7 @@ jobs:
           release_flags=(
             --title "Unsloth ${STUDIO_VERSION}"
             --notes-file "$RUNNER_TEMP/desktop-release-body.md"
+            --verify-tag
           )
           if [ "$RELEASE_DRAFT" = "true" ]; then
             release_flags+=(--draft)
