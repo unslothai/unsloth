@@ -1497,5 +1497,114 @@ def test_the_delete_switch_only_appears_where_it_works():
     assert "setConfirmingDelete({ kind:" not in sidebar
 
 
+def test_a_symlinked_builtin_cache_is_not_deleted_through(tmp_path, monkeypatch):
+    """Being at a built-in path proves ownership of the directory, not of
+    whatever a link there points at."""
+    victim = tmp_path / "someones_files"
+    victim.mkdir()
+    (victim / "thesis.txt").write_text("years of work")
+
+    from utils import cache_cleanup
+
+    link = tmp_path / "unsloth_compiled_cache"
+    link.symlink_to(victim, target_is_directory = True)
+    monkeypatch.setattr(cache_cleanup, "_CACHE_DIRS", [link])
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+    monkeypatch.chdir(tmp_path / "..")
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert (victim / "thesis.txt").read_text() == "years of work"
+
+
+def test_a_symlinked_builtin_cache_with_the_marker_is_cleared(tmp_path, monkeypatch):
+    real = tmp_path / "real_cache"
+    real.mkdir()
+
+    from utils import cache_cleanup
+
+    (real / cache_cleanup.CACHE_MARKER).touch()
+    (real / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
+    link = tmp_path / "unsloth_compiled_cache"
+    link.symlink_to(real, target_is_directory = True)
+    monkeypatch.setattr(cache_cleanup, "_CACHE_DIRS", [link])
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert not (real / "unsloth_compiled_module_gemma3.py").exists()
+
+
+def test_the_invalid_fallback_cannot_be_pointed_out_of_the_sandbox(tmp_path, monkeypatch):
+    """Tool code runs inside the sandbox, so it can plant this link; every
+    unchecked request would then read from wherever it points."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "id_rsa").write_text("PRIVATE KEY")
+    root = tmp_path / "sb"
+    root.mkdir()
+    (root / "_invalid").symlink_to(outside, target_is_directory = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    resolved = Path(tools.resolve_sandbox_workdir("../escape"))
+    assert not (resolved / "id_rsa").exists(), resolved
+    assert outside.is_dir() and (outside / "id_rsa").is_file(), "the target was touched"
+
+    executing = Path(tools.get_sandbox_workdir("../escape"))
+    assert not (executing / "id_rsa").exists(), executing
+
+
+def test_the_default_fallback_is_contained_too(tmp_path, monkeypatch):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("TOPSECRET")
+    root = tmp_path / "sb"
+    root.mkdir()
+    (root / "_default").symlink_to(outside, target_is_directory = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    resolved = Path(tools.resolve_sandbox_workdir(None))
+    assert not (resolved / "secret.txt").exists(), resolved
+
+
+def test_deleting_a_big_sandbox_does_not_hold_the_tool_lock(tmp_path, monkeypatch):
+    """rmtree of a large tree would otherwise block every tool start, and the
+    event loop of the route that called it."""
+    import threading
+    import time
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_bigdel1"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "data.bin").write_bytes(b"x" * 1024)
+
+    slow = threading.Event()
+    real_rmtree = tools.shutil.rmtree
+
+    def slow_rmtree(path, **kw):
+        slow.set()
+        time.sleep(0.5)
+        return real_rmtree(path, **kw)
+
+    monkeypatch.setattr(tools.shutil, "rmtree", slow_rmtree)
+    assert tools.remove_session_sandbox(session, delete_files = True) is True
+    assert not workdir.exists(), "the session directory is gone immediately"
+
+    # The lock is free while the tree is still being removed.
+    assert slow.wait(timeout = 5)
+    started = time.monotonic()
+    with tools._session_in_flight("__LOCALID_other12"):
+        pass
+    assert time.monotonic() - started < 0.3, "a tool start waited for the delete"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

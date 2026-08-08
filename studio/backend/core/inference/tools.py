@@ -26,6 +26,7 @@ import sys
 import tempfile
 import contextlib
 import threading
+import uuid
 import time
 import urllib.parse
 import urllib.request
@@ -7260,6 +7261,21 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
         return False
 
 
+def _sandbox_fallback(root: str, name: str) -> str:
+    """``_default`` / ``_invalid`` under the root, contained like any session.
+
+    They are ordinary directories in a writable sandbox, so one replaced by a
+    symlink would otherwise become the root every unchecked request reads from.
+    """
+    path = os.path.join(root, name)
+    if os.path.islink(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            return os.path.join(root, "_invalid_unusable")
+    return path
+
+
 def _contained_in_root(workdir: str, root: str) -> bool:
     """Whether a resolved session path is still inside the sandbox root.
 
@@ -7300,11 +7316,11 @@ def _get_workdir(session_id: str | None = None) -> str:
         elif session_id and _usable_session_id(session_id):
             workdir = os.path.join(sandbox_root_path, session_id)
             if not _contained_in_root(workdir, sandbox_root_path):
-                workdir = os.path.join(sandbox_root_path, "_invalid")
+                workdir = _sandbox_fallback(sandbox_root_path, "_invalid")
         elif session_id:
-            workdir = os.path.join(sandbox_root_path, "_invalid")
+            workdir = _sandbox_fallback(sandbox_root_path, "_invalid")
         else:
-            workdir = os.path.join(sandbox_root_path, "_default")
+            workdir = _sandbox_fallback(sandbox_root_path, "_default")
         os.makedirs(workdir, exist_ok = True)
         # Only a root we just created: the override can name a shared
         # directory, and locking that down would cut off everything else.
@@ -7343,14 +7359,14 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
     # nothing else has run yet. This moves them without creating a session dir.
     _migrate_legacy_sandbox(root)
     if not session_id:
-        return os.path.join(root, "_default")
+        return _sandbox_fallback(root, "_default")
     if not _usable_session_id(session_id):
-        return os.path.join(root, "_invalid")
+        return _sandbox_fallback(root, "_invalid")
     workdir = os.path.join(root, session_id)
     # Same containment _get_workdir applies: a session entry symlinked out of
     # the root would otherwise serve whatever it points at.
     if not _contained_in_root(workdir, root):
-        return os.path.join(root, "_invalid")
+        return _sandbox_fallback(root, "_invalid")
     return workdir
 
 
@@ -7397,8 +7413,23 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     _workdirs.pop(session_id, None)
     try:
         if delete_files:
-            shutil.rmtree(target, ignore_errors = True)
-            return not os.path.isdir(target)
+            # Renamed while locked, deleted after: rmtree of a large tree would
+            # otherwise hold the lock every tool start takes, and block the
+            # event loop of the route that called this.
+            detached = f"{target}.deleting-{uuid.uuid4().hex[:8]}"
+            try:
+                os.rename(target, detached)
+            except OSError:
+                shutil.rmtree(target, ignore_errors = True)
+                return not os.path.isdir(target)
+            threading.Thread(
+                target = shutil.rmtree,
+                args = (detached,),
+                kwargs = {"ignore_errors": True},
+                name = "sandbox-delete",
+                daemon = True,
+            ).start()
+            return True
         os.rmdir(target)  # raises when non-empty, which is the intent
         return True
     except OSError:

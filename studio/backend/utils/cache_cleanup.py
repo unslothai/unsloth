@@ -117,7 +117,11 @@ def _cleanable_cache_dirs() -> "List[tuple]":
     builtin = _builtin_cache_paths()
     cleanable: "List[tuple]" = []
     for cache_dir in get_existing_cache_dirs():
-        if str(cache_dir) in builtin or _is_dedicated_cache(cache_dir):
+        # A built-in path is ours by construction only while it IS the directory.
+        # Through a link, the marker on the target is the only proof, since the
+        # clearing below resolves it and would take whatever it points at.
+        owned_by_path = str(cache_dir) in builtin and not cache_dir.is_symlink()
+        if owned_by_path or _is_dedicated_cache(cache_dir):
             cleanable.append((cache_dir, True))
         elif _holds_generated_modules(cache_dir):
             cleanable.append((cache_dir, False))
