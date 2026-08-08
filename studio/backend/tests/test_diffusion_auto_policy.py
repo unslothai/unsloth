@@ -20,6 +20,7 @@ from core.inference.diffusion_auto_policy import (
     build_resolved_record,
     estimate_dense_quant,
     family_bf16_components_gb,
+    precision_fallback_allowed,
     resolve_dense_quant_candidate,
 )
 from core.inference.diffusion_memory import (
@@ -294,3 +295,54 @@ def test_resolved_record_marks_auto_and_explicit():
     assert record["cpu_offload"]["source"] == "explicit"
     assert record["transformer_quant"]["value"] == "fp8"
     assert all("reason" in v for v in record.values())
+
+
+def test_resolved_record_keeps_the_request_beside_the_engaged_value():
+    # P1-2: a declined explicit precision must not collapse into a bare source="explicit" that
+    # renders no badge while the dropdown still advertises the ask.
+    record = build_resolved_record(
+        {
+            "transformer_quant": ("fp8", "off", "the dense build did not fit", "fell_back"),
+            "text_encoder_quant": ("int8", "fp8", "no keep-bf16 schedule"),
+            "memory_mode": ("low_vram", "sequential", "planned"),
+        }
+    )
+    assert record["transformer_quant"]["requested"] == "fp8"
+    assert record["transformer_quant"]["value"] == "off"
+    assert record["transformer_quant"]["status"] == "fell_back"
+    # Derived without the call site classifying it: request and engaged value disagree.
+    assert record["text_encoder_quant"]["status"] == "fell_back"
+    # ...but only where the two share a vocabulary. memory_mode requests a MODE and engages an
+    # offload POLICY, so an honored request must not be reported as a fallback.
+    assert record["memory_mode"]["status"] == "applied"
+
+
+def test_resolved_record_treats_an_honored_off_request_as_applied():
+    # "none"/"off"/"" all ask for no quant, which an "off" engagement satisfies.
+    record = build_resolved_record(
+        {
+            "transformer_quant": ("none", "off", "GGUF loaded"),
+            "text_encoder_quant": ("fp8", "fp8", "cast in place"),
+            "cpu_offload": (True, True, "legacy flag"),
+        }
+    )
+    assert record["transformer_quant"]["status"] == "applied"
+    assert record["text_encoder_quant"]["status"] == "applied"
+    assert record["cpu_offload"]["status"] == "applied"
+
+
+def test_resolved_record_auto_never_reports_a_fallback():
+    # An auto request delegates the choice, so a decline is the ladder working: no ask to betray.
+    record = build_resolved_record({"transformer_quant": (None, "off", "no CUDA")})
+    assert record["transformer_quant"]["source"] == "auto"
+    assert record["transformer_quant"]["requested"] is None
+    assert record["transformer_quant"]["status"] == "applied"
+
+
+def test_precision_fallback_escape_hatch(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", raising = False)
+    assert precision_fallback_allowed() is False
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    assert precision_fallback_allowed() is True
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "0")
+    assert precision_fallback_allowed() is False

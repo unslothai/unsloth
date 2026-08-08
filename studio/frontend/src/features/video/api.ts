@@ -6,11 +6,16 @@ import { authFetch } from "@/features/auth";
 import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-// One Advanced control's resolved value + provenance for the "Auto: X" badges, same shape as the diffusion status.
-// `value` is the engaged value (string, null when off, or boolean); `source` is "auto" or "explicit"; `reason` is the tooltip.
+// One Advanced control's resolved value + provenance, same shape as the diffusion status. `value` is the engaged value
+// (string, null when off, or boolean), `requested` is what the caller asked for (null = left to the backend), `source` is
+// "auto" or "explicit", `status` says whether the ask survived, and `reason` is the tooltip.
 export interface VideoResolvedControl {
   value: string | boolean | null;
+  // Absent on backends predating the requested/actual split.
+  requested?: string | boolean | null;
   source: "auto" | "explicit";
+  // "applied" (honored, or nothing was asked) | "fell_back" | "unsupported". Absent on older backends.
+  status?: "applied" | "fell_back" | "unsupported";
   reason: string;
 }
 
@@ -48,6 +53,8 @@ export interface VideoStatus {
   transformer_cache?: string | null;
   // Dense DiT precision actually engaged ("int8" | "fp8" | ...) or null for bf16.
   transformer_quant?: string | null;
+  // Text-encoder quant actually engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4") or null for dense bf16.
+  text_encoder_quant?: string | null;
   // Whether the loaded family produces a synchronized audio track.
   has_audio: boolean;
   // Per-family generation defaults + shape constraints; null when unloaded.
@@ -107,6 +114,8 @@ export interface VideoLoadRequest {
   transformer_cache_threshold?: number;
   // Dense DiT precision on full-pipeline loads (omit for the hardware ladder; "none" pins bf16). GGUF / single-file checkpoints carry their own.
   transformer_quant?: "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
+  // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host cannot run it.
+  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
 }
 
 export interface VideoGenerateRequest {
@@ -139,6 +148,14 @@ export interface GalleryVideo {
   seed: number;
   has_audio: boolean;
   model?: string | null;
+  // The load-time BUILD, all ENGAGED values, so a clip's recipe still names the precision it ran at
+  // once the model is unloaded. Absent on sidecars written before this existed.
+  model_kind?: string | null;
+  gguf_filename?: string | null;
+  transformer_quant?: string | null;
+  text_encoder_quant?: string | null;
+  memory_mode?: string | null;
+  offload_policy?: string | null;
   // Creation time (ISO 8601 timestamp).
   created_at: string;
 }

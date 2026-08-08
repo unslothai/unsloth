@@ -657,6 +657,22 @@ def test_status_passthrough(client, monkeypatch):
     resolved = {
         "speed_mode": {"value": "eager", "source": "auto", "reason": "GGUF default"},
         "transformer_cache": {"value": None, "source": "auto", "reason": "few-step model"},
+        # A declined explicit precision has to survive the boundary here too (the Linux half of
+        # P1-2: the label kept reading BF16 while telemetry confirmed NVFP4).
+        "transformer_quant": {
+            "value": "off",
+            "requested": "nvfp4",
+            "source": "explicit",
+            "status": "unsupported",
+            "reason": "this GPU has no NVFP4 cores",
+        },
+        "text_encoder_quant": {
+            "value": "fp8",
+            "requested": "int8",
+            "source": "explicit",
+            "status": "fell_back",
+            "reason": "int8 has no measured keep-bf16 schedule for this family",
+        },
     }
     monkeypatch.setattr(
         backend,
@@ -672,13 +688,94 @@ def test_status_passthrough(client, monkeypatch):
     )
     body = client.get("/api/inference/video/status").json()
     assert body["loaded"] is True and body["family"] == "ltx-2"
-    assert body["resolved"] == resolved
+    assert body["resolved"]["transformer_quant"] == resolved["transformer_quant"]
+    assert body["resolved"]["text_encoder_quant"] == resolved["text_encoder_quant"]
+    # Entries from an older backend (no requested/status) still parse, defaulted to "applied".
+    assert body["resolved"]["speed_mode"]["requested"] is None
+    assert body["resolved"]["speed_mode"]["status"] == "applied"
     assert body["defaults"]["frame_step"] == 8
 
 
 def test_status_resolved_defaults_to_null(client):
     body = client.get("/api/inference/video/status").json()
     assert body["resolved"] is None and body["defaults"] is None
+
+
+def _load_fake_video(client):
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    assert resp.status_code == 200
+
+
+def test_saved_clip_records_the_engaged_build(client, monkeypatch):
+    # A saved MP4 has to name the BUILD it came off, like a saved PNG already does: without it a
+    # clip rendered at bf16 is indistinguishable from one rendered at the precision that was asked
+    # for. Every value here is the ENGAGED state, never the load request.
+    backend = video_module.get_video_backend()
+    real_generate = backend.generate
+
+    def _generate(**kwargs):
+        return {
+            **real_generate(**kwargs),
+            "model_kind": "gguf",
+            "gguf_filename": "ltx-2.3-Q4_K_M.gguf",
+            "transformer_quant": None,
+            "text_encoder_quant": "fp8",
+            "memory_mode": "low_vram",
+            "offload_policy": "sequential",
+        }
+
+    monkeypatch.setattr(backend, "generate", _generate)
+    _load_fake_video(client)
+    video = _generate_and_wait(client, {"prompt": "a sloth", "seed": 3})
+    assert video["model_kind"] == "gguf"
+    assert video["gguf_filename"] == "ltx-2.3-Q4_K_M.gguf"
+    assert video["transformer_quant"] is None
+    assert video["text_encoder_quant"] == "fp8"
+    assert video["memory_mode"] == "low_vram"
+    assert video["offload_policy"] == "sequential"
+    # ...and it round-trips through the on-disk sidecar, not just the in-memory record.
+    listed = client.get("/api/inference/video/gallery").json()["videos"]
+    assert listed[0]["text_encoder_quant"] == "fp8"
+    assert listed[0]["gguf_filename"] == "ltx-2.3-Q4_K_M.gguf"
+
+
+def test_sidecars_without_the_build_fields_still_list(client):
+    # The new keys are NOT in video_gallery._REQUIRED_META, so a clip written before they existed
+    # lists with them null instead of being skipped as a foreign sidecar.
+    _load_fake_video(client)
+    video = _generate_and_wait(client, {"prompt": "a sloth"})
+    assert video["model_kind"] is None and video["transformer_quant"] is None
+    listed = client.get("/api/inference/video/gallery").json()["videos"]
+    assert len(listed) == 1 and listed[0]["text_encoder_quant"] is None
+
+
+def test_load_refuses_an_unusable_explicit_precision_with_409(client, monkeypatch):
+    # begin_load refuses an EXPLICIT precision this host cannot honor; the route answers 409 with
+    # the reason instead of accepting the load and denoising at some other precision.
+    from core.inference.diffusion_auto_policy import precision_refusal_message
+
+    backend = video_module.get_video_backend()
+    refusal = precision_refusal_message(
+        "transformer_quant",
+        "nvfp4",
+        "'nvfp4' is not usable for family 'ltx-2' on this GPU",
+        off_label = "Off to run the DiT at bf16",
+    )
+
+    def _refuse(model_path, **kwargs):
+        raise RuntimeError(refusal)
+
+    monkeypatch.setattr(backend, "begin_load", _refuse)
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "Lightricks/LTX-2.3", "transformer_quant": "nvfp4"},
+    )
+    assert resp.status_code == 409
+    assert "transformer_quant='nvfp4' could not be used" in resp.json()["detail"]
+    assert client.get("/api/inference/video/status").json()["loaded"] is False
 
 
 def test_unload_releases_arbiter(client, monkeypatch):

@@ -1206,7 +1206,13 @@ def test_status_passes_through_resolved(client, monkeypatch):
     backend = diffusion_module.get_diffusion_backend()
     resolved = {
         "speed_mode": {"value": "eager", "source": "auto", "reason": "per-kind default"},
-        "transformer_quant": {"value": "int8", "source": "explicit", "reason": "requested"},
+        "transformer_quant": {
+            "value": "off",
+            "requested": "fp8",
+            "source": "explicit",
+            "status": "fell_back",
+            "reason": "the dense bf16 transformer does not fit resident",
+        },
         "cpu_offload": {"value": False, "source": "auto", "reason": "from the memory plan"},
         "transformer_cache": {"value": None, "source": "auto", "reason": "few-step model"},
     }
@@ -1214,16 +1220,54 @@ def test_status_passes_through_resolved(client, monkeypatch):
         backend, "status", lambda: {**_unloaded_status(), "loaded": True, "resolved": resolved}
     )
     body = client.get("/api/inference/images/status").json()
-    assert body["resolved"] == resolved
     assert body["resolved"]["speed_mode"]["source"] == "auto"
     # The cpu_offload value stays a real boolean (not coerced to a string).
     assert body["resolved"]["cpu_offload"]["value"] is False
+    # A declined explicit precision keeps BOTH sides across the boundary: ask and outcome.
+    assert body["resolved"]["transformer_quant"] == resolved["transformer_quant"]
+    # Entries from an older backend (no requested/status) still parse, defaulted to "applied".
+    assert body["resolved"]["speed_mode"]["requested"] is None
+    assert body["resolved"]["speed_mode"]["status"] == "applied"
 
 
 def test_status_resolved_defaults_to_null(client):
     # A backend status without a `resolved` key leaves the additive field null (older backends and the unloaded state).
     body = client.get("/api/inference/images/status").json()
     assert body["resolved"] is None
+
+
+def test_load_refuses_an_unusable_explicit_precision_with_409(client, monkeypatch):
+    # begin_load raises for an EXPLICIT precision this host cannot honor, and the route surfaces it
+    # as a 409 carrying the reason -- instead of accepting the load and rendering at some other
+    # precision. The frontend shows the detail verbatim.
+    from core.inference.diffusion_auto_policy import precision_refusal_message
+
+    backend = diffusion_module.get_diffusion_backend()
+    refusal = precision_refusal_message(
+        "transformer_quant",
+        "fp8",
+        "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)",
+        off_label = "Off to run the checkpoint as-is",
+    )
+
+    def _refuse(model_path, **kwargs):
+        raise RuntimeError(refusal)
+
+    monkeypatch.setattr(backend, "begin_load", _refuse)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+            "transformer_quant": "fp8",
+        },
+    )
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "transformer_quant='fp8' could not be used" in detail
+    assert "Auto" in detail and "Off" in detail
+    # Nothing was loaded, so the UI is not left half-initialised.
+    assert client.get("/api/inference/images/status").json()["loaded"] is False
 
 
 def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
@@ -1464,6 +1508,11 @@ def test_recipe_records_the_load_time_build(client, monkeypatch):
             "model_kind": "gguf",
             "gguf_filename": "z-image-turbo-Q8_0.gguf",
             "transformer_quant": "int8",
+            # The rest of the precision picture, all ENGAGED values: the text encoder is often the
+            # largest resident component and the memory mode decides whether it could be cast.
+            "text_encoder_quant": "fp8",
+            "memory_mode": "balanced",
+            "offload_policy": "group",
             # Baked at LOAD time; the generate request below carries no adapters, so the applied set is empty.
             "baked_loras": ["bakedlora"],
             "active_loras": [],
@@ -1483,9 +1532,15 @@ def test_recipe_records_the_load_time_build(client, monkeypatch):
     assert img["model_kind"] == "gguf"
     assert img["gguf_filename"] == "z-image-turbo-Q8_0.gguf"
     assert img["transformer_quant"] == "int8"
+    assert img["text_encoder_quant"] == "fp8"
+    assert img["memory_mode"] == "balanced"
+    assert img["offload_policy"] == "group"
     # The bake is recorded even though nothing was applied to THIS generation.
     assert img["baked_loras"] == ["bakedlora"]
     assert img["loras"] == []
+    # The recipe survives a reload from the PNG's own text chunk, not just this response.
+    listed = client.get("/api/inference/images/gallery").json()["images"][0]
+    assert listed["text_encoder_quant"] == "fp8" and listed["memory_mode"] == "balanced"
 
 
 def test_recipe_build_fields_absent_on_an_engine_that_omits_them(client):
@@ -1499,6 +1554,11 @@ def test_recipe_build_fields_absent_on_an_engine_that_omits_them(client):
     assert img["model_kind"] is None
     assert img["gguf_filename"] is None
     assert img["transformer_quant"] is None
+    # Same for the precision fields added later: absent keys read back as null, and the PNG still
+    # lists (they are not in image_gallery._REQUIRED_META).
+    assert img["text_encoder_quant"] is None
+    assert img["memory_mode"] is None and img["offload_policy"] is None
+    assert len(client.get("/api/inference/images/gallery").json()["images"]) == 1
     assert img["baked_loras"] == []
 
 

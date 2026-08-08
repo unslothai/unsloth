@@ -817,6 +817,10 @@ def test_ltx23_load_forwards_the_precast_encoder(fake_runtime, tmp_path, monkeyp
     # The wiring half of the same bug: the 2.3 branch does not use pipe_kwargs, so the loader must pass the pre-cast encoder across explicitly.
     from core.inference import diffusion_te_prequant, video_ltx2
 
+    # The CPU stub cannot cast the encoder, which the strict default now refuses; this test is
+    # about the WIRING, so keep the legacy silent-fallback behaviour for it.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+
     precast = object()
     monkeypatch.setattr(
         diffusion_te_prequant, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": precast}
@@ -1521,9 +1525,12 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
 
 
 def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
-    # Offload hooks move modules with Module.to(), which torchao tensors reject, so any offload policy must SKIP quant: the load succeeds dense and the record explains why.
+    # Offload hooks move modules with Module.to(), which torchao tensors reject, so any offload
+    # policy must SKIP quant. With the legacy escape hatch set the load still succeeds dense and the
+    # record explains why; the strict default refuses instead (see the test below).
     import core.inference.video as video_mod
 
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     quantised = []
 
@@ -1563,7 +1570,57 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     assert status["offload_policy"] == "model"
     assert quantised == []
     assert status["transformer_quant"] is None
-    assert "offload moves the DiT" in status["resolved"]["transformer_quant"]["reason"]
+    resolved = status["resolved"]["transformer_quant"]
+    assert "moves the DiT" in resolved["reason"]
+    # BOTH sides of the story survive: the ask, the outcome, and that they disagree.
+    assert resolved["requested"] == "int8"
+    assert resolved["value"] == "off"
+    assert resolved["status"] == "fell_back"
+
+
+def test_explicit_dense_quant_refuses_under_offload(fake_runtime, monkeypatch):
+    # Strict default (no escape hatch): an explicit int8 the offload plan cannot honor stops the
+    # load, rather than denoising at bf16 while the Precision dropdown still reads INT8.
+    import dataclasses
+
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        video_mod,
+        "quantize_transformer",
+        lambda view, target, *, mode, family, logger = None: pytest.fail("must not quantise"),
+    )
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
+    )
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            model_kind = "pipeline",
+            transformer_quant = "int8",
+        )
+    assert "transformer_quant='int8' could not be used" in str(excinfo.value)
+    assert "resident memory mode" in str(excinfo.value)
+    assert backend.status()["loaded"] is False
+
+
+def test_begin_load_refuses_dense_quant_on_a_non_pipeline_video_kind(fake_runtime, monkeypatch):
+    # The DiT quant only exists on the full-pipeline path, so an explicit scheme on a GGUF pick was
+    # accepted and then ignored outright. Refused before the load starts (the route's 409).
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.begin_load(
+            "unsloth/LTX-2.3-GGUF",
+            gguf_filename = "ltx-2.3-Q4_K_M.gguf",
+            model_kind = "gguf",
+            transformer_quant = "fp8",
+        )
+    assert "full-pipeline loads only" in str(excinfo.value)
 
 
 def test_wan_a14b_partial_quant_fails_the_load(fake_runtime, monkeypatch):

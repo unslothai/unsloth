@@ -20360,6 +20360,12 @@ async def generate_diffusion_image(
                         "model_kind": result.get("model_kind"),
                         "gguf_filename": result.get("gguf_filename"),
                         "transformer_quant": result.get("transformer_quant"),
+                        # The other half of the build's precision: the text encoder is often the
+                        # largest resident component and its quant changes the conditioning, and
+                        # the memory mode decides whether the torchao TE modes could run at all.
+                        "text_encoder_quant": result.get("text_encoder_quant"),
+                        "memory_mode": result.get("memory_mode"),
+                        "offload_policy": result.get("offload_policy"),
                         "baked_loras": list(result.get("baked_loras") or []),
                         # The adapters APPLIED to this generation. A baked-but-disabled adapter is recorded above as part of the build instead.
                         "loras": [f"{l.id}:{l.weight:g}" for l in request.loras or []],
