@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the flow-matching DiT LoRA trainer (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image).
+"""Unit tests for the flow-matching DiT LoRA trainer (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / LTX-2).
 
 CPU-only: cover family resolution, the per-family spec table, the QLoRA prequant
 heuristic, the bf16-only guard, and the gated-repo name check. The full training loop is
@@ -46,6 +46,8 @@ def test_specs_cover_the_dit_families():
         "krea-2",
         "flux.2-klein",
         "flux.2-dev",
+        # The first VIDEO family; its own assertions live in test_diffusion_dit_trainer_ltx2.
+        "ltx-2",
     }
     # FLUX / Qwen share the added-kv attention target set; Z-Image and Krea 2 are single-stream.
     assert "add_q_proj" in _SPECS["flux.1"].lora_targets
