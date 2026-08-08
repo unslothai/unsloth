@@ -914,3 +914,83 @@ test("does not read a block quote marker as the end of a tag", () => {
     "> <script>\n> body\n</script>",
   );
 });
+
+test("waits for the terminator the raw block is actually waiting for", () => {
+  // The tokenizer ends a bogus comment at the first >, but CommonMark start
+  // conditions 3 and 5 end their blocks at ?> and ]]>. Stopping at the > in
+  // the php comparison leaves every later turn inside the block as raw text.
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "<?php\nif ($a > $b) { echo 1; }" },
+    ]),
+    "<?php\nif ($a > $b) { echo 1; }\n?>",
+  );
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<![CDATA[\na > b" }]),
+    "<![CDATA[\na > b\n]]>",
+  );
+  // Condition 4 really does end at a >, and a block that closed itself needs
+  // nothing.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<!DOCTYPE html>\nhi" }]),
+    "<!DOCTYPE html>\nhi",
+  );
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<?php echo 1; ?>\nhi" }]),
+    "<?php echo 1; ?>\nhi",
+  );
+});
+
+test("leaves a backslash-escaped tag out of the repair scan", () => {
+  // CommonMark 2.4: \< is a literal <, so it opens nothing and the closer the
+  // scan would append is text the message never wrote.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "\\<script>" }]),
+    "\\<script>",
+  );
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "\\<!-- note" }]),
+    "\\<!-- note",
+  );
+  // And the element it was hiding is found again: reading the escape as live
+  // markup swallowed the details opener as raw text, which left the next turn
+  // inside it.
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "\\<script>\n\n<details>\n\nhi" },
+    ]),
+    "\\<script>\n\n<details>\n\nhi\n\n</details>",
+  );
+  // A doubled backslash escapes itself, so the < after it is live.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "\\\\<script>" }]),
+    "\\\\<script>\n</script>",
+  );
+  // The escape is markdown's, so it does not apply where markdown is not
+  // reading inlines.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "```\n\\<script>" }]),
+    "```\n\\<script>\n```",
+  );
+});
+
+test("closes a template element before emitting the next turn", () => {
+  // Its children are parsed and then put in a DocumentFragment that is never
+  // rendered, so an unmatched opener takes every later turn with it.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<template>" }]),
+    "<template>\n</template>",
+  );
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "SFC:\n\n<template>\n  <div>{{ msg }}</div>" },
+    ]),
+    "SFC:\n\n<template>\n  <div>{{ msg }}</div>\n</template>",
+  );
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "<template>\n<td>a</td>\n</template>" },
+    ]),
+    "<template>\n<td>a</td>\n</template>",
+  );
+});

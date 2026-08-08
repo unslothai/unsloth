@@ -57,6 +57,12 @@ const AUDIO_DATA_URI_PATTERN = /<audio-player\s+src="data:[^"]*"\s*\/>/g;
 const DETAILS_TAG_PATTERN = /<(\/?)(details)((?:\s[^>]*)?)>/gi;
 // A code span is literal text, so a <!-- inside one opens nothing.
 const CODE_SPAN_PATTERN = /(`+)[^`]*\1/g;
+// CommonMark 2.4: a backslash before ASCII punctuation makes that character
+// literal, so \<script> and \<!-- reach the browser as text and open nothing.
+// The run is matched whole because the backslashes escape each other first:
+// \\< is an escaped backslash followed by a live <, so only an odd run counts,
+// which is an even match length once the < is included.
+const ESCAPED_LT_PATTERN = /\\+</g;
 // Four spaces of indentation is an indented code block, so a fence or a raw
 // html block only starts within the first three columns. Splitting the
 // indentation off once keeps the opener's container context, which the
@@ -108,12 +114,16 @@ const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
 // pre is ordinary content to the tokenizer, but CommonMark condition 1 still
 // runs its markdown block to the end of the document; details is condition 6,
 // whose block ends at the blank line between two turns while the element does
-// not. Both are closed rather than escaped, because both are things the chat
-// renders and a transcript has to keep.
+// not. template is neither: its children are parsed normally and then put in
+// a DocumentFragment that "represents nothing" in a rendering (WHATWG 4.12.3),
+// so an unmatched one takes every later turn out of the document with it. All
+// three are closed rather than escaped, because closing is what the chat did:
+// a template is dropped there too, and the turns after it are not.
 const CLOSED_ELEMENTS: ReadonlySet<string> = new Set([
   ...RAW_TEXT_ELEMENTS,
   "pre",
   "details",
+  "template",
 ]);
 // The four whose markdown block also runs to the end of the document, so
 // nothing inside one is a fence or an indented code block either.
@@ -130,6 +140,18 @@ const CONDITION_1_ELEMENTS: ReadonlySet<string> = new Set([
 // into raw text even where the element itself is closed.
 const HTML_BLOCK_START_PATTERN = /^<(pre|script|style|textarea)(?=[ \t>]|$)/i;
 const HTML_BLOCK_END_PATTERN = /<\/(?:pre|script|style|textarea)>/i;
+// Start conditions 3, 4 and 5 (4.6) are the same disagreement one level down:
+// the block a line beginning with <?, <! and a letter, or <![CDATA[ opens ends
+// at ?>, > or ]]>, while the html tokenizer ends the bogus comment any of them
+// started at the first > it finds. <?php\nif ($a > $b) satisfies the tokenizer
+// and leaves the block running to the end of the document, so the block is
+// tracked on its own line-by-line rather than read off the tag.
+const RAW_BLOCK_START_PATTERN = /^<(\?|!\[CDATA\[|![A-Za-z])/;
+
+function rawBlockEnd(opener: string): string {
+  if (opener === "?") return "?>";
+  return opener === "![CDATA[" ? "]]>" : ">";
+}
 
 type OpenElement = { readonly name: string; readonly indent: string };
 
@@ -169,6 +191,8 @@ function scanOpenBlocks(text: string): OpenState {
   let comment = false;
   let fence: OpenElement | null = null;
   let block: OpenElement | null = null;
+  // The condition 3, 4 or 5 block, holding the terminator it is waiting for.
+  let bogus: OpenElement | null = null;
   // A tag runs to its >, which can be lines away, so where it started and what
   // it is are carried across them, as is the quote an attribute value is
   // inside: a > within one is part of the value, not the end of the tag.
@@ -222,7 +246,7 @@ function scanOpenBlocks(text: string): OpenState {
     // finished reading is a state the browser has and it does not: a <script>
     // on the next line still opens a block for it, and a fence still opens a
     // fence, so neither may be suspended on that account.
-    const insideRawBlock = comment || block !== null;
+    const insideRawBlock = comment || block !== null || bogus !== null;
     if (!insideRawBlock) {
       if (fence !== null) {
         literal = true;
@@ -269,14 +293,25 @@ function scanOpenBlocks(text: string): OpenState {
     // are blanked rather than removed, so an index into what is scanned is
     // still an index into the message. Annotated because raw is assigned from
     // this scan, which would otherwise make the inference circular.
-    const prose: string =
-      literal && raw === null
-        ? line.replace(NON_BREAK_PATTERN, " ")
-        : line
-            .replace(CODE_SPAN_PATTERN, (span) => " ".repeat(span.length))
-            .replace(BLOCK_QUOTE_PREFIX_PATTERN, (marker) =>
-              " ".repeat(marker.length),
-            );
+    let prose: string;
+    if (literal && raw === null) {
+      prose = line.replace(NON_BREAK_PATTERN, " ");
+    } else {
+      prose = line
+        .replace(CODE_SPAN_PATTERN, (span) => " ".repeat(span.length))
+        .replace(BLOCK_QUOTE_PREFIX_PATTERN, (marker) =>
+          " ".repeat(marker.length),
+        );
+      // A backslash escape is the markdown parser's, so it only holds where
+      // that parser is reading inlines: not inside a fence or an indented code
+      // block, and not inside a raw html block, where the backslash is content
+      // and the < after it is live markup (CommonMark 2.4).
+      if (!literal && block === null) {
+        prose = prose.replace(ESCAPED_LT_PATTERN, (run) =>
+          run.length % 2 === 0 ? `${run.slice(0, -1)} ` : run,
+        );
+      }
+    }
     live += prose;
     // Raw text is scanned even where markdown calls the line literal: a fence
     // inside an <xmp> is a fence to the parser and text to the tokenizer, and
@@ -409,6 +444,16 @@ function scanOpenBlocks(text: string): OpenState {
         block = { name: (start[1] ?? "pre").toLowerCase(), indent };
       }
     }
+    if (bogus !== null) {
+      if (line.includes(bogus.name)) bogus = null;
+    } else if (!insideRawBlock && !literal) {
+      const start = RAW_BLOCK_START_PATTERN.exec(rest);
+      const close = start ? rawBlockEnd(start[1] ?? "") : "";
+      // Same as above: a line meeting both conditions is the whole block.
+      if (close && !line.includes(close)) {
+        bogus = { name: close, indent };
+      }
+    }
 
     blankBefore = blankLine;
     if (!blankLine && CONTAINER_MARKER_PATTERN.test(line)) container = true;
@@ -448,10 +493,14 @@ function scanOpenBlocks(text: string): OpenState {
     comment,
     fence,
     block,
+    // The block first: its terminator carries the > the tokenizer is waiting
+    // for as well, and only conditions 6 and 7 pass a bogus comment through to
+    // the browser without one of their own.
     bogus:
-      tag !== null && tag.name === ""
+      bogus ??
+      (tag !== null && tag.name === ""
         ? { name: tag.close, indent: tag.indent }
-        : null,
+        : null),
   };
 }
 
