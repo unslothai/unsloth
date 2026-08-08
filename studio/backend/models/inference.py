@@ -2896,6 +2896,12 @@ class DiffusionDownloadPlanEntry(BaseModel):
     gguf_filename: Optional[str] = Field(
         None, description = "Set when this entry is the single-file GGUF checkpoint"
     )
+    checkpoint: bool = Field(
+        False,
+        description = "This entry holds the SELECTED model rather than a companion repo. The "
+        "planner has to say so: a gated base is staged from its ungated mirror, so the entry's "
+        "repo id is not the id the caller picked and the role cannot be recovered downstream.",
+    )
 
 
 class DiffusionDownloadPlanResponse(BaseModel):

@@ -1270,6 +1270,85 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert len(seen["loras"] or []) == 1
 
 
+def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, monkeypatch):
+    # Through the ROUTE, not the planner: the response model is what the picker actually reads, and
+    # a field the planner sets but the model does not declare is dropped silently on serialization.
+    # That is exactly how the checkpoint marker was lost, leaving a mirrored pipeline mislabelled.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+
+    def _plan(model_path, **kwargs):
+        return {
+            "entries": [
+                {
+                    "repo_id": "unsloth/FLUX.1-dev",  # the ungated MIRROR, not the picked id
+                    "files": ["model_index.json"],
+                    "bytes": 10,
+                    "gguf_filename": None,
+                    "checkpoint": True,
+                },
+                {
+                    "repo_id": "some/text-encoder",
+                    "files": ["model.safetensors"],
+                    "bytes": 20,
+                    "gguf_filename": None,
+                    "checkpoint": False,
+                },
+            ],
+            "total_bytes": 30,
+            "required_bytes": 30,
+            "checkpoint_bytes": 10,
+        }
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert [e["checkpoint"] for e in resp.json()["entries"]] == [True, False]
+
+
+def test_download_plan_defaults_the_checkpoint_marker_for_an_older_planner(client, monkeypatch):
+    # A plan built before the marker existed must still serialize, defaulting to not-the-checkpoint
+    # so the picker falls back to its own derivation rather than seeing a missing key.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda model_path, **kwargs: {
+            "entries": [{"repo_id": "a/b", "files": ["f"], "bytes": 1}],
+            "total_bytes": 1,
+        },
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["entries"][0]["checkpoint"] is False
+
+
 def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
     # The planner's ValueError has to reach the UI intact: the repo id and licence URL are the fix.
     from core.inference import diffusion_engine_router as router

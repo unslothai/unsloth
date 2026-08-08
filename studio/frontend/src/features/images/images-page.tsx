@@ -2065,10 +2065,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
+      // Carried forward when one is already pending: a superseded staged pick left its
+      // optimistic quant and recipe in state, so snapshotting now would record THAT and
+      // restore a model which never loaded. The live entry already holds the resident one.
         // Registers its own rollback like every other branch. Leaving the previous pick's entry in
         // place would let that older staged download, on cancelling, revert to state from before it
         // -- over a selection this pick already replaced -- and leave this one with no rollback.
-        const revert: PickRevert = { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(null);
         const d = defaultsFor(id);
@@ -2087,7 +2090,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but revert if the load fails to START
       // or LATER in the poll: the old pipeline stays loaded either way. The poll owns the after-start revert via quantRevert.
       if (meta.ggufVariant && meta.ggufFilename) {
-        const revert: PickRevert = { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         const dq = defaultsFor(id);
@@ -2118,7 +2121,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         }
         // A direct pick carries no curated variant label; surface the filename so the selector stops advertising the old quant.
         // Optimistic, reverted if the load fails to start OR later in the poll (mirrors the curated branch above).
-        const revert: PickRevert = { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
         const dq2 = defaultsFor(id);
@@ -2139,7 +2142,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        const revert: PickRevert = { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
         const dsf = defaultsFor(id);
@@ -2159,7 +2162,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         return;
       }
       // Optimistically clear the quant label, revert it if the load never starts.
-      const revert: PickRevert = { prev: quant, steps, guidance };
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
       const d = defaultsFor(id);

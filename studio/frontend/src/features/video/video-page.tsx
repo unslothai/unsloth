@@ -1363,10 +1363,13 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // Curated non-GGUF model: load as a full pipeline.
       const spec = loadSpecFor(id, VIDEO_CATALOG);
       if (spec && spec.kind !== "gguf") {
+      // Carried forward when one is already pending: a superseded staged pick left its
+      // optimistic quant and recipe in state, so snapshotting now would record THAT and
+      // restore a model which never loaded. The live entry already holds the resident one.
         // Registers its own rollback like every other branch. Leaving the previous pick's entry in
         // place would let that older staged download, on cancelling, revert to state from before it
         // -- over a selection this pick already replaced -- and leave this one with no rollback.
-        const revert: PickRevert = { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(null);
         // The distilled variant lives in the checkpoint name, not the repo id, so include the filename when seeding defaults.
@@ -1386,7 +1389,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       }
       // GGUF quant pick from the variant expander. Optimistic for picker feedback, reverted if the load fails to START; the poll owns the after-start revert.
       if (meta.ggufVariant && meta.ggufFilename) {
-        const revert: PickRevert = { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         // Include the picked filename: the variant (distilled vs dev) lives there, not in the repo id.
@@ -1416,7 +1419,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           toast.error("Pick a quantization for this model to load it");
           return;
         }
-        const revert: PickRevert = { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
         const dq2 = defaultsFor(id);
@@ -1436,7 +1439,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        const revert: PickRevert = { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
         const dsf = defaultsFor(id);
@@ -1457,7 +1460,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       }
       // Its own rollback, like every other branch: leaving the previous pick's entry live lets an
       // older staged download revert over a selection this pick already replaced.
-      const revert: PickRevert = { prev: quant, steps, guidance };
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
       const d = defaultsFor(id);
