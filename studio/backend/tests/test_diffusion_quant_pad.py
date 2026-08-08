@@ -58,7 +58,13 @@ def _fake_quant_tensor_type(**class_attrs):
     )
 
 
-def _fake_quantized_linear(in_f = 8, out_f = 6, *, per_row = True, unknown = False):
+def _fake_quantized_linear(
+    in_f = 8,
+    out_f = 6,
+    *,
+    per_row = True,
+    unknown = False,
+):
     """A Linear whose weight advertises a torchao layout with a chosen activation granularity."""
     if unknown:
         attrs = {}
@@ -163,11 +169,10 @@ def test_forward_holds_no_mutable_integer_state():
     """dynamo guards on an nn.Module's integer attributes, so a counter incremented in forward
     would recompile on every call until the recompile limit silently drops the module to eager.
     The wrapper's ints must be exactly the two configured constants, before and after use."""
+
     def int_attrs(module):
         return {
-            k: v
-            for k, v in vars(module).items()
-            if isinstance(v, int) and not isinstance(v, bool)
+            k: v for k, v in vars(module).items() if isinstance(v, int) and not isinstance(v, bool)
         }
 
     wrapped = PadToMinM(nn.Linear(8, 6), min_m = 17, pad_to = 32)

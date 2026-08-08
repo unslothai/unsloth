@@ -223,7 +223,12 @@ class PadToMinM(nn.Module):
         return f"min_m = {self.min_m}, pad_to = {self.pad_to}"
 
 
-def padding_is_bitwise_exact(module: Any, m: int, *, pad_to: int = DEFAULT_PAD_TO) -> bool:
+def padding_is_bitwise_exact(
+    module: Any,
+    m: int,
+    *,
+    pad_to: int = DEFAULT_PAD_TO,
+) -> bool:
     """Run ``module`` at ``m`` rows with and without padding and report bitwise equality.
 
     The direct form of the property the granularity check infers. Used by the tests; too costly

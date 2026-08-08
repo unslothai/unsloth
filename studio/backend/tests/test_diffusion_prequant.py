@@ -1314,18 +1314,19 @@ def test_load_pads_the_small_m_linears_with_the_recorded_family(monkeypatch, tmp
 
     seen = {}
 
-    def _spy(transformer, scheme, family = None, logger = None):
+    def _spy(
+        transformer,
+        scheme,
+        family = None,
+        logger = None,
+    ):
         seen["args"] = (scheme, family)
         return ("context_embedder",)
 
-    monkeypatch.setattr(
-        "core.inference.diffusion_transformer_quant.apply_small_m_padding", _spy
-    )
+    monkeypatch.setattr("core.inference.diffusion_transformer_quant.apply_small_m_padding", _spy)
     ckpt = _good_ckpt(scheme = "int8")
     ckpt["metadata"]["family"] = "minimax-h3"
-    ckpt["metadata"]["exclude_name_tokens"] = list(
-        exclude_tokens_for_scheme("int8", "minimax-h3")
-    )
+    ckpt["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8", "minimax-h3"))
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
     assert seen["args"] == ("int8", "minimax-h3")
 
@@ -1336,12 +1337,15 @@ def test_load_is_dropped_when_the_padding_cannot_be_proven(monkeypatch, tmp_path
     falls back to dense-quantise, rather than returning a transformer that renders once and dies
     the moment the compiled scope reaches the text stream."""
 
-    def _boom(transformer, scheme, family = None, logger = None):
+    def _boom(
+        transformer,
+        scheme,
+        family = None,
+        logger = None,
+    ):
         raise RuntimeError("cannot prove per-row granularity")
 
-    monkeypatch.setattr(
-        "core.inference.diffusion_transformer_quant.apply_small_m_padding", _boom
-    )
+    monkeypatch.setattr("core.inference.diffusion_transformer_quant.apply_small_m_padding", _boom)
     ckpt = _good_ckpt(scheme = "int8")
     ckpt["metadata"]["family"] = "minimax-h3"
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None

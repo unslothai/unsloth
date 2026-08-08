@@ -757,13 +757,12 @@ def test_pad_and_exclude_sets_never_overlap():
         exclude_tokens_for_scheme,
         pad_tokens_for_scheme,
     )
-
     for family in _INT8_FAMILY_PAD_NAME_TOKENS:
         exclude = exclude_tokens_for_scheme(TQ_INT8, family)
         for pad_token in pad_tokens_for_scheme(TQ_INT8, family):
-            assert not any(e in pad_token or pad_token in e for e in exclude), (
-                f"{family}: {pad_token!r} is both padded and excluded"
-            )
+            assert not any(
+                e in pad_token or pad_token in e for e in exclude
+            ), f"{family}: {pad_token!r} is both padded and excluded"
 
 
 def test_only_minimax_h3_pads_today():
@@ -784,7 +783,6 @@ def test_only_int8_pads():
     """``_int_mm``'s row floor is int8's alone: scaled_mm and the MX/FP4 kernels have no
     equivalent, so no other scheme should be paying for a pad-and-slice."""
     from core.inference.diffusion_transformer_quant import pad_tokens_for_scheme
-
     for scheme in ("fp8", "nvfp4", "mxfp8", "auto"):
         assert pad_tokens_for_scheme(scheme, "minimax-h3") == ()
 
@@ -827,7 +825,12 @@ def test_quantize_transformer_refuses_when_padding_cannot_be_proven(monkeypatch)
     tqz.PerRow = lambda: "per-row"
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
 
-    def _boom(transformer, scheme, family = None, logger = None):
+    def _boom(
+        transformer,
+        scheme,
+        family = None,
+        logger = None,
+    ):
         raise RuntimeError("cannot prove per-row granularity")
 
     monkeypatch.setattr(tq, "apply_small_m_padding", _boom)
