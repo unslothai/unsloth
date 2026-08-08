@@ -286,17 +286,19 @@ def test_rocm_is_detected_off_disk_without_importing_torch(
     pkg = tmp_path / "torch"
     pkg.mkdir()
     (pkg / "__init__.py").write_text(
-        "raise ImportError(\"DLL load failed while importing _C: amdhip64.dll not found\")\n"
+        'raise ImportError("DLL load failed while importing _C: amdhip64.dll not found")\n'
     )
     (pkg / "version.py").write_text(f"from typing import Optional\n{hip_line}\n")
 
     monkeypatch.setattr(
-        _torchao_stub.importlib.util, "find_spec",
+        _torchao_stub.importlib.util,
+        "find_spec",
         lambda name: types.SimpleNamespace(origin = str(pkg / "__init__.py")),
     )
     monkeypatch.delitem(sys.modules, "torch", raising = False)
     monkeypatch.setattr(
-        "importlib.metadata.version", lambda name: dist_version if name == "torch" else "0",
+        "importlib.metadata.version",
+        lambda name: dist_version if name == "torch" else "0",
     )
     monkeypatch.setattr(sys, "platform", "win32")
 

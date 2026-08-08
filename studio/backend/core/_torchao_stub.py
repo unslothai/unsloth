@@ -139,7 +139,8 @@ def _hip_field_is_set() -> Optional[bool]:
         if not origin:
             return None
         with open(
-            os.path.join(os.path.dirname(origin), "version.py"), encoding = "utf-8",
+            os.path.join(os.path.dirname(origin), "version.py"),
+            encoding = "utf-8",
             errors = "replace",
         ) as handle:
             found = _HIP_LINE_RE.search(handle.read())
