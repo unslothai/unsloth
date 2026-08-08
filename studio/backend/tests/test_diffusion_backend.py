@@ -2711,6 +2711,37 @@ def test_load_memory_mode_low_vram_engages_model_offload(fake_runtime, tmp_path,
     assert pipe.offloaded is True and pipe.moved_to is None  # offload owns placement
 
 
+def test_load_refines_component_placement_after_text_encoder_quantization(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    seen = {"quantized": False, "refined": False}
+
+    def _quantize(*args, **kwargs):
+        seen["quantized"] = True
+        return None
+
+    def _refine(pipe, plan):
+        assert seen["quantized"] is True
+        assert pipe is not None and plan.offload_policy == "model"
+        seen["refined"] = True
+        return plan
+
+    monkeypatch.setattr(dmod, "quantize_text_encoders", _quantize)
+    monkeypatch.setattr(dmod, "refine_memory_plan_for_components", _refine)
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        memory_mode = "low_vram",
+    )
+    assert seen == {"quantized": True, "refined": True}
+
+
 def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(
     fake_runtime, tmp_path, monkeypatch
 ):
