@@ -294,7 +294,7 @@ def _strip_files_sentinel(result: str) -> str:
         end = len(result)
     try:
         entries = json.loads(result[payload_start:end])
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return result
     # Every entry, not just the list: the executor emits {"name": str, "size":
     # int | None}, and anything else is a tool that happened to print the marker.

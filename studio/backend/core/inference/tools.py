@@ -10411,6 +10411,7 @@ _MAX_REPORTED_FILES = 25
 # advertise a file that route would refuse.
 _MAX_SANDBOX_PATH_SEGMENTS = 4
 _MAX_SNAPSHOT_FILES = 2000  # a shard-writing script must not blow up the result
+_MAX_SNAPSHOT_DIRS = 2000  # nor a directory-writing one stall the next call
 
 
 # The same allowlist the download route applies per segment, so a name that
@@ -10432,9 +10433,15 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     snapshot: "dict[str, tuple]" = {}
     if not workdir or not os.path.isdir(workdir):
         return snapshot
+    # Directories are budgeted separately from files: thousands of empty output
+    # folders never reach the file cap, and this walk runs twice per tool call.
+    visited = 0
     # Walked, not listed: a script writing outputs/report.csv is ordinary, and a
     # top-level listing saw only the directory and dropped it.
     for base, dirs, names in os.walk(workdir):
+        visited += 1
+        if visited > _MAX_SNAPSHOT_DIRS:
+            return snapshot
         # depth 0 is the workdir itself, whose files are one segment.
         depth = base[len(workdir) :].count(os.sep)
         # Dot-directories stay out: .git, .cache and friends are where the noise

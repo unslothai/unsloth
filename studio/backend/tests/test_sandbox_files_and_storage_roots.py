@@ -618,7 +618,7 @@ def test_a_configured_cache_that_holds_other_files_is_never_deleted(tmp_path, mo
     assert (shared / "important" / "notes.txt").read_text() == "user data"
 
 
-def test_a_real_configured_cache_is_still_cleared(tmp_path, monkeypatch):
+def test_an_unmarked_configured_cache_keeps_what_studio_did_not_write(tmp_path, monkeypatch):
     cache = tmp_path / "compiled_cache"
     cache.mkdir()
     (cache / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
@@ -628,7 +628,8 @@ def test_a_real_configured_cache_is_still_cleared(tmp_path, monkeypatch):
     from utils import cache_cleanup
 
     cache_cleanup.clear_unsloth_compiled_cache()
-    assert not cache.exists()
+    assert not (cache / "unsloth_compiled_module_gemma3.py").exists()
+    assert (cache / "__pycache__").is_dir()
 
 
 def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, monkeypatch):
@@ -786,16 +787,18 @@ def test_a_marked_directory_is_cleared(tmp_path, monkeypatch):
 
 
 def test_generated_modules_identify_a_cache_without_a_marker(tmp_path, monkeypatch):
-    """An install that predates the marker is still recognised."""
+    """An install that predates the marker is still cleaned, file by file."""
     cache = tmp_path / "old_cache"
     cache.mkdir()
     (cache / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
+    (cache / "UnslothSFTTrainer.py").write_text("trainer\n")
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(cache))
 
     from utils import cache_cleanup
 
     cache_cleanup.clear_unsloth_compiled_cache()
-    assert not cache.exists()
+    assert not (cache / "unsloth_compiled_module_gemma3.py").exists()
+    assert not (cache / "UnslothSFTTrainer.py").exists()
 
 
 def test_studio_writes_the_marker_when_it_creates_the_location(tmp_path, monkeypatch):
@@ -835,6 +838,91 @@ def test_a_cached_sandbox_path_is_re_checked(tmp_path, monkeypatch):
 
     executing = Path(tools.get_sandbox_workdir("__LOCALID_swapped"))
     assert executing.name == "_invalid", executing
+
+
+def test_a_shared_compile_location_loses_only_generated_files(tmp_path, monkeypatch):
+    """UNSLOTH_COMPILE_LOCATION=$HOME/.cache after one compile made the whole
+    directory look like ours; only the compiler's own output is."""
+    shared = tmp_path / "dot_cache"
+    (shared / "pip").mkdir(parents = True)
+    (shared / "pip" / "wheel.whl").write_text("wheel")
+    (shared / "notes.txt").write_text("keep me")
+    (shared / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(shared))
+
+    from utils import cache_cleanup
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert shared.is_dir()
+    assert (shared / "pip" / "wheel.whl").read_text() == "wheel"
+    assert (shared / "notes.txt").read_text() == "keep me"
+    assert not (shared / "unsloth_compiled_module_gemma3.py").exists()
+
+
+def test_a_shared_compile_location_keeps_preserved_patterns(tmp_path, monkeypatch):
+    shared = tmp_path / "dot_cache2"
+    shared.mkdir()
+    (shared / "UnslothSFTTrainer.py").write_text("trainer")
+    (shared / "unsloth_compiled_module_llama.py").write_text("x = 1\n")
+    (shared / "__pycache__").mkdir()
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(shared))
+
+    from utils import cache_cleanup
+
+    cache_cleanup.clear_unsloth_compiled_cache(preserve_patterns = ["Unsloth*Trainer.py"])
+    assert (shared / "UnslothSFTTrainer.py").is_file()
+    assert not (shared / "unsloth_compiled_module_llama.py").exists()
+    # Not ours to remove in a directory we do not own.
+    assert (shared / "__pycache__").is_dir()
+
+
+def test_a_marked_shared_directory_is_still_cleared_whole(tmp_path, monkeypatch):
+    """The marker means Studio made the directory, so the old behaviour stands."""
+    cache = tmp_path / "marked"
+    cache.mkdir()
+
+    from utils import cache_cleanup
+
+    (cache / cache_cleanup.CACHE_MARKER).touch()
+    (cache / "leftover.txt").write_text("x")
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(cache))
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert not cache.exists()
+
+
+def test_many_empty_directories_do_not_stall_the_snapshot(tmp_path, monkeypatch):
+    """Directories never hit the file cap, so the walk needs its own budget."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_manydirs"))
+    monkeypatch.setattr(tools, "_MAX_SNAPSHOT_DIRS", 5)
+    for i in range(40):
+        (workdir / f"out{i}").mkdir()
+
+    visited = []
+    real_walk = os.walk
+
+    def counting_walk(top, *a, **kw):
+        for entry in real_walk(top, *a, **kw):
+            visited.append(entry[0])
+            yield entry
+
+    monkeypatch.setattr(tools.os, "walk", counting_walk)
+    tools._snapshot_workdir_files(str(workdir))
+    # The budget is checked on entry, so the one that trips it is visited too.
+    assert len(visited) <= 6, len(visited)
+
+
+def test_a_files_marker_with_absurd_nesting_does_not_abort_the_turn(tmp_path):
+    """json.loads raises RecursionError, which is not a ValueError."""
+    from core.inference import tool_loop_controller
+
+    payload = "[" * 200000 + "]" * 200000
+    text = "tool output\n__FILES__:" + payload
+    assert tool_loop_controller.strip_result_for_model(text) == text
 
 
 if __name__ == "__main__":
