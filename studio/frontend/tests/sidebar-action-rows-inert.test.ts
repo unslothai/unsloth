@@ -100,16 +100,31 @@ test("the sidebar list measures its scroll rail", async () => {
   const source = await sidebarSource();
   assert.match(
     source,
-    /el\.parentElement\?\.style\.setProperty\(\s*"--sidebar-rail",\s*`\$\{el\.offsetWidth - el\.clientWidth\}px`,\s*\)/,
+    /const rail = el\.offsetWidth - el\.clientWidth;[\s\S]*el\.parentElement\?\.style\.setProperty\(\s*"--sidebar-rail",\s*`\$\{rail\}px`,?\s*\)/,
   );
-  // Scroll events alone would leave the first paint on the 0px fallback, so a
-  // list that overflows on arrival stays misaligned until the user scrolls it.
-  // Measured on mount and on every content change too, before paint.
+  // Measured before paint, or a list that overflows on arrival stays
+  // misaligned until something happens to fire a scroll.
   assert.match(
     source,
     /useLayoutEffect\(\(\) => \{\s*const el = scrollRef\.current;\s*if \(!el\) return;\s*measureScrollRail\(el\);/,
   );
-  assert.match(source, /const syncScrollState = useCallback\(\(el: HTMLDivElement\) => \{\s*measureScrollRail\(el\);/);
+  // Then off the box, not off renders: the Images disclosure and the project
+  // toggles change the row count without rendering AppSidebar or firing a
+  // collapsible animation, and a scrollbar appearing shrinks the content box.
+  assert.match(
+    source,
+    /const observer = new ResizeObserver\(\(\) => measureScrollRail\(el\)\);\s*observer\.observe\(el\);\s*return \(\) => observer\.disconnect\(\);/,
+  );
+  // Writes a variable, never state: that pairing is what looped.
+  assert.equal(
+    /new ResizeObserver\([^)]*set[A-Z]/.test(source),
+    false,
+  );
+  // And only on a change, so it cannot re-trigger itself.
+  assert.match(
+    source,
+    /if \(rail === railWidthRef\.current\) return;/,
+  );
   const css = await readFile(
     new URL("../src/index.css", import.meta.url),
     "utf8",

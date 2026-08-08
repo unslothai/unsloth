@@ -705,20 +705,20 @@ export function AppSidebar() {
   // Rail width: 0 where scrollbars overlay (macOS default) or the list does not
   // overflow, 8px where they are classic (Show scroll bars: Always, Windows,
   // Linux). Only rows inside the scroller lose it, so the rows outside pad by it
-  // to keep one edge. Written straight to the DOM: state here would loop
-  // (React #185).
+  // to keep one edge. Written straight to the DOM, and only on a change: state
+  // here would loop (React #185).
+  const railWidthRef = useRef<number | null>(null);
   const measureScrollRail = useCallback((el: HTMLDivElement) => {
-    el.parentElement?.style.setProperty(
-      "--sidebar-rail",
-      `${el.offsetWidth - el.clientWidth}px`,
-    );
+    const rail = el.offsetWidth - el.clientWidth;
+    if (rail === railWidthRef.current) return;
+    railWidthRef.current = rail;
+    el.parentElement?.style.setProperty("--sidebar-rail", `${rail}px`);
   }, []);
 
   // Driven only from onScroll + a content-change effect below. No
   // ResizeObserver: its callback-driven setState caused a render loop (React
   // #185). Both setters bail out when unchanged, so neither path can loop.
   const syncScrollState = useCallback((el: HTMLDivElement) => {
-    measureScrollRail(el);
     const nextScrolled = el.scrollTop > 0;
     setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
     const nextCanScrollDown =
@@ -726,7 +726,7 @@ export function AppSidebar() {
     setCanScrollDown((prev) =>
       prev === nextCanScrollDown ? prev : nextCanScrollDown,
     );
-  }, [measureScrollRail]);
+  }, []);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
@@ -941,20 +941,35 @@ export function AppSidebar() {
   // The Train-page status poll doesn't run off-route; keep state fresh so the spinner clears.
   useTrainingCompletionWatch();
 
-  // Recompute bottom-fade on mount and whenever list height can change: onScroll never fires
-  // for short, non-scrolling lists. Guarded setState below can't loop.
-  // Measures the rail on the same beat: a classic scrollbar only takes width
-  // once the list overflows, so mount and every one of these is when that can
-  // change. Runs before paint, since a frame on the 0px fallback is a frame of
-  // the misalignment the rail width exists to cancel.
+  // The rail comes and goes as the list crosses the overflow threshold, and
+  // plenty of controls move it without rendering this component at all: the
+  // Images disclosure reads its own store, the project toggles rebuild rows
+  // below. Listing those is how this was wrong twice, so watch the box instead.
+  // A scrollbar appearing shrinks the scroller's content box by its own width,
+  // which is exactly what this reports.
+  //
+  // Safe where the earlier observer was not: it writes a CSS variable, never
+  // state, so there is no render to feed back (React #185). That variable only
+  // pads rows outside the scroller, and the write is guarded, so it cannot
+  // re-trigger this. Measured once first, before paint, since a frame on the
+  // 0px fallback is a frame of the misalignment the width exists to cancel.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     measureScrollRail(el);
+    const observer = new ResizeObserver(() => measureScrollRail(el));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [measureScrollRail]);
+
+  // Recompute bottom-fade on mount and whenever list height can change: onScroll never fires
+  // for short, non-scrolling lists. Guarded setState below can't loop.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
     const next = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
     setCanScrollDown((prev) => (prev === next ? prev : next));
   }, [
-    measureScrollRail,
     recentChatItems.length,
     runItems.length,
     projects.length,
