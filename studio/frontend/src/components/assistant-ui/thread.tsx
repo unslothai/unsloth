@@ -2164,12 +2164,10 @@ const Composer: FC<{
   );
   const [materializingDroppedImages, setMaterializingDroppedImages] =
     useState(false);
-  // A send parked behind indexing must not fire on a drop that failed: the user
-  // is owed the toast and their text, not a send of the text alone. Assigned
-  // below, once the callback it forwards to exists.
+  // A parked send must not fire on a failed drop: the user is owed the toast and
+  // their text, not a send of the text alone. Assigned below, once the callback exists.
   const cancelQueuedSendRef = useRef<(() => void) | null>(null);
   // Which composer is mounted, for deciding where a drain puts work back.
-  // Assigned below, next to the identity the dictation send already uses.
   const composerIdentityRef = useRef("");
   const imageDropFailures = useNativeIntentStore((s) => s.imageDropFailures);
   const seenImageDropFailuresRef = useRef(imageDropFailures);
@@ -2190,8 +2188,7 @@ const Composer: FC<{
     let draining = false;
 
     // A fresh chat re-keys from "single:new" to its thread id under the same
-    // composer, so follow it; a real thread switch leaves the batch with the
-    // chat that received the drop.
+    // composer, so follow it; a real thread switch keeps the original target.
     const requeueKey = () =>
       composerIdentityRef.current === identityAtSetup
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -2248,11 +2245,9 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
             } catch (error) {
-              // Every reachable rejection here is about the chat, not the file:
-              // the model can't take images, or it isn't loaded. Rust already
-              // enforces the same 20 MiB cap the adapter checks. So the rest of
-              // the batch would fail identically -- drop it rather than reading
-              // and rejecting each one for its own pair of toasts.
+              // Rejections here are about the chat, not the file: no vision model,
+              // or none loaded (Rust enforces the adapter's 20 MiB cap). The rest
+              // fails identically, so drop the batch rather than toast every file.
               toast.error("Could not attach dropped images", {
                 description:
                   error instanceof Error ? error.message : String(error),

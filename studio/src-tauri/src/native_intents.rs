@@ -590,8 +590,7 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     if Some(metadata.len()) != entry.size_bytes || modified_ms != entry.modified_ms {
         return Err("Native path changed after it was selected.".to_string());
     }
-    // The file can still grow between the stat and the read, so cap the reader
-    // itself rather than trusting the size we just measured.
+    // The file can grow between the stat and the read, so cap the reader itself.
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_NATIVE_ATTACHMENT_BYTES + 1)
         .read_to_end(&mut bytes)

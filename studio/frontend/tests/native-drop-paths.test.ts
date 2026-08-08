@@ -135,9 +135,8 @@ test("attachment batches stay bound to the chat that received the drop", () => {
   assert.deepEqual(remaining, {});
 });
 
-// The queue can't cover the window between the drop and the intents reaching it:
-// registration crosses into Rust first, and a send in that gap would go out
-// without the image.
+// Registration crosses into Rust before the queue exists, and a send in that gap
+// would go out without the image.
 test("registering image drops hold the gate before the queue can", () => {
   const store = useNativeIntentStore.getState();
   assert.equal(store.registeringImageDrops, 0);
@@ -206,10 +205,9 @@ test("frontend and Rust accept the same chat image extensions", () => {
   assert.deepEqual(rust, frontend);
 });
 
-// #7963 was a list reused across two features drifting apart. The drop path has
-// one more seam like it: Rust stamps the File's MIME type, and the composer
-// routes to an adapter by MIME, so a type Rust emits that VisionImageAdapter
-// doesn't claim would land the image on the wrong adapter or nowhere.
+// One more seam of #7963's shape: Rust stamps the File's MIME type and the
+// composer routes by MIME, so a type VisionImageAdapter does not claim lands on
+// the wrong adapter or nowhere.
 test("every MIME type Rust stamps is one the vision adapter claims", () => {
   const rustSource = readFileSync(
     new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
@@ -235,9 +233,8 @@ test("every MIME type Rust stamps is one the vision adapter claims", () => {
   assert.deepEqual(stamped, accepted);
 });
 
-// The join between the two tests above. Without it an extension can be added to
-// both allow-lists with no MIME arm: the drop is accepted, queued, and only
-// then refused by the reader, one toast per file.
+// The join between the two tests above: without it an extension can reach both
+// allow-lists with no MIME arm, and the reader refuses it after the drop.
 test("every accepted image extension has a Rust MIME arm", () => {
   const policySource = readFileSync(
     new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),

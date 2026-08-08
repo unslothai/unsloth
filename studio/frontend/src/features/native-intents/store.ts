@@ -13,9 +13,8 @@ interface NativeIntentState {
   pendingAttachments: PendingNativeAttachments;
   pendingImageAttachments: PendingNativeAttachments;
   // Image drops registering with Rust, before they have a queue to sit in. Not
-  // keyed: until the intents land there is no settled target -- an implicit
-  // single chat re-keys from "single:new" the moment the thread is created --
-  // and the OS drop went to the window, which has one composer to send from.
+  // keyed: until the intents land there is no settled target, and the OS drop
+  // went to the window, which has one composer to send from.
   registeringImageDrops: number;
   // Bumped when a drop fails before it reaches a queue. The composer watches
   // this to drop a parked send rather than let it go out without the image.
