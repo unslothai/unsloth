@@ -4220,14 +4220,26 @@ def test_marker_sync_never_fails_setup_when_the_write_cannot_land(tmp_path, monk
 # fails once, in this test, saying which parameter moved.
 _VALIDATOR_KEYWORD_ONLY = {
     "validate_prebuilt_attempts": (
-        "requested_tag", "llama_tag", "release_tag", "approved_checksums",
-        "initial_fallback_used", "existing_install_dir", "force_cpu",
-        "llama_backend", "rocm_gfx",
+        "requested_tag",
+        "llama_tag",
+        "release_tag",
+        "approved_checksums",
+        "initial_fallback_used",
+        "existing_install_dir",
+        "force_cpu",
+        "llama_backend",
+        "rocm_gfx",
     ),
     "validate_prebuilt_choice": (
-        "requested_tag", "llama_tag", "release_tag", "approved_checksums",
-        "prebuilt_fallback_used", "quantized_path", "force_cpu",
-        "llama_backend", "rocm_gfx",
+        "requested_tag",
+        "llama_tag",
+        "release_tag",
+        "approved_checksums",
+        "prebuilt_fallback_used",
+        "quantized_path",
+        "force_cpu",
+        "llama_backend",
+        "rocm_gfx",
     ),
 }
 
