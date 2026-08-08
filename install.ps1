@@ -1052,11 +1052,29 @@ public static class UnslothStudioFinalPathV2
                 $_idBytes = New-Object byte[] 32
                 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($_idBytes)
                 $_studioRootId = -join ($_idBytes | ForEach-Object { $_.ToString('x2') })
-                # Atomic write: write to a temp sibling then rename, so a partial
-                # install cannot leave a half-written id.
+                # Publish no-clobber: the desktop app mints this same id, so
+                # -Force could replace one a running backend already reported.
+                # Two-arg File.Move throws when the destination exists (the
+                # 3-arg overwrite overload is .NET Core only), so we adopt it.
                 $_idTmp = $_studioIdFile + ".$PID.tmp"
                 [System.IO.File]::WriteAllText($_idTmp, $_studioRootId)
-                Move-Item -LiteralPath $_idTmp -Destination $_studioIdFile -Force
+                try {
+                    [System.IO.File]::Move($_idTmp, $_studioIdFile)
+                } catch [System.IO.IOException] {
+                    $_adoptedRootId = ""
+                    try {
+                        $_adoptedRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()
+                    } catch { }
+                    if ($_adoptedRootId) {
+                        $_studioRootId = $_adoptedRootId
+                    } else {
+                        # Zero-length incumbent is an interrupted write, not an
+                        # id. Replace it with one atomic rename, no unlink.
+                        Move-Item -LiteralPath $_idTmp -Destination $_studioIdFile -Force
+                    }
+                } finally {
+                    Remove-Item -LiteralPath $_idTmp -Force -ErrorAction SilentlyContinue
+                }
             }
 
             # Env-mode: persist UNSLOTH_STUDIO_HOME (and llama path) so fresh

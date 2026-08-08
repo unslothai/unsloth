@@ -270,11 +270,24 @@ def _run_security_gates(
     # False, so check HF's security scan every load (for a LoRA, the base deserializes).
     from utils.security import evaluate_file_security
 
+    from utils.security import load_scan_target
+
     if compute_subdirs:
         from utils.security import security_load_subdirs
 
-    for target in targets:
-        _subdirs = security_load_subdirs(target, hf_token) if compute_subdirs else ()
+    scoped_targets: list[str] = []
+    consent_load_subdirs: dict[str, tuple] = {}
+    for requested_target in targets:
+        _subdirs = security_load_subdirs(requested_target, hf_token) if compute_subdirs else ()
+        target, _subdirs = load_scan_target(requested_target, _subdirs)
+        if target not in consent_load_subdirs:
+            scoped_targets.append(target)
+            consent_load_subdirs[target] = ()
+        _subdirs = tuple(dict.fromkeys((*consent_load_subdirs[target], *_subdirs)))
+        consent_load_subdirs[target] = _subdirs
+
+    for target in scoped_targets:
+        _subdirs = consent_load_subdirs[target]
         _fs = evaluate_file_security(target, hf_token = hf_token, load_subdirs = _subdirs)
         if _fs.blocked:
             _send_response(
@@ -294,11 +307,12 @@ def _run_security_gates(
     if trust_remote_code:
         from utils.security import evaluate_remote_code_consent_for_targets
         _rc = evaluate_remote_code_consent_for_targets(
-            targets,
+            scoped_targets,
             hf_token = hf_token,
             trust_remote_code = True,
             approved_fingerprint = approved_fingerprint,
             subject = subject,
+            load_subdirs_by_target = consent_load_subdirs,
         )
         if _rc.blocked:
             _send_response(

@@ -303,6 +303,38 @@ def gguf_variant_blob_hashes(
     return frozenset()
 
 
+def _is_scope_key(variant: str) -> bool:
+    """Whether a stored variant key is a download SCOPE ("@diffusion"), not a quant.
+
+    A scoped job rides the variant slot with an "@" prefix to keep its state out
+    of the quant namespace. Its manifest names the file it fetched, so rebuilding
+    quants from download state would list the same .gguf twice, the scope row
+    permanently partial, and cost the picker its single-quant collapse.
+    """
+    return variant.startswith("@")
+
+
+def _quants_from_state(
+    repo_id: str, hub_cache: Optional[Path]
+) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+    """``list_partial_gguf_variants_from_state`` with download scopes dropped.
+
+    A scope whose payload is gone is dropped by the lister, the only place that
+    can tell a recovered digest from a variant truly named like one (see
+    _is_state_filename_fallback); left here is the readable "@diffusion" case.
+    Scopes alone return None like nothing at all, since a scope naming no .gguf
+    reconstructs as ``f"{variant}.gguf"``, a file that never existed, so the
+    caller must fall through rather than serve one.
+    """
+    partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
+    if partial is None:
+        return None
+    variants, has_vision = partial
+    variants = [v for v in variants if not (v.quant and _is_scope_key(v.quant))]
+    if not variants:
+        return None
+    return variants, has_vision
+
 def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
     """Group key for variants that share one companion download footprint.
 
@@ -336,7 +368,6 @@ def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
     except Exception as e:
         logger.debug("Dependency key unavailable for %s/%s: %s", repo_id, filename, e)
         return None
-
 
 def _partial_transport_for_variant(
     repo_id: str,
@@ -977,7 +1008,7 @@ async def get_gguf_variants_answer(
             before any file landed has no snapshot entry, so a listing built
             from the cache alone reads as if it were never asked for, and the
             row loses its resume."""
-            state = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
+            state = _quants_from_state(repo_id, hub_cache)
             if state is None:
                 return response
             listed = {v.quant.lower() for v in response.variants if v.quant}
@@ -1106,7 +1137,7 @@ async def get_gguf_variants_answer(
                     return _local_response(
                         repo_id, variants, has_vision, _complete_quants_under(local_path)
                     )
-            partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
+            partial = _quants_from_state(repo_id, hub_cache)
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)
@@ -1141,7 +1172,7 @@ async def get_gguf_variants_answer(
                 return _with_state_partials(
                     _local_response(repo_id, variants, has_vision, complete)
                 )
-            partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
+            partial = _quants_from_state(repo_id, hub_cache)
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)

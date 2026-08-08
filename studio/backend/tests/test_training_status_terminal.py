@@ -15,6 +15,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -22,6 +24,15 @@ if _BACKEND_DIR not in sys.path:
 
 import routes.training as rt
 from core.training.training import TrainingBackend, TrainingProgress
+
+
+async def _inline_to_thread(function, /, *args, **kwargs):
+    return function(*args, **kwargs)
+
+
+@pytest.fixture(autouse = True)
+def _run_route_helpers_inline(monkeypatch):
+    monkeypatch.setattr(rt.asyncio, "to_thread", _inline_to_thread)
 
 
 class _WedgedProc:
@@ -168,7 +179,12 @@ def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
     b = _running(monkeypatch)
     b._handle_event(dict(_DONE))
 
-    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = True), current_subject = "t"))
+    resp = asyncio.run(
+        rt.stop_training(
+            rt.TrainingStopRequest(save = True, expected_job_id = "job_1"),
+            current_subject = "t",
+        )
+    )
     assert resp.status == "idle"
     assert b._should_stop is False
 
@@ -202,7 +218,12 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
 
     b.stop_training = stop_after_complete
 
-    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = True), current_subject = "t"))
+    resp = asyncio.run(
+        rt.stop_training(
+            rt.TrainingStopRequest(save = True, expected_job_id = "job_1"),
+            current_subject = "t",
+        )
+    )
     assert resp.status == "idle"
     assert b._should_stop is False, "a run that finished in the gap must not latch a stop"
     assert (b._terminal_finalize_payload or {}).get("status") == "completed"
@@ -214,7 +235,12 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
 
 def test_stop_mid_run_still_works(monkeypatch):
     b = _running(monkeypatch)
-    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = True), current_subject = "t"))
+    resp = asyncio.run(
+        rt.stop_training(
+            rt.TrainingStopRequest(save = True, expected_job_id = "job_1"),
+            current_subject = "t",
+        )
+    )
     assert resp.status == "stopped"
     assert b._should_stop is True
 
@@ -226,7 +252,12 @@ def test_cancel_mid_run_still_works(monkeypatch):
     monkeypatch.setattr(
         "storage.studio_db.mark_run_cancel_requested", lambda *a, **k: True, raising = False
     )
-    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = False), current_subject = "t"))
+    resp = asyncio.run(
+        rt.stop_training(
+            rt.TrainingStopRequest(save = False, expected_job_id = "job_1"),
+            current_subject = "t",
+        )
+    )
     assert resp.status == "stopped"
     assert b._cancel_requested is True
 
