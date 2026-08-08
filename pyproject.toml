@@ -165,10 +165,33 @@ huggingface = [
     "torchvision",
     "unsloth[triton]",
 ]
+# xFormers' win_amd64 wheels are per-CUDA-family, not just per-torch: the
+# xformers/_C.pyd is linked against ONE exact (torch, CUDA) pair, and next to any
+# other pair torch.ops.load_library raises and xformers/_cpp_lib.py downgrades to
+# "xFormers can't load C++/CUDA extensions", losing memory-efficient attention,
+# SwiGLU and the sparse ops for the rest of the process -- a silent warning, not
+# an install failure. PyPI publishes only the CUDA-12.8 flavour (0.0.34's
+# cpp_lib.json reads torch 2.10.0+cu128), which matches the PyPI torch this extra
+# resolves but NOT the cu126 / cu130 torch install.ps1 pulls from
+# download.pytorch.org.
+#
+# There is no PEP 508 marker for "which CUDA build of torch is resident", so a
+# single static extra cannot pick the right wheel. The CUDA-matched route on
+# Windows is therefore the same one Linux uses -- the cuXXX-torchYYY extras,
+# every one of which has carried win_amd64 rows since cu124-torch240:
+#     pip install "unsloth[cu130-torch2100]"    # cu130 + torch 2.10.x
+#     pip install "unsloth[cu128-torch2100]"    # cu128 + torch 2.10.x
+# install.ps1 now picks that wheel automatically from the index it installed
+# torch from, so Studio never reaches the PyPI fallback below.
+#
+# This extra stays the CUDA-agnostic default for a plain PyPI install. The upper
+# bound is not cosmetic: unbounded, this resolves to 0.0.35, which is published
+# as a py39-none wheel with no compiled extension AT ALL (2.6 MB vs 103 MB) and
+# whose torch>=2.10 floor lets pip drag a pinned torch forward.
 windows = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",
-    "xformers>=0.0.22.post7 ; (sys_platform == 'win32')",
+    "xformers>=0.0.22.post7,<0.0.35 ; (sys_platform == 'win32')",
 ]
 base = [
     "unsloth[huggingface]",
