@@ -4151,3 +4151,76 @@ def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path)
     )
     assert [v.quant for v in response.variants] == ["Q8_0"]
     assert context_calls == [(str(repo_dir / "snapshots" / "rev"), True)]
+
+
+def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
+    """A scoped job ("@diffusion") rides the variant slot, so its manifest names the
+    same .gguf the real quant does. Reconstructing quants from download state listed
+    it beside the quant: one file, twice, the second permanently partial. That also
+    cost the picker its single-quant collapse, since one quant read as two. A real
+    cancelled quant still has to survive, or it loses its resume."""
+    repo_dir = tmp_path / "models--org--repo"
+    (repo_dir / "snapshots" / "rev").mkdir(parents = True)
+
+    monkeypatch.setattr(
+        GV,
+        "select_gguf_cache_snapshot",
+        lambda repo_id, root = None: (
+            [
+                SimpleNamespace(
+                    filename = "m-Q4_K_S.gguf",
+                    quant = "Q4_K_S",
+                    display_label = None,
+                    size_bytes = 10,
+                )
+            ],
+            False,
+            {"q4_k_s"},
+            repo_dir / "snapshots" / "rev",
+        ),
+    )
+    # Download state holds both: the scope the diffusion load ran under, and a quant
+    # the user cancelled.
+    monkeypatch.setattr(
+        GV,
+        "list_partial_gguf_variants_from_state",
+        lambda *a, **k: (
+            [
+                SimpleNamespace(
+                    filename = "m-Q4_K_S.gguf",
+                    quant = "@diffusion",
+                    display_label = None,
+                    size_bytes = 10,
+                    download_size_bytes = 10,
+                ),
+                SimpleNamespace(
+                    filename = "m-Q6_K.gguf",
+                    quant = "Q6_K",
+                    display_label = None,
+                    size_bytes = 20,
+                    download_size_bytes = 20,
+                ),
+            ],
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            offline = True,
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    quants = [v.quant for v in response.variants]
+    assert "@diffusion" not in quants
+    assert quants == ["Q4_K_S", "Q6_K"]
+    # The scope named the quant's own file, so keeping it would list that file twice.
+    filenames = [v.filename for v in response.variants]
+    assert len(filenames) == len(set(filenames))
+

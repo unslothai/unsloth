@@ -302,6 +302,20 @@ def gguf_variant_blob_hashes(
     return frozenset()
 
 
+def _is_scope_key(variant: str) -> bool:
+    """Whether a stored variant key is a download SCOPE ("@diffusion"), not a quant.
+
+    A scoped job rides the variant slot to keep its state apart from the full
+    snapshot's, and the "@" prefix is what keeps it out of the quant namespace
+    (see test_scope_keys_apart_from_the_full_snapshot). Its manifest names the
+    file it fetched, so reconstructing quants from download state would list the
+    scope beside the real quant: the same .gguf twice, one of them "@diffusion"
+    and permanently partial. That second row also costs the picker its
+    single-quant collapse, since one quant on disk then reads as two.
+    """
+    return variant.startswith("@")
+
+
 def _partial_transport_for_variant(
     repo_id: str,
     variant: str,
@@ -957,7 +971,7 @@ async def get_gguf_variants_answer(
                     ),
                 )
                 for v in state[0]
-                if v.quant and v.quant.lower() not in listed
+                if v.quant and v.quant.lower() not in listed and not _is_scope_key(v.quant)
             ]
             if not extra:
                 return response
