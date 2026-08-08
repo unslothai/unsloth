@@ -11,6 +11,8 @@ export interface McpServerConfig {
   headers: Record<string, string>;
   is_enabled: boolean;
   use_oauth: boolean;
+  oauth_client_id: string | null;
+  has_oauth_client_secret: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -63,6 +65,8 @@ export function createMcpServer(payload: {
   headers?: Record<string, string>;
   isEnabled?: boolean;
   useOauth?: boolean;
+  oauthClientId?: string | null;
+  oauthClientSecret?: string;
 }): Promise<McpServerConfig> {
   return mcpRequest("/", {
     method: "POST",
@@ -72,6 +76,8 @@ export function createMcpServer(payload: {
       headers: payload.headers ?? null,
       is_enabled: payload.isEnabled ?? true,
       use_oauth: payload.useOauth ?? false,
+      oauth_client_id: payload.oauthClientId ?? null,
+      oauth_client_secret: payload.oauthClientSecret ?? null,
     },
   });
 }
@@ -85,6 +91,8 @@ export function updateMcpServer(
     headers?: Record<string, string> | null;
     isEnabled?: boolean;
     useOauth?: boolean;
+    oauthClientId?: string | null;
+    oauthClientSecret?: string | null;
   },
 ): Promise<McpServerConfig> {
   const body: Record<string, unknown> = {};
@@ -93,6 +101,10 @@ export function updateMcpServer(
   if (payload.headers !== undefined) body.headers = payload.headers;
   if (payload.isEnabled !== undefined) body.is_enabled = payload.isEnabled;
   if (payload.useOauth !== undefined) body.use_oauth = payload.useOauth;
+  if (payload.oauthClientId !== undefined)
+    body.oauth_client_id = payload.oauthClientId;
+  if (payload.oauthClientSecret !== undefined)
+    body.oauth_client_secret = payload.oauthClientSecret;
   return mcpRequest(`/${serverId}`, { method: "PUT", body });
 }
 
@@ -107,16 +119,22 @@ export function refreshMcpServerTools(
 }
 
 export function testMcpServer(payload: {
+  serverId?: string;
   url: string;
   headers?: Record<string, string>;
   useOauth?: boolean;
+  oauthClientId?: string | null;
+  oauthClientSecret?: string;
 }): Promise<McpServerProbeResult> {
   return mcpRequest("/test", {
     method: "POST",
     body: {
+      server_id: payload.serverId ?? null,
       url: payload.url,
       headers: payload.headers ?? null,
       use_oauth: payload.useOauth ?? false,
+      oauth_client_id: payload.oauthClientId ?? null,
+      oauth_client_secret: payload.oauthClientSecret ?? null,
     },
   });
 }

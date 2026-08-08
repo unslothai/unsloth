@@ -38,6 +38,7 @@ from core.inference.mcp_client import (
     in_failure_cooloff,
     is_stdio,
     list_tools_async,
+    oauth_client_kwargs,
     parse_server_headers,
     probe_timeout,
     record_probe_failure,
@@ -7395,6 +7396,25 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     return specs
 
 
+def _load_enabled_mcp_servers(server_metadata: list[dict]) -> list[dict]:
+    servers = []
+    for row in server_metadata:
+        if not row.get("is_enabled"):
+            continue
+        try:
+            server = mcp_servers_db.get_enabled_server(row["id"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Skipping MCP server '%s': credentials could not be loaded: %s",
+                row["id"],
+                exc,
+            )
+            continue
+        if server is not None:
+            servers.append(server)
+    return servers
+
+
 def cached_mcp_tools() -> tuple[list[dict], bool]:
     """The MCP schemas already in cache, and whether that is the whole set.
 
@@ -7408,7 +7428,8 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     price. A cool-off server renders nothing on the completion path either, so skipping that one
     is exact rather than short. Callers that must not undercount should decline on False.
     """
-    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    server_metadata = mcp_servers_db.list_servers(decrypt_secrets = False)
+    servers = _load_enabled_mcp_servers(server_metadata)
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
 
@@ -7425,7 +7446,8 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
 
 
 async def get_enabled_mcp_tools() -> list[dict]:
-    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    server_metadata = mcp_servers_db.list_servers(decrypt_secrets = False)
+    servers = _load_enabled_mcp_servers(server_metadata)
     # Never spawn stdio servers when stdio is disabled on this host.
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
@@ -7446,6 +7468,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
                     headers = parse_server_headers(s),
                     timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
                     use_oauth = bool(s.get("use_oauth")),
+                    **oauth_client_kwargs(s),
                 )
                 for s in uncached
             ),
@@ -7454,7 +7477,8 @@ async def get_enabled_mcp_tools() -> list[dict]:
         # An edit/delete can land while we await a probe; re-read and drop a
         # result whose server changed or was removed mid-probe, else a stale
         # tool list (or cool-off on a just-fixed server) persists.
-        current = {s["id"]: s for s in mcp_servers_db.list_servers()}
+        current_metadata = mcp_servers_db.list_servers(decrypt_secrets = False)
+        current = {server["id"]: server for server in _load_enabled_mcp_servers(current_metadata)}
         for server, payload in zip(uncached, results):
             fresh = current.get(server["id"])
             if fresh is None or any(
@@ -7589,6 +7613,7 @@ def execute_tool(
             args = arguments,
             timeout = effective_timeout,
             use_oauth = bool(server.get("use_oauth")),
+            **oauth_client_kwargs(server),
             cancel_event = cancel_event,
             scope = mcp_scope,
             config_check = _config_current,

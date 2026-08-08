@@ -31,6 +31,36 @@ FAILED_PROBE_COOLOFF_SECONDS = 60.0
 OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
+_oauth_client_token_stores: dict[str, Any] = {}
+_SERIALIZED_VALUE_FIELD = "value"
+
+
+def _encrypted_oauth_serialization_adapter():
+    """Encrypt OAuth store values while leaving non-sensitive file metadata readable."""
+    from key_value.aio._utils.serialization import BasicSerializationAdapter
+    from storage.mcp_oauth_secret_crypto import decrypt_client_secret, encrypt_client_secret
+
+    class EncryptedOAuthSerializationAdapter(BasicSerializationAdapter):
+        def prepare_dump(self, data: dict[str, Any]) -> dict[str, Any]:
+            prepared = dict(data)
+            serialized = json.dumps(prepared[_SERIALIZED_VALUE_FIELD], separators = (",", ":"))
+            prepared[_SERIALIZED_VALUE_FIELD] = encrypt_client_secret(serialized)
+            return prepared
+
+        def prepare_load(self, data: dict[str, Any]) -> dict[str, Any]:
+            prepared = dict(data)
+            stored_value = prepared[_SERIALIZED_VALUE_FIELD]
+            # OAuth tokens created before encrypted storage shipped are JSON
+            # objects. Keep them readable; every subsequent write encrypts them.
+            if isinstance(stored_value, dict):
+                return prepared
+            serialized = decrypt_client_secret(stored_value)
+            if serialized is None:
+                raise ValueError("encrypted OAuth store value is empty")
+            prepared[_SERIALIZED_VALUE_FIELD] = json.loads(serialized)
+            return prepared
+
+    return EncryptedOAuthSerializationAdapter()
 
 
 def is_stdio(address: str) -> bool:
@@ -182,8 +212,25 @@ def parse_server_headers(server: dict) -> Optional[dict]:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _oauth_store():
+def _oauth_store(oauth_client_id: Optional[str] = None):
     global _oauth_token_store
+    if oauth_client_id:
+        namespace = hashlib.sha256(oauth_client_id.encode()).hexdigest()
+        existing = _oauth_client_token_stores.get(namespace)
+        if existing is not None:
+            return existing
+        from key_value.aio._utils.sanitization import AlwaysHashStrategy
+        from key_value.aio.stores.filetree import FileTreeStore
+        from utils.paths.storage_roots import ensure_dir, studio_root
+
+        store = FileTreeStore(
+            data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens" / namespace),
+            serialization_adapter = _encrypted_oauth_serialization_adapter(),
+            key_sanitization_strategy = AlwaysHashStrategy(),
+            collection_sanitization_strategy = AlwaysHashStrategy(),
+        )
+        _oauth_client_token_stores[namespace] = store
+        return store
     if _oauth_token_store is None:
         from key_value.aio._utils.sanitization import AlwaysHashStrategy
         from key_value.aio.stores.filetree import FileTreeStore
@@ -193,20 +240,25 @@ def _oauth_store():
         # would treat the "://" as nested directories.
         _oauth_token_store = FileTreeStore(
             data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
+            serialization_adapter = _encrypted_oauth_serialization_adapter(),
             key_sanitization_strategy = AlwaysHashStrategy(),
             collection_sanitization_strategy = AlwaysHashStrategy(),
         )
     return _oauth_token_store
 
 
-async def clear_oauth_tokens_async(url: str) -> None:
+async def clear_oauth_tokens_async(url: str, oauth_client_id: Optional[str] = None) -> None:
     """Drop any persisted OAuth tokens for ``url``. fastmcp keys tokens by MCP
     URL, so on server delete / URL change / OAuth disable we must clear them, else
     re-registering the same URL reuses the old account's token. Best-effort: store
     / OAuth failures must not 500 the delete / update route."""
     try:
         from fastmcp.client.auth import OAuth
-        auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+        auth = OAuth(
+            mcp_url = url,
+            token_storage = _oauth_store(oauth_client_id),
+            client_id = oauth_client_id,
+        )
         await auth.token_storage_adapter.clear()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
@@ -216,6 +268,8 @@ def _client(
     url: str,
     headers: Optional[dict],
     use_oauth: bool = False,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
 ):
     from fastmcp import Client
 
@@ -245,12 +299,29 @@ def _client(
     auth = None
     if use_oauth:
         from fastmcp.client.auth import OAuth
-        auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+        auth = OAuth(
+            mcp_url = url,
+            token_storage = _oauth_store(oauth_client_id),
+            client_id = oauth_client_id,
+            client_secret = oauth_client_secret,
+        )
 
     transport_cls = (
         SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
     )
     return Client(transport_cls(url = url, headers = headers or None, auth = auth))
+
+
+def oauth_client_kwargs(server: dict) -> dict:
+    """Only extend legacy call signatures when credentials are configured."""
+    client_id = server.get("oauth_client_id")
+    client_secret = server.get("oauth_client_secret")
+    if not client_id and not client_secret:
+        return {}
+    return {
+        "oauth_client_id": client_id,
+        "oauth_client_secret": client_secret,
+    }
 
 
 # Persistent stdio sessions: a stdio MCP server owns live state (a browser, a
@@ -792,9 +863,17 @@ async def list_tools_async(
     headers: Optional[dict] = None,
     timeout: float = 5.0,
     use_oauth: bool = False,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
 ) -> list[dict]:
     async def _fetch() -> list[dict]:
-        async with _client(url, headers, use_oauth) as client:
+        kwargs = oauth_client_kwargs(
+            {
+                "oauth_client_id": oauth_client_id,
+                "oauth_client_secret": oauth_client_secret,
+            }
+        )
+        async with _client(url, headers, use_oauth, **kwargs) as client:
             tools = await client.list_tools()
         return [t.model_dump(exclude_none = True) for t in tools]
 
@@ -816,7 +895,16 @@ _probe_cooloff_until: dict[str, float] = {}
 # endpoint/auth used to probe it (url, headers, oauth) or whether it's used at
 # all (is_enabled). A rename does not. The update route's eviction and
 # get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
-TOOL_CACHE_INVALIDATING_FIELDS = frozenset({"url", "headers_json", "use_oauth", "is_enabled"})
+TOOL_CACHE_INVALIDATING_FIELDS = frozenset(
+    {
+        "url",
+        "headers_json",
+        "use_oauth",
+        "oauth_client_id",
+        "oauth_client_secret",
+        "is_enabled",
+    }
+)
 
 
 def get_cached_tools(server_id: str) -> Optional[list[dict]]:
@@ -1094,6 +1182,8 @@ def call_tool_sync(
     args: dict,
     timeout: Optional[float] = 300.0,
     use_oauth: bool = False,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
     cancel_event = None,
     scope: Optional[str] = None,
     config_check = None,
@@ -1106,7 +1196,13 @@ def call_tool_sync(
     before a fresh stdio session is cached; False fails the call."""
 
     async def _one_shot() -> Any:
-        async with _client(url, headers, use_oauth) as client:
+        kwargs = oauth_client_kwargs(
+            {
+                "oauth_client_id": oauth_client_id,
+                "oauth_client_secret": oauth_client_secret,
+            }
+        )
+        async with _client(url, headers, use_oauth, **kwargs) as client:
             # raise_on_error=False lets an is_error result (which may still carry
             # image content) reach _flatten_result instead of FastMCP raising ToolError
             # and dropping the images. Transport failures still raise (handled below).
