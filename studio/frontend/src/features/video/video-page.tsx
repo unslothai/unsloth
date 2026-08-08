@@ -865,7 +865,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey is the serialized record
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
   // Mint (once) a playable link for a record's MP4, cached across remounts. Unlike the images gallery this does NOT download

@@ -1859,7 +1859,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey is the serialized record
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
   // The adapter list a load of *repoId* would BAKE into the build, shared by the load and the download plan: a torchao int8/fp8 transformer
