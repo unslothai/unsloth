@@ -287,7 +287,7 @@ def test_import_survives_a_local_rank_that_names_no_visible_device(local_rank):
         env = env,
         cwd = str(_REPO_ROOT),
     )
-    assert result.returncode == 0, (
-        f"import unsloth crashed with LOCAL_RANK={local_rank!r}:\n{result.stderr[-2000:]}"
-    )
+    assert (
+        result.returncode == 0
+    ), f"import unsloth crashed with LOCAL_RANK={local_rank!r}:\n{result.stderr[-2000:]}"
     assert "IDX 0" in result.stdout, result.stdout[-2000:]

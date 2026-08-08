@@ -82,9 +82,7 @@ try:
     _PROBE_DEVICE_INDEX = int(os.environ.get("LOCAL_RANK", "") or 0)
 except ValueError:
     _PROBE_DEVICE_INDEX = 0
-if not (
-    0 <= _PROBE_DEVICE_INDEX < (torch.cuda.device_count() if torch.cuda.is_available() else 0)
-):
+if not (0 <= _PROBE_DEVICE_INDEX < (torch.cuda.device_count() if torch.cuda.is_available() else 0)):
     _PROBE_DEVICE_INDEX = 0
 
 
@@ -183,8 +181,7 @@ if HAS_XFORMERS and torch.cuda.is_available():
 # capability off device 0 while probing this rank's device is how a display card ends up
 # deciding downcast policy for a compute card.
 _XFORMERS_FP32_UNSUPPORTED = (
-    torch.cuda.is_available()
-    and torch.cuda.get_device_capability(_PROBE_DEVICE_INDEX)[0] >= 10
+    torch.cuda.is_available() and torch.cuda.get_device_capability(_PROBE_DEVICE_INDEX)[0] >= 10
 )
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
