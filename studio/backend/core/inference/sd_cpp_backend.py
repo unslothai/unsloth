@@ -498,9 +498,7 @@ class SdCppDiffusionBackend:
                 asset_repos = tuple(
                     dict.fromkeys(
                         r
-                        for r, _f, kind in self._asset_specs(
-                            repo_id, gguf_filename, fam, inner_dim
-                        )
+                        for r, _f, kind in self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
                         if kind != "diffusion_model"
                     )
                 ),

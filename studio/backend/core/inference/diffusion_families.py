@@ -977,7 +977,13 @@ def gguf_flux2_inner_dim_from_header(header: bytes) -> Optional[int]:
         class _HeaderOnlyGGUFReader(GGUFReader):  # type: ignore[misc, valid-type]
             """``GGUFReader`` over a file that holds only the header."""
 
-            def _get(self, offset, dtype, count = 1, override_order = None):
+            def _get(
+                self,
+                offset,
+                dtype,
+                count = 1,
+                override_order = None,
+            ):
                 itemsize = int(np.empty([], dtype = dtype).itemsize)
                 if int(offset) < 0 or int(offset) + itemsize * int(count) > len(self.data):
                     raise ValueError("GGUF header is truncated")
@@ -986,9 +992,7 @@ def gguf_flux2_inner_dim_from_header(header: bytes) -> Optional[int]:
             def _build_tensors(self, start_offs, fields):
                 # ``field.name`` is the decoded tensor name and parts[3] its dims, both already
                 # read from real bytes by ``_get_tensor_info_field``.
-                self.tensors = [
-                    _HeaderTensor(field.name, field.parts[3]) for field in fields
-                ]
+                self.tensors = [_HeaderTensor(field.name, field.parts[3]) for field in fields]
 
         # GGUFReader memory-maps a path, so the prefix has to land on disk. Bounded by the
         # caller's range request, so this is KiB, never the checkpoint.

@@ -71,6 +71,7 @@ def _local_gguf_path(repo_id: str, gguf_filename: str) -> Optional[str]:
     try:
         from huggingface_hub import try_to_load_from_cache
         from utils.hf_cache_settings import active_hf_hub_cache
+
         # The live root first, then huggingface_hub's import-time constant, the same pair the
         # loader resolves a staged file through. Read directly rather than through
         # ``diffusion.hub_cache_dir``: that module imports this one.
@@ -128,7 +129,9 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
 
 
 def flux2_inner_dim_for_pick(
-    repo_id: str, gguf_filename: Optional[str], hf_token: Optional[str] = None
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
 ) -> Optional[int]:
     """``inner_dim`` of the GGUF this pick names, WITHOUT downloading it, or None.
 

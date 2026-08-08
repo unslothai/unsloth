@@ -70,7 +70,10 @@ def _gguf_header(
     # Siblings so the probe tensor is not the whole table, as in a real checkpoint.
     for i in range(siblings):
         writer.add_tensor_info(
-            f"blk.{i}.weight", [64, 64], np.dtype(np.float16), 64 * 64 * 2,
+            f"blk.{i}.weight",
+            [64, 64],
+            np.dtype(np.float16),
+            64 * 64 * 2,
             raw_dtype = GGMLQuantizationType.F16,
         )
     if probe_last:
@@ -85,7 +88,11 @@ def _gguf_header(
 class _FakeResponse:
     """The slice of ``requests.Response`` the header read uses."""
 
-    def __init__(self, status_code, body = b""):
+    def __init__(
+        self,
+        status_code,
+        body = b"",
+    ):
         self.status_code = status_code
         self._body = body
 
@@ -100,7 +107,12 @@ class _FakeResponse:
         return False
 
 
-def _stub_range_reads(monkeypatch, bodies, *, status = 206):
+def _stub_range_reads(
+    monkeypatch,
+    bodies,
+    *,
+    status = 206,
+):
     """Serve ``{filename: header_bytes}`` over the stubbed Hub session; returns the request log.
 
     Also arms the negative assertions this whole module rests on: nothing may call
@@ -108,7 +120,13 @@ def _stub_range_reads(monkeypatch, bodies, *, status = 206):
     requests: list[tuple[str, str]] = []
 
     class _Session:
-        def get(self, url, headers = None, timeout = None, stream = False):
+        def get(
+            self,
+            url,
+            headers = None,
+            timeout = None,
+            stream = False,
+        ):
             requests.append((url, (headers or {}).get("Range", "")))
             body = next((b for name, b in bodies.items() if url.endswith(name)), None)
             if body is None:
@@ -274,7 +292,13 @@ def test_a_server_that_ignores_the_range_header_is_abandoned(monkeypatch, tmp_pa
             yield b""
 
     class _Session:
-        def get(self, url, headers = None, timeout = None, stream = False):
+        def get(
+            self,
+            url,
+            headers = None,
+            timeout = None,
+            stream = False,
+        ):
             return _WholeFile(200, _gguf_header(3072, tmp_path))
 
     monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: _Session())
@@ -311,6 +335,7 @@ def test_a_known_ungated_mirror_is_checked_like_its_upstream(monkeypatch, tmp_pa
     # actually gets -- as the only unguarded path.
     _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(3072, tmp_path)})
     from core.inference.diffusion_families import canonical_base
+
     mirror = "unsloth/FLUX.2-klein-9B"
     assert canonical_base(mirror).lower() == KLEIN_9B_BASE.lower(), "mirror table changed"
 
@@ -458,6 +483,7 @@ def test_the_download_plan_reports_the_mismatch_instead_of_raising(monkeypatch, 
     assert KLEIN_9B_BASE in (plan["incompatible_reason"] or "")
     # And it survives the envelope the route returns, or the picker never sees it.
     from models.inference import DiffusionDownloadPlanResponse
+
     assert KLEIN_9B_BASE in (DiffusionDownloadPlanResponse(**plan).incompatible_reason or "")
 
 
@@ -465,7 +491,6 @@ def test_a_planner_that_omits_the_field_still_answers():
     # The native and video planners share this envelope and have no base pairing to check, so the
     # response model must default the field rather than 500 on its absence.
     from models.inference import DiffusionDownloadPlanResponse
-
     assert DiffusionDownloadPlanResponse(entries = [], total_bytes = 0).incompatible_reason is None
 
 
