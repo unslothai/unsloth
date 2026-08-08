@@ -32,7 +32,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Once, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
@@ -41,7 +41,7 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 /// Serializes the exit paths that reap the backend: `request_quit` (tray "Quit" and,
 /// outside macOS, the close button), the Unix signal listener, and `RunEvent::Exit`.
 /// Exactly one runs cleanup; the others block, so the process never exits mid-reap.
-static TERMINATION_CLEANUP: Once = Once::new();
+static TERMINATION_CLEANUP: Mutex<bool> = Mutex::new(false);
 
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
 
@@ -682,15 +682,32 @@ fn confirm_quit_during_update(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-fn cleanup_child_processes(app: &tauri::AppHandle) {
-    // `call_once_force` rather than `call_once`: a panicking cleanup poisons the `Once`
-    // instead of deadlocking the exit paths waiting on it, and the next caller retries
-    // it rather than exiting on a backend that was never reaped.
-    TERMINATION_CLEANUP.call_once_force(|state| {
-        if state.is_poisoned() {
-            warn!("Previous termination cleanup panicked, retrying it");
-        }
+/// Let a later exit run cleanup again. A cancelled or failed installer leaves the
+/// app running with a spent guard, so the retry's pre-exit hook would reap nothing
+/// and then suspend the job with the backend still holding the environment open.
+fn reset_termination_cleanup() {
+    match TERMINATION_CLEANUP.lock() {
+        Ok(mut done) => *done = false,
+        Err(poisoned) => *poisoned.into_inner() = false,
+    }
+}
 
+fn cleanup_child_processes(app: &tauri::AppHandle) {
+    // A resettable guard rather than a `Once`, so `reset_termination_cleanup` can
+    // re-arm it. The flag is set after the body, so a panicking cleanup poisons the
+    // lock and the next caller retries it rather than exiting on a backend that was
+    // never reaped.
+    let mut done = match TERMINATION_CLEANUP.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            warn!("Previous termination cleanup panicked, retrying it");
+            poisoned.into_inner()
+        }
+    };
+    if *done {
+        return;
+    }
+    {
         let diagnostics_state = app
             .try_state::<diagnostics::DiagnosticsState>()
             .map(|state| state.inner().clone());
@@ -712,7 +729,8 @@ fn cleanup_child_processes(app: &tauri::AppHandle) {
                 .expect("ShutdownFlag must be managed");
             let _ = process::stop_backend(&backend_state, &shutdown, diagnostics_state.as_ref());
         }
-    });
+    }
+    *done = true;
 }
 
 /// The backend is spawned as its own process-group leader, so nothing reaps it when the
@@ -1167,6 +1185,7 @@ fn main() {
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             desktop_updater::check_desktop_update,
+            desktop_updater::resume_desktop_update_cleanup,
             diagnostics::collect_support_diagnostics,
             native_clipboard::read_native_clipboard_files,
             native_clipboard::read_native_clipboard_png,

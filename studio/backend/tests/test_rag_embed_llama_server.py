@@ -33,6 +33,7 @@ class _FakeProc:
     ):
         self._alive = alive
         self.returncode = returncode
+        self.pid = 424242  # every real Popen has one; the lifetime record reads it
         self.stdout = iter(())  # drain thread exits immediately
 
     def poll(self):

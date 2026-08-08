@@ -117,6 +117,21 @@ export function useTauriUpdate(isExternalServer = false) {
   const startupScheduledRef = useRef(false);
   const checkingRef = useRef(false);
   const updatingRef = useRef(false);
+  // Windows kill-on-close: false once a re-arm has failed, and every path that
+  // starts a backend has to check it or the orphan risk comes straight back.
+  const cleanupRearmedRef = useRef(true);
+
+  async function resumeCleanup(): Promise<boolean> {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("resume_desktop_update_cleanup");
+      cleanupRearmedRef.current = true;
+    } catch (e) {
+      console.error("Could not re-arm crash cleanup after a failed update:", e);
+      cleanupRearmedRef.current = false;
+    }
+    return cleanupRearmedRef.current;
+  }
 
   function replaceInfo(nextInfo: UpdateInfo | null) {
     infoRef.current = nextInfo;
@@ -291,7 +306,6 @@ export function useTauriUpdate(isExternalServer = false) {
     updatingRef.current = true;
 
     const cleanups: (() => void)[] = [];
-
     try {
       const { policy } = await resolveUpdatePolicy();
       if (policy.mode === "manual_linux_package") {
@@ -381,20 +395,32 @@ export function useTauriUpdate(isExternalServer = false) {
               break;
           }
         });
+      } catch (installError) {
+        // Failed or cancelled: we keep running, so the cleanup the pre-exit hook
+        // stood down has to come back.
+        await resumeCleanup();
+        throw installError;
       } finally {
-        // Success, failure and cancel alike: the installer is no longer running.
         publishShellUpdateActive(false);
       }
 
-      // relaunch() re-execs with the original argv, so flag the inherited --hidden as not a login
-      // start. It only fails when there is a --hidden to suppress, so let it stop the restart.
-      await invoke("mark_in_app_relaunch");
-      const { relaunch } = await import("@tauri-apps/plugin-process");
+      // Deliberately NOT re-arming kill-on-close before the restart: relaunch()
+      // starts the replacement as a child, so it inherits this job, and re-arming
+      // would make this process kill it on the way out.
+      // The whole handoff is inside the recovery scope: anything that throws here
+      // leaves this process running with cleanup still stood down.
       try {
+        // relaunch() re-execs with the original argv, so flag the inherited --hidden as not a
+        // login start. It only fails when there is a --hidden to suppress, so let it stop the
+        // restart.
+        await invoke("mark_in_app_relaunch");
+        const { relaunch } = await import("@tauri-apps/plugin-process");
         await relaunch();
       } catch (relaunchError) {
         // No replacement process, so the marker would outlive it and unhide a later login start.
         await invoke("clear_in_app_relaunch").catch(() => {});
+        // Still this process, so the cleanup has to come back after all.
+        await resumeCleanup();
         throw relaunchError;
       }
     } catch (e) {
@@ -403,6 +429,17 @@ export function useTauriUpdate(isExternalServer = false) {
 
       // Shell update failed, so restart the backend on the updated code.
       if (phaseRef.current === "shell_download" || phaseRef.current === "shell_install") {
+        // A backend started under a job that still has kill-on-close disabled is
+        // the orphan this PR exists to prevent, so retry the re-arm and stop here
+        // if it will not take.
+        if (!cleanupRearmedRef.current && !(await resumeCleanup())) {
+          retainFailure(msg, phaseRef.current ?? "shell_install");
+          setError(
+            "Update failed and crash cleanup could not be re-armed. Restart Unsloth Studio before continuing.",
+          );
+          setStatus("error");
+          return;
+        }
         try {
           const { invoke } = await import("@tauri-apps/api/core");
           await invoke("start_server", { port: 8888 });
@@ -438,6 +475,15 @@ export function useTauriUpdate(isExternalServer = false) {
 
   async function skipAndRestart() {
     const skippedError = error;
+    // Same gate as the recovery path: this is offered on every error, so it is
+    // the other way a user could start a backend under a disarmed job.
+    if (!cleanupRearmedRef.current && !(await resumeCleanup())) {
+      setError(
+        "Crash cleanup could not be re-armed. Restart Unsloth Studio before continuing.",
+      );
+      setStatus("error");
+      return;
+    }
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("start_server", { port: 8888 });

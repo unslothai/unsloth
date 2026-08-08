@@ -7300,9 +7300,20 @@ class LlamaCppBackend:
             encoding = "utf-8",
             errors = "replace",
             env = utf8_child_env(env),
+            # Its own group: the shim spawns the visual server, and the startup
+            # sweep can only killpg a recorded pid that leads one. Without this
+            # the runner dies alone and its child keeps the GPU.
+            start_new_session = (os.name == "posix"),
             **_windows_hidden_subprocess_kwargs(),
             **_child_popen_kwargs(),
         )
+        # macOS has no parent-death signal, so the kwargs above are empty there and
+        # only this record lets the next startup reap a runner holding the GPU.
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(self._process.pid)
+        except Exception as e:
+            logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
         )
@@ -13411,6 +13422,18 @@ class LlamaCppBackend:
             if getattr(self, "_stats_logger", None) is not None:
                 self._stats_logger.stop()
                 self._stats_logger = None
+            # Drop it from the lifetime record only once it is confirmed gone.
+            # A server that survived a failed kill has to stay recorded, or the
+            # next startup sweep cannot reap it. The record stores a start-time
+            # identity, so a recycled pid is never signalled either way.
+            _killed_pid = getattr(self._process, "pid", None)
+            _exited = getattr(self._process, "poll", lambda: None)() is not None
+            if _killed_pid is not None and _exited:
+                try:
+                    from utils.process_lifetime import forget_pid
+                    forget_pid(_killed_pid)
+                except Exception:
+                    pass
             self._process = None
             self._clear_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
@@ -13454,6 +13477,14 @@ class LlamaCppBackend:
         since been recycled to a different process (see ``_pid_start_identity``).
         A bare ``pid`` (no identity) is still accepted on read for compatibility.
         """
+        # Track it generically too: the pidfile holds one server, while the
+        # process-lifetime record covers every child and is what the startup
+        # sweep reads where there is no parent-death signal (macOS).
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(pid)
+        except Exception as e:
+            logger.debug(f"Could not track llama-server for lifetime sweep: {e}")
         path = cls._server_pidfile_path()
         if path is None:
             return

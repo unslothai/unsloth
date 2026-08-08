@@ -97,8 +97,10 @@ unsafe fn set_kill_on_close(job: &OwnedHandle, enabled: bool) -> std::io::Result
 
 /// Keep the updater-launched installer alive after Tauri exits this process.
 ///
-/// The updater calls this from its native pre-exit hook after extraction and
-/// immediately before it launches the installer.
+/// Called from the updater's pre-exit hook, just before the installer launches.
+/// `cleanup_child_processes` has already reaped the backend tree by then, which
+/// is what has to be gone: a child that outlives the app keeps
+/// `%STUDIO_HOME%\unsloth_studio` open and the next update refuses to run.
 #[cfg(windows)]
 pub fn suspend_for_update_installer() -> std::io::Result<()> {
     let Some(job) = APP_JOB.get().and_then(Option::as_ref) else {
@@ -107,6 +109,19 @@ pub fn suspend_for_update_installer() -> std::io::Result<()> {
 
     unsafe { set_kill_on_close(job, false) }?;
     info!("Windows job cleanup suspended for updater installer launch");
+    Ok(())
+}
+
+/// Re-arm crash cleanup after a suspension that did not end in an exit (a failed
+/// or abandoned install). Without it the app runs on with no reaper at all.
+#[cfg(windows)]
+pub fn resume_after_update_installer() -> std::io::Result<()> {
+    let Some(job) = APP_JOB.get().and_then(Option::as_ref) else {
+        return Ok(());
+    };
+
+    unsafe { set_kill_on_close(job, true) }?;
+    info!("Windows job cleanup re-armed after the updater did not exit");
     Ok(())
 }
 
