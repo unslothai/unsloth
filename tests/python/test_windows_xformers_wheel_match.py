@@ -132,19 +132,19 @@ def test_no_extras_invented_for_torch_without_xformers_wheels(torch_tag: str):
     )
 
 
-def test_windows_extra_xformers_spec_is_bounded():
-    """Unbounded, `xformers>=0.0.22.post7` resolves to 0.0.35, whose extension is built
-    for torch 2.10.0 while its metadata asks only for torch>=2.10 -- so pip is free to pair
-    it with torch 2.11 and recreate the same silent mismatch. 0.0.34 declares
-    torch==2.10.0, an exact pair. The bound is the only thing forcing that choice."""
+def test_windows_extra_xformers_spec_is_a_version_range():
+    """The windows extra is the CUDA-agnostic fallback, so it must stay a plain range.
+
+    It is deliberately uncapped. 0.0.35 declares torch>=2.10 rather than an exact pin
+    because xFormers moved to the PyTorch stable API/ABI in 0.0.34, and upstream states
+    that such builds "will be compatible with any later version". A cap would also strand
+    anyone on torch 2.10.1, since 0.0.34 pins torch==2.10.0 exactly. The CUDA family is
+    the axis that has to match, and this extra cannot see it -- install.ps1 does that.
+    """
     deps = _extras()["windows"]
     specs = [d for d in deps if d.split(";")[0].strip().startswith("xformers")]
     assert len(specs) == 1, f"expected one xformers spec in the windows extra, got {specs}"
     spec = specs[0].split(";")[0].strip()
-    assert "<" in spec, (
-        f"the windows extra must bound xformers ({spec!r} is open ended); an unbounded "
-        "spec floats onto the extension-less 0.0.35"
-    )
     assert "xformers @ " not in spec, (
         "the windows extra is the CUDA-agnostic fallback and must stay a version range; "
         "a direct URL here hard-pins torch for every Windows user"

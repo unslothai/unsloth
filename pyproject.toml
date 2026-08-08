@@ -192,16 +192,19 @@ huggingface = [
 # torch from, so Studio never reaches the extra below.
 #
 # The extra below is what a `pip install "unsloth[windows]"` resolves, and it
-# stays CUDA-agnostic because it has nothing to key off. The upper bound keeps it
-# self-consistent: 0.0.34 declares torch==2.10.0, an exact pair, while 0.0.35
-# declares only torch>=2.10 even though its extension is still built for 2.10.0
-# -- so unbounded, pip is free to pair 0.0.35 with torch 2.11 and recreate the
-# same silent mismatch. 2.10 is also the top of the torch>=2.4,<2.11 window both
-# installers already enforce.
+# stays CUDA-agnostic because it has nothing to key off. It is deliberately NOT
+# capped. An earlier revision bounded it at <0.0.35 on the reasoning that 0.0.35
+# declares only torch>=2.10 while its extension is built for 2.10.0. Upstream says
+# that pairing is supported: v0.0.34's notes record the migration to the PyTorch
+# stable API/ABI, "which means that binary builds targeting PyTorch 2.10+ will be
+# compatible with any later version". Capping also has a cost -- 0.0.34 pins
+# torch==2.10.0 EXACTLY, so a cap strands anyone on 2.10.1. The axis that actually
+# has to match is the CUDA family, which this extra cannot see and install.ps1
+# handles instead.
 windows = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",
-    "xformers>=0.0.22.post7,<0.0.35 ; (sys_platform == 'win32')",
+    "xformers>=0.0.22.post7 ; (sys_platform == 'win32')",
 ]
 base = [
     "unsloth[huggingface]",

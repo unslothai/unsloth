@@ -3655,6 +3655,11 @@ exit 0
         "2.9.0"  = @{ "cu126" = "0.0.33.post1"; "cu128" = "0.0.33.post1"; "cu130" = "0.0.33.post1" }
         "2.9.1"  = @{ "cu126" = "0.0.33.post2"; "cu128" = "0.0.33.post2"; "cu130" = "0.0.33.post2" }
         "2.10.0" = @{ "cu126" = "0.0.34";       "cu128" = "0.0.34";       "cu130" = "0.0.34" }
+        # Stable-ABI era: 0.0.35 targets torch 2.10+ and upstream guarantees it works on
+        # any later release, so one row per torch covers 2.11 onward with the same wheel.
+        "2.11.0" = @{ "cu126" = "0.0.35";       "cu128" = "0.0.35";       "cu130" = "0.0.35" }
+        "2.12.0" = @{ "cu126" = "0.0.35";       "cu128" = "0.0.35";       "cu130" = "0.0.35" }
+        "2.13.0" = @{ "cu126" = "0.0.35";       "cu128" = "0.0.35";       "cu130" = "0.0.35" }
     }
 
     # xFormers version built for exactly ($TorchVersion, $CudaTag), or $null when that pair

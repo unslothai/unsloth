@@ -236,11 +236,12 @@ def direct_wheel_url(
 #   download.pytorch.org, so an exact hit guarantees the URL exists. The cost is that a
 #   family with no row of its own resolves to nothing even when a sibling would work --
 #   torch 2.10.0+cu129 on Linux is the live example.
-# * The table stops at torch 2.10.0 because upstream does. 2.11, 2.12 and 2.13 are
-#   released, and no xFormers release is built for any of them: 0.0.35 declares
-#   torch>=2.10 but every published 0.0.35 wheel was compiled against 2.10.0, and only
-#   the unreleased 0.0.35.dev1130 targets 2.11. Those torch releases resolving to nothing
-#   is the correct answer until an xFormers release exists, not a gap to paper over.
+# * torch 2.11+ maps to 0.0.35, which is compiled against 2.10.0 and works there by
+#   design rather than by luck: xFormers moved to the PyTorch stable API/ABI in 0.0.34,
+#   and its notes state that "binary builds targeting PyTorch 2.10+ will be compatible
+#   with any later version". So one 0.0.35 row per CUDA family covers every later torch,
+#   and the rows below are exact only up to 2.10.0, where upstream still shipped an
+#   exact-pinned wheel per torch release.
 #
 # Keep in step with $script:XformersWheelVersions in install.ps1 and the matrix in
 # tests/python/test_windows_xformers_wheel_match.py.
@@ -257,6 +258,12 @@ _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
     "2.9.0": {"cu126": "0.0.33.post1", "cu128": "0.0.33.post1", "cu130": "0.0.33.post1"},
     "2.9.1": {"cu126": "0.0.33.post2", "cu128": "0.0.33.post2", "cu130": "0.0.33.post2"},
     "2.10.0": {"cu126": "0.0.34", "cu128": "0.0.34", "cu130": "0.0.34"},
+    # Stable-ABI era: one wheel serves every torch from 2.11 on. Keyed per release
+    # rather than open ended so an unknown torch still resolves to nothing instead of
+    # guessing, and so a future exact-pinned release can displace a single row.
+    "2.11.0": {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"},
+    "2.12.0": {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"},
+    "2.13.0": {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"},
 }
 
 # The interpreter tag in the wheel FILENAME, which xFormers has changed twice: 0.0.30 and
