@@ -57,7 +57,10 @@ import {
   normalizeSpeculativeType,
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
-import { beginInferenceStatusRefresh } from "../lib/inference-status-refresh-seq";
+import {
+  awaitInferenceStatusRefreshTurn,
+  beginInferenceStatusRefresh,
+} from "../lib/inference-status-refresh-seq";
 import {
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
@@ -309,10 +312,12 @@ async function syncInferenceStatusToStore(options?: {
     // Cancellation can land while the requests above are in flight. Bail
     // before writing backend state back -- cancelLoading already cleared it.
     if (signal?.aborted) return;
-    if (!refresh.isCurrent()) {
-      await refresh.superseded();
-      if (refresh.shouldSkipAfterSupersession()) return;
-      if (signal?.aborted) return;
+    if (
+      !(await awaitInferenceStatusRefreshTurn(refresh, {
+        aborted: () => signal?.aborted ?? false,
+      }))
+    ) {
+      return;
     }
 
     setModels(listRes.models.map(toChatModelSummary));

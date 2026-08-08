@@ -42,6 +42,32 @@ export function beginInferenceStatusRefresh(): {
   };
 }
 
+export type InferenceStatusRefresh = ReturnType<typeof beginInferenceStatusRefresh>;
+
+/**
+ * Wait out any newer overlapping reads before committing this snapshot. Loops
+ * through every intervening refresh, not just the first superseder, so a failed
+ * refresh 2 cannot let refresh 1 commit while refresh 3 is still pending.
+ */
+export async function awaitInferenceStatusRefreshTurn(
+  refresh: InferenceStatusRefresh,
+  options?: { aborted?: () => boolean },
+): Promise<boolean> {
+  let lastAwaitedSeq = refresh.seq;
+  while (!refresh.isCurrent()) {
+    if (refresh.shouldSkipAfterSupersession()) return false;
+    if (options?.aborted?.()) return false;
+    const latest = inferenceStatusSupersession.latest;
+    if (!latest || latest.seq <= lastAwaitedSeq) break;
+    await latest.settled;
+    lastAwaitedSeq = latest.seq;
+    if (options?.aborted?.()) return false;
+  }
+  if (refresh.shouldSkipAfterSupersession()) return false;
+  if (options?.aborted?.()) return false;
+  return true;
+}
+
 /** Test hook: reset module state between cases. */
 export function resetInferenceStatusRefreshSeqForTests(): void {
   inferenceStatusSeq = 0;
