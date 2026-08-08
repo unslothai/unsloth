@@ -563,7 +563,21 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
+
+            # Triton importing isn't enough on AMD: its clang-cl JIT needs the MSVC
+            # CRT headers, or the first compile dies on 'stdlib.h' not found (#7595).
+            from core._msvc_env import ensure_msvc_env_for_triton
+            if ensure_msvc_env_for_triton():
+                logger.info("Triton available — torch.compile enabled")
+            else:
+                os.environ["TORCHDYNAMO_DISABLE"] = "1"
+                logger.warning(
+                    "Triton is installed but no MSVC toolchain was found, so its "
+                    "clang-cl JIT would fail on 'stdlib.h' (#7595). torch.compile "
+                    "disabled. Install Visual Studio Build Tools (C++ workload) to "
+                    "enable it: winget install Microsoft.VisualStudio.2022.BuildTools "
+                    '--override "--add Microsoft.VisualStudio.Workload.VCTools".'
+                )
         except ImportError:
             os.environ["TORCHDYNAMO_DISABLE"] = "1"
             logger.warning(
