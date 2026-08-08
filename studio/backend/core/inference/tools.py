@@ -7231,6 +7231,7 @@ def _get_workdir(session_id: str | None = None) -> str:
     key = session_id or "_default"
     if key not in _workdirs or not os.path.isdir(_workdirs[key]):
         sandbox_root_path = sandbox_root()
+        root_existed = os.path.isdir(sandbox_root_path)
         _migrate_legacy_sandbox(sandbox_root_path)
         project_workdir = (
             _get_project_workdir(session_id)
@@ -7250,10 +7251,14 @@ def _get_workdir(session_id: str | None = None) -> str:
         else:
             workdir = os.path.join(sandbox_root_path, "_default")
         os.makedirs(workdir, exist_ok = True)
-        try:
-            os.chmod(sandbox_root_path, 0o700)
-        except OSError:
-            pass
+        # Only a root we just created, or our own default location.
+        # UNSLOTH_STUDIO_SANDBOX_HOME can name an existing shared directory, and
+        # locking that down would cut off everything else using it.
+        if not root_existed or not (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip():
+            try:
+                os.chmod(sandbox_root_path, 0o700)
+            except OSError:
+                pass
         try:
             os.chmod(workdir, 0o700)
         except OSError:
@@ -7324,7 +7329,7 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
         # here": a tool call that just finished can leave a studio_exec_ file
         # behind, and rmdir would then leak the folder forever.
         for name in os.listdir(target):
-            if name.startswith(_INTERNAL_FILE_PREFIXES):
+            if _is_internal_scratch(name):
                 try:
                     os.unlink(os.path.join(target, name))
                 except OSError:
@@ -10373,7 +10378,13 @@ def _drain_process_output(
     return "".join(chunks), timed_out
 
 
-_INTERNAL_FILE_PREFIXES = ("studio_exec_",)  # the sandbox's own scratch files
+# The executor's own scratch: tempfile.mkstemp(prefix = "studio_exec_",
+# suffix = ".py"). Matched in full, since studio_exec_results.csv is the user's.
+_INTERNAL_SCRATCH_RE = re.compile(r"\Astudio_exec_[A-Za-z0-9_]+\.py\Z")
+
+
+def _is_internal_scratch(name: str) -> bool:
+    return bool(_INTERNAL_SCRATCH_RE.match(name))
 _MAX_REPORTED_FILES = 25
 # A build step or an unpacked archive can leave thousands of files; the walk is
 # bounded so a tool call cannot turn into a filesystem crawl. Counted in path
@@ -10415,7 +10426,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
             else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
         )
         for name in names:
-            if name.startswith(_INTERNAL_FILE_PREFIXES) or not _servable_segment(name):
+            if _is_internal_scratch(name) or not _servable_segment(name):
                 continue
             path = os.path.join(base, name)
             try:

@@ -982,6 +982,20 @@ export function isSandboxToolResult(
   return typeof v.text === "string" && typeof v.sessionId === "string";
 }
 
+/**
+ * The text the model actually saw, for a result that may be wrapped.
+ *
+ * Chat replay and every export path have to agree on this: exports feed
+ * fine-tuning datasets, so a wrapper serialized whole would train on the card's
+ * sessionId/images/files instead of the tool's output.
+ */
+export function toolResultModelText(result: unknown): unknown {
+  if (isMcpImageToolResult(result) || isSandboxToolResult(result)) {
+    return result.text;
+  }
+  return result;
+}
+
 export function isMcpImageToolResult(
   val: unknown,
 ): val is McpImageToolResult {

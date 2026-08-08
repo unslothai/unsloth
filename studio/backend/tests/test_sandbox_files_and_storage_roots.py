@@ -709,5 +709,52 @@ def test_the_listing_drops_a_directory_the_route_would_refuse(tmp_path, monkeypa
     assert not any("\\" in name for name in names), names
 
 
+def test_a_user_file_named_like_scratch_is_kept(tmp_path, monkeypatch):
+    """Only the generated studio_exec_<random>.py is internal; a tool may
+    legitimately write studio_exec_results.csv."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_prefix1"))
+    (workdir / "studio_exec_results.csv").write_text("a,b\n")
+    (workdir / "studio_exec_ab12cd.py").write_text("print(1)")
+
+    # Reported, because it is the user's.
+    assert "studio_exec_results.csv" in tools._snapshot_workdir_files(str(workdir))
+    # And it blocks removal without the opt-in, unlike the generated script.
+    assert tools.remove_session_sandbox("__LOCALID_prefix1") is False
+    assert (workdir / "studio_exec_results.csv").is_file()
+    assert not (workdir / "studio_exec_ab12cd.py").exists()
+
+
+def test_an_existing_sandbox_override_keeps_its_permissions(tmp_path, monkeypatch):
+    """UNSLOTH_STUDIO_SANDBOX_HOME can name a shared directory; locking it down
+    to 0o700 would cut off everything else using it."""
+    shared = tmp_path / "shared"
+    shared.mkdir(mode = 0o755)
+    before = shared.stat().st_mode & 0o777
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(shared))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_shared1"))
+    assert (shared.stat().st_mode & 0o777) == before, "the shared root was re-permissioned"
+    # The session directory is ours, so it is still locked down.
+    assert (workdir.stat().st_mode & 0o777) == 0o700
+
+
+def test_a_sandbox_root_studio_creates_is_still_locked_down(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "fresh"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools.get_sandbox_workdir("__LOCALID_fresh11")
+    assert ((tmp_path / "fresh").stat().st_mode & 0o777) == 0o700
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
