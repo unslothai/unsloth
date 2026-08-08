@@ -10050,7 +10050,7 @@ async def _proxy_to_external_provider(
         and not _use_external_studio_tools
         and not payload.bypass_permissions
         and (
-            bool(payload.enabled_tools)
+            bool(_external_provider_enabled_tools)
             or bool(payload.tools)
             or bool(payload.openai_code_exec_container_id)
             or bool(payload.anthropic_code_exec_container_id)

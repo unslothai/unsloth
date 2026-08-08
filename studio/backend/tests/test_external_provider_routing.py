@@ -139,6 +139,10 @@ def test_process_policy_can_force_saved_external_tools_on(monkeypatch):
     _run(_payload(enable_tools = False, mcp_enabled = False))
 
     assert captured["managed"]["tools"] == [TOOL]
+    captured.clear()
+    monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: False)
+    _run(_payload(enabled_tools = [TOOL["function"]["name"]]))
+    assert "managed" not in captured and captured["plain"]["enabled_tools"] == []
 
 
 def test_native_gemini_image_models_skip_managed_tools(monkeypatch):
