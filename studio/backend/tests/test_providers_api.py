@@ -56,6 +56,7 @@ _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "huggingface": ("HUGGINGFACE_API_KEY", "meta-llama/Llama-3.3-70B-Instruct"),
     "kimi": ("MOONSHOT_API_KEY", "moonshot-v1-8k"),
     "qwen": ("DASHSCOPE_API_KEY", "qwen-turbo"),
+    "minimax": ("MINIMAX_API_KEY", "MiniMax-M3"),
 }
 
 PROVIDER_KEYS: dict[str, str] = {
@@ -243,7 +244,7 @@ class TestRegistry:
         )
         assert resp.status_code == 200, f"Registry failed: {resp.text}"
         providers = resp.json()
-        assert len(providers) == 9, f"Expected 9 providers, got {len(providers)}: {providers}"
+        assert len(providers) == 10, f"Expected 10 providers, got {len(providers)}: {providers}"
         print(f"\n  {'Provider':<12} {'Base URL'}")
         print(f"  {'-'*12} {'-'*45}")
         for p in providers:
@@ -260,6 +261,16 @@ class TestRegistry:
         returned_types = {p["provider_type"] for p in resp.json()}
         missing = EXPECTED_PROVIDER_TYPES - returned_types
         assert not missing, f"Missing provider types: {missing}"
+
+    def test_minimax_registry_metadata(self, auth_headers: dict[str, str]):
+        """MiniMax exposes the current defaults and supported capabilities."""
+        resp = requests.get(_url("/api/providers/registry"), headers = auth_headers, timeout = 10)
+        assert resp.status_code == 200
+        entry = next(p for p in resp.json() if p["provider_type"] == "minimax")
+        assert entry["base_url"] == "https://api.minimax.io/v1"
+        assert entry["default_models"][:2] == ["MiniMax-M3", "MiniMax-M2.7"]
+        assert entry["supports_vision"] is True
+        assert entry["supports_tool_calling"] is True
 
     def test_registry_entries_have_required_fields(self, auth_headers: dict[str, str]):
         """Each registry entry has provider_type, display_name, base_url, default_models."""
@@ -476,7 +487,7 @@ _VISION_PARAMS = [
         ),
     )
     for ptype, (_, model) in _PROVIDER_CONFIGS.items()
-    if ptype in {"openai", "mistral", "gemini", "anthropic", "openrouter"}
+    if ptype in {"openai", "mistral", "gemini", "anthropic", "openrouter", "minimax"}
 ]
 
 

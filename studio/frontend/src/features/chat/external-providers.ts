@@ -92,14 +92,20 @@ const VISION_CAPABLE_PROVIDER_TYPES = new Set<string>([
   "openai",
   "anthropic",
   "gemini",
+  "minimax",
   "openrouter",
 ]);
 
 // false = known text-only, true = known vision, null = unknown (default-allow).
 export function providerTypeSupportsVision(
   providerType: string | null | undefined,
+  modelId?: string | null | undefined,
 ): boolean | null {
   if (providerType == null) return null;
+  if (providerType === "minimax") {
+    const normalizedModelId = modelId?.trim().toLowerCase() ?? "";
+    if (normalizedModelId === "minimax-m2.7") return false;
+  }
   if (NON_VISION_PROVIDER_TYPES.has(providerType)) return false;
   if (VISION_CAPABLE_PROVIDER_TYPES.has(providerType)) return true;
   return null;
