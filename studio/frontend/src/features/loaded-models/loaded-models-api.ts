@@ -25,6 +25,7 @@ import { notifyModelEjected } from "@/lib/model-lifecycle-events";
 import { ejectChatModel } from "./eject-chat-model";
 import {
   type LoadedModelEntry,
+  type LoadedModelSource,
   type SttStatusResponse,
   describeDiffusionStatus,
   describeInferenceStatus,
@@ -103,19 +104,32 @@ async function bounded<T>(
   }
 }
 
-/** Everything resident right now, across all four runtimes. */
-export async function readLoadedModels(): Promise<LoadedModelEntry[]> {
+/**
+ * Everything resident right now, across all four runtimes.
+ *
+ * `previous` is what the card is showing. A read that failed or timed out comes
+ * back as null, which is not evidence the runtime is empty: dropping its rows
+ * would take the model off the card, and with all four failing on one blip of a
+ * remote Studio the whole card would vanish while everything stayed loaded. So
+ * an unreadable source keeps what it last showed and a readable one is always
+ * replaced, including by an empty answer, which is how an unload still clears.
+ */
+export async function readLoadedModels(
+  previous: readonly LoadedModelEntry[] = [],
+): Promise<LoadedModelEntry[]> {
   const [inference, diffusion, video, stt] = await Promise.all([
     settled(readInferenceStatus),
     settled(getDiffusionStatus),
     settled(getVideoStatus),
     settled(readSttStatus),
   ]);
+  const kept = (source: LoadedModelSource) =>
+    previous.filter((row) => row.source === source);
   return mergeLoadedModels([
-    describeInferenceStatus(inference),
-    describeDiffusionStatus(diffusion),
-    describeVideoStatus(video),
-    describeSttStatus(stt),
+    inference === null ? kept("chat") : describeInferenceStatus(inference),
+    diffusion === null ? kept("image") : describeDiffusionStatus(diffusion),
+    video === null ? kept("video") : describeVideoStatus(video),
+    stt === null ? kept("stt") : describeSttStatus(stt),
   ]);
 }
 

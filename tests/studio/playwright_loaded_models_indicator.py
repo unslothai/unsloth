@@ -449,6 +449,45 @@ def run(page, state: Runtime) -> None:
     check("a hung runtime still lets the other rows render", len(rows(page)) == 1, str(rows(page)))
     state.hang = set()
 
+    # ── A blip on a runtime that IS holding something ───────────────────
+    # A failed read is not evidence the runtime is empty. Dropping the rows for
+    # it takes a loaded model off the card, and on a remote Studio a blip can
+    # take all four at once, so the whole card would go while everything stayed
+    # resident. The row must survive the failure and outlive it.
+    state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
+    boot(page, state)
+    page.wait_for_selector(CARD, timeout = 30_000)
+    check("the chat row is up before the blip", len(rows(page)) == 1, str(rows(page)))
+    failing = {"count": 0}
+
+    def fail_chat_status(route):
+        failing["count"] += 1
+        route.fulfill(
+            status = 503, content_type = "application/json", body = json.dumps({"detail": "upstream"})
+        )
+
+    page.context.route("**/api/inference/status", fail_chat_status)
+    # Long enough for several polls at the 5s cadence, so this is the steady
+    # state rather than a single unlucky read.
+    page.wait_for_timeout(12_000)
+    check(
+        "a failing status read keeps the row it cannot confirm",
+        failing["count"] > 0 and len(rows(page)) == 1,
+        f"{failing['count']} failed reads, rows={rows(page)}",
+    )
+    install_routes(page.context, state)  # restore the stub
+
+    # ── And a readable empty answer still clears it ─────────────────────
+    state.chat = chat()
+    page.wait_for_timeout(8000)
+    check(
+        "a readable empty status still retires the row",
+        len(rows(page)) == 0,
+        str(rows(page)),
+    )
+    state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
+    state.hang = set()
+
     # ── The position restore: the bug this suite exists for ─────────────
     state.chat = chat(active_model = "unsloth/Qwen3-4B-GGUF", is_gguf = True, gguf_variant = "Q4_K_M")
     # As if dragged to the corner of a 2560x1440 monitor, then reopened here.

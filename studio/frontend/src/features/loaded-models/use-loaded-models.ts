@@ -39,6 +39,9 @@ export function useLoadedModels(
   track: boolean = enabled,
 ): UseLoadedModels {
   const [polled, setEntries] = useState<LoadedModelEntry[]>([]);
+  // Mirrored for the read below, which needs the last rows without taking a
+  // dependency that would rebuild `refresh` on every poll.
+  const polledRef = useRef<LoadedModelEntry[]>(NO_ENTRIES);
   // Reported empty rather than cleared: clearing would be a setState in an
   // effect, and the last read is right again the moment the pref returns.
   // Loads announced by the API call itself, so a row appears with the toast
@@ -93,7 +96,9 @@ export function useLoadedModels(
     }
     inFlightRef.current = true;
     const generation = generationRef.current;
-    void readLoadedModels()
+    // What the card shows now, so a source that fails to answer keeps its rows
+    // rather than being read as empty.
+    void readLoadedModels(polledRef.current)
       .then((next) => {
         if (mountedRef.current && generation === generationRef.current) {
           setEntries(next);
@@ -114,6 +119,9 @@ export function useLoadedModels(
         if (mountedRef.current) retireSettled();
       });
   }, [enabled, retireSettled]);
+  useEffect(() => {
+    polledRef.current = polled;
+  }, [polled]);
   useEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
