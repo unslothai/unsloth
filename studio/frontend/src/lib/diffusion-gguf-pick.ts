@@ -7,11 +7,13 @@
 /** Which pick owns the page. A claim invalidates every token handed out before it, so the newest pick wins. */
 export interface PickGuard {
   claim(): number;
-  /** Leave the page unowned: a page switch, an unload, an unmount. */
+  /** Leave the page unowned, without ending the pick: a page switch, an unmount. */
   release(): void;
-  /** Is this token still the owner? False after a release, so nothing lands on a page nobody is picking for. */
+  /** End the pick outright: an eject or a deploy, which the staged download must not undo. */
+  cancel(): void;
+  /** Is this token still the owner? False after a release, so nothing lands on a page nobody is looking at. */
   holds(token: number): boolean;
-  /** Has nothing been picked since this token? Survives a release, so a staged download still loads on the way back. */
+  /** Is this still the last pick made? Survives a release, so a staged download resumes on the way back. */
   isLatest(token: number): boolean;
 }
 
@@ -25,6 +27,11 @@ export function createPickGuard(): PickGuard {
       return latest;
     },
     release: () => {
+      owner = 0;
+    },
+    cancel: () => {
+      // Past every token handed out, so nothing outstanding is the latest pick either.
+      latest += 1;
       owner = 0;
     },
     holds: (token) => token !== 0 && token === owner,

@@ -2006,6 +2006,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    // This arrival owns the page like a direct pick does, so a download staged by an earlier one cannot land on top.
+    const token = pickGuard.claim();
     void navigateSelf({ to: "/images", search: {}, replace: true });
     // A label means a GGUF repo whatever the catalog says, and a label is not loadable, so resolve it rather than routing it
     // through the classifier's filename slot.
@@ -2027,7 +2029,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, false));
       return;
     }
-    void loadOrStage(pick.repoId, pick.opts, false);
+    void loadOrStage(pick.repoId, pick.opts, false, token);
   }, [
     active,
     routeSearch.model,
@@ -2036,6 +2038,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     loadOrStage,
     loadGgufRepoPick,
     navigateSelf,
+    pickGuard,
   ]);
 
   // Reload the current model with the current advanced options.
@@ -2194,8 +2197,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.error("Could not resolve the trained adapter's name.");
         return;
       }
-      // The deploy owns the page now: a resolving pick would load over the base about to load.
-      pickGuard.release();
+      // The deploy owns the page now: a resolving pick, or a staged download, would load over the base it is about to.
+      pickGuard.cancel();
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
@@ -2212,8 +2215,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   const handleUnload = useCallback(async () => {
     // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too, or the toast leaks forever.
-    // A pick still resolving its filename counts: it would load the model just ejected.
-    pickGuard.release();
+    // Cancel, not release: a pick still resolving, and a download already staged, would both load back what was just ejected.
+    pickGuard.cancel();
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
     dismissLoadToast();

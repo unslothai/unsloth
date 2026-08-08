@@ -153,6 +153,19 @@ test("releasing the page invalidates the pick holding it", () => {
   assert.notEqual(guard.claim(), token);
 });
 
+test("an eject ends the pick, so a staged download does not come back", () => {
+  // Release and cancel differ exactly here: leaving the page defers the staged load, ejecting drops it.
+  const guard = createPickGuard();
+  const staged = guard.claim();
+  guard.cancel();
+  assert.equal(guard.holds(staged), false);
+  assert.equal(guard.isLatest(staged), false);
+  // And the page is claimable again afterwards, with a token of its own.
+  const next = guard.claim();
+  assert.notEqual(next, staged);
+  assert.equal(guard.holds(next), true);
+});
+
 test("a release is not a new pick, so a staged download still lands", () => {
   // Leaving the page defers the staged load rather than dropping it; only another pick may take it.
   const guard = createPickGuard();
