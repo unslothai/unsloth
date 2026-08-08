@@ -210,7 +210,6 @@ def _scope_spellings(hub_cache: str | Path) -> tuple[str, ...]:
     canonical = normalize_hub_cache(hub_cache)
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
-
         configured = get_hf_cache_paths().hub_cache
     except Exception:
         return tuple(scopes)

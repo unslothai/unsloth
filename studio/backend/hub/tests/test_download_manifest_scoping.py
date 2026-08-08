@@ -455,9 +455,7 @@ def test_variant_index_sees_legacy_scope_when_handed_a_RESOLVED_root(monkeypatch
     assert state.manifest_for("Q4_K_M") is not None
 
 
-def test_the_configured_spelling_is_only_borrowed_for_the_SAME_directory(
-    monkeypatch, tmp_path
-):
+def test_the_configured_spelling_is_only_borrowed_for_the_SAME_directory(monkeypatch, tmp_path):
     """The guard on the fan-out, which matters more than the fan-out.
 
     Borrowing the configured cache's spellings unconditionally would make a
