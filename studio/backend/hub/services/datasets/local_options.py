@@ -179,6 +179,8 @@ def _declared_configs(payload: Any) -> Any:
         return {}
     if not isinstance(payload, list):
         return _UNPARSABLE_METADATA
+    if sum(1 for item in payload if isinstance(item, dict) and item.get("default")) > 1:
+        return _UNPARSABLE_METADATA
     declared: dict[str, Optional[str]] = {}
     for item in payload[:_MAX_OPTIONS]:
         if not isinstance(item, dict) or not isinstance(item.get("config_name"), str):
@@ -339,6 +341,14 @@ def _snapshot_metadata_file(snapshot: Path, name: str) -> Optional[Path]:
     return path if 0 < size <= _MAX_METADATA_BYTES else None
 
 
+def _snapshot_metadata_is_oversized(snapshot: Path, name: str) -> bool:
+    path = resolved_dataset_snapshot_file(snapshot, name)
+    try:
+        return path is not None and path.stat().st_size > _MAX_METADATA_BYTES
+    except OSError:
+        return False
+
+
 def _read_card_metadata(path: Path) -> Optional[dict[str, Any]]:
     try:
         lines = path.read_text(encoding = "utf-8").splitlines()
@@ -353,13 +363,19 @@ def _read_card_metadata(path: Path) -> Optional[dict[str, Any]]:
             return _UNPARSABLE_METADATA
     except (ImportError, OSError, UnicodeError, ValueError, StopIteration):
         return None
-    # DatasetCard.load insists the metadata block is a mapping and raises when it is not.
+    # DatasetCard.load turns a null block into empty metadata but raises on anything else
+    # that is not a mapping.
+    if payload is None:
+        return {}
     return payload if isinstance(payload, dict) else _UNPARSABLE_METADATA
 
 
 def _snapshot_card_data(snapshot: Path) -> Any:
     """The card datasets would build: README front matter, then .huggingface.yaml over it."""
     card: dict[str, Any] = {}
+    if _snapshot_metadata_is_oversized(snapshot, "README.md"):
+        # datasets parses it whatever its size, so treating it as absent invents options.
+        return _UNPARSABLE_METADATA
     readme = _snapshot_metadata_file(snapshot, "README.md")
     if readme is not None:
         payload = _read_card_metadata(readme)
@@ -378,7 +394,10 @@ def _snapshot_card_data(snapshot: Path) -> Any:
                 return _UNPARSABLE_METADATA
         except (ImportError, OSError, UnicodeError, ValueError):
             payload = None
-        if isinstance(payload, dict):
+        if payload is not None and not isinstance(payload, dict):
+            # The loader feeds this straight to dict.update, which raises on a scalar.
+            return _UNPARSABLE_METADATA
+        if payload:
             card.update(payload)
     return card
 
@@ -451,19 +470,18 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
     return files
 
 
-def _keyword_splits(parts: Iterable[str]) -> dict[str, tuple[int, int]]:
-    """Splits named by these path parts, each with (first keyword matched, how many matched).
+def _keyword_splits(parts: Iterable[str]) -> dict[str, list[int]]:
+    """Splits named by these path parts, each with the keyword positions that matched.
 
-    datasets resolves every keyword pattern separately and concatenates, so the keyword that
-    hits first decides where the file lands in the split, and a name carrying two synonyms of
-    one split contributes that file twice to its extension count.
+    datasets resolves every keyword pattern separately and concatenates, so a name carrying
+    two synonyms of one split appears twice in it, once at each synonym's own position.
     """
     tokens = {token for part in parts for token in re.split(r"[-._ 0-9]+", part) if token}
     matched = {}
     for split, keywords in _SPLIT_KEYWORDS.items():
         hits = [index for index, keyword in enumerate(keywords) if keyword in tokens]
         if hits:
-            matched[split] = (hits[0], len(hits))
+            matched[split] = hits
     return matched
 
 
@@ -474,8 +492,10 @@ def _sharded_split_files(files: Iterable[_DataFile]) -> Optional[dict[str, list[
         match = _SHARDED_DATA_RE.fullmatch(entry[0].as_posix())
         if match is None:
             continue
-        split = _valid_option(match.group("split"), _SPLIT_RE, reject_dotdot = True)
-        if split is None:
+        raw = match.group("split")
+        split = _valid_option(raw, _SPLIT_RE, reject_dotdot = True)
+        if split is None or split != raw:
+            # Trimming would hand the picker a different split than the loader rejects.
             return None
         grouped.setdefault(split, []).append(entry)
     return {split: sorted(entries) for split, entries in grouped.items()}
@@ -486,8 +506,8 @@ def _keyword_split_files(
 ) -> dict[str, list[_DataFile]]:
     ordered: dict[str, list[tuple[int, PurePosixPath, _DataFile]]] = {}
     for entry in files:
-        for split, (first, hits) in _keyword_splits(naming(entry[0])).items():
-            ordered.setdefault(split, []).extend([(first, entry[0], entry)] * hits)
+        for split, indexes in _keyword_splits(naming(entry[0])).items():
+            ordered.setdefault(split, []).extend((index, entry[0], entry) for index in indexes)
     return {
         split: [entry for _first, _path, entry in sorted(rows, key = lambda row: row[:2])]
         for split, rows in ordered.items()
@@ -527,7 +547,14 @@ def _offerable_split(entries: Iterable[_DataFile], snapshot: Path, root: str, mo
     read stays inside the cache. One safe file is not enough: datasets loads them all."""
     trainable = False
     for path, _file_module in entries:
-        if module not in _file_modules(path.name):
+        # datasets keeps every zip, and folder metadata for its own builders, whatever module
+        # won, so those are read as well and have to clear the resolver too.
+        retained = (
+            module in _file_modules(path.name)
+            or _INDETERMINATE_MODULE in _file_modules(path.name)
+            or path.name in _METADATA_FILENAMES
+        )
+        if not retained:
             continue
         if resolved_dataset_snapshot_file(snapshot, root + path.as_posix()) is None:
             return False
@@ -561,7 +588,9 @@ def _declared_module(payload: Any) -> Optional[str]:
             if isinstance(path, str) and (candidate := PurePosixPath(path))
         ]
         if named:
-            return _split_module(named)
+            # An extensionless glob names no module, and the loader would settle one by
+            # resolving it, so we cannot claim a sibling config agrees with it.
+            return _split_module(named) or _INDETERMINATE_MODULE
     return None
 
 
@@ -636,8 +665,9 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         if metadata is None:
             continue
         payload = _safe_json_file(metadata, snapshot, allow_snapshot_symlink = True)
-        if payload is None:
-            # datasets opens this file whenever it exists and lets the decode error out.
+        if payload is None and filename == "dataset_infos.json":
+            # The local factory opens the plural file whenever it exists and lets the decode
+            # error out. The singular one is an ignored data filename it never reads here.
             return set()
         if filename == "dataset_infos.json":
             _add_dataset_info_options(options, payload)

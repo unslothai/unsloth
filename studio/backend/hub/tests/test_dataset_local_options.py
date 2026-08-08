@@ -223,6 +223,115 @@ def test_snapshot_options_keep_a_declared_config_name_when_inferring(tmp_path):
     assert local_options._snapshot_options(snapshot) == {("foo", "train")}
 
 
+def test_snapshot_options_reject_a_split_whose_archive_escapes_the_cache(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "train").mkdir(parents = True)
+    (snapshot / "train" / "safe.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    outside = tmp_path / "outside.zip"
+    outside.write_bytes(b"zip")
+    (snapshot / "train" / "data.zip").symlink_to(outside)
+
+    # datasets keeps zips for every module, so the split's builder would open this one.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_do_not_infer_beside_an_unreadable_declared_pattern(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "a").mkdir(parents = True)
+    (snapshot / "b").mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: a\n  data_files: a/*\n- config_name: b\n  data_dir: b\n---\n",
+        encoding = "utf-8",
+    )
+    (snapshot / "a" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    # `a/*` names no extension, so the module it settles is unknown and b cannot be claimed.
+    assert local_options._snapshot_options(snapshot) == {("a", "train")}
+
+
+def test_snapshot_options_reject_a_scalar_standalone_yaml(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / ".huggingface.yaml").write_text("metadata\n", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # The loader hands this to dict.update, which raises.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_card_too_large_to_read(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: foo\n---\n" + "x" * (2 * 1024 * 1024),
+        encoding = "utf-8",
+    )
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets parses the card whatever its size, so calling it absent invents a default.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_card_with_two_default_configs(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: a\n  default: true\n"
+        "- config_name: b\n  default: true\n---\n",
+        encoding = "utf-8",
+    )
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # get_default_config_name raises on several defaults before anything is built.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_ignore_a_malformed_singular_dataset_info(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "dataset_info.json").write_text("{oops", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # Only the plural legacy file is opened by the local factory; this one it just ignores.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_shard_name_needing_a_trim(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "data").mkdir(parents = True)
+    (snapshot / "data" / " train-00000-of-00001.parquet").write_bytes(b"parquet")
+
+    # datasets validates the captured name as it stands and raises on the space.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_treat_empty_front_matter_as_no_metadata(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text("---\n---\n", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # DatasetCard.load turns a null block into empty metadata rather than raising.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_keyword_split_files_place_each_synonym_at_its_own_position(tmp_path):
+    files = [
+        (local_options.PurePosixPath("a_train_training.csv"), "csv"),
+        (local_options.PurePosixPath("b_training.jsonl"), "json"),
+    ]
+
+    # train resolves before training, so the csv's train copy leads and its training copy
+    # sits beside the other training file rather than next to itself.
+    grouped = local_options._keyword_split_files(files, lambda path: (path.name,))
+    assert [str(path) for path, _module in grouped["train"]] == [
+        "a_train_training.csv",
+        "a_train_training.csv",
+        "b_training.jsonl",
+    ]
+
+
 def _card(snapshot, body: str) -> None:
     snapshot.mkdir(parents = True, exist_ok = True)
     (snapshot / "README.md").write_text(f"---\n{body}---\n", encoding = "utf-8")
