@@ -32,7 +32,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   LOADED_MODEL_KIND_LABELS,
   type LoadedModelEntry,
@@ -177,7 +177,10 @@ export function LoadedModelsIndicator({
   const enabled = showIndicator && !dismissed && canShowIndicator(pathname);
   // Recording is gated on the preference alone: a card that is closed, or on a
   // route that hides it, must still hear the load that brings it back.
-  const { entries, ejecting, eject } = useLoadedModels(enabled, showIndicator);
+  const { entries, polledEntries, ejecting, eject } = useLoadedModels(
+    enabled,
+    showIndicator,
+  );
   const [collapsed, setCollapsed] = usePersistedToggle(COLLAPSED_KEY);
   const navigate = useNavigate();
   const openEntry = useCallback(
@@ -214,6 +217,32 @@ export function LoadedModelsIndicator({
       }),
     [],
   );
+
+  // A load started outside this tab raises no lifecycle event at all: the
+  // OpenAI-compatible API and auto-switch go nowhere near the frontend wrappers
+  // that announce one. The poll is the only witness, so a row appearing while
+  // the card is closed reopens it too, which is what the tooltip promises.
+  //
+  // The first poll after closing is the baseline, never a reopen: the ids are
+  // read fresh on mount, and a dismissal survives a reload, so treating what is
+  // already resident as new would make the card impossible to close.
+  const idsWhileClosedRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (!dismissed) {
+      idsWhileClosedRef.current = null;
+      return;
+    }
+    const ids = new Set(polledEntries.map((entry) => entry.id));
+    const before = idsWhileClosedRef.current;
+    idsWhileClosedRef.current = ids;
+    if (!before) return;
+    for (const id of ids) {
+      if (!before.has(id)) {
+        setLoadedModelsDismissed(false);
+        return;
+      }
+    }
+  }, [dismissed, polledEntries]);
 
   if (!enabled || entries.length === 0) return null;
 

@@ -284,12 +284,23 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
  * is a thin wrapper over it. External selections are left untouched since they
  * have no backend mirror.
  */
+// Bumped by every call. Two refreshes can be in flight at once -- a media load
+// announces itself before its POST and again once the backend has committed the
+// eviction -- and they read the status at different moments. Completion order is
+// not the order they were issued in, so without this the older one could land
+// last and re-pin the model the newer one had just seen released, leaving chat
+// claiming a model that 400s on send until the load finally settled.
+let syncGeneration = 0;
+
 async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
+  // Last issued wins: it read the freshest status, whichever answers first.
+  const generation = ++syncGeneration;
+  const superseded = () => generation !== syncGeneration;
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
@@ -302,7 +313,9 @@ async function syncInferenceStatusToStore(options?: {
 
     // Cancellation can land while the requests above are in flight. Bail
     // before writing backend state back -- cancelLoading already cleared it.
-    if (signal?.aborted) return;
+    // Same for a refresh that a later one has already superseded: its answer
+    // describes a moment that has passed.
+    if (signal?.aborted || superseded()) return;
 
     setModels(listRes.models.map(toChatModelSummary));
     if (lorasRes) {
@@ -380,7 +393,9 @@ async function syncInferenceStatusToStore(options?: {
       }
     }
   } catch (error) {
-    if (signal?.aborted) return;
+    // A superseded refresh reports nothing, or a stale failure would raise a
+    // toast about a read whose answer would have been discarded anyway.
+    if (signal?.aborted || superseded()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);

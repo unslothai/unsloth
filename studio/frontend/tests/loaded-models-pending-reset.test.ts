@@ -205,5 +205,9 @@ test("recording is gated on the preference, not on whether the card shows", () =
   );
   // showIndicator is the Settings toggle alone: dismissal and route gating must
   // not stop the recording, or the card cannot reopen for the load.
-  assert.match(INDICATOR, /useLoadedModels\(enabled, showIndicator\)/);
+  assert.match(
+    INDICATOR,
+    /useLoadedModels\(\s*enabled,\s*showIndicator,\s*\)/,
+    "recording follows the preference, not what is on screen",
+  );
 });

@@ -19,6 +19,10 @@ const NO_ENTRIES: LoadedModelEntry[] = [];
 
 export type UseLoadedModels = {
   entries: LoadedModelEntry[];
+  /** What the polls actually found, whether or not the card is showing it. The
+   *  card is closed, not deaf: this is how it notices a load it was not told
+   *  about and honours "Back on the next model load". */
+  polledEntries: LoadedModelEntry[];
   /** Row ids with an eject in flight. */
   ejecting: ReadonlySet<string>;
   eject: (entry: LoadedModelEntry) => Promise<void>;
@@ -87,7 +91,10 @@ export function useLoadedModels(
 
   const refreshRef = useRef<() => void>(() => {});
   const refresh = useCallback(() => {
-    if (!enabled) return;
+    // Keyed on recording, not showing: a closed card keeps polling so a load
+    // started outside this tab, which raises no lifecycle event at all, still
+    // brings it back.
+    if (!track) return;
     if (inFlightRef.current) {
       // Remember the ask instead of dropping it: the refresh an eject queues
       // collides with the poll it has to correct more often than not.
@@ -118,7 +125,7 @@ export function useLoadedModels(
         // further read is already queued.
         if (mountedRef.current) retireSettled();
       });
-  }, [enabled, retireSettled]);
+  }, [track, retireSettled]);
   useEffect(() => {
     polledRef.current = polled;
   }, [polled]);
@@ -162,7 +169,7 @@ export function useLoadedModels(
   }, [track, refresh]);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!track) return;
     refresh();
     const timer = window.setInterval(() => {
       if (document.hidden) return;
@@ -179,7 +186,7 @@ export function useLoadedModels(
       window.removeEventListener("focus", onWake);
       document.removeEventListener("visibilitychange", onWake);
     };
-  }, [enabled, refresh]);
+  }, [track, refresh]);
 
   const eject = useCallback(
     async (entry: LoadedModelEntry) => {
@@ -239,5 +246,5 @@ export function useLoadedModels(
     [refresh],
   );
 
-  return { entries, ejecting, eject, refresh };
+  return { entries, polledEntries: polled, ejecting, eject, refresh };
 }

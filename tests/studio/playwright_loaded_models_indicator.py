@@ -554,6 +554,43 @@ def run(page, state: Runtime) -> None:
     page.wait_for_timeout(SETTLE_MS // 2)
     check("the collapsed state survives a reload", page.locator(pill).count() > 0)
 
+    # ── Closed, then a load nobody announced ────────────────────────────
+    # "Back on the next model load" is what the close tooltip promises, and a
+    # load through the OpenAI-compatible API or auto-switch raises no lifecycle
+    # event at all: the poll is the only witness. Closing must also not be
+    # undone by whatever is already resident, or the card could never be shut.
+    state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
+    boot(page, state)
+    page.wait_for_selector(CARD, timeout = 30_000)
+    page.locator('[aria-label="Close loaded models"]').first.click()
+    page.wait_for_timeout(SETTLE_MS)
+    check(
+        "closing hides the card while a model is still resident",
+        page.locator(CARD).count() == 0,
+    )
+    # Several polls with nothing new: it must stay closed.
+    page.wait_for_timeout(11_000)
+    check(
+        "a closed card stays closed over what was already loaded",
+        page.locator(CARD).count() == 0,
+    )
+    # Now a second model appears with no announcement, as a server-side load does.
+    state.diffusion = dict(
+        NOTHING_DIFFUSION,
+        loaded = True,
+        repo_id = "black-forest-labs/FLUX.1-dev",
+        family = "flux",
+        device = "cuda",
+        dtype = "bfloat16",
+    )
+    page.wait_for_timeout(11_000)
+    check(
+        "a load nobody announced reopens the closed card",
+        page.locator(CARD).count() > 0,
+        "the poll is the only witness for a load started outside the frontend",
+    )
+    state.diffusion = NOTHING_DIFFUSION
+
     # The expanded grip and the collapsed pill share one drag sentinel, but only
     # the pill has a click to consume it. Drag by the grip, collapse, then click
     # the pill ONCE: without the sentinel being dropped when a click-less handle
