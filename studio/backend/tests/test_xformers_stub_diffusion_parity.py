@@ -253,10 +253,11 @@ def test_dit_training_refuses_dense_precision_under_the_stub(on_windows_rocm, mo
 
 
 @pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
-def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode):
+def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode, monkeypatch):
     """The child's guard fires after _free_gpu_for_diffusion_training() has already unloaded residents, so the preflight must reject it first."""
     pytest.importorskip("torch")
     from core.training.diffusion_dit_trainer import _resolve_base_precision
+    from core.training import diffusion_train_common as dtc
     from core.training.diffusion_train_common import training_precision_preflight_error
 
     install_torchao_windows_rocm_stub()
@@ -264,6 +265,14 @@ def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode):
     with pytest.raises(ValueError, match = "Windows-ROCm stub"):
         _resolve_base_precision(cfg, None, "cuda")
 
+    # Pin the earlier gates: on a CPU-only runner they answer first and correctly,
+    # so without this the assertion below reads their message and the stub gate is
+    # never exercised (it passes only on a GPU host).
+    import torch
+
+    monkeypatch.setattr(dtc, "bf16_unsupported_reason", lambda _f: None)
+    monkeypatch.setattr(dtc, "dit_accelerator_missing_reason", lambda _f: None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     # A real DiT family name, or the gate block is skipped and the test proves nothing.
     reason = training_precision_preflight_error("flux.1", mode)
     assert reason and "Windows-ROCm stub" in reason, (
