@@ -1075,7 +1075,7 @@ def test_the_marker_survives_a_cache_clear(tmp_path, monkeypatch):
 
     storage_roots.setup_cache_env()
     pinned = Path(os.environ["UNSLOTH_COMPILE_LOCATION"])
-    (pinned / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
+    (pinned / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n", encoding = "utf-8")
 
     cache_cleanup.clear_unsloth_compiled_cache()
     assert (pinned / cache_cleanup.CACHE_MARKER).is_file()
@@ -1083,7 +1083,7 @@ def test_the_marker_survives_a_cache_clear(tmp_path, monkeypatch):
 
     # Still ours on the next pass, so a __pycache__ left by the compiler goes too.
     (pinned / "__pycache__").mkdir()
-    (pinned / "UnslothSFTTrainer.py").write_text("trainer\n")
+    (pinned / "UnslothSFTTrainer.py").write_text("trainer\n", encoding = "utf-8")
     cache_cleanup.clear_unsloth_compiled_cache(preserve_patterns = ["Unsloth*Trainer.py"])
     assert not (pinned / "__pycache__").exists()
     assert (pinned / "UnslothSFTTrainer.py").is_file()
