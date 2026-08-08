@@ -332,7 +332,6 @@ def _installed_distribution_version(name: str) -> str | None:
     """Return installed distribution metadata without importing the package."""
     try:
         from importlib.metadata import PackageNotFoundError, version
-
         return version(name)
     except (PackageNotFoundError, ValueError):
         return None
