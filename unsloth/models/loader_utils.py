@@ -36,6 +36,7 @@ from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version, get_quant_type
 import gc
+import traceback as _traceback
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -1180,6 +1181,31 @@ def _restore_progress_bars(were_disabled):
             pass
 
 
+def _empty_cache_artifact(exc):
+    """True if exc, or something it wraps, is offline mode's empty-cache artifact.
+
+    The ONE retry failure that says nothing useful. Forced offline, Transformers
+    skips its own "does not appear to have a file named" raise and leaves
+    `resolved_archive_file = None`, so a cache with nothing in it surfaces as
+    `AttributeError: 'NoneType' object has no attribute 'endswith'`.
+
+    Named positively, rather than asking "is this an OOM": every other retry
+    failure is real news and must reach the user, and enumerating the ways an
+    accelerator spells OOM cannot be complete (accelerate re-raises it as a bare
+    RuntimeError, XPU has its own class). Asking for the one artifact instead is
+    complete by construction.
+    """
+    seen = 0
+    while exc is not None and seen < 8:
+        if isinstance(exc, AttributeError):
+            text = str(exc)
+            if "NoneType" in text and "endswith" in text:
+                return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
+
+
 def _offline_aware_load(fn):
     """Decide offline ONCE (local_files_only kwarg or env) and force it around the
     whole load. If we started online and hit a network error, retry once forced-offline.
@@ -1201,6 +1227,19 @@ def _offline_aware_load(fn):
             # (else outer layers reload the whole model again).
             if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
                 raise
+            # Keep the error, drop its traceback. Holding `e` holds its frames, and
+            # those frames hold the half-built model, so the collect below could not
+            # free it and a large VLM OOMed on the reload the retry exists to make.
+            online_error = e.with_traceback(None)
+            # A wrapper keeps its own cause/context, and those carry tracebacks over the
+            # SAME failed-attempt frames, so dropping only the top one still pins the
+            # half-built model. Clear the locals along the chain; file/line is kept.
+            _chained = online_error.__cause__ or online_error.__context__
+            _depth = 0
+            while _chained is not None and _depth < 8:
+                _traceback.clear_frames(_chained.__traceback__)
+                _chained = _chained.__cause__ or _chained.__context__
+                _depth += 1
         # Retry OUTSIDE the except so the failed attempt's traceback (a partial model)
         # is freed before reallocating, else a large VLM can OOM on the second load.
         try:
@@ -1218,12 +1257,32 @@ def _offline_aware_load(fn):
             with _force_hf_offline():
                 return fn(*args, **kwargs)
         except Exception as e:
+            # Report the ONLINE error: this retry only runs because of it. Its own
+            # failure names an empty cache badly, since offline mode skips
+            # Transformers' "does not appear to have a file named" raise and leaves
+            # `resolved_archive_file = None` -- the user saw `AttributeError:
+            # 'NoneType' ... 'endswith'`. The retry stays as __cause__.
+            surfaced = online_error if _empty_cache_artifact(e) else e
             # Tag so an enclosing _offline_aware_load skips its own redundant retry.
             try:
-                e._unsloth_offline_retried = True
+                surfaced._unsloth_offline_retried = True
             except Exception:
                 pass
-            raise
+            if surfaced is e:
+                raise
+            # `from e` only where there is no chain to lose. A wrapper classified as
+            # network-related THROUGH its `__cause__` would otherwise have that cause
+            # replaced by the retry, and nothing downstream could classify it again.
+            # The retry still reaches the user either way: implicit chaining sets
+            # `__context__` because this raise is inside the except block.
+            if online_error.__cause__ is None:
+                if online_error.__context__ is None:
+                    raise surfaced from e
+                # Classified through an implicit chain: promote it to `__cause__` first,
+                # because the raise below is inside this except block and so overwrites
+                # `__context__` with the retry failure either way.
+                online_error.__cause__ = online_error.__context__
+            raise surfaced
 
     return _wrapper
 
