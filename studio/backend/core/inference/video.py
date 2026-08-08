@@ -55,7 +55,7 @@ from .diffusion_cache import (
     maybe_toggle_step_cache,
     normalize_transformer_cache,
 )
-from .diffusion_device import resolve_diffusion_device_target
+from .diffusion_device import force_float32_rope, resolve_diffusion_device_target
 from .diffusion_memory import (
     apply_memory_plan,
     estimate_gguf_resident_mib,
@@ -1445,6 +1445,8 @@ class VideoBackend:
             if effective_speed not in (SPEED_OFF, SPEED_MAX)
             else False
         )
+        # Before any generation touches the RoPE tables, and after every component is on-device.
+        force_float32_rope(pipe, target, logger = logger)
         speed_optims: tuple = ()
         for view in views:
             # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first). is_gguf needs kind==gguf AND no quant engaged.
