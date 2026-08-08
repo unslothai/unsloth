@@ -94,6 +94,22 @@ def _read_local_header(path: str) -> bytes:
         return b""
 
 
+def _interrupt_read(response: Any) -> None:
+    """Make a read parked on ``response`` return, so the whole-body deadline can be enforced.
+
+    ``urllib3.HTTPResponse.shutdown`` half-closes the socket, which is the only thing that wakes a
+    thread blocked inside ``iter_content``: ``Response.close`` drops the file object while the
+    socket stays readable, so the read sits there regardless. Best effort -- a urllib3 without it,
+    or a response already handed back to the pool, just leaves today's behaviour."""
+    try:
+        response.raw.shutdown()
+    except Exception:  # noqa: BLE001 — a deadline that cannot fire must not become a new failure
+        try:
+            response.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> bytes:
     """The first ``_GGUF_HEADER_BYTES`` of a Hub-hosted GGUF, or b"" when they cannot be read."""
     try:
@@ -116,13 +132,28 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
             if response.status_code != 206:
                 return b""
             # requests' timeout is per socket read, so a server trickling a byte at a time holds
-            # the picker open forever inside the byte cap. One deadline for the whole body.
+            # the picker open forever inside the byte cap. One deadline for the whole body -- and
+            # it has to be ARMED, not just tested between chunks: iter_content blocks inside
+            # urllib3 until a whole 64 KiB chunk has arrived, and every dribbled byte resets the
+            # socket timeout, so the test below is not reached for hours. The timer half-closes
+            # the socket instead, which makes that read return.
             deadline = time.monotonic() + _HEADER_TIMEOUT_SECONDS
+            watchdog = threading.Timer(_HEADER_TIMEOUT_SECONDS, _interrupt_read, (response,))
+            watchdog.daemon = True
+            watchdog.start()
             buffer = bytearray()
-            for chunk in response.iter_content(chunk_size = 65536):
-                buffer += chunk
-                if len(buffer) >= _GGUF_HEADER_BYTES or time.monotonic() > deadline:
-                    break
+            try:
+                for chunk in response.iter_content(chunk_size = 65536):
+                    buffer += chunk
+                    if len(buffer) >= _GGUF_HEADER_BYTES or time.monotonic() > deadline:
+                        break
+            # Keep what arrived rather than discarding it: the deadline firing on a merely SLOW
+            # link still leaves the tensor table (the first ~15 KiB) in hand, and the parser is
+            # truncation-safe, so a short prefix is answered or ignored, never guessed at.
+            except Exception:  # noqa: BLE001 — deadline fired, or the peer went away mid-body
+                pass
+            finally:
+                watchdog.cancel()
             return bytes(buffer[:_GGUF_HEADER_BYTES])
     except Exception:  # noqa: BLE001 — offline/transient must not block a load
         return b""

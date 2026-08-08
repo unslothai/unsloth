@@ -16,6 +16,7 @@ and a stubbed ``hf_hub_download`` fails the test if anything tries to fetch a wh
 
 from __future__ import annotations
 
+import threading
 import types
 
 import pytest
@@ -278,6 +279,60 @@ def test_an_offline_host_fails_open(monkeypatch):
         )
         is None
     )
+
+
+def test_a_trickling_server_cannot_hold_the_picker_open(monkeypatch):
+    # A pick is blocked on this read in the UI, and the pre-eviction preflight runs it on the
+    # route's thread, so an unbounded read is a load request that never answers.
+    #
+    # Testing the deadline BETWEEN chunks is not enough, which is what this pins. iter_content
+    # blocks inside urllib3 until a whole 64 KiB chunk has arrived, and requests' timeout is per
+    # socket read, so a server dribbling a byte at a time resets it forever: measured against a
+    # real loopback socket, one chunk at a byte a second is 18 hours and the loop never comes
+    # back to look at the clock. Half-closing the socket is what ends it -- response.close() does
+    # not, it drops the file object and leaves the socket readable -- and requests surfaces that
+    # as a broken-connection error, which reads as "no opinion" like any other transport failure.
+    interrupted = threading.Event()
+
+    class _Trickle:
+        status_code = 206
+
+        def __init__(self):
+            self.raw = types.SimpleNamespace(shutdown = interrupted.set)
+
+        def iter_content(self, chunk_size = 1):
+            if not interrupted.wait(10):
+                raise AssertionError("the header read was never interrupted")
+            raise OSError("Connection broken: IncompleteRead(12 bytes read)")
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(diffusion_compat, "_HEADER_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(
+        "huggingface_hub.utils.get_session",
+        lambda: types.SimpleNamespace(get = lambda *a, **k: _Trickle()),
+    )
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+
+    out: list[bytes] = []
+    reader = threading.Thread(
+        target = lambda: out.append(
+            diffusion_compat._read_gguf_header(KLEIN_4B_GGUF, KLEIN_4B_FILE, None)
+        ),
+        daemon = True,
+    )
+    reader.start()
+    reader.join(8)
+
+    assert not reader.is_alive(), "the header read outlived its own deadline"
+    assert out == [b""]
 
 
 def test_a_server_that_ignores_the_range_header_is_abandoned(monkeypatch, tmp_path):
