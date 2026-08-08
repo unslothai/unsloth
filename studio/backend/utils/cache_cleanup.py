@@ -65,6 +65,48 @@ def get_existing_cache_dirs() -> List[Path]:
     return found
 
 
+# What a compiled cache is made of. Anything else means the configured path is
+# a directory the user also keeps other things in.
+_CACHE_ENTRY_SUFFIXES = (".py", ".pyc", ".pyi")
+_CACHE_ENTRY_NAMES = ("__pycache__", ".locks", "unsloth_compiled_cache")
+
+
+def _is_cache_shaped(path: Path) -> bool:
+    """True when every entry looks like something the compiler wrote."""
+    try:
+        for item in path.iterdir():
+            if item.name in _CACHE_ENTRY_NAMES:
+                continue
+            if item.is_file() and item.suffix in _CACHE_ENTRY_SUFFIXES:
+                continue
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _cleanable_cache_dirs() -> List[Path]:
+    """Cache dirs safe to delete from.
+
+    UNSLOTH_COMPILE_LOCATION is a user-set variable, so it can name a directory
+    that holds other things (`$HOME/.cache`). The built-in paths are ours by
+    construction; a configured one has to look like a cache before anything here
+    deletes from it.
+    """
+    builtin = {str(p) for p in _CACHE_DIRS}
+    cleanable: List[Path] = []
+    for cache_dir in get_existing_cache_dirs():
+        if str(cache_dir) in builtin or _is_cache_shaped(cache_dir):
+            cleanable.append(cache_dir)
+        else:
+            logger.warning(
+                "Not clearing %s: it holds files the compiler did not write. Point "
+                "UNSLOTH_COMPILE_LOCATION at a directory used only for the compiled cache.",
+                cache_dir,
+            )
+    return cleanable
+
+
 def register_compiled_cache_on_path() -> None:
     """Add all existing compiled-cache directories to sys.path and PYTHONPATH.
 
@@ -98,7 +140,7 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
                            (e.g., ["Unsloth*Trainer.py"]). If None or empty,
                            the entire cache directory is deleted (legacy behavior).
     """
-    for cache_dir in get_existing_cache_dirs():
+    for cache_dir in _cleanable_cache_dirs():
         if preserve_patterns:
             logger.info(
                 f"Cleaning unsloth compiled cache (preserving {preserve_patterns}): " f"{cache_dir}"

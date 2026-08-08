@@ -7287,7 +7287,13 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         return os.path.join(root, "_default")
     if not _usable_session_id(session_id):
         return os.path.join(root, "_invalid")
-    return os.path.join(root, session_id)
+    workdir = os.path.join(root, session_id)
+    # The same containment _get_workdir applies: a session entry that is a
+    # symlink out of the root would otherwise become the root for reads, and
+    # serve whatever it points at.
+    if not os.path.realpath(workdir).startswith(os.path.realpath(root) + os.sep):
+        return os.path.join(root, "_invalid")
+    return workdir
 
 
 def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
@@ -7314,6 +7320,15 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
         if delete_files:
             shutil.rmtree(target, ignore_errors = True)
             return not os.path.isdir(target)
+        # Scratch the executor wrote does not count as "the user has files
+        # here": a tool call that just finished can leave a studio_exec_ file
+        # behind, and rmdir would then leak the folder forever.
+        for name in os.listdir(target):
+            if name.startswith(_INTERNAL_FILE_PREFIXES):
+                try:
+                    os.unlink(os.path.join(target, name))
+                except OSError:
+                    pass
         os.rmdir(target)  # raises when non-empty, which is the intent
         return True
     except OSError:

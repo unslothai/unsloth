@@ -13574,10 +13574,11 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
     for base, dirs, entries in os.walk(sandbox_dir):
         depth = base[len(sandbox_dir) :].count(os.sep)
         # depth 0 is the sandbox itself, whose files are one segment.
+        # Segments the route would refuse are dropped here too, so the two walks agree.
         dirs[:] = (
             []
             if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
-            else [d for d in sorted(dirs) if not d.startswith(".")]
+            else [d for d in sorted(dirs) if not d.startswith(".") and _servable_segment(d)]
         )
         for entry in sorted(entries):
             # Mirrors the snapshot: internal scratch out, dotfiles in.

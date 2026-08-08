@@ -601,5 +601,113 @@ def test_deleting_a_chat_right_after_an_upgrade_finds_its_legacy_sandbox(tmp_pat
     assert not (Path(tools.sandbox_root()) / "__LOCALID_oldchat").exists()
 
 
+def test_a_configured_cache_that_holds_other_files_is_never_deleted(tmp_path, monkeypatch):
+    """UNSLOTH_COMPILE_LOCATION is user-set. Pointed at a shared directory it
+    would otherwise be rmtree'd at startup, taking whatever else lives there."""
+    shared = tmp_path / "shared"
+    (shared / "important").mkdir(parents = True)
+    (shared / "important" / "notes.txt").write_text("user data")
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(shared))
+
+    from utils import cache_cleanup
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert (shared / "important" / "notes.txt").read_text() == "user data"
+
+    cache_cleanup.clear_unsloth_compiled_cache(preserve_patterns = ["Unsloth*Trainer.py"])
+    assert (shared / "important" / "notes.txt").read_text() == "user data"
+
+
+def test_a_real_configured_cache_is_still_cleared(tmp_path, monkeypatch):
+    cache = tmp_path / "compiled_cache"
+    cache.mkdir()
+    (cache / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
+    (cache / "__pycache__").mkdir()
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(cache))
+
+    from utils import cache_cleanup
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert not cache.exists()
+
+
+def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, monkeypatch):
+    """A legacy session entry that is a symlink used to become the sandbox root
+    for reads, so anything under its target was downloadable."""
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("TOPSECRET")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    legacy = fake_home / "studio_sandbox"
+    legacy.mkdir(parents = True)
+    (legacy / "__LOCALID_evil").symlink_to(outside)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    resolved = tools.resolve_sandbox_workdir("__LOCALID_evil")
+    assert Path(resolved).name == "_invalid", resolved
+    assert not str(Path(resolved).resolve()).startswith(str(outside.resolve()))
+
+
+def test_leftover_executor_scratch_does_not_leak_the_folder(tmp_path, monkeypatch):
+    """A tool call that just finished can leave studio_exec_ behind, and rmdir
+    would then keep the folder forever."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
+    (workdir / "studio_exec_abc123.py").write_text("print(1)")
+
+    assert tools.remove_session_sandbox("__LOCALID_scratch") is True
+    assert not workdir.exists()
+
+
+def test_a_real_file_still_blocks_removal(tmp_path, monkeypatch):
+    """Only scratch is ignored; the user's own files still need the opt-in."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_keepit"))
+    (workdir / "studio_exec_abc123.py").write_text("print(1)")
+    (workdir / "sales.csv").write_text("a,b\n")
+
+    assert tools.remove_session_sandbox("__LOCALID_keepit") is False
+    assert (workdir / "sales.csv").is_file()
+
+
+def test_the_listing_drops_a_directory_the_route_would_refuse(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    from routes.inference import _sandbox_listing_names
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_baddir"))
+    try:
+        bad = workdir / "back\\slash"
+        bad.mkdir()
+        (bad / "report.csv").write_text("x")
+    except OSError:
+        pytest.skip("filesystem rejects the name")
+    (workdir / "ok.csv").write_text("x")
+
+    names = _sandbox_listing_names(str(workdir))
+    assert "ok.csv" in names
+    assert not any("\\" in name for name in names), names
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
