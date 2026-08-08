@@ -1588,7 +1588,13 @@ def _iter_variant_state_files(
     requested, raw = _hub_cache_spellings(hub_cache)
     # Every scope this cache's state can sit in, so a variant filed under the
     # pre-resolve digest is enumerated instead of reading as "no variant state".
-    scopes = cache_scope_names(raw) if requested is not None and raw is not None else (None,)
+    #
+    # _scope_spellings, not cache_scope_names, for the same reason the delete and index paths
+    # use it: cache_scope_names recovers the legacy digest only from an UNRESOLVED path, and a
+    # variant request carrying local_path arrives here already resolved by
+    # _repo_cache_dir_for_request. On a cache reached through a symlink or a junction that left
+    # the offline listing unable to see its own partial download, or its resume control.
+    scopes = _scope_spellings(raw) if requested is not None and raw is not None else (None,)
     scoped_dirs: list[Path] = []
     for scope in scopes:
         scoped_probe = path_factory(

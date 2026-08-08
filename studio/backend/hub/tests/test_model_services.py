@@ -2754,14 +2754,17 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
         )
     )
 
+    # cache_path is ABSENT, not null. Null means "no cache dir for this repo exists", which
+    # hydration acts on by retiring the persisted job; a scan that threw is not evidence of
+    # that, and dropping a job whose partial cache is still on disk costs the user the resume.
     assert result == {
         "downloaded_bytes": 0,
         "completed_bytes": 0,
         "complete_on_disk": False,
         "expected_bytes": 0,
         "progress": 0,
-        "cache_path": None,
     }
+    assert "cache_path" not in result
     assert logger.warnings
     args, kwargs = logger.warnings[0]
     assert args[:4] == (

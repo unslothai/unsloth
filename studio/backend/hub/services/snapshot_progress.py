@@ -66,15 +66,24 @@ def _log_progress_step(job_key: str, repo_id: str, variant: Optional[str], progr
     )
 
 
-def _empty_progress(expected_bytes: int) -> dict:
-    return {
+def _empty_progress(expected_bytes: int, *, measured: bool = True) -> dict:
+    """An all-zero reading.
+
+    ``measured`` is the difference between "there is no cache dir for this repo" and "the scan
+    itself failed". Hydration retires a persisted job on the first and must not on the second: a
+    transient failure is not evidence that a partial cache was wiped. A null ``cache_path`` says
+    absent; omitting the key entirely says unknown, which is also what an older backend that
+    never sent the field looks like, so the frontend rule is the same for both."""
+    reading = {
         "downloaded_bytes": 0,
         "completed_bytes": 0,
         "complete_on_disk": False,
         "expected_bytes": max(expected_bytes, 0),
         "progress": 0,
-        "cache_path": None,
     }
+    if measured:
+        reading["cache_path"] = None
+    return reading
 
 
 _T = TypeVar("_T")
@@ -472,4 +481,4 @@ async def snapshot_progress_response(
             type(e).__name__,
             download_registry.scrub_secrets(str(e), hf_token = hf_token),
         )
-        return _empty_progress(expected_bytes)
+        return _empty_progress(expected_bytes, measured = False)

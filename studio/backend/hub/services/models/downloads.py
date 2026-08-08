@@ -502,17 +502,21 @@ def _variant_manifest_in_any_cache(
     file set came back empty and the hash filter then dropped every blob in the
     shared ``blobs/`` dir -- a finished variant reporting 0 bytes against the
     caller's catalog-hinted total. Active cache first, so the common case is one
-    lookup and the answer matches the entry snapshot_progress prefers.
+    lookup; every candidate found has to agree before one is returned.
     """
+    # The active cache's manifest is a candidate like any other, NOT an early return. Its repo
+    # dir can be gone while its scoped state still holds an old manifest, and idle progress goes
+    # on scanning the remembered caches -- so returning it unexamined applies a stale revision's
+    # hashes to a remembered cache that has the complete variant, and filters every blob of it
+    # out. That is the same wrong answer as two remembered caches disagreeing.
+    found: list[download_manifest.Manifest] = []
     manifest = download_manifest.read_manifest("model", repo_id, variant)
     if manifest is not None:
-        return manifest
-    # Whatever the active cache resolves to was just probed by the call above,
-    # and a state-dir miss is not free, so skip the entry that repeats it. In
-    # the common case preferred_repo_cache_dirs returns only that entry and this
-    # loop does no work at all.
+        found.append(manifest)
+    # The active cache was just probed by the call above and a state-dir miss is not free, so
+    # skip the entry that repeats it. In the common case preferred_repo_cache_dirs returns only
+    # that entry and this loop does no work at all.
     active = download_manifest._canonical_hub_cache()
-    found: list[download_manifest.Manifest] = []
     for entry in preferred_repo_cache_dirs("model", repo_id):
         if active is not None and download_manifest._canonical_hub_cache(entry.parent) == active:
             continue

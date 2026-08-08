@@ -525,3 +525,69 @@ def test_disagreeing_manifests_across_caches_are_refused(monkeypatch, tmp_path):
     # Agreement is still answered: the point is the ambiguity, not the multiplicity.
     served[second.parent] = old
     assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is old
+
+
+def test_a_stale_active_manifest_is_compared_rather_than_returned(monkeypatch, tmp_path):
+    """The configured cache's repo dir can be gone while its scoped state still holds an old
+    manifest, and idle progress keeps scanning the remembered caches. Returning the active one
+    unexamined applies a stale revision's hashes to a remembered cache that has the complete
+    variant and filters every blob of it out -- the same wrong answer, one cache earlier."""
+    from hub.services.models import downloads
+    from hub.utils import download_manifest
+
+    stale = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "unsloth/Model-GGUF",
+        variant = "Q4_K_M",
+        started_at = "2026-01-01T00:00:00Z",
+        expected_files = (download_manifest.ExpectedFile("old.gguf", 10, "aaa"),),
+    )
+    current = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "unsloth/Model-GGUF",
+        variant = "Q4_K_M",
+        started_at = "2026-02-01T00:00:00Z",
+        expected_files = (download_manifest.ExpectedFile("new.gguf", 20, "bbb"),),
+    )
+    remembered = tmp_path / "remembered" / "repo"
+
+    monkeypatch.setattr(downloads, "preferred_repo_cache_dirs", lambda *a, **k: [remembered])
+    monkeypatch.setattr(download_manifest, "_canonical_hub_cache", lambda *a, **k: None)
+    monkeypatch.setattr(
+        download_manifest,
+        "read_manifest",
+        # hub_cache omitted is the ACTIVE cache lookup.
+        lambda repo_type, repo_id, variant = None, *, hub_cache = None: (
+            stale if hub_cache is None else current
+        ),
+    )
+
+    assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is None
+
+
+def test_variant_enumeration_sees_legacy_scope_when_handed_a_RESOLVED_root(monkeypatch, tmp_path):
+    """The third caller with the same asymmetry, and the one that was left out.
+
+    A variant request carrying ``local_path`` is resolved by ``_repo_cache_dir_for_request``
+    before the enumerator ever sees the cache root, so ``cache_scope_names`` -- which recovers
+    the pre-resolve digest only from an unresolved path -- returned the canonical digest alone.
+    On a cache reached through a symlink or junction the offline variant listing then lost the
+    partial download entirely, along with its resume control, while the progress endpoint could
+    still see it.
+    """
+    spelled, resolved = _redirected_hub_cache(tmp_path)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = str(spelled)),
+    )
+    _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
+
+    listed = dict(
+        download_manifest.iter_variant_manifests("model", "Org/Model", hub_cache = str(resolved))
+    )
+
+    assert "Q4_K_M" in listed, (
+        "the resolved spelling lost the legacy scope, so an offline listing cannot see the "
+        "partial download it is meant to offer a resume for"
+    )
