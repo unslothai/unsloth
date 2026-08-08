@@ -2667,47 +2667,40 @@ html[data-chat-font] .aui-root {
 
 /* Settings and search: hide the scroll thumb at rest and reveal it only while
    the area is hovered, so the rail never sits visible over content. */
+.sidebar-scroll-fade,
 .run-settings-scroll,
 .hover-scrollbar {
 	scrollbar-color: transparent transparent;
 }
 
+.sidebar-scroll-fade::-webkit-scrollbar-thumb,
 .run-settings-scroll::-webkit-scrollbar-thumb,
 .hover-scrollbar::-webkit-scrollbar-thumb {
 	background: transparent;
 }
 
+.sidebar-scroll-fade:hover,
 .run-settings-scroll:hover,
 .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.5 0 0 / 0.4) transparent;
 }
 
+.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .run-settings-scroll:hover::-webkit-scrollbar-thumb,
 .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.5 0 0 / 0.4);
 }
 
+.dark .sidebar-scroll-fade:hover,
 .dark .run-settings-scroll:hover,
 .dark .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.72 0 0 / 0.4) transparent;
 }
 
+.dark .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .dark .run-settings-scroll:hover::-webkit-scrollbar-thumb,
 .dark .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.72 0 0 / 0.4);
-}
-
-/* Sidebar list: no scroll rail. A rail narrows the rows inside the scroller,
-   so their pills came out short of New Chat above it, by 8px on WebKit, a thin
-   rail on Chromium, nothing under macOS overlay scrollbars. The thumb was
-   already transparent at rest, and the fades still show there is more list. */
-.sidebar-scroll-fade {
-	scrollbar-width: none;
-}
-
-.sidebar-scroll-fade::-webkit-scrollbar {
-	width: 0;
-	height: 0;
 }
 
 /* Run settings: always reserve the scrollbar gutter so the header close

@@ -74,29 +74,47 @@ test("footer profile sits 11px above the sidebar edge", async () => {
 });
 
 test("every sidebar row pill sits in one shared box", async () => {
-  // A recent chat's pill has to match New Chat's, so the padding is defined
-  // once and every group takes it.
+  // A recent chat's pill has to match New Chat's. The rows inside the list
+  // scroller lose the scrollbar rail's width, so the rows outside it add that
+  // same width back and both end on one edge. Right pad matches left, so a
+  // pill sits the same distance from the scrollbar as from the near edge.
   const source = await sidebarSource();
   assert.match(
     source,
-    /const rowPadding = usesDesktopTitlebar\s*\?\s*"pl-\[5px\] pr-2"\s*:\s*"pl-1\.5 pr-1\.75"/,
+    /const rowPadding = usesDesktopTitlebar\s*\?\s*"pl-\[5px\] pr-\[calc\(var\(--sidebar-rail,0px\)\+5px\)\]"\s*:\s*"pl-1\.5 pr-\[calc\(var\(--sidebar-rail,0px\)\+6px\)\]"/,
   );
-  // New Chat, the nav rows, pinned projects, Recents, training runs, footer.
-  assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 6);
+  assert.match(
+    source,
+    /const scrollRowPadding = usesDesktopTitlebar\s*\?\s*"pl-\[5px\] pr-\[5px\]"\s*:\s*"pl-1\.5 pr-1\.5"/,
+  );
+  // New Chat and the footer sit outside the scroller.
+  assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 2);
+  // Nav rows, pinned projects, Recents, training runs sit inside it.
+  assert.equal(source.match(/scrollRowPadding[,}]/g)?.length, 4);
   assert.equal(source.match(/"pl-2 pr-\[5px\]"/g), null);
 });
 
-test("the sidebar list keeps no scroll rail to steal row width", async () => {
-  // A rail narrows every row under New Chat, which sits above the scroller.
+test("the sidebar list measures its scroll rail", async () => {
+  // 0 where scrollbars overlay, 8px where they are classic. Read off the
+  // scroller and written to the DOM: state here loops (React #185).
+  const source = await sidebarSource();
+  assert.match(
+    source,
+    /el\.parentElement\?\.style\.setProperty\(\s*"--sidebar-rail",\s*`\$\{el\.offsetWidth - el\.clientWidth\}px`,\s*\)/,
+  );
   const css = await readFile(
     new URL("../src/index.css", import.meta.url),
     "utf8",
   );
-  assert.match(css, /\.sidebar-scroll-fade \{\s*scrollbar-width: none;\s*\}/);
-  assert.match(
-    css,
-    /\.sidebar-scroll-fade::-webkit-scrollbar \{\s*width: 0;\s*height: 0;\s*\}/,
+  // No width override: the rail keeps the 8px the rest of the app uses, and
+  // hiding it outright is what took the scrollbar away.
+  assert.equal(/\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width/.test(css), false);
+  assert.equal(
+    /\.sidebar-scroll-fade::-webkit-scrollbar \{/.test(css),
+    false,
   );
+  // Thumb stays hidden until the list is hovered, as the other lists do.
+  assert.match(css, /\.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,/);
 });
 
 test("Tauri chat Recents label keeps its 2px shift", async () => {

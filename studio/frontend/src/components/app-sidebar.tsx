@@ -705,6 +705,14 @@ export function AppSidebar() {
   // ResizeObserver: its callback-driven setState caused a render loop (React
   // #185). Both setters bail out when unchanged, so neither path can loop.
   const syncScrollState = useCallback((el: HTMLDivElement) => {
+    // Rail width: 0 where scrollbars overlay (macOS default), 8px where they
+    // are classic (Show scroll bars: Always, Windows, Linux). Only rows inside
+    // the scroller lose it, so the rows outside pad by it to keep one edge.
+    // Written straight to the DOM: state here would loop (React #185).
+    el.parentElement?.style.setProperty(
+      "--sidebar-rail",
+      `${el.offsetWidth - el.clientWidth}px`,
+    );
     const nextScrolled = el.scrollTop > 0;
     setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
     const nextCanScrollDown =
@@ -962,10 +970,17 @@ export function AppSidebar() {
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
 
   // One box for every row pill, so a hover pill has the same edges wherever it
-  // lands. The list scroller hides its rail (index.css) instead of eating width.
+  // lands. Rows outside the list scroller add the rail width it does not lose,
+  // so both end on the same edge whether or not the scrollbar takes space.
   const rowPadding = usesDesktopTitlebar
-    ? "pl-[5px] pr-2"
-    : "pl-1.5 pr-1.75";
+    ? "pl-[5px] pr-[calc(var(--sidebar-rail,0px)+5px)]"
+    : "pl-1.5 pr-[calc(var(--sidebar-rail,0px)+6px)]";
+
+  // Inside it the rail already sits in that space, so this is just the gap
+  // between a pill and the scrollbar, matched to the gap on the left.
+  const scrollRowPadding = usesDesktopTitlebar
+    ? "pl-[5px] pr-[5px]"
+    : "pl-1.5 pr-1.5";
 
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
@@ -1985,7 +2000,7 @@ export function AppSidebar() {
           data-tour="navbar"
           className={cn(
             "group-data-[collapsible=icon]:px-0 py-0 shrink-0",
-            rowPadding,
+            scrollRowPadding,
           )}
         >
 
@@ -2156,7 +2171,7 @@ export function AppSidebar() {
                   </CollapsibleTrigger>
                 </SidebarGroupLabel>
                 <CollapsibleContent>
-                  <SidebarGroupContent className={rowPadding}>
+                  <SidebarGroupContent className={scrollRowPadding}>
                     <SidebarMenu>
                       {pinnedProjectRecords.map((project) => {
                         const projectChats =
@@ -2306,7 +2321,7 @@ export function AppSidebar() {
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className={rowPadding}>
+                <SidebarGroupContent className={scrollRowPadding}>
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -2338,7 +2353,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className={rowPadding}>
+              <SidebarGroupContent className={scrollRowPadding}>
                 <SidebarMenu>
                   {runItems.map((run) => {
                     // Explicit selection wins. Otherwise highlight the active job only while the "Current Run"
