@@ -1007,25 +1007,20 @@ def _probe_torchvision_binary(torch_version_raw, torchvision_version_raw):
     """Import torchvision, so a broken binary is named here and not six frames
     deep in transformers.
 
-    The table above compares metadata, and metadata cannot see an ABI break: a
-    torchvision whose recorded version matches torch but whose compiled ops
-    were built against a different one dies in `_meta_registrations`, at
-    `register_fake("torchvision::nms")`, with `RuntimeError: operator
-    torchvision::nms does not exist`. Found by running Gemma4_(E2B)_GRPO,
-    whose T4 branch installs vllm==0.9.2 beside Colab's torch and leaves both
-    vllm and torchvision mismatched. The vLLM half is already recovered from
-    by `disable_broken_vllm`; this half reached the user as the bare operator
-    error, raised from `transformers/image_utils.py`, naming nothing.
+    The table above compares metadata, which cannot see an ABI break: ops
+    built against a different torch die in `_meta_registrations`, at
+    `register_fake("torchvision::nms")`. Found by running Gemma4_(E2B)_GRPO,
+    whose T4 branch installs vllm==0.9.2 beside Colab's torch and mismatches
+    both; `disable_broken_vllm` already covers the vLLM half.
 
-    Not an extra import in practice: transformers imports torchvision from
-    `image_utils` the moment anything touches `processing_utils`.
+    Costs no extra import: transformers imports torchvision from `image_utils`
+    the moment anything touches `processing_utils`.
     """
     try:
         import torchvision  # noqa: F401
         import torchvision.ops  # noqa: F401  where the compiled nms lives
     except Exception as error:
-        # Anything we cannot explain is left alone rather than reported as a
-        # torchvision break; the caller that really needs it will raise it.
+        # Anything else is left for whoever actually needs torchvision.
         if not _is_broken_torchvision_error(error):
             return
         raise ImportError(

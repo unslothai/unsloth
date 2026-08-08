@@ -14,18 +14,12 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """Name a torchvision whose compiled ops do not match torch.
 
-`torchvision_compatibility_check` compared version metadata only, and metadata
-cannot see an ABI break. Found by running `Gemma4_(E2B)_GRPO`: its T4 branch
-installs vllm==0.9.2 beside Colab's torch, and torchvision came out reporting a
-version the table accepts while its ops were built against a torch that is
-gone. `import unsloth` then died with
-
-    RuntimeError: operator torchvision::nms does not exist
-
-raised from `transformers/image_utils.py`, six frames below anything the user
-wrote, naming neither torchvision nor what to do. The vLLM half of the same
-breakage was already handled -- the run logged "Detected broken vLLM binary
-extension; disabling vLLM imports and continuing".
+`torchvision_compatibility_check` compared version metadata, which cannot see
+an ABI break. Found by running `Gemma4_(E2B)_GRPO`: its T4 branch installs
+vllm==0.9.2 beside Colab's torch, and `import unsloth` then died with
+`RuntimeError: operator torchvision::nms does not exist`, raised from
+`transformers/image_utils.py` and naming nothing. The vLLM half of the same
+breakage was already handled.
 """
 
 import ast
