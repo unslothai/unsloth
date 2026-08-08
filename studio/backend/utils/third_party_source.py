@@ -106,6 +106,12 @@ _ARCHIVE_MAX_TAR_BYTES = 160 * 1024 * 1024
 _ARCHIVE_SOCKET_TIMEOUT_SECONDS = 15
 _ARCHIVE_DOWNLOAD_DEADLINE_SECONDS = 300
 
+# Git for Windows still enforces MAX_PATH (260) unless told otherwise, and the pinned cache
+# nests a 40-char revision, a staging dir and .git/objects under the studio home; a
+# venv-inferred home already reaches ~253 chars, so a slightly longer one fails the
+# checkout with "Filename too long". Passed per-invocation so no user config is touched.
+_GIT_LONG_PATHS = ["-c", "core.longpaths=true"]
+
 
 def _git(arguments: list[str], *, source_name: str) -> subprocess.CompletedProcess:
     env = child_env_without_native_path_secret()
@@ -114,7 +120,7 @@ def _git(arguments: list[str], *, source_name: str) -> subprocess.CompletedProce
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
         return subprocess.run(
-            ["git", *arguments],
+            ["git", *_GIT_LONG_PATHS, *arguments],
             check = True,
             capture_output = True,
             text = True,
@@ -143,7 +149,7 @@ def _git_bytes(
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
         return subprocess.run(
-            ["git", *arguments],
+            ["git", *_GIT_LONG_PATHS, *arguments],
             check = True,
             capture_output = True,
             input = input_data,

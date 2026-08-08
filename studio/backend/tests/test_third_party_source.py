@@ -798,3 +798,29 @@ def test_bytecode_purge_fails_closed_when_a_pycache_dir_survives(monkeypatch, tm
     monkeypatch.setattr(source.shutil, "rmtree", refuse)
     with pytest.raises(PermissionError):
         source._purge_package_bytecode(package_root)
+
+
+def test_git_invocations_opt_into_long_paths(monkeypatch):
+    """Git for Windows enforces MAX_PATH unless told otherwise, and the pinned cache nests a
+    revision, a staging dir and .git/objects under the studio home. Without this the checkout
+    dies with "Filename too long" on a perfectly normal Windows install."""
+    seen = []
+
+    def capture(arguments, **kwargs):
+        seen.append(arguments)
+        # text= tells us which wrapper called: _git decodes for us, _git_bytes does not.
+        stderr = "stop here" if kwargs.get("text") else b"stop here"
+        raise subprocess.CalledProcessError(1, arguments, stderr = stderr)
+
+    monkeypatch.setattr(source.subprocess, "run", capture)
+
+    for call in (
+        lambda: source._git(["status"], source_name = "Spark-TTS"),
+        lambda: source._git_bytes(["cat-file"], source_name = "Spark-TTS", input_data = b""),
+    ):
+        with pytest.raises(RuntimeError):
+            call()
+
+    assert len(seen) == 2
+    for arguments in seen:
+        assert arguments[:3] == ["git", "-c", "core.longpaths=true"], arguments
