@@ -652,20 +652,45 @@ def _explain(path: Path, code: int, raw: bytes, err: str) -> str:
     )
 
 
-@windows_only
-@powershell_51_only
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
-def test_banner_survives_a_console_less_spawn(path: Path) -> None:
-    """Without the sink this exits 1 with 2 bytes: the banner never arrives."""
+# A floor, not the 191 and 207 bytes these banners currently produce. The point
+# is only to outrun a dead script: without the sink the run aborts having
+# written 2 bytes, and every "nothing is wrong with this stream" assertion below
+# holds trivially over 2 bytes. Two of the three cases here are phrased that way
+# because that is the regression they guard, so they need this floor underneath
+# them or they pass on the very code they exist to reject. Pinning the exact
+# count instead would make editing the banner wording a test failure.
+_MIN_BANNER_BYTES = 64
+
+
+def _banner_or_explain(path: Path) -> tuple[str, str]:
+    """Run the probe, insist the banner actually arrived, and decode it.
+
+    Every console-less case starts here. `raw` being truthy is not enough: the
+    aborted run is truthy too.
+    """
     code, raw, err = _run_console_less(path)
+    detail = _explain(path, code, raw, err)
     assert code == 0, (
         "the banner block aborted the script instead of printing. Write-Host needs a "
         "console screen buffer, and CREATE_NO_WINDOW is documented not to give the "
         "child one, so it throws and -ErrorActionPreference Stop takes the run down. "
         "The desktop setup log gets a PowerShell stack trace and no banner at all. "
-        "Route the line through Write-StudioLine." + _explain(path, code, raw, err)
+        "Route the line through Write-StudioLine." + detail
     )
-    assert raw, "the probe printed nothing" + _explain(path, code, raw, err)
+    assert len(raw) >= _MIN_BANNER_BYTES, (
+        f"only {len(raw)} stdout bytes, under the {_MIN_BANNER_BYTES}-byte floor: the "
+        "banner was LOST, not mangled. Exiting 0 having printed nothing is the same "
+        "empty setup log to the user as throwing." + detail
+    )
+    return _decode_like_install_rs(raw), detail
+
+
+@windows_only
+@powershell_51_only
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+def test_banner_survives_a_console_less_spawn(path: Path) -> None:
+    """Without the sink this exits 1 with 2 bytes: the banner never arrives."""
+    _banner_or_explain(path)
 
 
 @windows_only
@@ -673,23 +698,22 @@ def test_banner_survives_a_console_less_spawn(path: Path) -> None:
 @pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
 def test_console_less_banner_is_valid_utf8(path: Path) -> None:
     """Lossy first: it names how bad the stream is before the strict decode."""
-    code, raw, err = _run_console_less(path)
-    lossy = _decode_like_install_rs(raw)
+    lossy, detail = _banner_or_explain(path)
     assert REPLACEMENT not in lossy, (
         "the desktop app decodes this pipe as UTF-8 and got bytes that are not, so the "
         "log shows U+FFFD. With no console the UTF-8 setter throws, and only the "
-        "writers bound in its catch branch keep the stream UTF-8." + _explain(path, code, raw, err)
+        "writers bound in its catch branch keep the stream UTF-8." + detail
     )
-    raw.decode("utf-8")  # strict on purpose; UnicodeDecodeError is the failure
+    # Strict on purpose; UnicodeDecodeError is the failure. Reruns the cached
+    # bytes rather than trusting the lossy pass above to have caught everything.
+    _run_console_less(path)[1].decode("utf-8")
 
 
 @windows_only
 @powershell_51_only
 @pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
 def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
-    code, raw, err = _run_console_less(path)
-    text = _decode_like_install_rs(raw)
-    detail = _explain(path, code, raw, err)
+    text, detail = _banner_or_explain(path)
     assert SLOTH in text, "the sloth did not reach stdout" + detail
     assert "??" not in text, "the sloth was transcoded to '?' by a non-UTF-8 code page" + detail
     assert text.count(RULE_CHAR * 52) == 1, (
