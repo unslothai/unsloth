@@ -96,7 +96,6 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     # optimizer moments and the scheduler position come from the bundle, so changing one
     # continues a run whose objective or learning-rate curve is no longer the one those moments
     # were produced under -- reported as a clean continue.
-
     ("flow_shift", "timestep shift"),
     ("weighting_scheme", "loss weighting scheme"),
     ("snr_gamma", "min-SNR gamma"),
@@ -988,7 +987,9 @@ def snapshot_checkpoints(output_dir: str | os.PathLike[str]) -> list[tuple[Path,
     return [(path, _bundle_identity(path)) for path in list_checkpoints(output_dir)]
 
 
-def retire_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]") -> None:
+def retire_own_checkpoints(
+    output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]"
+) -> None:
     """Drop THIS run's periodic bundles once it has finished successfully.
 
     Same selection as ``clear_own_checkpoints`` and a different reason: nothing here is being
@@ -1404,7 +1405,6 @@ def _assert_optimizer_buildable(path: Path, manifest: dict[str, Any]) -> None:
     else:
         try:
             import importlib.util
-
             if importlib.util.find_spec("bitsandbytes") is None:
                 reason = "bitsandbytes is not installed on this host"
         except (ImportError, ValueError):

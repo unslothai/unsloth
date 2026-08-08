@@ -1827,9 +1827,7 @@ def test_the_identity_covers_the_trajectory_knobs(run_dir):
         assert older.mismatch_reason(dc.identity_for_config(changed.cfg)) is None, field
     # And an unchanged config still resumes.
     assert (
-        dc.identity_for_config(base.cfg).mismatch_reason(
-            dc.identity_for_config(_Run(run_dir).cfg)
-        )
+        dc.identity_for_config(base.cfg).mismatch_reason(dc.identity_for_config(_Run(run_dir).cfg))
         is None
     )
 
@@ -1861,9 +1859,9 @@ def test_a_completed_run_does_not_leave_its_periodic_bundles_behind(run_dir):
         marker = source.find("retire_own_checkpoints(out_dir, preexisting_checkpoints)")
         assert marker > 0, name
         guard = source.rfind("if not stopped:", 0, marker)
-        assert guard > 0 and marker - guard < 700, (
-            f"{name} must retire its bundles only on a completed run"
-        )
+        assert (
+            guard > 0 and marker - guard < 700
+        ), f"{name} must retire its bundles only on a completed run"
 
 
 def test_a_swap_aside_orphan_is_found_by_the_resume_scan(run_dir):
