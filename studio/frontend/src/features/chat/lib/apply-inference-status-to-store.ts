@@ -138,6 +138,11 @@ export function applyActiveModelStatusToStore(
   const checkpointId = resolveInferenceCheckpointId(status);
   if (!checkpointId) return;
 
+  // Only reached with a model actually active, so this is the one place both
+  // the status poll and the readopt path can publish residency from. Without
+  // it a load would look unloaded until the next poll, up to 10s later.
+  useChatRuntimeStore.setState({ residentCheckpoint: checkpointId });
+
   const store = useChatRuntimeStore.getState();
   const previousCheckpoint =
     options.previousCheckpoint ?? store.params.checkpoint;

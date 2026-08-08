@@ -347,10 +347,24 @@ async function syncInferenceStatusToStore(options?: {
         }
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
+      // Loading an image or video model evicts the chat one (the GPU arbiter
+      // allows a single owner), and nothing else here would say so: the picker
+      // keeps the selection, so the header would go on claiming it is loaded
+      // and the next prompt would come back a bare 400.
+      const wasResident = useChatRuntimeStore.getState().residentCheckpoint;
+      if (wasResident && selectedCheckpoint) {
+        // Already the clean id the header shows: resolveInferenceCheckpointId
+        // put it there, not a load path.
+        toast.info(`${wasResident} is no longer loaded`, {
+          description:
+            "The server released it, which loading an image or video model does. Load it again to keep chatting.",
+        });
+      }
       // specFallbackReason survives here, so clearing activeModelIsLocal
       // alone would flip a local model's warning to "download failed". Every
       // load path and clearCheckpoint set it, so leave it consistent.
       useChatRuntimeStore.setState({
+        residentCheckpoint: null,
         modelRequiresTrustRemoteCode: false,
         loadedIsMultimodal: false,
         loadedIsDiffusion: false,

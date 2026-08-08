@@ -897,6 +897,14 @@ type ChatRuntimeStore = {
   // lets the attach gates flag a failed load vs "no model picked".
   lastModelLoadError: string | null;
   activeGgufVariant: string | null;
+  /**
+   * What /api/inference/status says is resident, as opposed to what the picker
+   * has selected. undefined until the first status read, so the header does not
+   * flash "not loaded" before anything is known. Loading an image or video
+   * model evicts the chat model (one GPU owner at a time), which is otherwise
+   * invisible here: the selection survives it.
+   */
+  residentCheckpoint: string | null | undefined;
   /** Whether the backend loaded the active model from a filesystem path. */
   activeModelIsLocal: boolean;
   ggufContextLength: number | null;
@@ -1534,6 +1542,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
+  residentCheckpoint: undefined,
   activeModelIsLocal: false,
   ggufContextLength: null,
   ggufMaxContextLength: null,
@@ -2024,6 +2033,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpoint: "",
       },
       activeGgufVariant: null,
+      // Nothing is picked, so there is nothing for residency to describe. Back
+      // to unknown rather than null: null would be read as "was evicted".
+      residentCheckpoint: undefined,
       activeModelIsLocal: false,
       activeLoadId: null,
       activeNativePathToken: null,
