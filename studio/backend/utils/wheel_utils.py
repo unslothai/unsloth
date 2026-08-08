@@ -198,9 +198,18 @@ def direct_wheel_url(
 # Loaded beside any other pair torch.ops.load_library raises, and xformers/_cpp_lib.py
 # turns that into a log warning rather than an error -- so the import "succeeds" and
 # memory-efficient attention, SwiGLU and the sparse ops are silently gone. PyPI publishes
-# only the CUDA-12.8 flavour (0.0.34's win_amd64 cpp_lib.json reads torch 2.10.0+cu128),
-# which is why `pip install xformers` next to a cu130 torch reports "xFormers was built
-# for PyTorch 2.10.0+cu128 with CUDA 1208 (you have 2.10.0+cu130)".
+# exactly one win_amd64 flavour, and today that is the CUDA-12.8 one (0.0.34's win_amd64
+# cpp_lib.json reads torch 2.10.0+cu128), which is why `pip install xformers` next to a
+# cu130 torch reports "xFormers was built for PyTorch 2.10.0+cu128 with CUDA 1208 (you
+# have 2.10.0+cu130)". WHICH flavour that is is not stable and must not be assumed: across
+# releases the PyPI win wheel has been cu124 (0.0.29.post2), cu126 (0.0.30), cu128
+# (0.0.32), cu130 (0.0.33) and cu128 again (0.0.33.post1 onward). That churn is the
+# argument for resolving a URL rather than pinning a version.
+#
+# Note also that cpp_lib.json's `cuda` is the NVCC TOOLKIT version, not torch's CUDA
+# family: download.pytorch.org's cu126 0.0.34 also reports 1208. Only the `torch` field
+# ("2.10.0+cu128") separates the flavours, which is the field this resolver keys on and
+# the field xFormers' own error message does not lead with.
 #
 # download.pytorch.org publishes one wheel per (CUDA family, torch patch), so resolve
 # the exact URL instead. torch release -> {CUDA family: xFormers version}. Every row was
@@ -217,6 +226,21 @@ def direct_wheel_url(
 # wheels are one file per interpreter and the single filename template below cannot name
 # them; expressing those rows needs a per-interpreter gate here and a second one in
 # install.ps1, for CUDA families no supported torch install pulls any more.
+#
+# Two deliberate over-approximations, recorded so nobody "fixes" them by interpolating:
+#
+# * Keying on the CUDA MINOR is stricter than the ABI needs. The cu126 and cu128 _C.so
+#   have identical undefined-symbol sets and both link libcudart.so.12, so either loads
+#   against either runtime; only a MAJOR bump changes the interface (cu130 links
+#   libcudart.so.13). The minor is in the key because it names a real directory on
+#   download.pytorch.org, so an exact hit guarantees the URL exists. The cost is that a
+#   family with no row of its own resolves to nothing even when a sibling would work --
+#   torch 2.10.0+cu129 on Linux is the live example.
+# * The table stops at torch 2.10.0 because upstream does. 2.11, 2.12 and 2.13 are
+#   released, and no xFormers release is built for any of them: 0.0.35 declares
+#   torch>=2.10 but every published 0.0.35 wheel was compiled against 2.10.0, and only
+#   the unreleased 0.0.35.dev1130 targets 2.11. Those torch releases resolving to nothing
+#   is the correct answer until an xFormers release exists, not a gap to paper over.
 #
 # Keep in step with $script:XformersWheelVersions in install.ps1 and the matrix in
 # tests/python/test_windows_xformers_wheel_match.py.
@@ -237,10 +261,14 @@ _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
 
 # The interpreter tag in the wheel FILENAME, which xFormers has changed twice: 0.0.30 and
 # earlier ship one wheel per cpXY (and stop at cp312), 0.0.31..0.0.34 ship a single
-# cp39-abi3 wheel, and 0.0.35 switched to py39-none (its extension moved behind
-# torch.ops.load_library, which does not bind the Python ABI -- the wheel still carries a
-# per-CUDA _C.pyd, it just dropped the bundled flash_attn_3 kernels, which is the whole
-# 103 MB -> 2.6 MB difference). Verified by reading the WHEEL metadata out of each.
+# cp39-abi3 wheel, and 0.0.35 switched to py39-none. That last switch is a PACKAGING
+# change, not an architectural one: 0.0.35's setup.py drops py_limited_api=True and
+# force-tags the wheel through a custom bdist_wheel, on the grounds that the extension
+# never bound the CPython ABI in the first place -- it is loaded by
+# torch.ops.load_library, and its _C.so defines no PyInit and references no Py* symbol.
+# The wheel still carries a per-CUDA _C.pyd; it just dropped the bundled flash_attn_3
+# kernels, which is the whole 103 MB -> 2.6 MB difference. Verified by reading the WHEEL
+# metadata, setup.py and the extension's symbol table out of each.
 #
 # Ranges, not an open-ended floor: guessing the tag for an unreleased version is how a
 # resolver starts emitting URLs that 404, so an unknown release resolves to nothing until
