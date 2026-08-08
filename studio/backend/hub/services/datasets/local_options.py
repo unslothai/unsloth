@@ -71,9 +71,7 @@ _FEATURE_TYPE_NAMES = frozenset(
 # A card can alias a feature node into itself, so the walk is bounded rather than trusting
 # the tree to end. Nothing real nests anywhere near this deep.
 _MAX_FEATURE_DEPTH = 64
-_PARAMETERLESS_FEATURES = frozenset(
-    "translationvariablelanguages audio image video pdf".split()
-)
+_PARAMETERLESS_FEATURES = frozenset("translationvariablelanguages audio image video pdf".split())
 # datasets' own version grammar. Anything else raises when it builds the cache directory.
 _VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 # Ordered, because datasets resolves a split's keyword patterns in this order and samples
@@ -1571,9 +1569,7 @@ def _info_split_sets(payload: Any, declared: dict[str, Optional[set[str]]]) -> N
             continue
         splits = entry["splits"]
         sized = list(splits.values()) if isinstance(splits, dict) else splits
-        counted = (
-            all(_counted_split(item) for item in sized) if isinstance(sized, list) else False
-        )
+        counted = all(_counted_split(item) for item in sized) if isinstance(sized, list) else False
         declared[config] = set(_split_names(splits)) if counted else None
 
 

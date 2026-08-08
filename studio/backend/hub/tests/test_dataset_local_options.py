@@ -2313,7 +2313,10 @@ def test_snapshot_options_share_one_directory_listing_across_wildcard_data_dirs(
 @pytest.mark.parametrize("dtype", ["class_label", "translation", "value", "list"])
 def test_snapshot_options_reject_a_feature_class_named_without_its_arguments(tmp_path, dtype):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n")
+    _card(
+        snapshot,
+        f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -2322,8 +2325,11 @@ def test_snapshot_options_reject_a_feature_class_named_without_its_arguments(tmp
 
 def test_snapshot_options_reject_repeated_class_label_names(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
-                    "    dtype:\n      class_label:\n        names:\n        - negative\n        - negative\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+        "    dtype:\n      class_label:\n        names:\n        - negative\n        - negative\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
 
@@ -2332,8 +2338,11 @@ def test_snapshot_options_reject_repeated_class_label_names(tmp_path):
 
 def test_snapshot_options_reject_repeated_class_label_names_in_a_mapping(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
-                    "    dtype:\n      class_label:\n        names:\n          '0': a\n          '1': a\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+        "    dtype:\n      class_label:\n        names:\n          '0': a\n          '1': a\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
 
@@ -2343,7 +2352,10 @@ def test_snapshot_options_reject_repeated_class_label_names_in_a_mapping(tmp_pat
 @pytest.mark.parametrize("version", ["{}", "{major: 1, minor: 0, patch: 0}", "{version_str: bad}"])
 def test_snapshot_options_reject_a_dataset_info_version_mapping_it_cannot_build(tmp_path, version):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, f"dataset_info:\n  version: {version}\n  splits:\n  - name: train\n    num_examples: 1\n")
+    _card(
+        snapshot,
+        f"dataset_info:\n  version: {version}\n  splits:\n  - name: train\n    num_examples: 1\n",
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == set()
@@ -2351,7 +2363,10 @@ def test_snapshot_options_reject_a_dataset_info_version_mapping_it_cannot_build(
 
 def test_snapshot_options_accept_a_dataset_info_version_mapping(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "dataset_info:\n  version:\n    version_str: 1.0.0\n  splits:\n  - name: train\n    num_examples: 1\n")
+    _card(
+        snapshot,
+        "dataset_info:\n  version:\n    version_str: 1.0.0\n  splits:\n  - name: train\n    num_examples: 1\n",
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
@@ -2359,8 +2374,11 @@ def test_snapshot_options_accept_a_dataset_info_version_mapping(tmp_path):
 
 def test_snapshot_options_reject_a_dataset_info_feature_the_loader_cannot_build(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "dataset_info:\n  features:\n  - name: x\n    dtype: nope\n"
-                    "  splits:\n  - name: train\n    num_examples: 1\n")
+    _card(
+        snapshot,
+        "dataset_info:\n  features:\n  - name: x\n    dtype: nope\n"
+        "  splits:\n  - name: train\n    num_examples: 1\n",
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == set()
@@ -2368,7 +2386,10 @@ def test_snapshot_options_reject_a_dataset_info_feature_the_loader_cannot_build(
 
 def test_snapshot_options_reject_parquet_scan_options_a_card_cannot_write(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  fragment_scan_options:\n    bogus: true\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  fragment_scan_options:\n    bogus: true\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.parquet").write_bytes(b"PAR1")
 
@@ -2387,8 +2408,11 @@ def test_snapshot_options_accept_a_row_count_written_as_another_number(tmp_path,
 
 def test_snapshot_options_reject_every_config_when_the_first_one_mixes_formats(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: mixed\n  data_files:\n  - split: train\n    path: a/train.jsonl\n"
-                    "  - split: test\n    path: a/test.csv\n- config_name: pure\n  data_files: b/train.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: mixed\n  data_files:\n  - split: train\n    path: a/train.jsonl\n"
+        "  - split: test\n    path: a/test.csv\n- config_name: pure\n  data_files: b/train.jsonl\n",
+    )
     for name in ("a", "b"):
         (snapshot / name).mkdir()
     (snapshot / "a" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
@@ -2401,8 +2425,11 @@ def test_snapshot_options_reject_every_config_when_the_first_one_mixes_formats(t
 
 def test_snapshot_options_reject_a_feature_tree_aliased_into_itself(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
-                    "    dtype: &cycle\n      list: *cycle\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+        "    dtype: &cycle\n      list: *cycle\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
