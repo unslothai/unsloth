@@ -255,7 +255,9 @@ def _shared_non_runtime(rel: str) -> bool:
     with `unsloth_zoo: tests/conftest.py is 8107 bytes, expected 11429`. Our
     runtime trees are unaffected, since none of them is named for a shared root.
     Applied while reading RECORD, not when reporting, so the row also stays out
-    of the ownership tally and the `limit` budget.
+    of the `limit` budget. Its claim is still counted: dropping a colliding row
+    before the tally is what made a retained row look singly owned, so another
+    distribution's file got measured against unsloth_zoo's RECORD.
     """
     parts = tuple(p for p in rel.replace("\\", "/").split("/") if p and p != ".")
     return len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS
@@ -331,6 +333,13 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
             # size recorded inside itself; .pyc is regenerated from source.
             if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
                 continue
+            try:
+                target = dist.locate_file(rel)
+            except Exception:
+                continue
+            key = os.path.normcase(str(target))
+            # Before the filter: a dropped row still owns the path it claims.
+            owners[key] = owners.get(key, 0) + 1
             if _shared_non_runtime(rel):
                 continue
             # The size field is optional and real wheels do leave it blank. Keep
@@ -342,12 +351,6 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
                     recorded = int(row[2])
                 except ValueError:
                     recorded = None
-            try:
-                target = dist.locate_file(rel)
-            except Exception:
-                continue
-            key = os.path.normcase(str(target))
-            owners[key] = owners.get(key, 0) + 1
             entries.append((name, rel, recorded, target, key))
 
     found: List[str] = []
