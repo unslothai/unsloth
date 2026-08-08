@@ -255,6 +255,7 @@ export function applyActiveModelStatusToStore(
   // the requested value (parity with the load paths' keepCustomCtx).
   const { pin: contextPin, baseline: contextBaseline } = refreshedContextPin({
     isGguf: status.is_gguf ?? false,
+    isMlx: status.is_mlx ?? false,
     gpuMemoryMode: status.gpu_memory_mode ?? "auto",
     gpuLayers: status.gpu_layers ?? -1,
     requestedContextLength: status.requested_context_length ?? null,

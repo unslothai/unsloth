@@ -2956,7 +2956,11 @@ export function ChatPage({
           }
           // For local turns, also require the restored count to fit in
           // the active window. Skip when unknown (external provider).
-          const limit = store.loadedContextLength;
+          //
+          // llama.cpp only: it stops at the window, so a count past it is stale by
+          // definition. MLX generates straight past instead, where an over-window count
+          // is the true one and the bar has a state for it.
+          const limit = store.loadedIsGguf ? store.loadedContextLength : null;
           if (
             typeof limit === "number" &&
             limit > 0 &&
