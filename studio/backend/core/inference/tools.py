@@ -8870,6 +8870,10 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     ddgs raises for an empty sweep as well as for refusals, so an unclassified
     ``Search failed: {exc}`` reports "nothing matched" and "every engine throttled us" the same
     way. Matched by class name because ddgs is imported lazily and tests stub the module.
+
+    The RatelimitException arm is forward-looking: ddgs 9.14.4 defines the class but raises it
+    nowhere, and no engine inspects the status code, so a throttled sweep parses to zero items
+    and arrives here as the empty-sweep DDGSException instead.
     """
     name = type(exc).__name__
     if name == "RatelimitException":

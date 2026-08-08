@@ -285,8 +285,9 @@ def _search_with_raising_ddgs(monkeypatch, exc: Exception) -> str:
 def test_rate_limited_search_says_so_instead_of_leaking_the_exception(monkeypatch):
     # Every engine refusing used to read as "Search failed: RatelimitException(...)", which told
     # neither the model nor the user that waiting or reading a page directly would work.
-    class RatelimitException(Exception):
-        pass
+    # The real class, not a stand-in: ddgs is unpinned and has renamed these before, and the
+    # classifier matches on the class name, so a rename has to fail here rather than in a message.
+    from ddgs.exceptions import RatelimitException
 
     result = _search_with_raising_ddgs(monkeypatch, RatelimitException("all engines"))
     assert "rate limiting this machine" in result
@@ -294,8 +295,7 @@ def test_rate_limited_search_says_so_instead_of_leaking_the_exception(monkeypatc
 
 
 def test_search_timeout_reports_the_budget_it_exceeded(monkeypatch):
-    class TimeoutException(Exception):
-        pass
+    from ddgs.exceptions import TimeoutException
 
     result = _search_with_raising_ddgs(monkeypatch, TimeoutException("timed out"))
     assert result == "Search failed: the search engines did not respond within 7s."
@@ -304,8 +304,7 @@ def test_search_timeout_reports_the_budget_it_exceeded(monkeypatch):
 def test_empty_sweep_is_reported_as_no_results_not_as_a_failure(monkeypatch):
     # ddgs raises instead of returning [], so a search that simply matched nothing arrived
     # prefixed "Search failed" and read like a broken tool.
-    class DDGSException(Exception):
-        pass
+    from ddgs.exceptions import DDGSException
 
     result = _search_with_raising_ddgs(monkeypatch, DDGSException("No results found."))
     assert result == tools.EMPTY_SEARCH_RESULTS[0]
