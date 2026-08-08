@@ -1286,13 +1286,20 @@ def test_local_diffusion_routing_is_keyed_by_the_id_the_row_selects():
 
 
 def test_a_staged_download_that_never_starts_clears_the_queue():
-    """requestStart can answer "error" (network failure, rejected scoped request, worker refused).
-    Nothing completes after that, so leaving the head in place stranded the pick: the effect never
-    re-ran and onReady never fired."""
+    """requestStart can answer "error" (network failure, rejected scoped request, worker refused),
+    "conflict" or "busy". Nothing completes after any of them, so leaving the head in place strands
+    the pick: the effect never re-runs and onReady never fires. The consumer's pending auto-load
+    has to go with it, or a later completion loads a model nobody asked for.
+
+    Asserted over the whole non-started region rather than a fixed window after the first branch,
+    so one shared clean-up for all three outcomes passes and three copies would too."""
     src = _read("features/hub/download-manager/use-staged-download.ts")
-    assert 'if (outcome === "error") {' in src
-    branch = src[src.index('if (outcome === "error") {') :][:400]
-    assert "setQueue(null)" in branch
+    assert 'if (outcome === "started") return;' in src
+    region = src[src.index('if (outcome === "started") return;') : src.index("return () => {")]
+    for outcome in ("error", "conflict", "busy"):
+        assert f'outcome === "{outcome}"' in region
+    assert "setQueue(null)" in region
+    assert "onCancelledRef.current?.()" in region
 
 
 def test_staged_download_callbacks_are_bound_to_the_started_file_set():
