@@ -13533,7 +13533,13 @@ def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
 # A tool may write into a subdirectory, so a single segment is not enough. Taken
 # from the snapshot walk rather than restated, so the card can never advertise a
 # file this route would then refuse.
-from core.inference.tools import _MAX_SANDBOX_PATH_SEGMENTS, _servable_segment
+from core.inference.tools import (
+    _MAX_SANDBOX_PATH_SEGMENTS,
+    _MAX_SNAPSHOT_DIRS,
+    _MAX_SNAPSHOT_FILES,
+    _is_internal_scratch,
+    _servable_segment,
+)
 
 
 def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
@@ -13571,7 +13577,11 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
     archive cannot turn a listing into a filesystem crawl.
     """
     names: "list[str]" = []
+    visited = 0
     for base, dirs, entries in os.walk(sandbox_dir):
+        visited += 1
+        if visited > _MAX_SNAPSHOT_DIRS:
+            return names
         depth = base[len(sandbox_dir) :].count(os.sep)
         # depth 0 is the sandbox itself, whose files are one segment.
         # Segments the route would refuse are dropped here too, so the two walks agree.
@@ -13582,7 +13592,7 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
         )
         for entry in sorted(entries):
             # Mirrors the snapshot: internal scratch out, dotfiles in.
-            if entry.startswith("studio_exec_") or not _servable_segment(entry):
+            if _is_internal_scratch(entry) or not _servable_segment(entry):
                 continue
             path = os.path.join(base, entry)
             try:
@@ -13591,7 +13601,7 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
             except OSError:
                 continue
             names.append(os.path.relpath(path, sandbox_dir).replace(os.sep, "/"))
-            if len(names) >= 2000:
+            if len(names) >= _MAX_SNAPSHOT_FILES:
                 return names
     return names
 

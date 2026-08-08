@@ -7193,17 +7193,26 @@ def _migrate_legacy_sandbox(root: str) -> None:
     with _legacy_sandbox_lock:
         if _legacy_sandbox_migrated:
             return
-        _migrate_legacy_sandbox_locked(root)
-        _legacy_sandbox_migrated = True
+        # Flagged only when nothing movable is left: a file locked by another
+        # process on Windows is retryable, and giving up after one attempt
+        # strands it once _get_workdir creates the destination.
+        if _migrate_legacy_sandbox_locked(root):
+            _legacy_sandbox_migrated = True
 
 
-def _migrate_legacy_sandbox_locked(root: str) -> None:
+def _migrate_legacy_sandbox_locked(root: str) -> bool:
+    """True when the legacy root holds nothing that could still be moved.
+
+    A collision is not a failure: the new root already has that session, and the
+    legacy copy is deliberately left for the user to find.
+    """
     legacy = _legacy_sandbox_root()
     try:
         if os.path.realpath(legacy) == os.path.realpath(root) or not os.path.isdir(legacy):
-            return
+            return True
         os.makedirs(root, exist_ok = True)
         moved = 0
+        complete = True
         for name in os.listdir(legacy):
             source = os.path.join(legacy, name)
             target = os.path.join(root, name)
@@ -7213,6 +7222,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> None:
                 shutil.move(source, target)
                 moved += 1
             except OSError as error:
+                complete = False
                 logger.warning("Could not move sandbox %s: %s", name, error)
         if moved:
             logger.info("Moved %d chat sandbox folder(s) from %s to %s", moved, legacy, root)
@@ -7221,8 +7231,10 @@ def _migrate_legacy_sandbox_locked(root: str) -> None:
             os.rmdir(legacy)
         except OSError:
             pass
+        return complete
     except Exception as error:
         logger.warning("Sandbox migration skipped: %s", error)
+        return False
 
 
 def _contained_in_root(workdir: str, root: str) -> bool:

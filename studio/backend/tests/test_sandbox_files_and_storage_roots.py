@@ -925,5 +925,122 @@ def test_a_files_marker_with_absurd_nesting_does_not_abort_the_turn(tmp_path):
     assert tool_loop_controller.strip_result_for_model(text) == text
 
 
+def test_the_listing_walk_is_bounded_like_the_snapshot(tmp_path, monkeypatch):
+    """Same directory budget: a listing request must not crawl a filesystem
+    either, and it runs on a server worker."""
+    from core.inference import tools
+    from routes import inference
+
+    sandbox = tmp_path / "sb"
+    sandbox.mkdir()
+    for i in range(40):
+        (sandbox / f"out{i}").mkdir()
+
+    visited = []
+    real_walk = os.walk
+
+    def counting_walk(top, *a, **kw):
+        for entry in real_walk(top, *a, **kw):
+            visited.append(entry[0])
+            yield entry
+
+    monkeypatch.setattr(inference, "_MAX_SNAPSHOT_DIRS", 5)
+    monkeypatch.setattr(inference.os, "walk", counting_walk)
+    inference._sandbox_listing_names(str(sandbox))
+    assert len(visited) <= 6, len(visited)
+    assert inference._MAX_SNAPSHOT_FILES == tools._MAX_SNAPSHOT_FILES
+
+
+def test_the_listing_shows_a_user_file_named_like_scratch(tmp_path):
+    """studio_exec_results.csv is the user's; only studio_exec_<token>.py is ours,
+    and the snapshot and download route already agree on that."""
+    from routes import inference
+
+    sandbox = tmp_path / "sb"
+    sandbox.mkdir()
+    (sandbox / "studio_exec_results.csv").write_text("a,b\n")
+    (sandbox / "studio_exec_ab12cd.py").write_text("print(1)")
+
+    names = inference._sandbox_listing_names(str(sandbox))
+    assert names == ["studio_exec_results.csv"], names
+
+
+def test_clear_all_chats_can_take_the_files_too(tmp_path, monkeypatch):
+    """DELETE /threads has the opt-in; without it here a bulk clear could only
+    ever leave a nonempty sandbox behind, with no thread left to reach it."""
+    import inspect
+
+    from routes import chat_history
+
+    signature = inspect.signature(chat_history.clear_history)
+    assert "delete_files" in signature.parameters
+    assert signature.parameters["delete_files"].default is False
+
+    source = inspect.getsource(chat_history.clear_history)
+    assert "delete_files = delete_files" in source
+
+
+def test_a_failed_legacy_move_is_retried(tmp_path, monkeypatch):
+    """A file locked by another process on Windows is retryable; giving up after
+    one attempt strands it once the destination directory exists."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_locked1"
+    legacy.mkdir(parents = True)
+    (legacy / "results.csv").write_text("a,b\n")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+
+    attempts = []
+    real_move = tools.shutil.move
+
+    def failing_move(source, target):
+        attempts.append(source)
+        if len(attempts) == 1:
+            raise OSError(13, "in use by another process")
+        return real_move(source, target)
+
+    monkeypatch.setattr(tools.shutil, "move", failing_move)
+    root = tools.sandbox_root()
+    tools._migrate_legacy_sandbox(root)
+    assert tools._legacy_sandbox_migrated is False, "gave up on a retryable failure"
+
+    tools._migrate_legacy_sandbox(root)
+    assert tools._legacy_sandbox_migrated is True
+    assert (Path(root) / "__LOCALID_locked1" / "results.csv").read_text() == "a,b\n"
+
+
+def test_a_collision_is_not_a_retryable_failure(tmp_path, monkeypatch):
+    """The new root already has that session, so the legacy copy stays for the
+    user to find and the migration is still done."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_dupe123"
+    legacy.mkdir(parents = True)
+    (legacy / "old.csv").write_text("old\n")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    root = Path(tools.sandbox_root())
+    (root / "__LOCALID_dupe123").mkdir(parents = True)
+
+    tools._migrate_legacy_sandbox(str(root))
+    assert tools._legacy_sandbox_migrated is True
+    assert (legacy / "old.csv").is_file(), "the legacy copy was not left behind"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

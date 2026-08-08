@@ -731,17 +731,23 @@ async def record_import_ledger(
 
 
 @router.delete("")
-async def clear_history(request: Request, current_subject: str = Depends(get_current_subject)):
+async def clear_history(
+    request: Request,
+    delete_files: bool = False,
+    current_subject: str = Depends(get_current_subject),
+):
     thread_ids = [thread["id"] for thread in list_chat_threads()]
     _cancel_active_research(request, thread_ids)
     clear_chat_history()
     # "Clear all chats" is the common bulk delete, so it has to clean up the
     # same folders DELETE /threads does; otherwise every sandbox is stranded.
+    # delete_files matches DELETE /threads: off by default, since the files are
+    # the user's, but a caller clearing everything can ask for them too.
     removed = 0
     try:
         from core.inference.tools import remove_session_sandbox
         for thread_id in thread_ids:
-            if remove_session_sandbox(thread_id):
+            if remove_session_sandbox(thread_id, delete_files = delete_files):
                 removed += 1
     except Exception:
         logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
