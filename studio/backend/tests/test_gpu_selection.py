@@ -685,6 +685,37 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(model_size_bytes, 1234)
         self.assertEqual(source, "vllm_utils")
 
+    def test_offline_safetensors_probe_uses_config_without_hub_access(self):
+        config = object()
+        for offline_variable in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            with self.subTest(offline_variable = offline_variable):
+                with (
+                    patch.dict(os.environ, {offline_variable: "true"}, clear = True),
+                    patch("huggingface_hub.model_info") as hub_info,
+                    patch(
+                        "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
+                        return_value = "unsloth/test",
+                    ),
+                    patch(
+                        "utils.hardware.hardware._load_config_for_gpu_estimate",
+                        return_value = config,
+                    ),
+                    patch(
+                        "utils.hardware.hardware._estimate_fp16_model_size_bytes_from_config",
+                        return_value = 1234,
+                    ),
+                    patch(
+                        "utils.hardware.hardware._get_local_weight_size_bytes",
+                        return_value = None,
+                    ),
+                ):
+                    model_size_bytes, source = _hw_module.estimate_fp16_model_size_bytes(
+                        "unsloth/test"
+                    )
+
+                self.assertEqual((model_size_bytes, source), (1234, "config"))
+                hub_info.assert_not_called()
+
     def test_auto_select_gpu_ids_chooses_smallest_fitting_subset(self):
         fake_devices = {
             "devices": [

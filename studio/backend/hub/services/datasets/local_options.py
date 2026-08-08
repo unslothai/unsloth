@@ -23,6 +23,10 @@ from hub.utils.dataset_cache import (
     resolved_dataset_snapshot_file,
 )
 from hub.utils.paths import is_valid_repo_id
+from utils.hf_dataset_options import (
+    HF_DATASET_SPLIT_NAME_PATTERN,
+    has_unsafe_hf_dataset_option_characters,
+)
 
 
 _MAX_METADATA_BYTES = 2 * 1024 * 1024
@@ -53,17 +57,13 @@ _IGNORED_DATA_FILENAMES = frozenset(
         "dummy_data.zip",
     }
 )
-# datasets' own _split_re. A sharded name outside it raises before any split loads.
-_SHARDED_SPLIT_RE = re.compile(r"\w+(?:\.\w+)*")
 # datasets builds every split with one module, so mixed families load nothing.
 _EXTENSION_MODULES = {".parquet": "parquet", ".jsonl": "json", ".json": "json", ".csv": "csv"}
 # Its tie-break when a split mixes extensions: most files, then this order.
 _EXTENSION_PRIORITY = {ext: rank for rank, ext in enumerate(reversed(list(_EXTENSION_MODULES)))}
-# The picker starts these, so they have to be the grammar TrainingStartRequest accepts:
-# anything looser is offered and then 422s, anything tighter hides a usable option.
-# _check_subset and _check_split_name in models/training.py are the authority.
-_CONFIG_RE = re.compile(r"[A-Za-z0-9._\-]+")
-_SPLIT_RE = re.compile(r"[A-Za-z0-9_\-\[\]:%.+ ]+")
+_CONFIG_RE = re.compile(r"[^<>:/\\|?*\x00-\x1f\x7f]+")
+# Also datasets' own _split_re, so a sharded name it would reject never reaches the picker.
+_SPLIT_RE = HF_DATASET_SPLIT_NAME_PATTERN
 
 
 def _valid_option(
@@ -77,12 +77,10 @@ def _valid_option(
     normalized = value.strip()
     if not normalized or len(normalized) > _MAX_OPTION_LENGTH:
         return None
-    if "\x00" in normalized or "/" in normalized or "\\" in normalized:
+    if has_unsafe_hf_dataset_option_characters(normalized):
         return None
-    # _check_split_name rejects ".." anywhere, _check_subset does not, so a config named
-    # v1..v2 is startable and hiding it would be the same bug in the other direction.
-    # Neither charset admits a separator, so the bare "." and ".." names are the only
-    # traversal shapes left to refuse.
+    if "/" in normalized or "\\" in normalized:
+        return None
     if normalized in {".", ".."} or (reject_dotdot and ".." in normalized):
         return None
     if pattern.fullmatch(normalized) is None:
@@ -323,7 +321,7 @@ def _sharded_split_files(
             continue
         raw = match.group("split")
         split = _valid_option(raw, _SPLIT_RE, reject_dotdot = True)
-        if split is None or _SHARDED_SPLIT_RE.fullmatch(raw) is None:
+        if split is None:
             return None
         grouped.setdefault(split, []).append(path)
     return grouped
@@ -355,11 +353,11 @@ def _split_module(files: Iterable[PurePosixPath]) -> Optional[str]:
 def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     """Mirror datasets' default local-file split inference without importing it.
 
-    Known gaps: split names are ASCII where datasets' \\w is unicode, `__` files are
-    skipped though datasets only skips `__` directories, only TRAINING_DATA_EXTS is
-    considered, and external symlinks stay rejected for cache safety, all of which hide
-    an option rather than offer a dead one. Keyword matching is case-insensitive, which
-    can name a split datasets would call train on a case-sensitive filesystem.
+    Known gaps: `__` files are skipped though datasets only skips `__` directories, only
+    TRAINING_DATA_EXTS is considered, and external symlinks stay rejected for cache
+    safety, all of which hide an option rather than offer a dead one. Keyword matching is
+    case-insensitive, which can name a split datasets would call train on a
+    case-sensitive filesystem.
     """
     files = _snapshot_data_files(snapshot)
     if not files:

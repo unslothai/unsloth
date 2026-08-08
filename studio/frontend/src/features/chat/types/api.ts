@@ -3,6 +3,8 @@
 
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 
+export type CpuFallbackReason = "vulkan_startup_crash";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -87,6 +89,8 @@ export interface LoadModelRequest {
   gpu_memory_mode?: "auto" | "manual";
   /** Manual mode: layers to offload to GPU (--gpu-layers, --fit off); -1 = Auto (--fit). */
   gpu_layers?: number;
+  /** Restore a previous automatic Vulkan CPU recovery after a failed model switch. */
+  cpu_fallback?: boolean;
   /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
   n_cpu_moe?: number;
   /** Manual mode: relative model share per GPU (--tensor-split), in GPU order. */
@@ -220,6 +224,8 @@ export interface LoadModelResponse {
   tensor_parallel?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
+  /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
+  cpu_fallback_reason?: CpuFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
@@ -303,6 +309,8 @@ export interface InferenceStatusResponse {
   tensor_parallel?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
+  /** Set while the active model is a recovered CPU-only Vulkan load. */
+  cpu_fallback_reason?: CpuFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
@@ -373,6 +381,17 @@ export interface ApiMonitorEntry {
   reason?: "manual" | "idle" | "api" | null;
   // 0-100 while a download row is running.
   progress?: number | null;
+  // Server-side time to first token (measured, else engine prefill).
+  ttft_ms?: number | null;
+  tok_per_sec?: number | null;
+  stop_reason?: string | null;
+}
+
+export interface ApiMonitorQueue {
+  capacity: number;
+  active: number;
+  queued: number;
+  free: number;
 }
 
 export interface ApiMonitorResponse {
@@ -383,6 +402,8 @@ export interface ApiMonitorResponse {
   active_model?: string | null;
   context_length?: number | null;
   active_requests: number;
+  /** Live slot/queue occupancy; null when no llama model is loaded. */
+  queue?: ApiMonitorQueue | null;
   /** Absent on older backends -- treat only an explicit `false` as disabled. */
   logging_enabled?: boolean;
   entries: ApiMonitorEntry[];
