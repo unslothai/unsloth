@@ -42,6 +42,8 @@ APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
 VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
+VIDEO_API = FRONTEND / "features/video/api.ts"
+RAG_API = FRONTEND / "features/rag/api/rag-api.ts"
 
 REMOTE_ACCESS_SECTION = FRONTEND / "features/settings/components/remote-access-section.tsx"
 PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialog.tsx"
@@ -263,6 +265,29 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     for source in (training, markdown, image, audio):
         assert 'document.createElement("a")' not in source
         assert "isDownloadCancelled(error)" in source
+
+
+def test_gallery_video_links_are_absolute_and_saved_natively():
+    video_api = VIDEO_API.read_text(encoding = "utf-8")
+    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
+    rag_api = RAG_API.read_text(encoding = "utf-8")
+
+    # The backend mints this link relative so a proxy can serve it. Its consumers are
+    # <video src> and the download, none of which go through authFetch, so a relative
+    # path under Tauri resolves against the webview and yields the SPA shell.
+    assert "return apiUrl(body.url);" in video_api
+    assert 'from "@/lib/api-base"' in video_api
+    # The same fix the RAG document preview already carries.
+    assert "return apiUrl(data.url);" in rag_api
+
+    assert "downloadUrl(src, filename)" in video_page
+    assert "downloadFile(blob, filename" in video_page
+    assert 'document.createElement("a")' not in video_page
+    assert "isDownloadCancelled(err)" in video_page
+
+    # media-src, not just connect-src: the signed link is played by an element.
+    tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
+    assert "media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*" in tauri_config
 
 
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():

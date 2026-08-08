@@ -66,6 +66,11 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { cn } from "@/lib/utils";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
+import {
+  downloadFile,
+  downloadUrl,
+  isDownloadCancelled,
+} from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 
 import {
@@ -169,30 +174,20 @@ function exportFilename(video: GalleryVideo, format: VideoExportFormat = "mp4"):
   return `Unsloth_video_${stamp}_${video.seed}.${format}`;
 }
 
-function saveLink(href: string, filename: string) {
-  const link = document.createElement("a");
-  link.href = href;
-  link.download = filename;
-  link.click();
-}
-
 // MP4 saves the original file straight from its signed link; WebM / GIF are transcoded by the backend on demand (501 when the codec is absent).
+// Both go through the native-files helpers so desktop saves reach the OS chooser instead of an anchor the webview ignores.
 async function downloadVideo(
   src: string,
   video: GalleryVideo,
   format: VideoExportFormat = "mp4",
 ) {
+  const filename = exportFilename(video, format);
   if (format === "mp4") {
-    saveLink(src, exportFilename(video, format));
+    await downloadUrl(src, filename);
     return;
   }
   const blob = await fetchGalleryVideoExport(video.id, format);
-  const url = URL.createObjectURL(blob);
-  try {
-    saveLink(url, exportFilename(video, format));
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
-  }
+  await downloadFile(blob, filename, blob.type || undefined);
 }
 
 function formatTimestamp(iso: string): string {
@@ -835,7 +830,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const handleDownload = useCallback(
     async (src: string, video: GalleryVideo, format: "mp4" | "webm" | "gif") => {
       if (format === "mp4") {
-        void downloadVideo(src, video, format);
+        void downloadVideo(src, video, format).catch((err) => {
+          if (!isDownloadCancelled(err)) toast.error("Could not save video.");
+        });
         return;
       }
       const toastId = toast.loading(`Converting to ${format.toUpperCase()}…`);
@@ -844,6 +841,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         toast.dismiss(toastId);
       } catch (err) {
         toast.dismiss(toastId);
+        if (isDownloadCancelled(err)) return;
         toast.error(
           err instanceof Error ? err.message : `Failed to export ${format}`,
         );
