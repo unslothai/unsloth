@@ -3462,6 +3462,10 @@ export function HubModelPicker({
                 isLora: false,
                 ggufVariant: entry.quant,
                 isDownloaded: true,
+                // The row loads one quant, so it is a GGUF pick like the expander's. Without this the diffusion pages read
+                // the label-only meta as a curated repo and asked for a pipeline, which a GGUF repo rejects. No filename:
+                // the pin stores a label, and the pages resolve it against the listing.
+                isGguf: true,
               })
             }
             vramStatus={null}

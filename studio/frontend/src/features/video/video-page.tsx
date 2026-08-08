@@ -65,6 +65,7 @@ import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { cn } from "@/lib/utils";
+import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
 
@@ -1240,6 +1241,46 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [stage],
   );
 
+  // A GGUF pick can arrive with only a repo id: a pinned row sends its quant label, a curated artifact sends neither, and a
+  // local GGUF directory is a repo too. The backend rejects a gguf load with no filename, and a pipeline load of a GGUF repo,
+  // so both dead-ended. The repo's listing names the file, so resolve it before giving up.
+  const loadGgufRepoPick = useCallback(
+    async (
+      repoId: string,
+      quantHint: string | null,
+      isDownloaded?: boolean,
+    ): Promise<boolean> => {
+      const filename = await resolveDiffusionGgufFilename(repoId, {
+        quant: quantHint,
+        hfToken: hfApiToken(getHfToken()),
+      });
+      // Still ambiguous (several quants on disk, or the listing failed): only the expander can say which.
+      if (!filename) {
+        toast.error("Pick a quantization for this model to load it");
+        return false;
+      }
+      // Optimistic label, reverted if the load never starts, like the curated GGUF branch below.
+      const prevQuant = quant;
+      quantRevert.current = { prev: prevQuant };
+      setQuant(quantHint ?? filename);
+      // Filename-qualified like the expander branch: the LTX variant lives in the checkpoint name, not the repo id.
+      const d = defaultsFor(`${repoId}/${filename}`);
+      setSteps(d.steps);
+      setGuidance(d.guidance);
+      const started = await loadOrStage(
+        repoId,
+        { kind: "gguf", filename },
+        isDownloaded,
+      );
+      if (!started) {
+        setQuant(prevQuant);
+        quantRevert.current = null;
+      }
+      return started;
+    },
+    [loadOrStage, quant],
+  );
+
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params.
   const routeSearch = useSearch({ strict: false }) as {
     model?: string;
@@ -1267,8 +1308,23 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       routeSearch.quant,
       loadSpecFor(wanted, VIDEO_CATALOG),
     );
+    // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.
+    if (pick.opts.kind === "gguf" && !pick.opts.filename) {
+      // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
+      void Promise.resolve().then(() =>
+        loadGgufRepoPick(pick.repoId, routeSearch.quant ?? null, false),
+      );
+      return;
+    }
     void loadOrStage(pick.repoId, pick.opts, false);
-  }, [active, routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
+  }, [
+    active,
+    routeSearch.model,
+    routeSearch.quant,
+    loadOrStage,
+    loadGgufRepoPick,
+    navigateSelf,
+  ]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
@@ -1321,8 +1377,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
         if (!filename.toLowerCase().endsWith(".gguf")) {
-          // No filename to load, and a quant label can't be mapped back to one.
-          toast.error("Pick a quantization for this model to load it");
+          // A repo id or local directory, not a file. The listing names its .gguf; the label picks between siblings.
+          void loadGgufRepoPick(id, meta.ggufVariant ?? null, meta.isDownloaded);
           return;
         }
         const prevQuant = quant;
@@ -1359,6 +1415,17 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         });
         return;
       }
+      // A GGUF repo with no filename: a pinned row sends its label alone, a curated artifact sends neither. Both used to
+      // fall through to the pipeline branch below, which the backend rejects for a single-file GGUF repo.
+      if (spec?.kind === "gguf" || meta.ggufVariant) {
+        // An artifact that names its file short-circuits the listing; otherwise the label is the hint.
+        void loadGgufRepoPick(
+          id,
+          spec?.filename ?? meta.ggufVariant ?? null,
+          meta.isDownloaded,
+        );
+        return;
+      }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos, the family bases, or on-device paths.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
         toast.error("Only unsloth or on-device video models can be loaded here");
@@ -1370,7 +1437,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       setGuidance(d.guidance);
       void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded);
     },
-    [busy, handleLoad, loadOrStage, quant],
+    [busy, handleLoad, loadGgufRepoPick, loadOrStage, quant],
   );
 
   const handleUnload = useCallback(async () => {
