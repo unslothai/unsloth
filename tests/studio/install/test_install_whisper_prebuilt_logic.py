@@ -1041,7 +1041,9 @@ def test_pairing_does_not_infer_a_tree_for_non_fork_binaries(monkeypatch):
 
     monkeypatch.setattr(M, "_download_host_json_once", record)
     assert M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = None) is True
-    assert not any(SUFFIX_SHARED_A in url for url in fetched)
+    # Nothing at all is probed: the installed tag because there is no repo, and
+    # the required tag because a lone required tree cannot decide the pairing.
+    assert fetched == []
 
 
 def test_installed_llama_ggml_tree_reads_marker(tmp_path):

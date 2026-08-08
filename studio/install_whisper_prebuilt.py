@@ -431,7 +431,10 @@ def llama_runtime_pairs(
     if not (isinstance(installed_ggml_tree, str) and installed_ggml_tree):
         if isinstance(installed_repo, str) and installed_repo:
             installed_ggml_tree = published_llama_ggml_tree(installed_tag, installed_repo)
-    if not (isinstance(required_ggml_tree, str) and required_ggml_tree):
+    # Only probe the required release once the installed side actually resolved:
+    # the comparison below needs both trees, so with no installed tree the answer
+    # cannot change the verdict and the request is a 30s stall for nothing.
+    if installed_ggml_tree and not (isinstance(required_ggml_tree, str) and required_ggml_tree):
         required_ggml_tree = published_llama_ggml_tree(required_tag)
     if installed_ggml_tree and required_ggml_tree:
         return installed_ggml_tree == required_ggml_tree
