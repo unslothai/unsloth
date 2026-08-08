@@ -193,6 +193,9 @@ class _CpuFallbackRuntime(NamedTuple):
     tempdir: tempfile.TemporaryDirectory
     source_binary: Path
     staged_binary: Path
+    # An update swaps the install directory in place, so the source path alone
+    # cannot tell a refreshed build from the staged copy of the old one.
+    source_stamp: tuple
 
 
 # Shared so the from_identifier preflight and the load-time raise stay in sync.
@@ -3096,6 +3099,7 @@ class LlamaCppBackend:
         # Set after an auto-Vulkan crash recovers with all devices disabled.
         self._cpu_fallback_reason: Optional[str] = None
         self._cpu_fallback_runtime: Optional[_CpuFallbackRuntime] = None
+        self._pending_cpu_fallback_cleanups: list = []
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         # Block-diffusion model (e.g. DiffusionGemma): served by the diffusion
@@ -8882,7 +8886,11 @@ class LlamaCppBackend:
         cmd: Iterable[str],
         env: dict[str, str],
         server_caps: Mapping[str, object],
-    ) -> Optional[tuple[list[str], str]]:
+    ) -> Optional[tuple[list[str], Optional[str]]]:
+        # The staged runtime only removes GPU backends; replaying a non-Vulkan
+        # install would report a Vulkan crash that never happened.
+        if not self._is_vulkan_backend(binary):
+            return None
         replay = self._cpu_isolated_replay(cmd, env, server_caps)
         if replay is None:
             return None
@@ -8908,8 +8916,13 @@ class LlamaCppBackend:
         if not binary or not self._is_unsloth_managed_binary(binary):
             return None
         source_binary = _resolve_llama_binary(binary)
+        source_stamp = self._binary_stamp(source_binary)
         runtime = self._cpu_fallback_runtime
-        if runtime is not None and runtime.source_binary == source_binary:
+        if (
+            runtime is not None
+            and runtime.source_binary == source_binary
+            and runtime.source_stamp == source_stamp
+        ):
             if runtime.staged_binary.is_file():
                 return str(runtime.staged_binary)
         self._cleanup_cpu_fallback_runtime()
@@ -8960,15 +8973,34 @@ class LlamaCppBackend:
             tempdir = staged_runtime,
             source_binary = source_binary,
             staged_binary = staged_binary,
+            source_stamp = source_stamp,
         )
         return str(staged_binary)
+
+    @staticmethod
+    def _binary_stamp(path: Path) -> tuple:
+        try:
+            stat = path.stat()
+        except OSError:
+            return ()
+        return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
     def _cleanup_cpu_fallback_runtime(self) -> None:
         runtime = getattr(self, "_cpu_fallback_runtime", None)
         self._cpu_fallback_runtime = None
+        # cleanup() detaches its finalizer before removing the tree, so dropping
+        # a failed one (a locked DLL on Windows) would orphan it for good. Hold
+        # the handle and retry it on the next cleanup instead.
+        pending = getattr(self, "_pending_cpu_fallback_cleanups", [])
         if runtime is not None:
-            with contextlib.suppress(Exception):
-                runtime.tempdir.cleanup()
+            pending.append(runtime.tempdir)
+        retry = []
+        for tempdir in pending:
+            try:
+                tempdir.cleanup()
+            except Exception:
+                retry.append(tempdir)
+        self._pending_cpu_fallback_cleanups = retry
 
     def _cleanup_failed_cpu_fallback(self) -> None:
         """Remove every process and staged artifact from a terminal CPU replay."""
@@ -11504,12 +11536,6 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
-                _cpu_fallback_eligible = self._auto_vulkan_cpu_fallback_eligible(
-                    binary,
-                    intent,
-                    extra_args,
-                    env,
-                )
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(env)
                 # llama.cpp reads LLAMA_ARG_MLOCK / _MMAP / _LOAD_MODE before argv,
@@ -11571,6 +11597,16 @@ class LlamaCppBackend:
                 # A gpu_ids pin also owns inherited device placement.
                 if gpu_ids is not None:
                     self._clear_device_placement_env(env)
+
+                # After the scrubs above, so a stale inherited placement this
+                # launch already dropped cannot disqualify the replay of a child
+                # that never saw it.
+                _cpu_fallback_eligible = self._auto_vulkan_cpu_fallback_eligible(
+                    binary,
+                    intent,
+                    extra_args,
+                    env,
+                )
 
                 # The unpinnable-drafter drop above rewrites argv, which cannot reach the
                 # drafter the child picks up from its own env. The spec type goes too,
@@ -12092,11 +12128,16 @@ class LlamaCppBackend:
                 # _requested_spec_mode so a duplicate /load doesn't thrash. The
                 # cancel check stops an /unload-killed attempt respawning. A
                 # decode-probe failure above also routes here.
+                # The retry replaces _last_spawn_cmd with a drafterless argv, but a
+                # GPU init crash is not the drafter's fault: keep the requested
+                # launch so the CPU replay below can still run it.
+                _spec_cpu_replay_cmd: Optional[List[str]] = None
                 if (
                     not healthy
                     and (_spec_requested_mtp or _spec_requested_dspark)
                     and not self._cancel_event.is_set()
                 ):
+                    _spec_cpu_replay_cmd = list(_last_spawn_cmd)
                     # Blame the binary only when the output shows MTP itself
                     # failing (unknown arch / draft or context build); an
                     # unrelated crash (e.g. OOM) gets a neutral message.
@@ -12279,8 +12320,14 @@ class LlamaCppBackend:
                                     )
                                 )
                     else:
-                        if _try_auto_vulkan_cpu_fallback(_last_spawn_cmd, _crash_rc):
+                        if _try_auto_vulkan_cpu_fallback(
+                            _spec_cpu_replay_cmd or _last_spawn_cmd, _crash_rc
+                        ):
                             healthy = True
+                            if _spec_cpu_replay_cmd is not None:
+                                # The drafter came back with the replay, so the
+                                # speculative-disable diagnosis no longer applies.
+                                self._spec_fallback_reason = None
                         else:
                             _raise_terminal_load_failure(
                                 self._classify_llama_start_failure(

@@ -90,6 +90,7 @@ def _run_cpu_fallback_load(
     mmproj_from_argv = False,
     mmproj_env = None,
     cpu_fallback_available = True,
+    extra_args = None,
 ):
     def _gguf_string(value: str) -> bytes:
         encoded = value.encode()
@@ -185,6 +186,7 @@ def _run_cpu_fallback_load(
             mmproj_path = str(mmproj) if mmproj_from_argv else None,
             model_identifier = "owner/model",
             is_vision = mmproj_from_argv,
+            extra_args = list(extra_args) if extra_args else None,
         )
     )
     return backend, loaded, launches, fallback_sources
@@ -407,6 +409,9 @@ class TestCpuIsolatedReplay:
         backend = LlamaCppBackend()
         monkeypatch.setattr(llama_cpp.sys, "platform", platform)
         monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+        )
+        monkeypatch.setattr(
             backend,
             "_cpu_isolated_replay",
             lambda _cmd, _env, _caps: ["original", "--device", "none"],
@@ -521,6 +526,62 @@ class TestCpuIsolatedReplay:
         backend._cleanup_cpu_fallback_runtime()
         assert not staged_dir.exists()
 
+    def test_non_vulkan_managed_runtime_is_never_staged(self, monkeypatch, tmp_path):
+        binary = _managed_runtime(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)
+        )
+        backend = LlamaCppBackend()
+
+        prepared = backend._prepare_cpu_fallback_launch(
+            str(binary), [str(binary), "-m", "model.gguf"], {}, {"found": True}
+        )
+
+        assert prepared is None
+        assert backend._cpu_fallback_runtime is None
+
+    def test_an_updated_install_restages_instead_of_reusing(self, monkeypatch, tmp_path):
+        binary = _managed_runtime(monkeypatch, tmp_path)
+        backend = LlamaCppBackend()
+        first = backend._cpu_isolated_binary(str(binary))
+        assert first is not None
+        assert backend._cpu_isolated_binary(str(binary)) == first
+
+        # An update swaps the tree in place, so the path is unchanged.
+        binary.unlink()
+        binary.write_bytes(b"rebuilt binary")
+        binary.chmod(0o755)
+
+        second = backend._cpu_isolated_binary(str(binary))
+        assert second is not None and second != first
+        assert Path(second).read_bytes() == b"rebuilt binary"
+        assert not Path(first).parent.exists()
+
+    def test_a_failed_cleanup_is_retried_rather_than_orphaned(self, monkeypatch, tmp_path):
+        binary = _managed_runtime(monkeypatch, tmp_path)
+        backend = LlamaCppBackend()
+        assert backend._cpu_isolated_binary(str(binary)) is not None
+        tempdir = backend._cpu_fallback_runtime.tempdir
+        staged_dir = Path(tempdir.name)
+        attempts = []
+        real_cleanup = tempdir.cleanup
+
+        def _cleanup():
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise PermissionError("locked")
+            real_cleanup()
+
+        monkeypatch.setattr(tempdir, "cleanup", _cleanup)
+
+        backend._cleanup_cpu_fallback_runtime()
+        assert staged_dir.exists()
+        assert backend._pending_cpu_fallback_cleanups == [tempdir]
+
+        backend._cleanup_cpu_fallback_runtime()
+        assert not staged_dir.exists()
+        assert backend._pending_cpu_fallback_cleanups == []
+
     def test_terminal_cpu_replay_failure_removes_staged_runtime(self, monkeypatch, tmp_path):
         binary = _managed_runtime(monkeypatch, tmp_path)
         backend = LlamaCppBackend()
@@ -621,6 +682,36 @@ def test_env_projector_cpu_recovery_preserves_vision_state(monkeypatch, tmp_path
     assert len(fallback_sources) == 1
     assert "--mmproj" not in fallback_sources[0]
     assert backend._is_vision is True
+
+
+def test_inherited_split_mode_dropped_before_spawn_still_recovers(monkeypatch, tmp_path):
+    """A stale env value this launch scrubs never reached the crashed child."""
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [-11, -11, None],
+        mmproj_env = {"LLAMA_ARG_SPLIT_MODE": "tensor"},
+    )
+
+    assert loaded is True
+    assert "LLAMA_ARG_SPLIT_MODE" not in launches[0][1]
+    assert len(fallback_sources) == 1
+    assert backend._cpu_fallback_reason == "vulkan_startup_crash"
+
+
+def test_drafter_survives_the_cpu_replay(monkeypatch, tmp_path):
+    """The speculative retry must not become the source of the CPU replay."""
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [-11, -11, -11, None],
+        extra_args = ["--spec-type", "mtp"],
+    )
+
+    assert loaded is True
+    assert len(fallback_sources) == 1
+    assert "--spec-default" not in fallback_sources[0]
+    assert backend._spec_fallback_reason is None
 
 
 @pytest.mark.parametrize(
