@@ -226,8 +226,11 @@ _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
 }
 
 # xFormers switched to a single stable-ABI wheel at 0.0.31; 0.0.30 and earlier publish
-# one wheel per interpreter (cp310-cp310, ... up to cp312 only).
+# one wheel per interpreter, and only cp39 through cp312 -- there is no 0.0.30 wheel for
+# 3.13 on any index, so a 3.13 interpreter on torch 2.7.0 has to resolve to nothing rather
+# than to a URL that 404s.
 _XFORMERS_ABI3_MIN_VERSION = (0, 0, 31)
+_XFORMERS_PRE_ABI3_PYTHON_RANGE = ((3, 9), (3, 12))
 
 # platform_tag from wheel_platform_tag() -> the leaf in the wheel filename. aarch64 and
 # macOS are absent because download.pytorch.org publishes no xFormers wheel for them.
@@ -292,8 +295,12 @@ def xformers_wheel_url(env: dict[str, str] | None) -> str | None:
     if _xformers_version_tuple(version) >= _XFORMERS_ABI3_MIN_VERSION:
         python_tag = "cp39-abi3"
     else:
-        interpreter = env.get("python_tag")
-        if not interpreter:
+        interpreter = str(env.get("python_tag") or "")
+        match = re.fullmatch(r"cp(\d)(\d+)", interpreter)
+        if match is None:
+            return None
+        low, high = _XFORMERS_PRE_ABI3_PYTHON_RANGE
+        if not low <= (int(match.group(1)), int(match.group(2))) <= high:
             return None
         python_tag = f"{interpreter}-{interpreter}"
     return (

@@ -183,3 +183,62 @@ def test_flash_attn_resolution_is_untouched():
         "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1"
         "/flash_attn-2.8.1+cu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
     )
+
+
+def test_pre_abi3_rows_refuse_interpreters_with_no_wheel():
+    """xFormers 0.0.30 publishes cp39..cp312 only. On 3.13 the pre-abi3 filename pattern
+    builds a URL that 404s, so the row must resolve to nothing instead."""
+    for python_tag, expected_none in (("cp312", False), ("cp313", True), ("cp38", True)):
+        url = wheel_utils.xformers_wheel_url(
+            _env(
+                torch_version = "2.7.0+cu128",
+                cuda_version = "12.8",
+                python_tag = python_tag,
+                platform_tag = "linux_x86_64",
+            )
+        )
+        assert (url is None) is expected_none, f"{python_tag} -> {url}"
+
+    # abi3 rows are interpreter independent and must not be caught by the same gate.
+    assert wheel_utils.xformers_wheel_url(_env(python_tag = "cp313")) is not None
+    assert wheel_utils.xformers_wheel_url(_env(python_tag = "cp314")) is not None
+
+
+@pytest.mark.parametrize("platform_tag", ["win_amd64", "linux_x86_64"])
+def test_every_url_the_matrix_can_produce_is_live(platform_tag):
+    """The matrix is a hand-maintained list of URLs; the only way to know a row is real is
+    to ask. A 404 fails (that row is wrong); a network outage skips, matching
+    tests/version_compat/_fetch.py."""
+    import urllib.error
+    import urllib.request
+
+    cuda_for_family = {"cu126": "12.6", "cu128": "12.8", "cu129": "12.9", "cu130": "13.0"}
+    urls: set[str] = set()
+    for release, families in wheel_utils._XFORMERS_WHEEL_VERSIONS.items():
+        for family, _version in families.items():
+            assert family in cuda_for_family, f"unmapped CUDA family {family}"
+            for python_tag in ("cp39", "cp310", "cp311", "cp312", "cp313", "cp314"):
+                url = wheel_utils.xformers_wheel_url(
+                    _env(
+                        torch_version = f"{release}+{family}",
+                        cuda_version = cuda_for_family[family],
+                        python_tag = python_tag,
+                        platform_tag = platform_tag,
+                    )
+                )
+                if url is not None:
+                    urls.add(url)
+    assert urls, "the matrix produced no URLs at all"
+
+    dead = []
+    for url in sorted(urls):
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(url, method = "HEAD"), timeout = 30
+            ):
+                pass
+        except urllib.error.HTTPError as exc:
+            dead.append(f"{exc.code} {url}")
+        except (urllib.error.URLError, TimeoutError) as exc:
+            pytest.skip(f"download.pytorch.org unreachable: {exc}")
+    assert dead == [], "matrix rows pointing at wheels that do not exist:\n" + "\n".join(dead)
