@@ -32,7 +32,7 @@ import { shouldUseVisionDatasetCheck } from "./fresh-dataset-check";
 import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
 import { isRawTextDatasetFormat } from "./training-methods";
 import { normalizeTrainingStartError } from "./training-start-errors";
-import { normalizeTrainingStartPayloadForComparison } from "./training-start-inputs";
+import { createTrainingStartInputIdentity } from "./training-start-inputs";
 import {
   TRAINING_SETUP_CHANGED_ERROR,
   type TrainingStartLease,
@@ -56,15 +56,10 @@ const ROLE_REMAP: Record<string, Record<string, string>> = {
 type AttemptPhase = "preflight" | "transport" | "finished";
 
 function captureTrainingStartInputs(config: TrainingConfigState) {
-  const payload = normalizeTrainingStartPayloadForComparison(
+  return createTrainingStartInputIdentity(
     buildTrainingStartPayload(config, null),
+    config,
   );
-  return {
-    payload,
-    modelType: config.modelType,
-    isVisionModel: config.isVisionModel,
-    isAudioModel: config.isAudioModel,
-  };
 }
 
 type TrainingStartInputs = ReturnType<typeof captureTrainingStartInputs>;

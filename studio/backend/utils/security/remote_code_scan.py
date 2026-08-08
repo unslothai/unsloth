@@ -24,8 +24,10 @@ import hashlib
 import io
 import tokenize
 import importlib.util
+import os
 import pathlib
 import re
+import stat
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
@@ -55,6 +57,23 @@ REMOTE_CODE_CONFIG_FILES = (
     "processor_config.json",
     "video_preprocessor_config.json",
 )
+
+
+def remote_code_config_paths(load_subdirs = ()) -> tuple[str, ...]:
+    paths = list(REMOTE_CODE_CONFIG_FILES)
+    for value in dict.fromkeys(load_subdirs):
+        raw = str(value)
+        subdir = pathlib.PurePosixPath(raw)
+        if (
+            not raw
+            or "\\" in raw
+            or subdir.is_absolute()
+            or any(pathlib.PureWindowsPath(part).drive for part in subdir.parts)
+            or any(part in {"", ".", ".."} for part in subdir.parts)
+        ):
+            raise ValueError(f"Invalid remote-code load subdirectory: {value!r}")
+        paths.extend(f"{subdir.as_posix()}/{name}" for name in REMOTE_CODE_CONFIG_FILES)
+    return tuple(paths)
 
 
 class RemoteCodeUnscannable(Exception):
@@ -406,6 +425,14 @@ def _read_python_source(path) -> str:
     return data.decode(encoding, errors = "replace")
 
 
+def _is_linked_directory(path: pathlib.Path) -> bool:
+    if path.is_symlink():
+        return True
+    attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(reparse_point and attributes & reparse_point)
+
+
 def remote_code_fingerprint(files: dict[str, str]) -> str:
     """Stable sha256 over the (sorted) file contents, for pinning consent."""
     h = hashlib.sha256()
@@ -417,8 +444,13 @@ def remote_code_fingerprint(files: dict[str, str]) -> str:
     return h.hexdigest()
 
 
-def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> dict[str, str]:
-    """Download a repo's executable ``.py`` (auto_map targets + modeling/config).
+def repo_remote_code_files(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    *,
+    load_subdirs = (),
+) -> dict[str, str]:
+    """Download every executable ``.py`` in the repo plus external ``auto_map`` targets.
 
     Returns {filename: content}. An EMPTY dict means the repo ships no executable ``.py``
     (trust_remote_code is a no-op). Raises ``RemoteCodeUnscannable`` when code is present
@@ -436,22 +468,45 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
 
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
+
             # Walk ALL .py, not just the auto_map entry's static import closure. This is
             # DELIBERATE (see the remote-branch note): the entry can reach a sibling via
             # an absolute import, importlib, or exec, which a relative-import closure
             # misses, so closure-only scanning is a real bypass. Broad scan never
             # under-scans; the cost is a benign script can over-block, the safe direction
             # for an RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
-            for p in root.rglob("*.py"):
-                if p.is_file():
+            def raise_walk_error(error):
+                raise error
+
+            for directory, dirnames, filenames in os.walk(
+                root,
+                followlinks = False,
+                onerror = raise_walk_error,
+            ):
+                directory_path = Path(directory)
+                for name in dirnames:
+                    child = directory_path / name
+                    if _is_linked_directory(child):
+                        raise RemoteCodeUnscannable(
+                            f"{model_name}: linked directory {child.relative_to(root)} "
+                            "could hide executable code"
+                        )
+                for name in filenames:
+                    if not name.endswith(".py"):
+                        continue
+                    p = directory_path / name
+                    if not p.is_file():
+                        raise RemoteCodeUnscannable(
+                            f"{model_name}: Python source {p.relative_to(root)} is unreadable"
+                        )
                     files[str(p.relative_to(root))] = _read_python_source(p)
             # A local config can still point auto_map at an EXTERNAL Hub repo
             # (owner/name--module.Class) that executes on load, so fetch it. Every config
             # that can declare auto_map is checked, so a custom processor's external code
             # is not missed.
             ext_refs = set()
-            for name in REMOTE_CODE_CONFIG_FILES:
-                p = root / name
+            for name in remote_code_config_paths(load_subdirs):
+                p = root.joinpath(*pathlib.PurePosixPath(name).parts)
                 if p.is_file():
                     try:
                         ext_refs |= _auto_map_refs(json.loads(p.read_text(encoding = "utf-8-sig")))
@@ -468,7 +523,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
         # (EntryNotFoundError) means the config is absent -> skip; any other failure is
         # transient/auth and could hide an auto_map, so fail closed (unscannable).
         refs = set()
-        for cfg_name in REMOTE_CODE_CONFIG_FILES:
+        for cfg_name in remote_code_config_paths(load_subdirs):
             try:
                 cfg_path = hf_hub_download(
                     model_name,
@@ -595,7 +650,12 @@ def _auto_map_py(cfg: dict) -> set[str]:
     return {fn for repo, fn in _auto_map_refs(cfg) if repo is None}
 
 
-def external_auto_map_repos(model_name: str, hf_token: Optional[str] = None) -> set:
+def external_auto_map_repos(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    *,
+    load_subdirs = (),
+) -> set:
     """External Hub repos referenced by any of this model's auto_map configs.
 
     The ``owner/name`` repos ``_add_external_refs`` downloads. The scan route uses this so
@@ -611,8 +671,8 @@ def external_auto_map_repos(model_name: str, hf_token: Optional[str] = None) -> 
 
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
-            for cfg_name in REMOTE_CODE_CONFIG_FILES:
-                p = root / cfg_name
+            for cfg_name in remote_code_config_paths(load_subdirs):
+                p = root.joinpath(*pathlib.PurePosixPath(cfg_name).parts)
                 if not p.is_file():
                     continue
                 try:
@@ -625,7 +685,7 @@ def external_auto_map_repos(model_name: str, hf_token: Optional[str] = None) -> 
         from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import EntryNotFoundError
 
-        for cfg_name in REMOTE_CODE_CONFIG_FILES:
+        for cfg_name in remote_code_config_paths(load_subdirs):
             try:
                 cfg_path = hf_hub_download(
                     model_name,

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { authFetch } from "@/features/auth";
+// eslint-disable-next-line no-restricted-imports -- Avoid the auth barrel's React login page.
+import { authFetch } from "@/features/auth/api";
 import type {
   CreateResearchRunInput,
   ResearchEvent,
