@@ -3604,6 +3604,85 @@ def test_gguf_progress_without_a_manifest_needs_every_expected_blob(monkeypatch,
     assert result["progress"] == 0.99  # capped, not settled
 
 
+def test_gguf_progress_recovers_the_windows_shaped_stale_download_card(monkeypatch, tmp_path):
+    """The reported symptom end to end: finished download, "0 B of 33 GB", Retry showing.
+
+    Every Windows-shaped condition at once, none of which reproduce on Linux on
+    their own. The cache is reached through a redirect so its resolved and
+    unresolved spellings differ; the snapshot holds copies rather than symlinks,
+    as HF falls back to when the filesystem refuses them; the manifest sits
+    under the pre-resolve scope digest an earlier build wrote it to; and
+    model_info is failing, so the expected blob hashes come back empty and stay
+    that way for the negative-cache TTL. Each one alone was enough to zero the
+    reading and keep the job out of a terminal state.
+    """
+    resolved_root = tmp_path / "resolved"
+    resolved_root.mkdir()
+    link = tmp_path / "redirected"
+    try:
+        link.symlink_to(resolved_root, target_is_directory = True)
+    except (NotImplementedError, OSError):  # pragma: no cover - unprivileged Windows
+        pytest.skip("symlinks unavailable on this host")
+    hub_cache = link / "hub"
+    entry = hub_cache / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    # Copy layout: the snapshot holds real files, and blobs/ was never populated
+    # with anything this reading could have matched by hash.
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 33_000)
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = str(hub_cache)),
+    )
+    # A manifest as an older build filed it: hashed from the unresolved spelling,
+    # and with no sha256 because HF metadata was already unreachable when the
+    # worker recorded it from the finished snapshot.
+    legacy = state_dir.manifest_path(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        hub_cache = hub_cache,
+        cache_scope = state_dir.legacy_cache_scope_name(hub_cache),
+    )
+    assert legacy.parent.name != state_dir.cache_scope_name(hub_cache)
+    legacy.parent.mkdir(parents = True, exist_ok = True)
+    legacy.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "repo_type": "model",
+                "repo_id": "Org/Model-GGUF",
+                "variant": "Q4_K_M",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "expected_files": [{"path": "model-Q4_K_M.gguf", "size": 33_000}],
+                "transport": "http",
+                "hub_cache": str(hub_cache),
+            }
+        ),
+        encoding = "utf-8",
+    )
+    _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 33_000,
+        )
+    )
+
+    assert result["downloaded_bytes"] == 33_000  # not "0 B"
+    assert result["completed_bytes"] == 33_000  # what settles the job terminal
+    assert result["expected_bytes"] == 33_000
+    assert result["complete_on_disk"] is True  # so Retry/Resume goes away
+    assert result["progress"] == 1.0
+
+
 def test_gguf_progress_without_a_manifest_needs_the_snapshot_materialized(monkeypatch, tmp_path):
     """A finalized blob no one linked to is not a finished download.
 
