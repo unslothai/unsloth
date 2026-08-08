@@ -237,6 +237,55 @@ def test_an_unspawnable_xet_retry_falls_through_to_http(monkeypatch, tmp_path):
     assert spawned == [True, False], "the failed XET respawn must be followed by an HTTP one"
 
 
+def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_path):
+    """That fallthrough is the one path that hands a held stall to an HTTP worker. HTTP completing
+    says nothing about Xet, so clearing the verdict there would lose the only evidence a repeatedly
+    stalling machine ever produces."""
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    verdict = "Download appears stalled (xet transport) -- no progress for 30s"
+
+    def _start(registry, key, proc, *, on_stall, **_kwargs):
+        on_stall(verdict)
+        return None
+
+    def flaky_spawn(args, _token, *, use_xet, protected_blob_hashes = None):
+        if use_xet:
+            raise OSError("cannot fork")
+        return _Proc(0)  # the HTTP worker starts and completes
+
+    monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", _start)
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", flaky_spawn)
+
+    recorded = []
+    monkeypatch.setattr(download_lifecycle, "_record_xet_failure", lambda m, _l: recorded.append(m))
+
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = None,
+        blob_hashes = frozenset({"blob"}),
+    )[0]
+    download_lifecycle.register_worker(
+        registry,
+        key,
+        _Proc(1, b"killed"),
+        hf_token = None,
+        label = "Org/Model",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+    )
+    assert recorded == [verdict], "a real Xet stall was dropped when HTTP finished the download"
+
+
 def test_http_failure_remains_terminal(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)

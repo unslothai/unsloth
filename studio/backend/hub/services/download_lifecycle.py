@@ -1013,9 +1013,12 @@ def register_worker(
                         state,
                         stalled[0],
                     )
-            if state in ("complete", "cancelled"):
-                # A recovered download proved Xet works here, and a cancel was never evidence
-                # against it: either way an earlier stall is dropped, not charged.
+            if state == "cancelled" or (
+                state == "complete" and transport == download_registry.TRANSPORT_XET
+            ):
+                # A XET completion proved Xet works here, and a cancel was never evidence against
+                # it: either way an earlier stall is dropped. An HTTP completion proves nothing
+                # about Xet, so a verdict carried onto that rung is still charged below.
                 xet_failure = None
             if xet_failure is not None and not retry_xet:
                 # Xet phase over (HTTP next, or nothing left to try): report it, once.
