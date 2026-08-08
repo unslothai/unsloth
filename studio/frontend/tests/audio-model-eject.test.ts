@@ -23,6 +23,10 @@ test("Audio exposes the shared picker eject action only while idle", () => {
     /onEject=\{busy === null && selectorValue \? handleEject : undefined\}/,
   );
   assert.match(source, /if \(busy !== null \|\| isRecording\)/);
+  assert.match(
+    source,
+    /loaded=\{mode === "transcribe" \? sttReady : undefined\}/,
+  );
 });
 
 test("Speak eject unloads the live main model and cancels stale auto-load", () => {

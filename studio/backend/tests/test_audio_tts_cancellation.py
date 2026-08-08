@@ -261,6 +261,8 @@ def test_audio_response_timeout_tears_down_unresponsive_worker_before_release(mo
 
     assert shutdown_state == [(True, 0.03)]
     assert orchestrator._exclusive_tts_pending is False
+    assert orchestrator.active_model_name is None
+    assert orchestrator.models == {}
 
 
 def test_worker_audio_prepare_rechecks_unload_drain_after_clear():

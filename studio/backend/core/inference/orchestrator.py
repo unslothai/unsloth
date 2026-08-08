@@ -2185,7 +2185,11 @@ class InferenceOrchestrator:
                     # response, and tear down a worker that does not acknowledge promptly.
                     self._cancel_generation()
                     if not _drain(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT):
-                        self._shutdown_subprocess(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT)
+                        if self._shutdown_subprocess(
+                            timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT
+                        ):
+                            self.active_model_name = None
+                            self.models.clear()
                     raise RuntimeError(
                         f"Timeout waiting for audio generation ({generation_timeout:g}s)"
                     )

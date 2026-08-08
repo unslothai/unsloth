@@ -645,6 +645,44 @@ def test_mtmd_disconnect_closes_the_request_connection(monkeypatch):
     assert len(errors) == 1 and isinstance(errors[0], OSError)
 
 
+def test_mtmd_transcription_rejects_non_success_server_response(monkeypatch):
+    class _Response:
+        status = 500
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"error":{"message":"decode failed"}}'
+
+    class _Connection:
+        sock = None
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return _Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mtmd_mod.http.client, "HTTPConnection", _Connection)
+
+    with pytest.raises(RuntimeError, match = "returned HTTP 500"):
+        MtmdSttSidecar()._post_transcribe(
+            65000,
+            "qwen3-asr-0.6b",
+            b"RIFFwav",
+        )
+
+
 def test_mtmd_disconnect_cancels_only_its_owned_startup():
     class _StartingProcess:
         terminated = False

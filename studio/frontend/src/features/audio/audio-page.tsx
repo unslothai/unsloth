@@ -793,9 +793,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         }
       } finally {
         if (sttLoadingGeneration.current === generation) {
+          sttLoadingGeneration.current = null;
           await refreshSttStatus();
-          if (sttLoadingGeneration.current === generation) {
-            sttLoadingGeneration.current = null;
+          if (
+            generation === sttLoadGeneration.current &&
+            sttLoadingGeneration.current === null
+          ) {
             setBusy(null);
           }
         } else {
@@ -1504,6 +1507,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                 ? (selectedSttRepo ?? undefined)
                 : undefined
             }
+            loaded={mode === "transcribe" ? sttReady : undefined}
             value={selectorValue}
             onValueChange={handleModelSelect}
             onEject={busy === null && selectorValue ? handleEject : undefined}

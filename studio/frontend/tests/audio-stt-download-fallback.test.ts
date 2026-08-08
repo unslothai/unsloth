@@ -80,7 +80,7 @@ test("hidden Audio cancels only an active sidecar load", () => {
 test("STT loading stays busy until authoritative residency refresh completes", () => {
   assert.match(
     source,
-    /if \(sttLoadingGeneration\.current === generation\) \{[\s\S]*await refreshSttStatus\(\);[\s\S]*if \(sttLoadingGeneration\.current === generation\) \{[\s\S]*setBusy\(null\)/,
+    /if \(sttLoadingGeneration\.current === generation\) \{[\s\S]*sttLoadingGeneration\.current = null;[\s\S]*await refreshSttStatus\(\);[\s\S]*generation === sttLoadGeneration\.current[\s\S]*sttLoadingGeneration\.current === null[\s\S]*setBusy\(null\)/,
   );
 });
 

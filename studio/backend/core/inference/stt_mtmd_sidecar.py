@@ -1005,7 +1005,12 @@ class MtmdSttSidecar:
                 headers = {"Content-Type": "application/json"},
             )
             with connection.getresponse() as response:
-                body = json.loads(response.read().decode("utf-8"))
+                response_body = response.read()
+                if not 200 <= response.status < 300:
+                    raise RuntimeError(
+                        f"MTMD transcription server returned HTTP {response.status}."
+                    )
+                body = json.loads(response_body.decode("utf-8"))
         finally:
             cancel_done.set()
             connection.close()
