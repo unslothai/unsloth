@@ -127,7 +127,11 @@ def ok(msg: str) -> None:
 # --------------------------------------------------------------------------- HTTP
 
 
-def _get(url: str, token: str | None = None, timeout: float = 15.0):
+def _get(
+    url: str,
+    token: str | None = None,
+    timeout: float = 15.0,
+):
     """(status, parsed body) for a GET, or (None, None) when the socket is not there yet."""
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     req = urllib.request.Request(url, method = "GET", headers = headers)
@@ -142,7 +146,12 @@ def _get(url: str, token: str | None = None, timeout: float = 15.0):
         return None, None
 
 
-def _post(url: str, body: dict, token: str | None = None, timeout: float = 30.0):
+def _post(
+    url: str,
+    body: dict,
+    token: str | None = None,
+    timeout: float = 30.0,
+):
     data = json.dumps(body).encode()
     headers = {"Content-Type": "application/json"}
     if token:
