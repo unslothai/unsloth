@@ -112,3 +112,36 @@ def test_terminal_db_status_removes_queue(monkeypatch):
         assert jid not in ing._jobs, "a terminal DB status must remove the queue"
     finally:
         ing._jobs.pop(jid, None)
+
+
+def test_consumed_internal_job_removes_terminal_row_and_queue(tmp_path, monkeypatch):
+    db_path = tmp_path / "jobs.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("CREATE TABLE ingestion_jobs(id TEXT PRIMARY KEY, status TEXT NOT NULL)")
+        conn.executemany(
+            "INSERT INTO ingestion_jobs(id, status) VALUES(?, ?)",
+            [("terminal", "completed"), ("active", "running")],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(ing.rag_db, "get_connection", lambda: sqlite3.connect(db_path))
+    ing._jobs["terminal"] = queue.Queue()
+    ing._jobs["active"] = queue.Queue()
+    try:
+        assert ing.delete_terminal_job("terminal") is True
+        assert ing.delete_terminal_job("active") is False
+        assert "terminal" not in ing._jobs
+        assert "active" in ing._jobs
+        conn = sqlite3.connect(db_path)
+        try:
+            assert conn.execute("SELECT id FROM ingestion_jobs ORDER BY id").fetchall() == [
+                ("active",)
+            ]
+        finally:
+            conn.close()
+    finally:
+        ing._jobs.pop("terminal", None)
+        ing._jobs.pop("active", None)

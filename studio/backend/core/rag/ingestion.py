@@ -411,6 +411,24 @@ def _reap_finished_jobs() -> None:
                 _jobs.pop(jid, None)
 
 
+def delete_terminal_job(job_id: str) -> bool:
+    """Remove a consumed internal job without racing an active ingestion worker."""
+    conn = rag_db.get_connection()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM ingestion_jobs WHERE id=? AND status IN ('completed','failed')",
+            (job_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    if cursor.rowcount:
+        with _jobs_lock:
+            _jobs.pop(job_id, None)
+        return True
+    return False
+
+
 def job_events(job_id: str):
     """Yield job events for SSE; ends when the worker signals completion.
 

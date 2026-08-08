@@ -13,6 +13,8 @@ import stat
 import threading
 import time
 import uuid
+import weakref
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,13 +28,28 @@ logger = logging.getLogger(__name__)
 _wake = threading.Event()
 _stop = threading.Event()
 _thread: threading.Thread | None = None
+_thread_stop: threading.Event | None = None
 _thread_lock = threading.Lock()
-_sync_lock = threading.RLock()
+_worker_lock = threading.Lock()
+_worker_state = threading.local()
+_folder_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
+_scope_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
+_named_locks_lock = threading.Lock()
 _TERMINAL = {"completed", "failed"}
 
 
 class _SyncStopped(Exception):
     pass
+
+
+def _folder_lock(folder_id: str) -> threading.RLock:
+    with _named_locks_lock:
+        return _folder_locks.setdefault(folder_id, threading.RLock())
+
+
+def _scope_lock(scope: str) -> threading.RLock:
+    with _named_locks_lock:
+        return _scope_locks.setdefault(scope, threading.RLock())
 
 
 def _now() -> str:
@@ -159,46 +176,53 @@ def create_folder(
     )
     folder_id = str(uuid.uuid4())
     now = _now()
-    conn = rag_db.get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        normalized_key = _path_key(normalized)
-        existing = conn.execute("SELECT * FROM linked_folders WHERE scope=?", (scope,)).fetchall()
-        for row in existing:
-            existing_key = _path_key(row["path"])
-            if existing_key == normalized_key or _same_file(row["path"], normalized):
-                conn.rollback()
-                return dict(row)
-            if _paths_overlap(existing_key, normalized_key):
-                raise ValueError("Linked folders in the same scope cannot overlap")
-        conn.execute(
-            "INSERT INTO linked_folders(id, scope_type, scope_id, scope, path, name, "
-            "root_device, root_inode, auto_sync, status, created_at, updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                folder_id,
-                scope_type,
-                scope_id,
-                scope,
-                normalized,
-                (name or Path(normalized).name or normalized).strip(),
-                root_device,
-                root_inode,
-                int(auto_sync),
-                "pending",
-                now,
-                now,
-            ),
-        )
-        conn.commit()
-        return dict(
-            conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
-        )
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    with _scope_lock(scope):
+        conn = rag_db.get_connection()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
+            ).fetchone():
+                raise ValueError("The linked-folder scope no longer exists")
+            normalized_key = _path_key(normalized)
+            existing = conn.execute(
+                "SELECT * FROM linked_folders WHERE scope=?", (scope,)
+            ).fetchall()
+            for row in existing:
+                existing_key = _path_key(row["path"])
+                if existing_key == normalized_key or _same_file(row["path"], normalized):
+                    conn.rollback()
+                    return dict(row)
+                if _paths_overlap(existing_key, normalized_key):
+                    raise ValueError("Linked folders in the same scope cannot overlap")
+            conn.execute(
+                "INSERT INTO linked_folders(id, scope_type, scope_id, scope, path, name, "
+                "root_device, root_inode, auto_sync, status, created_at, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    folder_id,
+                    scope_type,
+                    scope_id,
+                    scope,
+                    normalized,
+                    (name or Path(normalized).name or normalized).strip(),
+                    root_device,
+                    root_inode,
+                    int(auto_sync),
+                    "pending",
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            return dict(
+                conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
+            )
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def get_folder(folder_id: str) -> dict | None:
@@ -232,9 +256,20 @@ def update_folder(
     name: str | None = None,
     auto_sync: bool | None = None,
 ) -> dict:
+    with _folder_lock(folder_id):
+        return _update_folder(folder_id, name = name, auto_sync = auto_sync)
+
+
+def _update_folder(
+    folder_id: str,
+    *,
+    name: str | None = None,
+    auto_sync: bool | None = None,
+) -> dict:
     conn = rag_db.get_connection()
     try:
-        if conn.execute("SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)).fetchone() is None:
+        row = conn.execute("SELECT status FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
+        if row is None or row["status"] == "retired":
             raise KeyError(folder_id)
         if name is not None:
             clean_name = name.strip()
@@ -270,7 +305,7 @@ def _remove_snapshot(path: str | None) -> None:
 
 
 def delete_folder(folder_id: str, *, remove_index: bool = True) -> bool:
-    with _sync_lock:
+    with _folder_lock(folder_id):
         conn = rag_db.get_connection()
         snapshots: list[str] = []
         try:
@@ -312,12 +347,62 @@ def delete_folder(folder_id: str, *, remove_index: bool = True) -> bool:
         return True
 
 
+def retire_scope(scope: str) -> list[dict]:
+    """Stop all future work before best-effort cleanup of a removed scope."""
+    with _scope_lock(scope), ExitStack() as locks:
+        conn = rag_db.get_connection()
+        try:
+            folders = [
+                dict(row)
+                for row in conn.execute("SELECT * FROM linked_folders WHERE scope=?", (scope,))
+            ]
+        finally:
+            conn.close()
+        for folder in sorted(folders, key = lambda row: row["id"]):
+            locks.enter_context(_folder_lock(folder["id"]))
+        conn = rag_db.get_connection()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT OR IGNORE INTO linked_folder_retired_scopes(scope, retired_at) "
+                "VALUES(?, ?)",
+                (scope, _now()),
+            )
+            conn.execute(
+                "UPDATE linked_folders SET auto_sync=0, status='retired', "
+                "last_error='Owning scope was removed', updated_at=? WHERE scope=?",
+                (_now(), scope),
+            )
+            conn.execute(
+                "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
+                "error='Owning scope was removed', rebuild_requested=0, completed_at=? "
+                "WHERE folder_id IN (SELECT id FROM linked_folders WHERE scope=?) "
+                "AND (status IN ('pending','running') OR rebuild_requested=1)",
+                (_now(), scope),
+            )
+            conn.commit()
+            return folders
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
 def request_sync(folder_id: str, *, rebuild: bool = False) -> str:
+    with _folder_lock(folder_id):
+        return _request_sync(folder_id, rebuild = rebuild)
+
+
+def _request_sync(folder_id: str, *, rebuild: bool = False) -> str:
     job_id = str(uuid.uuid4())
     conn = rag_db.get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        if conn.execute("SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)).fetchone() is None:
+        folder = conn.execute(
+            "SELECT status FROM linked_folders WHERE id=?", (folder_id,)
+        ).fetchone()
+        if folder is None or folder["status"] == "retired":
             raise KeyError(folder_id)
         active = conn.execute(
             "SELECT id, kind, status FROM linked_folder_sync_jobs WHERE folder_id=? "
@@ -524,7 +609,8 @@ def _wait_ingestion(job_id: str) -> dict:
 
 
 def _check_running() -> None:
-    if _stop.is_set():
+    stop_event = getattr(_worker_state, "stop_event", _stop)
+    if stop_event.is_set():
         raise _SyncStopped
 
 
@@ -708,12 +794,12 @@ def _reconcile_folder(job_id: str) -> None:
     finally:
         conn.close()
     folder = get_folder(job["folder_id"])
-    if folder is None:
+    if folder is None or folder["status"] == "retired":
         _set_job(
             job_id,
             status = "failed",
             stage = "error",
-            error = "Linked folder not found",
+            error = "Linked folder not found" if folder is None else "Owning scope was removed",
             completed_at = _now(),
         )
         return
@@ -771,12 +857,12 @@ def _reconcile_folder(job_id: str) -> None:
     by_identity: dict[tuple, list[str]] = {}
     for rel in missing:
         old = known[rel]
-        key = (old["device"], old["inode"], old["size_bytes"], old["mtime_ns"])
+        key = (old["device"], old["inode"])
         by_identity.setdefault(key, []).append(rel)
     for rel in sorted(list(new)):
         _check_running()
         meta = current[rel]
-        key = (meta["device"], meta["inode"], meta["size_bytes"], meta["mtime_ns"])
+        key = (meta["device"], meta["inode"])
         candidates = by_identity.get(key, [])
         if len(candidates) == 1:
             old_rel = candidates.pop()
@@ -817,6 +903,7 @@ def _reconcile_folder(job_id: str) -> None:
     for index, rel in enumerate(work):
         snapshot = None
         document_id = None
+        ingestion_job = None
         try:
             _check_running()
             metadata = current[rel]
@@ -874,6 +961,16 @@ def _reconcile_folder(job_id: str) -> None:
                 _discard_document(document_id)
             else:
                 _remove_snapshot(snapshot)
+        finally:
+            if ingestion_job:
+                try:
+                    ingestion.delete_terminal_job(ingestion_job)
+                except Exception:
+                    logger.warning(
+                        "failed to prune linked-folder ingestion job %s",
+                        ingestion_job,
+                        exc_info = True,
+                    )
         _set_job(
             job_id,
             added = added,
@@ -1017,7 +1114,9 @@ def _enqueue_periodic() -> None:
     try:
         now = _now()
         conn.execute("BEGIN IMMEDIATE")
-        rows = conn.execute("SELECT id FROM linked_folders WHERE auto_sync=1").fetchall()
+        rows = conn.execute(
+            "SELECT id FROM linked_folders WHERE auto_sync=1 AND status!='retired'"
+        ).fetchall()
         for row in rows:
             conn.execute(
                 "INSERT OR IGNORE INTO linked_folder_sync_jobs"
@@ -1031,84 +1130,109 @@ def _enqueue_periodic() -> None:
         conn.close()
 
 
-def _next_job() -> str | None:
+def _next_job() -> tuple[str, str] | None:
     conn = rag_db.get_connection()
     try:
         row = conn.execute(
-            "SELECT id FROM linked_folder_sync_jobs WHERE status='pending' ORDER BY created_at LIMIT 1"
+            "SELECT id, folder_id FROM linked_folder_sync_jobs "
+            "WHERE status='pending' ORDER BY created_at LIMIT 1"
         ).fetchone()
-        return row["id"] if row else None
+        return (row["id"], row["folder_id"]) if row else None
     finally:
         conn.close()
 
 
-def _worker() -> None:
-    global _thread
+def _worker(stop_event: threading.Event | None = None) -> None:
+    global _thread, _thread_stop
+    stop_event = stop_event or _stop
     try:
-        while not _stop.is_set():
-            job_id = _next_job()
-            if job_id:
+        with _worker_lock:
+            _worker_state.stop_event = stop_event
+            while not stop_event.is_set():
                 try:
-                    with _sync_lock:
-                        reconcile_folder(job_id)
-                except Exception as exc:
-                    logger.exception("linked-folder job %s failed unexpectedly", job_id)
-                    _fail_job(job_id, exc)
-                continue
-            _wake.wait(max(1.0, config.FOLDER_SYNC_INTERVAL_S))
-            _wake.clear()
-            if not _stop.is_set():
-                try:
+                    _recover_startup_state()
                     _enqueue_periodic()
+                    break
                 except Exception:
-                    logger.warning("linked-folder periodic scheduling failed", exc_info = True)
+                    logger.warning("linked-folder worker initialization failed", exc_info = True)
+                    stop_event.wait(1.0)
+            while not stop_event.is_set():
+                job = _next_job()
+                if job:
+                    job_id, folder_id = job
+                    try:
+                        with _folder_lock(folder_id):
+                            reconcile_folder(job_id)
+                    except Exception as exc:
+                        logger.exception("linked-folder job %s failed unexpectedly", job_id)
+                        _fail_job(job_id, exc)
+                    continue
+                _wake.wait(max(1.0, config.FOLDER_SYNC_INTERVAL_S))
+                _wake.clear()
+                if not stop_event.is_set():
+                    try:
+                        _enqueue_periodic()
+                    except Exception:
+                        logger.warning("linked-folder periodic scheduling failed", exc_info = True)
     finally:
+        _worker_state.stop_event = None
         with _thread_lock:
             if _thread is threading.current_thread():
                 _thread = None
+                _thread_stop = None
+
+
+def _recover_startup_state() -> None:
+    conn = rag_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs SET status='pending', stage='queued', "
+            "error=NULL WHERE status='running'"
+        )
+        rebuild_handoffs = conn.execute(
+            "SELECT id FROM linked_folder_sync_jobs WHERE status IN ('completed','failed') "
+            "AND rebuild_requested=1"
+        ).fetchall()
+        # A crash between successful ingestion and mapping installation can leave
+        # a folder-owned document unreferenced. It is safe to remove at startup.
+        orphans = conn.execute(
+            "SELECT d.id, d.stored_path FROM documents d "
+            "WHERE d.linked_folder_id IS NOT NULL AND NOT EXISTS "
+            "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)"
+        ).fetchall()
+        for orphan in orphans:
+            store.delete_document(conn, orphan["id"], commit = False)
+        conn.commit()
+    finally:
+        conn.close()
+    for orphan in orphans:
+        _remove_snapshot(orphan["stored_path"])
+    for job in rebuild_handoffs:
+        _queue_requested_rebuild(job["id"])
 
 
 def start_auto_sync(*, admission_lock = None, admit = None) -> bool:
-    global _thread
+    global _thread, _thread_stop
     if not rag_db.RAG_AVAILABLE:
         return False
     with _thread_lock:
         retired = _thread if _thread is not None and _thread.is_alive() else None
         if retired is not None and not _stop.is_set():
             return False
-    if retired is not None:
-        retired.join(timeout = 0)
-        if retired.is_alive():
-            return False
-
     def launch() -> bool:
-        global _thread
+        global _thread, _thread_stop
         with _thread_lock:
-            if _thread is not None and _thread.is_alive():
+            if _thread is not None and _thread.is_alive() and not _stop.is_set():
                 return False
+            stop_event = threading.Event()
             _stop.clear()
-            conn = rag_db.get_connection()
-            try:
-                conn.execute(
-                    "UPDATE linked_folder_sync_jobs SET status='pending', stage='queued', "
-                    "error=NULL WHERE status='running'"
-                )
-                # A crash between successful ingestion and mapping installation can leave
-                # a folder-owned document unreferenced. It is safe to remove at startup.
-                orphans = conn.execute(
-                    "SELECT d.id, d.stored_path FROM documents d "
-                    "WHERE d.linked_folder_id IS NOT NULL AND NOT EXISTS "
-                    "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)"
-                ).fetchall()
-                for orphan in orphans:
-                    store.delete_document(conn, orphan["id"], commit = False)
-                conn.commit()
-            finally:
-                conn.close()
-            for orphan in orphans:
-                _remove_snapshot(orphan["stored_path"])
-            _enqueue_periodic()
-            _thread = threading.Thread(target = _worker, daemon = True, name = "rag-folder-sync")
+            _thread_stop = stop_event
+            _thread = threading.Thread(
+                target = _worker,
+                args = (stop_event,),
+                daemon = True,
+                name = "rag-folder-sync",
+            )
             _thread.start()
             return True
 
@@ -1125,5 +1249,8 @@ def stop_auto_sync(timeout: float = 2.0) -> None:
     _wake.set()
     with _thread_lock:
         thread = _thread
+        stop_event = _thread_stop
+    if stop_event is not None:
+        stop_event.set()
     if thread is not None:
         thread.join(timeout = timeout)

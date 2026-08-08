@@ -288,7 +288,11 @@ def _resolve_linked_folder_path(native_path_lease: str, *, verifier = None) -> s
 
 def _folder_view(row: dict) -> dict:
     status = (
-        "syncing" if row["status"] == "syncing" else "error" if row["status"] == "error" else "idle"
+        "syncing"
+        if row["status"] == "syncing"
+        else "error"
+        if row["status"] in {"error", "retired"}
+        else "idle"
     )
     return {
         "id": row["id"],

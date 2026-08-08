@@ -175,6 +175,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_linked_folders_scope ON linked_folders(scope);
 
+        CREATE TABLE IF NOT EXISTS linked_folder_retired_scopes (
+            scope TEXT NOT NULL PRIMARY KEY,
+            retired_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS linked_folder_files (
             folder_id TEXT NOT NULL,
             relative_path TEXT NOT NULL,

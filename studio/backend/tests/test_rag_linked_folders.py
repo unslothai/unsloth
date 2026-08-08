@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-import os
 import asyncio
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -59,7 +59,12 @@ def test_schema_is_idempotent_and_persists_folder_tables(rag_home):
         }
     finally:
         second.close()
-    assert {"linked_folders", "linked_folder_files", "linked_folder_sync_jobs"} <= tables
+    assert {
+        "linked_folders",
+        "linked_folder_files",
+        "linked_folder_sync_jobs",
+        "linked_folder_retired_scopes",
+    } <= tables
     assert "rebuild_requested" in job_columns
 
 
@@ -259,6 +264,48 @@ def test_rename_reuse_verifies_content_before_reusing_the_document(rag_home, stu
         )
         assert after["document_id"] != before["document_id"]
         assert store.search_lexical(conn, folder["scope"], "other", 5)
+    finally:
+        conn.close()
+
+
+@requires_sqlite_vec
+def test_edited_rename_failure_retains_the_prior_mapping(rag_home, stub_embeddings, monkeypatch):
+    source, folder = _folder(rag_home)
+    original = source / "original.txt"
+    original.write_text("durable prior words", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        before = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
+    finally:
+        conn.close()
+
+    renamed = source / "renamed.txt"
+    original.rename(renamed)
+    renamed.write_text("replacement content that fails", encoding = "utf-8")
+    assert renamed.stat().st_ino == before["inode"]
+    monkeypatch.setattr(
+        folder_sync.ingestion,
+        "start_ingestion",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
+    )
+
+    result = _run(folder["id"])
+    assert result["status"] == "failed"
+    conn = rag_db.get_connection()
+    try:
+        current = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
+        assert current["relative_path"] == "original.txt"
+        assert current["document_id"] == before["document_id"]
+        assert store.search_lexical(conn, folder["scope"], "durable", 5)
     finally:
         conn.close()
 
@@ -649,6 +696,57 @@ def test_pending_rebuild_promotion_clears_a_recovered_successor_flag(rag_home):
         conn.close()
 
 
+@requires_sqlite_vec
+def test_startup_recovers_terminal_rebuild_handoff(rag_home):
+    _, folder = _folder(rag_home)
+    completed = folder_sync.request_sync(folder["id"])
+    conn = rag_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs SET status='completed', rebuild_requested=1, "
+            "completed_at=created_at WHERE id=?",
+            (completed,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    folder_sync._recover_startup_state()
+
+    conn = rag_db.get_connection()
+    try:
+        successor = conn.execute(
+            "SELECT * FROM linked_folder_sync_jobs WHERE folder_id=? AND status='pending'",
+            (folder["id"],),
+        ).fetchone()
+        assert successor is not None
+        assert successor["kind"] == "rebuild"
+        assert (
+            conn.execute(
+                "SELECT rebuild_requested FROM linked_folder_sync_jobs WHERE id=?", (completed,)
+            ).fetchone()["rebuild_requested"]
+            == 0
+        )
+    finally:
+        conn.close()
+
+
+@requires_sqlite_vec
+def test_linked_folder_ingestion_jobs_are_pruned_after_reconciliation(
+    rag_home, stub_embeddings
+):
+    source, folder = _folder(rag_home)
+    (source / "notes.txt").write_text("temporary internal job", encoding = "utf-8")
+
+    assert _run(folder["id"])["status"] == "completed"
+
+    conn = rag_db.get_connection()
+    try:
+        assert conn.execute("SELECT COUNT(*) AS n FROM ingestion_jobs").fetchone()["n"] == 0
+    finally:
+        conn.close()
+
+
 def test_document_and_folder_views_expose_management_and_scope_name():
     from routes.rag import _doc_view, _folder_view
 
@@ -766,10 +864,14 @@ def test_shutdown_requeues_a_scan_before_it_mutates_mappings(rag_home, monkeypat
         conn.close()
 
 
-@requires_sqlite_vec
-def test_start_auto_sync_does_not_block_on_retired_live_worker(rag_home):
+def test_start_auto_sync_queues_replacement_for_retired_live_worker(monkeypatch):
     blocker = threading.Event()
     released = threading.Event()
+
+    monkeypatch.setattr(folder_sync.rag_db, "RAG_AVAILABLE", True)
+    monkeypatch.setattr(folder_sync, "_recover_startup_state", lambda: None)
+    monkeypatch.setattr(folder_sync, "_enqueue_periodic", lambda: None)
+    monkeypatch.setattr(folder_sync, "_next_job", lambda: None)
 
     def parked():
         blocker.wait()
@@ -778,19 +880,53 @@ def test_start_auto_sync_does_not_block_on_retired_live_worker(rag_home):
     thread = threading.Thread(target = parked)
     thread.start()
     original_thread = folder_sync._thread
+    original_thread_stop = folder_sync._thread_stop
     original_stop = folder_sync._stop.is_set()
+    folder_sync._worker_lock.acquire()
     try:
         folder_sync._thread = thread
+        folder_sync._thread_stop = threading.Event()
+        folder_sync._thread_stop.set()
         folder_sync._stop.set()
-        assert folder_sync.start_auto_sync() is False
+        assert folder_sync.start_auto_sync() is True
         assert thread.is_alive()
+        assert folder_sync._thread is not thread
+        assert folder_sync._thread.is_alive()
     finally:
         blocker.set()
         thread.join(timeout = 1)
+        folder_sync._worker_lock.release()
+        folder_sync.stop_auto_sync(timeout = 1)
         if not original_stop:
             folder_sync._stop.clear()
         folder_sync._thread = original_thread
+        folder_sync._thread_stop = original_thread_stop
     assert released.is_set()
+
+
+@requires_sqlite_vec
+def test_unlink_of_another_folder_does_not_wait_for_active_folder(rag_home):
+    first_source = rag_home / "first"
+    second_source = rag_home / "second"
+    first_source.mkdir()
+    second_source.mkdir()
+    first = folder_sync.create_folder(
+        scope_type = "project", scope_id = "one", path = str(first_source)
+    )
+    second = folder_sync.create_folder(
+        scope_type = "project", scope_id = "two", path = str(second_source)
+    )
+    deleted = threading.Event()
+
+    with folder_sync._folder_lock(first["id"]):
+        thread = threading.Thread(
+            target = lambda: (folder_sync.delete_folder(second["id"]), deleted.set())
+        )
+        thread.start()
+        thread.join(timeout = 1)
+
+    assert deleted.is_set()
+    assert folder_sync.get_folder(second["id"]) is None
 
 
 def test_project_rag_cleanup_runs_off_the_event_loop(monkeypatch):
@@ -817,6 +953,49 @@ def test_project_rag_cleanup_runs_off_the_event_loop(monkeypatch):
     )
     assert result.id == "p1"
     assert cleanup_threads and cleanup_threads[0] != event_loop_thread
+
+
+@requires_sqlite_vec
+def test_project_rag_cleanup_retires_every_folder_before_best_effort_deletion(
+    rag_home, monkeypatch
+):
+    from routes import chat_history
+
+    scope = store.project_scope("project")
+    folders = []
+    for name in ("first", "second"):
+        source = rag_home / name
+        source.mkdir()
+        folders.append(
+            folder_sync.create_folder(
+                scope_type = "project", scope_id = "project", path = str(source)
+            )
+        )
+    failed_id = folders[0]["id"]
+    original_delete = folder_sync.delete_folder
+
+    def delete(folder_id, **kwargs):
+        if folder_id == failed_id:
+            raise sqlite3.OperationalError("database is busy")
+        return original_delete(folder_id, **kwargs)
+
+    monkeypatch.setattr(folder_sync, "delete_folder", delete)
+    chat_history._delete_project_rag_sources("project")
+
+    remaining = folder_sync.list_folders(scope)
+    assert [folder["id"] for folder in remaining] == [failed_id]
+    assert remaining[0]["auto_sync"] == 0
+    assert remaining[0]["status"] == "retired"
+    with pytest.raises(KeyError):
+        folder_sync.request_sync(failed_id)
+    with pytest.raises(KeyError):
+        folder_sync.update_folder(failed_id, auto_sync = True)
+    replacement = rag_home / "replacement"
+    replacement.mkdir()
+    with pytest.raises(ValueError, match = "scope no longer exists"):
+        folder_sync.create_folder(
+            scope_type = "project", scope_id = "project", path = str(replacement)
+        )
 
 
 def test_preview_containment_is_component_aware(rag_home):

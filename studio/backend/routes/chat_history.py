@@ -563,9 +563,13 @@ def _delete_project_rag_sources(project_id: str) -> None:
 
     uploads = os.path.realpath(str(rag_uploads_root()))
     scope = rag_store.project_scope(project_id)
-    for folder in folder_sync.list_folders(scope):
-        # delete_folder serializes against reconciliation via the folder sync lock.
-        folder_sync.delete_folder(folder["id"])
+    folders = folder_sync.retire_scope(scope)
+    for folder in folders:
+        try:
+            folder_sync.delete_folder(folder["id"])
+        except Exception:
+            # The registration remains durably disabled and a later cleanup can retry it.
+            logger.warning("failed to delete retired linked folder %s", folder["id"], exc_info = True)
     conn = rag_db.get_connection()
     try:
         for doc in rag_store.list_documents(conn, scope):
