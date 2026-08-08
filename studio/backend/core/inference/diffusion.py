@@ -136,8 +136,8 @@ from .diffusion_transformer_quant import (
 
 logger = get_logger(__name__)
 
-# Every `import diffusers` below is lazy, so this runs before the first one. On Windows ROCm
-# both reach an absent distributed backend: diffusers imports xformers on sight, quantizers torchao.
+# Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent
+# distributed backend: diffusers imports xformers on sight, its quantizers torchao.
 install_xformers_windows_rocm_stub()
 install_torchao_windows_rocm_stub()
 
@@ -156,61 +156,51 @@ def hub_cache_dir() -> str:
     return active_hf_hub_cache()
 
 
-# Repo id out of any hub URL in an error. Two shapes reach here: a download's file URL,
-# ".../huggingface.co/<owner>/<name>/resolve/...", which is what a gated PUBLIC repo raises,
-# and an API URL, ".../huggingface.co/api/models/<owner>/<name>", from auth_check or from
-# model_info on a gated PRIVATE one. Without the prefix branch the second yields "api/models".
+# Repo id out of any hub URL in an error. A gated PUBLIC repo raises a download URL,
+# ".../huggingface.co/<owner>/<name>/resolve/..."; auth_check, and model_info on a gated PRIVATE
+# repo, raise ".../huggingface.co/api/models/<owner>/<name>", which without the prefix branch would yield "api/models".
 _HUB_REPO_RE = re.compile(
     r"huggingface\.co/(?:api/(?:models|datasets|spaces)/)?([\w.\-]+/[\w.\-]+)"
 )
 
 
 def _gated_in_chain(exc: BaseException) -> Optional[BaseException]:
-    """The GatedRepoError in ``exc``'s cause/context chain, or None.
-
-    Transformers loads re-raise the 403 wrapped in an OSError, so the outermost error alone
-    misses the case this exists for. Screened by class name across the MRO, so no hub import.
-    """
+    """The GatedRepoError in ``exc``'s cause/context chain, or None. Transformers loads re-raise
+    the 403 wrapped in an OSError, so the outermost error alone misses the case this exists for.
+    Screened by class name across the MRO, so no hub import."""
     seen: set[int] = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
         if any(cls.__name__ == "GatedRepoError" for cls in type(exc).__mro__):
             return exc
-        # `raise ... from None` means the raiser already wrote a better message (the base-repo
-        # preflight does), so stop rather than overwrite it with the generic one.
+        # `raise ... from None` means the raiser already wrote a better message (the base-repo preflight does), so stop.
         exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
     return None
 
 
 def _hf_token_in_play(hf_token: Optional[str]) -> bool:
-    """Whether the failing Hub call carried ANY credential.
-
-    Not just Studio's own: with token=None huggingface_hub still falls back to HF_TOKEN or the
-    cached CLI login, so keying off the request token alone loops an already-authenticated user.
-    """
+    """Whether the failing Hub call carried ANY credential, not just Studio's own: with token=None
+    huggingface_hub still falls back to HF_TOKEN or the cached CLI login, so keying off the request
+    token alone loops an already-authenticated user."""
     if hf_token:
         return True
     try:
-        # What build_hf_headers calls, not get_token(): under HF_HUB_DISABLE_IMPLICIT_TOKEN a
-        # cached login still answers get_token() while the request goes out anonymous.
+        # What build_hf_headers calls: under HF_HUB_DISABLE_IMPLICIT_TOKEN get_token() still answers while the request goes out anonymous.
         from huggingface_hub.utils import get_token_to_send
         return bool(get_token_to_send(None))
-    except Exception:  # noqa: BLE001 -- unreadable or an unknown hub layout: assume none, which
-        return False  # only costs the user the "add a token" half of the message
+    except Exception:  # noqa: BLE001 -- assume none; at worst the message says "add a token"
+        return False
 
 
 def hub_access_message(exc: BaseException, *, had_token: bool) -> Optional[str]:
-    """Rewrite a gated-repo failure into the step that actually unblocks the user.
-
-    Returns None for anything else, so an unrelated load error keeps its own text. Only the
-    toast is affected; the raw exception, request id and resolve URL still reach the log.
-    """
+    """Rewrite a gated-repo failure into the step that actually unblocks the user, else None so an
+    unrelated load error keeps its own text. Only the toast is affected; the raw exception, request
+    id and resolve URL still reach the log."""
     gated = _gated_in_chain(exc)
     if gated is None:
         return None
     found = _HUB_REPO_RE.search(str(gated))
-    # An API URL ends at the repo, so the sentence's full stop lands inside the name (dots are
-    # legal mid-name, as in FLUX.2-klein-9B, but a name never ends in one).
+    # An API URL ends at the repo, so a trailing full stop lands inside the name (dots are legal mid-name, but a name never ends in one).
     repo = found.group(1).rstrip(".") if found else None
     # Any other /api/<endpoint> URL (whoami-v2, ...) would parse as the repo "api/<endpoint>".
     if repo and repo.split("/", 1)[0] == "api":
@@ -1374,10 +1364,9 @@ class DiffusionBackend:
                 clear_gpu_cache()
             except Exception:  # noqa: BLE001
                 pass
-            # Rewrite a gated-repo 403 into the step that unblocks the user, then redact native
-            # paths: this text is surfaced verbatim and Studio can be shared. Guarded because on
-            # this daemon thread anything escaping leaves _loading.error unset and
-            # load_progress() stuck on "downloading" forever.
+            # Rewrite a gated-repo 403 into the step that unblocks the user, then redact native paths:
+            # this text is surfaced verbatim and Studio can be shared. Guarded because on this daemon
+            # thread anything escaping leaves _loading.error unset and load_progress() stuck forever.
             from utils.native_path_leases import redact_native_paths
 
             try:

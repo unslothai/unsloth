@@ -222,9 +222,9 @@ def dense_transformer_supported(target: Any) -> bool:
     dtype (the only config any torchao dynamic scheme accelerates). Cheap loader pre-check."""
     if getattr(target, "device", None) != "cuda":
         return False
-    # Windows ROCm stubs torchao (core/_torchao_stub.py). The stub's quantize_ is a no-op, so
-    # the smoke probe passes on a still-dense Linear and the transformer would be MARKED
-    # quantised without being quantised -- wrong VRAM budget and compile policy.
+    # The Windows-ROCm torchao stub's quantize_ is a no-op, so the smoke probe passes on a
+    # still-dense Linear and the transformer gets MARKED quantised without being quantised,
+    # giving the wrong VRAM budget and compile policy.
     if is_stubbed("torchao"):
         return False
     try:

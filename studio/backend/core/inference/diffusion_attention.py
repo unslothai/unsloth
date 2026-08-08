@@ -103,8 +103,8 @@ def _is_cuda_nvidia(target: Any) -> bool:
     try:
         import torch
 
-        # Shared with the stub installer: hip alone misreads AMD wheels that only tag __version__,
-        # dropping aiter and routing cuDNN/xformers (stubbed there) at a ROCm card.
+        # Shared with the stub installer: torch.version.hip alone misreads AMD wheels that only tag
+        # __version__, dropping aiter and pointing cuDNN/xformers (stubbed there) at a ROCm card.
         from core._torchao_stub import _module_is_rocm
         return not _module_is_rocm(torch)
     except Exception:  # noqa: BLE001

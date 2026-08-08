@@ -3,15 +3,15 @@
 
 """Invariant: the diffusion paths must stub xformers and torchao before importing diffusers.
 
-The Windows xformers pin is CUDA-only, so against a ROCm torch (no distributed backend)
-``import xformers.ops`` dies inside torch.distributed -- and diffusers imports xformers on
-sight, so such a host cannot load any image or video model, with an error naming neither
-xformers nor the cause. diffusers reaches torchao the same way, through its quantizers.
+The Windows xformers pin is CUDA-only, so against a ROCm torch (no distributed backend) ``import
+xformers.ops`` dies inside torch.distributed, and diffusers imports xformers on sight, so such a
+host cannot load any image or video model and the error names neither xformers nor the cause.
+diffusers reaches torchao the same way, through its quantizers.
 
 Every ``import diffusers`` there is lazy, so a module-scope install is what puts the stubs in
 first; asserting module scope stops a later edit tucking one inside a skippable function. Those
-modules are not enough alone: a stub only seeds names nothing has imported yet, and the server
-has already pulled torchao in via the route tree, so run.py installs both before its first import.
+modules are not enough alone: a stub only seeds names nothing has imported yet, and the server has
+already pulled torchao in via the route tree, so run.py installs both before its first import.
 
 CPU-only: source is parsed with ``ast``, and the behaviour tests fake the platform probe.
 """
@@ -38,8 +38,7 @@ _INSTALLS = frozenset(
     {install_xformers_windows_rocm_stub.__name__, install_torchao_windows_rocm_stub.__name__}
 )
 
-# Where diffusers gets imported: the loader, and the trainers' shared module (they run in a
-# spawned child, so the loader's install does not carry over).
+# Where diffusers gets imported: the loader, and the trainers' shared module (a spawned child, so the loader's install does not carry over).
 _DIFFUSION_MODULES = [
     _CORE / "inference" / "diffusion.py",
     _CORE / "training" / "diffusion_train_common.py",
@@ -48,8 +47,7 @@ _DIFFUSION_MODULES = [
 _ENTRY_POINT = _BACKEND / "run.py"
 _STUB_MODULE = "core._torchao_stub"
 _ML_ROOTS = frozenset({"diffusers", "peft", "torch", "torchao", "transformers", "xformers"})
-# Must run BEFORE the installers: these set the env vars torch reads when it sizes its
-# OpenMP/BLAS pools, so nothing heavy may precede them. Imports stdlib only.
+# Must run BEFORE the installers: these set the env vars torch reads when it sizes its OpenMP/BLAS pools. Imports stdlib only.
 _PRE_STUB = frozenset({"utils.cpu_threads"})
 
 
@@ -65,8 +63,7 @@ def _import_roots(node) -> set[str]:
 
 
 def _reaches_torch(root: str) -> bool:
-    # Anything in the backend tree can, transitively; probing the tree keeps this honest as
-    # modules come and go. stdlib roots fall through both checks.
+    # Anything in the backend tree can, transitively; probing the tree keeps this honest as modules come and go. stdlib falls through.
     return root in _ML_ROOTS or (_BACKEND / root).is_dir() or (_BACKEND / f"{root}.py").is_file()
 
 
@@ -131,8 +128,7 @@ def test_the_entry_point_installs_both_stubs_before_its_first_heavy_import():
 
 
 def _is_stub_key(name: str) -> bool:
-    # Both packages, not just xformers: a torchao stub left behind turns a later
-    # importorskip("torchao.quantization") into a silent no-op instead of a skip.
+    # Both packages: a torchao stub left behind turns a later importorskip("torchao.quantization") into a silent no-op.
     return any(name == p or name.startswith(p + ".") for p in ("xformers", "torchao"))
 
 
@@ -193,15 +189,13 @@ def test_the_finder_is_registered_once(on_windows_rocm):
 
 
 def test_no_stub_survives_this_module():
-    """The fixture must hand sys.modules back clean: a leaked torchao stub is silently
-    accepted by a later pytest.importorskip("torchao.quantization")."""
+    """The fixture must hand sys.modules back clean: a leaked torchao stub is silently accepted by a later importorskip."""
     for name in ("xformers", "torchao", "torchao.quantization"):
         assert not _torchao_stub.is_stubbed(name), name
 
 
 def _target(dtype = None):
-    """A device target. Both guards reject a stub BEFORE looking at the dtype, so the decline
-    tests need no torch and still run on the torch-less CI runners."""
+    """A device target. Both guards reject a stub BEFORE looking at the dtype, so the decline tests need no torch."""
     return type("T", (), {"device": "cuda", "dtype": dtype})()
 
 
@@ -211,8 +205,7 @@ def _bf16_target():
 
 
 def test_dense_quant_declines_a_stubbed_torchao(on_windows_rocm):
-    """The stub's quantize_ is a no-op, so the smoke probe passes on a still-dense Linear and the
-    transformer gets MARKED quantised without being quantised."""
+    """The stub's quantize_ is a no-op, so the smoke probe passes on a still-dense Linear and the transformer gets MARKED quantised."""
     from core.inference.diffusion_transformer_quant import dense_transformer_supported
 
     install_torchao_windows_rocm_stub()
@@ -229,8 +222,7 @@ def test_dense_quant_still_allowed_without_the_stub(on_windows_rocm):
 
 @pytest.mark.parametrize("mode", ["int8", "fp8_dynamic", "nvfp4"])
 def test_te_quant_declines_a_stubbed_torchao(on_windows_rocm, mode):
-    """Same no-op, same false report, on the text encoders. ROCm answers device "cuda" and a
-    capability pair, so nothing else in te_quant_supported catches it."""
+    """Same no-op, same false report, on the text encoders. ROCm answers device "cuda" and a capability pair, so nothing else catches it."""
     from core.inference.diffusion_precision import te_quant_supported
 
     install_torchao_windows_rocm_stub()
@@ -250,8 +242,7 @@ def test_layerwise_fp8_te_still_works_under_the_stub(on_windows_rocm):
 
 @pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
 def test_dit_training_refuses_dense_precision_under_the_stub(on_windows_rocm, mode):
-    """_apply_fp8_training / _apply_mxfp8_training call the stub, get None, raise nothing and
-    return True, so the run would report fp8 while training bf16. Fail fast instead."""
+    """_apply_fp8_training / _apply_mxfp8_training call the stub, get None and return True, so the run would report fp8 while training bf16."""
     pytest.importorskip("torch")
     from core.training.diffusion_dit_trainer import _resolve_base_precision
 
@@ -263,8 +254,7 @@ def test_dit_training_refuses_dense_precision_under_the_stub(on_windows_rocm, mo
 
 @pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
 def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode):
-    """The child's guard fires after _free_gpu_for_diffusion_training() has already unloaded
-    resident models, so the start route's preflight has to reject the same thing first."""
+    """The child's guard fires after _free_gpu_for_diffusion_training() has already unloaded residents, so the preflight must reject it first."""
     pytest.importorskip("torch")
     from core.training.diffusion_dit_trainer import _resolve_base_precision
     from core.training.diffusion_train_common import training_precision_preflight_error
@@ -285,8 +275,7 @@ def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode):
 @pytest.mark.parametrize(
     "dist_version, hip_line, expected",
     [
-        # AMD's own Windows build: repo.radeon.com/rocm/windows/rocm-rel-6.4.4 ships
-        # torch-2.8.0a0+gitfc14c65, so the version carries no "rocm" and only hip answers.
+        # AMD's own Windows build (repo.radeon.com/rocm/windows) carries no "rocm" tag, so only hip answers.
         ("2.8.0a0+gitfc14c65", "hip: Optional[str] = '6.4.50101-9a6572ae7'", True),
         # download.pytorch.org and TheRock DO tag theirs; the fast path must still work.
         ("2.9.1+rocm7.2.1", "hip: Optional[str] = '7.2.1'", True),
@@ -298,8 +287,7 @@ def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode):
 def test_rocm_is_detected_off_disk_without_importing_torch(
     monkeypatch, tmp_path, dist_version, hip_line, expected
 ):
-    """A rocm-tagged version is sufficient but not necessary, so the version string alone
-    cannot decide. The fake torch raises on import, which also proves no import happens."""
+    """A rocm tag is sufficient but not necessary, so the version alone cannot decide. The fake torch raises on import, proving none happens."""
     pkg = tmp_path / "torch"
     pkg.mkdir()
     (pkg / "__init__.py").write_text(
@@ -323,16 +311,15 @@ def test_rocm_is_detected_off_disk_without_importing_torch(
     assert "torch" not in sys.modules
 
 
-# The two ways a ROCm wheel identifies itself: hip set (pytorch.org), or version tag only
-# (AMD SDK / Radeon wheels, per worker.py::_torch_has_hip).
+# The two ways a ROCm wheel identifies itself: hip set (pytorch.org), or version tag only (AMD SDK / Radeon, per worker.py::_torch_has_hip).
 _ROCM_WHEELS = [("7.2.1", "2.9.1+rocm7.2.1"), (None, "2.10.0a0+rocm7.10.0a20251116")]
 
 
 @pytest.mark.parametrize("hip,version", _ROCM_WHEELS)
 def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch, hip, version):
-    """The one check standing between an API-supplied attention_backend="xformers" and a stub
-    that returns None mid-denoise. diffusers' own probe is metadata-based, so with xformers
-    installed it believes the stub is usable and will not refuse the backend itself."""
+    """The one check standing between an API-supplied attention_backend="xformers" and a stub that
+    returns None mid-denoise. diffusers' own probe is metadata-based, so it believes the stub is
+    usable and will not refuse the backend itself."""
     torch = pytest.importorskip("torch")
 
     from core.inference.diffusion_attention import select_attention_backend

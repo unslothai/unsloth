@@ -73,9 +73,9 @@ def te_quant_supported(target: Any, mode: str) -> bool:
     Blackwell sm_100+ (nvfp4)."""
     if getattr(target, "device", None) != "cuda":
         return False
-    # Windows ROCm stubs torchao, and the stub's quantize_ is a no-op that leaves the encoder
-    # bf16 while quantize_text_encoders reports the mode applied. ROCm answers device "cuda"
-    # and a capability pair, so nothing below would catch it.
+    # The Windows-ROCm torchao stub's quantize_ is a no-op, so the encoder stays bf16 while
+    # quantize_text_encoders reports the mode applied. ROCm answers device "cuda" and a
+    # capability pair, so nothing below would catch it.
     if mode in _TE_TORCHAO_MODES and is_stubbed("torchao"):
         return False
     try:

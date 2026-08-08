@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A gated model must say how to get in, not paste the 403 back at the user.
-
-The load error is surfaced verbatim in a toast, where a raw GatedRepoError is a
-request id and a resolve URL wrapped around one useful sentence.
+"""A gated model must say how to get in, not paste the 403 back at the user: the load error is
+surfaced verbatim in a toast, where a raw GatedRepoError is a request id and a resolve URL
+wrapped around one useful sentence.
 """
 
 import sys
@@ -27,12 +26,9 @@ _GATED = (
 
 
 def _gated(text = _GATED):
-    """A real GatedRepoError by type, without hub's constructor.
-
-    HfHubHTTPError.__init__ requires a response on hub 1.x but not on 0.x, and the pin spans
-    both. The helper screens on type and str() only, so a message-carrying subclass pins the
-    contract on either version.
-    """
+    """A real GatedRepoError by type, without hub's constructor: HfHubHTTPError.__init__ requires a
+    response on hub 1.x but not on 0.x, and the pin spans both. The helper screens on type and
+    str() only, so a message-carrying subclass pins the contract on either version."""
     from huggingface_hub.errors import GatedRepoError
 
     class _Gated(GatedRepoError):
@@ -65,8 +61,8 @@ def test_a_token_that_still_bounces_names_the_account():
 
 def test_a_metadata_api_url_names_the_model_not_the_endpoint():
     """auth_check, and model_info on a gated private repo, raise with /api/models/<owner>/<repo>
-    (the shape hub's own GatedRepoError docstring shows). A plain two-segment match on that
-    names "api/models" as the gated repo."""
+    (the shape hub's own GatedRepoError docstring shows); a plain two-segment match on that would
+    name "api/models" as the gated repo."""
     message = hub_access_message(
         _gated(
             "403 Client Error. (Request ID: ViT1Bf7O) Cannot access gated repo for url "
@@ -117,8 +113,7 @@ def test_other_failures_keep_their_own_text(exc):
 
 
 def test_a_wrapped_gated_error_is_still_rewritten():
-    """Transformers loads re-raise the 403 inside an OSError, so matching only the outermost
-    exception misses the shape this rewrite exists for."""
+    """Transformers loads re-raise the 403 inside an OSError, so matching only the outermost exception misses the shape this exists for."""
     try:
         try:
             raise _gated()
