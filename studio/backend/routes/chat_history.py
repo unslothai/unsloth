@@ -8,15 +8,16 @@ Chat history API routes backed by studio.db.
 from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from auth.authentication import get_current_subject
-from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
+from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
 from loggers import get_logger
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
     ChatMessageProtectedError,
+    ChatThreadPreconditionFailed,
     CorruptSettingsError,
     clear_chat_history,
     count_chat_threads,
@@ -70,6 +71,10 @@ class ChatThread(BaseModel):
 
 class ChatThreadPatch(BaseModel):
     title: Optional[str] = None
+    # Apply only while the row still holds this title, so a rename beats a background rewrite.
+    expectedTitle: Optional[str] = None
+    # Apply only while this is still the opening user message, so a title from a deleted one is rejected.
+    expectedOpeningMessageId: Optional[str] = None
     modelType: Optional[Literal["base", "lora", "model1", "model2"]] = None
     modelId: Optional[str] = None
     pairId: Optional[str] = None
@@ -168,13 +173,28 @@ class ChatPresetLoadConfig(BaseModel):
     customContextLength: Optional[int] = Field(default = None, gt = 0)
     maxSeqLength: Optional[float] = None
     kvCacheDtype: Optional[str] = None
+    mlxKvBits: Optional[Literal[8, 6, 5, 4, 3, 2]] = None
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
     nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
+    # The normalizer emits both keys on every preset (null included) and this model is
+    # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
+    # preset carrying a loadConfig, including one that only pinned nParallel.
+    nBatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    nUbatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
     tensorParallel: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
+
+    @field_validator("nBatch", "nUbatch", mode = "before")
+    @classmethod
+    def _no_booleans(cls, value: Any) -> Any:
+        # Same contract as LoadRequest: bool subclasses int, so lax mode would store
+        # `true` as 1 here while /load 422s it.
+        if isinstance(value, bool):
+            raise ValueError("Expected a number, got a boolean.")
+        return value
 
 
 class ChatPreset(BaseModel):
@@ -275,6 +295,8 @@ async def patch_thread(
     current_subject: str = Depends(get_current_subject),
 ):
     patch = payload.model_dump(exclude_unset = True)
+    expected_title = patch.pop("expectedTitle", None)
+    expected_opening_message_id = patch.pop("expectedOpeningMessageId", None)
     for field in ("title", "modelType", "modelId", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
@@ -283,10 +305,18 @@ async def patch_thread(
             status_code = 404,
             detail = f"Project {patch['projectId']} not found",
         )
-    thread = update_chat_thread(
-        thread_id,
-        patch,
-    )
+    try:
+        thread = update_chat_thread(
+            thread_id,
+            patch,
+            expected_title = expected_title,
+            expected_opening_message_id = expected_opening_message_id,
+        )
+    except ChatThreadPreconditionFailed:
+        raise HTTPException(
+            status_code = 409,
+            detail = f"Thread {thread_id} changed since it was read",
+        )
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     return ChatThread(**thread)

@@ -83,6 +83,10 @@ def load_studio_run_module(monkeypatch):
     )
     loggers = types.ModuleType("loggers")
     loggers.get_logger = lambda name: logger
+    # run.py imports this at module scope, so the stub has to carry it or the import
+    # of run fails before any test body runs. A no-op is right here: the filter only
+    # de-duplicates uvicorn's copy of a traceback, and this module never starts a server.
+    loggers.install_uvicorn_duplicate_exception_filter = lambda: None
     monkeypatch.setitem(sys.modules, "loggers", loggers)
 
     startup_banner = types.ModuleType("startup_banner")

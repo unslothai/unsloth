@@ -922,6 +922,44 @@ def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatc
         assert b._dspark_sidecar_absent is expect_absent
 
 
+def test_an_unreachable_hub_is_not_recorded_as_a_missing_sidecar(monkeypatch, tmp_path):
+    """A listing that never completed says nothing about the repo. Recording it as
+    a definitive absence would suppress the reuse check's retry, so DSpark would
+    never be fetched once connectivity returned."""
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
+    )
+    monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda repo: False)
+    monkeypatch.setattr(
+        llama_cpp_module, "_hub_cache_dir_for_snapshot_path", lambda p: str(tmp_path)
+    )
+
+    def _explode(repo, token = None):
+        raise ConnectionError("hub unreachable")
+
+    monkeypatch.setattr("huggingface_hub.list_repo_files", _explode)
+    monkeypatch.setattr("utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [])
+
+    outcome: dict = {}
+    b = LlamaCppBackend()
+    b._cancel_event.clear()
+    assert (
+        b._download_companion_gguf(
+            hf_repo = "org/repo",
+            hf_token = None,
+            pick = lambda names: None,
+            label = "DSpark drafter",
+            outcome = outcome,
+        )
+        is None
+    )
+    assert "listed" not in outcome
+
+
 def test_download_dspark_still_reports_a_cached_sidecar_it_cannot_run(monkeypatch):
     """Skipping the fetch must not hide a sidecar already on disk: the route
     rediscovers it on every Apply, so answering None would leave the reuse check
@@ -931,6 +969,159 @@ def test_download_dspark_still_reports_a_cached_sidecar_it_cannot_run(monkeypatc
     got, reached = _dspark_download_probe(monkeypatch, supports_dspark = False, cached = cached)
     assert got == cached
     assert reached is False
+
+
+@pytest.mark.parametrize("shape", ["dangling", "directory"])
+def test_detect_dspark_file_skips_a_sidecar_it_cannot_open(tmp_path, shape):
+    """A dangling snapshot symlink or a directory named like a sidecar must read
+    as "no sidecar", not as a drafter: handing llama-server a --model-draft it
+    cannot open fails the whole load instead of falling back to no speculation.
+    detect_mtp_file has always guarded this."""
+    import os
+
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    if shape == "dangling":
+        os.symlink(tmp_path / "missing_blob", sidecar)
+    else:
+        sidecar.mkdir()
+
+    assert detect_dspark_file(str(weight)) is None
+    # Same shape, same answer for MTP: the two must not diverge.
+    mtp = tmp_path / "mtp-model.gguf"
+    if shape == "dangling":
+        os.symlink(tmp_path / "missing_blob", mtp)
+    else:
+        mtp.mkdir()
+    assert detect_mtp_file(str(weight)) is None
+
+
+@pytest.mark.parametrize("kind", ["dspark", "mtp"])
+def test_a_release_specific_sidecar_outranks_the_base_family(tmp_path, kind):
+    """Both prefix-match a 0731 weight, and only one is really its drafter. The
+    prefix rule cannot be tightened to equality -- mtp-gemma-4-12B-it.gguf really
+    does ship beside gemma-4-12B-it-qat-*.gguf -- so ranking settles it."""
+    weight = tmp_path / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL.gguf"
+    weight.write_bytes(b"target")
+    base = tmp_path / f"{kind}-DeepSeek-V4-Flash-Q8_0.gguf"
+    exact = tmp_path / f"{kind}-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    base.write_bytes(b"x" * 10)
+    exact.write_bytes(b"x" * 4000)  # deliberately the larger, so size cannot decide
+
+    detect = detect_dspark_file if kind == "dspark" else detect_mtp_file
+    found = detect(str(weight))
+    assert found is not None and Path(found).name == exact.name
+
+
+def test_root_mtp_candidates_are_ranked_not_taken_in_directory_order(tmp_path):
+    """The root branch returns the first match it walks, so specificity has to be
+    applied before the walk: mtp-model.gguf sorts ahead of mtp-model_v2-Q8_0.gguf
+    yet only the second names this weight's family."""
+    weight = tmp_path / "model_v2-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"base")
+    exact = tmp_path / "mtp-model_v2-Q8_0.gguf"
+    exact.write_bytes(b"exact")
+
+    found = detect_mtp_file(str(weight))
+    assert found is not None and Path(found).name == exact.name
+
+
+def test_root_mtp_ranking_spans_the_search_root(tmp_path):
+    """Same ordering hazard across the two scanned directories: the base sits in
+    the model's own folder and the exact match only in the search root."""
+    home = tmp_path / "home"
+    root = tmp_path / "root"
+    home.mkdir()
+    root.mkdir()
+    weight = home / "model_v2-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    (home / "mtp-model.gguf").write_bytes(b"base")
+    exact = root / "mtp-model_v2-Q8_0.gguf"
+    exact.write_bytes(b"exact")
+
+    found = detect_mtp_file(str(weight), search_root = str(root))
+    assert found is not None and Path(found).name == exact.name
+
+
+def test_a_more_specific_subdir_drafter_beats_a_base_family_root_one(tmp_path):
+    """Specificity has to be compared across layouts, not only within one: the
+    root file names a different family, so it is not this weight's drafter at all
+    and root preference must not save it."""
+    weight = tmp_path / "model_v2-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"base")
+    (tmp_path / "MTP").mkdir()
+    exact = tmp_path / "MTP" / "mtp-model_v2-Q8_0.gguf"
+    exact.write_bytes(b"exact")
+
+    found = detect_mtp_file(str(weight))
+    assert found is not None and Path(found).name == exact.name
+
+
+def test_root_still_wins_when_both_layouts_name_the_same_family(tmp_path):
+    """Negative control: equal specificity is every published layout, and there
+    the root copy keeps its long-standing preference."""
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    root = tmp_path / "mtp-model.gguf"
+    root.write_bytes(b"root")
+    (tmp_path / "MTP").mkdir()
+    (tmp_path / "MTP" / "model-Q8_0-MTP.gguf").write_bytes(b"sub")
+
+    found = detect_mtp_file(str(weight))
+    assert found is not None and Path(found).name == root.name
+
+
+def test_an_unusable_candidate_does_not_win_the_tier_comparison(tmp_path):
+    """Tier order is decided by specificity, so an unusable candidate that
+    outranks everything would put its tier first and then be skipped, handing
+    back a less specific sibling instead of the usable copy next door."""
+    import os
+
+    weight = tmp_path / "model_v2_release-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    # Most specific, but a dangling link: it must not speak for the root tier.
+    os.symlink(tmp_path / "missing", tmp_path / "mtp-model_v2_release.gguf")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"base")
+    (tmp_path / "MTP").mkdir()
+    usable = tmp_path / "MTP" / "mtp-model_v2-Q8_0.gguf"
+    usable.write_bytes(b"mid")
+
+    found = detect_mtp_file(str(weight))
+    assert found is not None and Path(found).name == usable.name
+
+
+def test_a_rejected_candidate_does_not_win_the_tier_comparison(tmp_path):
+    """Same shape as the unusable case, via accept: a native grant can reject the
+    most specific root file, which is then skipped at emission. It must not have
+    spoken for its tier, or a base-family sibling goes out ahead of the more
+    specific accepted copy under MTP/."""
+    weight = tmp_path / "model_v2_release-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    rejected = tmp_path / "mtp-model_v2_release.gguf"
+    rejected.write_bytes(b"out-of-grant")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"base")
+    (tmp_path / "MTP").mkdir()
+    accepted = tmp_path / "MTP" / "mtp-model_v2-Q8_0.gguf"
+    accepted.write_bytes(b"mid")
+
+    found = detect_mtp_file(str(weight), accept = lambda candidate: rejected.name not in candidate)
+    assert found is not None and Path(found).name == accepted.name
+
+
+def test_a_qat_weight_still_pairs_with_its_base_family_drafter(tmp_path):
+    """Negative control for the ranking above: unsloth/gemma-4-12B-it-qat-GGUF
+    ships mtp-gemma-4-12B-it.gguf, so the prefix rule has to keep working when no
+    more specific sidecar exists."""
+    weight = tmp_path / "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf"
+    weight.write_bytes(b"target")
+    drafter = tmp_path / "mtp-gemma-4-12B-it.gguf"
+    drafter.write_bytes(b"draft")
+
+    found = detect_mtp_file(str(weight))
+    assert found is not None and Path(found).name == drafter.name
 
 
 def test_detect_mtp_file_returns_first_shard_of_split_subdir_drafter(tmp_path):
@@ -1230,8 +1421,13 @@ def test_cached_dspark_lookup_prefers_q8_and_excludes_dflash(tmp_path, monkeypat
     )
     backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
 
-    assert backend._cached_repo_dspark_drafter("some/repo").endswith(
-        "dspark/dspark-model-Q8_0.gguf"
+    # `as_posix()`, because the lookup returns an OS-native path: on Windows it
+    # comes back with backslashes and the literal below never matched, so this
+    # was the one red in an otherwise green cross-platform run.
+    assert (
+        Path(backend._cached_repo_dspark_drafter("some/repo"))
+        .as_posix()
+        .endswith("dspark/dspark-model-Q8_0.gguf")
     )
 
 
@@ -1254,7 +1450,10 @@ def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
         link.symlink_to(blob)
         files.append(
             SimpleNamespace(
-                file_name = name,
+                # Basename, like huggingface_hub (file_path.name) and our own
+                # recovery scan (entry.name); the directory only reaches the
+                # predicates via _repo_file_matches' snapshot-relative rebuild.
+                file_name = Path(name).name,
                 file_path = str(link),
                 blob_path = str(blob),
                 size_on_disk = 64,
@@ -1306,6 +1505,38 @@ def test_deleting_the_last_variant_reclaims_an_opt_in_dspark_drafter(tmp_path):
 
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert not (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
+
+
+def test_a_suffix_scheme_sidecar_is_not_mistaken_for_a_quant(tmp_path):
+    """The second published naming scheme, <model>-dspark.gguf. Its basename
+    carries no drafter marker, only its dspark/ parent does, so a predicate fed
+    the bare file_name read it as a real Q8_0 variant: deleting the genuine Q8_0
+    would take the sidecar the Q4_K_M still needs, and no companion could ever be
+    reclaimed because a main GGUF always appeared to remain."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        [
+            "model-Q4_K_M.gguf",
+            "model-Q8_0.gguf",
+            "dspark/DeepSeek-V4-Flash-0731-Q8_0-dspark.gguf",
+        ],
+    )
+    _delete_gguf_variant_from_repos(
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q8_0", [repo], None, root = tmp_path
+    )
+
+    assert not (snap / "model-Q8_0.gguf").is_symlink()
+    assert (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "dspark" / "DeepSeek-V4-Flash-0731-Q8_0-dspark.gguf").is_symlink()
+
+    # ...and it still goes with the last variant.
+    _delete_gguf_variant_from_repos(
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root = tmp_path
+    )
+    assert not (snap / "dspark" / "DeepSeek-V4-Flash-0731-Q8_0-dspark.gguf").is_symlink()
 
 
 def test_deleting_the_last_variant_keeps_a_dflash_weight(tmp_path):

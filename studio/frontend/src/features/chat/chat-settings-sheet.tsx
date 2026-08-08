@@ -42,7 +42,12 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { NumericValueInput, snapToStep } from "@/features/model-picker";
+import { usePlatformStore } from "@/config/env";
+import {
+  NumericValueInput,
+  presetLoadSettingNames,
+  snapToStep,
+} from "@/features/model-picker";
 import { RetrievalSettingsSection } from "@/features/rag";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import {
@@ -486,6 +491,13 @@ export function ChatSettingsPanel({
     isLoadedGguf ||
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const loadSettingNames = presetLoadSettingNames(
+    isGguf,
+    platformDeviceType,
+    platformChatOnlyReason,
+  );
   // activeModelIsLocal is the backend's own classification and covers native
   // picks. Two things must not decide this: activeNativePathToken, which
   // status reconciliation keeps across a switch to a remote GGUF (no
@@ -498,12 +510,15 @@ export function ChatSettingsPanel({
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
+  const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
+  const nBatch = useChatRuntimeStore((s) => s.nBatch);
+  const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
   const specDrafterKind = useChatRuntimeStore((s) => s.specDrafterKind);
@@ -629,6 +644,7 @@ export function ChatSettingsPanel({
     customContextLength,
     ggufContextLength,
     kvCacheDtype,
+    mlxKvBits,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,
@@ -636,6 +652,8 @@ export function ChatSettingsPanel({
     speculativeType,
     specDraftNMax,
     nParallel,
+    nBatch,
+    nUbatch,
     params.maxSeqLength,
   ]);
   const activePresetLoadSummary = useMemo(
@@ -648,6 +666,7 @@ export function ChatSettingsPanel({
       customContextLength,
       ggufContextLength,
       kvCacheDtype,
+      mlxKvBits,
       gpuMemoryMode,
       gpuLayers,
       nCpuMoe,
@@ -655,6 +674,8 @@ export function ChatSettingsPanel({
       speculativeType,
       specDraftNMax,
       nParallel,
+      nBatch,
+      nUbatch,
       params.maxSeqLength,
     ],
   );
@@ -980,8 +1001,8 @@ export function ChatSettingsPanel({
           label="Preset"
           headerAction={
             <InfoHint>
-              Saving a preset also stores current load settings (context length,
-              KV cache dtype, speculative decoding, GPU layers).
+              Saving a preset also stores current load settings (
+              {loadSettingNames}).
               {currentLoadSummary ? (
                 <>
                   {" "}

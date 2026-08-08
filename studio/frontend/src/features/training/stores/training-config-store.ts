@@ -617,6 +617,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         datasetSubset: null,
         datasetSplit: null,
         datasetEvalSplit: null,
+        manualDatasetOptionsValid: true,
         datasetManualMapping: emptyManualMapping(),
         datasetSystemPrompt: "",
         datasetLabelMapping: {},
@@ -1038,6 +1039,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetSubset: null,
             datasetSplit: null,
             datasetEvalSplit: null,
+            manualDatasetOptionsValid: true,
             datasetManualMapping: emptyManualMapping(),
             datasetSliceStart: null,
             datasetSliceEnd: null,
@@ -1065,6 +1067,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetSubset,
             datasetSplit: null,
             datasetEvalSplit: null,
+            manualDatasetOptionsValid: true,
             datasetManualMapping: emptyManualMapping(),
             isDatasetImage: null,
             isDatasetAudio: false,
@@ -1199,6 +1202,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             );
           }
         },
+        setManualDatasetOptionsValid: (manualDatasetOptionsValid) =>
+          set((state) =>
+            state.manualDatasetOptionsValid === manualDatasetOptionsValid
+              ? state
+              : { manualDatasetOptionsValid },
+          ),
+        markManualDatasetOptionsEdited: (manualDatasetOptionsValid) =>
+          set((state) => ({
+            manualDatasetOptionsValid,
+            userEditRevision: state.userEditRevision + 1,
+          })),
         setDatasetManualMapping: (datasetManualMapping) =>
           setUserEdit({ datasetManualMapping }),
         setDatasetAdvisorFields: (fields) =>
@@ -1232,6 +1246,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetSubset: null,
             datasetSplit: null,
             datasetEvalSplit: null,
+            manualDatasetOptionsValid: true,
             datasetManualMapping: emptyManualMapping(),
             datasetSliceStart: null,
             datasetSliceEnd: null,

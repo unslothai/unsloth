@@ -13,6 +13,7 @@ canonicaliser and the legacy `-m` / `-hfr` / `-f` shim.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from io import BytesIO
@@ -178,8 +179,9 @@ def _install_reexec_capture(monkeypatch, *, platform):
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
 
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    fake_python = fake_venv / "bin" / "python"
-    fake_bin = fake_venv / "bin" / "unsloth"
+    host_is_windows = sys.platform == "win32"
+    fake_python = fake_venv / ("Scripts/python.exe" if host_is_windows else "bin/python")
+    fake_bin = fake_python.parent / ("unsloth.exe" if host_is_windows else "unsloth")
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
 
     real_is_file = Path.is_file
@@ -199,6 +201,12 @@ def _install_reexec_capture(monkeypatch, *, platform):
     )
 
     monkeypatch.setattr(sys, "platform", platform)
+    # Emulate Windows re-exec without calling Win32 APIs on non-Windows hosts.
+    monkeypatch.setattr(
+        studio_mod,
+        "_studio_runtime_launch_guard",
+        lambda **_kwargs: contextlib.nullcontext(True),
+    )
 
     def capture(kind, argv):
         captured.append(

@@ -345,3 +345,55 @@ pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendPro
         .or(first_old)
         .unwrap_or(BackendProbe::Missing)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LOCAL: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const OTHER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn health(studio_root_id: Option<&str>) -> BackendHealth {
+        BackendHealth {
+            desktop_protocol_version: None,
+            desktop_manageability_version: None,
+            supports_desktop_auth: None,
+            supports_desktop_backend_ownership: None,
+            studio_root_id: studio_root_id.map(str::to_string),
+            desktop_owner: None,
+            version: None,
+            stale_reason: None,
+        }
+    }
+
+    /// Minting an id at startup must not reclassify a backend that predates
+    /// ownership: it reports no id, or an empty one, and stays a conflict.
+    #[test]
+    fn ownerless_backends_stay_ambiguous_once_a_local_id_exists() {
+        for reported in [None, Some(""), Some("not-hex"), Some("AAAA")] {
+            for expected in [None, Some(LOCAL)] {
+                assert_eq!(
+                    backend_root_status(&health(reported), expected),
+                    if expected.is_none() {
+                        BackendRootStatus::ExpectedUnavailable
+                    } else {
+                        BackendRootStatus::AmbiguousRoot
+                    },
+                    "reported={reported:?} expected={expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_valid_different_id_is_a_foreign_install_not_an_ambiguous_one() {
+        assert_eq!(
+            backend_root_status(&health(Some(OTHER)), Some(LOCAL)),
+            BackendRootStatus::ForeignRoot
+        );
+        assert_eq!(
+            backend_root_status(&health(Some(LOCAL)), Some(LOCAL)),
+            BackendRootStatus::SameRoot
+        );
+    }
+}

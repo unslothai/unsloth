@@ -30,6 +30,7 @@ def _load_route_module(name: str):
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / "routes" / "training.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module._hub_unreachable = lambda: False
     return module
 
 
@@ -1348,7 +1349,10 @@ def test_stop_route_passes_expected_job_id_to_backend():
         stop_training = lambda **kwargs: calls.append(kwargs) or True,
     )
 
-    with patch.object(route, "get_training_backend", return_value = backend):
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+    ):
         response = asyncio.run(
             route.stop_training(
                 route.TrainingStopRequest(
@@ -1363,6 +1367,38 @@ def test_stop_route_passes_expected_job_id_to_backend():
     assert calls == [{"save": False, "expected_job_id": "job_old"}]
 
 
+def test_stop_route_reports_superseded_job_without_mutation():
+    route = _load_route_module("training_route_superseded_stop")
+    calls: list[dict] = []
+    backend = SimpleNamespace(
+        current_job_id = "job_new",
+        is_training_active = lambda: True,
+        stop_training = lambda **kwargs: calls.append(kwargs) or True,
+    )
+
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+        pytest.raises(route.HTTPException) as exc_info,
+    ):
+        asyncio.run(
+            route.stop_training(
+                route.TrainingStopRequest(save = False, expected_job_id = "job_old"),
+                current_subject = "test-user",
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert calls == []
+
+
+def test_stop_request_requires_job_scope():
+    route = _load_route_module("training_route_required_stop_scope")
+
+    with pytest.raises(ValueError):
+        route.TrainingStopRequest(save = True)
+
+
 def test_reset_route_reports_superseded_job_without_mutation():
     route = _load_route_module("training_route_scoped_reset")
     calls: list[str | None] = []
@@ -1372,7 +1408,10 @@ def test_reset_route_reports_superseded_job_without_mutation():
         )
     )
 
-    with patch.object(route, "get_training_backend", return_value = backend):
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+    ):
         response = asyncio.run(
             route.reset_training(
                 route.TrainingResetRequest(expected_job_id = "job_old"),
@@ -1384,7 +1423,8 @@ def test_reset_route_reports_superseded_job_without_mutation():
     assert calls == ["job_old"]
 
 
-def test_reset_route_without_body_uses_unscoped_reset():
+def test_reset_route_without_body_stays_supported():
+    """Pre-rework clients POST /reset with no body; that must keep working when idle."""
     route = _load_route_module("training_route_unscoped_reset")
     calls: list[str | None] = []
     backend = SimpleNamespace(
@@ -1399,6 +1439,30 @@ def test_reset_route_without_body_uses_unscoped_reset():
 
     assert response == {"status": "ok"}
     assert calls == [None]
+
+
+def test_unscoped_reset_cannot_touch_a_live_run(monkeypatch):
+    """...but it may not force-terminate a run it cannot prove it owns."""
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend.__new__(TrainingBackend)
+    TrainingBackend.__init__(backend)
+    backend.current_job_id = "job_new"
+    backend._cancel_requested = True
+    monkeypatch.setattr(backend, "is_training_active", lambda: True)
+    monkeypatch.setattr(
+        backend, "force_terminate", lambda **_kw: pytest.fail("unscoped reset terminated a run")
+    )
+
+    # A stop was already requested, so this is the pre-rework cancel-then-dismiss flow and
+    # the client may clear its UI. Still no force_terminate: the stub above would fail.
+    assert backend.reset_training_state() == "superseded"
+    assert backend.reset_training_state(expected_job_id = "job_old") == "superseded"
+
+    # No stop requested, so a bodyless reset of a live run is stale: 409, not a 200 that
+    # would tell an older client a running job had been cleared.
+    backend._cancel_requested = False
+    assert backend.reset_training_state() == "active"
 
 
 def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):
@@ -2327,8 +2391,14 @@ def test_worker_security_consent_uses_exact_target_and_base():
 
     snapshot = "/cache/models--org--adapter/snapshots/deadbeef"
     consent_targets: list[str] = []
+    consent_kwargs: dict = {}
     file_decision = SimpleNamespace(blocked = False)
     consent_decision = SimpleNamespace(blocked = False)
+
+    def evaluate_consent(targets, **kwargs):
+        consent_targets.extend(targets)
+        consent_kwargs.update(kwargs)
+        return consent_decision
 
     with (
         patch(
@@ -2337,7 +2407,9 @@ def test_worker_security_consent_uses_exact_target_and_base():
         ),
         patch(
             "utils.security.security_load_subdirs",
-            return_value = (),
+            side_effect = lambda target, _token: (
+                ("LLM",) if target in {snapshot, "org/adapter"} else ()
+            ),
         ),
         patch(
             "utils.security.evaluate_file_security",
@@ -2345,9 +2417,7 @@ def test_worker_security_consent_uses_exact_target_and_base():
         ),
         patch(
             "utils.security.evaluate_remote_code_consent_for_targets",
-            side_effect = (
-                lambda targets, **kwargs: consent_targets.extend(targets) or consent_decision
-            ),
+            side_effect = evaluate_consent,
         ),
     ):
         result = worker._model_load_security_error(
@@ -2362,6 +2432,10 @@ def test_worker_security_consent_uses_exact_target_and_base():
 
     assert result is None
     assert consent_targets == [snapshot, "org/base"]
+    assert consent_kwargs["load_subdirs_by_target"] == {
+        snapshot: ("LLM",),
+        "org/base": (),
+    }
 
 
 def test_worker_resolves_cached_model_snapshot():
@@ -2769,6 +2843,40 @@ def test_worker_auto_eval_load_failure_warns_and_falls_back(monkeypatch):
     assert len(warnings) == 1
     assert "held-out split" in warnings[0]
     assert "eval download failed" in warnings[0]
+
+
+def test_worker_auto_eval_excludes_every_split_in_training_instruction(monkeypatch):
+    from core.training import worker
+
+    train = SimpleNamespace(info = SimpleNamespace(splits = None))
+    held_out = list(range(20))
+    calls: list[str] = []
+    config = {
+        "hf_dataset": "org/dataset",
+        "train_split": "train + validation",
+        "eval_split": None,
+        "eval_steps": 0.1,
+    }
+    monkeypatch.setattr(
+        "datasets.get_dataset_split_names",
+        lambda **_kwargs: ["train", "validation", "test"],
+    )
+
+    def load_remote(_repo_id, **kwargs):
+        split = kwargs["split"]
+        calls.append(split)
+        return held_out if split == "test" else train
+
+    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
+        config,
+        None,
+        load_remote,
+        lambda _message: None,
+    )
+
+    assert dataset is train
+    assert eval_dataset is held_out
+    assert calls == ["train + validation", "test"]
 
 
 def test_worker_cached_auto_eval_without_split_metadata_stays_offline(monkeypatch):

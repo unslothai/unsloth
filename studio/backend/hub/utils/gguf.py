@@ -578,7 +578,11 @@ def list_gguf_variants(
             has_vision = True
             continue
         quant = extract_quant_label(filename)
-        if is_big_endian_gguf_path(filename, quant):
+        # The two extractors disagree on F16-be-checkpoint-Q4_K_M shapes; judge with the
+        # loader's label so no row is advertised for a file the remote detector refuses.
+        from utils.models.model_config import _extract_quant_label as _loader_quant
+
+        if is_big_endian_gguf_path(filename, _loader_quant(filename)):
             continue
         quant_totals[quant] = quant_totals.get(quant, 0) + int(getattr(sibling, "size", 0) or 0)
         quant_first_file.setdefault(quant, filename)
@@ -648,7 +652,11 @@ def list_local_gguf_variants(
         if _is_local_mtp_drafter(file, custom_root, rel):
             continue
         quant = extract_quant_label(rel)
-        if is_big_endian_gguf_path(rel, quant):
+        # The two extractors disagree on F16-be-checkpoint-Q4_K_M shapes; judge with the
+        # loader's label so no row is listed for a file the local detector refuses.
+        from utils.models.model_config import _extract_quant_label as _loader_quant
+
+        if is_big_endian_gguf_path(rel, _loader_quant(rel)):
             continue
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         quant_first_file.setdefault(quant, rel)
