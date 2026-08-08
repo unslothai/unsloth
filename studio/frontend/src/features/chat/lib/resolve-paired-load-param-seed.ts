@@ -36,7 +36,10 @@ export function resolvePairedLoadParamSeed<T>(options: {
   if (incoming === undefined || !seedLoadParams) {
     return {};
   }
-  const unseeded = previous.loaded === null && previous.control === null;
+  // A null loaded baseline means this tab has not hydrated the resident server yet.
+  // Non-null store defaults (tensorParallel=false, persisted speculativeType) are not
+  // user edits and must adopt the status echo together with the baseline.
+  const unseeded = previous.loaded === null;
   if (hydratingExistingModel || unseeded) {
     return { control: incoming, loaded: incoming };
   }

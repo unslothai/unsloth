@@ -13,6 +13,7 @@ import {
 } from "@/features/hub/lib/superseded-refresh";
 
 let inferenceStatusSeq = 0;
+let lastSuccessfulStatusSeq = 0;
 const inferenceStatusSupersession: RefreshSupersession = { latest: null };
 
 export function beginInferenceStatusRefresh(): {
@@ -20,6 +21,10 @@ export function beginInferenceStatusRefresh(): {
   isCurrent: () => boolean;
   register: (settled: Promise<void>) => Promise<void>;
   superseded: () => Promise<void> | undefined;
+  /** Call after this refresh commits status/checkpoint hydration. */
+  markApplied: () => void;
+  /** True once a newer refresh has successfully applied. */
+  shouldSkipAfterSupersession: () => boolean;
 } {
   const seq = ++inferenceStatusSeq;
   return {
@@ -30,11 +35,16 @@ export function beginInferenceStatusRefresh(): {
       return settled;
     },
     superseded: () => supersedingRefresh(inferenceStatusSupersession, seq),
+    markApplied: () => {
+      lastSuccessfulStatusSeq = seq;
+    },
+    shouldSkipAfterSupersession: () => lastSuccessfulStatusSeq > seq,
   };
 }
 
 /** Test hook: reset module state between cases. */
 export function resetInferenceStatusRefreshSeqForTests(): void {
   inferenceStatusSeq = 0;
+  lastSuccessfulStatusSeq = 0;
   inferenceStatusSupersession.latest = null;
 }

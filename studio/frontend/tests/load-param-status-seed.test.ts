@@ -98,6 +98,17 @@ test("an omitted speculative_type leaves the pair alone on older backends", () =
   assert.deepEqual(seed(undefined, paired("ngram", "auto")), {});
 });
 
+test("default controls hydrate with the resident server before a loaded baseline exists", () => {
+  assert.deepEqual(seed(true, paired(false, null)), {
+    control: true,
+    loaded: true,
+  });
+  assert.deepEqual(seed("mtp", paired("auto", null)), {
+    control: "mtp",
+    loaded: "mtp",
+  });
+});
+
 test("tensor parallel and KV dtype follow the same dirty-control rule", () => {
   assert.deepEqual(seed(true, paired(false, false)), {
     control: true,

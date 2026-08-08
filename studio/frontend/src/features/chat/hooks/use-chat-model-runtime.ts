@@ -310,7 +310,8 @@ async function syncInferenceStatusToStore(options?: {
     // before writing backend state back -- cancelLoading already cleared it.
     if (signal?.aborted) return;
     if (!refresh.isCurrent()) {
-      return refresh.superseded();
+      await refresh.superseded();
+      if (refresh.shouldSkipAfterSupersession()) return;
     }
 
     setModels(listRes.models.map(toChatModelSummary));
@@ -366,6 +367,7 @@ async function syncInferenceStatusToStore(options?: {
         loadedIsDiffusion: false,
       });
     }
+    refresh.markApplied();
   } catch (error) {
     if (signal?.aborted) return;
     const message =
