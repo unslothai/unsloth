@@ -906,7 +906,6 @@ def _mask_supervised_dataset(tok):
     that still has something to train on is what pins the filter itself.
     """
     from datasets import Dataset
-
     return Dataset.from_list(
         [_mask_row(tok, "completion_mask", long) for long in (True, True, False, False)]
     )
@@ -932,7 +931,6 @@ def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
 def _assistant_mask_dataset(tok):
     """The same shape, supervised by `assistant_masks` instead."""
     from datasets import Dataset
-
     return Dataset.from_list(
         [_mask_row(tok, "assistant_masks", long) for long in (True, True, False, False)]
     )
@@ -941,7 +939,6 @@ def _assistant_mask_dataset(tok):
 def _all_unsupervised_dataset(tok):
     """Every row loses its supervision to the truncation."""
     from datasets import Dataset
-
     return Dataset.from_list([_mask_row(tok, "completion_mask", True) for _ in range(4)])
 
 
@@ -1060,7 +1057,11 @@ def _stub_trainer_class(prepares_late = False):
                 # The 1.7.0 shape, and the string the probe looks for.
                 seen["ds"] = self._prepare_dataset(eval_dataset)
 
-            def predict(self, test_dataset = None, **kw):
+            def predict(
+                self,
+                test_dataset = None,
+                **kw,
+            ):
                 seen["ds"] = test_dataset
 
     else:
@@ -1073,7 +1074,11 @@ def _stub_trainer_class(prepares_late = False):
             ):
                 seen["ds"] = eval_dataset
 
-            def predict(self, test_dataset = None, **kw):
+            def predict(
+                self,
+                test_dataset = None,
+                **kw,
+            ):
                 seen["ds"] = test_dataset
 
     _wrap_sft_evaluate_cap(Stub)
@@ -1448,6 +1453,7 @@ def test_eval_packing_on_a_late_split_follows_whether_trl_packs_it():
     packer has to keep the split instead.
     """
     _, tok = _load_plain()
+
     # A fresh split per case on purpose: a skipped cut MARKS the caller's own
     # object as capped, which is what stops the paired `get_eval_dataloader`
     # wrapper cutting it seconds later, so reusing one split across cases would
@@ -1457,7 +1463,11 @@ def test_eval_packing_on_a_late_split_follows_whether_trl_packs_it():
         assert max(len(r) for r in split["input_ids"]) > _MODEL_MAX_SEQ_LENGTH
         return split
 
-    def _run(prepares_late, eval_packing, strategy = "wrapped"):
+    def _run(
+        prepares_late,
+        eval_packing,
+        strategy = "wrapped",
+    ):
         Stub, seen = _stub_trainer_class(prepares_late = prepares_late)
         stub = Stub()
         stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
@@ -1473,9 +1483,9 @@ def test_eval_packing_on_a_late_split_follows_whether_trl_packs_it():
             f"{strategy}: the split was cut at the cap before TRL's packer "
             "could redistribute the overflow"
         )
-        assert _run(False, True, strategy) <= _MODEL_MAX_SEQ_LENGTH, (
-            f"{strategy}: an uncapped split reached the collator"
-        )
+        assert (
+            _run(False, True, strategy) <= _MODEL_MAX_SEQ_LENGTH
+        ), f"{strategy}: an uncapped split reached the collator"
 
     # With `eval_packing` off, the cap applies on both sides: nothing packs it.
     for prepares_late in (False, True):
