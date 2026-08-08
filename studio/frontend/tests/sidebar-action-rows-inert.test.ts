@@ -76,16 +76,17 @@ test("footer profile sits 11px above the sidebar edge", async () => {
 test("every sidebar row pill sits in one shared box", async () => {
   // A recent chat's pill has to match New Chat's. The rows inside the list
   // scroller lose the scrollbar rail's width, so the rows outside it add that
-  // same width back and both end on one edge. Right pad matches left, so a
-  // pill sits the same distance from the scrollbar as from the near edge.
+  // same width back and both end on one edge. Both pads match, so a pill sits
+  // the same distance from the scrollbar as from the near edge. Logical sides:
+  // the rail moves to the left under dir=rtl.
   const source = await sidebarSource();
   assert.match(
     source,
-    /const rowPadding = usesDesktopTitlebar\s*\?\s*"pl-\[5px\] pr-\[calc\(var\(--sidebar-rail,0px\)\+5px\)\]"\s*:\s*"pl-1\.5 pr-\[calc\(var\(--sidebar-rail,0px\)\+6px\)\]"/,
+    /const rowPadding = usesDesktopTitlebar\s*\?\s*"ps-\[5px\] pe-\[calc\(var\(--sidebar-rail,0px\)\+5px\)\]"\s*:\s*"ps-1\.5 pe-\[calc\(var\(--sidebar-rail,0px\)\+6px\)\]"/,
   );
   assert.match(
     source,
-    /const scrollRowPadding = usesDesktopTitlebar\s*\?\s*"pl-\[5px\] pr-\[5px\]"\s*:\s*"pl-1\.5 pr-1\.5"/,
+    /const scrollRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5"/,
   );
   // New Chat and the footer sit outside the scroller.
   assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 2);
@@ -135,10 +136,10 @@ test("the sidebar list measures its scroll rail", async () => {
     source,
     /if \(rail === railWidthRef\.current\) return;/,
   );
-  // The footer fade stops at the rail: the thumb ends its travel in that band.
+  // The fade stops at the rail too: the thumb ends its travel in that band.
   assert.match(
     source,
-    /absolute left-0 right-\[var\(--sidebar-rail,0px\)\] bottom-full/,
+    /absolute start-0 end-\[var\(--sidebar-rail,0px\)\] bottom-full/,
   );
   const css = await readFile(
     new URL("../src/index.css", import.meta.url),

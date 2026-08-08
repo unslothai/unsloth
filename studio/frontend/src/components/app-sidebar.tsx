@@ -1004,15 +1004,15 @@ export function AppSidebar() {
   // One box for every row pill, so a hover pill has the same edges wherever it
   // lands. Rows outside the list scroller add the rail width it does not lose,
   // so both end on the same edge whether or not the scrollbar takes space.
+  // Logical sides: the rail sits on the inline end, which is the left under
+  // dir=rtl, and a physical pr- would then pad away from it.
   const rowPadding = usesDesktopTitlebar
-    ? "pl-[5px] pr-[calc(var(--sidebar-rail,0px)+5px)]"
-    : "pl-1.5 pr-[calc(var(--sidebar-rail,0px)+6px)]";
+    ? "ps-[5px] pe-[calc(var(--sidebar-rail,0px)+5px)]"
+    : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px)]";
 
   // Inside it the rail already sits in that space, so this is just the gap
-  // between a pill and the scrollbar, matched to the gap on the left.
-  const scrollRowPadding = usesDesktopTitlebar
-    ? "pl-[5px] pr-[5px]"
-    : "pl-1.5 pr-1.5";
+  // between a pill and the scrollbar, matched to the gap on the other side.
+  const scrollRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
 
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
@@ -2496,7 +2496,7 @@ export function AppSidebar() {
             // ramp is still part-transparent there and slices the last row
             // mid-glyph. from-[8px] holds it opaque just across the clip, and
             // matches the list's pb-2 so the gap is the same once it hides.
-            "pointer-events-none absolute left-0 right-[var(--sidebar-rail,0px)] bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            "pointer-events-none absolute start-0 end-[var(--sidebar-rail,0px)] bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             // Shorter fade with the update card so the list reads closer to
             // it, but still tall enough to clear a row.
             showUpdateCard ? "h-7" : "h-10",
