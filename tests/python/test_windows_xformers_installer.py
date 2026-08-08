@@ -70,6 +70,8 @@ SELECTION_CASES = [
     ("2.9.0+cu126", "0.0.33.post1"),
     ("2.8.0+cu129", "0.0.32.post2"),
     ("2.7.1+cu128", "0.0.31.post1"),
+    # 0.0.30 predates the abi3 switch and has no cp313 wheel; the row is deliberately gone.
+    ("2.7.0+cu128", ""),
     # No cu130 build of xFormers exists for torch 2.8 or earlier, and no cu118 /
     # cu124 win_amd64 build exists at all -- refuse rather than serve a neighbour.
     ("2.8.0+cu130", ""),
@@ -127,7 +129,8 @@ def test_installer_installs_xformers_from_the_torch_index():
 
 def test_installer_never_installs_an_unpinned_xformers():
     """A bare `xformers` (or a floor) resolves to whatever the index serves newest -- on the
-    cu130 index that is 0.0.35, a py39-none wheel with no compiled extension at all."""
+    cu130 index that is 0.0.35, whose extension is built for torch 2.10.0 while its
+    metadata asks only for torch>=2.10, so it can be paired with a torch it cannot load."""
     source = _source()
     for match in re.finditer(r'"xformers[^"]*"', source):
         spec = match.group(0)

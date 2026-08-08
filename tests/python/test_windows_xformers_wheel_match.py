@@ -137,9 +137,10 @@ def test_no_extras_invented_for_torch_without_xformers_wheels(torch_tag: str):
 
 
 def test_windows_extra_xformers_spec_is_bounded():
-    """Unbounded, `xformers>=0.0.22.post7` resolves to 0.0.35 -- a py39-none wheel with
-    no compiled extension at all (2.6 MB vs 103 MB) whose torch>=2.10 floor also lets
-    pip drag a pinned torch forward. The bound is the only thing stopping that."""
+    """Unbounded, `xformers>=0.0.22.post7` resolves to 0.0.35, whose extension is built
+    for torch 2.10.0 while its metadata asks only for torch>=2.10 -- so pip is free to pair
+    it with torch 2.11 and recreate the same silent mismatch. 0.0.34 declares
+    torch==2.10.0, an exact pair. The bound is the only thing forcing that choice."""
     deps = _extras()["windows"]
     specs = [d for d in deps if d.split(";")[0].strip().startswith("xformers")]
     assert len(specs) == 1, f"expected one xformers spec in the windows extra, got {specs}"

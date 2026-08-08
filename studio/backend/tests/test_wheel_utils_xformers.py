@@ -3,7 +3,7 @@
 
 """wheel_utils must resolve a CUDA-matched xFormers wheel, on Windows too.
 
-``linux_wheel_platform_tag`` returned None for Windows, so nothing in the backend could
+The platform-tag helper returned None for Windows, so nothing in the backend could
 resolve a Windows wheel URL at all -- which is why the on-demand xFormers install fell
 back to an unpinned ``pip install xformers`` and landed the PyPI CUDA-12.8 build next to
 a cu130 torch.
@@ -123,25 +123,21 @@ class TestXformersWheelUrl:
             "/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl"
         )
 
-    def test_pre_abi3_releases_use_the_interpreter_tag(self):
-        """0.0.30 and earlier publish one wheel per cpXY, not a single stable-ABI wheel."""
-        url = wheel_utils.xformers_wheel_url(
-            _env(
-                torch_version = "2.7.0+cu128",
-                cuda_version = "12.8",
-                python_tag = "cp312",
-                platform_tag = "linux_x86_64",
-            )
-        )
-        assert url == (
-            "https://download.pytorch.org/whl/cu128"
-            "/xformers-0.0.30-cp312-cp312-manylinux_2_28_x86_64.whl"
-        )
+    def test_url_is_interpreter_independent(self):
+        """0.0.31..0.0.34 ship a single cp39-abi3 wheel, so the interpreter must not leak
+        into the URL. (0.0.30 and earlier did ship one wheel per cpXY, which is exactly why
+        torch 2.7.0 is not in the matrix.)"""
+        urls = {
+            wheel_utils.xformers_wheel_url(_env(python_tag = tag))
+            for tag in ("cp39", "cp310", "cp311", "cp312", "cp313", "cp314")
+        }
+        assert len(urls) == 1 and None not in urls
 
     @pytest.mark.parametrize(
         ("torch_version", "cuda_version", "why"),
         [
             ("2.8.0+cu130", "13.0", "no cu130 xFormers build exists for torch 2.8"),
+            ("2.7.0+cu128", "12.8", "xFormers 0.0.30 predates abi3 and stops at cp312"),
             ("2.9.0+cu118", "11.8", "cu118 publishes no win_amd64 xFormers wheel at all"),
             ("2.10.0+cu124", "12.4", "cu124 stopped at xFormers 0.0.29"),
             ("2.11.0+cu130", "13.0", "torch 2.11 has no xFormers wheel on any index"),
@@ -185,23 +181,22 @@ def test_flash_attn_resolution_is_untouched():
     )
 
 
-def test_pre_abi3_rows_refuse_interpreters_with_no_wheel():
-    """xFormers 0.0.30 publishes cp39..cp312 only. On 3.13 the pre-abi3 filename pattern
-    builds a URL that 404s, so the row must resolve to nothing instead."""
-    for python_tag, expected_none in (("cp312", False), ("cp313", True), ("cp38", True)):
-        url = wheel_utils.xformers_wheel_url(
-            _env(
-                torch_version = "2.7.0+cu128",
-                cuda_version = "12.8",
-                python_tag = python_tag,
-                platform_tag = "linux_x86_64",
-            )
-        )
-        assert (url is None) is expected_none, f"{python_tag} -> {url}"
+def test_filename_python_tag_is_ranged_not_open_ended():
+    """xFormers has changed its wheel filename tag twice. Guessing the tag for an unreleased
+    version is how a resolver starts emitting URLs that 404, so an unknown release must
+    resolve to nothing. Verified against the real WHEEL metadata: 0.0.34 is
+    cp39-abi3-win_amd64, 0.0.35 is py39-none-win_amd64."""
+    assert wheel_utils.xformers_filename_python_tag("0.0.31.post1") == "cp39-abi3"
+    assert wheel_utils.xformers_filename_python_tag("0.0.34") == "cp39-abi3"
+    assert wheel_utils.xformers_filename_python_tag("0.0.35") == "py39-none"
+    for unknown in ("0.0.30", "0.0.29.post3", "0.0.36", "0.1.0", "", "nonsense"):
+        assert wheel_utils.xformers_filename_python_tag(unknown) is None, unknown
 
-    # abi3 rows are interpreter independent and must not be caught by the same gate.
-    assert wheel_utils.xformers_wheel_url(_env(python_tag = "cp313")) is not None
-    assert wheel_utils.xformers_wheel_url(_env(python_tag = "cp314")) is not None
+
+def test_every_matrix_version_has_a_known_filename_tag():
+    for families in wheel_utils._XFORMERS_WHEEL_VERSIONS.values():
+        for version in families.values():
+            assert wheel_utils.xformers_filename_python_tag(version) is not None, version
 
 
 @pytest.mark.parametrize("platform_tag", ["win_amd64", "linux_x86_64"])

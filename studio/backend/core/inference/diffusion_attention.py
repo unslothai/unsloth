@@ -29,6 +29,7 @@ Best-effort: an unavailable backend falls back to the diffusers default. torch/d
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Optional
 
 ATTN_AUTO = "auto"
@@ -170,12 +171,13 @@ _ATTENTION_INSTALL_ENV = "UNSLOTH_DIFFUSION_ATTENTION_INSTALL"
 _INSTALL_ATTEMPTED: set[str] = set()
 
 # Backends whose wheel must be resolved against the RUNNING torch build instead of handed
-# to pip as a name. The answer is memoised for the process: None = not resolved yet, else
-# (wheel URL, refusal reason) with exactly one of the two set. torch cannot change under a
-# running interpreter, and caching a transient failure too is no worse than the status quo
-# -- _INSTALL_ATTEMPTED below already made the old install one-shot per process.
+# to pip as a name. Only DETERMINISTIC answers are memoised (a URL, or a refusal that
+# depends purely on the resident torch, which cannot change under a running interpreter).
+# A probe timeout is transient and is deliberately NOT cached: caching it would turn one
+# loaded-machine hiccup into "no xFormers for the rest of this Studio session".
 _MATCHED_WHEEL_BACKENDS = frozenset({"xformers"})
 _XFORMERS_WHEEL_TARGET: Optional[tuple[Optional[str], Optional[str]]] = None
+_XFORMERS_WHEEL_LOCK = threading.Lock()
 
 
 def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
@@ -191,42 +193,44 @@ def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
     So resolve the exact download.pytorch.org wheel instead, and when no wheel matches
     return a reason rather than a URL: installing nothing leaves the caller on torch SDPA,
     which is strictly better than installing an extension that cannot load.
+
+    The URL is not HEAD-checked here. This can run under ``_generate_lock`` (the video
+    loader has no out-of-lock pre-install hop, unlike the image one), so it must not add
+    network round trips to a path that already blocks unload/cancel; a wrong row surfaces
+    as a pip failure instead, and the matrix has a live-URL test behind it.
     """
     global _XFORMERS_WHEEL_TARGET
-    if _XFORMERS_WHEEL_TARGET is not None:
-        return _XFORMERS_WHEEL_TARGET
+    with _XFORMERS_WHEEL_LOCK:
+        if _XFORMERS_WHEEL_TARGET is not None:
+            return _XFORMERS_WHEEL_TARGET
+        try:
+            from utils.wheel_utils import probe_torch_wheel_env, xformers_wheel_url
 
-    try:
-        from utils.wheel_utils import probe_torch_wheel_env, url_exists, xformers_wheel_url
-
-        # include_windows: this is the one resolver that HAS win_amd64 wheels upstream.
-        env = probe_torch_wheel_env(timeout = 120, include_windows = True)
+            # include_windows: this is the one resolver that HAS win_amd64 wheels
+            # upstream. timeout matches the other probe_torch_wheel_env callers.
+            env = probe_torch_wheel_env(timeout = 30, include_windows = True)
+        except Exception as exc:  # noqa: BLE001 -- must never break a model load
+            return (None, f"the xFormers wheel could not be resolved ({exc})")
         if env is None:
-            target = (
+            # Ambiguous: an unsupported platform (deterministic) or a probe that timed out
+            # on a busy box (transient). Not cached, so the next request can settle it.
+            return (
                 None,
                 "torch could not be probed, or this platform has no xFormers wheel "
                 "(macOS / Linux aarch64 / Windows on ARM)",
             )
+        url = xformers_wheel_url(env)
+        if url is None:
+            target = (
+                None,
+                f"no xFormers wheel is published for torch "
+                f"{env.get('torch_version') or 'unknown'} with CUDA "
+                f"{env.get('cuda_version') or 'none'}",
+            )
         else:
-            url = xformers_wheel_url(env)
-            if url is None:
-                target = (
-                    None,
-                    f"no xFormers wheel is published for torch "
-                    f"{env.get('torch_version') or 'unknown'} with CUDA "
-                    f"{env.get('cuda_version') or 'none'}",
-                )
-            elif not url_exists(url):
-                # Belt and braces: an index outage or a withdrawn wheel must refuse too,
-                # never silently degrade into an unpinned resolve.
-                target = (None, f"the matching xFormers wheel is unavailable ({url})")
-            else:
-                target = (url, None)
-    except Exception as exc:  # noqa: BLE001 -- resolution must never break a model load
-        target = (None, f"the xFormers wheel could not be resolved ({exc})")
-
-    _XFORMERS_WHEEL_TARGET = target
-    return target
+            target = (url, None)
+        _XFORMERS_WHEEL_TARGET = target
+        return target
 
 
 def _pip_requirement(backend: str, package: str) -> str:
@@ -290,8 +294,10 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
 
     Returns the reason the install was REFUSED (a policy decision, e.g. no CUDA-matched
     xFormers wheel exists for the resident torch), or None when nothing stood in the way --
-    the install ran, was skipped as already present, or merely failed. Callers may ignore it;
-    it exists so a refusal is reportable rather than only logged."""
+    the install ran, was skipped as already present, or merely failed. Every refusal is also
+    logged at warning level; the return value is there so a caller that wants to surface the
+    reason (rather than silently falling back to native) can, and both current callers
+    deliberately ignore it."""
     import importlib.util
     import os
 

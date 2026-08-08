@@ -171,9 +171,11 @@ huggingface = [
 # "xFormers can't load C++/CUDA extensions", losing memory-efficient attention,
 # SwiGLU and the sparse ops for the rest of the process -- a silent warning, not
 # an install failure. PyPI publishes only the CUDA-12.8 flavour (0.0.34's
-# cpp_lib.json reads torch 2.10.0+cu128), which matches the PyPI torch this extra
-# resolves but NOT the cu126 / cu130 torch install.ps1 pulls from
-# download.pytorch.org.
+# win_amd64 cpp_lib.json reads torch 2.10.0+cu128), which is wrong next to the
+# cu126 / cu130 torch install.ps1 pulls from download.pytorch.org -- and cannot
+# be right on a plain PyPI install either, because PyPI's WINDOWS torch carries
+# no CUDA at all (torch 2.10.0's win_amd64 wheel reports __version__
+# '2.10.0+cpu' with cuda = None; only the Linux wheel is +cu128).
 #
 # There is no PEP 508 marker for "which CUDA build of torch is resident", so a
 # single static extra cannot pick the right wheel. The CUDA-matched route on
@@ -185,9 +187,11 @@ huggingface = [
 # torch from, so Studio never reaches the PyPI fallback below.
 #
 # This extra stays the CUDA-agnostic default for a plain PyPI install. The upper
-# bound is not cosmetic: unbounded, this resolves to 0.0.35, which is published
-# as a py39-none wheel with no compiled extension AT ALL (2.6 MB vs 103 MB) and
-# whose torch>=2.10 floor lets pip drag a pinned torch forward.
+# bound keeps that install self-consistent: 0.0.34 declares torch==2.10.0, an
+# exact pair, while 0.0.35 declares only torch>=2.10 even though its extension is
+# still built for 2.10.0 -- so unbounded, pip is free to pair 0.0.35 with torch
+# 2.11 and recreate the same silent mismatch. 2.10 is also the top of the
+# torch>=2.4,<2.11 window both installers already enforce.
 windows = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",

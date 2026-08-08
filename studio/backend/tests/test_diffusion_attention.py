@@ -410,8 +410,8 @@ def test_xformers_refusal_is_logged_with_its_reason(monkeypatch):
 
 
 def test_xformers_refusal_records_no_attempt(monkeypatch):
-    """Refusal is a POLICY decision, like the kernels/hub gate: a later request on a
-    repaired environment must still be able to install."""
+    """Refusal is a POLICY decision, like the kernels/hub gate, so it must not burn the
+    one-shot install slot: once the resolver can answer, the install still happens."""
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
 
@@ -422,7 +422,7 @@ def test_xformers_refusal_records_no_attempt(monkeypatch):
     att._ensure_attention_backend_installed("xformers")
     assert att._INSTALL_ATTEMPTED == set()
 
-    # Environment repaired -> the next request installs.
+    # Resolver can now answer -> the next request installs.
     _stub_xformers_wheel(monkeypatch)
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
@@ -643,3 +643,91 @@ def test_kernels_hub_compatible_reads_hub_version(monkeypatch):
     # Undeterminable hub -> keep the previous (permissive) behaviour.
     monkeypatch.setattr(importlib.metadata, "version", _boom)
     assert att._kernels_hub_compatible() is True
+
+
+def test_transient_resolution_failure_is_not_memoised(monkeypatch):
+    """A probe that times out on a loaded box is transient. Caching it would turn one
+    hiccup into "no xFormers for the rest of this Studio session", so only DETERMINISTIC
+    answers (a URL, or a refusal that depends purely on the resident torch) are cached."""
+    import utils.wheel_utils as wu
+
+    calls = []
+
+    def _probe(**kwargs):
+        calls.append(kwargs)
+        return None if len(calls) == 1 else {
+            "platform_tag": "win_amd64",
+            "python_tag": "cp313",
+            "torch_version": "2.10.0+cu130",
+            "cuda_version": "13.0",
+        }
+
+    monkeypatch.setattr(wu, "probe_torch_wheel_env", _probe)
+
+    url, reason = att._xformers_wheel_target()
+    assert url is None and "could not be probed" in reason
+    assert att._XFORMERS_WHEEL_TARGET is None, "a transient failure must not be cached"
+
+    url, reason = att._xformers_wheel_target()
+    assert reason is None and url == _XFORMERS_WHEEL
+    assert att._XFORMERS_WHEEL_TARGET == (_XFORMERS_WHEEL, None)
+    assert len(calls) == 2
+
+
+def test_deterministic_refusal_is_memoised(monkeypatch):
+    """torch cannot change under a running interpreter, so "no wheel for this torch" is
+    settled; re-probing it on every request would re-pay the subprocess under the lock."""
+    import utils.wheel_utils as wu
+
+    calls = []
+
+    def _probe(**kwargs):
+        calls.append(kwargs)
+        return {
+            "platform_tag": "win_amd64",
+            "python_tag": "cp313",
+            "torch_version": "2.11.0+cu130",
+            "cuda_version": "13.0",
+        }
+
+    monkeypatch.setattr(wu, "probe_torch_wheel_env", _probe)
+
+    for _ in range(3):
+        url, reason = att._xformers_wheel_target()
+        assert url is None
+        assert "no xFormers wheel is published for torch 2.11.0+cu130" in reason
+    assert len(calls) == 1
+
+
+def test_resolution_does_no_network_io(monkeypatch):
+    """It can run under _generate_lock (the video loader has no out-of-lock pre-install),
+    so it must not add a HEAD to a path that already blocks unload/cancel."""
+    import utils.wheel_utils as wu
+
+    monkeypatch.setattr(
+        wu, "probe_torch_wheel_env",
+        lambda **kw: {
+            "platform_tag": "win_amd64",
+            "python_tag": "cp313",
+            "torch_version": "2.10.0+cu130",
+            "cuda_version": "13.0",
+        },
+    )
+    monkeypatch.setattr(
+        wu, "url_exists", lambda url: pytest.fail("resolution must not hit the network")
+    )
+    assert att._xformers_wheel_target() == (_XFORMERS_WHEEL, None)
+
+
+def test_probe_timeout_matches_the_other_wheel_callers(monkeypatch):
+    import utils.wheel_utils as wu
+
+    seen = {}
+
+    def _probe(**kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(wu, "probe_torch_wheel_env", _probe)
+    att._xformers_wheel_target()
+    assert seen == {"timeout": 30, "include_windows": True}

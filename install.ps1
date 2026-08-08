@@ -3643,9 +3643,13 @@ exit 0
     # tests/python/test_windows_xformers_wheel_match.py.
     #
     # Deliberately NOT a floor-and-let-pip-pick: the cu130 index also serves
-    # xformers-0.0.35, which is a py39-none wheel with no compiled extension at all.
+    # xformers-0.0.35, whose extension is built for torch 2.10.0 while its metadata only
+    # asks for torch>=2.10, so a resolver is free to pair it with a torch it cannot load.
+    #
+    # torch 2.7.0 (xFormers 0.0.30) is deliberately absent: it predates the stable-ABI
+    # switch, publishes one wheel per interpreter and stops at cp312, and this installer
+    # defaults to Python 3.13 -- so the row would resolve to a wheel that does not exist.
     $script:XformersWheelVersions = @{
-        "2.7.0"  = @{ "cu126" = "0.0.30";       "cu128" = "0.0.30" }
         "2.7.1"  = @{ "cu126" = "0.0.31.post1"; "cu128" = "0.0.31.post1" }
         "2.8.0"  = @{ "cu126" = "0.0.32.post2"; "cu128" = "0.0.32.post2"; "cu129" = "0.0.32.post2" }
         "2.9.0"  = @{ "cu126" = "0.0.33.post1"; "cu128" = "0.0.33.post1"; "cu130" = "0.0.33.post1" }
@@ -3666,14 +3670,16 @@ exit 0
         return $byFamily[$CudaTag]
     }
 
-    # The (torch, CUDA) pair the RESIDENT xformers extension was compiled against, read out of
-    # xformers/cpp_lib.json ("2.10.0+cu128"), or $null when xformers is absent or ships no
-    # extension. Read from disk rather than "import xformers" so a mismatched .pyd cannot emit
-    # its own warning into the probe, and so 0.0.35 (no cpp_lib.json) reads as unbuilt.
+    # What the RESIDENT xformers actually is: "<version> <torch-it-was-built-for>", e.g.
+    # "0.0.34 2.10.0+cu128", or $null when xformers is absent or carries no build metadata.
+    # BOTH halves are needed. The version alone cannot tell cu126 from cu128 from cu130 --
+    # all three publish the same version string -- and the build tag alone cannot tell
+    # 0.0.34 from 0.0.35, which report the same torch. Read from disk rather than
+    # "import xformers" so a mismatched .pyd cannot log its own warning into the probe.
     function Get-InstalledXformersBuild {
         param([string]$PythonExe)
         if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
-        $code = 'import importlib.util,json,os;s=importlib.util.find_spec(''xformers'');l=(list(s.submodule_search_locations) if s and s.submodule_search_locations else []);p=(os.path.join(l[0],''cpp_lib.json'') if l else ''''); print(json.load(open(p))[''version''][''torch''] if p and os.path.isfile(p) else '''')'
+        $code = 'import importlib.metadata as m,importlib.util,json,os;s=importlib.util.find_spec(''xformers'');l=(list(s.submodule_search_locations) if s and s.submodule_search_locations else []);p=(os.path.join(l[0],''cpp_lib.json'') if l else '''');t=(json.load(open(p))[''version''][''torch''] if p and os.path.isfile(p) else '''');v=m.version(''xformers'') if l else '''';print((v + '' '' + t) if (v and t) else '''')'
         $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code $code
         if (-not $probe.Ok) { return $null }
         $build = $probe.Output.Trim()
@@ -4160,7 +4166,10 @@ exit 0
 
     # ── Pin xFormers to the wheel built for the torch that is actually installed ──
     # See $script:XformersWheelVersions above for why a version floor is not enough.
-    # Runs AFTER the flavor repair, so the resident torch and $TorchIndexUrl agree.
+    # Runs AFTER the flavor repair so it reads the final torch, and keys off THAT torch
+    # rather than off $TorchIndexUrl, which the repair does not always reconcile (it is
+    # skipped when the expected tag is 'cpu' or unrecognised, so a migrated venv can hold
+    # a +cu128 torch while the index leaf says /cpu, and /cpu serves no usable xFormers).
     # xFormers is an optional accelerator, so every failure here warns and the install
     # continues on torch SDPA; and when no wheel matches we install NOTHING, because
     # installing a mismatched one is the bug being fixed. UNSLOTH_SKIP_XFORMERS=1 opts out.
@@ -4168,18 +4177,23 @@ exit 0
         $_xfTorchVersion = Get-InstalledTorchVersion -PythonExe $VenvPython
         $_xfCudaTag = ConvertTo-TorchFlavorTag $_xfTorchVersion
         # cu<digits> only: cpu / rocm / xpu torch has no xFormers wheel on any index.
-        if ($_xfTorchVersion -and $_xfCudaTag -match '^cu\d+$') {
+        # IsMatch, not -match, so this does not clobber $Matches for the enclosing scope.
+        if ($_xfTorchVersion -and [regex]::IsMatch([string]$_xfCudaTag, '^cu\d+$')) {
             $_xfVersion = Get-XformersWheelVersion -TorchVersion $_xfTorchVersion -CudaTag $_xfCudaTag
             if (-not $_xfVersion) {
-                substep "no xFormers wheel is published for torch $_xfTorchVersion -- skipping it (attention falls back to torch SDPA)."
-            } elseif ((Get-InstalledXformersBuild -PythonExe $VenvPython) -eq $_xfTorchVersion) {
+                # "not in the table", which also covers families we have no row for (cu118,
+                # cu124) as well as torch releases upstream never built against.
+                substep "no matching xFormers wheel for torch $_xfTorchVersion -- skipping it (attention falls back to torch SDPA)."
+            } elseif ((Get-InstalledXformersBuild -PythonExe $VenvPython) -eq "$_xfVersion $_xfTorchVersion") {
                 substep "xFormers $_xfVersion already matches torch $_xfTorchVersion."
             } else {
-                # The fallback branch above installs torch with --torch-backend=auto and
-                # leaves $TorchIndexUrl empty; rebuild the leaf from the flavor uv chose so
-                # that path is covered too, still honouring UNSLOTH_PYTORCH_MIRROR.
+                # Index leaf comes from the torch that is actually resident. $TorchIndexUrl
+                # is reused only when it already points at that same family, so a custom
+                # mirror keeps working; otherwise (empty after the --torch-backend=auto
+                # fallback, or stale at /cpu) rebuild it, still honouring
+                # UNSLOTH_PYTORCH_MIRROR.
                 $_xfIndexUrl = $TorchIndexUrl
-                if (-not $_xfIndexUrl) {
+                if (-not $_xfIndexUrl -or (Get-TorchIndexLeafName $_xfIndexUrl) -ne $_xfCudaTag) {
                     $_xfBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
                     $_xfIndexUrl = "$_xfBase/$_xfCudaTag"
                 }

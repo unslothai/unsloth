@@ -197,10 +197,10 @@ def direct_wheel_url(
 # xformers/_C.pyd (_C.so on Linux) is linked against ONE exact (torch, CUDA) pair.
 # Loaded beside any other pair torch.ops.load_library raises, and xformers/_cpp_lib.py
 # turns that into a log warning rather than an error -- so the import "succeeds" and
-# memory-efficient attention, SwiGLU and the sparse ops are silently gone. PyPI
-# publishes only the CUDA-12.8 flavour, which is why `pip install xformers` next to a
-# cu130 torch reports "xFormers was built for PyTorch 2.10.0+cu128 with CUDA 1208 (you
-# have 2.10.0+cu130)".
+# memory-efficient attention, SwiGLU and the sparse ops are silently gone. PyPI publishes
+# only the CUDA-12.8 flavour (0.0.34's win_amd64 cpp_lib.json reads torch 2.10.0+cu128),
+# which is why `pip install xformers` next to a cu130 torch reports "xFormers was built
+# for PyTorch 2.10.0+cu128 with CUDA 1208 (you have 2.10.0+cu130)".
 #
 # download.pytorch.org publishes one wheel per (CUDA family, torch patch), so resolve
 # the exact URL instead. torch release -> {CUDA family: xFormers version}. Every row was
@@ -217,7 +217,11 @@ def direct_wheel_url(
 PYTORCH_WHEEL_INDEX_BASE_URL = "https://download.pytorch.org/whl"
 
 _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
-    "2.7.0": {"cu126": "0.0.30", "cu128": "0.0.30"},
+    # torch 2.7.0 (xFormers 0.0.30) is deliberately absent: it predates the stable-ABI
+    # switch, so it publishes one wheel per interpreter and stops at cp312, and Studio's
+    # default interpreter is 3.13. Supporting it would mean a per-interpreter gate here
+    # and a second one in install.ps1 for a four-year-old torch that resolves to nothing
+    # on the default install anyway.
     "2.7.1": {"cu126": "0.0.31.post1", "cu128": "0.0.31.post1"},
     "2.8.0": {"cu126": "0.0.32.post2", "cu128": "0.0.32.post2", "cu129": "0.0.32.post2"},
     "2.9.0": {"cu126": "0.0.33.post1", "cu128": "0.0.33.post1", "cu130": "0.0.33.post1"},
@@ -225,12 +229,20 @@ _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
     "2.10.0": {"cu126": "0.0.34", "cu128": "0.0.34", "cu130": "0.0.34"},
 }
 
-# xFormers switched to a single stable-ABI wheel at 0.0.31; 0.0.30 and earlier publish
-# one wheel per interpreter, and only cp39 through cp312 -- there is no 0.0.30 wheel for
-# 3.13 on any index, so a 3.13 interpreter on torch 2.7.0 has to resolve to nothing rather
-# than to a URL that 404s.
-_XFORMERS_ABI3_MIN_VERSION = (0, 0, 31)
-_XFORMERS_PRE_ABI3_PYTHON_RANGE = ((3, 9), (3, 12))
+# The interpreter tag in the wheel FILENAME, which xFormers has changed twice: 0.0.30 and
+# earlier ship one wheel per cpXY (and stop at cp312), 0.0.31..0.0.34 ship a single
+# cp39-abi3 wheel, and 0.0.35 switched to py39-none (its extension moved behind
+# torch.ops.load_library, which does not bind the Python ABI -- the wheel still carries a
+# per-CUDA _C.pyd, it just dropped the bundled flash_attn_3 kernels, which is the whole
+# 103 MB -> 2.6 MB difference). Verified by reading the WHEEL metadata out of each.
+#
+# Ranges, not an open-ended floor: guessing the tag for an unreleased version is how a
+# resolver starts emitting URLs that 404, so an unknown release resolves to nothing until
+# somebody checks the real filename.
+_XFORMERS_FILENAME_PYTHON_TAGS: tuple[tuple[tuple[int, ...], tuple[int, ...], str], ...] = (
+    ((0, 0, 31), (0, 0, 34), "cp39-abi3"),
+    ((0, 0, 35), (0, 0, 35), "py39-none"),
+)
 
 # platform_tag from wheel_platform_tag() -> the leaf in the wheel filename. aarch64 and
 # macOS are absent because download.pytorch.org publishes no xFormers wheel for them.
@@ -251,6 +263,17 @@ def _xformers_version_tuple(version: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+def xformers_filename_python_tag(version: str) -> str | None:
+    """The interpreter tag in an xFormers wheel filename, or None for an unknown release."""
+    parsed = _xformers_version_tuple(version)
+    if not parsed:
+        return None
+    for low, high, tag in _XFORMERS_FILENAME_PYTHON_TAGS:
+        if low <= parsed <= high:
+            return tag
+    return None
+
+
 def xformers_cuda_family(cuda_version: str | None) -> str | None:
     """torch.version.cuda -> the download.pytorch.org index leaf ('12.8' -> 'cu128').
 
@@ -258,7 +281,7 @@ def xformers_cuda_family(cuda_version: str | None) -> str | None:
     """
     if not cuda_version:
         return None
-    parts = str(cuda_version).split(".")
+    parts = str(cuda_version).strip().split(".")
     try:
         major = int(re.sub(r"[^0-9].*", "", parts[0]))
         minor = int(re.sub(r"[^0-9].*", "", parts[1])) if len(parts) > 1 else 0
@@ -292,17 +315,9 @@ def xformers_wheel_url(env: dict[str, str] | None) -> str | None:
     version = xformers_wheel_version(env.get("torch_version"), family)
     if version is None:
         return None
-    if _xformers_version_tuple(version) >= _XFORMERS_ABI3_MIN_VERSION:
-        python_tag = "cp39-abi3"
-    else:
-        interpreter = str(env.get("python_tag") or "")
-        match = re.fullmatch(r"cp(\d)(\d+)", interpreter)
-        if match is None:
-            return None
-        low, high = _XFORMERS_PRE_ABI3_PYTHON_RANGE
-        if not low <= (int(match.group(1)), int(match.group(2))) <= high:
-            return None
-        python_tag = f"{interpreter}-{interpreter}"
+    python_tag = xformers_filename_python_tag(version)
+    if python_tag is None:
+        return None
     return (
         f"{PYTORCH_WHEEL_INDEX_BASE_URL}/{family}"
         f"/xformers-{version}-{python_tag}-{platform_leaf}.whl"
