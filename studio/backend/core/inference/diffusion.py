@@ -1698,18 +1698,24 @@ class DiffusionBackend:
             straight from cache instead of staging a download that fetches nothing.
             Entries are what the Downloads panel lists, so a cached repo listed here
             reads as a re-download of a model the user already has. No revision drops nothing,
-            so an unpinnable repo stages in full as it always did."""
+            so an unpinnable repo stages in full as it always did.
+
+            All or nothing per repo, never a subset. Every diffusion entry for a repo rides the
+            one "@diffusion" scope slot, and download_registry refuses a claim whose scoped_files
+            differ from the live job's: a shrinking list would 409 a second pick sharing this base
+            where it used to adopt the running job. Staging a cached file costs nothing anyway,
+            since hf_hub_download returns the pointer without a transfer."""
             cached = self._files_already_cached(repo, files, revision)
-            missing = [name for name in files if name not in cached]
-            if missing:
-                entries.append(
-                    {
-                        "repo_id": repo,
-                        "files": missing,
-                        "bytes": int(sum(sized.get(name, 0) for name in missing)),
-                        "gguf_filename": gguf,
-                    }
-                )
+            if files and cached.issuperset(files):
+                return
+            entries.append(
+                {
+                    "repo_id": repo,
+                    "files": files,
+                    "bytes": int(sum(sized.get(name, 0) for name in files)),
+                    "gguf_filename": gguf,
+                }
+            )
 
         for repo, files in te_files.values():
             # No revision: te_prequant_hub_files reports names and sizes only, so a pre-cast

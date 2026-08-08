@@ -5054,6 +5054,7 @@ _FLUX_BASE_SIBLINGS = [
     _FakeSibling("assets/gallery.pdf", 5000),
     _FakeSibling("README.md", 200),
 ]
+_FLUX_BASE_SIBLINGS_BY_NAME = {s.rfilename: s.size for s in _FLUX_BASE_SIBLINGS}
 
 
 def _fake_hf_api(monkeypatch, repos):
@@ -5511,7 +5512,11 @@ def _seed_cache_file(
     target.parent.mkdir(parents = True, exist_ok = True)
     if dangling:
         # A snapshot entry is a symlink into blobs/; a pruned blob leaves the link but no bytes.
-        _os.symlink(repo / "blobs" / "gone", target)
+        # Windows without developer mode cannot make one, and hub writes plain files there too.
+        try:
+            _os.symlink(repo / "blobs" / "gone", target)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this host")
     else:
         target.write_bytes(b"x")
     return target
@@ -5609,9 +5614,10 @@ def test_files_already_cached_survives_an_unreadable_root(monkeypatch, tmp_path)
     ) == {"flux1-dev-Q4_K_M.gguf"}
 
 
-def test_download_plan_stages_only_the_missing_file_of_a_half_cached_repo(monkeypatch):
-    """The delicate case the entry-level tests miss: some files of ONE repo on disk and some not.
-    The entry must survive carrying only what is missing, sized to only what is missing."""
+def test_download_plan_stages_a_half_cached_repo_whole(monkeypatch):
+    """A repo is dropped only when ALL of it is cached. A shrinking file list would 409 a second
+    pick sharing this base, since every diffusion entry rides the one "@diffusion" scope slot and
+    download_registry refuses a claim whose scoped_files differ from the live job's."""
     _fake_hf_api(
         monkeypatch,
         {
@@ -5649,11 +5655,65 @@ def test_download_plan_stages_only_the_missing_file_of_a_half_cached_repo(monkey
     # prefer_ungated_mirror swaps the gated vendor id for the one the fetch will really name.
     assert set(by_repo) == {"unsloth/FLUX.1-dev-GGUF", "unsloth/FLUX.1-dev"}
     base = by_repo["unsloth/FLUX.1-dev"]
-    assert base["files"] == ["vae/diffusion_pytorch_model.safetensors"]
-    assert base["bytes"] == 300
+    # The whole scoped list, not just the missing VAE: the cached file is still staged.
+    assert "vae/diffusion_pytorch_model.safetensors" in base["files"]
+    assert "model_index.json" in base["files"]
+    assert base["bytes"] == sum(
+        size for name, size in _FLUX_BASE_SIBLINGS_BY_NAME.items() if name in base["files"]
+    )
     # Derived, so the panel's rows and the bar it drives can never disagree.
-    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"]) == 7 * GB + 300
+    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
     assert all(e["files"] for e in plan["entries"])
+
+
+def test_download_plan_files_do_not_shrink_as_a_repo_warms(monkeypatch):
+    """The scope-slot invariant, stated directly: for one pick, a repo's staged file list is the
+    same whether none or some of it is on disk. Only all-cached removes the entry."""
+
+    def _plan(cached_for_base):
+        mp = pytest.MonkeyPatch()
+        try:
+            _fake_hf_api(
+                mp,
+                {
+                    "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+                    "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+                },
+            )
+            mp.setattr(
+                "core.inference.diffusion._resolve_base_repo",
+                lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+            )
+            mp.setattr(
+                DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+            )
+            _no_cache(mp)
+            mp.setattr(
+                DiffusionBackend,
+                "_files_already_cached",
+                staticmethod(
+                    lambda repo_id, files, revision = None: (
+                        set() if repo_id.endswith("-GGUF") else set(cached_for_base(files))
+                    )
+                ),
+            )
+            return DiffusionBackend().download_plan(
+                "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+            )
+        finally:
+            mp.undo()
+
+    cold = _plan(lambda files: [])
+    half = _plan(lambda files: files[:1])
+    most = _plan(lambda files: files[:-1])
+    warm = _plan(lambda files: files)
+
+    base_files = {e["repo_id"]: e["files"] for e in cold["entries"]}["unsloth/FLUX.1-dev"]
+    for plan in (half, most):
+        staged = {e["repo_id"]: e["files"] for e in plan["entries"]}
+        assert staged["unsloth/FLUX.1-dev"] == base_files
+    # Fully cached is the one state that removes the row.
+    assert "unsloth/FLUX.1-dev" not in {e["repo_id"] for e in warm["entries"]}
 
 
 class _ShaInfo(_FakeInfo):
