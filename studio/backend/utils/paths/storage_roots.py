@@ -288,6 +288,12 @@ def _setup_cache_env() -> None:
     defaults: dict[str, str] = {
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
+        # unsloth_zoo defaults this to a bare relative name, which resolves
+        # against the CWD, and the Windows launcher runs Studio with
+        # WorkingDirectory=%USERPROFILE%, so the cache landed in the user home.
+        # Must be set before unsloth_zoo.compiler imports: it reads the value
+        # at import time and puts it on sys.path.
+        "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
     }
     for key, value in defaults.items():
         if key not in os.environ:
@@ -296,8 +302,23 @@ def _setup_cache_env() -> None:
             # HF surfaces a clear error at download time instead.
             try:
                 Path(value).mkdir(parents = True, exist_ok = True)
-            except OSError:
+                if key == "UNSLOTH_COMPILE_LOCATION":
+                    # Marks the directory as ours, so the cleanup can delete from
+                    # it without inferring that from its contents.
+                    from utils.cache_cleanup import CACHE_MARKER
+                    (Path(value) / CACHE_MARKER).touch(exist_ok = True)
+            except (OSError, ImportError):
                 pass
+
+
+def setup_cache_env() -> None:
+    """Seed the cache env vars without creating every studio directory.
+
+    For `uvicorn main:app`, which bypasses run.py and so never reaches
+    ensure_studio_directories, but still has to pin UNSLOTH_COMPILE_LOCATION
+    before unsloth_zoo.compiler is imported.
+    """
+    _setup_cache_env()
 
 
 def ensure_studio_directories() -> None:

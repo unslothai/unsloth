@@ -7110,14 +7110,27 @@ _workdirs: dict[str, str] = {}
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
 _SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,64}\Z")
+# Reserved on Windows even as a directory name, and an API caller picks this id.
+_WINDOWS_DEVICE_NAMES = frozenset(
+    ["con", "prn", "aux", "nul"]
+    + [f"com{i}" for i in range(1, 10)]
+    + [f"lpt{i}" for i in range(1, 10)]
+)
 _PROJECT_SESSION_PREFIX = "project-"
+
+
+def _usable_session_id(session_id: str) -> bool:
+    """Matches the id charset and is a name every OS can hold as a directory."""
+    if not _SESSION_ID_RE.match(session_id):
+        return False
+    return session_id.split(".")[0].lower() not in _WINDOWS_DEVICE_NAMES
 
 
 def _get_project_workdir(session_id: str) -> str | None:
     if not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
     project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
-    if not project_id or not _SESSION_ID_RE.match(project_id):
+    if not project_id or not _usable_session_id(project_id):
         return None
     try:
         from storage.studio_db import ensure_chat_project_workspace
@@ -7138,33 +7151,147 @@ def _get_project_workdir(session_id: str) -> str | None:
     return sandbox_real
 
 
+def _legacy_sandbox_root() -> str:
+    """Where the sandbox used to live: a third folder in the user's home."""
+    return os.path.join(os.path.expanduser("~"), "studio_sandbox")
+
+
+def sandbox_root() -> str:
+    """Root of the per-session tool sandboxes.
+
+    Under the studio home, so UNSLOTH_STUDIO_HOME keeps everything in one place
+    instead of leaving a stray ~/studio_sandbox. Falls back to the legacy path
+    only if the studio root cannot be resolved.
+    """
+    override = (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
+    if override:
+        return os.path.expanduser(override)
+    try:
+        from utils.paths.storage_roots import studio_root
+        return os.path.join(str(studio_root()), "sandbox")
+    except Exception:
+        return _legacy_sandbox_root()
+
+
+_legacy_sandbox_migrated = False
+_legacy_sandbox_lock = threading.Lock()
+
+
+def _migrate_legacy_sandbox(root: str) -> None:
+    """Move sessions from ~/studio_sandbox into the studio home, once.
+
+    Those files are the user's, so they move rather than being dropped. A
+    session already present at the new root wins and its legacy copy is left
+    alone, so nothing is silently overwritten.
+    """
+    global _legacy_sandbox_migrated
+    if _legacy_sandbox_migrated:
+        return
+    # Under the lock, and flagged only once the move is done: setting it first
+    # let a concurrent first tool call create a destination session directory,
+    # which then looked like a collision and stranded the user's legacy files.
+    with _legacy_sandbox_lock:
+        if _legacy_sandbox_migrated:
+            return
+        # Flagged only when nothing movable is left: a file locked by another
+        # process on Windows is retryable, and giving up after one attempt
+        # strands it once _get_workdir creates the destination.
+        if _migrate_legacy_sandbox_locked(root):
+            _legacy_sandbox_migrated = True
+
+
+def _migrate_legacy_sandbox_locked(root: str) -> bool:
+    """True when the legacy root holds nothing that could still be moved.
+
+    A collision is not a failure: the new root already has that session, and the
+    legacy copy is deliberately left for the user to find.
+    """
+    legacy = _legacy_sandbox_root()
+    try:
+        if os.path.realpath(legacy) == os.path.realpath(root) or not os.path.isdir(legacy):
+            return True
+        os.makedirs(root, exist_ok = True)
+        moved = 0
+        complete = True
+        for name in os.listdir(legacy):
+            source = os.path.join(legacy, name)
+            target = os.path.join(root, name)
+            if os.path.exists(target):
+                continue
+            try:
+                shutil.move(source, target)
+                moved += 1
+            except OSError as error:
+                complete = False
+                logger.warning("Could not move sandbox %s: %s", name, error)
+        if moved:
+            logger.info("Moved %d chat sandbox folder(s) from %s to %s", moved, legacy, root)
+        # Empty only: a leftover is a collision the user should still find.
+        try:
+            os.rmdir(legacy)
+        except OSError:
+            pass
+        return complete
+    except Exception as error:
+        logger.warning("Sandbox migration skipped: %s", error)
+        return False
+
+
+def _contained_in_root(workdir: str, root: str) -> bool:
+    """Whether a resolved session path is still inside the sandbox root.
+
+    Applied to cached paths too: a directory replaced by a symlink after it was
+    cached would otherwise keep serving from wherever it now points.
+    """
+    try:
+        resolved, base = os.path.realpath(workdir), os.path.realpath(root)
+        # commonpath, not a prefix test: a root that is a filesystem or volume
+        # root ("/", "D:\\") already ends in a separator, and appending another
+        # made every real session path fail.
+        return resolved != base and os.path.commonpath([resolved, base]) == base
+    except (OSError, ValueError):
+        return False
+
+
 def _get_workdir(session_id: str | None = None) -> str:
     """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
     key = session_id or "_default"
-    if key not in _workdirs or not os.path.isdir(_workdirs[key]):
-        home = os.path.expanduser("~")
-        sandbox_root = os.path.join(home, "studio_sandbox")
+    cached = _workdirs.get(key)
+    if cached is not None and not os.path.isdir(cached):
+        cached = None
+    if cached is not None and not _get_project_workdir(session_id or ""):
+        if not _contained_in_root(cached, sandbox_root()):
+            cached = None  # replaced by a symlink out of the root since it was cached
+    if cached is None:
+        _workdirs.pop(key, None)
+        sandbox_root_path = sandbox_root()
+        root_existed = os.path.isdir(sandbox_root_path)
+        _migrate_legacy_sandbox(sandbox_root_path)
         project_workdir = (
             _get_project_workdir(session_id)
-            if session_id and _SESSION_ID_RE.match(session_id)
+            if session_id and _usable_session_id(session_id)
             else None
         )
         if project_workdir:
             workdir = project_workdir
-        elif session_id and _SESSION_ID_RE.match(session_id):
-            workdir = os.path.join(sandbox_root, session_id)
-            if not os.path.realpath(workdir).startswith(os.path.realpath(sandbox_root) + os.sep):
-                workdir = os.path.join(sandbox_root, "_invalid")
+        elif session_id and _usable_session_id(session_id):
+            workdir = os.path.join(sandbox_root_path, session_id)
+            if not _contained_in_root(workdir, sandbox_root_path):
+                workdir = os.path.join(sandbox_root_path, "_invalid")
         elif session_id:
-            workdir = os.path.join(sandbox_root, "_invalid")
+            workdir = os.path.join(sandbox_root_path, "_invalid")
         else:
-            workdir = os.path.join(sandbox_root, "_default")
+            workdir = os.path.join(sandbox_root_path, "_default")
         os.makedirs(workdir, exist_ok = True)
-        try:
-            os.chmod(sandbox_root, 0o700)
-        except OSError:
-            pass
+        # Only a root we just created, or our own default location.
+        # UNSLOTH_STUDIO_SANDBOX_HOME can name an existing shared directory, and
+        # locking that down would cut off everything else using it.
+        if not root_existed or not (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip():
+            try:
+                os.chmod(sandbox_root_path, 0o700)
+            except OSError:
+                pass
         try:
             os.chmod(workdir, 0o700)
         except OSError:
@@ -7175,6 +7302,76 @@ def _get_workdir(session_id: str | None = None) -> str:
 
 def get_sandbox_workdir(session_id: str | None = None) -> str:
     return _get_workdir(session_id)
+
+
+def resolve_sandbox_workdir(session_id: str | None = None) -> str:
+    """Where a session's sandbox would be, without creating it.
+
+    For read-only callers: serving a file must not materialise a directory for
+    every id someone asks about.
+    """
+    if session_id:
+        project = _get_project_workdir(session_id) if _usable_session_id(session_id) else None
+        if project:
+            return project
+    root = sandbox_root()
+    cached = _workdirs.get(session_id or "_default")
+    if cached and _contained_in_root(cached, root):
+        return cached
+    # Right after an upgrade a chat's files are still at the legacy root, and
+    # nothing else has run yet. This moves them without creating a session dir.
+    _migrate_legacy_sandbox(root)
+    if not session_id:
+        return os.path.join(root, "_default")
+    if not _usable_session_id(session_id):
+        return os.path.join(root, "_invalid")
+    workdir = os.path.join(root, session_id)
+    # The same containment _get_workdir applies: a session entry that is a
+    # symlink out of the root would otherwise become the root for reads, and
+    # serve whatever it points at.
+    if not _contained_in_root(workdir, root):
+        return os.path.join(root, "_invalid")
+    return workdir
+
+
+def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
+    """Drop a deleted chat's sandbox. True when something was removed.
+
+    The chat was the only handle on that directory, so leaving it behind means
+    one unreachable folder per chat forever. Empty folders always go; files
+    need ``delete_files``, since they are the user's and are downloadable from
+    the chat. Project workspaces are shared and have their own delete flow.
+    """
+    if not session_id or not _usable_session_id(session_id):
+        return False
+    if session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    # Deleting a chat can be the first thing that happens after an upgrade, and
+    # the folder to remove may still be at the legacy root.
+    _migrate_legacy_sandbox(sandbox_root())
+    root = os.path.realpath(sandbox_root())
+    entry = os.path.join(root, session_id)
+    # The entry itself, not what it resolves to: a session directory replaced by
+    # a symlink to a sibling still passes the containment check below, and would
+    # take the other chat's files with it. Drop the link, keep the target.
+    if os.path.islink(entry):
+        try:
+            os.unlink(entry)
+            return True
+        except OSError:
+            return False
+    target = os.path.realpath(entry)
+    if os.path.dirname(target) != root or not os.path.isdir(target):  # contained
+        return False
+    _workdirs.pop(session_id, None)
+    try:
+        if delete_files:
+            shutil.rmtree(target, ignore_errors = True)
+            return not os.path.isdir(target)
+        os.rmdir(target)  # raises when non-empty, which is the intent
+        return True
+    except OSError:
+        return False
 
 
 WEB_SEARCH_TOOL = {
@@ -7213,16 +7410,23 @@ def _build_sandbox_paths_note() -> str:
     instead: without it a model assumes the pipe is its only output and declines
     to open a window it believes nobody can see.
     """
+    # Without this a model assumes its output vanished into a scratch dir and
+    # says so, which reads as "the file was not really created".
+    created = (
+        " Any file you create here is kept and shown to the user with a download "
+        "link, so name the files you created in your reply -- by file name only, "
+        "since you do not know their absolute path."
+    )
     if sys.platform != "win32":
         return (
             " Read and write files using relative paths in the current working "
             "directory, which persists for this conversation; absolute paths like "
-            "/mnt/data or /tmp/outputs do not exist."
+            "/mnt/data or /tmp/outputs do not exist." + created
         )
     return (
         " You are on Windows, and this runs on the user's own machine. Read and "
         "write files using relative paths in the current working directory, which "
-        "persists for this conversation."
+        "persists for this conversation." + created
     )
 
 
@@ -10043,9 +10247,9 @@ _MISSING_PATH_PREFIXES = (
 _QUOTED_ABS_PATH_RE = re.compile(r"""['"](/[^'"\n]+)['"]""")
 _BASH_ABS_PATH_RE = re.compile(r"(/[^\s:'\"]+):\s*No such file or directory")
 
-# The sandbox CWD is a per-thread dir under ~/studio_sandbox; an absolute path
+# The sandbox CWD is a per-session dir under the studio home; an absolute path
 # under it is a genuine local miss, not a hallucinated out-of-sandbox write.
-_SANDBOX_ROOT = os.path.join(os.path.expanduser("~"), "studio_sandbox")
+# Resolved through the same helper as _get_workdir so the two cannot drift.
 
 
 def _missing_error_lines(output: str) -> list[str]:
@@ -10082,7 +10286,7 @@ def _is_outside_workdir(abs_path: str, workdir: str | None = None) -> bool:
     or it is wrongly classed as an external habit path.
     """
     try:
-        root = os.path.realpath(workdir or _SANDBOX_ROOT)
+        root = os.path.realpath(workdir or sandbox_root())
         rp = os.path.realpath(abs_path)
     except (OSError, ValueError):
         return True
@@ -10208,6 +10412,119 @@ def _drain_process_output(
     return "".join(chunks), timed_out
 
 
+_MAX_REPORTED_FILES = 25
+# A build step or an unpacked archive can leave thousands of files; the walk is
+# bounded so a tool call cannot turn into a filesystem crawl. Counted in path
+# segments, the same unit the download route enforces, so the card can never
+# advertise a file that route would refuse.
+_MAX_SANDBOX_PATH_SEGMENTS = 4
+_MAX_SNAPSHOT_FILES = 2000  # a shard-writing script must not blow up the result
+_MAX_SNAPSHOT_DIRS = 2000  # nor a directory-writing one stall the next call
+
+
+# The same allowlist the download route applies per segment, so a name that
+# route would refuse never reaches a file chip.
+_SERVABLE_SEGMENT_RE = re.compile(r"\A[^/\\\x00-\x1f]{1,255}\Z")
+
+
+def _servable_segment(name: str) -> bool:
+    return name not in (".", "..") and bool(_SERVABLE_SEGMENT_RE.match(name))
+
+
+# Studio's own bookkeeping, written by the sandbox sitecustomize. One exact
+# name we write ourselves, not a pattern reserved over names a tool may pick.
+_INTERNAL_SANDBOX_FILES = frozenset({".unsloth_sandbox_remap.json"})
+
+
+def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
+    """relative path -> change key for every regular file, for the post-run diff.
+
+    All files, not just images: a .csv the model wrote used to be invisible.
+    Size rides along with mtime because FAT/exFAT and some network volumes have
+    coarse timestamps, where an overwrite inside one tick would look unchanged.
+    """
+    snapshot: "dict[str, tuple]" = {}
+    if not workdir or not os.path.isdir(workdir):
+        return snapshot
+    # Directories are budgeted separately from files: thousands of empty output
+    # folders never reach the file cap, and this walk runs twice per tool call.
+    visited = 0
+    # Walked, not listed: a script writing outputs/report.csv is ordinary, and a
+    # top-level listing saw only the directory and dropped it.
+    for base, dirs, names in os.walk(workdir):
+        visited += 1
+        if visited > _MAX_SNAPSHOT_DIRS:
+            return snapshot
+        # depth 0 is the workdir itself, whose files are one segment.
+        depth = base[len(workdir) :].count(os.sep)
+        # Dot-directories stay out: .git, .cache and friends are where the noise
+        # lives. Dot-FILES are reported, since .gitignore is a real artifact.
+        dirs[:] = (
+            []
+            if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
+            else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
+        )
+        for name in names:
+            if name in _INTERNAL_SANDBOX_FILES or not _servable_segment(name):
+                continue
+            path = os.path.join(base, name)
+            try:
+                if not os.path.isfile(path) or os.path.islink(path):
+                    continue
+                relative = os.path.relpath(path, workdir).replace(os.sep, "/")
+                stat = os.stat(path)
+                snapshot[relative] = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                continue
+            if len(snapshot) >= _MAX_SNAPSHOT_FILES:
+                return snapshot
+    return snapshot
+
+
+def _created_file_sentinels(
+    workdir: str | None,
+    before: "dict[str, tuple]",
+    exclude: "str | None" = None,
+) -> str:
+    """Sentinels naming the files this call created or overwrote.
+
+    ``__IMAGES__`` renders inline as before; ``__FILES__`` carries every file
+    with its size so the UI can offer a download. Both are stripped before the
+    model sees the result.
+    """
+    after = _snapshot_workdir_files(workdir)
+    # ``exclude`` is this call's own scratch script by exact name, not a pattern
+    # reserved over names a tool might pick.
+    changed = sorted(
+        name
+        for name, key in after.items()
+        if name != exclude and (name not in before or before[name] != key)
+    )
+    if not changed:
+        return ""
+
+    import json as _json
+
+    # Same cap on both: a script writing a frame per step would otherwise put
+    # every name in the result and the stored chat, and the UI would render them all.
+    images = [n for n in changed if os.path.splitext(n)[1].lower() in _IMAGE_EXTS]
+    images = images[:_MAX_REPORTED_FILES]
+    entries = []
+    for name in changed[:_MAX_REPORTED_FILES]:
+        try:
+            size = os.stat(os.path.join(workdir, name)).st_size
+        except OSError:
+            size = None
+        entries.append({"name": name, "size": size})
+
+    # __IMAGES__ stays LAST: older clients slice from it to the end of the
+    # string, so anything after would land inside their JSON.
+    out = f"\n__FILES__:{_json.dumps(entries)}"
+    if images:
+        out += f"\n__IMAGES__:{_json.dumps(images)}"
+    return out
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -10245,22 +10562,18 @@ def _python_exec(
         )
 
     tmp_path = None
+    _scratch_name = None
     workdir = _get_workdir(session_id)
-    # Snapshot image mtimes to detect new and overwritten files.
-    _before: dict[str, int] = {}
-    if os.path.isdir(workdir):
-        for _name in os.listdir(workdir):
-            if os.path.splitext(_name)[1].lower() in _IMAGE_EXTS:
-                _p = os.path.join(workdir, _name)
-                if os.path.isfile(_p):
-                    try:
-                        _before[_name] = os.stat(_p).st_mtime_ns
-                    except OSError:
-                        pass
+    # Snapshot mtimes to detect new and overwritten files.
+    _before = _snapshot_workdir_files(workdir)
     try:
+        # In the workdir: it is what Python puts on sys.path[0], so an earlier
+        # call's helper.py stays importable, __file__ resolves inside the
+        # sandbox, and the script's directory is 0o700 rather than shared /tmp.
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
         # utf-8 so non-ASCII in model-written code survives the OS default codec
         # (Windows cp1252 would otherwise raise UnicodeEncodeError).
+        _scratch_name = os.path.basename(tmp_path)
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
 
@@ -10310,11 +10623,18 @@ def _python_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        # A run that wrote its file and then hung still produced that file, so
+        # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
-            return _truncate(f"Execution timed out after {timeout} seconds.")
+            ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            return ended + (
+                _created_file_sentinels(workdir, _before, _scratch_name) if session_id else ""
+            )
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled."
+            return "Execution cancelled." + (
+                _created_file_sentinels(workdir, _before, _scratch_name) if session_id else ""
+            )
 
         result = output or ""
         if proc.returncode != 0:
@@ -10327,24 +10647,15 @@ def _python_exec(
         result = _truncate(result) if result.strip() else "(no output)"
         result += hint
 
-        # Detect new/overwritten images and append sentinel for the frontend
-        if session_id and os.path.isdir(workdir):
-            new_images = []
-            for _name in os.listdir(workdir):
-                if os.path.splitext(_name)[1].lower() not in _IMAGE_EXTS:
-                    continue
-                _p = os.path.join(workdir, _name)
-                if not os.path.isfile(_p):
-                    continue
-                try:
-                    _mtime = os.stat(_p).st_mtime_ns
-                except OSError:
-                    continue
-                if _name not in _before or _mtime != _before[_name]:
-                    new_images.append(_name)
-            if new_images:
-                import json as _json
-                result += f"\n__IMAGES__:{_json.dumps(sorted(new_images))}"
+        # Tell the frontend what this call created, so the user can open it.
+        # No session id yet on a chat's first turn, and that call still runs in
+        # a real workdir (_default), which the UI and the route both resolve.
+        # Only for a chat that has an id. Without one every first turn shares
+        # the _default workdir, and a card pinned to it would later download
+        # whatever the next new chat wrote there. Reporting these needs a
+        # per-chat sandbox allocated before tools run, not this.
+        if session_id:
+            result += _created_file_sentinels(workdir, _before, _scratch_name)
 
         return result
 
@@ -10396,6 +10707,9 @@ def _bash_exec(
 
     try:
         workdir = _get_workdir(session_id)
+        # Same pre-run snapshot as _python_exec. A command that writes a file used
+        # to produce "(no output)" and no other trace anywhere in the product.
+        _before = _snapshot_workdir_files(workdir)
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
@@ -10434,11 +10748,16 @@ def _bash_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        # A run that wrote its file and then hung still produced that file, so
+        # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
-            return _truncate(f"Execution timed out after {timeout} seconds.")
+            ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            return ended + (_created_file_sentinels(workdir, _before) if session_id else "")
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled."
+            return "Execution cancelled." + (
+                _created_file_sentinels(workdir, _before) if session_id else ""
+            )
 
         result = output or ""
         if proc.returncode != 0:
@@ -10446,7 +10765,14 @@ def _bash_exec(
         # Same missing-path healing as _python_exec.
         hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
-        return result + hint
+        result += hint
+        # Only for a chat that has an id. Without one every first turn shares
+        # the _default workdir, and a card pinned to it would later download
+        # whatever the next new chat wrote there. Reporting these needs a
+        # per-chat sandbox allocated before tools run, not this.
+        if session_id:
+            result += _created_file_sentinels(workdir, _before)
+        return result
 
     except Exception as e:
         return f"Execution error: {e}"

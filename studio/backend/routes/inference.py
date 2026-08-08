@@ -31,6 +31,7 @@ from dataclasses import replace
 
 
 import re as _re
+from urllib.parse import quote as _urlquote
 
 # Model size extraction (shared with core/inference/llama_cpp.py)
 from utils.models import extract_model_size_b as _extract_model_size_b
@@ -13533,7 +13534,128 @@ _SANDBOX_MEDIA_TYPES = {
 }
 
 
-@router.get("/sandbox/{session_id}/{filename}")
+def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
+    """The session's sandbox directory.
+
+    ``create=False`` resolves the path without materialising it, so a read-only
+    request cannot leave a directory behind for every id it is asked about.
+    """
+    from core.inference.tools import get_sandbox_workdir, resolve_sandbox_workdir
+
+    resolver = get_sandbox_workdir if create else resolve_sandbox_workdir
+    return os.path.realpath(resolver(session_id))
+
+
+# A tool may write into a subdirectory, so a single segment is not enough. Taken
+# from the snapshot walk rather than restated, so the card can never advertise a
+# file this route would then refuse.
+from core.inference.tools import (
+    _INTERNAL_SANDBOX_FILES,
+    _MAX_SANDBOX_PATH_SEGMENTS,
+    _MAX_SNAPSHOT_DIRS,
+    _MAX_SNAPSHOT_FILES,
+    _servable_segment,
+)
+
+
+def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
+    """(sandbox_dir, absolute path) for a user-supplied relative path.
+
+    Character allowlist per segment and realpath containment as the image route
+    has always done, factored out so the two callers cannot drift. Containment
+    is decided by the resolved path, never by the string, so a symlink pointing
+    out of the sandbox is refused like any other escape.
+    """
+    parts = [part for part in filename.replace("\\", "/").split("/") if part not in ("", ".")]
+    if not parts or len(parts) > _MAX_SANDBOX_PATH_SEGMENTS:
+        raise HTTPException(status_code = 404, detail = "Not found")
+    for part in parts:
+        # os.path.join would let an absolute segment (or a Windows drive) throw
+        # the prefix away; realpath containment catches it, this is the guard in front.
+        if part == ".." or os.path.isabs(part) or os.path.splitdrive(part)[0]:
+            raise HTTPException(status_code = 404, detail = "Not found")
+        if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", part):
+            raise HTTPException(status_code = 404, detail = "Not found")
+    sandbox_dir = _sandbox_dir_for(session_id, create = False)
+    file_path = os.path.realpath(os.path.join(sandbox_dir, *parts))
+    if file_path != sandbox_dir and not file_path.startswith(sandbox_dir + os.sep):
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Access denied",
+        )
+    return sandbox_dir, file_path
+
+
+def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
+    """Relative paths of the files in a sandbox, subdirectories included.
+
+    Bounded the same way the snapshot walk is, so a chat that unpacked an
+    archive cannot turn a listing into a filesystem crawl.
+    """
+    names: "list[str]" = []
+    visited = 0
+    for base, dirs, entries in os.walk(sandbox_dir):
+        visited += 1
+        if visited > _MAX_SNAPSHOT_DIRS:
+            return names
+        depth = base[len(sandbox_dir) :].count(os.sep)
+        # depth 0 is the sandbox itself, whose files are one segment.
+        # Segments the route would refuse are dropped here too, so the two walks agree.
+        dirs[:] = (
+            []
+            if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
+            else [d for d in sorted(dirs) if not d.startswith(".") and _servable_segment(d)]
+        )
+        for entry in sorted(entries):
+            # Mirrors the snapshot, dotfiles included.
+            if entry in _INTERNAL_SANDBOX_FILES or not _servable_segment(entry):
+                continue
+            path = os.path.join(base, entry)
+            try:
+                if not os.path.isfile(path) or os.path.islink(path):
+                    continue
+            except OSError:
+                continue
+            names.append(os.path.relpath(path, sandbox_dir).replace(os.sep, "/"))
+            if len(names) >= _MAX_SNAPSHOT_FILES:
+                return names
+    return names
+
+
+@router.get("/sandbox/{session_id}")
+async def list_sandbox_files(
+    session_id: str,
+    request: Request,
+    token: Optional[str] = None,
+):
+    """Where this chat's files are, and what is in there.
+
+    The path answers "where did my file go"; before this the only way to find
+    one was to search the filesystem by hand.
+    """
+    await _authenticate_header_or_query(request, token)
+
+    sandbox_dir = _sandbox_dir_for(session_id, create = False)
+    files = []
+    if os.path.isdir(sandbox_dir):
+        for name in _sandbox_listing_names(sandbox_dir):
+            path = os.path.join(sandbox_dir, name)
+            try:
+                stat = os.stat(path)
+            except OSError:
+                continue
+            files.append(
+                {
+                    "name": name,
+                    "size": stat.st_size,
+                    "modified": int(stat.st_mtime),
+                    "inline": os.path.splitext(name)[1].lower() in _SANDBOX_MEDIA_TYPES,
+                }
+            )
+    return {"path": sandbox_dir, "files": files}
+
+
+@router.get("/sandbox/{session_id}/{filename:path}")
 async def serve_sandbox_file(
     session_id: str,
     filename: str,
@@ -13541,7 +13663,12 @@ async def serve_sandbox_file(
     token: Optional[str] = None,
 ):
     """
-    Serve image files created by Python tool execution.
+    Serve a file a tool call created in this chat's sandbox.
+
+    Images keep their real media type and render inline. Everything else is an
+    opaque attachment: the model picks these filenames, so an inline text/html
+    or image/svg+xml would be same-origin script execution. nosniff plus a
+    Content-Disposition filename is what makes serving them safe.
 
     Accepts auth via an Authorization header or a query token. Studio uses an
     authenticated fetch and object URL; query auth remains for older clients.
@@ -13551,45 +13678,32 @@ async def serve_sandbox_file(
     # ── Authentication (header or query param) ──────────────────
     await _authenticate_header_or_query(request, token)
 
-    # ── Filename sanitization ───────────────────────────────────
+    # ── Filename sanitization + path containment ────────────────
     safe_filename = os.path.basename(filename)
-    if not safe_filename or safe_filename in (".", ".."):
-        raise HTTPException(status_code = 404, detail = "Not found")
-    # Defense-in-depth allowlist (clears CodeQL py/path-injection), still allowing
-    # names like "loss curve.png"; basename + extension + realpath below are the guards.
-    if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", safe_filename):
-        raise HTTPException(status_code = 404, detail = "Not found")
-
-    # ── Extension allowlist ─────────────────────────────────────
-    ext = os.path.splitext(safe_filename)[1].lower()
-    media_type = _SANDBOX_MEDIA_TYPES.get(ext)
-    if not media_type:
-        raise HTTPException(
-            status_code = status.HTTP_403_FORBIDDEN,
-            detail = "File type not allowed",
-        )
-
-    # ── Path containment check ──────────────────────────────────
-    from core.inference.tools import get_sandbox_workdir
-
-    sandbox_dir = os.path.realpath(get_sandbox_workdir(session_id))
-    file_path = os.path.realpath(os.path.join(sandbox_dir, safe_filename))
-    if file_path != sandbox_dir and not file_path.startswith(sandbox_dir + os.sep):
-        raise HTTPException(
-            status_code = status.HTTP_403_FORBIDDEN,
-            detail = "Access denied",
-        )
+    _sandbox_dir, file_path = _contained_sandbox_path(session_id, filename)
 
     if not os.path.isfile(file_path):
         raise HTTPException(status_code = 404, detail = "Not found")
 
+    ext = os.path.splitext(safe_filename)[1].lower()
+    media_type = _SANDBOX_MEDIA_TYPES.get(ext)
+    headers = {
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if media_type is None:
+        media_type = "application/octet-stream"
+        # RFC 5987: ASCII fallback plus UTF-8 form, so "ventas año.csv" saves.
+        ascii_name = safe_filename.encode("ascii", "replace").decode("ascii").replace('"', "_")
+        quoted = _urlquote(safe_filename)
+        headers["Content-Disposition"] = (
+            f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+        )
+
     return FileResponse(
         path = file_path,
         media_type = media_type,
-        headers = {
-            "Cache-Control": "private, no-store",
-            "X-Content-Type-Options": "nosniff",
-        },
+        headers = headers,
     )
 
 

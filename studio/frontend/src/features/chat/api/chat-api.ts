@@ -979,9 +979,12 @@ export async function countBackendChats(): Promise<number> {
 }
 
 export async function clearBackendChats(
-  options: { notify?: boolean } = {},
+  options: { notify?: boolean; deleteFiles?: boolean } = {},
 ): Promise<void> {
-  const response = await authFetch("/api/chat", { method: "DELETE" });
+  const response = await authFetch(
+    `/api/chat${options.deleteFiles ? "?delete_files=true" : ""}`,
+    { method: "DELETE" },
+  );
   await parseJsonOrThrow<unknown>(response);
   if (options.notify !== false) {
     notifyChatHistoryUpdated();
