@@ -2292,6 +2292,18 @@ const Composer: FC<{
     };
 
     const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      // The predecessor's requeue can land after the claim at setup, so keep
+      // watching rather than claiming once. Owners are keyed by the queue they
+      // left behind, with the composer identity as the value.
+      const orphaned = Object.entries(state.imageDropOwners).some(
+        ([key, owner]) => owner === identityAtSetup && key !== targetKey,
+      );
+      if (orphaned) {
+        useNativeIntentStore
+          .getState()
+          .claimImageAttachments(identityAtSetup, targetKey);
+        return;
+      }
       const pending =
         state.pendingImageAttachments[targetKey]?.length ?? 0;
       if (pending > 0) {
@@ -2854,6 +2866,31 @@ const Composer: FC<{
     [cancelQueuedSend],
   );
 
+  // A materializing image is a wait, not a refusal: park the send so it fires
+  // when the image lands. Both send gates route through here so they cannot
+  // disagree about which blocked submit is recoverable.
+  const parkIfWaitingOnImages = useCallback(() => {
+    if (
+      disabled ||
+      overlay ||
+      !hasMaterializingImageAttachments ||
+      !hasSendableContent ||
+      isComposingRef.current ||
+      hasPendingAttachments
+    ) {
+      return;
+    }
+    enqueueSend("images");
+  }, [
+    disabled,
+    overlay,
+    hasMaterializingImageAttachments,
+    hasSendableContent,
+    hasPendingAttachments,
+    isComposingRef,
+    enqueueSend,
+  ]);
+
   const shouldBlockSend = useCallback(
     () =>
       !hasSendableContent ||
@@ -2916,18 +2953,7 @@ const Composer: FC<{
     (event: { preventDefault: () => void }) => {
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
-        // A materializing image is a wait, not a refusal. Park the send the
-        // way indexing does, or the click is silently swallowed.
-        if (
-          !disabled &&
-          !overlay &&
-          hasMaterializingImageAttachments &&
-          hasSendableContent &&
-          !isComposingRef.current &&
-          !hasPendingAttachments
-        ) {
-          enqueueSend("images");
-        }
+        parkIfWaitingOnImages();
         return true;
       }
       if (indexingActive && !overlay) {
@@ -2943,10 +2969,7 @@ const Composer: FC<{
       indexingActive,
       overlay,
       enqueueSend,
-      hasMaterializingImageAttachments,
-      hasSendableContent,
-      hasPendingAttachments,
-      isComposingRef,
+      parkIfWaitingOnImages,
     ],
   );
 
@@ -3090,6 +3113,7 @@ const Composer: FC<{
       }
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
+        parkIfWaitingOnImages();
         return;
       }
 
@@ -3223,6 +3247,7 @@ const Composer: FC<{
       interceptSend,
       isResearchActive,
       overlay,
+      parkIfWaitingOnImages,
       promptQueueActive,
       promptQueueThreadIds,
       preStreamThreadIds,

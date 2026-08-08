@@ -315,6 +315,37 @@ test("a remounted composer claims the batch its predecessor left behind", () => 
   assert.deepEqual(after.imageDropOwners, {});
 });
 
+// The ordering the first claim missed: the predecessor's requeue can land after
+// the replacement composer has already claimed once.
+test("ownership recorded after a claim is still picked up", () => {
+  const store = useNativeIntentStore.getState();
+  const intent = {
+    id: "i2",
+    kind: "attachment",
+    path: {
+      token: "t2",
+      kind: "attachment",
+      displayLabel: "late.png",
+      allowedOperations: ["attach"],
+      expiresAtMs: Date.now() + 60_000,
+    },
+  } as unknown as NativeIntent;
+
+  // The replacement composer claims first, finding nothing.
+  store.claimImageAttachments("composer-3", "single:thread-9");
+  // Only then does the outgoing drain put its batch back and tag it.
+  store.addImageAttachments("single:new", [intent]);
+  store.noteImageDropOwner("single:new", "composer-3");
+
+  const owners = useNativeIntentStore.getState().imageDropOwners;
+  assert.equal(owners["single:new"], "composer-3", "the note survives for a later claim");
+
+  store.claimImageAttachments("composer-3", "single:thread-9");
+  const after = useNativeIntentStore.getState();
+  assert.equal(after.pendingImageAttachments["single:new"], undefined);
+  assert.deepEqual(after.pendingImageAttachments["single:thread-9"], [intent]);
+});
+
 test("document and image drop extensions stay disjoint", () => {
   // classifyDropPaths sums the two filters, so an overlap silently turns a
   // perfectly good drop into "unsupported".
