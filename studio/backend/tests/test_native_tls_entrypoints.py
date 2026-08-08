@@ -94,6 +94,27 @@ def test_probe_script_injects_before_it_downloads(relative, name):
     assert activate < script.find(".from_pretrained("), f"{name} downloads before activating"
 
 
+def test_backend_serves_no_tls_in_process():
+    """truststore's injection is client-side: a context built after it cannot serve TLS.
+
+    Studio serves plain HTTP on loopback, so this never bites, but an in-process
+    HTTPS listener added later would fail at handshake on macOS and Windows,
+    where activation is default-on. Catch it here instead.
+    """
+    server_side = ("PROTOCOL_TLS_SERVER", "ssl_certfile", "ssl_keyfile")
+    offenders = []
+    for path in _BACKEND.rglob("*.py"):
+        if "tests" in path.parts:
+            continue
+        text = path.read_text(encoding = "utf-8", errors = "ignore")
+        if any(marker in text for marker in server_side):
+            offenders.append(str(path.relative_to(_BACKEND)))
+    assert not offenders, (
+        "in-process TLS server found, which the native TLS injection breaks: "
+        + ", ".join(offenders)
+    )
+
+
 def test_prebuilt_installer_core_injects_at_import():
     """The llama.cpp / whisper.cpp installers are vendored standalone: no backend import."""
     source = (_BACKEND.parent / "prebuilt_core.py").read_text(encoding = "utf-8")

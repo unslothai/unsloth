@@ -33,6 +33,13 @@ overrides keep working: clients pass them as ``verify=...``/``cafile``, which
 additive rather than exclusive though, since truststore keeps the OS anchors
 alongside them; ``UNSLOTH_STUDIO_NATIVE_TLS=0`` is the way back to a bundle
 being the only trust root.
+
+Client side only. The injected class verifies a peer chain on every handshake,
+so an ``SSLContext`` built after activation cannot serve TLS -- a server socket
+has no peer chain and the handshake dies in truststore. Studio serves plain
+HTTP on loopback, and ``test_native_tls_entrypoints.py`` keeps it that way; a
+future in-process HTTPS listener needs ``truststore.SSLContext`` for outbound
+connections instead of this process-wide injection.
 """
 
 from __future__ import annotations
@@ -82,9 +89,11 @@ def activate_native_tls() -> bool:
     try:
         import truststore
         truststore.inject_into_ssl()
-    except Exception:
-        # The one failure this feature exists to prevent, so say so out loud.
-        _logger.warning("truststore injection failed; TLS keeps certifi defaults", exc_info = True)
+    except Exception as exc:  # noqa: BLE001
+        # Say it out loud: a silent certifi fallback is the state this exists to
+        # prevent. One line, no traceback -- on Python 3.9 truststore is simply
+        # absent by design, and every worker start would log the same stack.
+        _logger.warning("native TLS unavailable (%s); TLS keeps certifi defaults", exc)
         return False
     _activated = True
     return True
