@@ -52,6 +52,31 @@ const STT_ENGINE_LABELS: Record<SttEngine, string> = {
   gguf: "whisper.cpp",
 };
 
+/**
+ * Where a row's model is actually used, so clicking it goes there. Keyed on the
+ * runtime holding the weights rather than the kind: a Whisper checkpoint in the
+ * chat slot belongs to Chat, while the dictation sidecars belong to Voice.
+ *
+ * Dictation has no page of its own yet, so it opens the settings tab that
+ * drives it. Point it at the Audio page once that lands.
+ */
+export type LoadedModelTarget =
+  | { open: "route"; to: "/chat" | "/images" | "/video"; label: string }
+  | { open: "settings"; tab: "voice"; label: string };
+
+export function loadedModelTarget(source: LoadedModelSource): LoadedModelTarget {
+  switch (source) {
+    case "image":
+      return { open: "route", to: "/images", label: "Images" };
+    case "video":
+      return { open: "route", to: "/video", label: "Video" };
+    case "stt":
+      return { open: "settings", tab: "voice", label: "Voice settings" };
+    default:
+      return { open: "route", to: "/chat", label: "Chat" };
+  }
+}
+
 export const LOADED_MODEL_KIND_LABELS: Record<LoadedModelKind, string> = {
   text: "Chat",
   tts: "Speech",

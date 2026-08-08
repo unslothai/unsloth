@@ -13,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { hasAuthToken, mustChangePassword } from "@/features/auth";
+import { useSettingsDialogStore } from "@/features/settings";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -29,11 +30,13 @@ import {
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useRouterState } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useCallback } from "react";
 import {
   LOADED_MODEL_KIND_LABELS,
   type LoadedModelEntry,
   type LoadedModelKind,
+  loadedModelTarget,
   shortModelLabel,
 } from "./loaded-models-sources";
 import {
@@ -79,36 +82,50 @@ function LoadedModelRow({
   entry,
   ejecting,
   onEject,
+  onOpen,
 }: {
   entry: LoadedModelEntry;
   ejecting: boolean;
   onEject: () => void;
+  onOpen: () => void;
 }) {
   const label = shortModelLabel(entry.name);
+  const target = loadedModelTarget(entry.source);
   return (
     <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1 transition-colors hover:bg-foreground/[0.04]">
-      <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground/[0.05] text-muted-foreground">
-        <HugeiconsIcon
-          icon={KIND_ICONS[entry.kind]}
-          strokeWidth={1.75}
-          className="size-[15px]"
-        />
-      </span>
-      <div className="min-w-0 flex-1">
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <div className="truncate text-ui-12p5 font-medium text-foreground">
-              {label}
-            </div>
-          </TooltipTrigger>
-          <TooltipContent side="left" sideOffset={6}>
-            {entry.name}
-          </TooltipContent>
-        </Tooltip>
-        <div className="truncate text-ui-11 text-muted-foreground">
-          {rowSubtitle(entry)}
-        </div>
-      </div>
+      {/* Only the label half is the link: the eject button cannot nest inside it. */}
+      <Tooltip>
+        <TooltipTrigger asChild={true}>
+          <button
+            type="button"
+            aria-label={`${label}. Open ${target.label}`}
+            onClick={onOpen}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          >
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground/[0.05] text-muted-foreground">
+              <HugeiconsIcon
+                icon={KIND_ICONS[entry.kind]}
+                strokeWidth={1.75}
+                className="size-[15px]"
+              />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-ui-12p5 font-medium text-foreground">
+                {label}
+              </span>
+              <span className="block truncate text-ui-11 text-muted-foreground">
+                {rowSubtitle(entry)}
+              </span>
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="left" sideOffset={6}>
+          <span className="block">{entry.name}</span>
+          <span className="block text-muted-foreground">
+            Open {target.label}
+          </span>
+        </TooltipContent>
+      </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild={true}>
           <button
@@ -145,6 +162,24 @@ export function LoadedModelsIndicator({
   const enabled = showIndicator && canShowIndicator(pathname);
   const { entries, ejecting, eject } = useLoadedModels(enabled);
   const [collapsed, setCollapsed] = usePersistedToggle(COLLAPSED_KEY);
+  const navigate = useNavigate();
+  const openEntry = useCallback(
+    (entry: LoadedModelEntry) => {
+      const target = loadedModelTarget(entry.source);
+      if (target.open === "settings") {
+        // Read on click, not at render: the settings barrel reaches back here
+        // through the General tab, so the binding is only safe once both
+        // modules have finished evaluating. The /settings route is no use, it
+        // redirects home and would take the user off the page they are on.
+        useSettingsDialogStore.getState().openDialog(target.tab);
+        return;
+      }
+      // No search params: this only takes the user to the page, it does not
+      // start a new thread or reload anything.
+      void navigate({ to: target.to });
+    },
+    [navigate],
+  );
   const {
     position,
     size,
@@ -307,6 +342,7 @@ export function LoadedModelsIndicator({
                 entry={entry}
                 ejecting={ejecting.has(entry.id)}
                 onEject={() => void eject(entry)}
+                onOpen={() => openEntry(entry)}
               />
             ))}
           </div>

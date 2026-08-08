@@ -13,6 +13,7 @@ import {
   describeInferenceStatus,
   describeSttStatus,
   describeVideoStatus,
+  loadedModelTarget,
   mergeLoadedModels,
   shortModelLabel,
   verifyResident,
@@ -215,6 +216,47 @@ test("a GGUF image load does not print GGUF twice", () => {
     device: "cuda",
   } as never);
   assert.equal(image.detail, "flux · GGUF · cuda");
+});
+
+test("a row opens the page its runtime is used on", () => {
+  assert.deepEqual(loadedModelTarget("chat"), {
+    open: "route",
+    to: "/chat",
+    label: "Chat",
+  });
+  assert.deepEqual(loadedModelTarget("image"), {
+    open: "route",
+    to: "/images",
+    label: "Images",
+  });
+  assert.deepEqual(loadedModelTarget("video"), {
+    open: "route",
+    to: "/video",
+    label: "Video",
+  });
+});
+
+// Dictation has no page of its own, so it opens the tab that drives it.
+test("a dictation row opens Voice settings", () => {
+  assert.deepEqual(loadedModelTarget("stt"), {
+    open: "settings",
+    tab: "voice",
+    label: "Voice settings",
+  });
+});
+
+// A Whisper checkpoint in the chat slot is Chat's, not dictation's: the target
+// follows the runtime holding the weights, not what the model does.
+test("the target follows the runtime, not the kind", () => {
+  const [chatWhisper] = describeInferenceStatus(
+    inferenceStatus({
+      active_model: "unsloth/whisper-large-v3",
+      is_audio: true,
+      audio_type: "whisper",
+    }),
+  );
+  assert.equal(chatWhisper.kind, "stt");
+  assert.equal(loadedModelTarget(chatWhisper.source).label, "Chat");
 });
 
 test("every runtime's rows appear together, in a fixed order", () => {
