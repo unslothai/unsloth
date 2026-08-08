@@ -407,15 +407,20 @@ def test_a_live_owner_survives_an_unreadable_identity(tmp_path, monkeypatch):
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
-        (directory / "123456.json").write_text(json.dumps({
-            "owner_pid": os.getppid(),  # alive
-            "owner_identity": "recorded-when-it-started",
-            "children": [{"pid": child.pid, "identity": pl._pid_identity(child.pid)}],
-        }))
+        (directory / "123456.json").write_text(
+            json.dumps(
+                {
+                    "owner_pid": os.getppid(),  # alive
+                    "owner_identity": "recorded-when-it-started",
+                    "children": [{"pid": child.pid, "identity": pl._pid_identity(child.pid)}],
+                }
+            )
+        )
         # The lookup fails only for the owner, as a transient `ps` error would.
         real = pl._pid_identity
         monkeypatch.setattr(
-            pl, "_pid_identity",
+            pl,
+            "_pid_identity",
             lambda pid: None if pid == os.getppid() else real(pid),
         )
         assert pl.reap_recorded_children() == []
@@ -429,8 +434,9 @@ def test_an_unverifiable_captured_pid_is_not_taskkilled(monkeypatch):
     from core.inference import tools
 
     ran = []
-    monkeypatch.setattr(tools, "_windows_taskkill_tree",
-                        lambda pid, identity = None: ran.append(pid) or True)
+    monkeypatch.setattr(
+        tools, "_windows_taskkill_tree", lambda pid, identity = None: ran.append(pid) or True
+    )
     tools._killpg_captured(("windows-tree", 4321, None))
     assert ran == [], "signalled a pid it could not verify"
     tools._killpg_captured(("windows-tree", 4321, "created-at-t0"))

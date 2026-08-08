@@ -586,11 +586,13 @@ def _pid_is_zombie(pid: int) -> bool:
             return False
     try:
         import subprocess
-
         out = subprocess.run(
             ["ps", "-o", "state=", "-p", str(pid)],
-            capture_output = True, text = True, encoding = "utf-8",
-            errors = "replace", timeout = 5,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
         )
         return (out.stdout or "").strip().startswith("Z")
     except Exception:
