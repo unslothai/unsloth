@@ -117,7 +117,7 @@ def test_executes_tool_continues_and_aggregates_usage(monkeypatch):
         "tool",
     ]
     assert sum('"type": "tool_start"' in line for line in output) == 1
-    assert any('"awaiting_confirmation": false' in line for line in output)
+    assert any('"awaiting_confirmation": true' in line for line in output)
     assert sum('"type": "tool_end"' in line for line in output) == 1
     usage = [payload["usage"] for payload in _payloads(output) if payload.get("usage")]
     assert usage == [{"prompt_tokens": 19, "completion_tokens": 7, "total_tokens": 26}]
@@ -151,7 +151,7 @@ def test_tool_round_requires_an_explicit_tool_finish(monkeypatch, terminal):
     assert executed == []
 
 
-def test_dropped_over_budget_call_unlinks_openai_response_and_keeps_gemini_parts(monkeypatch):
+def test_native_batch_over_budget_executes_nothing(monkeypatch):
     executed = []
     monkeypatch.setattr(
         loop_mod,
@@ -199,24 +199,12 @@ def test_dropped_over_budget_call_unlinks_openai_response_and_keeps_gemini_parts
         ]
     )
 
-    asyncio.run(_collect(client, max_tool_iterations = 1))
+    asyncio.run(_collect(client, max_tool_iterations = 1, require_complete_tool_batch = True))
 
-    assert executed == [{"query": 0}]
-    assistant = [
-        message for message in client.calls[1]["messages"] if message["role"] == "assistant"
-    ][-1]
-    assert [call["id"] for call in assistant["tool_calls"]] == ["call_0"]
-    assert "extra_content" not in assistant["tool_calls"][0]
-    assert assistant["extra_content"]["google"] == {
-        "hosted_parts": [native],
-        "thought_signature": "sig",
-    }
-    assert assistant["content"] == [
-        {"type": "compaction", "content": "summary"},
-        {"type": "text", "text": ""},
-    ]
-    assert assistant["reasoning_details"] == reasoning
-    assert assistant["reasoning_content"] == "think"
+    assert executed == []
+    assert not any(message.get("tool_calls") for message in client.calls[1]["messages"])
+    assert client.calls[1]["tools"] is None
+    assert "final answer" in client.calls[1]["messages"][-1]["content"]
 
 
 def test_usage_precedes_provider_error(monkeypatch):

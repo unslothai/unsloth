@@ -10004,6 +10004,7 @@ async def _proxy_to_external_provider(
         and not _external_tool_choice_disabled
         and (_external_tools_on or _external_mcp_allowed)
     )
+    _external_studio_tool_requested = payload.enable_tools is True or bool(payload.mcp_enabled)
     _external_studio_tools = (
         await _select_request_tools(
             payload,
@@ -10021,7 +10022,14 @@ async def _proxy_to_external_provider(
         and isinstance(tool.get("function"), dict)
         and isinstance(tool["function"].get("name"), str)
     }
-    if _external_studio_capable and payload.enabled_tools:
+    if (
+        _external_studio_capable
+        and payload.enabled_tools
+        and (
+            _external_studio_tool_intent
+            or (_external_studio_tool_requested and _external_tool_policy is False)
+        )
+    ):
         _external_studio_tool_names.update(
             tool["function"]["name"]
             for tool in await _select_request_tools(
@@ -10181,6 +10189,7 @@ async def _proxy_to_external_provider(
                     if _is_native_gemini_base(provider_type, base_url)
                     else payload.parallel_tool_calls
                 ),
+                require_complete_tool_batch = _is_native_gemini_base(provider_type, base_url),
             )
             _external_tracker = _TrackedCancel.for_payload(
                 cancel_event,

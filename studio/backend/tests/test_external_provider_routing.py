@@ -91,7 +91,7 @@ def _payload(**kwargs):
         provider_base_url = "https://attacker.invalid/v1",
         enable_tools = kwargs.pop("enable_tools", True),
         mcp_enabled = kwargs.pop("mcp_enabled", True),
-        confirm_tool_calls = True,
+        confirm_tool_calls = kwargs.pop("confirm_tool_calls", True),
         **kwargs,
     )
 
@@ -132,7 +132,7 @@ def test_saved_opt_in_owns_routing_and_empty_selection_falls_through(monkeypatch
             _run(_payload(stream = False))
 
 
-def test_process_policy_can_force_saved_external_tools_on(monkeypatch):
+def test_process_policy_and_request_intent_control_saved_external_tools(monkeypatch):
     captured = _configure(monkeypatch, [TOOL])
     monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: True)
 
@@ -143,6 +143,19 @@ def test_process_policy_can_force_saved_external_tools_on(monkeypatch):
     monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: False)
     _run(_payload(enabled_tools = [TOOL["function"]["name"]]))
     assert "managed" not in captured and captured["plain"]["enabled_tools"] == []
+    captured.clear()
+    monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: None)
+    _run(
+        _payload(
+            enable_tools = False,
+            mcp_enabled = False,
+            confirm_tool_calls = None,
+            enabled_tools = [TOOL["function"]["name"]],
+        )
+    )
+    assert "managed" not in captured and captured["plain"]["enabled_tools"] == [
+        TOOL["function"]["name"]
+    ]
 
 
 def test_native_gemini_image_models_skip_managed_tools(monkeypatch):

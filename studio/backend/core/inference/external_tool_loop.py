@@ -298,6 +298,7 @@ async def stream_external_chat_with_tools(
     permission_mode: str | None = None,
     auto_heal_tool_calls: bool = True,
     parallel_tool_calls: bool | None = None,
+    require_complete_tool_batch: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream an external chat while executing Studio tools server-side."""
 
@@ -306,7 +307,7 @@ async def stream_external_chat_with_tools(
     elif bypass_permissions:
         permission_mode = "full"
     elif permission_mode is None:
-        permission_mode = "auto"
+        permission_mode = "ask" if confirm_tool_calls else "auto"
     elif permission_mode not in ("ask", "auto", "off"):
         permission_mode = "ask"
 
@@ -507,14 +508,20 @@ async def stream_external_chat_with_tools(
             zip(tool_controller.prepare_batch(normalized_calls), normalized_calls)
         )
         remaining_calls = max(0, max_calls - executed_calls)
+        batch_exceeds_budget = (
+            require_complete_tool_batch
+            and sum(decision.should_execute for decision, _call in prepared_pairs) > remaining_calls
+        )
         decision_pairs: list[tuple[Any, dict[str, Any]]] = []
         retained_executable = 0
         for decision, call in prepared_pairs:
             if decision.should_execute:
-                if retained_executable >= remaining_calls:
+                if batch_exceeds_budget or retained_executable >= remaining_calls:
                     continue
                 retained_executable += 1
             decision_pairs.append((decision, call))
+        if batch_exceeds_budget:
+            executed_calls = max_calls
         decisions = [decision for decision, _call in decision_pairs]
         executable_pairs = [
             (decision, call) for decision, call in decision_pairs if decision.should_execute
