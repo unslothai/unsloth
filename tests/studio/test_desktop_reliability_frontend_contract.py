@@ -69,6 +69,12 @@ def _chrome_style_blocks(source: str) -> dict[str, dict[str, str]]:
     }
 
 
+def _titlebar_nav_button_px(source: str) -> int | None:
+    """The navigation button's box, read off the class string that sizes it."""
+    match = re.search(r"const buttonClass =\s*\n?\s*\"[^\"]*?size-\[(\d+)px\]", source, re.S)
+    return int(match.group(1)) if match else None
+
+
 def _px(value: str | None) -> int | None:
     """*value* as whole pixels, or None if it is not a px literal (rem, calc, absent)."""
     match = re.fullmatch(r"(\d+)px", (value or "").strip())
@@ -515,7 +521,11 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
         encoding = "utf-8"
     )
-    # The nudge has to move the navigation without pushing it out of the titlebar it sits in.
+    # The nudge has to move the navigation without pushing it out of the titlebar it sits
+    # in, so the button box travels with it. The container's mt-1 is deliberately not in
+    # the sum: translate-y is visual, and the margin already seats the box in the row.
+    button = _titlebar_nav_button_px(TITLEBAR.read_text(encoding = "utf-8"))
+    assert button is not None, "navigation button size no longer readable from buttonClass"
     blocks = _chrome_style_blocks(APP_PROVIDER.read_text(encoding = "utf-8"))
     nudged = {
         name: values
@@ -527,7 +537,8 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         offset = _px(values["--studio-titlebar-navigation-offset-y"])
         titlebar = _px(values.get("--studio-desktop-titlebar-height"))
         assert offset is not None and offset > 0, (name, values)
-        assert titlebar is not None and offset < titlebar, (name, offset, titlebar)
+        assert titlebar is not None, (name, values)
+        assert offset + button <= titlebar, (name, offset, button, titlebar)
     assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
     assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
 
