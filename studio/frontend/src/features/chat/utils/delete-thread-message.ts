@@ -18,11 +18,16 @@ import type {
   ExportedMessageRepository,
   ThreadMessage,
 } from "@assistant-ui/react";
+import { listChatMessages } from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import {
   ensureStoredChatThread,
   syncStoredChatMessages,
 } from "./chat-history-storage";
+import {
+  hasResearchMetadata,
+  reconcileServerManagedMessages,
+} from "./research-message-sync";
 
 function cloneContent(
   content: ThreadMessage["content"],
@@ -77,6 +82,18 @@ export function exportedItemToRecord(
   };
 }
 
+async function withStoredResearchMessages(
+  remoteId: string,
+  records: MessageRecord[],
+): Promise<MessageRecord[]> {
+  if (!records.some((record) => hasResearchMetadata(record.metadata))) {
+    return records;
+  }
+  // The backend copy, not the legacy-merged one: only what it stored can be echoed back to it.
+  const stored = await listChatMessages(remoteId).catch(() => []);
+  return reconcileServerManagedMessages(records, stored);
+}
+
 /**
  * Persist exported messages, pruning only for explicit delete flows.
  */
@@ -86,11 +103,12 @@ export async function syncExportedRepositoryToBackend(
   options: { pruneMissing?: boolean } = {},
 ): Promise<void> {
   await ensureStoredChatThread(remoteId);
+  const records = exp.messages.map(({ message, parentId }) =>
+    exportedItemToRecord(remoteId, parentId, message),
+  );
   await syncStoredChatMessages(
     remoteId,
-    exp.messages.map(({ message, parentId }) =>
-      exportedItemToRecord(remoteId, parentId, message),
-    ),
+    await withStoredResearchMessages(remoteId, records),
     { pruneMissing: options.pruneMissing },
   );
 }

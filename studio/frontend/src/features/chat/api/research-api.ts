@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { authFetch } from "@/features/auth";
+import { authFetch } from "@/features/auth/api";
 import type {
   CreateResearchRunInput,
   ResearchEvent,

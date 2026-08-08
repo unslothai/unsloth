@@ -58,6 +58,15 @@ _DISABLE_DNS_PINNING_ENV = "UNSLOTH_STUDIO_DISABLE_DNS_PINNING"
 # Splits the UI source-map from the result; loops strip it (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
 
+# A search that ran but produced nothing usable. Not a tool error, so callers that judge a step
+# by its evidence (deep research) have to test for these explicitly.
+EMPTY_SEARCH_RESULTS = (
+    "No results found.",
+    "No results found within the website access limits.",
+)
+# ddgs signals an empty sweep by raising rather than returning [].
+_DDGS_EMPTY_SWEEP = "No results found"
+
 # Import these at module level so the preexec_fn closure triggers no imports in
 # the forked child (which can deadlock multi-threaded servers).
 _libc = None
@@ -8855,6 +8864,28 @@ def _fetch_page_text(
     return _truncate_page_text(html_to_markdown(body, main_content = True), max_chars)
 
 
+def _search_failure_message(exc: BaseException, timeout: int) -> str:
+    """Turn a ddgs exception into text the model and the UI can act on.
+
+    ddgs raises for an empty sweep as well as for refusals, so an unclassified
+    ``Search failed: {exc}`` reports "nothing matched" and "every engine throttled us" the same
+    way. Matched by class name because ddgs is imported lazily and tests stub the module.
+    """
+    name = type(exc).__name__
+    if name == "RatelimitException":
+        return (
+            "Search failed: the search engines are rate limiting this machine. Wait a minute "
+            'before searching again, or read a known page directly with {"url": "<URL>"}.'
+        )
+    if name == "TimeoutException":
+        budget = f" within {timeout}s" if timeout else ""
+        return f"Search failed: the search engines did not respond{budget}."
+    # Only the base exception, so a subclass that happens to quote the phrase stays an error.
+    if name == "DDGSException" and _DDGS_EMPTY_SWEEP in str(exc):
+        return EMPTY_SEARCH_RESULTS[0]
+    return f"Search failed: {exc}"
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -8863,9 +8894,10 @@ def _web_search(
     cancel_event = None,
     website_policy: dict | None = None,
 ) -> str:
-    """Search the web using DuckDuckGo and return formatted results.
+    """Search the web and return formatted results.
 
-    If ``url`` is provided, fetches that page directly instead of searching.
+    ddgs fans the query out across its search engines, so a single engine refusing is already
+    covered. If ``url`` is provided, fetches that page directly instead of searching.
     """
     # Direct URL fetch mode.
     if url and url.strip():
@@ -8902,7 +8934,7 @@ def _web_search(
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
-            return "No results found."
+            return EMPTY_SEARCH_RESULTS[0]
         parts = []
         for r in results:
             if len(parts) >= max_results:
@@ -8915,7 +8947,7 @@ def _web_search(
             snippet = " ".join(str(r.get("body") or "").split())
             parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
         if not parts:
-            return "No results found within the website access limits."
+            return EMPTY_SEARCH_RESULTS[1]
         text = "\n\n---\n\n".join(parts)
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
@@ -8924,7 +8956,7 @@ def _web_search(
         )
         return text
     except Exception as e:
-        return f"Search failed: {e}"
+        return _search_failure_message(e, timeout)
 
 
 def _check_signal_escape_patterns(code: str):

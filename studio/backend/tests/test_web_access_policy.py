@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.inference import tools
+from core.inference.tool_loop_controller import is_tool_error
 from core.inference.web_access_policy import (
     check_url_access,
     normalize_website_policy,
@@ -263,3 +264,45 @@ def test_direct_fetch_rechecks_every_redirect_before_dns(monkeypatch):
     )
     assert "Blocked: website access policy disallows example.com" in result
     assert resolved == [("arxiv.org", 443)]
+
+
+def _search_with_raising_ddgs(monkeypatch, exc: Exception) -> str:
+    class FakeDDGS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def text(self, query, max_results = 5):
+            raise exc
+
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    return tools._web_search("q", timeout = 7)
+
+
+def test_rate_limited_search_says_so_instead_of_leaking_the_exception(monkeypatch):
+    # Every engine refusing used to read as "Search failed: RatelimitException(...)", which told
+    # neither the model nor the user that waiting or reading a page directly would work.
+    class RatelimitException(Exception):
+        pass
+
+    result = _search_with_raising_ddgs(monkeypatch, RatelimitException("all engines"))
+    assert "rate limiting this machine" in result
+    assert is_tool_error(result) is True
+
+
+def test_search_timeout_reports_the_budget_it_exceeded(monkeypatch):
+    class TimeoutException(Exception):
+        pass
+
+    result = _search_with_raising_ddgs(monkeypatch, TimeoutException("timed out"))
+    assert result == "Search failed: the search engines did not respond within 7s."
+
+
+def test_empty_sweep_is_reported_as_no_results_not_as_a_failure(monkeypatch):
+    # ddgs raises instead of returning [], so a search that simply matched nothing arrived
+    # prefixed "Search failed" and read like a broken tool.
+    class DDGSException(Exception):
+        pass
+
+    result = _search_with_raising_ddgs(monkeypatch, DDGSException("No results found."))
+    assert result == tools.EMPTY_SEARCH_RESULTS[0]
+    assert not is_tool_error(result)
