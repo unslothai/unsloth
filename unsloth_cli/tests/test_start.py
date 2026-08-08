@@ -514,6 +514,19 @@ def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
     )
 
 
+def test_vibe_install_hint_is_uv_tool_on_windows(monkeypatch):
+    # `curl | bash` cannot run under PowerShell (no native curl+bash); Vibe's
+    # upstream README documents `uv tool install mistral-vibe` for Windows,
+    # after installing uv separately via `irm https://astral.sh/uv/install.ps1`.
+    monkeypatch.setattr(start.os, "name", "nt")
+    assert start._vibe_install_hint() == "uv tool install mistral-vibe"
+
+
+def test_vibe_install_hint_is_bash_on_posix(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "posix")
+    assert start._vibe_install_hint() == "curl -LsSf https://mistral.ai/vibe/install.sh | bash"
+
+
 def test_hermes_install_hint_is_bash_on_posix(monkeypatch):
     monkeypatch.setattr(start.os, "name", "posix")
 
@@ -4896,6 +4909,59 @@ def test_write_vibe_config_idempotent(tmp_path):
     before = path.read_text()
     start.write_vibe_config(BASE, "sk-unsloth-abc", MODEL, path)
     assert path.read_text() == before
+
+
+def test_write_vibe_config_pins_auto_compact_threshold_from_context_length(tmp_path):
+    # Vibe's per-model auto_compact_threshold defaults to 200,000 tokens, far
+    # larger than the 131,072-token context of MODEL. Without an override, a long
+    # vibe session would keep growing until Unsloth's /v1 server rejects the
+    # request. Pin the threshold at 90% of the real window (matches hermes'
+    # compaction headroom) so vibe compacts before overflow. The field lives
+    # inside [[models]] because vibe's compaction is per-model.
+    path = tmp_path / ".vibe" / "config.toml"
+    start.write_vibe_config(BASE, "sk-unsloth-abc", MODEL, path)
+    parsed = _parse_toml(path.read_text())
+    expected = int(MODEL["context_length"] * 0.9)
+    assert parsed["models"][0]["auto_compact_threshold"] == expected
+
+
+def test_write_vibe_config_omits_auto_compact_threshold_when_no_context_length(tmp_path):
+    # Models fetched from a raw /v1/models list may not carry context_length
+    # (OpenAI's schema has no context field). When Unsloth cannot derive a real
+    # window, defer to vibe's built-in default rather than emit a bogus value.
+    model_no_ctx = {"id": "unsloth/no-context-length-model"}
+    path = tmp_path / ".vibe" / "config.toml"
+    start.write_vibe_config(BASE, "sk-unsloth-abc", model_no_ctx, path)
+    parsed = _parse_toml(path.read_text())
+    assert "auto_compact_threshold" not in parsed["models"][0]
+
+
+def test_write_vibe_config_derives_threshold_from_max_context_length_fallback(tmp_path):
+    # Some model entries expose the window under `max_context_length` instead of
+    # `context_length`; write_vibe_config must accept either (mirrors the fallback
+    # used by write_hermes_config / write_pi_config / write_opencode_config).
+    model_alt = {"id": "unsloth/alt-key-model", "max_context_length": 32768}
+    path = tmp_path / ".vibe" / "config.toml"
+    start.write_vibe_config(BASE, "sk-unsloth-abc", model_alt, path)
+    parsed = _parse_toml(path.read_text())
+    assert parsed["models"][0]["auto_compact_threshold"] == int(32768 * 0.9)
+
+
+def test_connect_vibe_warns_when_project_vibe_config_exists(fake_studio, tmp_path, monkeypatch):
+    # Vibe's ProjectConfigLayer (trusted `./.vibe/config.toml` in CWD) wins over
+    # UserConfigLayer ($VIBE_HOME/config.toml) and over the VIBE_* env-var layer,
+    # and there is no upstream flag/env var to bypass it. Warn the user so they
+    # can remove the file or launch from a different directory if the vibe
+    # session ends up pointed at the wrong model/provider.
+    project_dir = tmp_path / "project"
+    (project_dir / ".vibe").mkdir(parents = True)
+    (project_dir / ".vibe" / "config.toml").write_text("active_model = \"user-project-model\"\n")
+    monkeypatch.chdir(project_dir)
+    result = CliRunner().invoke(start.start_app, ["vibe", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    # The warning must name the file so the user can act on it (delete/untrust/move).
+    assert str(project_dir / ".vibe" / "config.toml") in result.output
+    assert "ProjectConfigLayer" in result.output or "override" in result.output
 
 
 def test_connect_vibe_no_launch(fake_studio, tmp_path):

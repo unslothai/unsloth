@@ -128,6 +128,14 @@ _OPENCODE_PROVIDER = "unsloth-studio"
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth-local"
 _VIBE_ENV_KEY = "UNSLOTH_API_KEY"
+# Vibe's README documents two install paths: `curl | bash` for POSIX, and a
+# two-step PowerShell + `uv tool install mistral-vibe` for Windows. Piping the
+# POSIX recipe into PowerShell won't work (curl/bash are not native shells on
+# Windows), so gate on os.name like _hermes_install_hint does. `uv tool install`
+# assumes uv is already installed; Windows users without uv see the two-step
+# recipe printed in _install_agent's failure message.
+_VIBE_POSIX_INSTALL_HINT = "curl -LsSf https://mistral.ai/vibe/install.sh | bash"
+_VIBE_WINDOWS_INSTALL_HINT = "uv tool install mistral-vibe"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
@@ -449,6 +457,14 @@ def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], 
 
 def _hermes_install_hint() -> str:
     return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
+
+
+def _vibe_install_hint() -> str:
+    # Vibe's upstream README uses `curl | bash` on POSIX and `uv tool install
+    # mistral-vibe` on Windows (after installing uv via PowerShell). Piping the
+    # POSIX curl recipe under PowerShell would fail (no native curl+bash), so
+    # switch on os.name the same way _hermes_install_hint does.
+    return _VIBE_WINDOWS_INSTALL_HINT if os.name == "nt" else _VIBE_POSIX_INSTALL_HINT
 
 
 def _npm_install_hint(package: str, *, ignore_scripts: bool = False) -> str:
@@ -4261,6 +4277,17 @@ def write_vibe_config(
         f'provider = "{_VIBE_PROVIDER}"',
         f'alias = "{_VIBE_MODEL_ALIAS}"',
     ]
+    # Vibe's per-model `auto_compact_threshold` defaults to 200,000 tokens, far
+    # larger than a small local GGUF window. When the real window is below that
+    # default, vibe would keep the session growing until the Unsloth /v1 server
+    # rejects the request for exceeding the model context. Derive the threshold
+    # at 90% of the real window (matches the compaction headroom used for
+    # hermes) so vibe compacts before overflowing smaller local models.
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        window = int(window)
+        threshold = max(1, int(window * 0.9))
+        lines.append(f"auto_compact_threshold = {threshold}")
     text = "\n".join(lines) + "\n"
     path.parent.mkdir(parents = True, exist_ok = True)
     if not path.exists() or path.read_text(encoding = "utf-8") != text:
@@ -5038,8 +5065,30 @@ def vibe(
     # delegate to (unlike Claude/Codex/OpenCode/Pi), so reject --as-subagent early
     # instead of letting the flag reach the vibe binary.
     _reject_as_subagent("vibe", ctx.args)
-    # Vibe ships an official installer; match the one-line recipe from the README.
-    install_hint = "curl -LsSf https://mistral.ai/vibe/install.sh | bash"
+    # Vibe's config precedence puts ProjectConfigLayer (trusted `./.vibe/config.toml`
+    # in the CWD) ABOVE UserConfigLayer ($VIBE_HOME/config.toml) and above the
+    # `VIBE_*` env-var layer. If the user runs `unsloth start vibe` from a repo
+    # whose ./.vibe/config.toml has been trusted (via Vibe's trust store), that
+    # config's active_model + [[providers]] would silently override our session
+    # config -- pointing vibe at the project's model instead of Unsloth /v1.
+    # There is no CLI flag or env var to bypass ProjectConfigLayer upstream, so
+    # the safest we can do is warn: the user can untrust the directory in Vibe's
+    # trust store, or run `unsloth start vibe` from a different working directory.
+    project_config = Path.cwd() / ".vibe" / "config.toml"
+    if project_config.exists():
+        typer.echo(
+            f"Warning: {project_config} exists and, if it is a trusted Vibe project "
+            "config, will override the session config Unsloth generates (Vibe's "
+            "ProjectConfigLayer wins over VIBE_HOME). If the vibe session uses the "
+            "wrong model/provider, remove that file or launch from a different "
+            "directory.",
+            err = True,
+        )
+    # Vibe ships an official installer per platform: `curl | bash` for POSIX,
+    # `uv tool install mistral-vibe` for Windows (piping curl into PowerShell
+    # would fail because PowerShell has no native curl+bash). _vibe_install_hint
+    # routes on os.name the same way _hermes_install_hint does.
+    install_hint = _vibe_install_hint()
     _require_agent_for_launch("vibe", install_hint, launch)
     base, key, entry = _connect(
         api_key,
