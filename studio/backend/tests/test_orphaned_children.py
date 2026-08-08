@@ -774,5 +774,110 @@ def test_every_restart_path_checks_the_rearm():
         assert "cleanupRearmedRef.current" in block, f"{name} restarts without checking the re-arm"
 
 
+def test_forgetting_a_leader_keeps_its_live_group(tmp_path, monkeypatch):
+    """The shim can exit before the visual server it started; dropping the
+    record then loses the only handle on that group."""
+    from utils import process_lifetime as pl
+
+    if pl._is_windows():
+        pytest.skip("POSIX only")
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    pl._tracked_pids.clear()
+    pl._tracked_pgids.clear()
+
+    marker = tmp_path / "grandchild.pid"
+    leader = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys, pathlib\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            f"pathlib.Path({str(marker)!r}).write_text(str(child.pid))\n",
+        ],
+        start_new_session = True,
+    )
+    try:
+        pl.adopt_pid(leader.pid)
+        assert pl._tracked_pgids.get(leader.pid) == leader.pid
+        leader.wait(timeout = 30)
+        for _ in range(100):
+            if marker.is_file():
+                break
+            time.sleep(0.1)
+        grandchild = int(marker.read_text())
+
+        pl.forget_pid(leader.pid)
+        assert leader.pid in pl._tracked_pids, "the group was dropped with its dead leader"
+
+        # And the backstop then takes it.
+        pl.terminate_all(timeout = 5.0)
+        time.sleep(0.5)
+        assert not _alive(grandchild)
+    finally:
+        _kill(leader.pid)
+
+
+def test_forgetting_a_leader_with_no_group_left_drops_it(tmp_path, monkeypatch):
+    from utils import process_lifetime as pl
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    pl._tracked_pids.clear()
+    pl._tracked_pgids.clear()
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session = True)
+    child.wait(timeout = 30)
+    pl.adopt_pid(child.pid)
+    pl.forget_pid(child.pid)
+    assert child.pid not in pl._tracked_pids
+    assert child.pid not in pl._tracked_pgids
+
+
+def test_the_windows_backstop_takes_the_whole_tree(tmp_path, monkeypatch):
+    """Same gap the startup sweep had: killing the leader alone strands its
+    workers, and clear_breadcrumb removes the record straight after."""
+    from utils import process_lifetime as pl
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "same")
+    monkeypatch.setattr(pl, "_identity_or_none", lambda pid: "same")
+    trees = []
+    monkeypatch.setattr(pl, "_windows_terminate_tree", trees.append)
+    killed_singly = []
+    monkeypatch.setattr(pl.os, "kill", lambda pid, sig: killed_singly.append(pid))
+
+    pl._tracked_pids.clear()
+    pl._tracked_pgids.clear()
+    pl._tracked_pids[4242] = "same"
+    pl.terminate_all(timeout = 1.0)
+    assert trees == [4242]
+    assert killed_singly == [], "the leader was signalled on its own"
+
+
+def test_the_windows_identity_probe_prototypes_every_handle_call():
+    """Without argtypes ctypes marshals a 64-bit HANDLE as c_int, so the handle
+    is truncated and the probe leaks one per call."""
+    import ast
+    import inspect
+
+    from utils import process_lifetime as pl
+
+    source = inspect.getsource(pl._pid_identity)
+    tree = ast.parse(source)
+    prototyped = {
+        node.targets[0].value.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Attribute)
+        and node.targets[0].attr in ("argtypes", "restype")
+        and isinstance(node.targets[0].value, ast.Attribute)
+    }
+    for call in ("OpenProcess", "GetProcessTimes", "CloseHandle"):
+        assert call in prototyped, f"{call} is called without a signature"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

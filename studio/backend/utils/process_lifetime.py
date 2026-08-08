@@ -451,6 +451,8 @@ def _pid_identity(pid: int) -> Optional[str]:
                 ctypes.POINTER(wintypes.FILETIME)
             ] * 4
             kernel32.GetProcessTimes.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
             handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if not handle:
                 return None
@@ -492,12 +494,29 @@ def _pid_identity(pid: int) -> Optional[str]:
 
 def forget_pid(pid: Optional[int]) -> None:
     """Stop tracking a child the owner has reaped, so terminate_all never
-    signals a recycled pid."""
-    if pid:
-        with _record_lock:
-            _tracked_pids.pop(pid, None)
-            _tracked_pgids.pop(pid, None)
-            _write_breadcrumb()
+    signals a recycled pid.
+
+    Kept when its process group still has members: the shim can exit before the
+    visual server it started, and this record is the only handle on that group.
+    """
+    if not pid:
+        return
+    with _record_lock:
+        if _group_has_members(_tracked_pgids.get(pid)):
+            return
+        _tracked_pids.pop(pid, None)
+        _tracked_pgids.pop(pid, None)
+        _write_breadcrumb()
+
+
+def _group_has_members(pgid: object) -> bool:
+    if not isinstance(pgid, int) or _is_windows() or not hasattr(os, "killpg"):
+        return False
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except Exception:
+        return False
 
 
 # ── Crash-survivable child record ──
@@ -708,7 +727,9 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
             continue
         try:
             if _is_windows():
-                os.kill(pid, signal.SIGTERM)
+                # The tree: a leader killed alone strands its workers, and the
+                # record naming them is cleared right after.
+                _windows_terminate_tree(pid)
             else:
                 _posix_terminate(pid, timeout)
         except Exception:
