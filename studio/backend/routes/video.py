@@ -211,9 +211,29 @@ async def generate_video(
     generate + gallery-persist pipeline; the terminal outcome (completed with the
     saved record / failed with a client-safe error) arrives via generate-progress."""
     from core.inference.video import get_video_backend
-    from core.inference.video_families import VIDEO_GENERATION_BUSY_MSG, VIDEO_NOT_LOADED_MSG
+    from core.inference.video_families import (
+        VIDEO_GENERATION_BUSY_MSG,
+        VIDEO_NOT_LOADED_MSG,
+        validate_video_request_shape,
+    )
 
     backend = get_video_backend()
+    # The request bounds on VideoGenerateRequest are a coarse outer guard; the real rule is the LOADED
+    # family's (its presets and frame lattice), so enforce it here instead of letting the backend snap
+    # silently to a shape the checkpoint was never trained for. Unloaded (or a family with no declared
+    # presets) falls through to the old behaviour, so begin_generate still owns the not-loaded 409.
+    fam = await asyncio.to_thread(backend.loaded_family)
+    if fam is not None:
+        try:
+            validate_video_request_shape(
+                fam,
+                width = request.width,
+                height = request.height,
+                num_frames = request.num_frames,
+            )
+        except ValueError as exc:
+            # 422: the body parses and is in range, but the requested shape is not one this model can render.
+            raise HTTPException(status_code = 422, detail = str(exc))
     try:
         await asyncio.to_thread(
             backend.begin_generate,

@@ -265,6 +265,58 @@ def snap_video_size(fam: VideoFamily, width: int, height: int) -> tuple[int, int
     return snap(width), snap(height)
 
 
+def format_video_resolution_presets(fam: VideoFamily) -> str:
+    """The family's presets as '768x512, 1216x704, ...' for messages and logs."""
+    return ", ".join(f"{w}x{h}" for w, h in fam.resolution_presets)
+
+
+def validate_video_request_shape(
+    fam: VideoFamily,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    num_frames: Optional[int] = None,
+) -> None:
+    """Raise ``ValueError`` when a request asks for a shape ``fam`` does not support.
+
+    The generate route calls this at the API boundary so HTTP enforces exactly the
+    rules the Desktop interface offers: its resolution select lists only
+    ``resolution_presets`` and its duration select only lattice frame counts, while
+    the API took anything inside the coarse request bounds and then SNAPPED it. The
+    snap is silent and floors, so a 256x256 request survived untouched (256 divides
+    both 16 and 32) and denoised at a size no checkpoint was ever trained for.
+
+    This is a separate, explicit check rather than a change to ``snap_video_size`` /
+    ``snap_num_frames``, which internal callers still need. It stays silent for
+    anything it cannot judge -- a family that declares no presets keeps the old
+    snapping behaviour -- and ``None`` means "use the family default", which is valid
+    by construction.
+    """
+    # Normalised to int pairs so membership holds however a family spelled its presets (the status payload
+    # hands them out as lists, and a round-trip through it must not silently stop matching).
+    presets = tuple((int(w), int(h)) for w, h in fam.resolution_presets)
+    # No declared presets: nothing to enforce against, so leave the request to the snap (unusual/custom families).
+    if presets and (width is not None or height is not None):
+        # Resolve a half-specified request against the default preset first, exactly as generate() does, then judge the pair.
+        want_w = presets[0][0] if width is None else int(width)
+        want_h = presets[0][1] if height is None else int(height)
+        if (want_w, want_h) not in presets:
+            raise ValueError(
+                f"{want_w}x{want_h} is not a supported resolution for {fam.name}. "
+                f"Supported resolutions: {format_video_resolution_presets(fam)}."
+            )
+    if num_frames is not None:
+        step = max(1, fam.frame_step)
+        count = int(num_frames)
+        if count < 1 or (count - 1) % step != 0:
+            # The two lattice points straddling the request say more than a prefix of the lattice would, and stay short.
+            below = snap_num_frames(fam, count)
+            raise ValueError(
+                f"{count} is not a supported frame count for {fam.name}. Its VAE compresses time by "
+                f"{step}, so a frame count must be k * {step} + 1; the nearest supported counts are "
+                f"{below} and {below + step} (the default is {fam.default_num_frames})."
+            )
+
+
 # Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base repo), most specific first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),

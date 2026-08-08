@@ -1597,6 +1597,18 @@ class VideoBackend:
 
     # ── generation ───────────────────────────────────────────────────────────
 
+    def loaded_family(self) -> Optional[VideoFamily]:
+        """The resident pipeline's family, or None when nothing is loaded.
+
+        The generate route reads it to enforce that family's shape rules (resolution
+        presets + frame lattice) at the API boundary, before the request reaches the
+        worker. ``getattr`` rather than ``state.family`` on purpose: a state object
+        that carries no family degrades to the old snapping path instead of raising.
+        """
+        with self._lock:
+            state = self._state
+        return getattr(state, "family", None) if state is not None else None
+
     @staticmethod
     def _reset_step_cache(pipe: Any) -> None:
         """Clear FBCache residuals on the resident DiT(s) before a generation.
