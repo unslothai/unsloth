@@ -545,7 +545,10 @@ export async function ensureStoredChatThread(
   // on every autosave (runStart/runEnd) and message append.
   if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
-  await awaitStoredChatThreadRecord(threadId);
+  // Wait for an in-flight write without adopting its failure: rethrowing here
+  // would skip the retryFailedThreadRecord branch below for exactly the callers
+  // already waiting when the write rejected.
+  await awaitStoredChatThreadRecord(threadId).catch(() => undefined);
   const legacyThread = fallback ?? (await db.threads.get(threadId));
   let backendThread: ThreadRecord | null;
   try {
