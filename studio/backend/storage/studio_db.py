@@ -2503,13 +2503,17 @@ def sync_chat_messages(
         pruned: set = set()
         if prune_missing:
             retained = {str(m["id"]) for m in messages}
-            pruned = {
-                str(row["id"])
-                for row in conn.execute(
-                    "SELECT id FROM chat_messages WHERE thread_id = ?",
-                    (thread_id,),
-                ).fetchall()
-            } - retained - research_ids
+            pruned = (
+                {
+                    str(row["id"])
+                    for row in conn.execute(
+                        "SELECT id FROM chat_messages WHERE thread_id = ?",
+                        (thread_id,),
+                    ).fetchall()
+                }
+                - retained
+                - research_ids
+            )
         protected = set() if allow_research_update else research_ids
         # Content is dropped, structure is not: the prune below can delete a protected
         # message's parent, and a dangling parent makes the whole thread unimportable. The

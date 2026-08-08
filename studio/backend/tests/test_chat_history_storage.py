@@ -788,9 +788,7 @@ def test_deleting_a_mid_chain_ancestor_relinks_to_the_surviving_grandparent(tmp_
     assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
 
 
-def test_a_relink_to_a_surviving_message_that_is_not_the_ancestor_is_ignored(
-    tmp_path, monkeypatch
-):
+def test_a_relink_to_a_surviving_message_that_is_not_the_ancestor_is_ignored(tmp_path, monkeypatch):
     # The bulk sync keeps the server copy instead of rejecting the batch, so the protection is
     # that the claim is dropped: the reseat is walked from the stored chain, and a client cannot
     # use a pruned parent as cover for pointing a protected message anywhere it likes.
