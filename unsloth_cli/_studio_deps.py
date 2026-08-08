@@ -255,10 +255,9 @@ def _shared_non_runtime(rel: str) -> bool:
     with `unsloth_zoo: tests/conftest.py is 8107 bytes, expected 11429`. Our
     runtime trees are unaffected, since none of them is named for a shared root.
     Applied while reading RECORD, not when reporting, so the row also stays out
-    of the `limit` budget. Its ownership claim is still counted: dropping a
-    colliding row before the tally is what made a retained row look singly
-    owned, which is how the size of somebody else's file got compared against
-    unsloth_zoo's RECORD.
+    of the `limit` budget. Its claim is still counted: dropping a colliding row
+    before the tally is what made a retained row look singly owned, so another
+    distribution's file got measured against unsloth_zoo's RECORD.
     """
     parts = tuple(p for p in rel.replace("\\", "/").split("/") if p and p != ".")
     return len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS
@@ -339,9 +338,7 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
             except Exception:
                 continue
             key = os.path.normcase(str(target))
-            # Every real claim counts, including one about to be filtered out.
-            # Filtering first is what let a dropped row's file be measured
-            # against a retained row's RECORD.
+            # Before the filter: a dropped row still owns the path it claims.
             owners[key] = owners.get(key, 0) + 1
             if _shared_non_runtime(rel):
                 continue

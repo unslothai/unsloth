@@ -2097,8 +2097,7 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
                 continue
             target = root / rel
             key = os.path.normcase(str(target))
-            # Count every real claim before filtering, or a dropped row's file is
-            # measured against a retained row's RECORD.
+            # Before the filter: a dropped row still owns the path it claims.
             owners[key] = owners.get(key, 0) + 1
             # Top-level dirs several wheels write into, so one uninstall deletes
             # another's files. Unreliable ownership is a property of the path, so
