@@ -302,7 +302,13 @@ def _setup_cache_env() -> None:
             # HF surfaces a clear error at download time instead.
             try:
                 Path(value).mkdir(parents = True, exist_ok = True)
-            except OSError:
+                if key == "UNSLOTH_COMPILE_LOCATION":
+                    # Marks the directory as ours, so the cleanup can delete from
+                    # it without inferring that from its contents.
+                    from utils.cache_cleanup import CACHE_MARKER
+
+                    (Path(value) / CACHE_MARKER).touch(exist_ok = True)
+            except (OSError, ImportError):
                 pass
 
 

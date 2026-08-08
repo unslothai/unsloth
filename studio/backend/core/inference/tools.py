@@ -7225,11 +7225,30 @@ def _migrate_legacy_sandbox_locked(root: str) -> None:
         logger.warning("Sandbox migration skipped: %s", error)
 
 
+def _contained_in_root(workdir: str, root: str) -> bool:
+    """Whether a resolved session path is still inside the sandbox root.
+
+    Applied to cached paths too: a directory replaced by a symlink after it was
+    cached would otherwise keep serving from wherever it now points.
+    """
+    try:
+        return os.path.realpath(workdir).startswith(os.path.realpath(root) + os.sep)
+    except OSError:
+        return False
+
+
 def _get_workdir(session_id: str | None = None) -> str:
     """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
     key = session_id or "_default"
-    if key not in _workdirs or not os.path.isdir(_workdirs[key]):
+    cached = _workdirs.get(key)
+    if cached is not None and not os.path.isdir(cached):
+        cached = None
+    if cached is not None and not _get_project_workdir(session_id or ""):
+        if not _contained_in_root(cached, sandbox_root()):
+            cached = None  # replaced by a symlink out of the root since it was cached
+    if cached is None:
+        _workdirs.pop(key, None)
         sandbox_root_path = sandbox_root()
         root_existed = os.path.isdir(sandbox_root_path)
         _migrate_legacy_sandbox(sandbox_root_path)
@@ -7242,9 +7261,7 @@ def _get_workdir(session_id: str | None = None) -> str:
             workdir = project_workdir
         elif session_id and _usable_session_id(session_id):
             workdir = os.path.join(sandbox_root_path, session_id)
-            if not os.path.realpath(workdir).startswith(
-                os.path.realpath(sandbox_root_path) + os.sep
-            ):
+            if not _contained_in_root(workdir, sandbox_root_path):
                 workdir = os.path.join(sandbox_root_path, "_invalid")
         elif session_id:
             workdir = os.path.join(sandbox_root_path, "_invalid")
@@ -7281,10 +7298,10 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         project = _get_project_workdir(session_id) if _usable_session_id(session_id) else None
         if project:
             return project
-    cached = _workdirs.get(session_id or "_default")
-    if cached:
-        return cached
     root = sandbox_root()
+    cached = _workdirs.get(session_id or "_default")
+    if cached and _contained_in_root(cached, root):
+        return cached
     # Right after an upgrade a chat's files are still at the legacy root, and
     # nothing else has run yet. This moves them without creating a session dir.
     _migrate_legacy_sandbox(root)
@@ -7296,7 +7313,7 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
     # The same containment _get_workdir applies: a session entry that is a
     # symlink out of the root would otherwise become the root for reads, and
     # serve whatever it points at.
-    if not os.path.realpath(workdir).startswith(os.path.realpath(root) + os.sep):
+    if not _contained_in_root(workdir, root):
         return os.path.join(root, "_invalid")
     return workdir
 

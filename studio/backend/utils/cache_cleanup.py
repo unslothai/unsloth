@@ -65,24 +65,29 @@ def get_existing_cache_dirs() -> List[Path]:
     return found
 
 
-# What a compiled cache is made of. Anything else means the configured path is
-# a directory the user also keeps other things in.
-_CACHE_ENTRY_SUFFIXES = (".py", ".pyc", ".pyi")
-_CACHE_ENTRY_NAMES = ("__pycache__", ".locks", "unsloth_compiled_cache")
+# Written when Studio creates the directory, so "we made this" is a fact rather
+# than an inference from the contents.
+CACHE_MARKER = ".unsloth_compiled_cache"
+
+# Names only the compiler produces, so a cache Studio did not create is still
+# recognised once it has been written into.
+import re as _re
+
+_GENERATED_NAME_RE = _re.compile(r"\A(unsloth_compiled_module_.+|Unsloth.+Trainer)\.py\Z")
 
 
-def _is_cache_shaped(path: Path) -> bool:
-    """True when every entry looks like something the compiler wrote."""
+def _is_studio_cache(path: Path) -> bool:
+    """True only for a directory Studio made, or one holding generated modules.
+
+    A shape test is not enough: a directory of plain .py files is someone's
+    package, and this decides what gets deleted.
+    """
     try:
-        for item in path.iterdir():
-            if item.name in _CACHE_ENTRY_NAMES:
-                continue
-            if item.is_file() and item.suffix in _CACHE_ENTRY_SUFFIXES:
-                continue
-            return False
+        if (path / CACHE_MARKER).exists():
+            return True
+        return any(_GENERATED_NAME_RE.match(item.name) for item in path.iterdir())
     except OSError:
         return False
-    return True
 
 
 def _cleanable_cache_dirs() -> List[Path]:
@@ -94,14 +99,19 @@ def _cleanable_cache_dirs() -> List[Path]:
     deletes from it.
     """
     builtin = {str(p) for p in _CACHE_DIRS}
+    try:
+        builtin.add(str(Path.cwd() / "unsloth_compiled_cache"))
+    except OSError:
+        pass
     cleanable: List[Path] = []
     for cache_dir in get_existing_cache_dirs():
-        if str(cache_dir) in builtin or _is_cache_shaped(cache_dir):
+        if str(cache_dir) in builtin or _is_studio_cache(cache_dir):
             cleanable.append(cache_dir)
         else:
             logger.warning(
-                "Not clearing %s: it holds files the compiler did not write. Point "
-                "UNSLOTH_COMPILE_LOCATION at a directory used only for the compiled cache.",
+                "Not clearing %s: Studio did not create it and it holds no generated "
+                "modules. Point UNSLOTH_COMPILE_LOCATION at a directory used only for "
+                "the compiled cache.",
                 cache_dir,
             )
     return cleanable

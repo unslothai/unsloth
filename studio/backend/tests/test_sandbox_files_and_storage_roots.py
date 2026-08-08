@@ -756,5 +756,86 @@ def test_a_sandbox_root_studio_creates_is_still_locked_down(tmp_path, monkeypatc
     assert ((tmp_path / "fresh").stat().st_mode & 0o777) == 0o700
 
 
+def test_a_directory_of_plain_python_files_is_not_a_cache(tmp_path, monkeypatch):
+    """A package or scripts directory is only .py files too, so shape alone
+    cannot decide what gets deleted."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "helper.py").write_text("print(1)\n")
+    (scripts / "__pycache__").mkdir()
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(scripts))
+
+    from utils import cache_cleanup
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert (scripts / "helper.py").read_text() == "print(1)\n"
+
+
+def test_a_marked_directory_is_cleared(tmp_path, monkeypatch):
+    """Studio writes the marker when it creates the location."""
+    cache = tmp_path / "compiled_cache"
+    cache.mkdir()
+    (cache / "helper.py").write_text("print(1)\n")
+
+    from utils import cache_cleanup
+
+    (cache / cache_cleanup.CACHE_MARKER).touch()
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(cache))
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert not cache.exists()
+
+
+def test_generated_modules_identify_a_cache_without_a_marker(tmp_path, monkeypatch):
+    """An install that predates the marker is still recognised."""
+    cache = tmp_path / "old_cache"
+    cache.mkdir()
+    (cache / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(cache))
+
+    from utils import cache_cleanup
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert not cache.exists()
+
+
+def test_studio_writes_the_marker_when_it_creates_the_location(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+
+    from utils import cache_cleanup
+    from utils.paths import storage_roots
+
+    storage_roots.setup_cache_env()
+    pinned = Path(os.environ["UNSLOTH_COMPILE_LOCATION"])
+    assert (pinned / cache_cleanup.CACHE_MARKER).is_file()
+
+
+def test_a_cached_sandbox_path_is_re_checked(tmp_path, monkeypatch):
+    """A session directory swapped for a symlink after it was cached would
+    otherwise keep serving from wherever it now points."""
+    root = tmp_path / "sb"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("TOPSECRET")
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_swapped"))
+    assert workdir.is_dir()
+
+    # Swap it, leaving the resolver's cache pointing at the same string.
+    workdir.rmdir()
+    workdir.symlink_to(outside)
+
+    resolved = Path(tools.resolve_sandbox_workdir("__LOCALID_swapped"))
+    assert resolved.name == "_invalid", resolved
+    assert not (resolved / "secret.txt").exists()
+
+    executing = Path(tools.get_sandbox_workdir("__LOCALID_swapped"))
+    assert executing.name == "_invalid", executing
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
