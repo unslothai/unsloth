@@ -383,15 +383,37 @@ def preferred_repo_cache_dirs(
     force_active: bool = False,
     active_root: Optional[Path] = None,
 ) -> list[Path]:
+    # iter_active_repo_cache_dirs already matches case-insensitively, so a repo
+    # dir the active root does hold is found whatever its casing; the canonical
+    # name below is only ever a placeholder for one that is not there yet.
     active_entries = list(iter_active_repo_cache_dirs(repo_type, repo_id, root = active_root))
     if active_entries:
         return active_entries
     if force_active:
-        root = hf_cache_root(root = active_root)
+        # A running or cancelling job writes into the active root and nowhere
+        # else, so its progress may only ever be read from there. hf_cache_root
+        # returns None for a root that is not a directory yet -- the first
+        # download into a freshly configured cache creates it -- and falling
+        # through from there would read a previous cache's completed copy as
+        # this run's progress and finalize a job that has not written a byte.
+        # Name the directory this run will create instead.
+        root = hf_cache_root(root = active_root) or active_root or _configured_hub_cache()
         if root is not None:
             canonical = repo_cache_dir_name(repo_type, repo_id)
             return [root / canonical]
     return list(iter_repo_cache_dirs(repo_type, repo_id))
+
+
+def _configured_hub_cache() -> Optional[Path]:
+    # Path()-wrapped: the setting is typed Path, but a caller (or a test) that
+    # hands back a str would otherwise turn `root / name` above into a TypeError
+    # that surfaces as an empty progress reading -- the very card being fixed.
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        configured = get_hf_cache_paths().hub_cache
+        return Path(configured) if configured else None
+    except Exception:
+        return None
 
 
 def has_incomplete_blobs(repo_type: str, repo_id: str) -> bool:

@@ -19,8 +19,9 @@ from hub.schemas.downloads import (
 )
 from hub.utils import download_registry
 from hub.utils import download_manifest
+from hub.utils import gguf_plan
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.hf_cache_state import has_active_incomplete_blobs
+from hub.utils.hf_cache_state import has_active_incomplete_blobs, preferred_repo_cache_dirs
 from hub.utils.snapshot_filters import blob_hashes_for_siblings
 from hub.utils.paths import (
     is_valid_gguf_variant as _is_valid_gguf_variant,
@@ -490,6 +491,41 @@ async def get_model_transport_status_response(
     }
 
 
+def _variant_manifest_in_any_cache(
+    repo_id: str, variant: str
+) -> Optional[download_manifest.Manifest]:
+    """The variant's manifest from whichever cache dir on disk holds it.
+
+    snapshot_progress reads manifests per scanned cache entry (``entry.parent``)
+    while this resolver only ever asked the active cache, so the two could
+    disagree about whether a manifest exists at all. When it lost, the expected
+    file set came back empty and the hash filter then dropped every blob in the
+    shared ``blobs/`` dir -- a finished variant reporting 0 bytes against the
+    caller's catalog-hinted total. Active cache first, so the common case is one
+    lookup and the answer matches the entry snapshot_progress prefers.
+    """
+    manifest = download_manifest.read_manifest("model", repo_id, variant)
+    if manifest is not None:
+        return manifest
+    # Whatever the active cache resolves to was just probed by the call above,
+    # and a state-dir miss is not free, so skip the entry that repeats it. In
+    # the common case preferred_repo_cache_dirs returns only that entry and this
+    # loop does no work at all.
+    active = download_manifest._canonical_hub_cache()
+    for entry in preferred_repo_cache_dirs("model", repo_id):
+        if active is not None and download_manifest._canonical_hub_cache(entry.parent) == active:
+            continue
+        manifest = download_manifest.read_manifest(
+            "model",
+            repo_id,
+            variant,
+            hub_cache = entry.parent,
+        )
+        if manifest is not None:
+            return manifest
+    return None
+
+
 async def get_gguf_download_progress_response(
     repo_id: str,
     variant: str = "",
@@ -521,11 +557,7 @@ async def get_gguf_download_progress_response(
         )
         if requirement is not None:
             return requirement.download_size_bytes, requirement.required_hashes
-        manifest = download_manifest.read_manifest(
-            "model",
-            resolved_repo_id,
-            progress_variant,
-        )
+        manifest = _variant_manifest_in_any_cache(resolved_repo_id, progress_variant)
         if manifest is not None:
             return (
                 sum(max(0, int(file.size or 0)) for file in manifest.expected_files),
@@ -541,6 +573,38 @@ async def get_gguf_download_progress_response(
             ),
         )
 
+    def _expected_files_resolver(
+        resolved_repo_id: str, token: Optional[str]
+    ) -> Sequence[download_manifest.ExpectedFile]:
+        """What HF says this variant should contain, paths and declared sizes.
+
+        The only thing that lets a finished variant whose manifest is missing
+        settle terminal instead of staying partial forever, so it has to be the
+        metadata's own file list: a byte tally taken from the shared blobs/ dir
+        cannot tell this quant's bytes from a sibling's. The requirement lookup
+        is cached, and snapshot_progress only calls this once a reading has
+        otherwise passed for complete.
+        """
+        if progress_variant is None:
+            return ()
+        requirement = gguf_variants.gguf_variant_requirements(
+            resolved_repo_id,
+            progress_variant,
+            token,
+        )
+        return requirement.expected_files if requirement is not None else ()
+
+    def _variant_file_matcher(path: str) -> bool:
+        # Which snapshot files a quant owns, for the reading snapshot_progress
+        # falls back to when the blob hashes cannot be resolved. Main shards are
+        # matched by quant label; mmproj and the MTP drafter are downloaded with
+        # every variant, so they belong to whichever one is being polled.
+        if progress_variant is None:
+            return False
+        return gguf_plan.is_main_gguf_variant_path(
+            path, progress_variant
+        ) or gguf_plan.is_companion_gguf_path(path)
+
     return await snapshot_progress.snapshot_progress_response(
         repo_type = "model",
         repo_id = repo_id,
@@ -550,6 +614,8 @@ async def get_gguf_download_progress_response(
         registry = _registry,
         metadata_resolver = _metadata_resolver,
         variant = progress_variant,
+        variant_file_matcher = _variant_file_matcher,
+        expected_files_resolver = _expected_files_resolver,
     )
 
 
