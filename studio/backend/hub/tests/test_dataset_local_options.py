@@ -134,6 +134,9 @@ Dataset card.
 """,
         encoding = "utf-8",
     )
+    (snapshot / "card").mkdir()
+    for name in ("train-0.parquet", "data-0.parquet", "part-1.parquet", "part-2.parquet"):
+        (snapshot / "card" / name).write_bytes(b"parquet")
     (snapshot / "dataset_infos.json").write_text(
         json.dumps({"legacy": {"splits": {"test": {"name": "test"}}}}),
         encoding = "utf-8",
@@ -149,8 +152,7 @@ Dataset card.
     ] == [
         {"dataset": "", "config": "default", "split": "holdout"},
         {"dataset": "", "config": "card", "split": "train"},
-        # implicit-list names two literal parquet files that are not in the snapshot, and
-        # the loader raises FileNotFoundError resolving them.
+        {"dataset": "", "config": "implicit-list", "split": "train"},
         {"dataset": "", "config": "implicit-train", "split": "train"},
         {"dataset": "", "config": "legacy", "split": "test"},
         {"dataset": "", "config": "measured", "split": "validation"},
@@ -1229,4 +1231,90 @@ def test_snapshot_options_let_an_empty_sharded_wildcard_take_the_stage(tmp_path,
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     # The loader's * matches the empty component, so the sharded stage wins and then fails.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_infer_past_an_empty_standalone_yaml_file(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / ".huggingface.yaml").write_text("", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+@pytest.mark.parametrize("data_dir", ["./a", "a/.", "a/", ".//a"])
+def test_snapshot_options_read_a_data_dir_the_loader_still_finds(tmp_path, data_dir):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f'configs:\n- config_name: cfg\n  data_dir: "{data_dir}"\n')
+    (snapshot / "a").mkdir()
+    (snapshot / "a" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+@pytest.mark.parametrize(
+    ("declared", "path"),
+    [(".hidden.jsonl", ".hidden.jsonl"), ("__special__/train.jsonl", "__special__/train.jsonl")],
+)
+def test_snapshot_options_resolve_a_declared_hidden_path(tmp_path, declared, path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_files: {declared}\n")
+    target = snapshot / path
+    target.parent.mkdir(parents = True, exist_ok = True)
+    target.write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # Default inference skips these, but a pattern naming them explicitly resolves.
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_split_declared_twice(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_files:\n  - split: train\n    path: a/one.jsonl\n  - split: train\n    path: a/two.jsonl\n- config_name: b\n  data_dir: b\n")
+    (snapshot / "a").mkdir(parents = True)
+    for name in ("one.jsonl", "two.jsonl"):
+        (snapshot / "a" / name).write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b").mkdir()
+    (snapshot / "b" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_first_config_whose_wildcard_matches_nothing(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_files: missing*.jsonl\n- config_name: b\n  data_dir: b\n")
+    (snapshot / "b").mkdir(parents = True)
+    (snapshot / "b" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_dataset_info_the_loader_cannot_walk(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info: [oops]\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_weigh_a_declared_module_by_the_files_it_resolves(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_files:\n  - a/*.jsonl\n  - a/*.csv\n- config_name: b\n  data_dir: b\n")
+    (snapshot / "a").mkdir(parents = True)
+    (snapshot / "a" / "one.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    for name in ("one.csv", "two.csv"):
+        (snapshot / "a" / name).write_text("text\nrow\n", encoding = "utf-8")
+    (snapshot / "b").mkdir()
+    (snapshot / "b" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    # Two csv files outvote one jsonl, so csv is settled and the csv sibling is offered.
+    # Config a keeps a jsonl the csv builder chokes on, so it is not.
+    assert local_options._snapshot_options(snapshot) == {("b", "train")}
+
+
+def test_snapshot_options_reject_a_card_with_a_non_string_key(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "1: x\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
     assert local_options._snapshot_options(snapshot) == set()
