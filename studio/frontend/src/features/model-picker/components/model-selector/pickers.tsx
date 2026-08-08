@@ -2918,7 +2918,7 @@ export function HubModelPicker({
       sortLocalModels(
         lmStudioModels.filter(
           (m) =>
-            filesystemRowsSupportedForTask(task) &&
+            filesystemRowsSupportedForTask(task, m.task) &&
             // The backend tags every local model with its task for exactly this: on the Images/Video pages a chat GGUF must not be offered.
             passesTaskGate(
               m.task,
@@ -2952,7 +2952,7 @@ export function HubModelPicker({
       sortLocalModels(
         localDirModels.filter(
           (m) =>
-            filesystemRowsSupportedForTask(task) &&
+            filesystemRowsSupportedForTask(task, m.task) &&
             passesTaskGate(
               m.task,
               m.model_id ?? m.id,
@@ -2989,7 +2989,7 @@ export function HubModelPicker({
       sortLocalModels(
         customFolderModels.filter(
           (m) =>
-            filesystemRowsSupportedForTask(task) &&
+            filesystemRowsSupportedForTask(task, m.task) &&
             passesTaskGate(
               m.task,
               m.model_id ?? m.id,

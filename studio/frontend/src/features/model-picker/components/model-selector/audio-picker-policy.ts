@@ -204,10 +204,12 @@ export function taskForMediaPick(
  * local-directory rows that would send an absolute path to the Hub-only API. */
 export function filesystemRowsSupportedForTask(
   pickerTask: string | readonly string[] | null | undefined,
+  rowTask?: string | null,
 ): boolean {
-  return Array.isArray(pickerTask)
-    ? !pickerTask.includes("automatic-speech-recognition")
-    : pickerTask !== "automatic-speech-recognition";
+  const pickerIncludesStt = Array.isArray(pickerTask)
+    ? pickerTask.includes("automatic-speech-recognition")
+    : pickerTask === "automatic-speech-recognition";
+  return !pickerIncludesStt && rowTask !== "automatic-speech-recognition";
 }
 
 /** GGUF variants are selected after the Hub row, so carry its task through the

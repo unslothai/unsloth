@@ -26,6 +26,14 @@ test("filesystem rows stay out of Transcribe while cached Hub ASR remains suppor
   assert.equal(filesystemRowsSupportedForTask("automatic-speech-recognition"), false);
   assert.equal(filesystemRowsSupportedForTask(["text-to-speech"]), true);
   assert.equal(filesystemRowsSupportedForTask(undefined), true);
+  assert.equal(
+    filesystemRowsSupportedForTask(undefined, "automatic-speech-recognition"),
+    false,
+  );
+  assert.equal(
+    filesystemRowsSupportedForTask(undefined, "text-generation"),
+    true,
+  );
 });
 
 test("curated downloaded TTS artifacts override generic GGUF task metadata only in Speak", () => {
@@ -193,7 +201,7 @@ test("every filesystem inventory applies the runtime task gate", () => {
     assert.match(
       pickerSource,
       new RegExp(
-        `${inventory}\\.filter\\([\\s\\S]*?filesystemRowsSupportedForTask\\(task\\)`,
+        `${inventory}\\.filter\\([\\s\\S]*?filesystemRowsSupportedForTask\\(task, m\\.task\\)`,
       ),
     );
   }
