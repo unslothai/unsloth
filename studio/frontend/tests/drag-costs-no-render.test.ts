@@ -39,8 +39,9 @@ test("the card hands the offset back to left/top on release", () => {
   assert.match(hook, /panel\.style\.transform = ""/);
   assert.match(
     hook,
-    /setPosition\(\{ left: session\.lastLeft, top: session\.lastTop \}\)/,
+    /const landed = \{ left: session\.lastLeft, top: session\.lastTop \};/,
   );
+  assert.match(hook, /setPosition\(landed\)/);
 });
 
 test("the monitor paints a drag frame through a transform", () => {

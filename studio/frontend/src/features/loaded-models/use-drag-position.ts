@@ -255,12 +255,18 @@ export function useDragPosition(storageKey: string): UseDragPosition {
       panel.style.transform = "";
     }
     if (moved && session) {
-      setPosition({ left: session.lastLeft, top: session.lastTop });
+      const landed = { left: session.lastLeft, top: session.lastTop };
+      setPosition(landed);
+      // Stored here rather than from an effect on `position`, so only a place
+      // the user chose is kept. A reclamp is the window adapting at display
+      // time, and persisting one let a small window permanently overwrite a
+      // position saved on a large one; the read path clamps anyway.
+      store(storageKey, landed);
     }
     sessionRef.current = null;
     setPressing(false);
     setDragging(false);
-  }, [applyPending]);
+  }, [applyPending, storageKey]);
 
   // The press turned into a drag. Pin the panel where it already sits, so the
   // transform offsets from the spot the anchor had it in and the first move
@@ -322,12 +328,6 @@ export function useDragPosition(storageKey: string): UseDragPosition {
       }
     };
   }, [pressing, onMove, onEnd]);
-
-  // Persist the resting place only, not every frame of the drag.
-  useEffect(() => {
-    if (pressing) return;
-    store(storageKey, position);
-  }, [pressing, position, storageKey]);
 
   const justDragged = useCallback(() => {
     const moved = movedRef.current;

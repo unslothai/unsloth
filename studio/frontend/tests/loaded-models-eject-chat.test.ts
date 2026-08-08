@@ -21,6 +21,8 @@ function resident(checkpoint: string): ResidentChatModel {
 function backend(
   timeline: (ResidentChatModel | null)[],
   cachedRow = false,
+  /** What the runtime still holds after a cached row's unload. */
+  cachedAfter: string[] | null = null,
 ) {
   const unloaded: string[] = [];
   let read = 0;
@@ -33,6 +35,7 @@ function backend(
       },
       matches: modelIdsMatch,
       cachedRow,
+      ...(cachedAfter === null ? {} : { readCached: async () => cachedAfter }),
     },
   };
 }
@@ -117,6 +120,34 @@ test("a cached row is unloaded even while another model is active", async () => 
     ["unsloth/Qwen3-4B"],
     "the cached copy goes, the active model stays",
   );
+});
+
+// /unload answers 200 for a name the backend no longer holds, and the cached
+// row is the one path with no scoped read to catch that, so the reported
+// success was the call itself rather than any evidence of a release.
+test("a cached row the backend kept is reported still resident", async () => {
+  const { unloaded, deps } = backend([null], true, ["unsloth/Qwen3-4B"]);
+  const result = await ejectChatModel("unsloth/Qwen3-4B", deps);
+  assert.deepEqual(unloaded, ["unsloth/Qwen3-4B"], "the unload was attempted");
+  assert.equal(result.stillResident, "unsloth/Qwen3-4B");
+  assert.deepEqual(result.unloadedAliases, [], "nothing to clear the picker on");
+});
+
+test("a cached row the backend released is reported ejected", async () => {
+  const { deps } = backend([null], true, ["unsloth/Llama-3.2-3B"]);
+  const result = await ejectChatModel("unsloth/Qwen3-4B", deps);
+  assert.equal(result.stillResident, null);
+  assert.deepEqual(result.unloadedAliases, ["unsloth/Qwen3-4B"]);
+});
+
+// Both the row and the confirmation come from the same `loaded` list, so the
+// names line up by construction; the comparator is there for the day they do not.
+test("a backend that cannot be re-read leaves the old reading alone", async () => {
+  const { unloaded, deps } = backend([null], true);
+  const result = await ejectChatModel("unsloth/Qwen3-4B", deps);
+  assert.deepEqual(unloaded, ["unsloth/Qwen3-4B"]);
+  assert.deepEqual(result.unloadedAliases, ["unsloth/Qwen3-4B"]);
+  assert.equal(result.stillResident, null);
 });
 
 test("the load path and the advertised repo id are the same row", async () => {

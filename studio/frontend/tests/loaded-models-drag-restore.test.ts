@@ -207,3 +207,32 @@ test("only the pill consumes the sentinel, since only it has a click", () => {
   assert.match(pill, /onPointerDown=\{startDrag\}/);
   assert.match(pill, /if \(!justDragged\(\)\) setCollapsed\(false\)/);
 });
+
+// The clamp is a display-time adaptation, not a choice the user made. Writing
+// one back meant opening the app on a laptop rewrote a position saved on a
+// large monitor, and going back to that monitor left the card where the laptop
+// had put it. Only a landed drag is stored; the read path clamps anyway.
+test("only a drag persists a position, never a reclamp", () => {
+  const HOOK = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/loaded-models/use-drag-position.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  const settleAt = HOOK.indexOf("const settle = useCallback(");
+  const settle = HOOK.slice(
+    settleAt,
+    HOOK.indexOf("}, [applyPending, storageKey]);", settleAt),
+  );
+  assert.match(settle, /store\(storageKey, landed\)/);
+  // The old shape: an effect on `position`, which every reclamp also changed.
+  assert.doesNotMatch(HOOK, /useEffect\(\(\) => \{\s*if \(pressing\) return;\s*store\(/);
+  assert.equal(
+    HOOK.split("store(storageKey").length - 1,
+    1,
+    "one write, in settle",
+  );
+});

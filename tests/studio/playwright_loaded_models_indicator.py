@@ -599,6 +599,33 @@ def run(page, state: Runtime) -> None:
         str(state.unloads),
     )
 
+    # A row over a runtime that is already idle: nothing is unloaded, so the
+    # toast must not report an eject. The row is up to one poll old and the
+    # dictation sidecars release themselves, so this is reached without anyone
+    # doing anything.
+    state.reset()
+    state.diffusion = dict(
+        NOTHING_DIFFUSION,
+        loaded = True,
+        repo_id = "black-forest-labs/FLUX.1-dev",
+        family = "flux",
+        device = "cuda",
+        dtype = "bfloat16",
+    )
+    boot(page, state)
+    page.wait_for_selector(CARD, timeout = 30_000)
+    state.diffusion = dict(NOTHING_DIFFUSION)
+    page.locator(EJECT).first.click()
+    page.wait_for_timeout(4000)
+    said = page.locator("[data-sonner-toast]").evaluate_all(
+        "els => els.map((el) => el.innerText || '').join(' | ')"
+    )
+    check(
+        "a stale row does not claim an eject it never performed",
+        "image" not in state.unloads and "Ejected" not in said,
+        f"unloads={state.unloads} toasts={said!r}",
+    )
+
     # ── The preference ──────────────────────────────────────────────────
     state.reset()
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])

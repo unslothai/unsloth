@@ -189,6 +189,14 @@ export function useLoadedModels(
           toast.warning(
             `${label} was asked to unload, but its runtime did not confirm. Check the card in a moment.`,
           );
+        } else if (outcome.status === "alreadyFree") {
+          // The row was stale and nothing was unloaded, so say that rather than
+          // report an eject. The row still goes: its memory is free either way.
+          toast.info(`${label} was no longer loaded.`);
+          generationRef.current += 1;
+          if (mountedRef.current) {
+            setEntries((prev) => prev.filter((row) => row.id !== entry.id));
+          }
         } else if (outcome.status === "replaced") {
           // Nothing was unloaded: this runtime holds something else now, and
           // releasing that is not what the click asked for.

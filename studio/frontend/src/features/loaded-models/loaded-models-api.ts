@@ -139,10 +139,13 @@ async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
       unload: (modelPath) => unloadModel({ model_path: modelPath }),
       matches: modelIdsMatch,
       cachedRow: entry.inactive === true,
+      readCached: async () => (await bounded(getInferenceStatus)).loaded ?? [],
     },
   );
   if (stillResident) return { status: "stillResident", model: stillResident };
   if (replacedBy) return { status: "replaced", resident: replacedBy };
+  // Nothing released and nothing in its place: the runtime was already idle.
+  if (unloadedAliases.length === 0) return { status: "alreadyFree" };
   // Only when the row's model is really gone. A reload during the run leaves it
   // resident and still usable, so emptying the picker would be wrong.
   clearChatSelectionFor(unloadedAliases);
@@ -163,10 +166,13 @@ function clearChatSelectionFor(aliases: string[]): void {
 /**
  * How an eject ended. `replaced` means the row named a model the runtime no
  * longer holds, so nothing was unloaded: these endpoints carry no model id and
- * would have released whatever took its place.
+ * would have released whatever took its place. `alreadyFree` is the same read
+ * of a runtime holding nothing at all, kept apart from `ejected` so a stale row
+ * cannot report an unload that never ran.
  */
 export type EjectOutcome =
   | { status: "ejected" }
+  | { status: "alreadyFree" }
   | { status: "replaced"; resident: string }
   | { status: "stillResident"; model: string }
   // The unload was accepted but the read that confirms it did not answer, so
@@ -194,11 +200,10 @@ async function ejectRuntimeRow(
   unload: () => Promise<string | null | typeof UNVERIFIED>,
 ): Promise<EjectOutcome> {
   const verdict = verifyResident(entry.name, resident, modelIdsMatch);
-  if (verdict === "replaced" && resident) {
-    return { status: "replaced", resident };
-  }
-  // Nothing resident: the row is stale and its memory is already free.
-  if (verdict !== "match") return { status: "ejected" };
+  // Nothing resident: the row is stale and its memory is already free. Said
+  // plainly rather than as an eject, which would claim an unload never issued.
+  if (!resident) return { status: "alreadyFree" };
+  if (verdict !== "match") return { status: "replaced", resident };
   const stillResident = await unload();
   if (stillResident === UNVERIFIED) return { status: "unverified" };
   return stillResident

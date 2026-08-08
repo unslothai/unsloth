@@ -24,6 +24,9 @@ export type EjectChatModelDeps = {
   /** True for a row the backend kept past the active model. Such a row is not
    *  resident by definition, so it is the one case worth naming directly. */
   cachedRow?: boolean;
+  /** Every model the runtime still holds, for confirming a cached row's unload.
+   *  Omitted leaves the call its own evidence, as it was before. */
+  readCached?: () => Promise<string[]>;
 };
 
 export type EjectChatModelResult = {
@@ -72,7 +75,15 @@ export async function ejectChatModel(
     // A cached row is never the active model, so the scoped read can never
     // match it. Name it directly: the Transformers backend can still hold it.
     await deps.unload(target);
-    return { unloadedAliases: [target], stillResident: null, replacedBy: null };
+    // Then confirm, for the same reason every other path does: /unload answers
+    // 200 for a name the backend no longer holds, so the call is not evidence.
+    const cached = await deps.readCached?.();
+    const survived = cached?.some((name) => deps.matches(target, name)) ?? false;
+    return {
+      unloadedAliases: survived ? [] : [target],
+      stillResident: survived ? target : null,
+      replacedBy: null,
+    };
   }
   // Nothing was unloaded. Either the model is already free, or a load replaced
   // it before the click -- and /unload naming a replaced model is a documented
