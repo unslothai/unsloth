@@ -22,6 +22,7 @@ import json
 import httpx
 from loggers import get_logger
 import asyncio
+import contextvars
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
@@ -3140,6 +3141,19 @@ def _monitor_prompt_from_messages(messages) -> str:
     return "\n\n".join(lines)
 
 
+# A wrapper route that keeps its own monitor row (Responses) suppresses the inner chat
+# handler's via skip_api_monitor, which also drops the engine timings computed inside it:
+# every in-process path answers with a ChatCompletion, and that pydantic model has no
+# timings field, so they cannot be read back off the serialized body. The wrapper leaves a
+# dict here for the duration of the inner call and reads the span out of it afterwards.
+# A dict rather than a plain value because a context is copied into tasks and threads:
+# reads flow down, writes do not flow back up, but a mutation of the shared dict does.
+_monitor_perf_sink: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "unsloth_monitor_perf_sink",
+    default = None,
+)
+
+
 def _monitor_usage(
     monitor_id: Optional[str],
     usage: Optional[dict],
@@ -3148,6 +3162,12 @@ def _monitor_usage(
     timings: Optional[dict] = None,
     stop_reason: Optional[str] = None,
 ):
+    # Only when the row is suppressed: a call that records its own timings needs no
+    # relay, and must not overwrite the wrapper's with a nested request's.
+    if not monitor_id and isinstance(timings, dict) and timings:
+        sink = _monitor_perf_sink.get()
+        if sink is not None:
+            sink["timings"] = timings
     # isinstance, not truthiness: a non-dict usage would raise on .get() into the
     # streaming generator and abort the user's response.
     if isinstance(usage, dict) and usage:
@@ -14861,8 +14881,15 @@ async def _responses_non_streaming(
     if request_state is not None:
         request_state.skip_api_monitor = True
 
+    # Catches the engine timings the suppressed inner monitor would otherwise drop.
+    inner_perf: dict = {}
+
     try:
-        result = await openai_chat_completions(chat_req, request)
+        _sink_token = _monitor_perf_sink.set(inner_perf)
+        try:
+            result = await openai_chat_completions(chat_req, request)
+        finally:
+            _monitor_perf_sink.reset(_sink_token)
 
         # openai_chat_completions returns a JSONResponse for non-streaming.
         if isinstance(result, Response):
@@ -14933,7 +14960,13 @@ async def _responses_non_streaming(
             usage_data,
             _monitor_context_length(),
             # Inner chat monitor is suppressed here, so perf stats must come off the body.
-            timings = body.get("timings") if isinstance(body, dict) else None,
+            # Only the llama-server pass-through relays a body with timings in it; every
+            # in-process path returns a ChatCompletion, which has no field to carry them,
+            # so those arrive through the sink instead.
+            timings = (
+                (body.get("timings") if isinstance(body, dict) else None)
+                or inner_perf.get("timings")
+            ),
             stop_reason = (choices[0].get("finish_reason") if choices else None),
         )
         api_monitor.finish(monitor_id)

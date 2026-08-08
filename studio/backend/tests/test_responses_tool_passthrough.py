@@ -834,6 +834,101 @@ class TestResponsesNonStreamingAdapter:
         assert entry["completion_tokens"] == 3
         assert request.state.skip_api_monitor is False
 
+    @staticmethod
+    def _run_in_process_completion(monkeypatch, monitor, timings):
+        """Drive the wrapper over an in-process chat completion.
+
+        The real thing suppresses its own monitor row and answers with a serialized
+        ``ChatCompletion``, so the engine timings it computed have nowhere on the body to
+        ride out: the pydantic model has no ``timings`` field and drops the key.
+        """
+        import routes.inference as inf_mod
+        from models.inference import (
+            ChatCompletion,
+            CompletionChoice,
+            CompletionMessage,
+            CompletionUsage,
+        )
+
+        usage = {"prompt_tokens": 11, "completion_tokens": 50, "total_tokens": 61}
+
+        async def fake_chat_completions(chat_req, request):
+            assert request.state.skip_api_monitor is True
+            # monitor_id is None here: this call's own row is the suppressed one.
+            inf_mod._monitor_usage(None, usage, 4096, timings = timings)
+            return inf_mod._model_json_response(
+                ChatCompletion(
+                    model = "test-model",
+                    choices = [
+                        CompletionChoice(
+                            index = 0,
+                            message = CompletionMessage(content = "answer"),
+                            finish_reason = "stop",
+                        )
+                    ],
+                    usage = CompletionUsage(**usage),
+                )
+            )
+
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        request = SimpleNamespace(
+            state = SimpleNamespace(),
+            url = SimpleNamespace(path = "/v1/responses"),
+            method = "POST",
+        )
+
+        async def run():
+            response = await _responses_non_streaming(
+                ResponsesRequest(input = "hi"),
+                [ChatMessage(role = "user", content = "hi")],
+                request,
+            )
+            return json.loads(response.body.decode())
+
+        return asyncio.run(run())
+
+    def test_in_process_engine_timings_reach_the_monitor(self, monkeypatch):
+        """A local non-streamed /v1/responses counted into total tokens and never into
+        the Throughput tile, which rates on decode_ms: the wrapper read the span off the
+        response body, and a ChatCompletion cannot carry one."""
+        from models.inference import ChatCompletion
+
+        # The premise, asserted rather than assumed: pydantic ignores an undeclared
+        # field, so a body lookup alone can never find these.
+        assert "timings" not in json.loads(
+            ChatCompletion(choices = [], timings = {"predicted_ms": 1000.0}).model_dump_json()
+        )
+
+        monitor = ApiMonitor(max_entries = 3)
+        body = self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {"prompt_ms": 9000.0, "predicted_ms": 1000.0, "predicted_per_second": 50.0},
+        )
+
+        assert body["output"][0]["content"][0]["text"] == "answer"
+        [entry] = monitor.snapshot()
+        assert entry["completion_tokens"] == 50
+        assert entry["decode_ms"] == 1000
+        # 9s of that request was queue wait and prefill; the model generated at 50 tok/s.
+        assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
+
+    def test_a_relayed_decode_span_does_not_outlive_its_request(self, monkeypatch):
+        """The relay is scoped to one inner call, so an engine that reports no timings
+        must not inherit the previous request's span."""
+        monitor = ApiMonitor(max_entries = 3)
+        self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {"predicted_ms": 1000.0},
+        )
+        self._run_in_process_completion(monkeypatch, monitor, None)
+
+        newest, previous = monitor.snapshot()
+        assert previous["decode_ms"] == 1000
+        assert newest["decode_ms"] is None
+
     def test_monitor_records_tool_only_reply(self, monkeypatch):
         import routes.inference as inf_mod
 
