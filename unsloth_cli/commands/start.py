@@ -4206,10 +4206,10 @@ def _vibe_toml_escape(value: str) -> str:
     """
     return (
         value.replace("\\", "\\\\")
-             .replace('"', '\\"')
-             .replace("\n", "\\n")
-             .replace("\r", "\\r")
-             .replace("\t", "\\t")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
     )
 
 

@@ -4928,9 +4928,7 @@ def test_connect_vibe_no_launch_yolo_pins_auto_approve(fake_studio, tmp_path):
     # --yolo routes to vibe's own --auto-approve flag on the command line so
     # even a bare `vibe` invocation auto-approves this session.
     assert "vibe --auto-approve" in result.output
-    parsed = _parse_toml(
-        (tmp_path / "agents" / "vibe" / ".vibe" / "config.toml").read_text()
-    )
+    parsed = _parse_toml((tmp_path / "agents" / "vibe" / ".vibe" / "config.toml").read_text())
     # And also to the persistent config so a passthrough subcommand (`vibe -p ...`)
     # that ignores CLI-only flags still runs in auto-approve mode.
     assert parsed["auto_approve"] is True
