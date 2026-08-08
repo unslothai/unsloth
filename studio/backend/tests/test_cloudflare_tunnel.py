@@ -1611,7 +1611,7 @@ def cf(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     cert_dir = tmp_path / "cloudflared"
     monkeypatch.setattr(ct, "origin_cert_path", lambda: cert_dir / "cert.pem")
-    monkeypatch.setattr(ct, "_claim_path", lambda: tmp_path / "claim" / "claim.json")
+    monkeypatch.setattr(ct, "_claim_path", lambda: tmp_path / "claim" / "claim.lock")
     fake = FakeCloudflared(cert_dir)
     monkeypatch.setattr(ct, "_cli", fake)
     monkeypatch.setattr(ct, "_spawn_login", fake.spawn)
@@ -1763,6 +1763,50 @@ def test_the_orphan_is_recorded_before_the_run_is_discarded(cf):
     assert ct._read(ct._RECORD) is None
 
 
+def test_a_held_claim_blocks_every_other_operation_and_is_released_after(cf):
+    with ct.certificate_state_claim("teardown"):
+        with pytest.raises(ct.ProvisioningError) as excinfo:
+            with ct.certificate_state_claim("setup"):
+                pass
+        assert excinfo.value.code == "certificate_state_busy"
+        assert "teardown" in excinfo.value.detail
+        with pytest.raises(ct.ProvisioningError) as excinfo:
+            _provision()
+        assert excinfo.value.code == "certificate_state_busy"
+    with ct.certificate_state_claim("teardown"):
+        pass
+
+
+def test_a_claim_held_by_another_process_blocks_this_one(cf, tmp_path):
+    path = ct._claim_path()
+    ct._writable_dir(path.parent)
+    program = (
+        "import os,sys,time;"
+        f"sys.path.insert(0, {str(ct.Path(ct.__file__).parent)!r});"
+        "import cloudflare_tunnel as ct;"
+        f"ct._claim_path = lambda: ct.Path({str(path)!r});"
+        "ctx = ct.certificate_state_claim('setup');"
+        "ctx.__enter__();"
+        "print('held', flush = True);"
+        "time.sleep(30)"
+    )
+    holder = subprocess.Popen([sys.executable, "-c", program], stdout = subprocess.PIPE, text = True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(ct.ProvisioningError) as excinfo:
+            with ct.certificate_state_claim("cleanup"):
+                pass
+        assert excinfo.value.code == "certificate_state_busy"
+        holder.kill()
+        holder.wait(timeout = 5)
+        with ct.certificate_state_claim("cleanup"):
+            pass
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout = 5)
+
+
 def test_the_login_child_is_written_down_on_disk_while_it_runs(cf):
     _provision()
     seen = cf.child.records[0]
@@ -1780,3 +1824,11 @@ def test_every_command_is_pinned_to_the_certificate_we_proved(monkeypatch):
     assert argv[argv.index("--origincert") + 1] == str(ct.origin_cert_path())
     assert not {"--overwrite-dns", "-f"} & set(argv)
     assert not any(key.startswith("TUNNEL_") for key in sent["env"])
+
+
+class _AlwaysFree:
+    def acquire(self, blocking = True):
+        return True
+
+    def release(self):
+        pass

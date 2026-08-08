@@ -1027,6 +1027,12 @@ _ROUTE_ADVICE = "overwrite any existing DNS records for this hostname."
 _CLI_TIMEOUT = 60.0
 _LOGIN_DEADLINE = 900.0
 
+# Fall back only when the platform explicitly lacks file locking.
+_LOCK_UNSUPPORTED = frozenset({errno.ENOTSUP, errno.EOPNOTSUPP})
+
+# Keep the Windows lock past the readable holder message.
+_LOCK_OFFSET = 1 << 30
+
 _claim_lock = threading.Lock()
 
 
@@ -1047,7 +1053,7 @@ def origin_cert_path() -> Path:
 
 
 def _claim_path() -> Path:
-    return Path.home() / ".unsloth" / "cloudflare" / "claim.json"
+    return Path.home() / ".unsloth" / "cloudflare" / "claim.lock"
 
 
 def _state_dir() -> Path:
@@ -1167,34 +1173,69 @@ def _pid_alive(pid: object) -> bool:
         return True
 
 
-def _claim_is_live(claim: object) -> bool:
-    if not isinstance(claim, dict) or not _pid_alive(claim.get("pid")):
-        return False
-    recorded = claim.get("created")
-    actual = _process_create_time(claim.get("pid"))
-    if not isinstance(recorded, float) or actual is None:
+def _lock_exclusively(fd: int) -> bool:
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            os.lseek(fd, _LOCK_OFFSET, os.SEEK_SET)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            finally:
+                os.lseek(fd, 0, os.SEEK_SET)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return True
-    return abs(actual - recorded) < 1.0
+    except OSError as exc:
+        if exc.errno in _LOCK_UNSUPPORTED:
+            logger.warning("This filesystem cannot lock; other Studios are unguarded.")
+            return True
+        return False
+
+
+def _release_lock(fd: int) -> None:
+    if sys.platform == "win32":
+        with suppress(OSError):
+            import msvcrt
+            os.lseek(fd, _LOCK_OFFSET, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
+def _busy_detail(path: Path, requested: str) -> str:
+    holder = ""
+    with suppress(OSError):
+        with open(path, "rb") as stream:
+            holder = stream.read(64).decode("utf-8", "replace").strip()
+    return f"Another Cloudflare {holder or requested} step is already running."
 
 
 @contextmanager
 def certificate_state_claim(operation: str):
     path = _claim_path()
-    with _claim_lock:
-        holder = _load(path)
-        if _claim_is_live(holder):
-            step = holder.get("operation") or "setup"
-            detail = f"Another Cloudflare {step} step is already running."
-            raise ProvisioningError("certificate_state_busy", detail)
-        pid = os.getpid()
-        _store(path, {"pid": pid, "created": _process_create_time(pid), "operation": operation})
+    _writable_dir(path.parent)
+    fd, locked, held = None, False, False
     try:
+        fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o600)
+        locked = _lock_exclusively(fd)
+        if not locked:
+            raise ProvisioningError("certificate_state_busy", _busy_detail(path, operation))
+        held = _claim_lock.acquire(blocking = False)
+        if not held:
+            raise ProvisioningError("certificate_state_busy", _busy_detail(path, operation))
+        with suppress(OSError):
+            os.truncate(fd, 0)
+            os.write(fd, operation.encode("utf-8"))
         yield
     finally:
-        with _claim_lock:
-            holder = _load(path)
-            if isinstance(holder, dict) and holder.get("pid") == os.getpid():
-                _unlink(path)
+        if fd is not None:
+            if locked:
+                _release_lock(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if held:
+            _claim_lock.release()
 
 
 # Strip ambient TUNNEL_* flag bindings before invoking cloudflared.
