@@ -1168,7 +1168,7 @@ def test_subagent_model_id_warns_when_status_unavailable(monkeypatch, capsys):
     assert "could not verify the loaded GGUF variant" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("agent", ["openclaw", "hermes"])
+@pytest.mark.parametrize("agent", ["openclaw", "hermes", "vibe"])
 @pytest.mark.parametrize("flag", ["--as-subagent", "--as-subagent=true", "--as-subagent=false"])
 def test_unsupported_agents_reject_as_subagent(agent, flag):
     result = CliRunner().invoke(start.start_app, [agent, flag])
@@ -1176,7 +1176,9 @@ def test_unsupported_agents_reject_as_subagent(agent, flag):
     assert f"--as-subagent is not supported for {agent}." in result.output
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
+@pytest.mark.parametrize(
+    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "vibe"]
+)
 def test_launch_preflights_agent_before_connect(agent, monkeypatch):
     events = []
 
@@ -1220,7 +1222,9 @@ def test_declined_opencode_subagent_install_stops_before_connect(monkeypatch):
     assert installs[0][0] == "opencode"
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
+@pytest.mark.parametrize(
+    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "vibe"]
+)
 def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
     monkeypatch.setattr(
@@ -1240,7 +1244,9 @@ def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
     assert f"`{agent}` not found on PATH" in result.output
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
+@pytest.mark.parametrize(
+    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "vibe"]
+)
 def test_no_launch_skips_agent_resolution(agent, monkeypatch):
     monkeypatch.setattr(
         start,
@@ -2896,7 +2902,7 @@ def test_connect_load_knobs_reach_server_even_when_id_loaded(fake_studio):
 
 
 @pytest.mark.parametrize(
-    "command_name", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"]
+    "command_name", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "vibe"]
 )
 def test_start_agents_expose_gpu_memory_mode_option(command_name):
     import inspect
@@ -4837,6 +4843,98 @@ def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_pat
     home = tmp_path / "agents" / "pi"
     assert f'$env:HOME = "{home}"' in result.output
     assert f'$env:USERPROFILE = "{home}"' in result.output
+
+
+# ── Vibe (Mistral, OpenAI-compatible /v1, key via env, ~/.vibe relocated via VIBE_HOME) ──
+
+
+def test_write_vibe_config_fresh(tmp_path):
+    path = tmp_path / ".vibe" / "config.toml"
+    start.write_vibe_config(BASE, "sk-unsloth-abc", MODEL, path)
+    parsed = _parse_toml(path.read_text())
+    # Pin active_model to a stable alias so vibe never depends on the exact repo id
+    # (which changes per GGUF quant); the alias maps to the concrete provider/model.
+    assert parsed["active_model"] == start._VIBE_MODEL_ALIAS
+    # Session-scoped: mute anything that reaches the network on its own initiative.
+    assert parsed["enable_telemetry"] is False
+    assert parsed["enable_update_checks"] is False
+    assert parsed["enable_auto_update"] is False
+    assert parsed["enable_notifications"] is False
+    # No --yolo => neither default_agent nor auto_approve is forced into the config,
+    # so the user's own default_agent (if any) is honored in interactive sessions.
+    assert "default_agent" not in parsed
+    assert "auto_approve" not in parsed
+    provider = parsed["providers"][0]
+    assert provider["name"] == start._VIBE_PROVIDER
+    assert provider["api_base"] == f"{BASE}/v1"
+    assert provider["api_key_env_var"] == start._VIBE_ENV_KEY
+    assert provider["api_style"] == "openai"
+    assert provider["backend"] == "generic"
+    model_entry = parsed["models"][0]
+    assert model_entry["name"] == MODEL["id"]
+    assert model_entry["provider"] == start._VIBE_PROVIDER
+    assert model_entry["alias"] == start._VIBE_MODEL_ALIAS
+    # .env sibling is created 0600 so a world-traversable parent dir can't leak the key.
+    env_path = path.parent / ".env"
+    assert env_path.read_text() == f"{start._VIBE_ENV_KEY}=sk-unsloth-abc\n"
+    assert (env_path.stat().st_mode & 0o777) == 0o600
+
+
+def test_write_vibe_config_yolo_pins_auto_approve(tmp_path):
+    path = tmp_path / ".vibe" / "config.toml"
+    start.write_vibe_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
+    parsed = _parse_toml(path.read_text())
+    # --yolo routes to both the persistent auto_approve flag AND default_agent so
+    # programmatic (-p) and interactive sessions both auto-approve tool calls.
+    assert parsed["auto_approve"] is True
+    assert parsed["default_agent"] == "auto-approve"
+
+
+def test_write_vibe_config_idempotent(tmp_path):
+    path = tmp_path / ".vibe" / "config.toml"
+    start.write_vibe_config(BASE, "sk-unsloth-abc", MODEL, path)
+    before = path.read_text()
+    start.write_vibe_config(BASE, "sk-unsloth-abc", MODEL, path)
+    assert path.read_text() == before
+
+
+def test_connect_vibe_no_launch(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["vibe", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    # $VIBE_HOME relocates vibe's config.toml + .env + sessions to keep the user's
+    # real ~/.vibe untouched; HOME is also relocated for any auxiliary lookup that
+    # bypasses VIBE_HOME.
+    home = tmp_path / "agents" / "vibe"
+    vibe_home = home / ".vibe"
+    _assert_env_set(result.output, "HOME", str(home))
+    _assert_env_set(result.output, "VIBE_HOME", str(vibe_home))
+    _assert_env_set(result.output, start._VIBE_ENV_KEY, "sk-unsloth-feedfacefeedface")
+    # No inline --model on the command: the config's active_model alias pins it,
+    # so a passthrough subcommand (`vibe -p '...'`) parses without confusion.
+    assert "vibe\n" in result.output or result.output.rstrip().endswith(" vibe")
+    parsed = _parse_toml((vibe_home / "config.toml").read_text())
+    assert parsed["providers"][0]["api_base"] == f"{BASE}/v1"
+    assert parsed["providers"][0]["api_key_env_var"] == start._VIBE_ENV_KEY
+    assert parsed["models"][0]["name"] == MODEL["id"]
+    # .env holds the minted key so a re-parsed vibe subprocess still finds it.
+    assert (vibe_home / ".env").read_text() == (
+        f"{start._VIBE_ENV_KEY}=sk-unsloth-feedfacefeedface\n"
+    )
+
+
+def test_connect_vibe_no_launch_yolo_pins_auto_approve(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["vibe", "--no-launch", "--yolo"])
+    assert result.exit_code == 0, result.output
+    # --yolo routes to vibe's own --auto-approve flag on the command line so
+    # even a bare `vibe` invocation auto-approves this session.
+    assert "vibe --auto-approve" in result.output
+    parsed = _parse_toml(
+        (tmp_path / "agents" / "vibe" / ".vibe" / "config.toml").read_text()
+    )
+    # And also to the persistent config so a passthrough subcommand (`vibe -p ...`)
+    # that ignores CLI-only flags still runs in auto-approve mode.
+    assert parsed["auto_approve"] is True
+    assert parsed["default_agent"] == "auto-approve"
 
 
 # ── WSLENV path translation + PowerShell quoting (helper units) ──
