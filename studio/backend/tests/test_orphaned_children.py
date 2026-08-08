@@ -1002,10 +1002,16 @@ def test_a_zombie_owner_does_not_shield_its_children(tmp_path, monkeypatch):
     terminated = []
     monkeypatch.setattr(pl, "_posix_terminate", lambda pid, timeout = 5.0: terminated.append(pid))
 
-    (directory / "9500.json").write_text(json.dumps({
-        "owner_pid": 9500, "owner_identity": "same",
-        "children": [{"pid": 9501, "identity": "same"}],
-    }), encoding = "utf-8")
+    (directory / "9500.json").write_text(
+        json.dumps(
+            {
+                "owner_pid": 9500,
+                "owner_identity": "same",
+                "children": [{"pid": 9501, "identity": "same"}],
+            }
+        ),
+        encoding = "utf-8",
+    )
 
     pl.reap_recorded_children(timeout = 1.0)
     assert terminated == [9501], "a zombie Studio kept its orphans alive"
@@ -1029,10 +1035,16 @@ def test_a_group_that_cannot_be_taken_keeps_its_record(tmp_path, monkeypatch):
     monkeypatch.setattr(pl, "_group_has_members", lambda pgid: True)
 
     record = directory / "9600.json"
-    record.write_text(json.dumps({
-        "owner_pid": 9600, "owner_identity": "gone",
-        "children": [{"pid": 9601, "identity": "same", "pgid": 9601}],
-    }), encoding = "utf-8")
+    record.write_text(
+        json.dumps(
+            {
+                "owner_pid": 9600,
+                "owner_identity": "gone",
+                "children": [{"pid": 9601, "identity": "same", "pgid": 9601}],
+            }
+        ),
+        encoding = "utf-8",
+    )
 
     pl._reap_one_record(record, timeout = 1.0)
     assert record.is_file(), "the last handle on a live group was deleted"
