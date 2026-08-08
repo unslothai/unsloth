@@ -1295,10 +1295,9 @@ def test_identity_capture_stops_once_the_child_is_gone(monkeypatch):
 
 def test_an_unanswerable_cleanup_query_counts_as_disarmed():
     hook = (
-        Path(__file__).resolve().parents[2]
-        / "frontend" / "src" / "hooks" / "use-tauri-update.ts"
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "hooks" / "use-tauri-update.ts"
     ).read_text(encoding = "utf-8")
-    gate = hook[hook.index("async function crashCleanupReady"):]
+    gate = hook[hook.index("async function crashCleanupReady") :]
     gate = gate[: gate.index("\n  }")]
     assert "cleanupRearmedRef.current = !isTauri;" in gate, "a failed query still reads as armed"
 
