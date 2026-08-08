@@ -2314,7 +2314,6 @@ class ExternalProviderClient:
                 # and emit on content_block_stop so the chat-adapter can persist
                 # it onto the assistant message for next-turn round-tripping.
                 current_compaction: Optional[dict[str, Any]] = None
-                # Track parallel calls by content-block index.
                 client_tool_uses: dict[int, dict[str, Any]] = {}
                 thinking_blocks: dict[int, dict[str, Any]] = {}
                 hosted_blocks: dict[int, dict[str, Any]] = {}

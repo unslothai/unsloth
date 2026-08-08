@@ -9984,7 +9984,6 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
     )
-    # Preserve provider defaults when top_k is omitted.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
     # Only saved connections may enable Studio execution.
     from state.tool_policy import get_tool_policy as _get_external_tool_policy
