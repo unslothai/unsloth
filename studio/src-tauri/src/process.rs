@@ -5,7 +5,7 @@ use regex::Regex;
 use std::collections::VecDeque;
 use std::io::BufRead;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -626,13 +626,6 @@ impl OwnedBackendHandle {
         }
     }
 
-    fn spawned_pid(&self) -> Option<u32> {
-        match self {
-            Self::Spawned { pid, .. } => Some(*pid),
-            Self::Adopted { .. } => None,
-        }
-    }
-
     fn spawned_child_mut(&mut self) -> Option<&mut Box<dyn ChildWrapper + Send>> {
         match self {
             Self::Spawned { child, .. } => Some(child),
@@ -870,191 +863,6 @@ pub(crate) fn trim_line_endings(bytes: &[u8]) -> &[u8] {
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-/// PID of one child tree we spawned, mirrored outside the mutex that owns its handle so the
-/// force-quit escape hatch can still find it.
-///
-/// Every stop path takes its child *out* of its state under the lock and only then blocks on
-/// the reap, so by the time a wedged shutdown paints the Force quit button the mutex says
-/// `child: None` and the pid is sitting in a local on the stuck thread. A `try_lock` there
-/// would succeed and hand back nothing. A plain atomic answers "which tree is still ours to
-/// kill" with no lock to contend for and no way to block.
-///
-/// `0` means "nothing to kill": never spawned, or already reaped.
-pub(crate) struct TrackedChildTree {
-    label: &'static str,
-    pid: AtomicU32,
-}
-
-impl TrackedChildTree {
-    const fn new(label: &'static str) -> Self {
-        Self {
-            label,
-            pid: AtomicU32::new(0),
-        }
-    }
-
-    /// Mirror a pid at spawn, while we still hold the handle that keeps it ours.
-    pub(crate) fn record(&self, pid: u32) {
-        self.pid.store(pid, Ordering::SeqCst);
-    }
-
-    /// Retire a pid at the moment the child stops being a live target: it was confirmed
-    /// gone, or we are about to let go of its handle.
-    ///
-    /// Both halves matter. On Windows the pid is only reliably ours while a handle to the
-    /// process object is open, because the kernel keeps the object (and its pid) alive for
-    /// exactly that long; once the last handle closes the pid can be handed to a stranger
-    /// and `taskkill /T /F` would go after their tree. So the record must never outlive the
-    /// handle.
-    ///
-    /// Keyed on the pid so a stop that finishes late cannot clear the record of a child that
-    /// has since been restarted, which would leave the live tree with no kill target.
-    pub(crate) fn retire(&self, pid: u32) {
-        let _ = self
-            .pid
-            .compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
-    }
-
-    pub(crate) fn pid(&self) -> Option<u32> {
-        match self.pid.load(Ordering::SeqCst) {
-            0 => None,
-            pid => Some(pid),
-        }
-    }
-}
-
-pub(crate) static SPAWNED_BACKEND_TREE: TrackedChildTree = TrackedChildTree::new("Backend");
-pub(crate) static INSTALLER_TREE: TrackedChildTree = TrackedChildTree::new("Installer");
-pub(crate) static UPDATER_TREE: TrackedChildTree = TrackedChildTree::new("Update");
-
-/// The records are process-wide, so the tests that assert on them take turns rather than
-/// reading each other's sentinel pids. Poisoning is ignored: a panicking test has already
-/// reported itself, and refusing the lock afterwards would only turn one failure into many.
-#[cfg(test)]
-pub(crate) fn lock_tracked_child_trees_for_test() -> std::sync::MutexGuard<'static, ()> {
-    static GUARD: Mutex<()> = Mutex::new(());
-    GUARD
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// Every child tree `cleanup_child_processes` stops, in the order it stops them.
-///
-/// It runs `stop_install`, then `stop_update`, then `stop_backend`, and on Windows the first
-/// two go straight to `force_kill_process_tree`, whose `taskkill` wait and follow-up
-/// `child.wait()` are both unbounded. A quit can therefore wedge on the installer or the
-/// updater and never reach the backend at all, so an escape hatch that knew only about the
-/// backend would leave the tree it was actually stuck on running.
-const TRACKED_CHILD_TREES: [&TrackedChildTree; 3] =
-    [&INSTALLER_TREE, &UPDATER_TREE, &SPAWNED_BACKEND_TREE];
-
-/// The trees force quit still has to reap, in cleanup order.
-///
-/// Split out from the kill itself so the "which children are covered" question stays
-/// answerable on every platform, including the ones that never run `taskkill`.
-pub(crate) fn force_quit_kill_targets() -> Vec<(u32, &'static str)> {
-    TRACKED_CHILD_TREES
-        .iter()
-        .filter_map(|tree| tree.pid().map(|pid| (pid, tree.label)))
-        .collect()
-}
-
-/// Take our child trees down on the way out of a force quit, for the case where no job
-/// object is holding them.
-///
-/// Called only from the force-quit path, which runs while some stop is already stuck, so it
-/// touches no shared state that the stuck reap could be holding: three atomic reads and
-/// detached `taskkill`s. Off Windows this is a no-op; the force-quit path never reaches it
-/// there, because exiting without the reap would orphan the process group either way.
-pub(crate) fn force_kill_tracked_child_trees() {
-    let targets = force_quit_kill_targets();
-    if targets.is_empty() {
-        info!("Force quit found no tracked child tree to terminate");
-        return;
-    }
-
-    #[cfg(windows)]
-    force_kill_process_trees_by_pid(&targets);
-
-    #[cfg(not(windows))]
-    {
-        let _ = targets;
-    }
-}
-
-/// Force-kill Windows process trees by pid alone, with no child handles to reap through.
-///
-/// The force-quit caller has no handles: the reaps it is escaping own them. `taskkill /T /F`
-/// needs only the pid.
-///
-/// Every `taskkill` is launched before any of them is waited on, and they share one budget
-/// rather than getting one each, so the escape hatch cannot be talked into a longer stall by
-/// having more children to clean up, and a slow first tree cannot cost the rest their
-/// reaper. The wait is bounded at all because the whole point of this path is that the user
-/// is already done waiting; anything still running when the budget expires is left running,
-/// since this process has no job object in the branch that calls this (that is *why* it is
-/// called) and the orphaned `taskkill` survives our exit and finishes the job.
-#[cfg(windows)]
-fn force_kill_process_trees_by_pid(targets: &[(u32, &'static str)]) {
-    use std::os::windows::process::CommandExt;
-
-    const TASKKILL_BUDGET: Duration = Duration::from_secs(5);
-
-    let mut pending = Vec::new();
-    for &(pid, label) in targets {
-        match Command::new("taskkill.exe")
-            .creation_flags(CREATE_NO_WINDOW)
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(taskkill) => pending.push((pid, label, taskkill)),
-            Err(e) => warn!(
-                "taskkill could not be launched for {} pid {}: {}",
-                label, pid, e
-            ),
-        }
-    }
-
-    let deadline = std::time::Instant::now() + TASKKILL_BUDGET;
-    while !pending.is_empty() {
-        pending.retain_mut(|(pid, label, taskkill)| match taskkill.try_wait() {
-            Ok(Some(status)) if status.success() => {
-                info!("{} process tree force stopped (pid {})", label, pid);
-                false
-            }
-            Ok(Some(status)) => {
-                warn!(
-                    "taskkill returned non-zero status for {} pid {}: {}",
-                    label, pid, status
-                );
-                false
-            }
-            Err(e) => {
-                warn!("Error polling taskkill for {} pid {}: {}", label, pid, e);
-                false
-            }
-            Ok(None) => true,
-        });
-
-        if pending.is_empty() {
-            return;
-        }
-        if std::time::Instant::now() >= deadline {
-            for (pid, label, _) in &pending {
-                warn!(
-                    "taskkill for {} pid {} outlived its budget; leaving it running and \
-                     exiting anyway",
-                    label, pid
-                );
-            }
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
 /// Force-kill a Windows process tree via hidden `taskkill /T /F`, falling
 /// back to `child.kill()` if taskkill itself fails.  Reaps the child afterward.
 #[cfg(windows)]
@@ -1130,112 +938,6 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    // The escape hatch reads these records instead of the state mutexes, because a wedged
-    // stop has already moved the handle out of its state. A stale entry would point
-    // `taskkill /T /F` at whatever inherited the pid next, so the retire has to be keyed on
-    // the pid rather than being a blind reset.
-    //
-    // Its own record rather than one of the globals, so it needs no turn-taking with the
-    // tests that assert on those.
-    #[test]
-    fn a_tracked_child_pid_record_is_retired_only_by_its_own_pid() {
-        const PID: u32 = 4_000_000_001;
-        const LATER_PID: u32 = 4_000_000_002;
-
-        let tree = TrackedChildTree::new("Test");
-
-        tree.record(PID);
-        assert_eq!(tree.pid(), Some(PID));
-
-        tree.retire(LATER_PID);
-        assert_eq!(
-            tree.pid(),
-            Some(PID),
-            "a stop that finished late must not retire the record of a child that has \
-             since been restarted, or force quit would leave the live tree behind"
-        );
-
-        tree.record(LATER_PID);
-        tree.retire(LATER_PID);
-        assert_eq!(
-            tree.pid(),
-            None,
-            "once the process is done with, the pid has to stop being a kill target, or a \
-             recycled pid gets a taskkill /T /F aimed at it"
-        );
-    }
-
-    // `cleanup_child_processes` stops the installer, then the updater, then the backend, and
-    // on Windows the first two go straight to `force_kill_process_tree`, whose `taskkill`
-    // wait and follow-up `child.wait()` are both unbounded. So the quit the overlay is
-    // covering can be wedged on any of the three, and the escape hatch has to be able to
-    // reap whichever one it is: a backend-only fallback exits and leaves a stuck installer
-    // or updater tree running.
-    #[test]
-    fn force_quit_covers_every_tree_the_cleanup_sequence_stops() {
-        const INSTALLER_PID: u32 = 4_000_000_011;
-        const UPDATER_PID: u32 = 4_000_000_012;
-        const BACKEND_PID: u32 = 4_000_000_013;
-
-        let _turn = lock_tracked_child_trees_for_test();
-        INSTALLER_TREE.record(INSTALLER_PID);
-        UPDATER_TREE.record(UPDATER_PID);
-        SPAWNED_BACKEND_TREE.record(BACKEND_PID);
-
-        let targets = force_quit_kill_targets();
-
-        INSTALLER_TREE.retire(INSTALLER_PID);
-        UPDATER_TREE.retire(UPDATER_PID);
-        SPAWNED_BACKEND_TREE.retire(BACKEND_PID);
-
-        assert_eq!(
-            targets,
-            vec![
-                (INSTALLER_PID, "Installer"),
-                (UPDATER_PID, "Update"),
-                (BACKEND_PID, "Backend"),
-            ],
-            "the overlay covers the whole cleanup sequence, so force quit has to cover every \
-             child it stops, in the order it stops them"
-        );
-    }
-
-    // Nothing to kill has to stay distinguishable from something to kill, or force quit
-    // would shell out to taskkill with a garbage pid on a clean shutdown.
-    #[test]
-    fn force_quit_has_no_targets_once_every_tree_is_retired() {
-        let _turn = lock_tracked_child_trees_for_test();
-        INSTALLER_TREE.record(4_000_000_021);
-        INSTALLER_TREE.retire(4_000_000_021);
-        UPDATER_TREE.record(4_000_000_022);
-        UPDATER_TREE.retire(4_000_000_022);
-        SPAWNED_BACKEND_TREE.record(4_000_000_023);
-        SPAWNED_BACKEND_TREE.retire(4_000_000_023);
-
-        assert!(force_quit_kill_targets().is_empty());
-    }
-
-    // Order, not just eventual retirement. Removing the owner metadata is a filesystem
-    // delete that can stall, and the record must not still be standing when it does: the
-    // child handle that pins the pid is dropped the moment this stop returns, so a retire
-    // deferred past the cleanup is a retire deferred past the handle.
-    #[test]
-    fn the_backend_pid_is_retired_before_the_owner_metadata_removal_that_can_stall() {
-        const PID: u32 = 4_000_000_031;
-
-        let _turn = lock_tracked_child_trees_for_test();
-        SPAWNED_BACKEND_TREE.record(PID);
-
-        let mut during_cleanup = Some(PID);
-        finish_stopped_backend(PID, || during_cleanup = SPAWNED_BACKEND_TREE.pid());
-
-        SPAWNED_BACKEND_TREE.retire(PID);
-        assert_eq!(
-            during_cleanup, None,
-            "the pid has to be retired before the cleanup that can stall runs, not after it"
-        );
-    }
 
     fn temp_studio_dir(test_name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -1566,9 +1268,6 @@ pub fn start_backend(
             backend_pid,
             generation,
         ));
-        // Mirrored out of the lock so force quit can reach the tree once a wedged
-        // `stop_backend` has taken this handle out of the state.
-        SPAWNED_BACKEND_TREE.record(backend_pid);
         proc.diagnostics_session = Some(backend_log.clone());
         (generation, backend_log, stdout, stderr)
     };
@@ -2041,12 +1740,6 @@ fn read_output_stream<R: std::io::Read>(
 
             if exited {
                 if let Some(owned) = proc.owned.take() {
-                    // The process is confirmed gone and this handle is about to drop, so
-                    // retire the pid before it can be recycled and force quit starts aiming
-                    // taskkill at a stranger.
-                    if let Some(pid) = owned.spawned_pid() {
-                        SPAWNED_BACKEND_TREE.retire(pid);
-                    }
                     owned.remove_owner_metadata();
                 }
                 proc.port = None;
@@ -2160,24 +1853,6 @@ fn remove_optional_owner(owner: Option<crate::desktop_backend_owner::BackendOwne
     }
 }
 
-/// The tail every terminal branch of `stop_spawned_backend` shares: the child is done with,
-/// so retire its pid first, and only then let the owner metadata go.
-///
-/// The order is the whole point. Removing the metadata is a filesystem delete that can stall
-/// (a network home, an antivirus scan, a file held open), and force quit can fire during that
-/// stall. Retiring afterwards -- or, as it was, only after the entire stop function returns --
-/// leaves the record standing past the moment the child handle is dropped, and on Windows that
-/// handle is the only thing keeping the kernel from handing the pid to a stranger. Doing it
-/// here puts the retire inside the handle's lifetime by construction, whatever the branch
-/// above did and however long the cleanup below takes.
-///
-/// `remove_owner` comes in injected, the way `force_quit_sequence` takes its blocking parts,
-/// so the ordering stays testable without a real owner file behind it.
-fn finish_stopped_backend(pid: u32, remove_owner: impl FnOnce()) {
-    SPAWNED_BACKEND_TREE.retire(pid);
-    remove_owner();
-}
-
 fn stop_spawned_backend(
     mut child: Box<dyn ChildWrapper + Send>,
     owner: Option<crate::desktop_backend_owner::BackendOwnerState>,
@@ -2198,7 +1873,7 @@ fn stop_spawned_backend(
             && try_exact_port_http_shutdown(port, "Spawned backend")
             && wait_for_child_exit(&mut child, "Backend")
         {
-            finish_stopped_backend(pid, || remove_optional_owner(owner));
+            remove_optional_owner(owner);
             return Ok(());
         }
     }
@@ -2209,7 +1884,7 @@ fn stop_spawned_backend(
             warn!("PID {} exceeds i32 range, using direct kill", pid);
             let _ = child.kill();
             let _ = child.wait();
-            finish_stopped_backend(pid, || remove_optional_owner(owner));
+            remove_optional_owner(owner);
             return Ok(());
         }
         unsafe {
@@ -2228,7 +1903,7 @@ fn stop_spawned_backend(
     }
 
     if wait_for_child_exit(&mut child, "Backend") {
-        finish_stopped_backend(pid, || remove_optional_owner(owner));
+        remove_optional_owner(owner);
         return Ok(());
     }
 
@@ -2239,7 +1914,7 @@ fn stop_spawned_backend(
             pid
         );
         force_kill_process_tree(pid, &mut child, "Backend");
-        finish_stopped_backend(pid, || remove_optional_owner(owner));
+        remove_optional_owner(owner);
         return Ok(());
     }
 
@@ -2251,7 +1926,7 @@ fn stop_spawned_backend(
         );
         let _ = child.kill();
         let _ = child.wait();
-        finish_stopped_backend(pid, || remove_optional_owner(owner));
+        remove_optional_owner(owner);
         info!("Backend process group forcefully stopped");
         Ok(())
     }
@@ -2372,15 +2047,7 @@ fn stop_backend_inner(
             reported_port,
             pid,
             ..
-        })) => {
-            let stopped = stop_spawned_backend(child, owner, reported_port, pid);
-            // A backstop only. Every terminal branch in there retires the pid the moment the
-            // child is confirmed gone, which is what keeps the record from outliving the
-            // handle that pins the pid; this catches a branch added later that forgets to.
-            // Harmless when the retire already happened, because it is keyed on the pid.
-            SPAWNED_BACKEND_TREE.retire(pid);
-            stopped
-        }
+        })) => stop_spawned_backend(child, owner, reported_port, pid),
         Some(StopTarget::Adopted {
             owner,
             port,
@@ -2498,92 +2165,5 @@ mod exit_status_after_stdout_closed_tests {
                 "child exiting after {delay_ms}ms was read as still alive"
             );
         }
-    }
-}
-
-// The escape hatch reads a pid record, not the state mutex, so the record has to stop
-// naming a child the moment that child is done with. These use real processes because the
-// thing being pinned is the relationship between the reap returning and the record being
-// retired, which no mock of the child would reproduce.
-#[cfg(test)]
-#[cfg(unix)]
-mod stop_spawned_backend_record_tests {
-    use super::*;
-
-    fn spawn(ignore_sigterm: bool) -> Box<dyn ChildWrapper + Send> {
-        let mut cmd = Command::new("/bin/sh");
-        cmd.args(["-c", "exec sleep 30"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if ignore_sigterm {
-            // Set here rather than with a shell `trap`, which dash drops, and inherited
-            // across the exec so the `sleep` itself ignores it. That makes the graceful
-            // wait spend its full budget before the SIGKILL fallback, which is the shape
-            // of a slow reap without needing a real one.
-            unsafe {
-                use std::os::unix::process::CommandExt;
-                cmd.pre_exec(|| {
-                    libc::signal(libc::SIGTERM, libc::SIG_IGN);
-                    Ok(())
-                });
-            }
-        }
-        let mut wrap = CommandWrap::from(cmd);
-        wrap.wrap(ProcessGroup::leader());
-        wrap.spawn().expect("spawn test child")
-    }
-
-    // Retiring in the caller instead leaves the record standing across everything the stop
-    // still has to do after the child is gone, and across the handle drop that ends the
-    // kernel's guarantee that the pid is still ours.
-    #[test]
-    fn the_pid_is_retired_by_the_time_the_stop_returns_not_by_its_caller() {
-        let _turn = lock_tracked_child_trees_for_test();
-
-        let child = spawn(false);
-        let pid = child.id();
-        SPAWNED_BACKEND_TREE.record(pid);
-
-        stop_spawned_backend(child, None, None, pid).expect("stopping a sleeper must succeed");
-
-        let recorded = SPAWNED_BACKEND_TREE.pid();
-        SPAWNED_BACKEND_TREE.retire(pid);
-        assert_eq!(
-            recorded, None,
-            "the reap itself has to retire the pid, or force quit can still be handed a \
-             stale target after the stop has finished with the child"
-        );
-    }
-
-    // The other half, and the one that would silently break force quit rather than merely
-    // misaim it: a stop that has not finished yet has to keep its pid on record, because a
-    // reap that will not finish is the entire reason the button exists.
-    //
-    // Observed from a second thread while a real stop is genuinely mid-flight. The child
-    // ignores SIGTERM, so the graceful wait spends its full five seconds before the SIGKILL
-    // fallback, which is the shape of the wedge without needing one.
-    #[test]
-    fn the_pid_stays_on_record_while_the_stop_is_still_running() {
-        let _turn = lock_tracked_child_trees_for_test();
-
-        let child = spawn(true);
-        let pid = child.id();
-        SPAWNED_BACKEND_TREE.record(pid);
-
-        let observer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(500));
-            SPAWNED_BACKEND_TREE.pid()
-        });
-
-        stop_spawned_backend(child, None, None, pid).expect("stopping the child must succeed");
-        let mid_stop = observer.join().expect("observer thread must not panic");
-
-        SPAWNED_BACKEND_TREE.retire(pid);
-        assert_eq!(
-            mid_stop,
-            Some(pid),
-            "a stop still in progress must leave force quit a target to kill, or the escape \
-             hatch exits on a tree nothing is reaping"
-        );
     }
 }

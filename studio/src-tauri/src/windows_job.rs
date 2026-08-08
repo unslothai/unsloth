@@ -37,26 +37,6 @@ pub fn initialize() {
     }
 }
 
-/// Whether a kill-on-close job object is actually holding this process.
-///
-/// `initialize` deliberately survives a failed `CreateJobObjectW`/`AssignProcessToJobObject`
-/// by storing `None` and leaving cleanup to the explicit stop paths, so "we are on Windows"
-/// is not the same claim as "exiting will reap the children". Anything that skips the reap
-/// has to ask this, not `cfg!(target_os = "windows")`.
-///
-/// `false` before `initialize` runs, and `false` off Windows, where there is no job object
-/// to hold anything in the first place.
-pub fn has_active_job() -> bool {
-    #[cfg(windows)]
-    {
-        APP_JOB.get().is_some_and(Option::is_some)
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
-}
-
 #[cfg(windows)]
 unsafe fn create_app_job_object() -> std::io::Result<OwnedHandle> {
     let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -128,21 +108,6 @@ pub fn suspend_for_update_installer() -> std::io::Result<()> {
     unsafe { set_kill_on_close(job, false) }?;
     info!("Windows job cleanup suspended for updater installer launch");
     Ok(())
-}
-
-#[cfg(all(test, not(windows)))]
-mod unix_tests {
-    use super::*;
-
-    #[test]
-    fn no_job_object_is_ever_active_off_windows() {
-        initialize();
-        assert!(
-            !has_active_job(),
-            "job objects are a Windows facility, so callers off Windows must never be told \
-             something will reap their children on exit"
-        );
-    }
 }
 
 #[cfg(all(test, windows))]

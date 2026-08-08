@@ -847,80 +847,42 @@ impl<E: Fn(&str)> Drop for ClosingOverlay<E> {
     }
 }
 
-/// Abandons the reap, on the platforms where that is safe. Returns whether the caller
-/// should now exit.
+/// Whether this quit has a window worth covering.
 ///
-/// Split out with its cleanup injected, the same way `quit_sequence` is, so both platform
-/// shapes stay covered by tests on whichever one is running them.
+/// Windows only, for the reason `request_quit` gives. Past that the question is whether
+/// there is anything on screen to explain. The tray's Quit reaches `request_quit` without
+/// going through the main window at all, and an autostart launch passes `--hidden`, whose
+/// window is built `"visible": false` and never shown, so the overlay would paint into a
+/// window nobody can see. Showing the window first was the other option and it is worse: a
+/// window that pops open because you asked the app to go away is a surprise, and there is
+/// no frozen window to explain when none is on screen.
 ///
-/// Windows only. Everywhere else the backend is spawned as its own process-group leader with
-/// nothing holding it, which is the whole reason `setup_unix_termination_signals` exists, and
-/// exiting here would orphan it.
+/// A minimized window does count as visible, and that is the answer we want rather than an
+/// accident: Tauri's `is_visible` is `IsWindowVisible`, which reports the `WS_VISIBLE`
+/// style bit, and minimizing does not clear it. The user can restore part way through the
+/// reap, and the frozen window this exists to explain is exactly what they must not find.
 ///
-/// On Windows the reaper is normally the kill-on-close app job object, which takes the
-/// backend tree down when this process leaves. But `windows_job::initialize` treats a failed
-/// job object as non-fatal: it logs that cleanup now rests on the explicit stop paths and
-/// carries on with no job. `process::exit` runs none of those paths, so trusting the target
-/// OS rather than the job would orphan the whole backend tree, port and GPU memory included,
-/// on exactly the machines where the job could not be created.
+/// The visibility read is injected rather than taken off an `AppHandle`, which cannot be
+/// built in a test, and it is asked for only on Windows: the getter blocks on a round trip
+/// to the event loop, and nothing off Windows raises an overlay to spend it on.
 ///
-/// So the branch is on the reaper, not the platform, and the no-job branch terminates the
-/// trees itself instead of declining. Declining would be worse than the orphan: force quit is
-/// only ever offered after the reap has blown through its own timeouts, and a button that
-/// does nothing is the dead-control state this overlay work exists to remove.
-///
-/// Trees, plural, because the overlay covers the whole of `cleanup_child_processes`, not just
-/// its last step. That runs `stop_install`, then `stop_update`, then `stop_backend`, and on
-/// Windows the first two go straight to an unbounded `taskkill` wait, so the quit can be
-/// wedged on the installer or the updater and never reach the backend at all.
-///
-/// `kill_trees` and `cleanup` come in injected, the way `quit_sequence` takes its blocking
-/// parts, so every branch stays testable on whichever platform is running the tests.
-fn force_quit_sequence(
+/// `None` means there is no main window, which is nothing to cover. A visibility that
+/// cannot be read raises the overlay anyway: an emit into a hidden window costs nothing,
+/// and an unexplained frozen window is the whole failure being fixed.
+fn quit_raises_the_overlay(
     windows: bool,
-    job_active: bool,
-    kill_trees: impl FnOnce(),
-    cleanup: impl FnOnce(),
+    main_window_visible: impl FnOnce() -> Option<Result<bool, String>>,
 ) -> bool {
     if !windows {
-        warn!("Force quit ignored: exiting here would orphan the backend process group");
         return false;
     }
-    if job_active {
-        warn!("Force quit requested, exiting without waiting for the backend reap");
-    } else {
-        warn!(
-            "Force quit requested with no app job object; terminating our child process trees \
-             before exiting so they are not orphaned"
-        );
-        // First, so a cleanup that wedges in turn cannot cost us the kills as well.
-        kill_trees();
-    }
-    // Before the exit, the way Tauri itself pairs them in `AppHandle::exit`. `process::exit`
-    // runs no destructors, and the tray icon only sends its `NIM_DELETE` from `Drop`, so
-    // skipping this leaves a ghost icon in the notification area until the user hovers it.
-    cleanup();
-    true
-}
-
-/// The overlay's way out, offered once the reap has run well past its own timeouts. The
-/// overlay covers the titlebar, so a teardown that wedges past them would otherwise leave a
-/// window with no controls and nothing to click. Only the Windows overlay reaches this, but
-/// it stays registered everywhere rather than splitting the handler list over a `cfg`: a
-/// command nothing invokes costs nothing.
-#[tauri::command]
-fn force_quit(app: tauri::AppHandle) {
-    if force_quit_sequence(
-        cfg!(target_os = "windows"),
-        windows_job::has_active_job(),
-        // Reads pids out of atomics and shells out to taskkill. It deliberately does not go
-        // through `InstallState` / `UpdateState` / `BackendState`: the stop being escaped has
-        // already taken the handle out of whichever one it was on, and waiting on anything
-        // that stop touches would hang the escape hatch.
-        process::force_kill_tracked_child_trees,
-        || app.cleanup_before_exit(),
-    ) {
-        std::process::exit(0);
+    match main_window_visible() {
+        None => false,
+        Some(Ok(visible)) => visible,
+        Some(Err(error)) => {
+            warn!("Could not read the main window visibility ({error}); covering the quit anyway");
+            true
+        }
     }
 }
 
@@ -934,16 +896,21 @@ fn force_quit(app: tauri::AppHandle) {
 /// training?" dialog on screen, and an overlay behind it would announce the opposite of
 /// what it is asking. It still lands before the reap, which is the whole of the wait.
 fn quit_sequence(
-    cover: bool,
     confirm: impl Fn() -> bool,
+    cover: impl FnOnce() -> bool,
     reap: impl FnOnce(),
     emit: impl Fn(&str),
 ) -> bool {
     if !confirm() {
         return false;
     }
+    // Asked after the confirmations rather than alongside them: a dialog sits on screen for
+    // as long as the user takes to answer it, and the window state that decides this is the
+    // one the reap is about to block. A declined quit never asks, which also keeps the
+    // blocking visibility read off the path that stays in the app.
+    //
     // `None` is the whole no-op: nothing raised, so nothing to retract on the way out.
-    let overlay = cover.then(|| ClosingOverlay::raise(emit));
+    let overlay = cover().then(|| ClosingOverlay::raise(emit));
     reap();
     if let Some(overlay) = overlay {
         overlay.keep();
@@ -967,18 +934,26 @@ fn request_quit(app: &tauri::AppHandle) {
             // Driven from here rather than the CloseRequested arm so the tray Quit is
             // covered on the same terms as the close button.
             let quitting = quit_sequence(
-                // Which is Windows only. macOS never reaches here from the close button,
-                // which hides to the tray, and on Linux the button already quit without
-                // an overlay: the freeze this covers was reported on Windows, where
-                // stop_backend spends its liveness, shutdown and CTRL_BREAK budgets in
-                // series.
-                cfg!(target_os = "windows"),
                 || {
                     confirm_quit_during_install(&app)
                         && confirm_quit_during_update(&app)
                         && confirm_quit_during_shell_update(&app)
                         && confirm_quit_during_training(&app)
                         && confirm_quit_during_downloads(&app)
+                },
+                || {
+                    quit_raises_the_overlay(
+                        // Windows only. macOS never reaches here from the close button,
+                        // which hides to the tray, and on Linux the button already quit
+                        // without an overlay: the freeze this covers was reported on
+                        // Windows, where stop_backend spends its liveness, shutdown and
+                        // CTRL_BREAK budgets in series.
+                        cfg!(target_os = "windows"),
+                        || {
+                            app.get_webview_window("main")
+                                .map(|window| window.is_visible().map_err(|e| e.to_string()))
+                        },
+                    )
                 },
                 || cleanup_child_processes(&app),
                 |event| {
@@ -1171,7 +1146,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             set_training_active,
             set_renderer_activity,
-            force_quit,
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
             app_layout::reset_app_window_layout_initialized,
@@ -1507,7 +1481,7 @@ mod tests {
         let events = std::cell::RefCell::new(Vec::new());
 
         let quitting = quit_sequence(
-            true,
+            || true,
             || true,
             || events.borrow_mut().push("reap".to_string()),
             |event| events.borrow_mut().push(event.to_string()),
@@ -1520,12 +1494,12 @@ mod tests {
     }
 
     #[test]
-    fn a_quit_off_windows_reaps_without_asking_for_an_overlay() {
+    fn a_quit_with_nothing_to_cover_reaps_without_asking_for_an_overlay() {
         let events = std::cell::RefCell::new(Vec::new());
 
         let quitting = quit_sequence(
-            false,
             || true,
+            || false,
             || events.borrow_mut().push("reap".to_string()),
             |event| events.borrow_mut().push(event.to_string()),
         );
@@ -1535,7 +1509,8 @@ mod tests {
             events.into_inner(),
             ["reap"],
             "macOS closes to the tray and Linux quit without an overlay before this \
-             existed, so neither may see the event at all"
+             existed, so neither may see the event at all, and neither may a tray quit \
+             with no window on screen"
         );
     }
 
@@ -1544,8 +1519,8 @@ mod tests {
         let events = std::cell::RefCell::new(Vec::new());
 
         let quitting = quit_sequence(
-            true,
             || false,
+            || true,
             || events.borrow_mut().push("reap".to_string()),
             |event| events.borrow_mut().push(event.to_string()),
         );
@@ -1558,13 +1533,37 @@ mod tests {
         );
     }
 
+    // The visibility read blocks on a round trip to the event loop, and the window state
+    // that decides the overlay is the one the reap will block, not the one from before a
+    // dialog the user sat on for a minute.
+    #[test]
+    fn a_declined_quit_never_asks_whether_the_window_is_visible() {
+        let asked = std::cell::Cell::new(false);
+
+        let quitting = quit_sequence(
+            || false,
+            || {
+                asked.set(true);
+                true
+            },
+            || panic!("a declined quit must not reap"),
+            |_| panic!("a declined quit must not emit"),
+        );
+
+        assert!(!quitting);
+        assert!(
+            !asked.get(),
+            "the window question is only worth asking once the quit is committed"
+        );
+    }
+
     #[test]
     fn a_panicking_reap_takes_the_overlay_back_down() {
         let events = std::cell::RefCell::new(Vec::new());
 
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             quit_sequence(
-                true,
+                || true,
                 || true,
                 || panic!("the reap panicked"),
                 |event| events.borrow_mut().push(event.to_string()),
@@ -1580,13 +1579,13 @@ mod tests {
     }
 
     #[test]
-    fn a_panicking_reap_off_windows_stays_silent() {
+    fn a_panicking_reap_with_nothing_to_cover_stays_silent() {
         let events = std::cell::RefCell::new(Vec::new());
 
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             quit_sequence(
-                false,
                 || true,
+                || false,
                 || panic!("the reap panicked"),
                 |event| events.borrow_mut().push(event.to_string()),
             )
@@ -1600,78 +1599,57 @@ mod tests {
         );
     }
 
+    // The tray's Quit reaches request_quit without going through the main window, and an
+    // autostart launch passes --hidden, whose window is built "visible": false and never
+    // shown. An overlay there paints into a window nobody can see.
     #[test]
-    fn force_quit_with_an_active_job_object_cleans_up_and_exits_without_killing_the_tree() {
-        let steps = std::cell::RefCell::new(Vec::new());
-
-        let exiting = force_quit_sequence(
-            true,
-            true,
-            || steps.borrow_mut().push("kill"),
-            || steps.borrow_mut().push("cleanup"),
-        );
-
+    fn a_quit_with_the_window_hidden_raises_no_overlay() {
         assert!(
-            exiting,
-            "the overlay's last resort has to actually reach the exit"
+            !quit_raises_the_overlay(true, || Some(Ok(false))),
+            "there is no frozen window to explain when no window is on screen"
         );
-        assert_eq!(
-            steps.into_inner(),
-            vec!["cleanup"],
-            "the job object is kill-on-close and this process is a member, so the exit \
-             already takes the tree down; a taskkill here would only add a stall to the one \
-             path the user reaches because they are done waiting"
+    }
+
+    // Not an accident of the API: Tauri's is_visible is IsWindowVisible, which reports the
+    // WS_VISIBLE style bit, and minimizing does not clear it. Restoring part way through
+    // the reap has to find the overlay rather than the freeze it explains.
+    #[test]
+    fn a_minimized_window_still_gets_the_overlay() {
+        assert!(quit_raises_the_overlay(true, || Some(Ok(true))));
+    }
+
+    #[test]
+    fn a_quit_with_no_main_window_at_all_raises_no_overlay() {
+        assert!(
+            !quit_raises_the_overlay(true, || None),
+            "a window that does not exist cannot be looking frozen"
         );
     }
 
     #[test]
-    fn force_quit_without_an_active_job_object_kills_the_tree_before_it_exits() {
-        let steps = std::cell::RefCell::new(Vec::new());
-
-        let exiting = force_quit_sequence(
-            true,
-            false,
-            || steps.borrow_mut().push("kill"),
-            || steps.borrow_mut().push("cleanup"),
-        );
-
+    fn an_unreadable_window_visibility_still_gets_the_overlay() {
         assert!(
-            exiting,
-            "declining here would paint a Force quit button that does nothing, which is the \
-             dead control this overlay work exists to remove"
-        );
-        assert_eq!(
-            steps.into_inner(),
-            vec!["kill", "cleanup"],
-            "job object creation can fail, and initialize() carries on with none; \
-             process::exit runs no explicit stop path, so nothing reaps the backend tree \
-             unless this does it first"
+            quit_raises_the_overlay(true, || Some(Err("no window handle".to_string()))),
+            "an emit into a hidden window costs nothing, and an unexplained frozen window \
+             is the failure this exists to fix"
         );
     }
 
     #[test]
-    fn force_quit_is_a_no_op_off_windows_whatever_the_job_reports() {
-        for job_active in [true, false] {
-            let steps = std::cell::RefCell::new(Vec::new());
+    fn the_window_visibility_is_never_read_off_windows() {
+        let asked = std::cell::Cell::new(false);
 
-            let exiting = force_quit_sequence(
-                false,
-                job_active,
-                || steps.borrow_mut().push("kill"),
-                || steps.borrow_mut().push("cleanup"),
-            );
+        let raised = quit_raises_the_overlay(false, || {
+            asked.set(true);
+            Some(Ok(true))
+        });
 
-            assert!(
-                !exiting,
-                "off Windows the backend is its own process-group leader with no job object \
-                 holding it, so exiting without the reap would orphan it"
-            );
-            assert!(
-                steps.into_inner().is_empty(),
-                "nothing is exiting, so neither killing the backend out from under the \
-                 running app nor tearing down its tray icon is wanted"
-            );
-        }
+        assert!(!raised, "only Windows shows the freeze this covers");
+        assert!(
+            !asked.get(),
+            "the getter blocks on a round trip to the event loop, and nothing off Windows \
+             raises an overlay to spend it on"
+        );
     }
 
     #[test]

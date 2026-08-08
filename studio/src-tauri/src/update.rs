@@ -132,10 +132,6 @@ fn spawn_update(
 
     let stdout = child.stdout().take();
     let stderr = child.stderr().take();
-    // Mirrored out of the lock so force quit can reach the tree once a wedged `stop_update`
-    // has taken this handle out of the state. `cleanup_child_processes` stops the updater
-    // before it ever reaches the backend, so a quit can be stuck here and get no further.
-    crate::process::UPDATER_TREE.record(child.id());
     update.child = Some(child);
     Ok((stdout, stderr))
 }
@@ -229,27 +225,17 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
         let intentional = update.intentional_stop;
 
         match update.child.as_mut() {
-            Some(child) => {
-                // Both arms below drop the handle, and the pid record is only sound while we
-                // hold it: on Windows an open process handle is what stops the kernel from
-                // handing that pid to a stranger for force quit's `taskkill /T /F` to find.
-                let pid = child.id();
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        crate::process::UPDATER_TREE.retire(pid);
-                        update.child = None;
-                        return Ok((status, intentional));
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        // Not a confirmed exit, but the handle goes anyway, so the record has
-                        // to go with it rather than outlive the pid it was pinning.
-                        crate::process::UPDATER_TREE.retire(pid);
-                        update.child = None;
-                        return Err(format!("Error waiting for update: {}", e));
-                    }
+            Some(child) => match child.try_wait() {
+                Ok(Some(status)) => {
+                    update.child = None;
+                    return Ok((status, intentional));
                 }
-            }
+                Ok(None) => {}
+                Err(e) => {
+                    update.child = None;
+                    return Err(format!("Error waiting for update: {}", e));
+                }
+            },
             None if intentional => return Err(UPDATE_STOPPED.to_string()),
             None => return Err("Update process disappeared unexpectedly.".to_string()),
         }
@@ -458,7 +444,6 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
             warn!("PID {} exceeds i32 range, using direct kill", pid);
             let _ = child.kill();
             let _ = child.wait();
-            crate::process::UPDATER_TREE.retire(pid);
             return Ok(());
         }
         unsafe {
@@ -468,7 +453,6 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     info!("Update exited gracefully with status: {:?}", status);
-                    crate::process::UPDATER_TREE.retire(pid);
                     return Ok(());
                 }
                 Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
@@ -478,13 +462,9 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
         warn!("Update did not exit gracefully, force killing");
     }
 
-    // Each branch retires the pid as soon as its child is done with, and always before this
-    // function returns and drops the handle. Leaving it on record past that point would aim
-    // force quit's `taskkill /T /F` at whatever inherits the pid next.
     #[cfg(windows)]
     {
         crate::process::force_kill_process_tree(pid, child, "Update");
-        crate::process::UPDATER_TREE.retire(pid);
         return Ok(());
     }
 
@@ -492,7 +472,6 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
     {
         let _ = child.kill();
         let _ = child.wait();
-        crate::process::UPDATER_TREE.retire(pid);
         info!("Update process group force stopped");
         Ok(())
     }
@@ -571,88 +550,5 @@ mod tests {
         assert!(build_update_command(&bin)
             .unwrap_err()
             .contains("python.exe"));
-    }
-}
-
-// The updater is the second tree `cleanup_child_processes` stops, still ahead of the
-// backend, so on Windows a quit can wedge on its unbounded `taskkill` wait and never reach
-// the backend at all. Force quit therefore has to know this tree's pid, which means the
-// record has to be accurate: still standing while the stop is stuck, and gone the moment
-// the child is done with, since a stale entry aims `taskkill /T /F` at whatever inherits
-// the pid next.
-#[cfg(test)]
-#[cfg(unix)]
-mod updater_pid_record_tests {
-    use super::*;
-    use crate::process::{lock_tracked_child_trees_for_test, UPDATER_TREE};
-
-    fn state_with_child(script: &str) -> (UpdateState, u32) {
-        let mut cmd = Command::new("/bin/sh");
-        cmd.args(["-c", script])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut wrap = CommandWrap::from(cmd);
-        wrap.wrap(ProcessGroup::leader());
-        let child = wrap.spawn().expect("spawn test updater");
-
-        let pid = child.id();
-        let state = new_update_state();
-        state.lock().unwrap().child = Some(child);
-        (state, pid)
-    }
-
-    #[test]
-    fn stopping_the_updater_retires_its_pid() {
-        let _turn = lock_tracked_child_trees_for_test();
-
-        let (state, pid) = state_with_child("exec sleep 30");
-        UPDATER_TREE.record(pid);
-
-        stop_update(&state).expect("stopping a sleeper must succeed");
-
-        let recorded = UPDATER_TREE.pid();
-        UPDATER_TREE.retire(pid);
-        assert_eq!(
-            recorded, None,
-            "the updater is done with, so its pid must stop being a kill target before the \
-             handle that kept it ours is dropped"
-        );
-    }
-
-    #[test]
-    fn the_updater_pid_stays_on_record_while_it_is_still_running() {
-        let _turn = lock_tracked_child_trees_for_test();
-
-        let (state, pid) = state_with_child("exec sleep 30");
-        UPDATER_TREE.record(pid);
-
-        assert_eq!(
-            UPDATER_TREE.pid(),
-            Some(pid),
-            "a running updater is exactly the tree force quit has to be able to reap"
-        );
-
-        stop_update(&state).expect("stopping a sleeper must succeed");
-        UPDATER_TREE.retire(pid);
-    }
-
-    // The ordinary end of an update, not a quit. Nothing kills this child, it just exits,
-    // and leaving its pid on record would hand force quit a target that has since been
-    // recycled into somebody else's process.
-    #[test]
-    fn an_updater_that_exits_on_its_own_retires_its_pid() {
-        let _turn = lock_tracked_child_trees_for_test();
-
-        let (state, pid) = state_with_child("exit 0");
-        UPDATER_TREE.record(pid);
-
-        wait_for_exit(&state).expect("a child that exits cleanly must be reported");
-
-        let recorded = UPDATER_TREE.pid();
-        UPDATER_TREE.retire(pid);
-        assert_eq!(
-            recorded, None,
-            "a finished update must not leave a kill target behind for force quit"
-        );
     }
 }

@@ -11,7 +11,6 @@ import {
   APP_CLOSING_CANCELLED_EVENT,
   APP_CLOSING_EVENT,
   clearAppClosing,
-  FORCE_QUIT_AFTER_MS,
   isAppClosing,
   markAppClosing,
   subscribeAppClosing,
@@ -127,11 +126,12 @@ test("the overlay survives a modal's body pointer-events lockout", async () => {
   // Radix parks pointer-events:none on <body> for as long as any modal layer is open,
   // and pointer-events inherits. A quit raised from the titlebar controls, the tray or
   // Alt+F4 never closes that layer, so without an explicit auto the overlay is
-  // click-through onto the dialog it is hiding and the force quit button is dead.
+  // click-through onto the dialog it is hiding, and clicks meant for a screen that says
+  // the app is closing land on buttons the user can no longer see.
   assert.match(
     closingScreen,
     /className="pointer-events-auto /,
-    "an open dialog would make the overlay click-through and kill the way out",
+    "an open dialog would take the clicks aimed at the overlay covering it",
   );
 });
 
@@ -148,52 +148,44 @@ test("the close button leaves the overlay to Rust", async () => {
   assert.match(titlebar, /onClick=\{\(\) => runWindowAction\(\(appWindow\) =>\s*appWindow\.close\(\)\)\}/);
 });
 
-test("the overlay offers a way out of a wedged reap", async () => {
-  // Past stop_backend's own worst case, or the button fires over a teardown that was
-  // merely slow. Windows is the platform that gets here and its bounded worst case is
-  // ~18s: 2 liveness plus 2 shutdown requests at 2s each, then two 5s waits for the child
-  // to exit either side of the CTRL_BREAK. The installer's and updater's 5s graceful waits
-  // are cfg(unix), so they cost Windows nothing.
-  assert.ok(
-    FORCE_QUIT_AFTER_MS >= 35_000,
-    "force quit would race a reap that is still within its timeouts",
-  );
-
+test("the overlay is presentation only, with no way out of a wedged reap", async () => {
   const signal = await source("components/tauri/closing-signal.ts");
-  assert.match(signal, /await invoke\("force_quit"\)/);
-
   const screen = await source("components/tauri/startup-screen.tsx");
   const body = closingContent(screen);
 
-  // Gated on the timer, and the timer is cleared on unmount: a declined quit unmounts the
-  // overlay, and a stray timer would raise the button over a running app.
-  assert.match(body, /const \[wedged, setWedged\] = useState\(false\);/);
-  assert.match(
-    body,
-    /setTimeout\(\(\) => setWedged\(true\), FORCE_QUIT_AFTER_MS\)/,
+  // A wedged teardown has no escape, and did not have one before this overlay either: a
+  // second close press, Alt+F4 and the taskbar all land on request_quit, which begin_quit
+  // has already turned into a silent no-op for the life of the reap. The overlay does not
+  // take an escape away, it explains the freeze that was already there.
+  assert.doesNotMatch(
+    signal,
+    /force_quit|forceQuit/,
+    "a force quit command is process management this overlay does not need",
   );
-  assert.match(body, /return \(\) => clearTimeout\(timer\);/);
-  assert.match(body, /\{wedged && \(/, "the button is not gated on the timer");
-  assert.match(body, /onClick=\{\(\) => void forceQuit\(\)\}/);
-  assert.match(body, /Force quit/);
+  assert.doesNotMatch(body, /Force quit/);
+  // No timer either: nothing in the overlay changes with time, so nothing may schedule
+  // work that outlives a declined quit.
+  assert.doesNotMatch(body, /setTimeout|useState/);
 });
 
-test("the force quit command is registered with Tauri", async () => {
+test("a quit with no window on screen raises no overlay", async () => {
   const rust = await readFile(
     new URL("../../src-tauri/src/main.rs", import.meta.url),
     "utf8",
   );
 
-  // An unregistered command fails at the invoke, which is the one moment the user has no
-  // other way out.
-  assert.match(rust, /^\s*force_quit,$/m);
-  // Takes the handle so it can clean up before the exit: std::process::exit runs no
-  // destructors, and the tray icon only sends its NIM_DELETE from Drop.
+  // Tray Quit reaches request_quit without going through the main window, and an autostart
+  // launch passes --hidden, whose window is built "visible": false and never shown. The
+  // overlay explains a frozen window, so with no window on screen there is nothing to say.
   assert.match(
     rust,
-    /#\[tauri::command\]\nfn force_quit\(app: tauri::AppHandle\)/,
+    /fn quit_raises_the_overlay\(/,
+    "the overlay is raised without asking whether anything is on screen",
   );
-  assert.match(rust, /app\.cleanup_before_exit\(\)/);
+  assert.match(
+    rust,
+    /app\.get_webview_window\("main"\)\s*\.map\(\|window\| window\.is_visible\(\)/,
+  );
 });
 
 test("the overlay names the wait it is covering", async () => {
