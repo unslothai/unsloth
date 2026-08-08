@@ -29,6 +29,10 @@ foreach ($name in $helperNames) {
 }
 
 function substep { param([string]$Message, [string]$Color) }
+# The rollback helpers report through install.ps1's UTF-8 stdout sink on their warn
+# and error branches. None of the cases below take one today, but this file runs
+# under "Stop", so an undefined sink would abort the suite rather than fail a check.
+function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Write-Host $Message }
 
 $failures = 0
 function Check($name, $condition) {
