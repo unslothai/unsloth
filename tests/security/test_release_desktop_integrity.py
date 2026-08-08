@@ -98,6 +98,8 @@ def _run_step(
             "COMMAND_LOG": str(log),
             "DESKTOP_RELEASE_TAG": RELEASE_TAG,
             "GH_REPO": "unslothai/unsloth",
+
+            "GITHUB_OUTPUT": str(tmp_path / "github-output"),
             "GH_TOKEN": "masked-token",
             "PATH": f"{fake_bin}:{env['PATH']}",
             "RELEASE_HTTP_STATUS": str(release_http_status),
@@ -151,6 +153,16 @@ def _run_create_release(workflow, tmp_path: Path, **kwargs):
         "STUDIO_VERSION": "v0.1.50-beta",
     }
     env.update(kwargs.pop("extra_env", None) or {})
+
+    # Execute the production publish sequence in one shell so the notes,
+    # metadata and provenance files cross the same step boundaries as Actions.
+    names = (
+        "Validate versioned release state",
+        "Generate versioned updater metadata and provenance",
+        "Create versioned release",
+    )
+    create_step = _step(workflow, "publish-release", "Create versioned release")
+    create_step["run"] = "\n".join(_step(workflow, "publish-release", name)["run"] for name in names)
     return _run_step(
         workflow, "publish-release", "Create versioned release", tmp_path, extra_env = env, **kwargs
     )

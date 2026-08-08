@@ -53,7 +53,6 @@ from unsloth.chat_templates import get_chat_template
 import json
 import threading
 import math
-import subprocess
 import structlog
 from loggers import get_logger
 import time
@@ -62,6 +61,14 @@ from typing import Any, Dict, List, Optional, Callable
 import pandas as pd
 from datasets import Dataset
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
+from utils.hf_dataset_options import hf_dataset_split_instruction_names
+from utils.third_party_source import (
+    ensure_dac_speech_weights,
+    ensure_outetts_source,
+    ensure_spark_tts_source,
+    import_outetts_module,
+    import_sparktts_module,
+)
 
 from utils.models import is_vision_model, detect_audio_type
 from utils.models.model_identity import restore_hf_cache_repo_identity
@@ -78,10 +85,6 @@ from utils.paths import (
 )
 from trl import SFTTrainer, SFTConfig
 
-from utils.native_path_leases import child_env_without_native_path_secret
-from utils.subprocess_compat import (
-    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
-)
 from .training import (
     TrainingProgress,
     create_mlx_trainer_adapter,
@@ -133,6 +136,8 @@ class UnslothTrainer:
         self._audio_type = None  # 'csm', 'whisper', 'snac', 'bicodec', 'dac'
         self._cuda_audio_used = False  # Set once after audio CUDA preprocessing; never cleared
         self._spark_tts_repo_dir = None  # Spark-TTS repo path, for BiCodecTokenizer
+        self._spark_tts_code_dir = None
+        self._outetts_code_dir = None
         self.model_name = None
         self.model_load_error = None
         self.dataset_loaded_from_exact_snapshot = False
@@ -439,20 +444,16 @@ class UnslothTrainer:
     def _cleanup_audio_artifacts(self):
         """Remove sys.path/sys.modules entries from previous audio preprocessing.
 
-        After audio training, cloned repo dirs (OuteTTS, Spark-TTS) and heavy
+        After audio training, codec source dirs and heavy
         modules (snac, whisper, sparktts, outetts) linger; the next
         dataset.map(num_proc=N) forks children that inherit this stale state and
         deadlock.
         """
-        # Remove cloned audio repo paths from sys.path
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        audio_paths = [
-            os.path.join(base_dir, "inference", "OuteTTS"),  # DAC/OuteTTS
-        ]
-        # Spark-TTS path is relative to the downloaded repo
-        if self._spark_tts_repo_dir:
-            spark_code_dir = os.path.join(os.path.dirname(self._spark_tts_repo_dir), "Spark-TTS")
-            audio_paths.append(spark_code_dir)
+        audio_paths = []
+        if self._spark_tts_code_dir:
+            audio_paths.append(str(self._spark_tts_code_dir))
+        if self._outetts_code_dir:
+            audio_paths.append(str(self._outetts_code_dir))
 
         removed_paths = []
         for path in audio_paths:
@@ -465,6 +466,8 @@ class UnslothTrainer:
         removed_modules = [key for key in sys.modules if key.startswith(prefixes)]
         for key in removed_modules:
             del sys.modules[key]
+        self._spark_tts_code_dir = None
+        self._outetts_code_dir = None
 
         if removed_paths or removed_modules:
             logger.info(
@@ -1738,31 +1741,17 @@ class UnslothTrainer:
         # Spark-TTS BiCodec unvalidated on Intel XPU; keep the pre-PR CPU fallback.
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # sparktts lives in the SparkAudio/Spark-TTS GitHub repo, not the HF model repo.
-        spark_code_dir = os.path.join(os.path.dirname(self._spark_tts_repo_dir), "Spark-TTS")
-        sparktts_pkg = os.path.join(spark_code_dir, "sparktts")
-        if not os.path.isdir(sparktts_pkg):
-            self._update_progress(status_message = "Cloning Spark-TTS code repo...")
-            logger.info(f"Cloning SparkAudio/Spark-TTS to {spark_code_dir}...\n")
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "https://github.com/SparkAudio/Spark-TTS",
-                    spark_code_dir,
-                ],
-                check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
-            )
-
-        if spark_code_dir not in sys.path:
-            sys.path.insert(0, spark_code_dir)
-
-        from sparktts.models.audio_tokenizer import BiCodecTokenizer
-        from sparktts.utils.audio import audio_volume_normalize
+        self._update_progress(status_message = "Preparing Spark-TTS codec source...")
+        spark_code_dir = ensure_spark_tts_source(self._spark_tts_repo_dir)
+        self._spark_tts_code_dir = spark_code_dir
+        BiCodecTokenizer = import_sparktts_module(
+            "sparktts.models.audio_tokenizer",
+            spark_code_dir,
+        ).BiCodecTokenizer
+        audio_volume_normalize = import_sparktts_module(
+            "sparktts.utils.audio",
+            spark_code_dir,
+        ).audio_volume_normalize
 
         resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
         audio_col = resolved["audio_col"]
@@ -1952,42 +1941,25 @@ class UnslothTrainer:
         # OuteTTS DAC/Whisper preprocess unvalidated on Intel XPU; CPU fallback kept.
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Clone OuteTTS repo (same as audio_codecs._load_dac)
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        outetts_code_dir = os.path.join(base_dir, "inference", "OuteTTS")
-        outetts_pkg = os.path.join(outetts_code_dir, "outetts")
-        if not os.path.isdir(outetts_pkg):
-            self._update_progress(status_message = "Cloning OuteTTS code repo...")
-            logger.info(f"Cloning edwko/OuteTTS to {outetts_code_dir}...\n")
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "https://github.com/edwko/OuteTTS",
-                    outetts_code_dir,
-                ],
-                check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
-            )
-            for fpath in [
-                os.path.join(outetts_pkg, "models", "gguf_model.py"),
-                os.path.join(outetts_pkg, "interface.py"),
-                os.path.join(outetts_pkg, "__init__.py"),
-            ]:
-                if os.path.exists(fpath):
-                    os.remove(fpath)
-                    logger.info(f"Removed {fpath}\n")
-
-        if outetts_code_dir not in sys.path:
-            sys.path.insert(0, outetts_code_dir)
-
-        from outetts.version.v3.audio_processor import AudioProcessor
-        from outetts.version.v3.prompt_processor import PromptProcessor
-        from outetts.models.config import ModelConfig as OuteTTSModelConfig
-        from outetts.utils.preprocessing import text_normalizations
+        self._update_progress(status_message = "Preparing OuteTTS codec source...")
+        outetts_code_dir = ensure_outetts_source()
+        self._outetts_code_dir = outetts_code_dir
+        AudioProcessor = import_outetts_module(
+            "outetts.version.v3.audio_processor",
+            outetts_code_dir,
+        ).AudioProcessor
+        PromptProcessor = import_outetts_module(
+            "outetts.version.v3.prompt_processor",
+            outetts_code_dir,
+        ).PromptProcessor
+        OuteTTSModelConfig = import_outetts_module(
+            "outetts.models.config",
+            outetts_code_dir,
+        ).ModelConfig
+        text_normalizations = import_outetts_module(
+            "outetts.utils.preprocessing",
+            outetts_code_dir,
+        ).text_normalizations
 
         resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
         audio_col = resolved["audio_col"]
@@ -2011,14 +1983,18 @@ class UnslothTrainer:
 
         self._update_progress(status_message = "Loading OuteTTS AudioProcessor...")
         logger.info("Loading OuteTTS AudioProcessor...\n")
-        model_tokenizer_path = "OuteAI/Llama-OuteTTS-1.0-1B"
+        audio_codec_path = ensure_dac_speech_weights()
         dummy_config = OuteTTSModelConfig(
-            tokenizer_path = model_tokenizer_path,
+            tokenizer_path = None,
             device = device,
-            audio_codec_path = None,
+            audio_codec_path = str(audio_codec_path),
         )
         audio_processor = AudioProcessor(config = dummy_config)
-        prompt_processor = PromptProcessor(model_tokenizer_path)
+        if self.tokenizer is None:
+            raise RuntimeError("OuteTTS tokenizer is not loaded")
+        prompt_processor = PromptProcessor(None)
+        prompt_processor.tokenizer = self.tokenizer
+        prompt_processor.get_audio_token_map()
 
         self._update_progress(status_message = "Preprocessing audio with OuteTTS...")
         logger.info(f"DAC preprocessing: audio_col='{audio_col}', text_col='{text_col}'\n")
@@ -2666,7 +2642,9 @@ class UnslothTrainer:
                             subset = subset,
                             available_splits = available_splits,
                             split_loader = split_loader,
-                            excluded_split = (train_split or "train").partition("[")[0].strip(),
+                            excluded_split = hf_dataset_split_instruction_names(
+                                train_split or "train"
+                            ),
                             revision = dataset_revision,
                             strict_split_loading = (
                                 require_exact_resume_resources and dataset_loaded_from_cache
@@ -2875,7 +2853,7 @@ class UnslothTrainer:
         *,
         available_splits: Optional[list[str]] = None,
         split_loader: Optional[Callable[[str], Dataset]] = None,
-        excluded_split: Optional[str] = None,
+        excluded_split: Any = None,
         revision: Optional[str] = None,
         strict_split_loading: bool = False,
     ) -> Optional[Dataset]:
@@ -2896,8 +2874,11 @@ class UnslothTrainer:
 
             from core.training.eval_dataset import EVAL_SPLIT_CANDIDATES, MIN_EVAL_ROWS
 
+            excluded_splits = (
+                {excluded_split} if isinstance(excluded_split, str) else set(excluded_split or ())
+            )
             for candidate in EVAL_SPLIT_CANDIDATES:
-                if candidate in available_splits and candidate != excluded_split:
+                if candidate in available_splits and candidate not in excluded_splits:
                     if split_loader is not None:
                         candidate_ds = split_loader(candidate)
                     else:
@@ -3674,7 +3655,7 @@ class UnslothTrainer:
                 train_on_responses_enabled
                 and not self.is_audio_vlm
                 and not self.is_audio
-                and not (is_deepseek_ocr or dataset_final_format == "alpaca")
+                and not is_deepseek_ocr
             ):
                 from unsloth.chat_templates import train_on_responses_only
 
@@ -3694,6 +3675,7 @@ class UnslothTrainer:
                     train_on_responses_only,
                     num_proc = config_args["dataset_num_proc"],
                     notify = _notify,
+                    dataset_template = ("alpaca" if dataset_final_format == "alpaca" else None),
                 )
 
                 if not masking_applied:

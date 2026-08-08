@@ -4,6 +4,8 @@
 // Barrel import (lint rule); the model-picker cycle is fine because the call
 // happens at runtime, not module eval.
 import { resolveResidentInitialConfig } from "@/features/model-picker";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import {
   mergeBackendRecommendedInference,
@@ -26,6 +28,7 @@ import {
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
+import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -110,7 +113,9 @@ function ensureActiveModelInStoreList(
   }
   const summary: ChatModelSummary = {
     id: checkpointId,
-    name: status.active_model ?? checkpointId,
+    // active_model is already the clean public id; its leaf matches the catalog rows,
+    // and the fallback keeps a snapshot path out of the trigger.
+    name: modelDisplayName(status.active_model ?? checkpointId),
     isVision: status.is_vision ?? false,
     isLora: false,
     isGguf: status.is_gguf ?? false,
@@ -210,13 +215,39 @@ export function applyActiveModelStatusToStore(
   // repo id, and the plain lookup misses that record.
   const slotsUnseeded =
     prevState.loadedNParallel === null && prevState.nParallel === null;
+  // same rule for the batch-size pair
+  const batchesUnseeded =
+    prevState.loadedNBatch === null &&
+    prevState.nBatch === null &&
+    prevState.loadedNUbatch === null &&
+    prevState.nUbatch === null;
   const remembered =
-    status.is_gguf && (slotsUnseeded || slotsModelChanged)
+    status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged)
       ? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)
       : null;
   const rememberedNParallel = remembered?.remembered
     ? (remembered.config.nParallel ?? null)
     : null;
+  const rememberedNBatch = remembered?.remembered
+    ? (remembered.config.nBatch ?? null)
+    : null;
+  const rememberedNUbatch = remembered?.remembered
+    ? (remembered.config.nUbatch ?? null)
+    : null;
+  const nBatchSeed = resolveBatchSizeSeed({
+    incoming: status.requested_n_batch,
+    isGguf: status.is_gguf ?? true,
+    previous: { value: prevState.nBatch, loaded: prevState.loadedNBatch },
+    seedLoadParams,
+    modelChanged: slotsModelChanged,
+  });
+  const nUbatchSeed = resolveBatchSizeSeed({
+    incoming: status.requested_n_ubatch,
+    isGguf: status.is_gguf ?? true,
+    previous: { value: prevState.nUbatch, loaded: prevState.loadedNUbatch },
+    seedLoadParams,
+    modelChanged: slotsModelChanged,
+  });
   // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
   // and status only exposes the RESOLVED context; re-seed the pin from the
   // requested value (parity with the load paths' keepCustomCtx). Baselines
@@ -419,6 +450,31 @@ export function applyActiveModelStatusToStore(
       rememberedNParallel != null &&
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
+      }),
+    // one rule per batch pair, see resolveBatchSizeSeed
+    ...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),
+    ...("value" in nBatchSeed && { nBatch: nBatchSeed.value ?? null }),
+    ...("loaded" in nUbatchSeed && {
+      loadedNUbatch: nUbatchSeed.loaded ?? null,
+    }),
+    ...("value" in nUbatchSeed && { nUbatch: nUbatchSeed.value ?? null }),
+    // A swap under this tab resets the controls too, but that clear belongs INSIDE
+    // resolveBatchSizeSeed (modelChanged), not after it: unlike the slot count above,
+    // the batch echo is the REQUESTED size, so a blanket null here would also discard
+    // the value the seed just adopted from the new model's own echo. The control would
+    // then read "default" while the server runs an explicit -b / -ub, and the next
+    // Reload or Apply, which omits a blank field, would silently revert it.
+    ...(seedLoadParams &&
+      (batchesUnseeded || slotsModelChanged) &&
+      rememberedNBatch != null &&
+      rememberedNBatch === status.requested_n_batch && {
+        nBatch: rememberedNBatch,
+      }),
+    ...(seedLoadParams &&
+      (batchesUnseeded || slotsModelChanged) &&
+      rememberedNUbatch != null &&
+      rememberedNUbatch === status.requested_n_ubatch && {
+        nUbatch: rememberedNUbatch,
       }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. gpuStatusFields preserves dirty local edits in the last

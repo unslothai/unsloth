@@ -132,6 +132,8 @@ import {
   usePinnedProjectsStore,
   useChatPreferencesStore,
   usePromptQueueUI,
+  CONVERSATION_MARKDOWN_FORMAT,
+  CONVERSATION_MARKDOWN_LABEL,
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
@@ -142,6 +144,7 @@ import {
 } from "@/features/settings";
 import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
+import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
@@ -223,6 +226,9 @@ type NavRowDef = {
   disabled?: boolean;
   tooltip?: string;
   spinner?: boolean;
+  // The capability that decides `disabled` has not been measured yet. A row in this state is
+  // neither enabled-looking nor blacked out: resolveNavRowState renders it with the spinner.
+  pending?: boolean;
   badge?: string;
   onClick: () => void;
   onIntent?: () => void;
@@ -230,7 +236,11 @@ type NavRowDef = {
   children?: ReactNode;
 };
 
-type ConversationExportFormat = "raw-jsonl" | "csv" | "sharegpt-jsonl";
+type ConversationExportFormat =
+  | "raw-jsonl"
+  | "csv"
+  | "sharegpt-jsonl"
+  | typeof CONVERSATION_MARKDOWN_FORMAT;
 
 // A pinned project shows this many recent chats before "Show more".
 const PINNED_PROJECT_CHAT_LIMIT = 4;
@@ -242,6 +252,7 @@ const CHAT_EXPORT_OPTIONS: Array<{
   { label: "Raw JSONL", format: "raw-jsonl" },
   { label: "CSV", format: "csv" },
   { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
+  { label: CONVERSATION_MARKDOWN_LABEL, format: CONVERSATION_MARKDOWN_FORMAT },
 ];
 
 async function exportConversationByFormat(
@@ -258,6 +269,13 @@ async function exportConversationByFormat(
       return exports.exportConversationCsv(threadId);
     case "sharegpt-jsonl":
       return exports.exportConversationShareGPT(threadId);
+    case CONVERSATION_MARKDOWN_FORMAT:
+      return exports.exportConversationMarkdown(threadId);
+    default: {
+      // Exhaustive: a new format is a build error, not a menu item that does nothing.
+      const unhandled: never = format;
+      throw new Error(`Unhandled export format: ${String(unhandled)}`);
+    }
   }
 }
 
@@ -330,6 +348,7 @@ function NavItem({
   onIntent,
   badge,
   overlay,
+  testId,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -341,6 +360,9 @@ function NavItem({
   className?: string;
   spinner?: boolean;
   onIntent?: () => void;
+  // Stable hook for the UI smokes, which assert a row spins rather than greys out
+  // while its capability verdict is still unmeasured.
+  testId?: string;
   // Overrides the hover tooltip; explains why a disabled item is greyed out.
   tooltip?: string;
   // Trailing "New" pill text.
@@ -359,6 +381,8 @@ function NavItem({
           onFocus={disabled ? undefined : onIntent}
           isActive={active}
           data-tour={dataTour}
+          data-testid={testId}
+          data-spinner={spinner ? "true" : undefined}
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-hover/menu-button:animate-icon-pop" />
@@ -390,6 +414,15 @@ function getSidebarItemThreadIds(item: SidebarItem) {
 }
 
 const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
+
+// Re-read cadences for the hardware verdict below. An unmeasured verdict holds Train and Video
+// on a spinner, so it is re-read sooner than the background MLX self-heal check, which only
+// pays off after the user has repaired an install. A re-read outstanding longer than the stall
+// window is given up on rather than latching the poll off: the backend it is waiting on is the
+// one case this has to recover from.
+const VERDICT_UNKNOWN_POLL_MS = 3000;
+const SELF_HEAL_POLL_MS = 15000;
+const VERDICT_POLL_STALL_MS = 30000;
 
 /** One workflow in the list under the Images row. */
 function WorkflowChoice({
@@ -576,9 +609,15 @@ export function AppSidebar() {
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
+  // Train and Video blacked out on load and only recovered once the backend reported. Gate the
+  // rows on a measured verdict and let them spin until it lands.
+  const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
+  const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
   // Explain a greyed-out Train (chat-only host) on hover. Export stays navigable so its page
   // can show a precise reason.
-  const trainDisabledHint: string | undefined = !chatOnly
+  const trainDisabledHint: string | undefined = !chatOnlyMeasured
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
       ? "Training needs MLX. Run `unsloth studio update` to enable Train."
@@ -587,18 +626,53 @@ export function AppSidebar() {
         : chatOnlyReason === "no_gpu"
           ? "Training needs an NVIDIA or AMD GPU."
           : undefined;
+  // Video's hint is derived the same way. It used to be hardcoded to "needs an NVIDIA or AMD
+  // GPU", which is wrong on an Apple Silicon host: video has no Apple path at all, so the row
+  // says so rather than pointing at hardware the user cannot add.
+  const videoDisabledHint: string | undefined = !chatOnlyMeasured
+    ? undefined
+    : platformDeviceType === "mac"
+      ? "Video generation on macOS is coming soon."
+      : chatOnlyReason === "no_gpu"
+        ? "Video generation needs an NVIDIA or AMD GPU."
+        : undefined;
 
-  // The backend MLX self-heal (utils/mlx_repair) can reinstall MLX and flip chat_only false
-  // without a restart. The platform store cached the initial /api/health, so re-poll while
-  // chat-only for the recoverable mlx_unavailable case; the guard below stops it after.
+  // Two things can change the verdict after the first /api/health. The backend MLX self-heal
+  // (utils/mlx_repair) can reinstall MLX and flip chat_only false without a restart, and
+  // detection can land after fetchDeviceType gave up waiting for it. The platform store cached
+  // that first reply, so re-poll for both; the guard below stops it once neither applies.
   useEffect(() => {
     // Also while deferred: under the kill switch health settles nothing, so a GPU host would stay chat-only.
-    if (!chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred)) return;
+    const selfHealSettled =
+      !chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred);
+    // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded
+    // wait at most once per page load, so a host that detects slower than that keeps the
+    // provisional reply, and nothing else is scheduled to re-read it: the rows above would spin
+    // and /studio would hold its loading panel for the rest of the session. This is the only
+    // recovery poll in the app, and the sidebar is mounted on every route that gates on the
+    // verdict (studio-page and video-page read the same store, so they recover with it).
+    if (selfHealSettled && !capabilitiesUnknown) return;
+    let pollingSince = 0;
+    // Which read currently owns the guard. A read that outlived the stall window is replaced,
+    // and the replacement takes the guard with it; without an owner the abandoned read's
+    // `finally` would clear a guard it no longer holds and let the next tick stack another
+    // forced read onto the slow backend, every interval, which is the pile-up this prevents.
+    let pollOwner = 0;
     const id = window.setInterval(() => {
-      void fetchDeviceType({ force: true }).catch(() => undefined);
-    }, 15000);
+      // A backend still importing torch answers slowly, so skip while a re-read is outstanding
+      // rather than stacking them against it. Bounded, or a request that never settles would
+      // hold the poll off for good.
+      if (pollingSince && Date.now() - pollingSince < VERDICT_POLL_STALL_MS) return;
+      const owned = ++pollOwner;
+      pollingSince = Date.now();
+      void fetchDeviceType({ force: true })
+        .catch(() => undefined)
+        .finally(() => {
+          if (owned === pollOwner) pollingSince = 0;
+        });
+    }, capabilitiesUnknown ? VERDICT_UNKNOWN_POLL_MS : SELF_HEAL_POLL_MS);
     return () => window.clearInterval(id);
-  }, [chatOnly, chatOnlyReason, detectionDeferred]);
+  }, [capabilitiesUnknown, chatOnly, chatOnlyReason, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
@@ -974,11 +1048,12 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnly,
+      disabled: chatOnlyMeasured,
       tooltip: trainDisabledHint,
       spinner: trainingInProgress,
+      pending: capabilitiesUnknown,
       onClick: () => {
-        if (chatOnly) return;
+        if (chatOnlyMeasured) return;
         navigate({ to: "/studio" });
         closeMobileIfOpen();
       },
@@ -991,10 +1066,9 @@ export function AppSidebar() {
       icon: FlimSlateIcon,
       label: t("shell.navigation.video"),
       active: pathname === "/video" || pathname.startsWith("/video/"),
-      disabled: chatOnly,
-      tooltip: chatOnly
-        ? "Video generation needs an NVIDIA or AMD GPU."
-        : undefined,
+      disabled: chatOnlyMeasured,
+      tooltip: videoDisabledHint,
+      pending: capabilitiesUnknown,
       onClick: () => {
         navigate({ to: "/video" });
         closeMobileIfOpen();
@@ -1935,6 +2009,8 @@ export function AppSidebar() {
                   Sidebar navigation. */}
               {inlineNavIds.map((id) => {
                 const row = navRows[id];
+                // A row whose capability is still unmeasured spins instead of blacking out.
+                const rowState = resolveNavRowState(row);
                 return (
                   <NavItem
                     key={id}
@@ -1945,9 +2021,10 @@ export function AppSidebar() {
                     active={
                       id === "images" && imagesWorkflowsListed ? false : row.active
                     }
-                    disabled={row.disabled}
-                    tooltip={row.tooltip}
-                    spinner={row.spinner}
+                    disabled={rowState.disabled}
+                    tooltip={rowState.tooltip}
+                    spinner={rowState.spinner}
+                    testId={`nav-row-${id}`}
                     onClick={row.onClick}
                     onIntent={row.onIntent}
                     className={cn(
@@ -2035,6 +2112,8 @@ export function AppSidebar() {
                     >
                       {overflowNavIds.map((id) => {
                         const row = navRows[id];
+                        // Same pending handling as the inline rows above.
+                        const rowState = resolveNavRowState(row);
                         return (
                           <MoreMenuItem
                             key={id}
@@ -2042,9 +2121,9 @@ export function AppSidebar() {
                             label={row.label}
                             badge={row.badge}
                             active={row.active}
-                            disabled={row.disabled}
-                            tooltip={row.tooltip}
-                            spinner={row.spinner}
+                            disabled={rowState.disabled}
+                            tooltip={rowState.tooltip}
+                            spinner={rowState.spinner}
                             onSelect={row.onClick}
                             onIntent={row.onIntent}
                           />

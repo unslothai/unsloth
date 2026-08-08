@@ -50,10 +50,20 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     )
     assert "build" in publish["needs"]
 
+    # The guard moved into a validation step that runs ahead of the VirusTotal
+    # scan; creating a missing release is deferred to a separate step so a
+    # non-draft release is never published empty for the length of the scan.
     release_step = next(
+        step for step in publish["steps"] if step.get("name") == "Validate versioned release state"
+    )
+    assert "gh release list" in release_step["run"]
+    assert "resource_exists" in release_step["run"]
+
+    create_step = next(
         step for step in publish["steps"] if step.get("name") == "Create versioned release"
     )
-    assert "gh release create" in release_step["run"]
+    assert "gh release create" in create_step["run"]
+    assert create_step["if"] == "steps.versioned_release_state.outputs.create == 'true'"
 
 
 def test_versioned_release_hides_updater_signature_assets():
