@@ -7,6 +7,7 @@ import {
   resolveInferredPickerTabLock,
   resolvePickerDeviceListState,
   resolvePickerTab,
+  shouldRefreshPickerInventoryOnMount,
 } from "../src/components/resource-picker/picker-tab-policy.ts";
 
 const inferredBase = {
@@ -120,6 +121,10 @@ test("keeps the opening tab stable when inventory settles", () => {
     }),
     "hub",
   );
+});
+
+test("refreshes picker inventory only when it was ready at mount", () => {
+  assert.deepEqual([false, true].map(shouldRefreshPickerInventoryOnMount), [false, true]);
 });
 
 test("preserves explicit, locked, and offline tab decisions", () => {
