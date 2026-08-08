@@ -302,12 +302,14 @@ def _masking_call_and_guard():
     """The apply_completion_masking call in _run_mlx_training, plus the `if not applied` guard."""
     tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
     calls = [
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "apply_completion_masking"
     ]
     assert len(calls) == 1, "expected exactly one masking call in the MLX path"
     guards = [
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.If) and ast.unparse(n.test) == "not masking_applied"
     ]
     assert len(guards) == 1, "masking result must be checked exactly once"
@@ -331,7 +333,8 @@ def test_completion_masking_miss_reaches_the_warning_channel():
     """
     _, guard = _masking_call_and_guard()
     sends = [
-        n for n in ast.walk(guard)
+        n
+        for n in ast.walk(guard)
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_send"
     ]
 
