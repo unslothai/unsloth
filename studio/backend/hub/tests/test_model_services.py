@@ -4631,7 +4631,7 @@ def test_prepare_cache_for_transport_purges_only_requested_hashes(monkeypatch, t
     blobs.mkdir(parents = True)
     (blobs / "variant-main.incomplete").write_bytes(b"x")
     (blobs / "shared-mmproj.incomplete").write_bytes(b"y")
-    monkeypatch.setattr(download_registry, "hf_cache_root", lambda create = False: root)
+    monkeypatch.setattr(download_registry, "hf_cache_root", lambda create = False, **kw: root)
 
     purged = download_registry.prepare_cache_for_transport(
         "model",
@@ -4678,7 +4678,7 @@ def _vision_cache_root(monkeypatch, tmp_path):
     root = tmp_path / "hub"
     blobs = root / "models--Org--Vision" / "blobs"
     blobs.mkdir(parents = True)
-    monkeypatch.setattr(download_registry, "hf_cache_root", lambda create = False: root)
+    monkeypatch.setattr(download_registry, "hf_cache_root", lambda create = False, **kw: root)
     return blobs
 
 
