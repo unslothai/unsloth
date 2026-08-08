@@ -1,7 +1,12 @@
 """Regression test for unslothai/unsloth#4631: xformers must not be blanket-disabled
 on sm_120 GPUs where its kernel actually runs (a ~57% attention-memory saving over the
-SDPA packed-mask fallback). The gate now probes the real op instead of guessing by the
-compute-capability major version."""
+SDPA packed-mask fallback). The gate probes the real op instead of guessing by the
+compute-capability major version.
+
+Also covers NVIDIA QA P0-1: the probe used to be skipped entirely below sm_120, on the
+assumption that xformers always works there. It does not when the wheel was built for a
+different torch or CUDA major, and skipping the probe is what let a cu128-built managed
+Windows package ship beside a cu130 runtime with its kernels silently dead."""
 
 import pytest
 import torch
@@ -13,11 +18,20 @@ from unsloth.utils import attention_dispatch as ad
 @pytest.mark.parametrize(
     "capability, probe_result, expect_disabled",
     [
-        ((8, 9), None, False),  # Ada: below sm_120, never probed, always kept
-        ((9, 0), None, False),  # Hopper: below sm_120, kept
-        ((10, 0), None, False),  # Blackwell B200 (sm_100): below sm_120, kept
+        # #4631: on sm_120 the answer must come from the real op, both ways.
         ((12, 0), True, False),  # sm_120 where the kernel runs: keep xformers
         ((12, 0), False, True),  # sm_120 where the kernel can't run: fall back to SDPA
+        # Every other capability is now probed too, and a working kernel is still kept:
+        # this is the half of #4631 that must not regress into "probe means disable".
+        ((7, 5), True, False),  # Turing
+        ((8, 0), True, False),  # Ampere
+        ((8, 9), True, False),  # Ada
+        ((9, 0), True, False),  # Hopper
+        ((10, 0), True, False),  # Blackwell B200 (sm_100)
+        # P0-1: a mismatched build is dead on these too, and must be caught.
+        ((8, 9), False, True),
+        ((9, 0), False, True),
+        ((10, 0), False, True),
     ],
 )
 def test_capability_gate(capability, probe_result, expect_disabled):
@@ -28,8 +42,9 @@ def test_capability_gate(capability, probe_result, expect_disabled):
         return probe_result
 
     assert ad._xformers_disabled_for_capability(capability, probe = probe) is expect_disabled
-    # Below sm_120 the probe must not run at all (no import-time kernel launch there).
-    assert calls["n"] == (0 if capability[0] < 12 else 1)
+    # Exactly once, on every capability: the decision is the kernel's to make, and it is
+    # one tiny forward, so there is no reason to run it twice or to skip it.
+    assert calls["n"] == 1
 
 
 @pytest.mark.skipif(
@@ -100,3 +115,59 @@ def test_probe_syncs_and_fails_on_deferred_async_error(monkeypatch):
     # Without the synchronize the stubbed op returns cleanly and the probe wrongly
     # reports True; the sync surfaces the deferred error so the probe returns False.
     assert ad._xformers_runs_on_device() is False
+
+
+def test_probe_caches_the_failure_reason(monkeypatch):
+    # "xformers is off" with no reason is what made the mismatched Windows build so hard
+    # to diagnose. A failed probe must leave something a report can print.
+    monkeypatch.setattr(ad, "XFORMERS_PROBE_REASON", None)
+    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("CUDA error: no kernel image is available for execution")
+
+    monkeypatch.setattr(ad.torch, "zeros", boom)
+    assert ad._xformers_runs_on_device() is False
+    assert "no kernel image is available" in ad.XFORMERS_PROBE_REASON
+    assert ad.XFORMERS_PROBE_REASON.startswith("RuntimeError: ")
+
+
+def test_probe_clears_a_stale_reason_on_success(monkeypatch):
+    # A later success must not leave the previous failure's reason behind, or a healthy
+    # install reports itself broken.
+    monkeypatch.setattr(ad, "XFORMERS_PROBE_REASON", "RuntimeError: stale")
+    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
+    monkeypatch.setattr(ad.torch, "zeros", lambda *a, **k: object())
+    monkeypatch.setattr(
+        ad,
+        "xformers",
+        type(
+            "X",
+            (),
+            {
+                "attn_bias": type(
+                    "B",
+                    (),
+                    {
+                        "BlockDiagonalCausalMask": type(
+                            "M", (), {"from_seqlens": staticmethod(lambda seqlens: None)}
+                        )
+                    },
+                )
+            },
+        ),
+    )
+    monkeypatch.setattr(ad, "xformers_attention", lambda *a, **k: None)
+    monkeypatch.setattr(ad.torch.cuda, "synchronize", lambda *a, **k: None)
+    assert ad._xformers_runs_on_device() is True
+    assert ad.XFORMERS_PROBE_REASON is None
+
+
+def test_probe_never_raises_even_when_xformers_is_none(monkeypatch):
+    # The probe runs at import time on every CUDA capability now, so anything it touches
+    # being missing or broken must degrade to False, never to an ImportError at `import
+    # unsloth`.
+    monkeypatch.setattr(ad, "xformers", None)
+    monkeypatch.setattr(ad, "xformers_attention", None)
+    assert ad._xformers_runs_on_device() is False
+    assert ad.XFORMERS_PROBE_REASON

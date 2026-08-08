@@ -38,8 +38,18 @@ if HAS_FLASH_ATTENTION:
 HAS_XFORMERS = xformers is not None
 
 
+# Why the on-device probe last failed, or None when it passed or never ran. Cached
+# alongside the boolean so callers can report WHY xformers went away, not just that it did.
+XFORMERS_PROBE_REASON: Optional[str] = None
+
+
 def _xformers_runs_on_device() -> bool:
-    """One tiny attention forward; True iff the xformers kernel actually runs here."""
+    """One tiny attention forward; True iff the xformers kernel actually runs here.
+
+    Never raises. Every failure becomes False plus a one-line XFORMERS_PROBE_REASON,
+    because this runs at import and a diagnostic must not be what breaks the import.
+    """
+    global XFORMERS_PROBE_REASON
     try:
         # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel
         # but run xformers fine in float16, so pick the dtype the device supports.
@@ -49,25 +59,39 @@ def _xformers_runs_on_device() -> bool:
         xformers_attention(q, q, q, attn_bias = attn_bias)
         # Launches are async; synchronize so a deferred kernel failure fails the probe here.
         torch.cuda.synchronize()
+        XFORMERS_PROBE_REASON = None
         return True
-    except Exception:
+    except Exception as error:
+        XFORMERS_PROBE_REASON = f"{type(error).__name__}: {error}".strip()
         return False
 
 
 def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
-    # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (caps at
-    # sm_90) and its flash-2 op runs only if the build ships an sm_120 kernel, so run
-    # one real forward to decide. Below sm_120 xformers always works; skip the probe.
-    if capability[0] < 12:
-        return False
+    # Probe on EVERY capability, not just sm_120+. The old gate returned early below
+    # sm_120 on the assumption that xformers always works there, which only holds when
+    # the wheel matches the runtime: a cu128-built xformers on a cu130 torch is just as
+    # dead on an sm_90 Hopper, and never probing there is what let a mismatched managed
+    # Windows package ship (NVIDIA P0-1).
+    #
+    # At sm_120 (RTX 50-series) there is a second, unrelated reason to probe: xformers'
+    # cutlass op is capability-rejected (it caps at sm_90) and its flash-2 op runs only
+    # if the build ships an sm_120 kernel (unslothai/unsloth#4631).
+    #
+    # `capability` is unused now that the answer is always the real op, but it stays in
+    # the signature: it is the thing being decided about, and callers pass it explicitly.
+    del capability
     return not probe()
 
 
-# FlashAttention always wins in select_attention_backend and nothing downgrades
-# flash -> xformers, so when it's installed xformers is never selected: skip the probe.
-if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
+# Probe whenever xformers imported, including when flash-attn is installed and will win
+# select_attention_backend anyway: a dead xformers is worth knowing about either way, and
+# reporting it is the point. Cost is one 1x8x1x64 forward on a CUDA context torch has
+# already initialised (_XFORMERS_FP32_UNSUPPORTED below forces the same lazy init).
+XFORMERS_DISABLED_REASON = XFORMERS_BROKEN_REASON
+if HAS_XFORMERS and torch.cuda.is_available():
     if _xformers_disabled_for_capability(torch.cuda.get_device_capability()):
         HAS_XFORMERS = False
+        XFORMERS_DISABLED_REASON = XFORMERS_PROBE_REASON
 
 # On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass op is capability-rejected and
 # only its fp16/bf16 flash-2 op runs, so fp32 Q/K/V (DoRA, #1013) must be downcast there;
