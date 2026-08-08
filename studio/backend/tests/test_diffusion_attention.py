@@ -256,6 +256,9 @@ def _no_real_installs(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
     # The install once-per-process memo is module state; clear it so each test starts fresh.
     att._INSTALL_ATTEMPTED.clear()
+    # So is the resolved xFormers wheel. Left set, one test's stub decides the next one's
+    # answer -- and unset, the resolver shells out to probe the real torch.
+    monkeypatch.setattr(att, "_XFORMERS_WHEEL_TARGET", None)
 
 
 class _Recorder:
@@ -322,17 +325,146 @@ def test_sage_install_carries_the_dispatcher_version_floor(monkeypatch):
     assert att._pip_requirement("xformers", "xformers") == "xformers"
 
 
+_XFORMERS_WHEEL = "https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
+
+
+def _stub_xformers_wheel(
+    monkeypatch,
+    url = _XFORMERS_WHEEL,
+    reason = None,
+):
+    """Pin the resolved xFormers wheel so no test probes the real torch."""
+    monkeypatch.setattr(att, "_xformers_wheel_target", lambda: (url, reason))
+
+
 def test_install_uses_no_deps_to_protect_core_deps(monkeypatch):
-    # A kernel add-on pins an exact torch, so --no-deps installs only the kernel wheel; an ABI-incompatible one merely fails to import.
+    # A kernel add-on pins an exact torch, so --no-deps installs only the kernel wheel.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(monkeypatch)
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("xformers")
     assert len(run.calls) == 1
     assert "--no-deps" in run.calls[0]
+
+
+def test_xformers_installs_the_cuda_matched_wheel_not_the_package_name(monkeypatch):
+    """`pip install xformers` resolves the PyPI build, which exists only in the CUDA-12.8
+    flavour: beside a cu130 torch its extension fails to load and xformers/_cpp_lib.py
+    logs a warning instead of raising, so memory-efficient attention vanishes silently
+    while the import still succeeds. Only a URL resolved against the running torch is safe."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(monkeypatch)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+
+    assert att._ensure_attention_backend_installed("xformers") is None
+    assert len(run.calls) == 1
+    assert _XFORMERS_WHEEL in run.calls[0]
+    assert "xformers" not in [arg for arg in run.calls[0] if arg != _XFORMERS_WHEEL]
+
+
+def test_xformers_install_refused_when_no_matching_wheel_exists(monkeypatch):
+    """No matched wheel must mean NO install. Falling back to an unpinned resolve is the
+    bug; the caller stays on torch SDPA and gets the reason back."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(
+        monkeypatch, url = None, reason = "no xFormers wheel is published for torch 2.11.0"
+    )
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+
+    reason = att._ensure_attention_backend_installed("xformers")
+    assert reason == "no xFormers wheel is published for torch 2.11.0"
+    assert run.calls == []
+
+
+def test_xformers_refusal_is_logged_with_its_reason(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(monkeypatch, url = None, reason = "torch could not be probed")
+    _stub_subprocess(monkeypatch, _Recorder())
+
+    warnings = []
+
+    class _Logger:
+        def info(self, *args, **kwargs):
+            pass
+
+        def warning(self, msg, *args, **kwargs):
+            warnings.append(msg % args if args else msg)
+
+    att._ensure_attention_backend_installed("xformers", _Logger())
+    assert len(warnings) == 1
+    assert "torch could not be probed" in warnings[0]
+    assert "not installing" in warnings[0]
+
+
+def test_xformers_refusal_records_no_attempt(monkeypatch):
+    """Refusal is a POLICY decision, like the kernels/hub gate, so it must not burn the
+    one-shot install slot: once the resolver can answer, the install still happens."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(monkeypatch, url = None, reason = "nope")
+    _stub_subprocess(monkeypatch, _Recorder())
+
+    att._ensure_attention_backend_installed("xformers")
+    assert att._INSTALL_ATTEMPTED == set()
+
+    # Resolver can now answer -> the next request installs.
+    _stub_xformers_wheel(monkeypatch)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("xformers")
+    assert len(run.calls) == 1
+    assert _XFORMERS_WHEEL in run.calls[0]
+
+
+def test_xformers_resolution_skipped_when_already_installed(monkeypatch):
+    """find_spec runs first, so a working xformers never pays for the torch probe."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    resolved = []
+    monkeypatch.setattr(att, "_xformers_wheel_target", lambda: resolved.append(1) or (None, "x"))
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+
+    assert att._ensure_attention_backend_installed("xformers") is None
+    assert resolved == []
+    assert run.calls == []
+
+
+def test_matched_wheel_path_does_not_touch_other_backends(monkeypatch):
+    """sage / flash / kernels still go to pip by name -- only xFormers has the silent
+    ABI failure that forces URL resolution."""
+    assert att._MATCHED_WHEEL_BACKENDS == frozenset({"xformers"})
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(
+        att, "_xformers_wheel_target", lambda: pytest.fail("resolver must not run for sage")
+    )
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("sage")
+    assert len(run.calls) == 1
+    assert "sageattention>=2.1.1" in run.calls[0]
 
 
 def test_failed_install_not_retried_in_same_process(monkeypatch):
@@ -511,3 +643,98 @@ def test_kernels_hub_compatible_reads_hub_version(monkeypatch):
     # Undeterminable hub -> keep the previous (permissive) behaviour.
     monkeypatch.setattr(importlib.metadata, "version", _boom)
     assert att._kernels_hub_compatible() is True
+
+
+def test_transient_resolution_failure_is_not_memoised(monkeypatch):
+    """A probe that times out on a loaded box is transient. Caching it would turn one
+    hiccup into "no xFormers for the rest of this Studio session", so only DETERMINISTIC
+    answers (a URL, or a refusal that depends purely on the resident torch) are cached."""
+    import utils.wheel_utils as wu
+
+    calls = []
+
+    def _probe(**kwargs):
+        calls.append(kwargs)
+        return (
+            None
+            if len(calls) == 1
+            else {
+                "platform_tag": "win_amd64",
+                "python_tag": "cp313",
+                "torch_version": "2.10.0+cu130",
+                "cuda_version": "13.0",
+            }
+        )
+
+    monkeypatch.setattr(wu, "probe_torch_wheel_env", _probe)
+
+    url, reason = att._xformers_wheel_target()
+    assert url is None and "could not be probed" in reason
+    assert att._XFORMERS_WHEEL_TARGET is None, "a transient failure must not be cached"
+
+    url, reason = att._xformers_wheel_target()
+    assert reason is None and url == _XFORMERS_WHEEL
+    assert att._XFORMERS_WHEEL_TARGET == (_XFORMERS_WHEEL, None)
+    assert len(calls) == 2
+
+
+def test_deterministic_refusal_is_memoised(monkeypatch):
+    """torch cannot change under a running interpreter, so "no wheel for this torch" is
+    settled; re-probing it on every request would re-pay the subprocess under the lock."""
+    import utils.wheel_utils as wu
+
+    calls = []
+
+    def _probe(**kwargs):
+        calls.append(kwargs)
+        return {
+            "platform_tag": "win_amd64",
+            "python_tag": "cp313",
+            # A CUDA family with no xFormers wheel on any index: the refusal has to be a
+            # real one, and torch 2.11 itself now resolves through the stable-ABI rows.
+            "torch_version": "2.11.0+cu124",
+            "cuda_version": "12.4",
+        }
+
+    monkeypatch.setattr(wu, "probe_torch_wheel_env", _probe)
+
+    for _ in range(3):
+        url, reason = att._xformers_wheel_target()
+        assert url is None
+        assert "no xFormers wheel is published for torch 2.11.0+cu124" in reason
+    assert len(calls) == 1
+
+
+def test_resolution_does_no_network_io(monkeypatch):
+    """It can run under _generate_lock (the video loader has no out-of-lock pre-install),
+    so it must not add a HEAD to a path that already blocks unload/cancel."""
+    import utils.wheel_utils as wu
+
+    monkeypatch.setattr(
+        wu,
+        "probe_torch_wheel_env",
+        lambda **kw: {
+            "platform_tag": "win_amd64",
+            "python_tag": "cp313",
+            "torch_version": "2.10.0+cu130",
+            "cuda_version": "13.0",
+        },
+    )
+    monkeypatch.setattr(
+        wu, "url_exists", lambda url: pytest.fail("resolution must not hit the network")
+    )
+    assert att._xformers_wheel_target() == (_XFORMERS_WHEEL, None)
+
+
+def test_probe_timeout_matches_the_other_wheel_callers(monkeypatch):
+    import utils.wheel_utils as wu
+
+    seen = {}
+
+    def _probe(**kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(wu, "probe_torch_wheel_env", _probe)
+    att._xformers_wheel_target()
+    assert seen == {"timeout": 30, "include_windows": True}
