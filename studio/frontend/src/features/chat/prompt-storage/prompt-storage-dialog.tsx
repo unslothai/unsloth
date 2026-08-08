@@ -55,6 +55,7 @@ import {
   saveStoredChatThread,
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
+import { orderByParentChain } from "../utils/chat-message-tree";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
 import { isMcpImageToolResult } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
@@ -183,42 +184,6 @@ function contentBlocksToText(content: unknown): string {
 // Order via parentId chain: createdAt misorders turns (GPT response slots
 // predate the user's next message); the parent chain is timestamp-independent.
 type _Msg = { id: string; parentId?: string | null; createdAt?: number };
-
-function orderByParentChain<T extends _Msg>(
-  messages: T[],
-  options: {
-    /** Append messages off the selected chain (abandoned branches) at the
-     *  end. Full exports keep everything; fine-tune conversion must not,
-     *  since alternate replies would merge into one conversation. */
-    includeSiblings?: boolean;
-  } = {},
-): T[] {
-  const { includeSiblings = true } = options;
-  const byId = new Map<string, T>(messages.map((m) => [m.id, m]));
-  const childrenOf = new Map<string | null, T[]>();
-  for (const m of messages) {
-    const pid = m.parentId ?? null;
-    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
-    childrenOf.get(pid)!.push(m);
-  }
-
-  const result: T[] = [];
-  let cur: string | null = null;
-  while (childrenOf.has(cur)) {
-    const children: T[] = childrenOf.get(cur)!;
-    const next: T = children.reduce((a: T, b: T) =>
-      (a.createdAt ?? 0) >= (b.createdAt ?? 0) ? a : b,
-    );
-    result.push(next);
-    cur = next.id;
-    byId.delete(next.id);
-  }
-
-  if (includeSiblings) {
-    for (const [, m] of byId) result.push(m);
-  }
-  return result;
-}
 
 async function loadConversationMessages(threadId: string) {
   const raw = await listStoredChatMessages(threadId);
