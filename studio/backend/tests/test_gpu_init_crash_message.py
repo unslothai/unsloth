@@ -93,6 +93,7 @@ def _run_cpu_fallback_load(
     extra_args = None,
     vulkan = True,
     cpu_fallback = False,
+    resident_fallback = False,
 ):
     def _gguf_string(value: str) -> bytes:
         encoded = value.encode()
@@ -187,6 +188,8 @@ def _run_cpu_fallback_load(
     backend._wait_for_health = _wait_for_health
     backend._prepare_cpu_fallback_launch = _prepare_cpu_fallback
     monkeypatch.setattr(subprocess, "Popen", _popen)
+    if resident_fallback:
+        backend._cpu_fallback_reason = "vulkan_startup_crash"
 
     loaded = backend.load_model(
         GgufLoadIntent(
@@ -956,6 +959,25 @@ def test_a_replay_request_needs_the_same_bar_as_the_crash_path(monkeypatch, tmp_
     assert loaded is True
     assert fallback_sources == []
     assert backend._cpu_fallback_reason is None
+
+
+def test_an_ineligible_replay_request_drops_the_recovery_state(monkeypatch, tmp_path):
+    """The kill phase keeps the staged recovery for a replay. A request that then
+    fails the eligibility bar must not leave the next model wearing it."""
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [None],
+        cpu_fallback = True,
+        resident_fallback = True,
+        extra_args = ["--device", "Vulkan0"],
+    )
+
+    assert loaded is True
+    assert fallback_sources == []
+    assert backend._cpu_fallback_reason is None
+    assert backend._cpu_fallback_runtime is None
+    assert backend._last_load_intent.cpu_fallback is False
 
 
 def test_preserving_a_recovery_ignores_env_the_replay_strips(monkeypatch, tmp_path):

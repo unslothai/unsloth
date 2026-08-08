@@ -12090,17 +12090,26 @@ class LlamaCppBackend:
                 # caller can ask for a replay the runtime never produced. Hold it
                 # to the same bar as the crash path (managed auto Vulkan, no
                 # explicit placement) and otherwise run the request as sent.
-                if intent.cpu_fallback and self._auto_vulkan_cpu_fallback_eligible(
-                    binary, intent, extra_args, env, allow_manual_cpu = True
-                ):
-                    prepared = self._prepare_cpu_fallback_launch(binary, cmd, env, server_caps)
-                    if prepared is None:
-                        _raise_terminal_load_failure(
-                            "The prior Vulkan CPU fallback could not be reconstructed; "
-                            "run `unsloth studio update` to repair the managed llama.cpp runtime."
-                        )
-                    cmd, _spawn_cwd = prepared
-                    self._cpu_fallback_reason = "vulkan_startup_crash"
+                if intent.cpu_fallback:
+                    if self._auto_vulkan_cpu_fallback_eligible(
+                        binary, intent, extra_args, env, allow_manual_cpu = True
+                    ):
+                        prepared = self._prepare_cpu_fallback_launch(binary, cmd, env, server_caps)
+                        if prepared is None:
+                            _raise_terminal_load_failure(
+                                "The prior Vulkan CPU fallback could not be reconstructed; run "
+                                "`unsloth studio update` to repair the managed llama.cpp runtime."
+                            )
+                        cmd, _spawn_cwd = prepared
+                        self._cpu_fallback_reason = "vulkan_startup_crash"
+                    else:
+                        # Phase 1 kept the recovery state for a replay this request
+                        # turned out not to qualify for. Drop it now, or this load
+                        # reports the old Vulkan crash and _preserve_cpu_fallback_intent
+                        # rewrites later reloads of a model that never recovered.
+                        intent = replace(intent, cpu_fallback = False)
+                        self._cpu_fallback_reason = None
+                        self._cleanup_cpu_fallback_runtime()
                 # The placement above is now fixed for this child, but _process
                 # is not set until Popen. Without this, a save landing in that
                 # window sees no active backend and reports no reload while the

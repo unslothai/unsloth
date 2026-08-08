@@ -13,6 +13,7 @@ because nothing in-tree mirrors it, and skips when that release is unreachable.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import json
 import sys
@@ -1951,6 +1952,38 @@ def test_automatic_amd_vulkan_marker_records_the_routing_gfx(tmp_path, monkeypat
     # Without it the update re-detects a ROCm-less host and leaves Vulkan behind.
     assert ilp._should_auto_vulkan_for_amd_windows(unprobed, UPSTREAM) is False
     assert ilp._route_to_vulkan_prebuilt(unprobed, UPSTREAM, "pin", force_cpu = False)[3] is None
+
+
+def test_a_remembered_arch_never_outranks_a_live_probe(monkeypatch):
+    """The updater replays the marker's arch, which is a stale probe result, not
+    an operator override: a host whose GPU changed must keep what it reports."""
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    unprobed = dataclasses.replace(
+        _windows_amd_host(rocm_gfx_target = None, rocm_gfx_targets = []), has_rocm = False
+    )
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_REMEMBERED", "gfx1034")
+
+    # No probe of its own: the remembered arch fills the gap.
+    filled = ilp._apply_host_overrides(unprobed)
+    assert ilp._active_rocm_gfx_target(filled) == "gfx1034"
+    assert filled.has_rocm is True
+
+    # A live probe wins, so a replaced card is not routed as the old one.
+    probed = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+    assert ilp._active_rocm_gfx_target(ilp._apply_host_overrides(probed)) == "gfx1100"
+
+
+def test_reusing_an_install_still_records_the_routing_gfx(tmp_path):
+    """The reuse paths skip write_prebuilt_metadata, so they must sync it too."""
+    marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(json.dumps({"llama_backend": "auto", "asset": "win-vulkan.zip"}))
+
+    ilp.sync_marker_rocm_gfx(tmp_path, "gfx1034")
+    assert json.loads(marker_path.read_text())["rocm_gfx"] == "gfx1034"
+
+    # Nothing to record leaves the marker untouched.
+    ilp.sync_marker_rocm_gfx(tmp_path, None)
+    assert json.loads(marker_path.read_text())["rocm_gfx"] == "gfx1034"
 
 
 def test_non_amd_installs_record_no_routing_gfx(tmp_path):

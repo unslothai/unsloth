@@ -2773,6 +2773,19 @@ def _apply_host_overrides(
             # [gfx], so the driver-only host the forward exists for keeps auto-Vulkan.
             rocm_gfx_targets = list(dict.fromkeys([*_physical, gfx])),
         )
+    # The arch a previous install recorded, replayed by the updater. It is a
+    # remembered probe result, not an operator override, so it only fills a gap:
+    # a host whose GPU changed must keep whatever its own probe now reports.
+    remembered = _normalize_forwarded_gfx(os.environ.get("UNSLOTH_ROCM_GFX_REMEMBERED"))
+    if remembered and not _active_rocm_gfx_target(host):
+        return dataclasses_replace(
+            host,
+            has_rocm = True,
+            rocm_gfx_target = remembered,
+            rocm_gfx_targets = list(
+                dict.fromkeys([*_host_rocm_gfx_targets(host), remembered])
+            ),
+        )
     if override_has_rocm and not host.has_rocm:
         return dataclasses_replace(host, has_rocm = True)
     return host
@@ -5913,6 +5926,27 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
     log(f"existing install reused; recorded llama_backend={llama_backend!r} from this run")
 
 
+def sync_marker_rocm_gfx(install_dir: Path, rocm_gfx: str | None) -> None:
+    """Sync the routing AMD arch when the bundle is reused unchanged. A Vulkan
+    asset name carries no arch, so a reuse that skipped write_prebuilt_metadata
+    would leave an automatic marker the next update cannot route from."""
+    if not rocm_gfx:
+        return
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    try:
+        marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(marker, dict) or marker.get("rocm_gfx") == rocm_gfx:
+        return
+    marker["rocm_gfx"] = rocm_gfx
+    if not _write_marker(marker_path, marker):
+        log(
+            f"WARNING: could not record rocm_gfx={rocm_gfx!r} in {marker_path}; "
+            "a later update may not reproduce this GPU routing"
+        )
+
+
 def recorded_ggml_tree(
     approved_checksums: ApprovedReleaseChecksums, choice: AssetChoice
 ) -> str | None:
@@ -7065,6 +7099,7 @@ def install_prebuilt(
                         install_dir,
                         recorded_ggml_tree(current.approved_checksums, current.attempts[0]),
                     )
+                    sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                     return
             with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
                 probe_path = work_dir / "stories260K.gguf"
@@ -7093,6 +7128,7 @@ def install_prebuilt(
                                 install_dir,
                                 recorded_ggml_tree(plan.approved_checksums, choice),
                             )
+                            sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                             return
                     log(
                         "selected "
@@ -7125,6 +7161,7 @@ def install_prebuilt(
                             install_dir,
                             recorded_ggml_tree(plan.approved_checksums, satisfied.choice),
                         )
+                        sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                         return
                     except PrebuiltFallback as exc:
                         if _environment_fatal_reason(exc):

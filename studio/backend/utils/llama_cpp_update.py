@@ -463,14 +463,7 @@ def _run_llama_phase(
         ]
         if pin_release_tag:
             cmd.extend(["--published-release-tag", pin_release_tag])
-        rocm_args = _rocm_install_args(asset)
-        # A Vulkan asset name carries no arch, so the marker is the only way back to
-        # the --rocm-gfx setup.ps1 forwarded. Without it detect_host on a Windows AMD
-        # host with no HIP SDK (hipinfo/amd-smi absent) reports no ROCm at all and the
-        # automatic Vulkan route silently becomes the CPU bundle.
-        if not rocm_args and rocm_gfx:
-            rocm_args = ["--rocm-gfx", rocm_gfx]
-        cmd.extend(rocm_args)
+        cmd.extend(_rocm_install_args(asset))
         # Re-assert a deliberate CPU install (--force-cpu) so detect_host on a GPU host
         # does not re-route to a GPU/Vulkan bundle and revive the crash (#7213). --force-cpu
         # (not --cpu-fallback) also re-persists force_cpu, keeping the choice across future
@@ -486,6 +479,12 @@ def _run_llama_phase(
         if llama_backend == "vulkan":
             env["UNSLOTH_FORCE_VULKAN"] = "1"
             env["UNSLOTH_LLAMA_CPP_BACKEND"] = "vulkan"
+        # A Vulkan asset name carries no arch, so the marker is the only record of
+        # the gfx an automatic AMD route was decided on. Advisory, not an override:
+        # the installer applies it only when this host's own probe finds none, so a
+        # replaced GPU still wins.
+        if rocm_gfx:
+            env["UNSLOTH_ROCM_GFX_REMEMBERED"] = rocm_gfx
         _flow.stream_installer(
             cmd,
             env,
