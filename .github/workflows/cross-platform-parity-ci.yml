@@ -16,6 +16,14 @@
 # the same scripts, refusing new yes/no questions (see #7016, reverted in #8040).
 # Its paths are globbed, since a newly named installer has to trigger the very
 # check that refuses to let it land unregistered.
+#
+# The setup-output encoding tests ride along for the same reason again, and it is
+# the sharpest case of it: they spawn install.ps1's and setup.ps1's own banner
+# under Windows PowerShell 5.1 with the flags and the CREATE_NO_WINDOW the
+# desktop app uses, so on Linux they either skip or fall back to pwsh 7, which is
+# UTF-8 by default and cannot reproduce anything. Backend CI already collects
+# that file on ubuntu, which covers its source contracts; this row is the only
+# place its byte-level half means something.
 
 name: Cross-platform parity
 
@@ -51,6 +59,7 @@ on:
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
@@ -94,6 +103,7 @@ on:
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
@@ -165,6 +175,7 @@ jobs:
           python -m pytest
           tests/python/test_cross_platform_parity.py
           tests/python/test_windows_python_venv_hardening.py
+          tests/python/test_windows_setup_output_encoding.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py

@@ -24,11 +24,19 @@ Splitting: ``step`` built one line from two Write-Host calls with -NoNewline,
 which a redirected consumer splits at the record boundary.
 
 Sink: fixing ``step``/``substep`` left every other line on Write-Host, which
-5.1's console host writes with its own OEM-code-page writer rather than the
-UTF-8 one bound to ``[Console]::Out``. The banner and the footer are not steps,
-so they kept arriving as U+FFFD. Both entry scripts now funnel through
-``Write-StudioLine``, and Write-Host survives only inside helpers that have
-already ruled out the redirected sink.
+5.1's console host writes through its own console-attached writer rather than
+the UTF-8 one bound to ``[Console]::Out``. The banner and the footer are not
+steps, so they never entered the sink #8083 built. Both entry scripts now
+funnel through ``Write-StudioLine``, and Write-Host survives only inside
+helpers that have already ruled out the redirected sink.
+
+No console: the transcode above needs a console to transcode against. Where
+``CREATE_NO_WINDOW`` really leaves the child without one, which is the state
+install.rs's own comment assumes, Write-Host has no screen buffer to query and
+throws instead, taking the whole script down under ``-ErrorActionPreference
+Stop``. The banner is then not mangled, it is absent. That is what
+``test_banner_survives_a_console_less_spawn`` measures, and it is the only case
+here that separates this fix from what shipped before it.
 
 The byte-level tests assert on raw bytes; decoding first would hide the exact
 regression being guarded.
@@ -36,10 +44,13 @@ regression being guarded.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -290,20 +301,28 @@ def _mask_literals(source: str) -> str:
     return "".join(out)
 
 
-def _function_span(masked: str, name: str) -> tuple[int, int]:
-    """Offsets of `function <name> { ... }`, brace-matched over masked source."""
-    match = re.search(r"(?im)^[ \t]*function\s+" + re.escape(name) + r"\b", masked)
-    assert match, f"no function {name}"
-    start = masked.index("{", match.end())
+def _close_brace(masked: str, open_offset: int) -> int:
+    """Offset of the `}` closing the `{` at `open_offset`, over masked source."""
     depth = 0
-    for offset in range(start, len(masked)):
+    for offset in range(open_offset, len(masked)):
         if masked[offset] == "{":
             depth += 1
         elif masked[offset] == "}":
             depth -= 1
             if depth == 0:
-                return match.start(), offset + 1
-    raise AssertionError(f"unbalanced braces in {name}")
+                return offset
+    raise AssertionError("unbalanced braces")
+
+
+def _function_span(masked: str, name: str) -> tuple[int, int]:
+    """Offsets of `function <name> { ... }`, brace-matched over masked source."""
+    match = _function_match(masked, name)
+    assert match, f"no function {name}"
+    return match.start(), _close_brace(masked, masked.index("{", match.end())) + 1
+
+
+def _function_match(masked: str, name: str) -> re.Match[str] | None:
+    return re.search(r"(?im)^[ \t]*function\s+" + re.escape(name) + r"\b", masked)
 
 
 # Write-Host may only appear inside a helper that has already ruled out the
@@ -448,3 +467,226 @@ def test_rust_windows_spawns_force_utf8(rust_file: str) -> None:
     assert (
         'cmd.env("PYTHONIOENCODING", "utf-8");' in source
     ), f"{rust_file} does not force PYTHONIOENCODING"
+
+
+# The console-less spawn. Windows only, and last in the file because it reuses
+# the literal masking above to brace-match the blocks it lifts.
+#
+# A GitHub runner hands a CREATE_NO_WINDOW child a console anyway
+# (GetConsoleOutputCP 437, GetConsoleWindow 0), so the UTF-8 setter in the
+# preamble succeeds there and every version of these scripts emits a clean
+# banner. The cases above therefore cannot tell this fix from what preceded it.
+# Calling FreeConsole() in the child first puts it in the state install.rs's own
+# comment assumes CREATE_NO_WINDOW produces, and there the two diverge hard:
+# without the sink, Write-Host throws `HostException: GetConsoleScreenBufferInfo,
+# The Win32 internal error "The handle is invalid" 0x6`, the script dies with
+# exit 1 and 2 bytes of stdout, and the user's setup log holds a PowerShell
+# stack trace where the banner should be.
+#
+# Every line of the probe is sliced out of the script under test. Restating the
+# banner here would only assert that this file can print a sloth.
+
+CREATE_NO_WINDOW = 0x08000000
+
+# studio/src-tauri/src/install.rs::powershell_launch_args, minus the -File the
+# runner appends. Not Bypass: RemoteSigned is what the shipped spawn uses.
+TAURI_FLAGS = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned"]
+
+# install.rs::powershell_exe. Resolved absolutely for the same reason it is
+# there, and not fallen back to a bare `powershell.exe`: pwsh 7 is UTF-8 by
+# default and would pass this without exercising anything.
+_WINDOWS_POWERSHELL = (
+    Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    / r"System32\WindowsPowerShell\v1.0\powershell.exe"
+    if sys.platform == "win32"
+    else None
+)
+
+windows_only = pytest.mark.skipif(
+    sys.platform != "win32", reason = "the console-less spawn is a Win32 state"
+)
+powershell_51_only = pytest.mark.skipif(
+    _WINDOWS_POWERSHELL is None or not _WINDOWS_POWERSHELL.is_file(),
+    reason = "Windows PowerShell 5.1 is unavailable",
+)
+
+# Documented kernel32 calls and nothing else, so the probe reaches the target
+# state without the scripts under test knowing they are being tested.
+_FREE_CONSOLE = """Add-Type -Namespace Force -Name Native -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern bool FreeConsole();
+'@
+$null = [Force.Native]::FreeConsole()"""
+
+# The first line of the preamble, and the anchor the slice starts from.
+_UTF8_ENCODER = "$_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false"
+
+
+def _dedent(block: str) -> str:
+    """Strip the common indent; install.ps1 defines all of this inside a block."""
+    indents = [len(line) - len(line.lstrip()) for line in block.split("\n") if line.strip()]
+    cut = min(indents) if indents else 0
+    return "\n".join(line[cut:] if line.strip() else "" for line in block.split("\n"))
+
+
+def _slice_preamble(source: str) -> str:
+    """The UTF-8 output invariant, from the encoder to the PYTHONIOENCODING line."""
+    head = source.rindex("\n", 0, source.index(_UTF8_ENCODER)) + 1
+    tail = source.index("\n", source.index("$env:PYTHONIOENCODING = 'utf-8'")) + 1
+    return _dedent(source[head:tail])
+
+
+def _slice_optional(source: str, pattern: str) -> str | None:
+    """None is an answer: main's install.ps1 has neither probe nor sink helper."""
+    match = re.search(pattern, source)
+    return _dedent(match.group(0)) if match else None
+
+
+def _slice_if_chain(source: str, masked: str, start: int) -> str:
+    """A whole `if {} else {}`; brace-matching alone drops the non-ANSI branch.
+
+    The redirected run is exactly the one that takes that branch.
+    """
+    end = _close_brace(masked, masked.index("{", start))
+    chained = r"[ \t\r\n]*(?:elseif[ \t]*\(.*?\)|else)[ \t\r\n]*\{"
+    while True:
+        tail = re.match(chained, masked[end + 1 :], re.S)
+        if not tail:
+            return source[start : end + 1]
+        end = _close_brace(masked, end + tail.end())
+
+
+def _slice_banner(source: str, masked: str) -> str:
+    """The blank line, the VT/plain branch and the trailing blank, verbatim."""
+    match = re.search(
+        r'(?m)^[ \t]*(?:Write-Host|Write-StudioLine) ""\n'
+        r"[ \t]*if \(\$script:StudioVtOk -and -not \$env:NO_COLOR\) \{",
+        source,
+    )
+    assert match, "no banner block"
+    block = _slice_if_chain(source, masked, match.end() - 1)
+    end = match.end() - 1 + len(block)
+    trailing = re.match(r'\n[ \t]*(?:Write-Host|Write-StudioLine) ""(?=\n)', source[end:])
+    return _dedent(source[match.start() : end + (trailing.end() if trailing else 0)])
+
+
+def _console_less_probe(path: Path) -> str:
+    """Assemble a probe out of the script's own preamble, helpers and banner."""
+    source = path.read_text(encoding = "utf-8")
+    masked = _mask_literals(source)
+    parts = ["$ErrorActionPreference = 'Stop'", _FREE_CONSOLE, "", _slice_preamble(source), ""]
+    redirect_probe = _slice_optional(
+        source,
+        r"(?m)^[ \t]*\$script:StudioStdoutRedirected = \$false\n"
+        r"[ \t]*try \{ \$script:StudioStdoutRedirected = \[Console\]::IsOutputRedirected \} catch \{ \}",
+    )
+    parts += [redirect_probe or "$script:StudioStdoutRedirected = $false", ""]
+    for name in ("Write-StudioLine", "Enable-StudioVirtualTerminal", "Get-StudioAnsi"):
+        if _function_match(masked, name):
+            lo, hi = _function_span(masked, name)
+            parts += [_dedent(source[lo:hi]), ""]
+    parts += ["$script:StudioVtOk = Enable-StudioVirtualTerminal", ""]
+    for pattern in (
+        r"(?m)^[ \t]*\$Rule = \[string\]::new\(\[char\]0x2500, 52\)",
+        r"(?m)^[ \t]*\$Sloth = \[char\]::ConvertFromUtf32\(0x1F9A5\)",
+    ):
+        # setup.ps1 inlines the sloth in the banner; install.ps1 binds it first.
+        assignment = _slice_optional(source, pattern)
+        if assignment:
+            parts.append(assignment)
+    parts += ["", _slice_banner(source, masked), ""]
+    # On stderr, which the app reads on a separate reader, so stdout stays
+    # exactly the byte stream the log panel is built from.
+    parts += [
+        '[Console]::Error.WriteLine("psversion=" + $PSVersionTable.PSVersion.ToString())',
+        '[Console]::Error.WriteLine("console_outputencoding_codepage=" + [Console]::OutputEncoding.CodePage)',
+        '[Console]::Error.WriteLine("output_redirected=" + [Console]::IsOutputRedirected)',
+        '[Console]::Error.WriteLine("studio_stdout_redirected=" + $script:StudioStdoutRedirected)',
+        '[Console]::Error.WriteLine("studio_vt_ok=" + $script:StudioVtOk)',
+    ]
+    assembled = "\n".join(parts) + "\n"
+    # 5.1 parses a BOM-less file as ANSI, which is why both scripts are ASCII-only.
+    assembled.encode("ascii")
+    return assembled
+
+
+@lru_cache(maxsize = None)
+def _run_console_less(path: Path) -> tuple[int, bytes, str]:
+    """Spawn the probe the way install.rs spawns the installer, and read bytes."""
+    with tempfile.TemporaryDirectory() as workdir:
+        # A file written here has no Zone.Identifier, so RemoteSigned admits it.
+        probe = Path(workdir) / f"{path.stem}_console_less_probe.ps1"
+        probe.write_bytes(_console_less_probe(path).replace("\n", "\r\n").encode("ascii"))
+        proc = subprocess.run(
+            [str(_WINDOWS_POWERSHELL), *TAURI_FLAGS, "-File", str(probe)],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            creationflags = CREATE_NO_WINDOW,
+            timeout = 180,
+        )
+    return proc.returncode, proc.stdout, proc.stderr.decode("utf-8", errors = "replace")
+
+
+def _decode_like_install_rs(raw: bytes) -> str:
+    """install.rs: read_until(b'\\n') -> trim_line_endings -> from_utf8_lossy.
+
+    One record per `install-progress` event, so this is what the log panel
+    renders. Python's 'replace' emits one U+FFFD per maximal subpart, the rule
+    Rust's from_utf8_lossy uses.
+    """
+    records = raw.split(b"\n")
+    if records and records[-1] == b"":
+        records.pop()  # read_until returning Ok(0) at EOF, not an empty line
+    return "\n".join(r.rstrip(b"\r\n").decode("utf-8", errors = "replace") for r in records)
+
+
+def _explain(path: Path, code: int, raw: bytes, err: str) -> str:
+    tail = "\n".join(line for line in err.splitlines() if line.strip())[-1200:]
+    return (
+        f"\n{path.name} under a console-less CREATE_NO_WINDOW spawn: exit {code}, "
+        f"{len(raw)} stdout bytes.\nstderr:\n{tail}\n"
+    )
+
+
+@windows_only
+@powershell_51_only
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+def test_banner_survives_a_console_less_spawn(path: Path) -> None:
+    """Without the sink this exits 1 with 2 bytes: the banner never arrives."""
+    code, raw, err = _run_console_less(path)
+    assert code == 0, (
+        "the banner block aborted the script instead of printing. Write-Host needs a "
+        "console screen buffer, and CREATE_NO_WINDOW is documented not to give the "
+        "child one, so it throws and -ErrorActionPreference Stop takes the run down. "
+        "The desktop setup log gets a PowerShell stack trace and no banner at all. "
+        "Route the line through Write-StudioLine." + _explain(path, code, raw, err)
+    )
+    assert raw, "the probe printed nothing" + _explain(path, code, raw, err)
+
+
+@windows_only
+@powershell_51_only
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+def test_console_less_banner_is_valid_utf8(path: Path) -> None:
+    """Strict, then lossy: the second says how bad the first would have looked."""
+    code, raw, err = _run_console_less(path)
+    lossy = _decode_like_install_rs(raw)
+    assert REPLACEMENT not in lossy, (
+        "the desktop app decodes this pipe as UTF-8 and got bytes that are not, so the "
+        "log shows U+FFFD. With no console the UTF-8 setter throws, and only the "
+        "writers bound in its catch branch keep the stream UTF-8." + _explain(path, code, raw, err)
+    )
+    raw.decode("utf-8")  # strict on purpose; UnicodeDecodeError is the failure
+
+
+@windows_only
+@powershell_51_only
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
+    code, raw, err = _run_console_less(path)
+    text = _decode_like_install_rs(raw)
+    detail = _explain(path, code, raw, err)
+    assert SLOTH in text, "the sloth did not reach stdout" + detail
+    assert "??" not in text, "the sloth was transcoded to '?' by a non-UTF-8 code page" + detail
+    assert text.count(RULE_CHAR * 52) == 1, (
+        f"expected one 52-char U+2500 rule, found {text.count(RULE_CHAR * 52)}" + detail
+    )
