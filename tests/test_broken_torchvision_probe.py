@@ -170,3 +170,51 @@ def test_the_skip_variable_still_skips_everything():
         with mock.patch.object(import_fixes, "_probe_torchvision_binary") as probe:
             import_fixes.torchvision_compatibility_check()
     probe.assert_not_called()
+
+
+# --- the repair command has to name a wheel that matches the installed torch ---
+
+
+def test_the_repair_names_the_wheel_for_this_torch_patch():
+    """`0.22.*` on a torch 2.7.0 host resolves torchvision 0.22.1, which requires
+    torch 2.7.1, and `--no-deps` then keeps the 2.7.0 that does not match it. The
+    advertised repair would rebuild the mismatch it is meant to fix."""
+    from unsloth.import_fixes import _torchvision_repair_command
+
+    assert '"torchvision==0.22.0"' in _torchvision_repair_command((0, 22, 0))
+    assert '"torchvision==0.22.1"' in _torchvision_repair_command((0, 22, 1))
+    assert ".*" not in _torchvision_repair_command((0, 24, 1))
+
+
+def test_a_minor_only_pair_still_gets_a_command():
+    """The table and the forward-compat formula both answer with two numbers when
+    the torch version carries no patch. Nothing to derive, so the range stands."""
+    from unsloth.import_fixes import _torchvision_repair_command
+
+    assert '"torchvision==0.22.*"' in _torchvision_repair_command((0, 22))
+    assert '"torchvision"' in _torchvision_repair_command(None)
+
+
+def test_the_pairing_this_relies_on_is_what_pypi_publishes():
+    """The whole fix rests on torchvision's patch tracking torch's. Asserted
+    against the real metadata rather than against the table, and skipped rather
+    than failed when the network is unavailable."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    import pytest
+
+    expected = {"0.22.0": "torch==2.7.0", "0.22.1": "torch==2.7.1"}
+    for torchvision_version, torch_requirement in expected.items():
+        try:
+            with urllib.request.urlopen(
+                f"https://pypi.org/pypi/torchvision/{torchvision_version}/json", timeout = 20
+            ) as response:
+                metadata = json.load(response)
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            pytest.skip(f"pypi.org unreachable: {error}")
+        requirements = metadata["info"].get("requires_dist") or []
+        assert torch_requirement in requirements, (
+            f"torchvision {torchvision_version} no longer requires {torch_requirement}"
+        )

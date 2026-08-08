@@ -1024,7 +1024,16 @@ def _torchvision_repair_command(required = None):
     (torch 2.4 accepts torchvision >= 0.19, so an installed 0.20 reaches here):
     the companion release is what gets reinstalled, not the newest one.
     """
-    spec = "torchvision" if required is None else f"torchvision=={required[0]}.{required[1]}.*"
+    if required is None:
+        spec = "torchvision"
+    elif len(required) >= 3:
+        # Exact, because the pair is exact: torchvision 0.22.0 requires torch
+        # 2.7.0 and 0.22.1 requires torch 2.7.1. A `0.22.*` wildcard on a
+        # torch 2.7.0 host resolves 0.22.1, and `--no-deps` then keeps the torch
+        # that does not match it, rebuilding the mismatch the command repairs.
+        spec = f"torchvision=={required[0]}.{required[1]}.{required[2]}"
+    else:
+        spec = f"torchvision=={required[0]}.{required[1]}.*"
     return f'pip install --force-reinstall --no-deps --no-cache-dir "{spec}"'
 
 
@@ -1107,6 +1116,12 @@ def torchvision_compatibility_check():
 
     if required is None:
         return
+
+    # Carry torch's own patch into the companion: the two move together
+    # (2.7.0/0.22.0, 2.7.1/0.22.1), so the repair command can name one wheel
+    # instead of a minor-wide range it cannot then satisfy under `--no-deps`.
+    if len(torch_release) >= 3:
+        required = (required[0], required[1], torch_release[2])
 
     required_tv_str = f"{required[0]}.{required[1]}.0"
 
