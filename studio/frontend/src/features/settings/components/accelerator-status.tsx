@@ -19,6 +19,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   type AcceleratorPackage,
   type AcceleratorReport,
+  type Health,
+  acceleratorHealth,
   hasDeadAccelerator,
 } from "@/hooks/accelerator-report";
 import { useAcceleratorReport } from "@/hooks/use-accelerator-report";
@@ -39,19 +41,6 @@ const PACKAGE_LABELS: Record<string, string> = {
 
 function packageLabel(name: string): string {
   return PACKAGE_LABELS[name] ?? name;
-}
-
-type Health = "working" | "broken" | "absent" | "unknown";
-
-/**
- * Three questions collapse to one badge. `runs === false` and "imports but does not run"
- * are the same thing to a user, and both mean the kernels are dead.
- */
-function healthOf(pkg: AcceleratorPackage, probed: boolean): Health {
-  if (!pkg.installed) return "absent";
-  if (!probed) return "unknown";
-  if (!pkg.imports || pkg.runs === false) return "broken";
-  return "working";
 }
 
 const HEALTH_LABEL_KEYS: Record<Health, TranslationKey> = {
@@ -94,7 +83,7 @@ function AcceleratorRow({
   probed: boolean;
 }) {
   const t = useT();
-  const health = healthOf(pkg, probed);
+  const health = acceleratorHealth(pkg, probed);
   const build = describeBuild(pkg);
   // Only explain a broken one. On a healthy machine the build detail is noise, and the
   // raw exception text is never the first thing to show.

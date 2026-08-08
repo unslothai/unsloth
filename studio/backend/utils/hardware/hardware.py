@@ -22,6 +22,7 @@ import glob
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -932,6 +933,10 @@ _ACCELERATOR_PACKAGES = (
 # would turn an expected import failure into a red banner.
 _ROCM_ACCELERATOR_PACKAGES = frozenset({"flash_attn"})
 
+# And on Intel XPU. Same reasoning, other package: bitsandbytes has an XPU backend that the
+# loader gates 4-bit on, while flash-attn / xformers / torchao publish nothing for it.
+_XPU_ACCELERATOR_PACKAGES = frozenset({"bitsandbytes"})
+
 # Importing native extension packages is the only honest way to know they load, but it is
 # slow and, on a badly broken install, not risk-free. Computed at most once per process
 # and skippable outright.
@@ -1043,7 +1048,13 @@ def _applicable_accelerator_packages() -> frozenset:
     stay out.
     """
     try:
-        if get_device() is not DeviceType.CUDA:
+        device = get_device()
+        if device is DeviceType.XPU:
+            # bitsandbytes ships an XPU backend and the loader gates 4-bit on
+            # native_kernels_ready(..., "xpu") with its own symbol set, so a broken XPU wheel
+            # is something training will reach. The other three are CUDA-only builds.
+            return _XPU_ACCELERATOR_PACKAGES
+        if device is not DeviceType.CUDA:
             return frozenset()
         if IS_ROCM:
             return _ROCM_ACCELERATOR_PACKAGES
@@ -1059,6 +1070,7 @@ def _run_probe_subprocess(
     names,
     timeout: int = 180,
     status: Optional[Dict[str, Any]] = None,
+    keep_cuda: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Run accelerator_probe.py in a throwaway interpreter. None if it could not answer.
 
@@ -1098,11 +1110,23 @@ def _run_probe_subprocess(
             env = utf8_child_env(
                 {
                     **os.environ,
-                    "CUDA_VISIBLE_DEVICES": "",
+                    # Hidden for every probe that only needs to know whether a library LOADS,
+                    # so the diagnostic cannot take VRAM from a run in progress. bitsandbytes
+                    # is the exception (see _probe_packages): with no visible CUDA it picks its
+                    # CPU library and a healthy install reports as broken.
+                    **({} if keep_cuda else {"CUDA_VISIBLE_DEVICES": ""}),
                     "UNSLOTH_ALLOW_CPU": "1",
                     # Which ctypes symbol set bitsandbytes is checked against; only "xpu"
                     # differs, and the child cannot work it out with the GPUs hidden.
                     "UNSLOTH_PROBE_DEVICE_TYPE": _probe_device_type(),
+                    # The capability of the GPU the APP can use. The child cannot read it: the
+                    # mask is gone by the time it starts, and nvidia-smi's first row is a
+                    # physical device this process may not even be allowed to touch.
+                    **(
+                        {"UNSLOTH_PROBE_DEVICE_CC": _visible_compute_capability() or ""}
+                        if not keep_cuda
+                        else {}
+                    ),
                 }
             ),
         )
@@ -1169,6 +1193,60 @@ def _probe_device_type() -> str:
         return "cuda"
 
 
+# bitsandbytes decides which native library to load from torch.cuda.is_available(), so a child
+# with the GPUs hidden picks the CPU one and a healthy CUDA install reports dead handles. It
+# gets its own child, with the mask the app itself runs under. That child does latch a CUDA
+# context, but it exits immediately and the SERVER never holds one -- which is what the hidden
+# mask is protecting.
+_CUDA_VISIBLE_PROBES = frozenset({"bitsandbytes"})
+
+
+def _visible_compute_capability() -> Optional[str]:
+    """Compute capability of the GPU this process can actually use, as "12.0", or None.
+
+    nvidia-smi lists PHYSICAL devices and ignores CUDA_VISIBLE_DEVICES, so the first row is not
+    necessarily the app's device: on a mixed host masked to an sm_120 card, reading row 0 (an
+    sm_90 part) evaluates the wrong op table and can report xFormers as working while the
+    visible GPU has no kernel. Resolved here, in the parent, because the child is started with
+    the mask cleared and cannot recover it.
+    """
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        result = subprocess.run(
+            [exe, "--query-gpu=index,uuid,compute_cap", "--format=csv,noheader"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+        )
+    except Exception:  # noqa: BLE001 — no answer is "unknown", never a failure
+        return None
+    if result.returncode != 0:
+        return None
+    rows = []
+    for line in (result.stdout or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) >= 3:
+            rows.append((parts[0], parts[1], parts[2]))
+    if not rows:
+        return None
+    mask = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
+    if not mask:
+        return rows[0][2]
+    first = mask.split(",")[0].strip()
+    if not first:
+        return None
+    for index, uuid, capability in rows:
+        # The mask names either an ordinal or a GPU UUID, and a UUID may be abbreviated.
+        if first == index or uuid == first or uuid.startswith(first):
+            return capability
+    return None
+
+
 def _probe_packages(names) -> Dict[str, Any]:
     """Probe ``names``, isolating a package that KILLS the child rather than raising.
 
@@ -1181,8 +1259,23 @@ def _probe_packages(names) -> Dict[str, Any]:
     time -- the survivors get their real answer, and the package whose own child dies is
     reported as broken, which is what it is.
     """
+    names = list(names)
+    # Split off the packages that need the real device mask; each group gets its own child.
+    cuda_visible = [name for name in names if name in _CUDA_VISIBLE_PROBES]
+    hidden = [name for name in names if name not in _CUDA_VISIBLE_PROBES]
+    if cuda_visible and hidden:
+        results = _probe_packages_with(hidden, keep_cuda = False)
+        results.update(_probe_packages_with(cuda_visible, keep_cuda = True))
+        return results
+    return _probe_packages_with(names, keep_cuda = bool(cuda_visible))
+
+
+def _probe_packages_with(names, *, keep_cuda: bool) -> Dict[str, Any]:
+    """One group of packages, under one CUDA visibility. Isolation rules as above."""
+    if not names:
+        return {}
     status: Dict[str, Any] = {}
-    results = _run_probe_subprocess(list(names), status = status)
+    results = _run_probe_subprocess(list(names), status = status, keep_cuda = keep_cuda)
     if results is not None:
         return results
     if not status.get("died"):
@@ -1201,7 +1294,7 @@ def _probe_packages(names) -> Dict[str, Any]:
         }
     isolated: Dict[str, Any] = {}
     for name in names:
-        isolated.update(_probe_packages([name]))
+        isolated.update(_probe_packages_with([name], keep_cuda = keep_cuda))
     return isolated
 
 
@@ -1340,6 +1433,9 @@ def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
                 "version": version,
                 "installed": version is not None,
                 "imports": False,
+                # Per package, because the probe set is per device: a ROCm host never probes
+                # bitsandbytes, and one global flag would render that row "Not loading".
+                "probed": False,
                 "runs": None,
                 "reason": None,
             }
@@ -1350,6 +1446,7 @@ def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
 
             result = results.get(import_name)
             if result is not None:
+                entry["probed"] = True
                 entry["imports"] = result.get("imports") is True
                 entry["runs"] = result.get("runs") if isinstance(result.get("runs"), bool) else None
                 error = result.get("error")

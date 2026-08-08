@@ -182,11 +182,11 @@ def test_the_bitsandbytes_check_is_the_one_the_loader_gates_on():
 
 
 def test_torchao_without_native_operators_is_not_working(monkeypatch):
-    torchao = types.ModuleType("torchao")
-    monkeypatch.setitem(sys.modules, "torchao", torchao)
-    torch = types.ModuleType("torch")
-    torch.ops = types.SimpleNamespace()
-    monkeypatch.setitem(sys.modules, "torch", torch)
+    # The dispatcher's table, NOT dir(torch.ops.torchao): touching that attribute creates an
+    # empty _OpNamespace whose dir() already lists __name__, __spec__ and friends, so the
+    # no-native-operators case -- the one this exists to catch -- read as healthy.
+    monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
+    monkeypatch.setattr(probe, "_registered_ops", lambda namespace: 0)
 
     entry = probe.probe_torchao()
     assert entry["imports"] is True
@@ -195,19 +195,23 @@ def test_torchao_without_native_operators_is_not_working(monkeypatch):
 
 
 def test_torchao_with_native_operators_is_working(monkeypatch):
-    torchao = types.ModuleType("torchao")
-    monkeypatch.setitem(sys.modules, "torchao", torchao)
-
-    class _Namespace:
-        def __dir__(self):
-            return ["quant_llm_linear"]
-
-    torch = types.ModuleType("torch")
-    torch.ops = types.SimpleNamespace(torchao = _Namespace())
-    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
+    monkeypatch.setattr(probe, "_registered_ops", lambda namespace: 12)
 
     entry = probe.probe_torchao()
     assert entry["runs"] is True and entry["error"] is None
+
+
+def test_an_empty_ops_namespace_is_not_mistaken_for_a_loaded_extension():
+    """Against the real torch in this environment: torch.ops.<ns> materialises on attribute
+    access, so the count has to come from the dispatcher."""
+    pytest.importorskip("torch")
+    import torch
+
+    assert probe._registered_ops("aten") > 0
+    # A namespace nothing has registered under. Reading it through torch.ops would create it.
+    assert probe._registered_ops("unsloth_no_such_namespace") == 0
+    assert len(dir(getattr(torch.ops, "unsloth_no_such_namespace"))) > 0
 
 
 def test_the_dispatch_table_uses_the_kernel_aware_probes():

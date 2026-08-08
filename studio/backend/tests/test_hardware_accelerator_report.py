@@ -16,6 +16,7 @@ the wheel on disk was compiled against. Nothing here needs a GPU or a working xf
 
 import ast
 import json
+import types
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 
@@ -60,6 +61,7 @@ def fake_probe(monkeypatch):
             names,
             timeout = 180,
             status = None,
+            keep_cuda = False,
         ):
             calls["n"] += 1
             calls["names"] = list(names)
@@ -274,18 +276,32 @@ def test_only_the_installed_and_applicable_packages_are_probed(
     assert calls["names"] == ["xformers"]
 
 
-def test_the_probe_is_one_child_for_all_packages(monkeypatch, on_accelerator, fake_probe):
-    # The interpreter start and the torch import dominate, so one child per package
-    # would cost four times as much for the same answer.
+def test_the_probe_is_one_child_per_visibility_group(monkeypatch, on_accelerator):
+    """The interpreter start and the torch import dominate, so one child per PACKAGE would
+    cost four times as much for the same answer. Two groups, though, not one: bitsandbytes
+    picks its native library from torch.cuda.is_available(), so with the GPUs hidden a healthy
+    CUDA install loads the CPU library and reports dead handles. It gets the app's own mask;
+    everything else keeps the hidden one, which is what stops a diagnostic taking VRAM from a
+    run in progress."""
     monkeypatch.setattr(hw, "pkg_version", lambda name: "1.0")
-    calls = fake_probe(
-        {
-            name: {"imports": True, "runs": None, "error": None}
-            for name, _ in hw._ACCELERATOR_PACKAGES
-        }
-    )
+    seen: list[tuple] = []
+
+    def run(
+        names,
+        timeout = 180,
+        status = None,
+        keep_cuda = False,
+    ):
+        seen.append((tuple(names), keep_cuda))
+        return {name: {"imports": True, "runs": None, "error": None} for name in names}
+
+    monkeypatch.setattr(hw, "_run_probe_subprocess", run)
     hw.get_accelerator_report(refresh = True)
-    assert calls["n"] == 1
+
+    assert seen == [
+        (("xformers", "flash_attn", "torchao"), False),
+        (("bitsandbytes",), True),
+    ]
 
 
 def test_absent_package_is_not_degraded(monkeypatch, on_accelerator, fake_probe):
@@ -326,7 +342,11 @@ def test_a_probe_that_cannot_answer_is_unknown_not_broken(monkeypatch, on_accele
     # The child timed out, crashed, or printed nothing. That says nothing about the
     # packages, so it must not light the banner.
     monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
-    monkeypatch.setattr(hw, "_run_probe_subprocess", lambda names, timeout = 180, status = None: None)
+    monkeypatch.setattr(
+        hw,
+        "_run_probe_subprocess",
+        lambda names, timeout = 180, status = None, keep_cuda = False: None,
+    )
 
     report = hw.get_accelerator_report(refresh = True)
     assert report["probed"] is False
@@ -394,7 +414,6 @@ def test_hardware_endpoint_gates_the_report_behind_its_own_flag():
     [
         (lambda: hw.DeviceType.MLX, False, "Apple Silicon"),
         (lambda: hw.DeviceType.CPU, False, "CPU-only"),
-        (lambda: hw.DeviceType.XPU, False, "Intel XPU"),
     ],
 )
 def test_a_host_these_kernels_cannot_run_on_is_never_degraded(monkeypatch, device, is_rocm, label):
@@ -417,6 +436,27 @@ def test_a_host_these_kernels_cannot_run_on_is_never_degraded(monkeypatch, devic
     assert report["packages"]["bitsandbytes"]["reason"] == "not used on this device"
 
 
+def test_an_xpu_host_probes_the_one_package_that_runs_there(monkeypatch, fake_probe):
+    """bitsandbytes has an XPU backend, and the loader gates 4-bit on
+    native_kernels_ready(..., "xpu") with its own symbol set -- so a broken XPU wheel is
+    something training will reach, and calling it "not used on this device" suppressed the
+    warning until the first 4-bit load failed. flash-attn / xformers / torchao publish nothing
+    for XPU, so they stay out."""
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.XPU)
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
+    calls = fake_probe(
+        {"bitsandbytes": {"imports": True, "runs": False, "error": "AttributeError: ..."}}
+    )
+
+    report = hw.get_accelerator_report(refresh = True)
+    assert calls["names"] == ["bitsandbytes"]
+    assert report["degraded"] == ["bitsandbytes"]
+    assert report["packages"]["xformers"]["reason"] == "not used on this device"
+    # ...and it is checked against the XPU symbol set, not the CUDA one.
+    assert hw._probe_device_type() == "xpu"
+
+
 def test_a_rocm_host_probes_only_what_it_can_actually_load(monkeypatch, fake_probe):
     """ROCm is the subtle one: those hosts report DeviceType.CUDA internally (there is
     deliberately no DeviceType.ROCM), so a plain device check waves them through -- but
@@ -436,6 +476,70 @@ def test_a_rocm_host_probes_only_what_it_can_actually_load(monkeypatch, fake_pro
     assert report["packages"]["bitsandbytes"]["reason"] == "not used on this device"
     assert report["packages"]["xformers"]["reason"] == "not used on this device"
     assert report["packages"]["torchao"]["reason"] == "not used on this device"
+
+
+_SMI_ROWS = (
+    "0, GPU-aaaaaaaa-1111-2222-3333-444444444444, 9.0\n"
+    "1, GPU-bbbbbbbb-5555-6666-7777-888888888888, 12.0\n"
+)
+
+
+def _fake_smi(monkeypatch, stdout = _SMI_ROWS, returncode = 0):
+    monkeypatch.setattr(hw.shutil, "which", lambda name: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(
+        hw.subprocess,
+        "run",
+        lambda *a, **kw: types.SimpleNamespace(returncode = returncode, stdout = stdout),
+    )
+
+
+@pytest.mark.parametrize(
+    "mask, expected",
+    [
+        (None, "9.0"),
+        ("1", "12.0"),
+        ("1,0", "12.0"),
+        ("GPU-bbbbbbbb-5555-6666-7777-888888888888", "12.0"),
+        ("GPU-bbbbbbbb", "12.0"),
+        ("7", None),
+    ],
+)
+def test_the_capability_follows_the_mask_the_app_runs_under(monkeypatch, mask, expected):
+    """nvidia-smi lists PHYSICAL devices and ignores CUDA_VISIBLE_DEVICES. On a mixed host
+    masked to the sm_120 card, reading row 0 evaluates the sm_90 op table and reports
+    xFormers as working while the GPU the app can actually use has no kernel -- exactly the
+    degraded state this report exists to surface. Resolved in the parent because the child
+    is started with the mask cleared."""
+    _fake_smi(monkeypatch)
+    if mask is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    assert hw._visible_compute_capability() == expected
+
+
+def test_no_nvidia_smi_is_unknown_rather_than_a_guess(monkeypatch):
+    monkeypatch.setattr(hw.shutil, "which", lambda name: None)
+    assert hw._visible_compute_capability() is None
+    _fake_smi(monkeypatch, stdout = "", returncode = 9)
+    assert hw._visible_compute_capability() is None
+
+
+def test_each_row_says_whether_it_was_probed(monkeypatch, fake_probe):
+    """Report-wide "probed" cannot answer for a row. The probe set is per device, so on this
+    ROCm host three of the four packages are installed and deliberately unprobed -- and with
+    only the global flag the About table rendered all three "Not loading", a red badge for
+    packages that are fine and that the banner does not even list."""
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
+    fake_probe({"flash_attn": {"imports": True, "runs": True, "error": None}})
+
+    packages = hw.get_accelerator_report(refresh = True)["packages"]
+    assert packages["flash_attn"]["probed"] is True
+    for name in ("xformers", "torchao", "bitsandbytes"):
+        assert packages[name]["installed"] is True
+        assert packages[name]["probed"] is False
 
 
 def test_a_cpu_host_is_distinguishable_from_an_opted_out_one(monkeypatch):
@@ -467,10 +571,11 @@ def test_a_child_that_dies_is_isolated_rather_than_erasing_the_report(monkeypatc
         names,
         timeout = 180,
         status = None,
+        keep_cuda = False,
     ):
         seen.append(list(names))
         if "bitsandbytes" in names:
-            # The batch, and bitsandbytes' own child, both die without answering.
+            # bitsandbytes' child dies without answering.
             if status is not None:
                 status["died"] = True
             return None
@@ -487,9 +592,9 @@ def test_a_child_that_dies_is_isolated_rather_than_erasing_the_report(monkeypatc
     assert report["degraded"] == ["bitsandbytes"]
     assert report["packages"]["bitsandbytes"]["runs"] is False
     assert "exited without answering" in report["packages"]["bitsandbytes"]["reason"]
-    # One batch attempt, then one child per package. No retry storm.
-    assert seen[0] == ["xformers", "flash_attn", "torchao", "bitsandbytes"]
-    assert seen[1:] == [["xformers"], ["flash_attn"], ["torchao"], ["bitsandbytes"]]
+    # The hidden-GPU group answers in one child; the bitsandbytes group is alone and its own
+    # child already died, so that IS the diagnosis. No retry storm either way.
+    assert seen == [["xformers", "flash_attn", "torchao"], ["bitsandbytes"]]
 
 
 def test_a_probe_that_never_ran_is_still_unknown(monkeypatch, on_accelerator):
@@ -502,6 +607,7 @@ def test_a_probe_that_never_ran_is_still_unknown(monkeypatch, on_accelerator):
         names,
         timeout = 180,
         status = None,
+        keep_cuda = False,
     ):
         calls["n"] += 1
         return None  # no status["died"]: the child never got to run
@@ -509,7 +615,8 @@ def test_a_probe_that_never_ran_is_still_unknown(monkeypatch, on_accelerator):
     monkeypatch.setattr(hw, "_run_probe_subprocess", run)
 
     report = hw.get_accelerator_report(refresh = True)
-    assert calls["n"] == 1
+    # One child per visibility group, and neither retried.
+    assert calls["n"] == 2
     assert report["probed"] is False and report["degraded"] == []
     assert report["packages"]["torchao"]["reason"] == "could not be checked"
 

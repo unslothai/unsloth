@@ -254,21 +254,37 @@ def probe_torchao() -> Dict[str, Any]:
     entry = probe_import("torchao")
     if not entry["imports"]:
         return entry
+    registered = _registered_ops("torchao")
+    if registered is None:
+        # Cannot tell (an unfamiliar torch): leave the import-only answer rather than invent
+        # a verdict.
+        return entry
+    entry["runs"] = registered > 0
+    if not entry["runs"]:
+        entry["error"] = (
+            "torchao imported but registered no native operators: its C++/CUDA extension was "
+            "skipped for this torch build, so the optimized quantization kernels are not "
+            "available"
+        )
+    return entry
+
+
+def _registered_ops(namespace: str):
+    """How many operators ``namespace`` has registered with the dispatcher, or None.
+
+    NOT ``dir(torch.ops.<ns>)``: touching that attribute CREATES an empty ``_OpNamespace``,
+    whose dir() is already non-empty (``__name__``, ``__spec__``, ...) before a single operator
+    exists -- so the no-native-operators case this exists to catch read as healthy. The
+    dispatcher's own table is the only thing that answers the question asked.
+    """
     try:
         import torch
 
-        ops = getattr(torch.ops, "torchao", None)
-        # torch._ops._OpNamespace resolves lazily, so its dir() is the registered set.
-        entry["runs"] = bool(ops is not None and dir(ops))
-        if entry["runs"] is False:
-            entry["error"] = (
-                "torchao imported but registered no native operators: its C++/CUDA "
-                "extension was skipped for this torch build, so the optimized "
-                "quantization kernels are not available"
-            )
-    except BaseException as exc:
-        entry["error"] = _error(exc)
-    return entry
+        names = torch._C._dispatch_get_all_op_names()
+    except BaseException:  # noqa: BLE001 — an unfamiliar torch means "cannot tell"
+        return None
+    prefix = f"{namespace}::"
+    return sum(1 for name in names if name.startswith(prefix))
 
 
 def probe_import(import_name: str) -> Dict[str, Any]:

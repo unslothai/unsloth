@@ -15,9 +15,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { parseAcceleratorReport, hasDeadAccelerator } = await import(
-  "../src/hooks/accelerator-report.ts"
-);
+const { parseAcceleratorReport, hasDeadAccelerator, acceleratorHealth } =
+  await import("../src/hooks/accelerator-report.ts");
 
 const BROKEN_XFORMERS = {
   python_version: "3.13.2",
@@ -154,4 +153,61 @@ test("the banner fires only on a degraded package", () => {
   // No report at all (older backend, or a fetch without include_details) must not
   // produce a banner claiming something is broken.
   assert.equal(hasDeadAccelerator(null), false);
+});
+
+test("a package the backend chose not to probe reads as unknown, not broken", () => {
+  // The probe set is per device: a ROCm host probes flash_attn and skips bitsandbytes, an
+  // Intel host does the reverse. Reading the report-wide flag onto every row rendered the
+  // skipped ones as "Not loading" as soon as one other row was probed -- a red badge for a
+  // package that is fine, and one the banner does not even list, since it is not degraded.
+  const report = parseAcceleratorReport({
+    probed: true,
+    packages: {
+      xformers: {
+        version: "0.0.34",
+        installed: true,
+        probed: true,
+        imports: true,
+        runs: true,
+      },
+      bitsandbytes: {
+        version: "0.48.0",
+        installed: true,
+        probed: false,
+        imports: false,
+        runs: null,
+        reason: "not used on this device",
+      },
+    },
+    degraded: [],
+  });
+  assert.ok(report);
+  const [xformers, bnb] = report.packages;
+  assert.equal(acceleratorHealth(xformers, report.probed), "working");
+  assert.equal(acceleratorHealth(bnb, report.probed), "unknown");
+});
+
+test("a backend too old to answer per package falls back to the report flag", () => {
+  const older = parseAcceleratorReport({
+    probed: true,
+    packages: {
+      xformers: { version: "0.0.34", installed: true, imports: true, runs: true },
+    },
+    degraded: [],
+  });
+  assert.ok(older);
+  assert.equal(older.packages[0].probed, null);
+  assert.equal(acceleratorHealth(older.packages[0], older.probed), "working");
+  assert.equal(acceleratorHealth(older.packages[0], false), "unknown");
+});
+
+test("not installed stays not installed, probed or not", () => {
+  const report = parseAcceleratorReport(BROKEN_XFORMERS);
+  const flash = report?.packages.find((p) => p.name === "flash_attn");
+  assert.ok(flash);
+  assert.equal(acceleratorHealth(flash, true), "absent");
+  // And a probed package that is dead is still dead.
+  const xformers = report?.packages.find((p) => p.name === "xformers");
+  assert.ok(xformers);
+  assert.equal(acceleratorHealth({ ...xformers, probed: true }, true), "broken");
 });
