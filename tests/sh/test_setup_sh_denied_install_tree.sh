@@ -37,6 +37,42 @@ assert_contains "the ownership guard checks readability before blaming ownership
 assert_contains "an unverifiable tree is never described as not ours" \
     "$SETUP_SH" "Unsloth cannot confirm this folder is its own install while it is unreadable"
 
+# The custom-home ownership guard misses the default cache, so check the prebuilt
+# path rejects an unreadable one before Python runs.
+PREBUILT_BLOCK="$(awk '/substep "installing prebuilt llama.cpp\.\.\."/,/_PREBUILT_CMD=\(/' "$SETUP_SH")"
+if printf '%s' "$PREBUILT_BLOCK" | grep -qF '_studio_dir_unreadable "$LLAMA_CPP_DIR"' &&
+   printf '%s' "$PREBUILT_BLOCK" | grep -qF '_path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"'; then
+    ok "the default-home prebuilt install stops on an unreadable tree"
+else
+    bad "the default-home prebuilt install stops on an unreadable tree"
+fi
+# The source build only guards after building, so check before the prebuilt/source
+# branch, skipping the local-link paths.
+PRE_BRANCH="$(awk '/^if \[ "\$_LOCAL_LLAMA_CPP_LINKED" != true \]; then/,/^fi$/' "$SETUP_SH")"
+if printf '%s' "$PRE_BRANCH" | grep -qF '_studio_dir_unreadable "$LLAMA_CPP_DIR"' &&
+   printf '%s' "$PRE_BRANCH" | grep -qF '_assert_studio_owned_or_absent "$LLAMA_CPP_DIR"'; then
+    ok "the access guard runs before the prebuilt/source branch"
+else
+    bad "the access guard runs before the prebuilt/source branch"
+fi
+PRE_AT="$(grep -n '^if \[ "\$_LOCAL_LLAMA_CPP_LINKED" != true \]; then' "$SETUP_SH" | cut -d: -f1 | head -1)"
+BRANCH_AT="$(grep -n '^if \[ "\$_LOCAL_LLAMA_CPP_LINKED" = true \]; then' "$SETUP_SH" | cut -d: -f1 | head -1)"
+if [ -n "$PRE_AT" ] && [ -n "$BRANCH_AT" ] && [ "$PRE_AT" -lt "$BRANCH_AT" ]; then
+    ok "the early guard precedes the branch it protects"
+else
+    bad "the early guard precedes the branch it protects"
+fi
+
+# Ownership guard first, to keep its cautious wording. Line numbers are checked for
+# emptiness so a vanished grep fails loudly.
+OWNED_LINE="$(printf '%s' "$PREBUILT_BLOCK" | grep -n '_assert_studio_owned_or_absent' | cut -d: -f1 | head -1)"
+UNREADABLE_LINE="$(printf '%s' "$PREBUILT_BLOCK" | grep -n '_studio_dir_unreadable' | cut -d: -f1 | head -1)"
+if [ -n "$OWNED_LINE" ] && [ -n "$UNREADABLE_LINE" ] && [ "$OWNED_LINE" -lt "$UNREADABLE_LINE" ]; then
+    ok "the ownership guard still reports a custom home first"
+else
+    bad "the ownership guard still reports a custom home first"
+fi
+
 echo ""
 echo "=== setup.sh: neither destructive replace runs blind ==="
 
@@ -52,6 +88,13 @@ if grep -q 'rm -rf "$LLAMA_CPP_DIR" 2>/dev/null' "$SETUP_SH"; then
     bad "the failing rm keeps its stderr"
 else
     ok "the failing rm keeps its stderr"
+fi
+# Mode 111 defeats the rm but stays searchable, so a search-only postcondition falls
+# through to the generic "could not be replaced" message.
+if [ "$(grep -c '_studio_dir_unsearchable "\$LLAMA_CPP_DIR"' "$SETUP_SH")" = 0 ]; then
+    ok "no replace site still uses the search-only probe"
+else
+    bad "no replace site still uses the search-only probe"
 fi
 if [ "$(grep -c 'if \[ -e "$LLAMA_CPP_DIR" \]; then' "$SETUP_SH")" -ge 2 ]; then
     ok "both replace sites check the postcondition"
@@ -80,6 +123,7 @@ import sys, pathlib
 src = pathlib.Path(sys.argv[1]).read_text()
 out = []
 for name in ("_studio_owned_adoptable", "_studio_dir_unsearchable",
+             "_studio_dir_unreadable",
              "_path_access_denied", "_assert_studio_owned_or_absent"):
     i = src.index(name + "() {")
     out.append(src[i:src.index("\n}\n", i) + 3])
@@ -135,6 +179,51 @@ else
     esac
 fi
 chmod 755 "$OURS"
+
+# setup_fail gates [TAURI:ERROR] on two variables. Test them separately: one joined
+# case subject lets a comma in either value alias the other's arm.
+python3 - "$SETUP_SH" "$WORK/gate.sh" <<'PY'
+import sys, pathlib
+src = pathlib.Path(sys.argv[1]).read_text()
+i = src.index("setup_fail() {")
+pathlib.Path(sys.argv[2]).write_text(src[i:src.index("\n}\n", i) + 3])
+PY
+gate_marker() {  # $1=MODE ("-" for unset), $2=UPDATE ("-" for unset)
+    env -u UNSLOTH_TAURI_MODE -u UNSLOTH_TAURI_UPDATE \
+        ${1:+$([ "$1" = - ] || echo UNSLOTH_TAURI_MODE="$1")} \
+        ${2:+$([ "$2" = - ] || echo UNSLOTH_TAURI_UPDATE="$2")} \
+        bash -c '. "$1"; setup_fail 1 boom' _ "$WORK/gate.sh" 2>/dev/null | grep -c 'TAURI:ERROR' || true
+}
+[ "$(gate_marker 1 -)" = 1 ] && ok "the Tauri marker prints for UNSLOTH_TAURI_MODE=1" \
+                             || bad "the Tauri marker prints for UNSLOTH_TAURI_MODE=1"
+[ "$(gate_marker - 1)" = 1 ] && ok "the Tauri marker prints for UNSLOTH_TAURI_UPDATE=1" \
+                             || bad "the Tauri marker prints for UNSLOTH_TAURI_UPDATE=1"
+[ "$(gate_marker - -)" = 0 ] && ok "a plain CLI run prints no Tauri marker" \
+                             || bad "a plain CLI run prints no Tauri marker"
+[ "$(gate_marker 0 'a,1')" = 0 ] && ok "a comma in UNSLOTH_TAURI_UPDATE does not alias the marker" \
+                                 || bad "a comma in UNSLOTH_TAURI_UPDATE does not alias the marker"
+[ "$(gate_marker '1,2' -)" = 0 ] && ok "a comma in UNSLOTH_TAURI_MODE does not alias the marker" \
+                                 || bad "a comma in UNSLOTH_TAURI_MODE does not alias the marker"
+
+# Mode 111 is searchable but not listable, and still breaks install_llama_prebuilt.py.
+NOLIST="$WORK/nolist"; mkdir -p "$NOLIST"; : > "$NOLIST/UNSLOTH_PREBUILT_INFO.json"
+chmod 111 "$NOLIST"
+if ls -A "$NOLIST" >/dev/null 2>&1; then
+    echo "  SKIP: this host cannot make a directory unlistable (running as root?)"
+else
+    ok "the host really cannot list the tree (negative control)"
+    probe=$(bash -c '. "$1"; _studio_dir_unsearchable "$2" && echo SEARCH_CAUGHT
+        _studio_dir_unreadable "$2" && echo READ_CAUGHT' _ "$WORK/helpers.sh" "$NOLIST")
+    case "$probe" in
+        *SEARCH_CAUGHT*) bad "mode 111 is searchable, so the search probe must not fire" ;;
+        *) ok "mode 111 is searchable, so the search probe does not fire" ;;
+    esac
+    case "$probe" in
+        *READ_CAUGHT*) ok "the read probe catches a searchable but unlistable tree" ;;
+        *) bad "the read probe catches a searchable but unlistable tree (got: $probe)" ;;
+    esac
+fi
+chmod 755 "$NOLIST"
 
 echo ""
 echo "=== Results ==="
