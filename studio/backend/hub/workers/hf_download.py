@@ -39,6 +39,11 @@ _BACKEND = _HERE.parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+# Fresh interpreter: main.py's truststore injection does not survive the spawn.
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 from hub.utils.snapshot_filters import (
     SNAPSHOT_IGNORE_PATTERNS,
 )

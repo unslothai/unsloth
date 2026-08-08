@@ -27,6 +27,12 @@ from typing import Any
 
 logger = get_logger(__name__)
 
+# Fresh spawned interpreter: re-apply the OS-trust-store injection before any Hub
+# call (see utils/native_tls.py).
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 
 # Gate controlling whether captured stdout/stderr lines are forwarded to the
 # parent's resp_queue (and on to the export-dialog SSE stream). Closed by default

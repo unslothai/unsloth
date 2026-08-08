@@ -178,6 +178,13 @@ _backend_dir = str(_Path(__file__).parent)
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
+# OS trust store for TLS before anything opens a connection: behind a
+# TLS-inspecting proxy certifi alone rejects every Hub request. See
+# utils/native_tls.py.
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 # `uvicorn main:app` bypasses run.py; seed thread caps here too.
 from utils.cpu_threads import configure_cpu_threads
 

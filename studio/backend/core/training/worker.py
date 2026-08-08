@@ -45,6 +45,13 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 
 logger = get_logger(__name__)
 from utils.child_stdio import utf8_child_env
+
+# Fresh spawned interpreter: re-apply the OS-trust-store injection before the Hub
+# pulls models/datasets (see utils/native_tls.py).
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 from utils.hardware import apply_gpu_ids
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
 from utils.training_runs import build_default_output_dir_name

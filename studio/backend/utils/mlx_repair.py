@@ -105,6 +105,9 @@ _MLX_ENV_ALLOWLIST = frozenset(
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",
         "CURL_CA_BUNDLE",
+        # uv's rustls reads these, not the CA bundle vars above (native_tls.py)
+        "UV_SYSTEM_CERTS",
+        "UV_NATIVE_TLS",
     }
 )
 _REPAIR_TIMEOUT_S = 900

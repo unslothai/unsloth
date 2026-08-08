@@ -27,6 +27,12 @@ from typing import Any
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
+# Fresh spawned interpreter: re-apply the OS-trust-store injection before any Hub
+# call (see utils/native_tls.py).
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
 _SHARE_OBJECT_ERROR_SIZE = -1
 
