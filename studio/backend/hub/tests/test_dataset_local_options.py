@@ -1973,7 +1973,10 @@ def test_snapshot_options_skip_a_hidden_directory_when_matching_a_wildcard_data_
 
 def test_snapshot_options_reject_a_timestamp_dtype_with_a_trailing_comma(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: at\n    dtype: 'timestamp[s,]'\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: at\n    dtype: 'timestamp[s,]'\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1982,7 +1985,10 @@ def test_snapshot_options_reject_a_timestamp_dtype_with_a_trailing_comma(tmp_pat
 
 def test_snapshot_options_reject_a_timestamp_dtype_with_an_empty_timezone(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: at\n    dtype: 'timestamp[s, tz=]'\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: at\n    dtype: 'timestamp[s, tz=]'\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1991,7 +1997,10 @@ def test_snapshot_options_reject_a_timestamp_dtype_with_an_empty_timezone(tmp_pa
 
 def test_snapshot_options_accept_a_timestamp_dtype_carrying_a_timezone(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: at\n    dtype: 'timestamp[s, tz=UTC]'\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: at\n    dtype: 'timestamp[s, tz=UTC]'\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -2000,7 +2009,10 @@ def test_snapshot_options_accept_a_timestamp_dtype_carrying_a_timezone(tmp_path)
 
 def test_snapshot_options_reject_a_decimal_dtype_outside_its_precision(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: n\n    dtype: 'decimal128(39, 2)'\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: n\n    dtype: 'decimal128(39, 2)'\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -2009,7 +2021,10 @@ def test_snapshot_options_reject_a_decimal_dtype_outside_its_precision(tmp_path)
 
 def test_snapshot_options_reject_a_decimal_dtype_scaled_past_its_precision(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: n\n    dtype: 'decimal128(2, 5)'\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: n\n    dtype: 'decimal128(2, 5)'\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -2018,7 +2033,10 @@ def test_snapshot_options_reject_a_decimal_dtype_scaled_past_its_precision(tmp_p
 
 def test_snapshot_options_accept_a_decimal_dtype_within_its_precision(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: n\n    dtype: 'decimal256(76, 3)'\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: n\n    dtype: 'decimal256(76, 3)'\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -2048,8 +2066,11 @@ def test_snapshot_options_reject_a_declared_file_symlinked_out_of_the_cache(tmp_
 def test_snapshot_options_drop_a_missing_literal_when_the_walk_is_truncated(tmp_path, monkeypatch):
     monkeypatch.setattr(local_options, "_MAX_SNAPSHOT_DATA_FILES", 1)
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: here\n  data_files: train.jsonl\n"
-                    "- config_name: gone\n  data_files: absent.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: here\n  data_files: train.jsonl\n"
+        "- config_name: gone\n  data_files: absent.jsonl\n",
+    )
     for name in ("train.jsonl", "extra.jsonl"):
         (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
 

@@ -285,9 +285,7 @@ def _known_dtype(dtype: str) -> bool:
     if len(parameters) == 1:
         return True
     return (
-        len(parameters) == 2
-        and parameters[1].startswith("tz=")
-        and len(parameters[1]) > len("tz=")
+        len(parameters) == 2 and parameters[1].startswith("tz=") and len(parameters[1]) > len("tz=")
     )
 
 
@@ -1168,9 +1166,7 @@ def _config_root(item: dict[str, Any], files: "_DeclaredFiles") -> Optional[str]
     return None if safe is None else files.collapse(safe.strip("/"))
 
 
-def _missing_literal_configs(
-    collapsed: dict[str, dict[str, Any]], snapshot: Path
-) -> set[str]:
+def _missing_literal_configs(collapsed: dict[str, dict[str, Any]], snapshot: Path) -> set[str]:
     """Configs naming a literal file the cache does not hold, checked without a walk.
 
     Used when the snapshot is too large to index: a literal needs one lookup, not a scan,
