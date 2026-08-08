@@ -1472,3 +1472,78 @@ def test_snapshot_options_drop_a_config_recorded_with_no_splits(tmp_path):
         (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == {("other", "train")}
+
+
+def test_snapshot_options_reject_a_data_files_list_mixing_shapes(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files:\n  - train.jsonl\n  - split: test\n    path: test.jsonl\n")
+    for name in ("train.jsonl", "test.jsonl"):
+        (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_ignore_a_mixed_case_media_suffix(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "train").mkdir(parents = True)
+    for name in ("a.Jpg", "b.Jpg", "c.Jpg"):
+        (snapshot / "train" / name).write_bytes(b"x")
+    (snapshot / "train" / "d.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets registers folder suffixes in lower and upper case only, so .Jpg is not media.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+@pytest.mark.parametrize("name", ["train.jsonl.txt", "train.csv.backup"])
+def test_snapshot_options_offer_a_compound_suffix_the_loader_keeps(tmp_path, name):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_still_hide_a_codec_studio_cannot_open(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl.zst").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("features", ["- dtype: string", "- name: t\n    dtype: nope"])
+def test_snapshot_options_reject_features_the_loader_cannot_build(tmp_path, features):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  {features}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("dtype", ["string", "image", "timestamp[s]", "decimal128(10,2)"])
+def test_snapshot_options_accept_features_the_loader_builds(tmp_path, dtype):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_an_absolute_declared_path(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: /train.jsonl\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_mapping_data_files(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files:\n    train: train.jsonl\n    test: test.jsonl\n")
+    for name in ("train.jsonl", "test.jsonl"):
+        (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # MetadataConfigs takes a string or a list here and raises on a mapping.
+    assert local_options._snapshot_options(snapshot) == set()

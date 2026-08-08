@@ -41,6 +41,18 @@ _MAX_SNAPSHOT_DATA_FILES = 200_000
 # datasets but need optional codecs we do not ship, so they raise "Compression type not
 # supported" and offering them would put a dead split in the picker.
 _COMPRESSION_EXTENSIONS = ("", ".gz", ".gzip", ".bz2", ".xz", ".lzma", ".zip")
+_UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4"})
+# What a card may name as a feature dtype, as datasets 4.3 reads it: a pyarrow value alias,
+# optionally parameterised, or one of its own feature classes.
+_VALUE_DTYPES = frozenset(
+    "null bool int8 int16 int32 int64 uint8 uint16 uint32 uint64 float16 float32 float64 "
+    "time32 time64 timestamp date32 date64 duration decimal128 decimal256 binary "
+    "large_binary string large_string".split()
+)
+_FEATURE_TYPE_NAMES = frozenset(
+    "Value Classlabel Translation Translationvariablelanguages Largelist List Array2d "
+    "Array3d Array4d Array5d Audio Image Video Pdf".split()
+)
 # Ordered, because datasets resolves a split's keyword patterns in this order and samples
 # the first files it gets back.
 _SPLIT_KEYWORDS = {
@@ -237,11 +249,33 @@ def _normalized_dir(value: str) -> Optional[str]:
     return "/".join(parts)
 
 
+def _valid_features(features: Any) -> bool:
+    """datasets turns this field into Features while it builds the configs, and anything it
+    cannot read raises there, so a card carrying one is not loadable at all."""
+    if not isinstance(features, list):
+        return False
+    for field in features:
+        if not isinstance(field, dict) or not isinstance(field.get("name"), str):
+            return False
+        dtype = field.get("dtype")
+        if dtype is None or not isinstance(dtype, str):
+            continue
+        base = re.split(r"[\[(]", dtype, maxsplit = 1)[0]
+        if base not in _VALUE_DTYPES and dtype.capitalize() not in _FEATURE_TYPE_NAMES:
+            return False
+    return True
+
+
 def _valid_declared_data_files(entries: Any) -> bool:
     """datasets checks every config's data_files shape before it builds any of them."""
     if entries is None or isinstance(entries, str):
         return True
     if not isinstance(entries, list):
+        return False
+    if any(isinstance(item, dict) for item in entries) and not all(
+        isinstance(item, dict) for item in entries
+    ):
+        # Once one entry is a dict, sanitize_patterns demands they all are.
         return False
     declared_splits = []
     for item in entries:
@@ -281,9 +315,7 @@ def _collapsed_configs(payload: Any) -> Any:
             # so nothing in the snapshot is loadable and inference must not step in.
             return _UNPARSABLE_METADATA
         features = item.get("features")
-        if features is not None and not (
-            isinstance(features, list) and all(isinstance(field, dict) for field in features)
-        ):
+        if features is not None and not _valid_features(features):
             # datasets parses these into Features while it builds the configs, and anything
             # it cannot read raises there rather than when the config is chosen.
             return _UNPARSABLE_METADATA
@@ -596,13 +628,19 @@ def _snapshot_card_data(snapshot: Path) -> Any:
 
 
 def _has_snapshot_data_extension(filename: str) -> bool:
-    # Case-sensitive on every platform: datasets globs through fsspec, whose matcher is a
-    # plain regex with no normcase, so a .JSONL file is unsupported even on Windows.
-    return any(
-        filename.endswith(extension + compression)
-        for extension in TRAINING_DATA_EXTS
-        for compression in _COMPRESSION_EXTENSIONS
-    )
+    """Whether datasets would keep this name and Studio could train on it.
+
+    The allowed-extension test looks at every suffix in the basename, not just the last, so
+    train.jsonl.txt is json data. Case-sensitive on every platform: datasets globs through
+    fsspec, whose matcher is a plain regex with no normcase, so .JSONL is unsupported even
+    on Windows.
+    """
+    suffixes = ["." + suffix for suffix in filename.split(".")[1:]]
+    if suffixes and suffixes[-1] in _UNREADABLE_COMPRESSION:
+        # Named by datasets but needing a codec a Studio install does not ship, so the split
+        # would be offered and then fail to open.
+        return False
+    return any(suffix in TRAINING_DATA_EXTS for suffix in suffixes)
 
 
 def _extension_module(extension: str) -> Optional[str]:
@@ -610,6 +648,10 @@ def _extension_module(extension: str) -> Optional[str]:
     module = _EXTENSION_MODULES.get(extension)
     if module is not None:
         return module
+    # The folder builders are registered twice, lower case and upper case. Nothing else,
+    # so a mixed-case .Jpg is not a media file and the loader filters it out.
+    if extension != extension.upper():
+        return None
     module = _EXTENSION_MODULES.get(extension.lower())
     return module if module in _FOLDER_MODULES else None
 
@@ -899,6 +941,9 @@ def _resolved_paths(pattern: str, files: Iterable[PurePosixPath]) -> list[PurePo
     The loader keeps a hidden or __ path only when the pattern names as many such parts as
     the path has, and it drops anything without a suffix it recognises.
     """
+    if pattern.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", pattern):
+        # The loader resolves this off the snapshot entirely, so nothing here can match it.
+        return []
     # The filesystem normalises ./x to x before it globs, so the matcher has to as well.
     pattern = PurePosixPath(pattern.strip("/")).as_posix()
     matcher = _glob_matcher(pattern)
