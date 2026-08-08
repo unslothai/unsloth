@@ -12,10 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .q_galore_projector import GaLoreProjector
-from .q_galore_adamw import QGaLoreAdamW8bit
+import importlib
 
 __all__ = [
     "GaLoreProjector",
     "QGaLoreAdamW8bit",
+    "make_layerwise_lr_param_groups",
 ]
+
+# Lazy so importing layerwise_lr (stdlib-only) doesn't also pull in Q-GaLore/bitsandbytes.
+_ATTR_TO_MODULE = {
+    "GaLoreProjector": "q_galore_projector",
+    "QGaLoreAdamW8bit": "q_galore_adamw",
+    "make_layerwise_lr_param_groups": "layerwise_lr",
+}
+
+
+def __getattr__(name):
+    module_name = _ATTR_TO_MODULE.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = importlib.import_module(f".{module_name}", __name__)
+    return getattr(module, name)
