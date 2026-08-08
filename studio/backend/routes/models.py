@@ -17,7 +17,7 @@ import weakref
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 import structlog
 from loggers import get_logger
 
@@ -436,6 +436,7 @@ def _scan_hf_cache(
     *,
     active_cache: bool = True,
     classify_format: bool = True,
+    variant_states = None,
 ) -> List[LocalModelInfo]:
     if not cache_dir.exists() or not cache_dir.is_dir():
         return []
@@ -457,8 +458,17 @@ def _scan_hf_cache(
         except OSError:
             updated_at = None
 
-        partial = hf_cache_scan.is_snapshot_partial("model", model_id, repo_dir)
-        partial = partial or hf_cache_scan.is_gguf_repo_partial(model_id, repo_dir)
+        variant_state = (
+            variant_states.for_repo("model", model_id, hub_cache = cache_dir)
+            if variant_states is not None
+            else None
+        )
+        partial = hf_cache_scan.is_snapshot_partial(
+            "model", model_id, repo_dir, variant_state = variant_state
+        )
+        partial = partial or hf_cache_scan.is_gguf_repo_partial(
+            model_id, repo_dir, variant_state = variant_state
+        )
 
         load_id = model_id
         snapshot = _resolve_hf_cache_realpath(repo_dir)
@@ -857,7 +867,32 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
     return found
 
 
-def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
+class _CompatLocalInventorySources(NamedTuple):
+    hf_cache_dir: Path
+    legacy_hf: Path
+    hf_default: Path
+    lm_dirs: tuple[Path, ...]
+    known_hf_caches: tuple[Path, ...]
+
+
+def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
+    from utils.paths import hf_default_cache_dir, legacy_hf_cache_dir, lmstudio_model_dirs
+    from utils.hf_cache_settings import known_hf_hub_caches
+    return _CompatLocalInventorySources(
+        _resolve_hf_cache_dir(),
+        legacy_hf_cache_dir(),
+        hf_default_cache_dir(),
+        tuple(lmstudio_model_dirs()),
+        tuple(known_hf_hub_caches()),
+    )
+
+
+def collect_local_models(
+    models_root: Path,
+    *,
+    custom_folders: Optional[list[dict]] = None,
+    sources: Optional[_CompatLocalInventorySources] = None,
+) -> List[LocalModelInfo]:
     """Scan ``models_root``, the HF caches, LM Studio dirs, and user scan folders,
     returning a deduplicated, hidden-filtered list of discovered local models.
 
@@ -867,25 +902,27 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
     """
     from storage.studio_db import list_scan_folders
     from utils.models.model_config import detect_gguf_model
-    from utils.paths import (
-        hf_default_cache_dir,
-        legacy_hf_cache_dir,
-        lmstudio_model_dirs,
-    )
-    from utils.hf_cache_settings import known_hf_hub_caches
 
-    hf_cache_dir = _resolve_hf_cache_dir()
-    legacy_hf = legacy_hf_cache_dir()
-    hf_default = hf_default_cache_dir()
-    lm_dirs = lmstudio_model_dirs()
+    sources = sources or _compat_local_inventory_sources()
+    hf_cache_dir = sources.hf_cache_dir
+    legacy_hf = sources.legacy_hf
+    hf_default = sources.hf_default
+    lm_dirs = sources.lm_dirs
+    if custom_folders is None:
+        try:
+            custom_folders = list_scan_folders()
+        except Exception as e:
+            logger.warning("Could not load custom scan folders: %s", e)
+            custom_folders = []
 
     local_models = _scan_models_dir(models_root)
     active_cache_real = _safe_resolve(hf_cache_dir)
     active_cache_key = os.path.normcase(active_cache_real) if active_cache_real else None
     seen_hf: set[str] = set()
+    hf_sources: list[tuple[Path, bool]] = []
     for cache_dir in (
         hf_cache_dir,
-        *known_hf_hub_caches(),
+        *sources.known_hf_caches,
         legacy_hf,
         hf_default,
     ):
@@ -896,9 +933,34 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
         if cache_key in seen_hf:
             continue
         seen_hf.add(cache_key)
+        hf_sources.append((cache_dir, cache_key == active_cache_key))
+
+    state_repositories = []
+    state_cache_dirs = [cache_dir for cache_dir, _active_cache in hf_sources]
+    state_cache_dirs.extend(Path(folder["path"]) for folder in custom_folders)
+    for cache_dir in dict.fromkeys(state_cache_dirs):
+        try:
+            for repo_dir in cache_dir.glob("models--*"):
+                repo_name = repo_dir.name[len("models--") :]
+                if repo_name and repo_dir.is_dir():
+                    state_repositories.append(("model", repo_name.replace("--", "/"), cache_dir))
+        except OSError:
+            continue
+    try:
+        from hub.utils import download_manifest
+        variant_states = download_manifest.build_variant_state_index(
+            state_repositories,
+            active_hub_cache = hf_cache_dir,
+        )
+    except Exception as e:
+        logger.warning("Could not build shared legacy Hub-state index: %s", e)
+        variant_states = None
+
+    for cache_dir, active_cache in hf_sources:
         local_models += _scan_hf_cache(
             cache_dir,
-            active_cache = cache_key == active_cache_key,
+            active_cache = active_cache,
+            variant_states = variant_states,
         )
 
     for lm_dir in lm_dirs:
@@ -906,11 +968,6 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
 
     # Scan user-added custom folders (per-folder cap).
     _MAX_MODELS_PER_FOLDER = 200
-    try:
-        custom_folders = list_scan_folders()
-    except Exception as e:
-        logger.warning("Could not load custom scan folders: %s", e)
-        custom_folders = []
     for folder in custom_folders:
         folder_path = Path(folder["path"])
         try:
@@ -919,7 +976,11 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
                 m
                 for m in (
                     _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                    + _scan_hf_cache(folder_path, active_cache = False)
+                    + _scan_hf_cache(
+                        folder_path,
+                        active_cache = False,
+                        variant_states = variant_states,
+                    )
                     + _scan_lmstudio_dir(folder_path)
                 )
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
@@ -984,6 +1045,95 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
     return [m for m in models if not _is_hidden_model(m.id, m.model_id, m.path)]
 
 
+_CompatLocalInventoryKey = tuple[Path, _CompatLocalInventorySources, tuple[str, ...], int]
+_compat_local_inventory_flights: dict[
+    tuple[asyncio.AbstractEventLoop, _CompatLocalInventoryKey], asyncio.Task[List[LocalModelInfo]]
+] = {}
+
+
+# Retrying a superseded scan is only worth it while invalidations are occasional;
+# past this the endpoint must answer instead of restarting the walk forever.
+_COMPAT_LOCAL_INVENTORY_MAX_ATTEMPTS = 8
+
+
+class _CompatLocalCacheChanged(RuntimeError):
+    def __init__(self, models: List[LocalModelInfo]) -> None:
+        super().__init__("local inventory sources changed during the scan")
+        # Carried so the attempt cap can serve the freshest scan it has instead
+        # of looping forever or answering with nothing.
+        self.models = models
+
+
+def _compat_inventory_path_identity(path: object) -> str:
+    """Canonical source identity for compatibility inventory flights."""
+    raw = str(path)
+    try:
+        return os.path.normcase(os.path.realpath(os.path.expanduser(raw)))
+    except (OSError, UnicodeError, ValueError):
+        return os.path.normcase(raw)
+
+
+async def _shared_compat_local_inventory_scan(
+    models_root: Path, sources: Optional[_CompatLocalInventorySources] = None
+) -> List[LocalModelInfo]:
+    from storage.studio_db import list_scan_folders
+    from hub.utils import inventory_scan as hf_cache_scan
+
+    requested_sources = sources
+
+    async def collect(
+        expected_epoch: int, custom_folders: List[dict], scan_sources: _CompatLocalInventorySources
+    ) -> List[LocalModelInfo]:
+        models = await asyncio.to_thread(
+            collect_local_models,
+            models_root,
+            custom_folders = custom_folders,
+            sources = scan_sources,
+        )
+        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+            raise _CompatLocalCacheChanged(models)
+        return models
+
+    # Discard obsolete results and retry their waiters against the current cache epoch.
+    superseded: Optional[List[LocalModelInfo]] = None
+    for _attempt in range(_COMPAT_LOCAL_INVENTORY_MAX_ATTEMPTS):
+        # Epoch first: the sources and folders below are read after it, so any
+        # change to them lands in a later epoch and the post-scan check sees it.
+        # A caller-supplied ``sources`` stays pinned - the /local route validated
+        # its models_dir against exactly those roots.
+        epoch = hf_cache_scan.hf_cache_scans_epoch()
+        scan_sources = requested_sources or _compat_local_inventory_sources()
+        try:
+            custom_folders = await asyncio.to_thread(list_scan_folders)
+        except Exception as e:
+            logger.warning("Could not load custom scan folders: %s", e)
+            custom_folders = []
+        key: _CompatLocalInventoryKey = (
+            Path(_compat_inventory_path_identity(models_root)),
+            scan_sources,
+            tuple(
+                _compat_inventory_path_identity(folder.get("path", "")) for folder in custom_folders
+            ),
+            epoch,
+        )
+        try:
+            return await hf_cache_scan.shared_scan(
+                _compat_local_inventory_flights,
+                key,
+                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: (
+                    collect(expected_epoch, folders, roots)
+                ),
+            )
+        except _CompatLocalCacheChanged as changed:
+            superseded = changed.models
+            continue
+    # Invalidations are outpacing the walk, so no scan will ever confirm as
+    # current. Answer with the freshest one (the loop only reaches here through
+    # the retry path, so there is always one) instead of rescanning forever.
+    logger.warning("Compat local inventory kept racing cache invalidations; serving the last scan")
+    return superseded
+
+
 @router.get("/local", response_model = LocalModelListResponse)
 async def list_local_models(
     models_dir: str = Query(
@@ -992,16 +1142,12 @@ async def list_local_models(
     current_subject: str = Depends(get_current_subject),
 ):
     """List local model candidates from the models dir, HF caches, and LM Studio dirs."""
-    from utils.paths import (
-        legacy_hf_cache_dir,
-        hf_default_cache_dir,
-        lmstudio_model_dirs,
-    )
-
-    hf_cache_dir = _resolve_hf_cache_dir()
-    legacy_hf = legacy_hf_cache_dir()
-    hf_default = hf_default_cache_dir()
-    lm_dirs = lmstudio_model_dirs()
+    # Resolve all scan directories up front.
+    sources = _compat_local_inventory_sources()
+    hf_cache_dir = sources.hf_cache_dir
+    legacy_hf = sources.legacy_hf
+    hf_default = sources.hf_default
+    lm_dirs = sources.lm_dirs
 
     # Validate models_dir against an allowlist of trusted dirs. Only the trusted Path objects
     # are used for FS access; the user string is for matching only, never path construction.
@@ -1030,7 +1176,7 @@ async def list_local_models(
         )
 
     try:
-        models = collect_local_models(models_root)
+        models = await _shared_compat_local_inventory_scan(models_root, sources)
         # Tag each model with its task so the Images picker can filter to diffusion.
         models = [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
 
@@ -2131,7 +2277,11 @@ async def scan_model_remote_code(
     never lands in a URL, browser history, or access log.
     """
     try:
-        from utils.security import preflight_remote_code_consent_for_targets
+        from utils.security import (
+            load_scan_target,
+            preflight_remote_code_consent_for_targets,
+            security_load_subdirs,
+        )
 
         local_model = is_local_path(model_name)
         if not local_model:
@@ -2175,21 +2325,38 @@ async def scan_model_remote_code(
         # Scan the adapter AND the base together (a LoRA runs both repos' code), pinned by one
         # combined fingerprint. Snapshot the primary's cache state BEFORE resolving the base: that
         # resolve downloads adapter_config.json, which would hide the adapter from cleanup on decline.
+        primary_cache_target, _ = load_scan_target(scan_target, ())
         try:
-            _primary_preexisting = is_local_path(model_name) or _repo_in_any_hf_cache(model_name)
+            _primary_preexisting = is_local_path(primary_cache_target) or _repo_in_any_hf_cache(
+                primary_cache_target
+            )
         except Exception:
             _primary_preexisting = True
-        security_targets = [scan_target]
+        requested_scan_target = scan_target
+        requested_security_targets = [requested_scan_target]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             # Resolve a LOCAL or REMOTE adapter's base so its code/weights are scanned too.
-            _base = get_base_model_from_lora_identifier(scan_target, hf_token)
+            _base = get_base_model_from_lora_identifier(requested_scan_target, hf_token)
             if _base:
-                security_targets.append(_base)
+                requested_security_targets.append(_base)
         except Exception:
             pass
-        security_targets = list(dict.fromkeys(security_targets))
+        security_targets: list[str] = []
+        consent_load_subdirs: dict[str, tuple] = {}
+        for _requested_target in dict.fromkeys(requested_security_targets):
+            _subdirs = security_load_subdirs(_requested_target, hf_token)
+            if _requested_target == requested_scan_target and requested_scan_target != model_name:
+                _subdirs = tuple(
+                    dict.fromkeys((*_subdirs, *security_load_subdirs(model_name, hf_token)))
+                )
+            _target, _subdirs = load_scan_target(_requested_target, _subdirs)
+            if _target not in consent_load_subdirs:
+                security_targets.append(_target)
+                consent_load_subdirs[_target] = ()
+            _subdirs = tuple(dict.fromkeys((*consent_load_subdirs[_target], *_subdirs)))
+            consent_load_subdirs[_target] = _subdirs
         # Record every repo OUR scan is first to pull into the cache (adapter, base, and external
         # auto_map repos), so a decline purges exactly what was downloaded. Computed BEFORE the
         # preflight downloads, against every cache the discard searches, so pre-existing repos stay.
@@ -2217,13 +2384,21 @@ async def scan_model_remote_code(
         for _target in security_targets:
             # Use the pre-base-resolution snapshot for the primary (see above).
             _mark_scan_created(
-                _target, preexisting = _primary_preexisting if _target == model_name else None
+                _target,
+                preexisting = _primary_preexisting if _target == primary_cache_target else None,
             )
-            for _ext in external_auto_map_repos(_target, hf_token):
+            for _ext in external_auto_map_repos(
+                _target,
+                hf_token,
+                load_subdirs = consent_load_subdirs[_target],
+            ):
                 external_refs.append(_ext)
                 _mark_scan_created(_ext)
         decision = preflight_remote_code_consent_for_targets(
-            security_targets, hf_token = hf_token, subject = current_subject
+            security_targets,
+            hf_token = hf_token,
+            subject = current_subject,
+            load_subdirs_by_target = consent_load_subdirs,
         )
         payload = decision.response_payload()
         payload["model_name"] = exact_snapshot_repo_id if exact_snapshot_path else model_name
@@ -2235,23 +2410,24 @@ async def scan_model_remote_code(
             and decision.reason == "approved by fingerprint"
         )
         # created_by_scan = primary flag (older clients); scan_created_repos drives cleanup.
-        payload["created_by_scan"] = model_name in scan_created_repos
+        payload["created_by_scan"] = primary_cache_target in scan_created_repos
         payload["scan_created_repos"] = scan_created_repos
         # Provider tag decided here, where locality/scan scope/external refs are known.
-        payload["provider"] = _consent_provider(
-            exact_snapshot_repo_id if exact_snapshot_path else model_name,
-            security_targets,
-            external_refs,
-        )
+        provider_target = exact_snapshot_repo_id if exact_snapshot_path else model_name
+        if requested_scan_target == model_name and primary_cache_target != model_name:
+            provider_target = primary_cache_target
+        payload["provider"] = _consent_provider(provider_target, security_targets, external_refs)
 
         # Malware gate (metadata-only): HF-flagged unsafe files, orthogonal to remote code.
-        from utils.security import evaluate_file_security, security_load_subdirs
+        from utils.security import evaluate_file_security
 
         unsafe_files: list = []
         security_blocked = False
         for _target in security_targets:
             _sec = evaluate_file_security(
-                _target, hf_token = hf_token, load_subdirs = security_load_subdirs(_target, hf_token)
+                _target,
+                hf_token = hf_token,
+                load_subdirs = consent_load_subdirs[_target],
             )
             security_blocked = security_blocked or _sec.blocked
             unsafe_files.extend(_sec.unsafe_files)
@@ -3284,12 +3460,16 @@ async def get_gguf_variants(
                     downloaded = bool(v.downloaded),
                     update_available = bool(getattr(v, "update_available", False)),
                     partial = bool(getattr(v, "partial", False)),
+                    cleanable = bool(getattr(v, "cleanable", False)),
                 )
                 for v in response.variants
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
             context_length = await _read_native_context_length_bounded(context_model, local),
+            resolved_locally = bool(getattr(response, "resolved_locally", False)),
+            loadable_variants = getattr(response, "loadable_variants", None),
+            loadable = getattr(response, "loadable", None),
         )
     except HTTPException:
         raise

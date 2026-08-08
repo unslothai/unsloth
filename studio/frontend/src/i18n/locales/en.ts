@@ -703,14 +703,31 @@ export const en = {
         free: "{value} free",
         total: "{value} total",
       },
+      modelMemory: {
+        title: "Model memory",
+        keepResident: "Keep model in GPU memory",
+        keepResidentDescription: "Stay in VRAM between prompts.",
+        keepResidentHint: "Don't hand the weights back to system RAM while the model stays loaded. Turns off idle auto-unload, and when the weights do sit in host RAM (unified memory, or a partial GPU offload) it also passes --mlock so the OS can't page them out and re-upload them on your next prompt.",
+        noRamReserve: "Don't reserve system RAM for the model",
+        noRamReserveDescription: "Keep no full copy in RAM.",
+        noRamReserveHint: "Stream the weights into VRAM instead of keeping a full copy in RAM. Keeps llama.cpp's memory-mapped loading and drops --no-mmap and --mlock.",
+        mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
+        memlockCapped: "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
+        reloadRequired: "Reload the model to apply the new memory flags.",
+        loadError: "Failed to load model memory settings",
+        saveError: "Failed to save model memory settings",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
+      },
       storage: {
         title: "Storage",
         systemDisk: "System disk",
         diskUsage: "{used} used / {total}",
         diskFree: "{free} free",
         modelsFolder: "Models folder",
-        modelsFolderDescription:
-          "Where downloaded models are stored. Change it to keep models off your system drive.",
+        modelsFolderDescription: "Where downloaded models are stored.",
+        modelsFolderHint: "Where downloaded models are stored. Change it to keep models off your system drive. Applies to new downloads only. Models you already have stay where they are.",
         // Not rendered: extra terms the settings search matches this row on.
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face",

@@ -89,6 +89,9 @@ fn spawn_update(
     let mut cmd = build_update_command(bin)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    #[cfg(target_os = "linux")]
+    crate::process::scrub_appimage_python_env(&mut cmd);
+
     // Tauri manages the legacy root; scrub so 'unsloth studio update' targets
     // the same install the desktop app uses, not an inherited custom root.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
@@ -97,6 +100,8 @@ fn spawn_update(
     // desktop bundle so it skips re-creating CLI launchers/.app/.desktop
     // shortcuts (Tauri owns its own bundle entries).
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
+    #[cfg(windows)]
+    cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 
     // read_lossy_lines decodes as UTF-8, and here the child is Python itself,
     // which otherwise encodes redirected streams with the locale code page.
@@ -148,11 +153,19 @@ fn read_lossy_lines<R: std::io::Read>(
     }
 }
 
+fn structured_update_error(text: &str) -> Option<String> {
+    text.strip_prefix("[TAURI:ERROR] ")
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_owned)
+}
+
 fn stream_output(
     app: &AppHandle,
     progress_event: &'static str,
     diagnostics: DiagnosticsState,
     attempt: AttemptLog,
+    explicit_error: Arc<Mutex<Option<String>>>,
     stdout: Option<std::process::ChildStdout>,
     stderr: Option<std::process::ChildStderr>,
 ) -> Vec<std::thread::JoinHandle<()>> {
@@ -162,6 +175,7 @@ fn stream_output(
         let app_clone = app.clone();
         let diagnostics_clone = diagnostics.clone();
         let attempt_clone = attempt.clone();
+        let explicit_error_clone = explicit_error.clone();
         threads.push(std::thread::spawn(move || {
             if let Err(e) = read_lossy_lines(out, |text| {
                 diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
@@ -171,6 +185,11 @@ fn stream_output(
                     diagnostics::record_progress(&diagnostics_clone, &attempt_clone, progress);
                 } else if let Some(marker) = text.strip_prefix("[TAURI:DIAG] ") {
                     diagnostics::record_diag_marker(&diagnostics_clone, &attempt_clone, marker);
+                }
+                if let Some(message) = structured_update_error(&text) {
+                    if let Ok(mut error) = explicit_error_clone.lock() {
+                        *error = Some(message);
+                    }
                 }
                 info!("[update][stdout] {}", text);
                 let _ = app_clone.emit(progress_event, &text);
@@ -285,33 +304,31 @@ fn run_backend_update_with_terminal_events(
     };
     let _ = app.emit(progress_event, "Starting backend update...");
 
-    let (stdout, stderr) = match spawn_update(&bin, &state) {
-        Ok(handles) => handles,
-        Err(msg) => {
-            diagnostics::finish_attempt(
-                &diagnostics,
-                &attempt,
-                None,
-                false,
-                Some(format!("spawn_update: {msg}")),
-            );
-            clear_current_attempt(&state);
-            return Err(msg);
-        }
-    };
-    let threads = stream_output(
-        &app,
-        progress_event,
-        diagnostics.clone(),
-        attempt.clone(),
-        stdout,
-        stderr,
-    );
+    let explicit_error = Arc::new(Mutex::new(None));
+    // Update mutates the managed environment for its whole lifetime. This function
+    // is synchronous, so the thread-owned Win32 mutex never crosses an await.
+    let result = crate::process::with_studio_runtime_launch_guard(|| {
+        crate::process::ensure_managed_environment_is_idle(&bin)?;
+        let (stdout, stderr) =
+            spawn_update(&bin, &state).map_err(|msg| format!("spawn_update: {msg}"))?;
+        let threads = stream_output(
+            &app,
+            progress_event,
+            diagnostics.clone(),
+            attempt.clone(),
+            explicit_error.clone(),
+            stdout,
+            stderr,
+        );
 
-    let result = wait_for_exit(&state);
-    for handle in threads {
-        let _ = handle.join();
-    }
+        let result = wait_for_exit(&state);
+        for handle in threads {
+            let _ = handle.join();
+        }
+        result
+    });
+    // Read only after the guard returned, so both reader threads are joined.
+    let explicit_error = explicit_error.lock().ok().and_then(|error| error.clone());
 
     match result {
         Ok((status, _)) if status.success() => {
@@ -343,7 +360,7 @@ fn run_backend_update_with_terminal_events(
         }
         Ok((status, intentional)) => {
             let code = status.code().unwrap_or(-1);
-            let msg = format!("Update exited with code {}", code);
+            let msg = explicit_error.unwrap_or_else(|| format!("Update exited with code {}", code));
             diagnostics::finish_attempt(
                 &diagnostics,
                 &attempt,
@@ -474,6 +491,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(lines, ["bad\u{fffd}", "[TAURI:STEP] next"]);
+    }
+
+    #[test]
+    fn structured_update_error_is_promoted_from_stdout() {
+        assert_eq!(
+            structured_update_error("[TAURI:ERROR] Access denied reading llama.cpp"),
+            Some("Access denied reading llama.cpp".to_string())
+        );
+        assert_eq!(structured_update_error("[TAURI:ERROR]   "), None);
+        assert_eq!(structured_update_error("ordinary update output"), None);
     }
 
     #[cfg(windows)]

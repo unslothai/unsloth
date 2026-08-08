@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -2232,6 +2233,7 @@ export function HubModelPicker({
   });
   const { cachedGguf, cachedModels, cachedReady, refreshInventory } =
     pickerInventory;
+  const cachedReadyAtMount = useRef(cachedReady);
   const lmStudioModels = useMemo(
     () =>
       sortLmStudio(
@@ -2419,6 +2421,9 @@ export function HubModelPicker({
   }, [refreshScanFolders]);
 
   useEffect(() => {
+    if (!shouldRefreshPickerInventoryOnMount(cachedReadyAtMount.current)) {
+      return;
+    }
     void refreshInventory();
   }, [refreshInventory]);
 
@@ -4472,7 +4477,8 @@ export function HubModelPicker({
         >
           <div
             className={cn(
-              "pr-0",
+              // Keep row actions clear of overlay scrollbars, overflowing or not.
+              "overlay-scrollbar-gutter",
               // On Device pulls the heading block tight to the controls; Recommended
               // keeps a little more top room above its first row.
               showDownloaded ? "pt-0" : "pt-[4px]",

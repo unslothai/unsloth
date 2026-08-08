@@ -76,6 +76,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.liveMonitor.vram",
     "settings.resources.liveMonitor.disk",
     "settings.resources.gpu.title",
+    "settings.resources.modelMemory.title",
+    "settings.resources.modelMemory.keepResident",
+    "settings.resources.modelMemory.noRamReserve",
     "settings.resources.storage.title",
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.futureDownloads",
@@ -187,4 +190,12 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  // mlock, vram, ulimit and pin are in none of these labels, so search
+  // missed the rows the feature is named after.
+  "settings.resources.modelMemory.title":
+    "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.resources.modelMemory.keepResident":
+    "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.resources.modelMemory.noRamReserve":
+    "settings.resources.modelMemory.modelMemoryKeywords",
 };

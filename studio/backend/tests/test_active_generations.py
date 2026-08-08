@@ -2731,3 +2731,97 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
         t.join(timeout = 30)
 
     assert orch._active_cancel_events == sent, "claim order must equal send order"
+
+
+def test_responses_stream_reports_reasoning_ttft_and_stop_reason(monkeypatch):
+    # This adapter parses SSE itself, so without its own stamp a reasoning-first
+    # turn would time from the visible text instead.
+    import asyncio
+
+    from core.inference.api_monitor import api_monitor
+    from models.inference import ChatMessage, ResponsesRequest
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch,
+        [
+            {"choices": [{"delta": {"reasoning_content": "thinking"}}]},
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": "length"}]},
+        ],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await inf_mod._responses_stream(
+            payload, messages, _NeverDisconnectedRequest(), monitor_id
+        )
+        async for _ in response.body_iterator:
+            pass
+
+    asyncio.run(run())
+
+    rows = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
+    assert rows, "the stream should have opened a monitor row"
+    assert rows[0]["ttft_ms"] is not None
+    assert rows[0]["stop_reason"] == "length"
+
+
+def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
+    # A tool-call-opening turn already sent client output, so TTFT must stamp there.
+    import asyncio
+
+    from core.inference.api_monitor import api_monitor
+    from models.inference import ChatMessage, ResponsesRequest
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch,
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "f", "arguments": "{}"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        ],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    # append_reply would stamp late; assert it happens at the delta instead.
+    stamped: list[str] = []
+    real_mark = api_monitor.mark_first_token
+    monkeypatch.setattr(
+        api_monitor,
+        "mark_first_token",
+        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+    )
+
+    async def run():
+        response = await inf_mod._responses_stream(
+            payload, messages, _NeverDisconnectedRequest(), monitor_id
+        )
+        async for _ in response.body_iterator:
+            pass
+
+    asyncio.run(run())
+
+    assert stamped, "the tool-call delta should stamp the first token"
+    [row] = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
+    assert row["ttft_ms"] is not None
+    assert row["stop_reason"] == "tool_calls"

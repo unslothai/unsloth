@@ -693,6 +693,23 @@ export const ja = {
         free: "{value} 空き",
         total: "{value} 合計",
       },
+      modelMemory: {
+        title: "モデルメモリ",
+        keepResident: "モデルを GPU メモリに保持",
+        keepResidentDescription: "プロンプト間も VRAM に常駐します。",
+        keepResidentHint: "モデルがロードされている間、重みをシステム RAM に戻しません。アイドル時の自動アンロードを無効にし、重みが実際にホスト RAM 上にある場合（ユニファイドメモリ、または GPU への部分オフロード）は --mlock も渡すため、OS が重みをページアウトして次のプロンプトで再アップロードすることがなくなります。",
+        noRamReserve: "モデル用にシステム RAM を確保しない",
+        noRamReserveDescription: "RAM に完全なコピーを保持しません。",
+        noRamReserveHint: "RAM に完全なコピーを保持せず、重みを VRAM へ転送します。llama.cpp のメモリマップ読み込みを維持し、--no-mmap と --mlock を除去します。",
+        mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
+        memlockCapped: "このシステムはロック可能なメモリを {limit} に制限しています。これより大きいモデルは完全には固定されません。ulimit -l で上限を引き上げてください。",
+        reloadRequired: "新しいメモリ設定を適用するにはモデルを再読み込みしてください。",
+        loadError: "モデルメモリ設定の読み込みに失敗しました",
+        saveError: "モデルメモリ設定の保存に失敗しました",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu メモリ ram 常駐 固定 ロック 保持 ロード済み アンロード アイドル mmap no-mmap load-mode スワップ ページング",
+      },
       storage: {
         title: "ストレージ",
         systemDisk: "システムディスク",
@@ -701,8 +718,8 @@ export const ja = {
         modelsFolder: "モデルフォルダ",
         modelsFolderKeywords:
           "モデル フォルダ ディレクトリ パス 保存先 場所 ダウンロード キャッシュ ストレージ ディスク ドライブ 移動 変更 models folder path hugging face",
-        modelsFolderDescription:
-          "ダウンロードしたモデルの保存先です。変更すると、システムドライブ以外にモデルを保存できます。",
+        modelsFolderDescription: "ダウンロードしたモデルの保存場所です。",
+        modelsFolderHint: "ダウンロードしたモデルの保存場所です。システムドライブを圧迫しないよう変更できます。新規ダウンロードにのみ適用され、既存のモデルはそのままの場所に残ります。",
         openAction: "開く",
         copyAction: "パスをコピー",
         copied: "パスをコピーしました",

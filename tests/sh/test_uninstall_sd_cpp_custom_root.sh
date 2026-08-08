@@ -31,6 +31,10 @@ HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
     sed -n '/^_remove_path() {/,/^}/p'      "$UNINSTALL_SH"
     sed -n '/^_is_studio_root() {/,/^}/p'   "$UNINSTALL_SH"
     sed -n '/^_is_unsafe_root() {/,/^}/p'   "$UNINSTALL_SH"
+    # The loop removes roots through this wrapper; without it and its marker helper the
+    # fragment dies with "command not found" and every assertion below is vacuous.
+    sed -n '/^_set_marker() {/,/^}/p'              "$UNINSTALL_SH"
+    sed -n '/^_remove_root_recording_db() {/,/^}/p' "$UNINSTALL_SH"
 } > "$HELPERS_FILE"
 # Both blocks sit inside the main removal function, so they are indented: anchor on optional
 # leading whitespace, never on column 0, or the range matches nothing and every assertion below
