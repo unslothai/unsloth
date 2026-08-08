@@ -310,6 +310,9 @@ def stream_installer(
         errors = "replace",
         # Make the Python child emit the UTF-8 we decode above.
         env = utf8_child_env(env),
+        # Its own group: the installer spawns a validation llama-server, and
+        # both PDEATHSIG and the startup sweep reach only what is recorded.
+        start_new_session = (os.name == "posix"),
         **child_popen_kwargs(),
     )
     # The kwargs above are empty on macOS, so record it: an installer that

@@ -311,8 +311,10 @@ _fork_reset_installed = False
 def _reset_after_fork() -> None:
     """A fork child inherits both locks in whatever state they were in and a
     _spawner whose thread does not exist here. Start clean instead of deadlocking."""
-    global _spawner, _spawner_lock, _record_lock
+    global _spawner, _spawner_lock, _record_lock, _owner_identity
     _spawner_lock = threading.Lock()
+    # A different pid here, so the parent's identity is not this process's.
+    _owner_identity = None
     # A fork while another thread was inside adopt_pid / forget_pid leaves this
     # held here with nobody to release it, and the first adoption blocks forever.
     _record_lock = threading.Lock()
@@ -595,6 +597,22 @@ def _breadcrumb_file():
     return None if directory is None else directory / f"{os.getpid()}.json"
 
 
+_owner_identity: Optional[str] = None
+
+
+def _own_identity() -> "Optional[str]":
+    """This process's identity, retried like a child's and then kept.
+
+    Recorded as None, any process that later reuses this pid reads as the owner
+    still running and the children this record names are never reaped. It
+    cannot change, so it is captured once rather than under the record lock.
+    """
+    global _owner_identity
+    if _owner_identity is None:
+        _owner_identity = _identity_for_record(os.getpid())
+    return _owner_identity
+
+
 def _write_breadcrumb() -> None:
     path = _breadcrumb_file()
     if path is None:
@@ -605,7 +623,7 @@ def _write_breadcrumb() -> None:
         path.parent.mkdir(parents = True, exist_ok = True)
         payload = {
             "owner_pid": os.getpid(),
-            "owner_identity": _pid_identity(os.getpid()),
+            "owner_identity": _own_identity(),
             "children": [
                 {"pid": pid, "identity": identity, "pgid": _tracked_pgids.get(pid)}
                 for pid, identity in _tracked_pids.items()

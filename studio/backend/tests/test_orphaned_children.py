@@ -1302,5 +1302,46 @@ def test_an_unanswerable_cleanup_query_counts_as_disarmed():
     assert "cleanupRearmedRef.current = !isTauri;" in gate, "a failed query still reads as armed"
 
 
+def test_the_component_installer_leads_its_own_group():
+    """It spawns a validation llama-server, and both PDEATHSIG and the startup
+    sweep reach only what was recorded."""
+    import inspect
+
+    from utils.prebuilt import update_flow
+
+    source = inspect.getsource(update_flow.stream_installer)
+    assert "start_new_session = (os.name == \"posix\")" in source
+    spawn = source.index("subprocess.Popen(")
+    assert source.index("start_new_session", spawn) < source.index("adopt_pid(proc.pid)", spawn)
+
+
+def test_the_owner_identity_is_retried_and_then_kept(monkeypatch):
+    from utils import process_lifetime as pl
+
+    monkeypatch.setattr(pl, "_owner_identity", None)
+    answers = iter([None, "started-at"])
+    calls = []
+
+    def _identity(pid):
+        calls.append(pid)
+        return next(answers, "started-at")
+
+    monkeypatch.setattr(pl, "_pid_identity", _identity)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    assert pl._own_identity() == "started-at"
+    assert len(calls) == 2, calls
+    # Kept, so the record lock never waits on another probe.
+    assert pl._own_identity() == "started-at"
+    assert len(calls) == 2, calls
+
+
+def test_a_fork_child_does_not_keep_the_parents_identity(monkeypatch):
+    from utils import process_lifetime as pl
+
+    monkeypatch.setattr(pl, "_owner_identity", "the-parents")
+    pl._reset_after_fork()
+    assert pl._owner_identity is None, "the child would record its parent's identity"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
