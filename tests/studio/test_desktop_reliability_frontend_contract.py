@@ -310,10 +310,13 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     streaming = dialogs[dialogs.index("pub async fn save_native_file_from_url") :]
     assert streaming.index(".save_file(") < streaming.index("stream_url_to_path(&url")
     # No proxy (the signed URL must not reach one) and no redirects (they would leave loopback
-    # after the check). The shared client keeps its own timeout; a streamed body outlasts one.
+    # after the check). read_timeout, not timeout: it bounds each chunk, so a backend that goes
+    # quiet cannot hang the save while a legitimately large clip still finishes.
     loopback = (REPO / "studio/src-tauri/src/loopback_http.rs").read_text(encoding = "utf-8")
     assert "fn streaming_client" in loopback
     assert "redirect(reqwest::redirect::Policy::none())" in loopback
+    assert ".read_timeout(read_timeout)" in loopback
+    assert ".timeout(" not in loopback.split("fn streaming_client")[1]
     assert loopback.count(".no_proxy()") == 2
     assert "loopback_http::streaming_client" in dialogs
     main_rs = (REPO / "studio/src-tauri/src/main.rs").read_text(encoding = "utf-8")

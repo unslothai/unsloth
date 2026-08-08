@@ -342,17 +342,22 @@ pub async fn save_native_file_from_url(
     let Some(path) = selected_path else {
         return Ok(None);
     };
-    stream_url_to_path(&url, &path).await?;
+    stream_url_to_path(&url, &path, DOWNLOAD_READ_TIMEOUT).await?;
     Ok(Some(saved_file_name(&path)))
 }
 
-async fn stream_url_to_path(url: &str, path: &Path) -> Result<(), String> {
-    let mut response = crate::loopback_http::streaming_client(Duration::from_secs(10))
-        .map_err(|error| format!("Download failed: {error}"))?
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| format!("Download failed: {error}"))?;
+/// A local backend that has accepted the request should never go quiet for this long, and a
+/// clip that is still arriving resets it, so a large save is not cut short.
+const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn stream_url_to_path(url: &str, path: &Path, read_timeout: Duration) -> Result<(), String> {
+    let mut response =
+        crate::loopback_http::streaming_client(Duration::from_secs(10), read_timeout)
+            .map_err(|error| format!("Download failed: {error}"))?
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| format!("Download failed: {error}"))?;
     // Redirects are refused rather than followed, so a 3xx is a rejection here, not a hop.
     if !response.status().is_success() {
         return Err(format!(
@@ -585,7 +590,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("clip.mp4");
         test_runtime()
-            .block_on(stream_url_to_path(&url, &dest))
+            .block_on(stream_url_to_path(&url, &dest, DOWNLOAD_READ_TIMEOUT))
             .unwrap();
         server.join().unwrap();
         assert_eq!(fs::read(&dest).unwrap(), body);
@@ -604,7 +609,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("clip.mp4");
         let error = test_runtime()
-            .block_on(stream_url_to_path(&url, &dest))
+            .block_on(stream_url_to_path(&url, &dest, DOWNLOAD_READ_TIMEOUT))
             .unwrap_err();
         server.join().unwrap();
         assert!(error.contains("401"), "{error}");
@@ -643,6 +648,42 @@ mod tests {
     }
 
     #[test]
+    fn a_backend_that_goes_quiet_mid_body_stops_the_save() {
+        // Headers promise more than is sent, then the server holds the socket open. Without a
+        // per-read timeout the invoke never resolves and the staging file stays behind.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (release, stalled) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut discard = [0_u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut discard);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\nContent-Type: video/mp4\r\n\r\nhalf",
+            );
+            let _ = stalled.recv(); // hold the connection open until the read has given up
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("clip.mp4");
+        let error = test_runtime()
+            .block_on(stream_url_to_path(
+                &format!("http://127.0.0.1:{port}/clip.mp4"),
+                &dest,
+                Duration::from_millis(250),
+            ))
+            .unwrap_err();
+        drop(release);
+        server.join().unwrap();
+        assert!(error.starts_with("Download failed"), "{error}");
+        assert!(!dest.exists(), "a stalled download must not leave a file");
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "the staging file must be cleaned up"
+        );
+    }
+
+    #[test]
     fn a_redirect_off_loopback_is_refused_not_followed() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -661,6 +702,7 @@ mod tests {
             .block_on(stream_url_to_path(
                 &format!("http://127.0.0.1:{port}/clip.mp4"),
                 &dest,
+                DOWNLOAD_READ_TIMEOUT,
             ))
             .unwrap_err();
         server.join().unwrap();
