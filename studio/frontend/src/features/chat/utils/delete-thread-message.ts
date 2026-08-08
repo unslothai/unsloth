@@ -90,7 +90,14 @@ async function withStoredResearchMessages(
     return records;
   }
   // The backend copy, not the legacy-merged one: only what it stored can be echoed back to it.
-  const stored = await listChatMessages(remoteId).catch(() => []);
+  // Swallowing a failure here would send the unreconciled payload, which the server rejects
+  // wholesale, so the read failure has to surface as itself rather than as a later 409.
+  const stored = await listChatMessages(remoteId).catch((error: unknown) => {
+    throw new Error(
+      `Could not read the stored research messages for thread ${remoteId} before syncing`,
+      { cause: error },
+    );
+  });
   return reconcileServerManagedMessages(records, stored);
 }
 
