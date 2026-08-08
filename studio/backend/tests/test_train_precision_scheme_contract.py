@@ -329,7 +329,8 @@ def test_the_reported_mode_filter_is_a_subset_of_what_the_backend_can_report(mon
     returns = [
         line
         for line in block.splitlines()
-        if "return [" in line and line.strip() not in ("return [];", "if (familyUntrainable) return [];")
+        if "return [" in line
+        and line.strip() not in ("return [];", "if (familyUntrainable) return [];")
     ]
     assert returns, f"parsed no return arrays out of the memo: {block!r}"
     for line in returns:
