@@ -298,6 +298,20 @@ def test_activate_transformers_version_or_warn_silent_on_success(monkeypatch):
     assert warnings_logged == [], "should not warn when activation succeeds"
 
 
+def _masking_block():
+    """The whole `if train_on_completions ...:` block from _run_mlx_training."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    blocks = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.If)
+        and isinstance(n.test, ast.BoolOp)
+        and "apply_completion_masking" in ast.unparse(n)
+    ]
+    assert len(blocks) == 1, "expected one guarded masking block"
+    return blocks[0]
+
+
 def _masking_call_and_guard():
     """The apply_completion_masking call in _run_mlx_training, plus the `if not applied` guard."""
     tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
@@ -324,33 +338,116 @@ def test_alpaca_datasets_still_get_explicit_markers():
     assert passed["dataset_template"] == "'alpaca' if dataset_final_format == 'alpaca' else None"
 
 
-def test_completion_masking_miss_reaches_the_warning_channel():
-    """A masking miss must be a sticky warning, not a status line that scrolls past.
+def _run_masking(
+    model_name = "org/unmapped",
+    detect = None,
+    **overrides,
+):
+    """Execute the real masking block from _run_mlx_training and return its events.
 
-    apply_completion_masking returns applied=False on a double miss and the run then trains
-    on full sequences. The warning channel is the one the eval-split fallback already uses;
-    a status message is overwritten by the next update, leaving no record.
+    _run_mlx_training only runs on Apple Silicon, so the block is lifted out and executed
+    directly. That keeps the production statements under test rather than a copy of them.
     """
-    _, guard = _masking_call_and_guard()
-    sends = [
-        n
-        for n in ast.walk(guard)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_send"
-    ]
+    block = compile(ast.Module(body = [_masking_block()], type_ignores = []), "<masking>", "exec")
+    events = []
+    trainer = types.SimpleNamespace(processing_class = types.SimpleNamespace(), tokenizer = None)
+    zoo = types.ModuleType("unsloth_zoo")
+    zoo.__path__ = []
+    datasets = types.ModuleType("unsloth_zoo.dataset_utils")
+    if detect is not None:
+        datasets.get_chat_template_parts = detect
+    previous = {n: sys.modules.get(n) for n in ("unsloth_zoo", "unsloth_zoo.dataset_utils")}
+    sys.modules["unsloth_zoo"] = zoo
+    sys.modules["unsloth_zoo.dataset_utils"] = datasets
 
-    assert len(sends) == 1, "a miss should emit exactly one event"
-    assert ast.unparse(sends[0].args[0]) == "'warning'"
-    # _send only mirrors status_message onto message for status events, so the warning
-    # payload has to use message or the parent pump drops it.
-    assert [kw.arg for kw in sends[0].keywords] == ["message"]
+    namespace = dict(vars(_worker))
+    namespace.update(
+        {
+            "config": {"train_on_completions": overrides.pop("train_on_completions", True)},
+            "raw_text_mode": overrides.pop("raw_text_mode", False),
+            "dataset_final_format": overrides.pop("dataset_final_format", "chatml"),
+            "model_name": model_name,
+            "trainer": trainer,
+            "train_on_responses_only": lambda t, **_kw: t,
+            "_send": lambda event_type, **kw: events.append((event_type, kw)),
+        }
+    )
+    try:
+        exec(block, namespace)
+    finally:
+        for name, module in previous.items():
+            sys.modules.pop(name, None) if module is None else sys.modules.update({name: module})
+    return events, namespace.get("masking_applied")
 
 
-def test_recovered_detection_failure_stays_a_status_update():
-    """Auto-detection can fail at level "warning" and still mask via the template table.
+try:  # the block imports this lazily; skip the behaviour tests where it cannot load
+    import utils.datasets.completion_masking  # noqa: F401
+    _MASKING_IMPORTABLE = True
+except Exception:  # pragma: no cover
+    _MASKING_IMPORTABLE = False
 
-    That run got what it asked for, so it must not be left with a sticky warning.
-    """
-    call, _ = _masking_call_and_guard()
-    notify = next(kw.value for kw in call.keywords if kw.arg == "notify")
+needs_masking_helper = pytest.mark.skipif(
+    not _MASKING_IMPORTABLE, reason = "utils.datasets.completion_masking is not importable"
+)
 
-    assert ast.unparse(notify.body) == "_send('status', status_message=message)"
+
+def _warnings(events):
+    return [kwargs["message"] for kind, kwargs in events if kind == "warning"]
+
+
+def _detect_fails(_processor):
+    raise RuntimeError("no chat template parts")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"train_on_completions": False},
+        {"raw_text_mode": True},
+        {"dataset_final_format": "raw_text"},
+    ],
+    ids = ["not-requested", "raw-text-mode", "raw-text-format"],
+)
+@needs_masking_helper
+def test_masking_block_is_skipped(overrides):
+    events, applied = _run_masking(**overrides)
+
+    assert events == [] and applied is None
+
+
+@needs_masking_helper
+def test_masking_miss_reaches_the_warning_channel():
+    """A miss must be a sticky warning, not a status line the next update overwrites."""
+    events, applied = _run_masking(detect = _detect_fails)
+
+    assert applied is False
+    warnings = _warnings(events)
+    assert len(warnings) == 1
+    assert "org/unmapped" in warnings[0] and "full sequences" in warnings[0]
+    # The parent pump reads only `message` for warnings, so `status_message` would be lost.
+    assert [kind for kind, _ in events][-1] == "warning"
+
+
+@pytest.mark.parametrize(
+    "model_name,detect",
+    [
+        ("org/unmapped", lambda _p: ("<|user|>", "<|assistant|>")),
+        ("unsloth/llama-3-8b-instruct", _detect_fails),
+    ],
+    ids = ["auto-detected", "recovered-by-template-table"],
+)
+@needs_masking_helper
+def test_applied_runs_leave_no_warning(model_name, detect):
+    """Detection can fail at level "warning" and the table still mask. That is not a miss."""
+    events, applied = _run_masking(model_name = model_name, detect = detect)
+
+    assert applied is True
+    assert _warnings(events) == []
+
+
+@pytest.mark.parametrize("model_name", ["", None, "org/model with spaces", "org/{brace}"])
+@needs_masking_helper
+def test_odd_model_names_do_not_break_the_warning(model_name):
+    events, applied = _run_masking(model_name = model_name, detect = _detect_fails)
+
+    assert applied is False and len(_warnings(events)) == 1
