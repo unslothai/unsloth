@@ -754,6 +754,11 @@ class SdCppDiffusionBackend:
                     "bytes": int(sum(sizes.get((repo, n), 0) for n in missing)),
                     # Only the transformer entry carries the GGUF filename; the VAE / encoder entries are plain single files.
                     "gguf_filename": gguf_filename if repo == fetch_repo_id else None,
+                    # Same entry, said plainly for the panel's label: the transformer IS the pick, the
+                    # VAE / encoders are required assets. Compared against the POST-swap id, because a
+                    # gated pick staged from its ungated mirror no longer matches the id the caller
+                    # asked for. Native picks are always single-file, so there is no pipeline case.
+                    "checkpoint": repo == fetch_repo_id,
                 }
             )
         return {

@@ -1740,6 +1740,7 @@ class DiffusionBackend:
             declared_sizes: dict[str, int],
             *,
             gguf: Optional[str] = None,
+            checkpoint: bool = False,
         ) -> None:
             """Add only files the loader cannot already resolve from either cache root.
 
@@ -1751,6 +1752,11 @@ class DiffusionBackend:
             republished a file is a MISS here rather than a silent inline fetch during the load.
             One entry per repo: same-repo groups share a scope variant, so a second job for the
             same repo would fight the first over progress, manifest and cancellation.
+
+            ``checkpoint`` marks the entry that holds the SELECTED model, so the panel can label
+            it without re-deriving the answer from the repo id: only this planner knows a gated
+            base was swapped for an ungated mirror, which leaves the entry's repo id different
+            from the id the caller picked.
             """
             revision = revisions.get(repo)
             live = hub_cache_dir()
@@ -1784,6 +1790,9 @@ class DiffusionBackend:
                 entry["files"].extend(added)
                 entry["bytes"] += int(sum(declared_sizes.get(n, 0) for n in added))
                 entry["gguf_filename"] = entry["gguf_filename"] or gguf
+                # OR, never assign: a combined repo merges the companion base INTO the checkpoint
+                # entry, and a plain assignment would clear the flag the checkpoint call just set.
+                entry["checkpoint"] = entry["checkpoint"] or checkpoint
                 return
             entries.append(
                 {
@@ -1791,6 +1800,7 @@ class DiffusionBackend:
                     "files": missing,
                     "bytes": int(sum(declared_sizes.get(name, 0) for name in missing)),
                     "gguf_filename": gguf,
+                    "checkpoint": checkpoint,
                 }
             )
 
@@ -1806,6 +1816,7 @@ class DiffusionBackend:
                 [gguf_filename],
                 file_sizes.get(repo_id, {gguf_filename: int(sizes.get(repo_id, 0))}),
                 gguf = gguf_filename,
+                checkpoint = True,
             )
         if base_files and not Path(base).expanduser().exists():
             # STAGED before the loader runs, so it must name the MIRROR: a gated upstream here 401s
@@ -1815,6 +1826,11 @@ class DiffusionBackend:
                 fetch_base,
                 base_files,
                 file_sizes.get(base, {}),
+                # A pipeline pick has no single file: the base IS the selected model (base = repo_id
+                # above). Flagged here rather than by comparing repo ids downstream, because the swap
+                # just above leaves this entry named after the MIRROR. Under a GGUF or single-file
+                # pick the base is a companion, so it stays unflagged.
+                checkpoint = kind == "pipeline",
             )
         return {
             "entries": entries,

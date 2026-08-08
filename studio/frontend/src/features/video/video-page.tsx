@@ -1284,9 +1284,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
               // .safetensors like its companions do. Repo identity alone is not enough, because a
               // checkpoint that shares its repo with the companions and is already cached leaves an
               // entry of companion files only. A pipeline pick has no one file: the repo IS it.
-              checkpoint: opts.filename
-                ? e.files.includes(opts.filename)
-                : e.repo_id === repoId,
+              // The backend's own answer wins: a gated pipeline is staged from an ungated MIRROR,
+              // so its entry no longer carries the id we picked and the id test below reads the
+              // whole selected model as companion assets. `??`, not `||`: a planner that says false
+              // is answering, and the fallback exists only for a backend too old to send the key.
+              checkpoint:
+                e.checkpoint ??
+                (opts.filename
+                  ? e.files.includes(opts.filename)
+                  : e.repo_id === repoId),
             })),
           );
           return true;
@@ -1338,10 +1344,22 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   }, [handleLoad]);
 
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated pipeline pick.
+  // Every pick supersedes the one before it, whichever route it takes. A staged download outlives
+  // its pick, and the direct-local branches call handleLoad rather than loadOrStage, so clearing
+  // only inside loadOrStage left the old job's onReady free to load the abandoned model over the
+  // one just chosen. Bumping the sequence here also invalidates any plan still in flight.
+  const beginPick = useCallback(() => {
+    pickSeq.current += 1;
+    pendingStagedLoad.current = null;
+    stagedLoadDeferred.current = false;
+    stagedQuantRevert.current = null;
+  }, []);
+
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
       // Ignore picks while a load/generation/unload is in flight.
       if (busy !== null) return;
+      beginPick();
       // Curated non-GGUF model: load as a full pipeline.
       const spec = loadSpecFor(id, VIDEO_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -1452,7 +1470,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         }
       });
     },
-    [busy, handleLoad, loadOrStage, quant, steps, guidance, revertPick],
+    [busy, handleLoad, loadOrStage, quant, steps, guidance, revertPick, beginPick],
   );
 
   const handleUnload = useCallback(async () => {

@@ -838,10 +838,15 @@ class VideoBackend:
             files: list[tuple[str, int]],
             gguf: Optional[str] = None,
             revision: Optional[str] = None,
+            checkpoint: bool = False,
         ) -> int:
             """Count every required file, but stage only the ones the loader cannot already
             resolve. The page now plans EVERY hub pick, so an unfiltered entry would re-stage
-            a model that is fully on disk. Returns the full size, cached or not."""
+            a model that is fully on disk. Returns the full size, cached or not.
+
+            ``checkpoint`` marks the entry holding the SELECTED model so the panel can label it
+            without re-deriving the answer from the repo id, which the plan itself may have
+            rewritten. Same envelope key the image planners emit, so one page-side map serves both."""
             from core.inference.diffusion import DiffusionBackend
 
             seen = planned.setdefault(repo, set())
@@ -854,12 +859,24 @@ class VideoBackend:
                 if DiffusionBackend._hub_file_is_cached(repo, name, revision, int(size)):
                     continue
                 entry = entries.setdefault(
-                    repo, {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None}
+                    repo,
+                    {
+                        "repo_id": repo,
+                        "files": [],
+                        "bytes": 0,
+                        "gguf_filename": None,
+                        "checkpoint": False,
+                    },
                 )
                 entry["files"].append(name)
                 entry["bytes"] += int(size)
             if gguf and repo in entries:
                 entries[repo]["gguf_filename"] = gguf
+            # Only ever raised, never cleared: a repo that holds both the checkpoint and companion
+            # files (a 2.3 pick whose extras live in the checkpoint repo) is keyed once, so a later
+            # companion add would otherwise unflag the entry the earlier checkpoint add marked.
+            if checkpoint and repo in entries:
+                entries[repo]["checkpoint"] = True
             return required
 
         try:
@@ -873,7 +890,11 @@ class VideoBackend:
                 ]
                 checkpoint_bytes = sum(size for _name, size in sizes)
                 total += add(
-                    repo_id, sizes, gguf = gguf_filename, revision = getattr(info, "sha", None)
+                    repo_id,
+                    sizes,
+                    gguf = gguf_filename,
+                    revision = getattr(info, "sha", None),
+                    checkpoint = True,
                 )
                 if ltx23:
                     # The 2.3 assembly reads these companion files at load; without them here they would be pulled inline, outside the panel's disk preflight.
@@ -910,6 +931,9 @@ class VideoBackend:
                         skip_te_components = tuple(te_files),
                     ),
                     revision = getattr(info, "sha", None),
+                    # A pipeline pick has no single file: the base IS the selected model (base =
+                    # repo_id above). Under a GGUF pick the base is a companion, so it stays unflagged.
+                    checkpoint = kind == "pipeline",
                 )
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
             logger.warning("video.download_plan_failed: %s", exc)

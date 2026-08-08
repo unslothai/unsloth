@@ -1317,6 +1317,40 @@ def test_every_pick_replaces_the_rollback_it_leaves_behind():
         )
 
 
+def test_every_pick_route_invalidates_the_staged_intent():
+    """Clearing inside `loadOrStage` is not enough: the direct-local GGUF and safetensors branches
+    call `handleLoad` themselves and never go through it, so a staged Hub download kept its intent
+    and its `onReady` could load the abandoned Hub model over the local one just picked.
+
+    So the invalidation sits in one helper fired at the top of every pick, before any branch."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        helper = re.search(r"const beginPick = useCallback\(\(\) => \{(.*?)\}, \[\]\);", src, re.S)
+        assert helper, f"{rel}: no shared pick-invalidation helper"
+        body = helper.group(1)
+        for cleared in (
+            "pickSeq.current += 1;",
+            "pendingStagedLoad.current = null;",
+            "stagedLoadDeferred.current = false;",
+            "stagedQuantRevert.current = null;",
+        ):
+            assert cleared in body, f"{rel}: beginPick does not release {cleared}"
+        select = re.search(
+            r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S
+        )
+        assert select, f"{rel}: handleModelSelect not found"
+        pick = select.group(1)
+        assert "beginPick();" in pick, f"{rel}: a pick can run without invalidating the last one"
+        # Before every branch, or the branch that returns first keeps the old intent armed.
+        first_branch = min(
+            pick.index(tok) for tok in ("const spec = loadSpecFor(", "if (meta.ggufVariant")
+            if tok in pick
+        )
+        assert pick.index("beginPick();") < first_branch, (
+            f"{rel}: the invalidation runs after a branch that can already have returned"
+        )
+
+
 def test_a_new_pick_drops_the_previous_staged_intent():
     """A staged download outlives the pick that made it. If the next pick stages nothing of its
     own -- fully cached, local, or no plan at all -- it never calls `stage()`, so the hook's queue
@@ -1393,6 +1427,13 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
         assert "e.files.includes(opts.filename)" in entries.group(
             0
         ), f"{page} does not mark the picked repo's entry as the checkpoint"
+        # The plan's own answer wins over both local guesses. A gated pipeline is staged from an
+        # ungated MIRROR, so its entry no longer carries the id we picked and the repo-id test
+        # reads the whole selected model as "Required assets". Only the planner knows about the
+        # swap. `??`, not `||`: a planner that answers false must not fall through to a guess.
+        assert "e.checkpoint ??" in entries.group(
+            0
+        ), f"{page} ignores the checkpoint flag the plan carried"
 
     staged = _read("features/hub/download-manager/use-staged-download.ts")
     assert "checkpoint?: boolean;" in staged

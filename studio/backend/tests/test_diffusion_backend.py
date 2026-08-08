@@ -5118,6 +5118,10 @@ def test_download_plan_scopes_the_base_repo_files(monkeypatch):
     checkpoint, base = plan["entries"]
     assert checkpoint["files"] == ["flux1-dev-Q4_K_M.gguf"]
     assert checkpoint["bytes"] == 7 * GB
+    # The panel labels "Model file" vs "Required assets" from this flag. Only the planner can name
+    # the selected entry, so it says so outright: the companion base is assets, not the pick.
+    assert checkpoint["checkpoint"] is True
+    assert base["checkpoint"] is False
     assert "flux1-dev.safetensors" not in base["files"]
     assert not any(f.startswith("transformer/") for f in base["files"])
     assert not any(f.startswith("assets/") for f in base["files"])
@@ -5333,6 +5337,23 @@ def test_download_plan_pipeline_kind_is_one_entry(monkeypatch):
     assert any(f.startswith("transformer/") for f in files)
     assert "flux1-dev.safetensors" not in files
     assert "text_encoder/model.fp16.safetensors" not in files
+
+
+def test_download_plan_flags_a_mirrored_pipeline_as_the_checkpoint(monkeypatch):
+    # The regression this flag exists for. A gated pipeline is STAGED from its ungated mirror, so
+    # the entry's repo id is unsloth/FLUX.1-dev while the pick is black-forest-labs/FLUX.1-dev.
+    # The page used to derive the label by comparing those two ids, which made every file of the
+    # selected model read as "Required assets". Only the planner knows about the swap.
+    gated = "black-forest-labs/FLUX.1-dev"
+    _fake_hf_api(monkeypatch, {gated: _FLUX_BASE_SIBLINGS})
+    _no_cache(monkeypatch)
+
+    plan = DiffusionBackend().download_plan(gated, model_kind = "pipeline")
+
+    assert len(plan["entries"]) == 1
+    entry = plan["entries"][0]
+    assert entry["repo_id"] == "unsloth/FLUX.1-dev" != gated
+    assert entry["checkpoint"] is True
 
 
 def test_download_plan_is_empty_for_a_local_path(tmp_path, monkeypatch):
