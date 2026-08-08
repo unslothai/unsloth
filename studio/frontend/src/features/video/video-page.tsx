@@ -73,6 +73,7 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 
 import {
   type GalleryVideo,
@@ -646,6 +647,24 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     loadToastId.current = null;
   }, []);
 
+  // Client-side state that only means anything while a model is resident: the
+  // in-flight replacement load's tracking, and the Reapply target. Shared with
+  // the indicator eject, which frees the runtime without going through the
+  // page's own Unload.
+  const dropResidentState = useCallback(() => {
+    // Cancel, not release: a resolving pick or a staged download would load
+    // back what was just ejected. In here rather than only in handleUnload, so
+    // an eject driven from the loaded models card is covered by it too.
+    pickGuard.cancel();
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+    dismissLoadToast();
+    lastLoadSig.current = null;
+    // Leaving this set would let Reapply reload the model that was just freed.
+    lastLoad.current = null;
+    setCanReapply(false);
+  }, [dismissLoadToast, pickGuard]);
+
   // Mirror to the module cache so a tab switch re-renders instantly.
   useEffect(() => {
     galleryCache.videos = videos;
@@ -925,13 +944,26 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [resolutionPresets, durationOptions],
   );
 
+  // A status read started before an eject can answer after the one that
+  // followed it, and this page has no periodic poll to correct it: the controls
+  // would go on offering to generate against a runtime that is already free.
+  // So every read takes a ticket and only the newest may write.
+  const statusTicket = useRef(0);
+  const setStatusIfNewest = useCallback(
+    (ticket: number, next: VideoStatus) => {
+      if (ticket === statusTicket.current) setStatus(next);
+    },
+    [],
+  );
+
   const refreshStatus = useCallback(async () => {
+    const ticket = ++statusTicket.current;
     try {
-      setStatus(await getVideoStatus());
+      setStatusIfNewest(ticket, await getVideoStatus());
     } catch {
       // Status is best-effort; a failed poll shouldn't surface an error toast.
     }
-  }, []);
+  }, [setStatusIfNewest]);
 
   // Track mount so a long generate stops issuing GPU work when the page is truly unmounted.
   useEffect(() => {
@@ -949,6 +981,28 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     })();
   }, [active, refreshStatus]);
 
+  // Ejected from the loaded models indicator, which does not run handleUnload:
+  // without this the controls keep offering to generate on a freed runtime, and
+  // Reapply still points at the model that was just ejected. The runtime is
+  // already free, so this is handleUnload without the unload call.
+  useEffect(
+    () =>
+      subscribeModelEjected("video", () => {
+        dropResidentState();
+        // That eject cancelled the replacement load, and its progress poll is
+        // the only thing that clears `busy` -- which dropResidentState has just
+        // stopped. Leaving it set locks the page: the picker ignores every
+        // choice while busy, and Unload is not offered once the status read
+        // comes back empty, so only an app reload recovered. Narrowed to
+        // "loading" so a generation in flight is left alone, as handleUnload's
+        // own finally does.
+        setBusy((prev) => (prev === "loading" ? null : prev));
+        setQuant(null);
+        void refreshStatus();
+      }),
+    [refreshStatus, dropResidentState],
+  );
+
   // Collapse the body-ported model selector when leaving the tab so returning to /video does not pop it back open unprompted.
   useEffect(() => {
     if (active) return;
@@ -961,7 +1015,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const p = await getVideoLoadProgress();
       if (p.phase === "ready") {
         dismissLoadToast();
-        setStatus(await getVideoStatus());
+        setStatusIfNewest(++statusTicket.current, await getVideoStatus());
         toast.success("Model loaded");
         setBusy(null);
         quantRevert.current = null;
@@ -1503,17 +1557,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   );
 
   const handleUnload = useCallback(async () => {
-    // Cancel, not release: a resolving pick or a staged download would load back what was just ejected.
-    pickGuard.cancel();
-    if (pollTimer.current) clearTimeout(pollTimer.current);
-    pollTimer.current = null;
-    dismissLoadToast();
-    lastLoadSig.current = null;
-    lastLoad.current = null;
-    setCanReapply(false);
+    dropResidentState();
     setBusy("unloading");
     try {
-      setStatus(await unloadVideoModel());
+      setStatusIfNewest(++statusTicket.current, await unloadVideoModel());
       setQuant(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to unload model");
@@ -1521,7 +1568,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     } finally {
       setBusy(null);
     }
-  }, [refreshStatus, dismissLoadToast, pickGuard]);
+  }, [refreshStatus, dropResidentState]);
 
   const handleCancelGenerate = useCallback(async () => {
     try {
