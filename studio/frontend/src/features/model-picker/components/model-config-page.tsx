@@ -260,7 +260,7 @@ function MaxSeqLengthSetting({
           <span className={LABEL_CLASS}>{label}</span>
           <InfoHint>
             {isMlx
-              ? "Tokens of context for this model. Left alone, it loads at the window the model was trained for; enter a number to load at that instead."
+              ? "Tokens of context to allocate. Higher uses more memory."
               : "Maximum context window size in tokens. Applies when the model loads."}
           </InfoHint>
         </div>

@@ -2715,7 +2715,7 @@ def test_quantization_is_refused_for_a_pinned_context_rather_than_raising_mid_st
 
     assert status["kv_bits"] is None
     assert status["eligibility"] == "refused"
-    assert "quantize a bounded cache" in status["reason"]
+    assert "quantize a limited cache" in status["reason"]
 
 
 def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():

@@ -35,8 +35,8 @@ class LoadRequest(BaseModel):
         ge = 0,
         le = 1048576,
         description = (
-            "Maximum sequence length. 0 asks a backend that sizes its own window -- "
-            "llama.cpp or MLX -- to choose the context itself."
+            "Maximum sequence length. Send 0 to let a backend that sizes its own window "
+            "(llama.cpp or MLX) choose the context itself."
         ),
     )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
@@ -568,9 +568,9 @@ class _InferenceRuntimeFields(BaseModel):
     max_context_length: Optional[int] = Field(
         None,
         description = (
-            "The ceiling to show for this model: llama.cpp estimates what the machine "
-            "holds, while MLX reports the model's own window. Neither is a reservation, "
-            "and an explicit request is honored above it."
+            "The ceiling to show for this model: llama.cpp estimates what the machine can "
+            "hold, while MLX reports the model's own window. Neither reserves memory, and "
+            "an explicit request above it is still honored."
         ),
     )
     native_context_length: Optional[int] = Field(
@@ -819,11 +819,11 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     requested_context_length: Optional[int] = Field(
         None,
         description = (
-            "The context length the active load was invoked with: 0 means it asked the "
-            "backend to choose, and None means the serving backend records no request at "
-            "all. Both local backends size their own window, so context_length exposes "
-            "only what was resolved and cannot say whether anyone chose it; this lets a "
-            "client re-seed the pin on hydration."
+            "The context length the active load was invoked with: 0 means the load asked "
+            "the backend to choose, and null means the serving backend records no request "
+            "at all. Both local backends size their own window, so context_length reports "
+            "only what was resolved and cannot say whether anyone chose it; this is what "
+            "lets a client restore the user's choice after a reload."
         ),
     )
     llama_cpp_supports_mtp: bool = Field(

@@ -421,8 +421,8 @@ MLX_KV_QUANT_VLM_CACHE_NOTE = (
 # mlx-lm attempts the conversion from the first token. Resolved here so the pinned
 # window is what applies, rather than letting generation fail on its first step.
 MLX_KV_QUANT_PINNED_CONTEXT = (
-    "A pinned context length bounds the KV cache, and the installed mlx-lm cannot "
-    "quantize a bounded cache. Clear the pin to quantize instead."
+    "Context Length is set for this model, which limits the KV cache, and the installed "
+    "mlx-lm cannot quantize a limited cache. Reset it to quantize instead."
 )
 
 
@@ -849,7 +849,7 @@ def _kv_window_enforced(model, is_vlm, window):
             from mlx_lm.models import cache as lm_cache
             entries = lm_cache.make_prompt_cache(language_model, max_kv_size = window)
     except Exception as exc:
-        logger.debug("MLX context bound probe failed: %s", exc)
+        logger.debug("MLX context limit probe failed: %s", exc)
         return None
     flattened = list(_flatten_kv_entries(entries))
     return bool(flattened) and all(_kv_entry_is_bounded(entry, window) for entry in flattened)
@@ -1259,14 +1259,14 @@ class MLXInferenceBackend:
         enforced = _kv_window_enforced(self._model, self._is_vlm, int(served))
         if enforced is False:
             logger.warning(
-                "MLX context bound of %d tokens does not apply: at least one cache layer "
-                "declares no cap at that length.",
+                "MLX context limit of %d tokens is not enforced: this model builds at "
+                "least one cache layer that declares no limit at that length.",
                 int(served),
             )
         elif enforced is None:
             logger.warning(
-                "MLX context bound of %d tokens not applied: no cache could be built to "
-                "confirm it.",
+                "MLX context limit of %d tokens is not enforced: no cache could be built "
+                "to confirm it.",
                 int(served),
             )
         return enforced is True
@@ -1293,7 +1293,7 @@ class MLXInferenceBackend:
         )
         if not enforceable or (quant["kv_bits"] is not None and not pinned):
             return quant, None
-        logger.info("MLX KV cache bounded at %d tokens", int(served))
+        logger.info("MLX KV cache limited to %d tokens", int(served))
         return quant, int(served)
 
     def load_model(
