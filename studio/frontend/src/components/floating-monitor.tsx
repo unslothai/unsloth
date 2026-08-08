@@ -16,6 +16,7 @@ import {
   type PointerEvent,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -89,6 +90,10 @@ function naturalWidth(monitor: HTMLDivElement): number {
 }
 
 function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
+  // This panel's claim on the shared frame. Reopening the monitor mid-exit
+  // mounts the replacement while the old panel is still animating out, and the
+  // old one unmounts last, so its cleanup must only clear its own frame.
+  const publisher = useMemo(() => ({}), []);
   const monitorRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -171,7 +176,7 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       }
 
       // Publish the real box so the overlay stack can keep clear of it.
-      useMonitorFrameStore.getState().setFrame({
+      useMonitorFrameStore.getState().setFrame(publisher, {
         left: monitorBox.left,
         top: monitorBox.top,
         right: monitorBox.right,
@@ -202,13 +207,13 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     }
     return () => {
       observer.disconnect();
-      useMonitorFrameStore.getState().setFrame(null);
+      useMonitorFrameStore.getState().clearFrame(publisher);
       if (remeasureRef.current) {
         cancelAnimationFrame(remeasureRef.current);
         remeasureRef.current = 0;
       }
     };
-  }, [constraintsElement]);
+  }, [constraintsElement, publisher]);
 
   // ResizeObserver never fires for a position-only change, so dragging alone
   // would leave the published frame at the monitor's old corner and the overlay
@@ -219,13 +224,13 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       return;
     }
     const box = monitor.getBoundingClientRect();
-    useMonitorFrameStore.getState().setFrame({
+    useMonitorFrameStore.getState().setFrame(publisher, {
       left: box.left,
       top: box.top,
       right: box.right,
       bottom: box.bottom,
     });
-  }, [layout, constraintsElement]);
+  }, [layout, constraintsElement, publisher]);
 
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     const monitor = monitorRef.current;

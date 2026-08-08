@@ -135,23 +135,29 @@ test("a vision model is marked on any backend", () => {
 
 // ── Chat runtime: every audio_type the backend can emit ─────────────────
 
-test("audio models split by direction, not by name", () => {
-  // VALID_AUDIO_TYPES in model_config.py, against is_audio_input_type(): only
-  // whisper and audio_vlm take audio IN. Anything else speaks.
+test("audio models split three ways, not two", () => {
+  // VALID_AUDIO_TYPES in model_config.py. is_audio means TTS here, as
+  // mlx_inference documents, so the split is not simply in-vs-out: whisper is
+  // the ASR sidecar, audio_vlm is a chat model that listens and still answers
+  // prompts, and the remaining four speak.
   const speaks = ["snac", "csm", "bicodec", "dac"];
-  const listens = ["whisper", "audio_vlm"];
   for (const audioType of speaks) {
     const rows = describeInferenceStatus(
       chat({ active_model: `m/${audioType}`, is_audio: true, audio_type: audioType }),
     );
     assert.equal(rows[0].kind, "tts", `${audioType} produces audio`);
   }
-  for (const audioType of listens) {
-    const rows = describeInferenceStatus(
-      chat({ active_model: `m/${audioType}`, is_audio: true, audio_type: audioType }),
-    );
-    assert.equal(rows[0].kind, "stt", `${audioType} consumes audio`);
-  }
+  const whisper = describeInferenceStatus(
+    chat({ active_model: "m/whisper", is_audio: true, audio_type: "whisper" }),
+  );
+  assert.equal(whisper[0].kind, "stt", "whisper transcribes, it does not answer");
+  // Gemma 3n. The Transformers path can report is_audio true for it (the codec
+  // load at inference.py:520 is skipped by name, not by the flag), so filing it
+  // by the flag alone would hide a chat model under Speech or Dictation.
+  const vlm = describeInferenceStatus(
+    chat({ active_model: "unsloth/gemma-3n-E4B-it", is_audio: true, audio_type: "audio_vlm" }),
+  );
+  assert.equal(vlm[0].kind, "text", "an audio VLM is a chat model that listens");
 });
 
 test("an audio flag with no type still reads as speech", () => {

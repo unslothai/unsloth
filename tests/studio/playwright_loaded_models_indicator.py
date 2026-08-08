@@ -416,15 +416,17 @@ def run(page, state: Runtime) -> None:
         page.wait_for_selector(CARD, timeout = 30_000)
         check(name, expected in card_text(page), card_text(page).replace("\n", " | "))
 
-    # An audio-input VLM listens; it must not be filed under Speech.
+    # An audio VLM answers prompts, so it is a chat model that happens to
+    # listen -- neither Speech nor Dictation.
     state.diffusion = dict(NOTHING_DIFFUSION)
     state.chat = chat(active_model = "unsloth/gemma-3n-E4B-it", is_audio = True, audio_type = "audio_vlm")
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
+    text = card_text(page)
     check(
-        "an audio-input VLM is Dictation, not Speech",
-        "Dictation" in card_text(page),
-        card_text(page).replace("\n", " | "),
+        "an audio VLM stays a Chat row",
+        "Chat" in text and "Speech" not in text and "Dictation" not in text,
+        text.replace("\n", " | "),
     )
 
     # ── A backend too old to have the video route ───────────────────────

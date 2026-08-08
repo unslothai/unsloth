@@ -126,13 +126,16 @@ export function describeInferenceStatus(
   const active = status.active_model;
   if (active) {
     const audioType = status.audio_type ?? null;
-    // The backend's own is_audio_input_type(): whisper (ASR) and audio_vlm
-    // (Gemma 3n) take audio in, the other four give audio out. Getting this
-    // wrong labels a model that listens as one that speaks, which is the
-    // confusion this card exists to remove.
-    const isAudioInput = audioType === "whisper" || audioType === "audio_vlm";
-    const isTts = Boolean(status.is_audio) && !isAudioInput;
-    const isStt = Boolean(status.is_audio) && isAudioInput;
+    // is_audio means TTS here, as mlx_inference documents ("audio_vlm (omni
+    // audio input; is_audio stays False -- it means TTS and redirects in the
+    // chat route)"). So the audio types split three ways, not two: whisper is
+    // the ASR sidecar, audio_vlm is a chat model that happens to listen, and
+    // the rest speak. Only the third kind belongs under Speech.
+    const isTts =
+      Boolean(status.is_audio) &&
+      audioType !== "whisper" &&
+      audioType !== "audio_vlm";
+    const isStt = Boolean(status.is_audio) && audioType === "whisper";
     const runtime = status.is_gguf
       ? "GGUF"
       : status.is_mlx

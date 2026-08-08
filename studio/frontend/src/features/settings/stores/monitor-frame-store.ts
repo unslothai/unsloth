@@ -16,9 +16,20 @@ export type MonitorFrame = {
   bottom: number;
 };
 
+/**
+ * Which panel published the current frame. Reopening the monitor during its
+ * exit animation leaves two panels mounted at once, and the one on its way out
+ * unmounts last: without an owner its cleanup would clear the replacement's
+ * frame, and a monitor that then sits still republishes nothing.
+ */
+export type MonitorFramePublisher = object;
+
 interface MonitorFrameState {
   frame: MonitorFrame | null;
-  setFrame: (frame: MonitorFrame | null) => void;
+  publisher: MonitorFramePublisher | null;
+  setFrame: (publisher: MonitorFramePublisher, frame: MonitorFrame) => void;
+  /** No-op unless `publisher` still owns the frame. */
+  clearFrame: (publisher: MonitorFramePublisher) => void;
 }
 
 function sameFrame(a: MonitorFrame | null, b: MonitorFrame | null): boolean {
@@ -33,10 +44,19 @@ function sameFrame(a: MonitorFrame | null, b: MonitorFrame | null): boolean {
 
 export const useMonitorFrameStore = create<MonitorFrameState>((set) => ({
   frame: null,
+  publisher: null,
   // Written from a layout effect on every reconcile, so no-op writes must not
   // notify: the overlay stack re-renders on this.
-  setFrame: (frame) =>
-    set((state) => (sameFrame(state.frame, frame) ? state : { frame })),
+  setFrame: (publisher, frame) =>
+    set((state) =>
+      state.publisher === publisher && sameFrame(state.frame, frame)
+        ? state
+        : { frame, publisher },
+    ),
+  clearFrame: (publisher) =>
+    set((state) =>
+      state.publisher === publisher ? { frame: null, publisher: null } : state,
+    ),
 }));
 
 // The corner stack's own inset, and the gap left between it and the monitor.
