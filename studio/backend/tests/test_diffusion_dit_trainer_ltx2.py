@@ -63,23 +63,41 @@ _BLOCK = "transformer_blocks.0."
 VIDEO_STREAM_LINEARS = tuple(
     _BLOCK + n
     for n in (
-        "attn1.to_q", "attn1.to_k", "attn1.to_v", "attn1.to_out.0",
-        "attn2.to_q", "attn2.to_k", "attn2.to_v", "attn2.to_out.0",
+        "attn1.to_q",
+        "attn1.to_k",
+        "attn1.to_v",
+        "attn1.to_out.0",
+        "attn2.to_q",
+        "attn2.to_k",
+        "attn2.to_v",
+        "attn2.to_out.0",
     )
 )
 NON_VIDEO_STREAM_LINEARS = tuple(
     _BLOCK + n
     for n in (
-        "audio_attn1.to_q", "audio_attn1.to_k", "audio_attn1.to_v", "audio_attn1.to_out.0",
-        "audio_attn2.to_q", "audio_attn2.to_k", "audio_attn2.to_v", "audio_attn2.to_out.0",
-        "audio_to_video_attn.to_q", "audio_to_video_attn.to_k",
-        "audio_to_video_attn.to_v", "audio_to_video_attn.to_out.0",
-        "video_to_audio_attn.to_q", "video_to_audio_attn.to_k",
-        "video_to_audio_attn.to_v", "video_to_audio_attn.to_out.0",
-        "audio_ff.net.0.proj", "audio_ff.net.2",
+        "audio_attn1.to_q",
+        "audio_attn1.to_k",
+        "audio_attn1.to_v",
+        "audio_attn1.to_out.0",
+        "audio_attn2.to_q",
+        "audio_attn2.to_k",
+        "audio_attn2.to_v",
+        "audio_attn2.to_out.0",
+        "audio_to_video_attn.to_q",
+        "audio_to_video_attn.to_k",
+        "audio_to_video_attn.to_v",
+        "audio_to_video_attn.to_out.0",
+        "video_to_audio_attn.to_q",
+        "video_to_audio_attn.to_k",
+        "video_to_audio_attn.to_v",
+        "video_to_audio_attn.to_out.0",
+        "audio_ff.net.0.proj",
+        "audio_ff.net.2",
         # Video-stream feed-forward: real, but deliberately NOT a target (Lightricks' own
         # video inpainting/outpainting LoRA configs stop at the attention projections).
-        "ff.net.0.proj", "ff.net.2",
+        "ff.net.0.proj",
+        "ff.net.2",
     )
 )
 
@@ -107,6 +125,7 @@ class _RecordingTransformer:
 def patched_pack(monkeypatch):
     """Replace the two diffusers-backed helpers with the identity-shaped equivalents, so the
     forward contract is testable without importing LTX2Pipeline."""
+
     def pack(latents, conf):
         b, c, f, h, w = latents.shape
         return latents.permute(0, 2, 3, 4, 1).reshape(b, f * h * w, c)
@@ -196,7 +215,9 @@ def test_generic_default_targets_resolve_to_the_ltx2_set():
         base_model = "Lightricks/LTX-2", data_dir = "d", output_dir = "o"
     ).normalized()
     assert cfg.lora_target_modules == DEFAULT_LORA_TARGETS
-    assert _select_lora_targets(cfg.lora_target_modules, _SPECS["ltx-2"].lora_targets) == _LTX2_TARGETS
+    assert (
+        _select_lora_targets(cfg.lora_target_modules, _SPECS["ltx-2"].lora_targets) == _LTX2_TARGETS
+    )
 
 
 # ── the audio placeholder ────────────────────────────────────────────────────
@@ -204,7 +225,7 @@ def test_generic_default_targets_resolve_to_the_ltx2_set():
     "num_pixel_frames, fps, expected",
     [
         # 16000 / 160 / 4 = 25 audio latent tokens per second.
-        (1, 24.0, 1),      # a still: 1/24 s -> round(1.04) -> 1
+        (1, 24.0, 1),  # a still: 1/24 s -> round(1.04) -> 1
         (25, 24.0, 26),
         (121, 24.0, 126),  # the family default clip
         (1, 1.0, 25),
@@ -239,11 +260,23 @@ def test_audio_state_is_zero_at_sigma_zero():
 
 
 # ── the forward contract ─────────────────────────────────────────────────────
-def _run_forward(transformer, bsz = 1, f = 1, h = 4, w = 4, c = 8, sigma = 0.5):
+def _run_forward(
+    transformer,
+    bsz = 1,
+    f = 1,
+    h = 4,
+    w = 4,
+    c = 8,
+    sigma = 0.5,
+):
     noisy = torch.randn(bsz, c, f, h, w)
     sigmas = torch.full((bsz,), sigma).view(bsz, 1, 1, 1, 1)
     timesteps = torch.full((bsz,), sigma * 1000.0)
-    embeds = (torch.randn(bsz, 6, 3840), torch.randn(bsz, 6, 3840), torch.ones(bsz, 6, dtype = torch.int64))
+    embeds = (
+        torch.randn(bsz, 6, 3840),
+        torch.randn(bsz, 6, 3840),
+        torch.ones(bsz, 6, dtype = torch.int64),
+    )
     out = _ltx2_forward(transformer, noisy, timesteps, sigmas, embeds, None, "cpu", torch.float32)
     return noisy, out
 
@@ -300,8 +333,16 @@ def test_forward_feeds_the_separate_video_and_audio_text_streams(patched_pack):
     sigmas = torch.full((1,), 0.5).view(1, 1, 1, 1, 1)
     video_emb, audio_emb = torch.randn(1, 6, 3840), torch.randn(1, 6, 3840)
     mask = torch.ones(1, 6, dtype = torch.int64)
-    _ltx2_forward(tr, noisy, torch.full((1,), 500.0), sigmas,
-                  (video_emb, audio_emb, mask), None, "cpu", torch.float32)
+    _ltx2_forward(
+        tr,
+        noisy,
+        torch.full((1,), 500.0),
+        sigmas,
+        (video_emb, audio_emb, mask),
+        None,
+        "cpu",
+        torch.float32,
+    )
     # The connector emits a DIFFERENT projection per modality; swapping them silently
     # conditions the video stream on the audio caption embedding.
     assert torch.equal(tr.kwargs["encoder_hidden_states"], video_emb)
@@ -322,7 +363,11 @@ class _FakeVae:
     """Mimics AutoencoderKLLTX2Video: per-channel latents_mean / latents_std buffers plus a
     scaling_factor, and a 5-D encode."""
 
-    def __init__(self, channels = 4, scaling_factor = 1.0):
+    def __init__(
+        self,
+        channels = 4,
+        scaling_factor = 1.0,
+    ):
         self.latents_mean = torch.arange(channels, dtype = torch.float32)
         self.latents_std = torch.full((channels,), 2.0)
         self.config = types.SimpleNamespace(scaling_factor = scaling_factor)
@@ -379,10 +424,14 @@ def test_collate_batches_the_three_connector_tensors():
 # ── memory: the LTX-2-only conditioning modules ──────────────────────────────
 def test_free_text_encoders_drops_the_ltx2_conditioning_stack():
     pipe = types.SimpleNamespace(
-        text_encoder = object(), tokenizer = object(),
+        text_encoder = object(),
+        tokenizer = object(),
         # ~2.7 GB of connectors plus the decode-side audio modules the trainer never uses.
-        connectors = object(), audio_vae = object(), vocoder = object(),
-        transformer = object(), vae = object(),
+        connectors = object(),
+        audio_vae = object(),
+        vocoder = object(),
+        transformer = object(),
+        vae = object(),
     )
     _free_text_encoders(pipe)
     assert pipe.text_encoder is None and pipe.tokenizer is None
@@ -460,7 +509,9 @@ def test_ltx2_has_a_vram_row():
 def test_video_resolution_must_sit_on_the_vae_grid(resolution, ok):
     def build():
         return DiffusionLoraConfig(
-            base_model = "Lightricks/LTX-2", data_dir = "d", output_dir = "o",
+            base_model = "Lightricks/LTX-2",
+            data_dir = "d",
+            output_dir = "o",
             resolution = resolution,
         ).normalized()
 
@@ -474,7 +525,9 @@ def test_video_resolution_must_sit_on_the_vae_grid(resolution, ok):
 def test_image_families_keep_the_multiple_of_8_rule():
     # The /32 rule is video-only; an image family at 520px must still be accepted.
     cfg = DiffusionLoraConfig(
-        base_model = "Tongyi-MAI/Z-Image-Turbo", data_dir = "d", output_dir = "o",
+        base_model = "Tongyi-MAI/Z-Image-Turbo",
+        data_dir = "d",
+        output_dir = "o",
         resolution = 520,
     ).normalized()
     assert cfg.resolution == 520
@@ -498,6 +551,8 @@ def test_ltx2_flow_shift_defaults_to_auto():
 def test_ltx2_rejects_fp16_before_loading():
     with pytest.raises(ValueError, match = "bf16"):
         DiffusionLoraConfig(
-            base_model = "Lightricks/LTX-2", data_dir = "d", output_dir = "o",
+            base_model = "Lightricks/LTX-2",
+            data_dir = "d",
+            output_dir = "o",
             mixed_precision = "fp16",
         ).normalized()
