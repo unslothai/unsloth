@@ -1270,7 +1270,10 @@ def test_snapshot_options_resolve_a_declared_hidden_path(tmp_path, declared, pat
 
 def test_snapshot_options_reject_a_split_declared_twice(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: a\n  data_files:\n  - split: train\n    path: a/one.jsonl\n  - split: train\n    path: a/two.jsonl\n- config_name: b\n  data_dir: b\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: a\n  data_files:\n  - split: train\n    path: a/one.jsonl\n  - split: train\n    path: a/two.jsonl\n- config_name: b\n  data_dir: b\n",
+    )
     (snapshot / "a").mkdir(parents = True)
     for name in ("one.jsonl", "two.jsonl"):
         (snapshot / "a" / name).write_text('{"text":"row"}\n', encoding = "utf-8")
@@ -1282,7 +1285,10 @@ def test_snapshot_options_reject_a_split_declared_twice(tmp_path):
 
 def test_snapshot_options_reject_a_first_config_whose_wildcard_matches_nothing(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: a\n  data_files: missing*.jsonl\n- config_name: b\n  data_dir: b\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: a\n  data_files: missing*.jsonl\n- config_name: b\n  data_dir: b\n",
+    )
     (snapshot / "b").mkdir(parents = True)
     (snapshot / "b" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1299,7 +1305,10 @@ def test_snapshot_options_reject_a_dataset_info_the_loader_cannot_walk(tmp_path)
 
 def test_snapshot_options_weigh_a_declared_module_by_the_files_it_resolves(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: a\n  data_files:\n  - a/*.jsonl\n  - a/*.csv\n- config_name: b\n  data_dir: b\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: a\n  data_files:\n  - a/*.jsonl\n  - a/*.csv\n- config_name: b\n  data_dir: b\n",
+    )
     (snapshot / "a").mkdir(parents = True)
     (snapshot / "a" / "one.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     for name in ("one.csv", "two.csv"):
