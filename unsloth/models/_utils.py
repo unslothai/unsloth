@@ -2365,6 +2365,18 @@ try:
     # The extensions loaded, so whatever the tables predicted did not happen. Never cry
     # wolf: a working xformers must not be reported as broken.
     XFORMERS_BROKEN_REASON = None
+    # And put the logger back where the unpredicted case leaves it. The silencing above is
+    # skipped on a PREDICTED break so xformers' own diagnostic can get through, but the
+    # prediction is read off cpp_lib.json and is wrong in the healthy direction whenever a
+    # wheel records a torch patch it still loads against. Leaving the logger open then is
+    # permanent and process-wide, so unrelated xformers warnings -- flash3's "package can't
+    # be used", which fires on exactly this hardware -- start reaching users who have
+    # nothing wrong with their install.
+    if _xformers_predicted_break is not None:
+        try:
+            logging.getLogger("xformers").setLevel(logging.ERROR)
+        except Exception:
+            pass
 except ModuleNotFoundError:
     # Not installed at all. Nothing to warn about - SDPA is the expected path here.
     xformers = None

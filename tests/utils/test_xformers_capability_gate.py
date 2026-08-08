@@ -8,11 +8,19 @@ assumption that xformers always works there. It does not when the wheel was buil
 different torch or CUDA major, and skipping the probe is what let a cu128-built managed
 Windows package ship beside a cu130 runtime with its kernels silently dead."""
 
+import contextlib
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 import torch
 import unsloth  # noqa: F401
 
 from unsloth.utils import attention_dispatch as ad
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize(
@@ -216,10 +224,70 @@ def test_the_probe_targets_this_rank_s_device(monkeypatch):
         captured["device"] = device
         raise RuntimeError("stop after capturing the device")
 
+    # torch.cuda.device is stubbed so this runs on a host with any number of GPUs, and so
+    # the index the context is entered with can be asserted directly.
+    @contextlib.contextmanager
+    def fake_device(index):
+        captured["context"] = index
+        yield
+
     monkeypatch.setattr(ad, "XFORMERS_PROBE_REASON", None)
     monkeypatch.setattr(ad, "XFORMERS_PROBE_INCONCLUSIVE", False)
     monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
     monkeypatch.setattr(ad, "_PROBE_DEVICE_INDEX", 3)
+    monkeypatch.setattr(ad.torch.cuda, "device", fake_device)
     monkeypatch.setattr(ad.torch, "zeros", fake_zeros)
     ad._xformers_runs_on_device()
     assert captured["device"] == "cuda:3"
+    # The attn_bias must land there too. BlockDiagonalCausalMask builds its seqstart
+    # tensors on the CURRENT device, so without this context q went to cuda:N and the bias
+    # to cuda:0, and xformers rejected the pair -- every rank but 0 lost xformers on a
+    # healthy install, which is the exact silent downgrade this gate exists to prevent.
+    assert captured["context"] == 3
+
+
+def test_the_probe_device_is_clamped_to_a_device_that_exists():
+    """LOCAL_RANK is a rank, not an index into the visible devices.
+
+    Slurm with --gpus-per-task=1, and anything that narrows CUDA_VISIBLE_DEVICES per rank,
+    gives a rank one visible device while still exporting its global rank. accelerate and
+    transformers also use -1 for "not distributed". torch raises on an invalid ordinal and
+    the capability read is at module scope, so an unclamped index makes `import unsloth`
+    itself crash.
+    """
+    visible = ad.torch.cuda.device_count() if ad.torch.cuda.is_available() else 0
+    assert 0 <= ad._PROBE_DEVICE_INDEX < max(visible, 1)
+    if visible:
+        # Would raise "Invalid device id" for an out-of-range index.
+        ad.torch.cuda.get_device_capability(ad._PROBE_DEVICE_INDEX)
+
+
+@pytest.mark.parametrize("local_rank", ["3", "-1", "07", "abc", ""])
+def test_import_survives_a_local_rank_that_names_no_visible_device(local_rank):
+    """The regression test the mocked one above cannot be: a real import, real env."""
+    if not (ad.torch.cuda.is_available() and ad.torch.cuda.device_count() >= 1):
+        pytest.skip("needs at least one CUDA device")
+    env = {
+        **os.environ,
+        "LOCAL_RANK": local_rank,
+        # One visible device, so any rank above 0 is out of range.
+        "CUDA_VISIBLE_DEVICES": (os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0]),
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import unsloth;"
+            "from unsloth.utils import attention_dispatch as a;"
+            "print('IDX', a._PROBE_DEVICE_INDEX)",
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+        env = env,
+        cwd = str(_REPO_ROOT),
+    )
+    assert result.returncode == 0, (
+        f"import unsloth crashed with LOCAL_RANK={local_rank!r}:\n{result.stderr[-2000:]}"
+    )
+    assert "IDX 0" in result.stdout, result.stdout[-2000:]
