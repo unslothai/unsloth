@@ -335,6 +335,7 @@ def _quants_from_state(
         return None
     return variants, has_vision
 
+
 def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
     """Group key for variants that share one companion download footprint.
 
@@ -368,6 +369,7 @@ def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
     except Exception as e:
         logger.debug("Dependency key unavailable for %s/%s: %s", repo_id, filename, e)
         return None
+
 
 def _partial_transport_for_variant(
     repo_id: str,
