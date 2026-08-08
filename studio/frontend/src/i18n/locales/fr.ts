@@ -101,6 +101,15 @@ export const fr = {
       logOut: "Se déconnecter",
       shutdown: "Arrêter",
     },
+    commandPalette: {
+      placeholder: "Saisissez une commande ou recherchez...",
+      noResults: "Aucun résultat trouvé.",
+      navigation: "Navigation",
+      actions: "Actions",
+      chat: "Chat",
+      projects: "Projets",
+      searchChats: "Rechercher des chats...",
+    },
     notFound: {
       title: "Page introuvable",
       description: "{path} n'existe pas.",

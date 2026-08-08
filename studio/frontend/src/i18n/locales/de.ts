@@ -101,6 +101,15 @@ export const de = {
       logOut: "Abmelden",
       shutdown: "Herunterfahren",
     },
+    commandPalette: {
+      placeholder: "Befehl eingeben oder suchen...",
+      noResults: "Keine Ergebnisse gefunden.",
+      navigation: "Navigation",
+      actions: "Aktionen",
+      chat: "Chat",
+      projects: "Projekte",
+      searchChats: "Chats durchsuchen...",
+    },
     notFound: {
       title: "Seite nicht gefunden",
       description: "{path} existiert nicht.",

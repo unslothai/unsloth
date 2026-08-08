@@ -53,6 +53,7 @@ export function ChatSearchDialog() {
   const isOpen = useChatSearchStore((s) => s.isOpen);
   const setOpen = useChatSearchStore((s) => s.setOpen);
   const close = useChatSearchStore((s) => s.close);
+  const opener = useChatSearchStore((s) => s.opener);
   const navigate = useNavigate();
   const { items, loading } = useChatSearchIndex(isOpen);
   const [query, setQuery] = useState("");
@@ -83,6 +84,12 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
+      onCloseAutoFocus={(event) => {
+        if (opener?.isConnected) {
+          event.preventDefault();
+          opener.focus({ preventScroll: true });
+        }
+      }}
       className="chat-search-surface rounded-3xl! max-sm:rounded-none! top-1/2 -translate-y-1/2 w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 sm:max-w-[635px]"
       overlayClassName="bg-transparent supports-backdrop-filter:backdrop-blur-none"
     >

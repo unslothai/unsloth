@@ -100,6 +100,15 @@ export const es = {
       logOut: "Cerrar sesión",
       shutdown: "Apagar",
     },
+    commandPalette: {
+      placeholder: "Escribe un comando o busca...",
+      noResults: "No se encontraron resultados.",
+      navigation: "Navegación",
+      actions: "Acciones",
+      chat: "Chat",
+      projects: "Proyectos",
+      searchChats: "Buscar chats...",
+    },
     notFound: {
       title: "Página no encontrada",
       description: "{path} no existe.",

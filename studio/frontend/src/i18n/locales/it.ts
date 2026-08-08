@@ -67,6 +67,15 @@ export const it = {
       logOut: "Esci",
       shutdown: "Arresta",
     },
+    commandPalette: {
+      placeholder: "Digita un comando o cerca...",
+      noResults: "Nessun risultato trovato.",
+      navigation: "Navigazione",
+      actions: "Azioni",
+      chat: "Chat",
+      projects: "Progetti",
+      searchChats: "Cerca nelle chat...",
+    },
     notFound: {
       title: "Pagina non trovata",
       description: "{path} non esiste.",

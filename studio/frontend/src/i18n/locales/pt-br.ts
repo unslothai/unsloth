@@ -100,6 +100,15 @@ export const ptBR = {
       logOut: "Sair",
       shutdown: "Desligar",
     },
+    commandPalette: {
+      placeholder: "Digite um comando ou pesquise...",
+      noResults: "Nenhum resultado encontrado.",
+      navigation: "Navegação",
+      actions: "Ações",
+      chat: "Chat",
+      projects: "Projetos",
+      searchChats: "Buscar chats...",
+    },
     notFound: {
       title: "Página não encontrada",
       description: "{path} não existe.",

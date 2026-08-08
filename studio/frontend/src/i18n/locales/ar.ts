@@ -98,6 +98,15 @@ export const ar = {
       logOut: "تسجيل الخروج",
       shutdown: "إيقاف التشغيل",
     },
+    commandPalette: {
+      placeholder: "اكتب أمرًا أو ابحث...",
+      noResults: "لم يُعثر على أي نتائج.",
+      navigation: "التنقل",
+      actions: "الإجراءات",
+      chat: "الدردشة",
+      projects: "المشاريع",
+      searchChats: "ابحث في الدردشات...",
+    },
     notFound: {
       title: "الصفحة غير موجودة",
       description: "{path} غير موجود.",
