@@ -977,10 +977,22 @@ create_studio_shortcuts() {
             echo "[WARN] Cannot create launcher: no entropy source for studio_install_id" >&2
             return 1
         fi
-        # Atomic write so a partial install can't leave a half-written id.
-        _css_id_tmp="$_css_id_file.$$.tmp"
-        printf '%s' "$_css_new_id" > "$_css_id_tmp" \
-            && mv "$_css_id_tmp" "$_css_id_file"
+        # Publish no-clobber: the desktop app mints this same id, so a plain mv
+        # could replace one a running backend already reported. ln fails with
+        # EEXIST instead and we adopt the winner; its lock is not shareable
+        # portably (no flock(1) on macOS). The id is in the temp name because
+        # $$ is the parent's pid inside a subshell in some shells.
+        _css_id_tmp="$_css_id_file.$$.$(printf '%.8s' "$_css_new_id").tmp"
+        if printf '%s' "$_css_new_id" > "$_css_id_tmp"; then
+            if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then
+                # A usable incumbent always wins. A zero-length file is an
+                # interrupted write, not an id, so replace it with one rename
+                # (no unlink, so the path never vanishes). This branch also
+                # covers filesystems without hard links (exFAT/FAT32).
+                [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"
+            fi
+        fi
+        rm -f "$_css_id_tmp"
         chmod 600 "$_css_id_file" 2>/dev/null || true
         unset _css_new_id _css_id_tmp
     fi
