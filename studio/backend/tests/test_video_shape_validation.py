@@ -283,6 +283,20 @@ def test_generate_for_a_family_without_presets_still_snaps(client, backend):
     assert (record["width"], record["height"]) == (224, 224)
 
 
+def test_a_family_without_presets_still_enforces_its_frame_lattice(client, backend):
+    """The preset escape hatch covers the SIZE only. frame_step is declared whether or
+    not a family lists presets, so an off-lattice count is still a 422 here -- pinned at
+    the route because the size and frame branches take different paths through the gate."""
+    backend.load_as(replace(LTX2, resolution_presets = ()))
+    resp = client.post("/api/inference/video/generate", json = _payload(num_frames = 100))
+    assert resp.status_code == 422, resp.text
+    assert "97" in resp.json()["detail"] and "105" in resp.json()["detail"]
+    # And an on-lattice count against the same preset-less family still runs.
+    assert client.post(
+        "/api/inference/video/generate", json = _payload(num_frames = 97)
+    ).status_code == 200
+
+
 def test_generate_omitting_the_shape_uses_the_family_defaults(client, backend):
     """The common API call sends no size at all; it must not be caught by the gate."""
     backend.load_as(LTX2)

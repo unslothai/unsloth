@@ -287,14 +287,17 @@ def validate_video_request_shape(
 
     This is a separate, explicit check rather than a change to ``snap_video_size`` /
     ``snap_num_frames``, which internal callers still need. It stays silent for
-    anything it cannot judge -- a family that declares no presets keeps the old
-    snapping behaviour -- and ``None`` means "use the family default", which is valid
-    by construction.
+    anything it cannot judge -- a family that declares no presets keeps the old SIZE
+    snapping, since there is no table to judge a size against -- and ``None`` means
+    "use the family default", which is valid by construction. The frame lattice is
+    deliberately NOT part of that escape hatch: every family declares a ``frame_step``
+    whether or not it declares presets, so an off-lattice count is always refused.
     """
     # Normalised to int pairs so membership holds however a family spelled its presets (the status payload
     # hands them out as lists, and a round-trip through it must not silently stop matching).
     presets = tuple((int(w), int(h)) for w, h in fam.resolution_presets)
-    # No declared presets: nothing to enforce against, so leave the request to the snap (unusual/custom families).
+    # No declared presets: no table to judge a SIZE against, so leave that to the snap (unusual/custom
+    # families). The frame check below still runs either way -- frame_step is always declared.
     if presets and (width is not None or height is not None):
         # Resolve a half-specified request against the default preset first, exactly as generate() does, then judge the pair.
         want_w = presets[0][0] if width is None else int(width)

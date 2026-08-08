@@ -220,8 +220,9 @@ async def generate_video(
     backend = get_video_backend()
     # The request bounds on VideoGenerateRequest are a coarse outer guard; the real rule is the LOADED
     # family's (its presets and frame lattice), so enforce it here instead of letting the backend snap
-    # silently to a shape the checkpoint was never trained for. Unloaded (or a family with no declared
-    # presets) falls through to the old behaviour, so begin_generate still owns the not-loaded 409.
+    # silently to a shape the checkpoint was never trained for. Unloaded falls through untouched, so
+    # begin_generate still owns the not-loaded 409; a family with no declared presets keeps the old SIZE
+    # snapping, though its frame lattice is still enforced (frame_step is declared either way).
     fam = await asyncio.to_thread(backend.loaded_family)
     if fam is not None:
         try:
