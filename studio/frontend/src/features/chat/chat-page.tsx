@@ -2607,6 +2607,7 @@ export function ChatPage({
   const nativeModelDropState = useNativeModelDrop({
     enabled: active && view.mode === "single",
     attachmentScope,
+    attachmentTargetKey: artifactViewKey,
     nativePathLeasesSupported,
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,

@@ -38,6 +38,14 @@ from utils.helper_precache_settings import (
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
+from utils.model_memory_settings import (
+    DEFAULT_KEEP_RESIDENT,
+    DEFAULT_NO_RAM_RESERVE,
+    get_model_memory_settings,
+    memlock_limit_bytes,
+    set_model_memory_settings,
+    should_mlock,
+)
 from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MAX,
     BATCH_SIZE_MIN,
@@ -56,6 +64,7 @@ from utils.openai_auto_switch_settings import (
     resolve_model_override_keys,
     get_stored_auto_unload_idle_seconds,
     get_stored_openai_auto_download_enabled,
+    idle_unload_is_configured,
     set_model_override,
     set_openai_auto_switch,
 )
@@ -108,6 +117,27 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class ModelMemoryPayload(BaseModel):
+    # None leaves the stored value untouched, so the switches save independently.
+    keep_resident: Optional[bool] = None
+    no_ram_reserve: Optional[bool] = None
+
+
+class ModelMemoryResponse(BaseModel):
+    keep_resident: bool
+    no_ram_reserve: bool
+    default_keep_resident: bool = DEFAULT_KEEP_RESIDENT
+    default_no_ram_reserve: bool = DEFAULT_NO_RAM_RESERVE
+    # Whether --mlock is passed on the next load. False when no_ram_reserve
+    # vetoes it; the UI surfaces that rather than failing silently.
+    mlock_active: bool
+    reload_required: bool
+    # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns
+    # that residency will not fully pin a model larger than this. None means
+    # unlimited (macOS) or not applicable (Windows).
+    memlock_limit_bytes: Optional[int] = None
 
 
 class HuggingFaceCachePayload(BaseModel):
@@ -259,6 +289,88 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     )
 
 
+# Distinct from None, which is a real launch this policy does not govern.
+_NO_LAUNCH = object()
+
+
+def _active_launch_placement():
+    """``(state, policy_active, mlock_applicable)`` for the running child.
+
+    ``state`` is ``_NO_LAUNCH`` when nothing is running or coming up, so the
+    caller can tell "no process" apart from "a process with no load-mode".
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        pending = bool(getattr(backend, "_memory_launch_pending", False))
+        if not backend.is_active and not pending:
+            return _NO_LAUNCH, False, True
+        return (
+            getattr(backend, "_memory_state", None),
+            bool(getattr(backend, "_memory_policy_active", False)),
+            bool(getattr(backend, "_memory_mlock_applicable", True)),
+        )
+    except Exception:
+        return _NO_LAUNCH, False, True
+
+
+def _model_memory_reload_required() -> bool:
+    """True when the loaded process's memory placement contradicts the settings.
+
+    Compares the state the child ACTUALLY launched with -- env defaults plus
+    last-wins argv, so a user-supplied --mlock / --no-mmap counts -- against
+    what the current settings would produce. The idle-unload veto applies
+    immediately (the loop re-reads each poll), so only placement can be stale.
+
+    Keyed on is_active, not is_loaded: a save that lands while a load is still
+    passing its health check would otherwise report no reload while the child is
+    already committed to the pre-save flags. _memory_launch_pending covers the
+    same window before Popen, where the placement is decided but _process is
+    still None.
+    """
+    state, policy_active, mlock_applicable = _active_launch_placement()
+    if state is _NO_LAUNCH:
+        return False
+
+    # Same predicate the duplicate-load comparator uses, so the reload hint and
+    # the reload path can never disagree.
+    from core.inference.llama_server_args import memory_state_satisfies_settings
+
+    return not memory_state_satisfies_settings(state, policy_active, mlock_applicable)
+
+
+def _model_memory_mlock_active(want_mlock: bool) -> bool:
+    """Whether page-locking is actually in force, not merely asked for.
+
+    This drives the locked-memory cap warning, so taking it from the toggles
+    alone would tell a discrete-GPU user to raise a limit nothing consults.
+    With nothing running this is the intent, so the UI reflects the toggle. Once
+    a child exists it is what that child got: a full offload to a discrete GPU
+    skips the lock, and a diffusion runner has no load-mode at all, so claiming
+    otherwise would warn about ulimit -l for a lock nobody took. A user's own
+    --mlock counts, since the resolver reads the launched argv.
+    """
+    if not want_mlock:
+        return False
+    state, _policy_active, _applicable = _active_launch_placement()
+    if state is _NO_LAUNCH:
+        return True
+    return bool(state and state[0])
+
+
+def _model_memory_response() -> ModelMemoryResponse:
+    keep_resident, no_ram_reserve = get_model_memory_settings()
+    mlock_active = _model_memory_mlock_active(should_mlock())
+    return ModelMemoryResponse(
+        keep_resident = keep_resident,
+        no_ram_reserve = no_ram_reserve,
+        mlock_active = mlock_active,
+        reload_required = _model_memory_reload_required(),
+        memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
+    )
+
+
 def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
     return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
 
@@ -329,6 +441,31 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+@router.get("/model-memory", response_model = ModelMemoryResponse)
+def get_model_memory(current_subject: str = Depends(get_current_subject)) -> ModelMemoryResponse:
+    return _model_memory_response()
+
+
+@router.put("/model-memory", response_model = ModelMemoryResponse)
+def update_model_memory(
+    payload: ModelMemoryPayload, current_subject: str = Depends(get_current_subject)
+) -> ModelMemoryResponse:
+    try:
+        set_model_memory_settings(
+            keep_resident = payload.keep_resident,
+            no_ram_reserve = payload.no_ram_reserve,
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid model memory setting."),
+            event = "settings.update_model_memory_failed",
+            log = logger,
+        ) from exc
+    return _model_memory_response()
+
+
 class CodingAgentsResponse(BaseModel):
     # All agents `unsloth start` supports, in the CLI's declared order.
     agents: tuple[str, ...] = CODING_AGENTS
@@ -375,8 +512,9 @@ def update_openai_auto_switch(
             log = logger,
         ) from exc
     idle_unload_active = get_auto_unload_idle_seconds() > 0
-    if not keep_kv or not idle_unload_active:
-        # Keep-KV off or idle unload disabled: drop already-saved chat context too.
+    if not keep_kv or not idle_unload_is_configured():
+        # Drop already-saved chat context too. Configured, not effective: residency
+        # zeroes the TTL, and that must not discard KV the user still wants.
         from core.inference.llama_keepwarm import purge_kv_resume
         purge_kv_resume()
     return OpenAIAutoSwitchResponse(

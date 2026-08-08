@@ -15,6 +15,8 @@ export type NativeModelDropState =
 interface NativeModelDropOptions {
   enabled?: boolean;
   attachmentScope?: string;
+  // Where a drop on this window belongs, for reporting a failure back to it.
+  attachmentTargetKey?: string;
   nativePathLeasesSupported: boolean;
   hasActiveModel: boolean;
   isModelLoading: boolean;
@@ -222,8 +224,9 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             if (registered.images.length > 0) {
               await attachOptions.onAttachImages?.(registered.images);
             }
-            if (registered.imagesFailed > 0) {
-              store.failImageDropRegistration();
+            const failureKey = attachOptions.attachmentTargetKey;
+            if (registered.imagesFailed > 0 && failureKey) {
+              store.failImageDropRegistration(failureKey);
             }
             if (registered.docsFailed + registered.imagesFailed > 0) {
               toast.error("Could not attach dropped files", {
@@ -231,7 +234,10 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
               });
             }
           } catch (error) {
-            if (needsImages) store.failImageDropRegistration();
+            const failureKey = currentOptions.attachmentTargetKey;
+            if (needsImages && failureKey) {
+              store.failImageDropRegistration(failureKey);
+            }
             toast.error("Could not attach dropped files", {
               description: error instanceof Error ? error.message : String(error),
             });

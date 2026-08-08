@@ -985,7 +985,7 @@ def test_admission_keepalives_do_not_spend_the_first_output_budget(monkeypatch):
     _install_fake_client(monkeypatch, [_QueuedThenServedStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 5.0) == ("report", "", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 5.0) == ("report", "", "stop", None)
 
 
 def _comment_only_stream(comment: str):
@@ -1052,7 +1052,7 @@ def test_the_queue_wait_is_not_charged_to_the_model_budget(monkeypatch):
     _install_fake_client(monkeypatch, [_QueuedThenAdmitted()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 10.0) == ("report", "", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 10.0) == ("report", "", "stop", None)
 
 
 def test_the_budget_starts_when_admission_ends(monkeypatch):
@@ -1528,7 +1528,7 @@ def test_first_output_deadline_disarms_once_output_starts(monkeypatch):
     _install_fake_client(monkeypatch, [_LongGenerationStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    report, _reasoning, finish_reason = _run_stream(supervisor, timeout_seconds = 30.0)
+    report, _reasoning, finish_reason, _usage = _run_stream(supervisor, timeout_seconds = 30.0)
     assert finish_reason == "stop"
     assert report.startswith("start w0 w1")
     assert report.endswith("w11")
@@ -1562,7 +1562,7 @@ def test_reasoning_only_prefix_disarms_the_first_output_deadline(monkeypatch):
     _install_fake_client(monkeypatch, [_LongThinkStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    report, reasoning, _finish = _run_stream(supervisor, timeout_seconds = 30.0)
+    report, reasoning, _finish, _usage = _run_stream(supervisor, timeout_seconds = 30.0)
     assert report == "answer"
     assert reasoning.startswith("t0 ")
 

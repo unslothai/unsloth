@@ -2169,7 +2169,9 @@ const Composer: FC<{
   const cancelQueuedSendRef = useRef<(() => void) | null>(null);
   // Which composer is mounted, for deciding where a drain puts work back.
   const composerIdentityRef = useRef("");
-  const imageDropFailures = useNativeIntentStore((s) => s.imageDropFailures);
+  const imageDropFailures = useNativeIntentStore(
+    (s) => (nativeAttachmentTargetKey ? s.imageDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
+  );
   const seenImageDropFailuresRef = useRef(imageDropFailures);
   // Registration fails before an intent exists, so the drain never sees it.
   // Cancel here or the parked send goes out with the text alone.
@@ -2224,12 +2226,17 @@ const Composer: FC<{
                 description:
                   error instanceof Error ? error.message : String(error),
               });
-              cancelQueuedSendRef.current?.();
+              // Only the chat that owns this drop: the composer is reused
+              // across chat switches, so a late failure must not cancel a
+              // send parked by whoever is on screen now.
+              if (!disposed && nativeAttachmentTargetKeyRef.current === targetKey) {
+                cancelQueuedSendRef.current?.();
+              }
               const remaining = intents.slice(index + 1);
               if (remaining.length > 0) {
                 useNativeIntentStore
                   .getState()
-                  .addImageAttachments(targetKey, remaining);
+                  .addImageAttachments(requeueKey(), remaining);
               }
               return;
             }

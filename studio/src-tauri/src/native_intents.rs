@@ -562,7 +562,26 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
             .open(path)
             .map_err(|_| unavailable())
     }
-    #[cfg(not(unix))]
+    // The Windows analogue: open the reparse point itself rather than its
+    // target, then refuse it. Literals because windows-sys is not built with
+    // Win32_Storage_FileSystem here, and both are stable std otherwise.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|_| unavailable())?;
+        let opened = file.metadata().map_err(|_| unavailable())?;
+        if opened.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !opened.is_file() {
+            return Err(unavailable());
+        }
+        Ok(file)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         fs::File::open(path).map_err(|_| unavailable())
     }
@@ -609,15 +628,23 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     })
 }
 
+// Async, because a sync command runs on the main thread and this one stats,
+// opens and base64s up to 20 MiB per dropped image. Only the token lookup stays
+// here: State is not 'static, and validation itself hits the filesystem.
 #[tauri::command]
-pub fn read_native_attachment_file(
+pub async fn read_native_attachment_file(
     window: WebviewWindow,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
 ) -> Result<NativeAttachmentFile, String> {
     ensure_main_window(&window)?;
-    let entry = state.path_for_operation(&token, NativePathOperation::Attach)?;
-    read_attachment_payload(&entry)
+    let entry = state.entry_for_operation(&token, NativePathOperation::Attach)?;
+    tokio::task::spawn_blocking(move || {
+        validate_entry_path(&entry, NativePathOperation::Attach)?;
+        read_attachment_payload(&entry)
+    })
+    .await
+    .map_err(|_| "Image attachment reader stopped unexpectedly.".to_string())?
 }
 
 #[cfg(test)]
