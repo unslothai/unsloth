@@ -3492,6 +3492,53 @@ def _filter_requirements(req: Path, skip: set[str]) -> Path:
     return Path(tmp.name)
 
 
+# The two names install.sh / install.ps1 install inline, before handing over to
+# setup.sh / setup.ps1. Everything else base.txt lists is theirs to apply.
+_CORE_BASE_PACKAGES = frozenset({"unsloth", "unsloth-zoo"})
+
+
+def _requirement_project_name(line: str) -> str:
+    """Project name of a single requirements line ("" for blanks/comments/flags).
+
+    Deliberately stricter than _filter_requirements' startswith() match, which
+    would also swallow a future `unsloth-<something>` pin.
+    """
+    stripped = line.split("#", 1)[0].strip()
+    if not stripped or stripped.startswith("-"):
+        return ""
+    # Ends at the first extras bracket, version specifier, direct URL (`@`) or
+    # environment marker (`;`). PEP 508 allows all of them with no surrounding
+    # whitespace, so splitting on whitespace alone is not enough.
+    name = re.split(r"[\[\s(<>=!~;@]", stripped, maxsplit = 1)[0]
+    return name.strip().lower().replace("_", "-")
+
+
+def _requirements_beyond(req: Path, names: frozenset[str]) -> Path | None:
+    """Temp copy of `req` keeping only the entries whose project is not in `names`.
+
+    None when nothing is left, so the caller skips the install rather than
+    handing pip a file with no requirements in it.
+    """
+    kept = [
+        line
+        for line in req.read_text(encoding = "utf-8").splitlines(keepends = True)
+        if _requirement_project_name(line) not in names
+    ]
+    # Comments and blanks do not count as something to install; a `-r`/`-c`
+    # include does, so it is not silently dropped if base.txt ever grows one.
+    if not any(line.split("#", 1)[0].strip() for line in kept):
+        return None
+    tmp = tempfile.NamedTemporaryFile(
+        mode = "w",
+        suffix = ".txt",
+        delete = False,
+        encoding = "utf-8",
+    )
+    tmp.writelines(kept)
+    tmp.close()
+    return Path(tmp.name)
+
+
 def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
     """Translate pip flags to their uv equivalents."""
     translated: list[str] = []
@@ -3875,7 +3922,31 @@ def install_python_stack() -> int:
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
-        pass
+        # SKIP_STUDIO_BASE=1 means "install.sh / install.ps1 already installed
+        # unsloth + unsloth-zoo inline, with their own version floors and torch
+        # overrides -- do not repeat that". It used to be the same thing as
+        # "skip base.txt", because those two names were the file's entire
+        # content. They are not the same thing: anything else pinned in base.txt
+        # (an exact revision Studio needs) reached no install.sh / install.ps1
+        # install at all, on any platform, because neither installer reads the
+        # file. It only landed later, if the user ran `unsloth studio update`.
+        # So skip the two core packages and apply whatever else base.txt asks
+        # for. No-torch mode keeps its own list (no-torch-runtime.txt, which the
+        # installers do apply inline), so leave that mode alone.
+        extra_base = (
+            None if NO_TORCH
+            else _requirements_beyond(REQ_ROOT / "base.txt", _CORE_BASE_PACKAGES)
+        )
+        if extra_base is not None:
+            try:
+                _step(_LABEL, "applying pinned base requirements")
+                pip_install(
+                    "Applying pinned base requirements",
+                    "--no-cache-dir",
+                    req = extra_base,
+                )
+            finally:
+                extra_base.unlink(missing_ok = True)
     elif NO_TORCH:
         # No-torch update path: install unsloth + unsloth-zoo, then runtime deps,
         # both with --no-deps (PyPI metadata declares torch a hard dep; avoid it).
