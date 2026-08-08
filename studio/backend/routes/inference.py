@@ -24,6 +24,7 @@ from loggers import get_logger
 import asyncio
 import threading
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 
@@ -146,6 +147,11 @@ def _install_httpcore_asyncgen_silencer() -> None:
 
 
 _install_httpcore_asyncgen_silencer()
+
+
+# Status polls can start a cold subprocess probe or wait on a release lookup.  Keep
+# that bounded work out of the default executor, which drives local token streaming.
+_STATUS_PROBE_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inference-status")
 
 
 def _loaded_chat_template() -> Optional[str]:
@@ -4201,12 +4207,17 @@ def disable_openai_auto_switch_for_request(scope) -> None:
 def _automatic_model_load_may_run() -> bool:
     """True when a request can trigger an automatic load: either resolver-based
     auto-switch is on, or a standalone idle TTL can reload an idle-freed model. The
-    validate-before-switch guards key off this so an invalid request never loads."""
+    validate-before-switch guards key off this so an invalid request never loads.
+
+    Reads the configured setting, not the effective TTL: Model Memory residency
+    zeroes the latter, and a model the idle loop freed BEFORE residency was
+    enabled still has to be reloadable. Residency stops unloads, not reloads.
+    """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
-        get_auto_unload_idle_seconds,
+        idle_unload_is_configured,
     )
-    return get_openai_auto_switch_enabled() or get_auto_unload_idle_seconds() > 0
+    return get_openai_auto_switch_enabled() or idle_unload_is_configured()
 
 
 def _no_model_loaded_detail(base: str) -> str:
@@ -4739,8 +4750,8 @@ async def _maybe_auto_switch_model(
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
-        get_auto_unload_idle_seconds,
         get_model_override,
+        idle_unload_is_configured,
         model_override_load_kwargs,
     )
     from core.inference.local_model_resolver import resolve_local_gguf
@@ -4763,7 +4774,9 @@ async def _maybe_auto_switch_model(
     # standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off), so a model the idle
     # loop freed is restored on the next request. The resolver-based switch still
     # requires the auto-switch toggle.
-    if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
+    # Configured, not effective: residency zeroes the TTL, and the stash still
+    # has to be restorable after it is turned on.
+    if not auto_switch_on and not idle_unload_is_configured():
         # No switching to do, but a named model must still not be answered by another.
         await _reject_unservable_model(requested_model, fastapi_request)
         return
@@ -8317,6 +8330,30 @@ async def generate_stream(
     return _sse_streaming_response(stream())
 
 
+def _probe_llama_cpp_status(llama_backend) -> tuple[bool, dict]:
+    """Read llama.cpp capabilities and release freshness without raising."""
+    try:
+        binary = type(llama_backend)._find_llama_server_binary()
+        capabilities = type(llama_backend).probe_server_capabilities(binary)
+        # Treat a discovered but inconclusive binary as MTP-compatible.
+        supports_mtp = bool(
+            capabilities.get("supports_mtp", False)
+            or (
+                capabilities.get("found", False)
+                and capabilities.get("mtp_probe_inconclusive", False)
+            )
+        )
+    except Exception:
+        binary = None
+        supports_mtp = False  # no usable binary: MTP genuinely unavailable
+    try:
+        from utils.llama_cpp_freshness import check_prebuilt_freshness
+        freshness = check_prebuilt_freshness(binary)
+    except Exception:
+        freshness = {}
+    return supports_mtp, freshness
+
+
 @router.get("/status", response_model = InferenceStatusResponse)
 async def get_status(current_subject: str = Depends(get_current_subject)):
     """
@@ -8326,24 +8363,11 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
     try:
         llama_backend = get_llama_cpp_backend()
 
-        # MTP probe + freshness check (both cached); drive the UI banner.
-        try:
-            _bin = type(llama_backend)._find_llama_server_binary()
-            _caps = type(llama_backend).probe_server_capabilities(_bin)
-            # Fail open on inconclusive probes: False means a definitive
-            # "binary lacks MTP" to API consumers.
-            _supports_mtp = bool(
-                _caps.get("supports_mtp", False)
-                or (_caps.get("found", False) and _caps.get("mtp_probe_inconclusive", False))
-            )
-        except Exception:
-            _bin = None
-            _supports_mtp = False  # no usable binary: MTP genuinely unavailable
-        try:
-            from utils.llama_cpp_freshness import check_prebuilt_freshness
-            _freshness = check_prebuilt_freshness(_bin)
-        except Exception:
-            _freshness = {}
+        # The cold subprocess and GitHub probes must not block the event loop or
+        # consume the default executor used by local token streaming.
+        _supports_mtp, _freshness = await asyncio.get_running_loop().run_in_executor(
+            _STATUS_PROBE_EXECUTOR, _probe_llama_cpp_status, llama_backend
+        )
         _stale = bool(_freshness.get("stale"))
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")
@@ -13174,8 +13198,8 @@ async def serve_sandbox_file(
     """
     Serve image files created by Python tool execution.
 
-    Accepts auth via Authorization header OR ?token= query param (needed
-    because <img src> cannot send custom headers).
+    Accepts auth via an Authorization header or a query token. Studio uses an
+    authenticated fetch and object URL; query auth remains for older clients.
     """
     from fastapi.responses import FileResponse
 
