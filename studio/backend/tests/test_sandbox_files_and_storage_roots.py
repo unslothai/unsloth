@@ -9,6 +9,7 @@ compiled cache landed in the launcher's CWD, and a deleted chat left its folder
 behind. Verified on Windows, macOS and Linux.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -1051,7 +1052,8 @@ def test_a_collision_is_not_a_retryable_failure(tmp_path, monkeypatch):
 def test_deleting_a_symlinked_session_spares_the_chat_it_points_at(tmp_path, monkeypatch):
     """realpath containment passes for a sibling, so a link left in the sandbox
     could take another chat's files."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
 
     from core.inference import tools
 
@@ -1924,6 +1926,65 @@ def test_a_pre_existing_folder_keeps_its_permissions(tmp_path, monkeypatch):
     # Ours is still tightened.
     mine = Path(tools.get_sandbox_workdir("__LOCALID_mine33"))
     assert oct(mine.stat().st_mode)[-3:] == "700"
+
+
+def test_a_link_in_a_shared_root_is_left_alone_by_a_delete(tmp_path, monkeypatch):
+    """A chat id can name an entry the user put there, and a delete is not a
+    licence to remove it."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (root / "notes").symlink_to(elsewhere, target_is_directory = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    assert tools.remove_session_sandbox("notes", delete_files = True) is False
+    assert (root / "notes").is_symlink(), "an entry we did not create was unlinked"
+    assert elsewhere.is_dir()
+
+
+def test_a_case_variant_chat_gets_its_own_directory(tmp_path, monkeypatch):
+    """One name on Windows and on a default macOS volume: sharing it means
+    either chat's delete takes the other's files."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    first = Path(tools.get_sandbox_workdir("CaseOwn"))
+    (first / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    assert (first / tools._SANDBOX_MARKER).read_text(encoding = "utf-8") == "CaseOwn"
+
+    # What the other id sees on a case-insensitive volume: this directory, made
+    # by someone else. On a case-sensitive one it is a separate name already.
+    root = first.parent
+    collision = root / "caseown"
+    if not collision.exists():
+        collision.mkdir()
+        (collision / tools._SANDBOX_MARKER).write_text("CaseOwn", encoding = "utf-8")
+        (collision / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    second = Path(tools._session_dir(str(root), "caseown"))
+    assert second.name == "caseown-" + hashlib.sha256(b"caseown").hexdigest()[:8]
+
+    # And that id cannot delete the other chat's files.
+    assert tools.remove_session_sandbox("caseown", delete_files = True) is False
+    assert (collision / "report.csv").is_file()
+    assert tools.remove_session_sandbox("CaseOwn", delete_files = True) is True
+
+
+def test_the_delete_switch_does_not_promise_project_files():
+    """A chat moved back to Recents wrote its earlier files into the project
+    workspace, which chat deletion does not touch."""
+    sidebar = (
+        Path(__file__).resolve().parents[2]
+        / "frontend" / "src" / "components" / "app-sidebar.tsx"
+    ).read_text(encoding = "utf-8")
+    assert "This chat's own sandbox folder is removed from disk." in sidebar
+    assert "Anything this chat's tools wrote is removed from disk." not in sidebar
 
 
 if __name__ == "__main__":

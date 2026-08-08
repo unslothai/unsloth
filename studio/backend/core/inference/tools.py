@@ -8,6 +8,7 @@ import ast
 import codecs
 import fnmatch
 import functools
+import hashlib
 import http.client
 import os
 import signal
@@ -7195,12 +7196,39 @@ def _get_project_workdir(session_id: str) -> str | None:
 _SANDBOX_MARKER = ".unsloth_sandbox"
 
 
-def _mark_sandbox(workdir: str) -> None:
+def _mark_sandbox(workdir: str, session_id: str) -> None:
     try:
-        with open(os.path.join(workdir, _SANDBOX_MARKER), "a", encoding = "utf-8"):
-            pass
+        with open(os.path.join(workdir, _SANDBOX_MARKER), "w", encoding = "utf-8") as fh:
+            fh.write(session_id)
     except OSError:
         pass
+
+
+def _marker_owner(workdir: str) -> "str | None":
+    """The id this directory was created for, when it says."""
+    try:
+        with open(os.path.join(workdir, _SANDBOX_MARKER), encoding = "utf-8") as fh:
+            return fh.read(256).strip() or None
+    except OSError:
+        return None
+
+
+def _session_dir(root: str, session_id: str) -> str:
+    """The directory for this exact id.
+
+    Two ids differing only in case are one name on Windows and on a default
+    macOS volume. The marker says which id made the directory, and anyone else
+    gets one of their own rather than sharing files that either chat's deletion
+    would then remove.
+    """
+    plain = os.path.join(root, session_id)
+    if os.path.islink(plain):
+        return plain  # never read a marker through a link; containment decides
+    owner = _marker_owner(plain)
+    if owner is None or owner == session_id:
+        return plain
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:8]
+    return f"{plain}-{digest}"
 
 
 def _root_is_ours() -> bool:
@@ -7360,7 +7388,7 @@ def _get_workdir(session_id: str | None = None) -> str:
         if project_workdir:
             workdir = project_workdir
         elif session_id and _usable_session_id(session_id):
-            workdir = os.path.join(sandbox_root_path, session_id)
+            workdir = _session_dir(sandbox_root_path, session_id)
             if not _contained_in_root(workdir, sandbox_root_path):
                 workdir = _sandbox_fallback(sandbox_root_path, "_invalid")
         elif session_id:
@@ -7373,7 +7401,7 @@ def _get_workdir(session_id: str | None = None) -> str:
         created = not os.path.isdir(workdir)
         os.makedirs(workdir, exist_ok = True)
         if created and not project_workdir:
-            _mark_sandbox(workdir)
+            _mark_sandbox(workdir, session_id or "")
         # Only a root we just created: the override can name a shared
         # directory, and locking that down would cut off everything else.
         if not root_existed or not (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip():
@@ -7417,7 +7445,7 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         return _sandbox_fallback(root, "_default")
     if not _usable_session_id(session_id):
         return _sandbox_fallback(root, "_invalid")
-    workdir = os.path.join(root, session_id)
+    workdir = _session_dir(root, session_id)
     # Same containment _get_workdir applies: a session entry symlinked out of
     # the root would otherwise serve whatever it points at.
     if not _contained_in_root(workdir, root):
@@ -7515,10 +7543,13 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
 
 def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     root = os.path.realpath(sandbox_root())
-    entry = os.path.join(root, session_id)
+    entry = _session_dir(root, session_id)
     # The entry itself, not what it resolves to: a symlink to a sibling passes
-    # the check below and would take that chat's files. Drop the link.
+    # the check below and would take that chat's files. Drop the link, but only
+    # at our own root: in a shared one it is the user's entry, not a sandbox.
     if os.path.islink(entry):
+        if not _root_is_ours():
+            return False
         try:
             os.unlink(entry)
             return True
@@ -7528,6 +7559,11 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     if os.path.dirname(target) != root or not os.path.isdir(target):  # contained
         return False
     if not _sandbox_is_ours(target):
+        return False
+    # Made for a different id: the same directory on a case-insensitive volume,
+    # and those files are the other chat's.
+    owner = _marker_owner(target)
+    if owner is not None and owner != session_id:
         return False
     _workdirs.pop(session_id, None)
     try:

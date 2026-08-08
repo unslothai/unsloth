@@ -2816,7 +2816,7 @@ export function AppSidebar() {
                 {confirmingDelete?.kind === "project"
                   ? (confirmingDelete.project.rootPath ??
                     "The project workspace folder will be removed from disk.")
-                  : "Anything this chat's tools wrote is removed from disk. Off keeps the folder."}
+                  : "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace."}
               </span>
             </label>
             <Switch
