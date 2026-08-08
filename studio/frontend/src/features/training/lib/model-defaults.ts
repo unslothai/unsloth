@@ -9,7 +9,10 @@ import type { ModelDefaultsPatch } from "./model-defaults-edit-policy";
 function toNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
-    const parsed = Number(value);
+    // Do not coerce blank strings to 0.
+    const trimmed = value.trim();
+    if (trimmed === "") return undefined;
+    const parsed = Number(trimmed);
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
@@ -38,6 +41,8 @@ function toStringArray(value: unknown): string[] | undefined {
 function toGradientCheckpointing(
   value: unknown,
 ): TrainingConfigState["gradientCheckpointing"] | undefined {
+  // Shipped YAML may decode this value as a boolean.
+  if (typeof value === "boolean") return value ? "true" : "none";
   if (value === "none" || value === "true" || value === "unsloth" || value === "mlx") {
     // On Mac, map "unsloth" → "mlx" since Unsloth GC is GPU-only
     if (usePlatformStore.getState().deviceType === "mac" && value === "unsloth") {
@@ -66,6 +71,19 @@ export function mapBackendModelConfigToTrainingPatch(
 
   const learningRate = toNumber(training?.learning_rate);
   if (learningRate !== undefined) patch.learningRate = learningRate;
+
+  // Preserve explicit null ("derive it") versus an absent or invalid value.
+  if (Object.hasOwn(training ?? {}, "embedding_learning_rate")) {
+    const raw = training?.embedding_learning_rate;
+    if (raw === null) {
+      patch.embeddingLearningRate = null;
+    } else {
+      const embeddingLearningRate = toNumber(raw);
+      if (embeddingLearningRate !== undefined) {
+        patch.embeddingLearningRate = embeddingLearningRate;
+      }
+    }
+  }
 
   const optim = toStringValue(training?.optim);
   if (optim !== undefined) patch.optimizerType = optim;
