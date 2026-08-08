@@ -1310,7 +1310,7 @@ def test_the_component_installer_leads_its_own_group():
     from utils.prebuilt import update_flow
 
     source = inspect.getsource(update_flow.stream_installer)
-    assert "start_new_session = (os.name == \"posix\")" in source
+    assert 'start_new_session = (os.name == "posix")' in source
     spawn = source.index("subprocess.Popen(")
     assert source.index("start_new_session", spawn) < source.index("adopt_pid(proc.pid)", spawn)
 
