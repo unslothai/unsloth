@@ -545,9 +545,14 @@ fn write_private_file(path: &Path, body: &[u8]) -> Result<(), String> {
         return Ok(());
     }
 
+    // Flush here too, so a crash right after publishing cannot leave a
+    // zero-length id behind. Permissions come from the user profile ACL.
     #[cfg(not(unix))]
     {
-        std::fs::write(path, body).map_err(|e| e.to_string())
+        let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+        file.write_all(body).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
@@ -1670,6 +1675,8 @@ mod tests {
         assert_eq!(first_id, persisted);
         assert_eq!(second_id, persisted);
 
+        // Windows cannot delete a file that still has an open handle.
+        drop(contender);
         let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
     }
 
@@ -1723,8 +1730,13 @@ mod tests {
         for id in &ids {
             assert_eq!(id, &persisted);
         }
-        let entries = std::fs::read_dir(path.parent().unwrap()).unwrap().count();
-        assert_eq!(entries, 2);
+        // Filter by name so an unrelated file in share/ cannot fail this test.
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "studio_install_id" && name != STUDIO_INSTALL_ID_LOCK_FILE)
+            .collect();
+        assert!(leftovers.is_empty(), "unexpected leftovers: {leftovers:?}");
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
     }
