@@ -4,6 +4,7 @@
 """Dictation lifecycle goes through one place, shared with the orchestrator."""
 
 import pytest
+import threading
 
 from core.inference import stt_registry
 
@@ -23,12 +24,14 @@ class _Sidecar:
         self._fail = fail
         self.unloaded = False
         self.loaded_with = None
+        self.load_cancel_event = None
 
     def is_loading(self):
         return self._loading
 
-    def load(self, model):
+    def load(self, model, request_cancel_event = None):
         self.loaded_with = model
+        self.load_cancel_event = request_cancel_event
 
     def unload(self):
         if self._fail:
@@ -54,10 +57,12 @@ def test_unload_attempts_every_engine_even_after_one_raises(monkeypatch):
 
 def test_load_delegates_to_the_engines_sidecar(monkeypatch):
     sidecar = _Sidecar("mtmd")
+    cancel_event = threading.Event()
     monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecar)
 
-    stt_registry.load("qwen3-asr-0.6b", "mtmd")
+    stt_registry.load("qwen3-asr-0.6b", "mtmd", cancel_event)
     assert sidecar.loaded_with == "qwen3-asr-0.6b"
+    assert sidecar.load_cancel_event is cancel_event
 
 
 def test_resident_reports_whichever_engine_holds_a_model(monkeypatch):

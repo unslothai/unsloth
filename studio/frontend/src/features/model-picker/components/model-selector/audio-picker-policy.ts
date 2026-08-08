@@ -199,6 +199,17 @@ export function taskForMediaPick(
   return pipelineTag ?? inventoryTask ?? null;
 }
 
+/** Filesystem checkpoints cannot be served by the STT sidecars yet. Keep
+ * cached Hub snapshots and curated artifacts visible, but do not advertise
+ * local-directory rows that would send an absolute path to the Hub-only API. */
+export function filesystemRowsSupportedForTask(
+  pickerTask: string | readonly string[] | null | undefined,
+): boolean {
+  return Array.isArray(pickerTask)
+    ? !pickerTask.includes("automatic-speech-recognition")
+    : pickerTask !== "automatic-speech-recognition";
+}
+
 /** GGUF variants are selected after the Hub row, so carry its task through the
  * expander instead of losing routing information at the quant click. */
 export function withPipelineTag(

@@ -218,13 +218,18 @@ export async function validateSttModel(
 }
 
 /** Load a selected model that is already downloaded. */
-export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
+export function loadSttModel(
+  model: string,
+  engine?: SttEngine,
+  signal?: AbortSignal,
+): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
   return queueSttLifecycle(async () => {
     const response = await authFetch("/api/inference/audio/stt/load", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, engine: resolvedEngine }),
+      signal,
     });
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
@@ -234,15 +239,6 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
       throw sttRequestError(response.status, detail);
     }
   });
-}
-
-/** Cancel an engine's pending model load without touching its downloads. */
-export async function cancelSttLoad(engine: SttEngine): Promise<void> {
-  const response = await authFetch(
-    `/api/inference/audio/stt/load/cancel?engine=${encodeURIComponent(engine)}`,
-    { method: "POST" },
-  );
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
 /** Start a background download of a dictation model. */

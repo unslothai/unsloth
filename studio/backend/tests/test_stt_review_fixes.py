@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import threading
 from pathlib import Path
@@ -56,20 +55,11 @@ def test_curated_gguf_dictation_repos_are_hidden():
     assert is_curated_stt_repo_id("unslothai/whisper-large-v3-GGUF-finetune") is False
 
 
-def test_stt_load_cancel_interrupts_only_the_selected_engine(monkeypatch):
+def test_stt_load_has_no_engine_wide_cancel_endpoint():
     import routes.inference as inference_route
 
-    class _Sidecar:
-        def cancel_pending_load(self):
-            return True
-
-    sidecar = _Sidecar()
-    monkeypatch.setattr(inference_route, "_resolve_serving_stt_engine", lambda engine: engine)
-    monkeypatch.setattr(inference_route, "_stt_sidecar_for", lambda engine: sidecar)
-    response = asyncio.run(
-        inference_route.stt_load_cancel(engine = "transformers", current_subject = "tester")
-    )
-    assert json.loads(response.body) == {"cancelled": True}
+    assert not hasattr(inference_route, "stt_load_cancel")
+    assert all(route.path != "/audio/stt/load/cancel" for route in inference_route.router.routes)
 
 
 # 2. GGUF status accessors are lock-free ----------------------------------------

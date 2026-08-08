@@ -1513,10 +1513,15 @@ class InferenceOrchestrator:
     # the same, so one object knows everything that is resident and Voice
     # settings and Model Hub cannot report different things about one model.
 
-    def load_stt_model(self, model: Optional[str], engine: str) -> None:
+    def load_stt_model(
+        self,
+        model: Optional[str],
+        engine: str,
+        request_cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         """Make a dictation model resident on its sidecar."""
         from core.inference import stt_registry
-        stt_registry.load(model, engine)
+        stt_registry.load(model, engine, request_cancel_event)
 
     def unload_stt_model(self, engines: Optional[Sequence[str]] = None) -> list:
         """Release dictation models (all engines by default); returns refusals."""

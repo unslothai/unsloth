@@ -9327,7 +9327,11 @@ async def stt_download_cancel(
 
 
 @studio_router.post("/audio/stt/load")
-async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_current_subject)):
+async def stt_load(
+    payload: SttLoadRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
     """Load the selected STT model after the user starts local dictation."""
     from core.inference.stt_sidecar import (
         SttLoadCancelledError,
@@ -9335,6 +9339,7 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
         SttModelCompatibilityError,
         SttModelIdError,
         SttModelNotDownloadedError,
+        SttTranscriptionCancelledError,
         SttUnavailableError,
         get_stt_sidecar,
     )
@@ -9342,13 +9347,17 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
     engine = _resolve_serving_stt_engine(payload.engine)
     sidecar = _stt_sidecar_for(engine)
     load_stt, _ = _stt_lifecycle()
+    cancel_event = threading.Event()
+    disconnect_watcher = asyncio.create_task(
+        _await_stt_disconnect_then_cancel(request, sidecar, cancel_event)
+    )
     try:
-        await asyncio.to_thread(load_stt, payload.model, engine)
+        await asyncio.to_thread(load_stt, payload.model, engine, cancel_event)
     except SttModelNotDownloadedError as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttUnavailableError as e:
         raise HTTPException(status_code = 501, detail = str(e))
-    except SttLoadCancelledError as e:
+    except (SttLoadCancelledError, SttTranscriptionCancelledError) as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttModelBusyError as e:
         raise HTTPException(status_code = 409, detail = str(e))
@@ -9359,18 +9368,9 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
     except Exception as e:
         logger.error(f"STT load error: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    finally:
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
     return JSONResponse(content = {"loaded_model": sidecar.loaded_model, "device": sidecar.device})
-
-
-@studio_router.post("/audio/stt/load/cancel")
-async def stt_load_cancel(
-    engine: Optional[str] = None, current_subject: str = Depends(get_current_subject)
-):
-    """Cancel an in-flight STT model load without cancelling its download."""
-    resolved_engine = _resolve_serving_stt_engine(engine)
-    sidecar = _stt_sidecar_for(resolved_engine)
-    cancelled = await asyncio.to_thread(sidecar.cancel_pending_load)
-    return JSONResponse(content = {"cancelled": cancelled})
 
 
 @studio_router.post("/audio/stt/validate")

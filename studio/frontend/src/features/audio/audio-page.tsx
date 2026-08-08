@@ -48,7 +48,6 @@ import {
 } from "@/features/chat";
 import {
   SttModelNotDownloadedError,
-  cancelSttLoad,
   fetchSttStatus,
   loadSttModel,
   startSttDownload,
@@ -298,6 +297,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const sttStatusRefreshGeneration = useRef(0);
   const sttLoadGeneration = useRef(0);
   const sttLoadingGeneration = useRef<number | null>(null);
+  const sttLoadAbort = useRef<AbortController | null>(null);
   const deferredSttLoad = useRef<{
     repoId: string;
     sidecarKey: string;
@@ -723,7 +723,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       engine: "transformers" | "gguf" | "mtmd",
     ) => {
       const generation = ++sttLoadGeneration.current;
+      const controller = new AbortController();
       sttLoadingGeneration.current = generation;
+      sttLoadAbort.current = controller;
       const isCurrent = () =>
         generation === sttLoadGeneration.current &&
         activeRef.current &&
@@ -733,7 +735,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       const toastId = toast.loading(`Preparing ${sidecarKey}…`);
       try {
         try {
-          await loadSttModel(sidecarKey, engine);
+          await loadSttModel(sidecarKey, engine, controller.signal);
         } catch (error) {
           if (!(error instanceof SttModelNotDownloadedError)) throw error;
           if (!isCurrent()) return;
@@ -776,7 +778,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           }
           if (!isCurrent()) return;
           toast.loading(`Loading ${sidecarKey}…`, { id: toastId });
-          await loadSttModel(sidecarKey, engine);
+          await loadSttModel(sidecarKey, engine, controller.signal);
         }
         if (isCurrent())
           toast.success("Transcription model ready", { id: toastId });
@@ -791,12 +793,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         }
       } finally {
         if (sttLoadingGeneration.current === generation) {
-          sttLoadingGeneration.current = null;
-          setBusy(null);
-          void refreshSttStatus();
+          await refreshSttStatus();
+          if (sttLoadingGeneration.current === generation) {
+            sttLoadingGeneration.current = null;
+            setBusy(null);
+          }
         } else {
           toast.dismiss(toastId);
         }
+        if (sttLoadAbort.current === controller) sttLoadAbort.current = null;
       }
     },
     [refreshSttStatus],
@@ -833,10 +838,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           : null;
         sttLoadGeneration.current += 1;
         sttLoadingGeneration.current = null;
+        sttLoadAbort.current?.abort();
+        sttLoadAbort.current = null;
         busyRef.current = null;
         setBusy(null);
-        const engine = repoId ? sttEngineForRepoId(repoId) : null;
-        if (engine) void cancelSttLoad(engine).catch(() => {});
       }
       return;
     }
@@ -1051,6 +1056,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         sttLoadedModel !== sttSidecarKeyFor(selected) ||
         sttLoadedEngine !== selectedEngine
       ) {
+        sttStatusRefreshGeneration.current += 1;
         deferredSttLoad.current = null;
         selectedSttRepoRef.current = null;
         sttLoadGeneration.current += 1;

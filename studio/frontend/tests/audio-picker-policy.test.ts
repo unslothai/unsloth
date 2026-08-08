@@ -9,6 +9,7 @@ import {
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
+  filesystemRowsSupportedForTask,
   macTtsHubRowIsRunnable,
   shouldDiscoverCommunityModels,
   shouldRecommendCommunityModels,
@@ -16,6 +17,16 @@ import {
   taskForMediaPick,
   withPipelineTag,
 } from "../src/features/model-picker/components/model-selector/audio-picker-policy.ts";
+
+test("filesystem rows stay out of Transcribe while cached Hub ASR remains supported", () => {
+  assert.equal(
+    filesystemRowsSupportedForTask(["automatic-speech-recognition"]),
+    false,
+  );
+  assert.equal(filesystemRowsSupportedForTask("automatic-speech-recognition"), false);
+  assert.equal(filesystemRowsSupportedForTask(["text-to-speech"]), true);
+  assert.equal(filesystemRowsSupportedForTask(undefined), true);
+});
 
 test("curated downloaded TTS artifacts override generic GGUF task metadata only in Speak", () => {
   assert.equal(
@@ -171,6 +182,21 @@ test("local Audio rows copy the curated task onto their clickable path alias", (
     pickerSource,
     /const exactAudioArtifact = m\.model_id[\s\S]*artifactForRepoId\(m\.model_id, AUDIO_CATALOG\)[\s\S]*put\(m\.id, m\.task, exactAudioArtifact\)/,
   );
+});
+
+test("every filesystem inventory applies the runtime task gate", () => {
+  for (const inventory of [
+    "lmStudioModels",
+    "localDirModels",
+    "customFolderModels",
+  ]) {
+    assert.match(
+      pickerSource,
+      new RegExp(
+        `${inventory}\\.filter\\([\\s\\S]*?filesystemRowsSupportedForTask\\(task\\)`,
+      ),
+    );
+  }
 });
 
 test("curated task artifacts remain in All while explicit formats still filter", () => {

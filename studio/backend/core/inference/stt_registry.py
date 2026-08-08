@@ -12,6 +12,7 @@ Model Hub cannot report different things about the same model.
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Optional, Sequence
 
 from loggers import get_logger
@@ -36,9 +37,13 @@ def sidecar_for(engine: str) -> Any:
     return get_stt_sidecar()
 
 
-def load(model: Optional[str], engine: str) -> None:
+def load(
+    model: Optional[str],
+    engine: str,
+    request_cancel_event: Optional[threading.Event] = None,
+) -> None:
     """Make ``model`` resident on ``engine``. Raises what the sidecar raises."""
-    sidecar_for(engine).load(model)
+    sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)
 
 
 def unload(engines: Optional[Sequence[str]] = None) -> list[str]:

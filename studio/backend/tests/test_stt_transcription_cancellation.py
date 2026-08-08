@@ -11,7 +11,54 @@ from fastapi import HTTPException
 
 import routes.inference as inference_route
 from core.inference.stt_ggml_sidecar import GgmlSttSidecar
-from core.inference.stt_sidecar import SttTranscriptionCancelledError, WhisperSttSidecar
+from core.inference.stt_sidecar import (
+    SttLoadCancelledError,
+    SttTranscriptionCancelledError,
+    WhisperSttSidecar,
+)
+
+
+def test_disconnected_load_cancels_only_its_request_event(monkeypatch):
+    class _DisconnectedRequest:
+        async def is_disconnected(self):
+            return True
+
+    sidecar = WhisperSttSidecar()
+    sibling_owner = threading.Event()
+    sibling_load_cancel = threading.Event()
+    with sidecar._load_state_lock:
+        sidecar._loading = True
+        sidecar._load_cancel_event = sibling_load_cancel
+        sidecar._load_owner_cancel_event = sibling_owner
+    cancelled_request = None
+
+    def load(_model, _engine, request_cancel_event):
+        nonlocal cancelled_request
+        cancelled_request = request_cancel_event
+        assert request_cancel_event.wait(1), "disconnect must cancel this load request"
+        assert not sibling_load_cancel.is_set(), "another caller's startup was cancelled"
+        raise SttLoadCancelledError("STT load cancelled.")
+
+    monkeypatch.setattr(inference_route, "_stt_sidecar_for", lambda _engine: sidecar)
+    monkeypatch.setattr(inference_route, "_stt_lifecycle", lambda: (load, None))
+    monkeypatch.setattr(
+        inference_route,
+        "_resolve_serving_stt_engine",
+        lambda _engine: "transformers",
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(
+            inference_route.stt_load(
+                inference_route.SttLoadRequest(model = "small", engine = "transformers"),
+                _DisconnectedRequest(),
+                "test-subject",
+            )
+        )
+
+    assert raised.value.status_code == 409
+    assert cancelled_request is not None and cancelled_request.is_set()
+    assert not sibling_load_cancel.is_set()
 
 
 def test_disconnected_raw_transcription_cancels_its_sidecar(monkeypatch):

@@ -39,7 +39,7 @@ test("Audio mirrors an STT transfer into Downloads without resetting an adopted 
 test("cancelling the shared STT download never loads a partial checkpoint", () => {
   assert.match(
     source,
-    /if \(download\?\.cancelled\) return;[\s\S]*if \(download\?\.error\)[\s\S]*if \(!download\?\.downloading\) break;[\s\S]*await loadSttModel\(sidecarKey, engine\)/,
+    /if \(download\?\.cancelled\) return;[\s\S]*if \(download\?\.error\)[\s\S]*if \(!download\?\.downloading\) break;[\s\S]*await loadSttModel\(sidecarKey, engine, controller\.signal\)/,
   );
 });
 
@@ -72,7 +72,15 @@ test("resolved Transformers transfers share one tracker identity", () => {
 test("hidden Audio cancels only an active sidecar load", () => {
   assert.match(
     source,
-    /if \(sttLoadingGeneration\.current !== null\)[\s\S]*cancelSttLoad\(engine\)/,
+    /if \(sttLoadingGeneration\.current !== null\)[\s\S]*sttLoadAbort\.current\?\.abort\(\)/,
+  );
+  assert.doesNotMatch(source, /cancelSttLoad/);
+});
+
+test("STT loading stays busy until authoritative residency refresh completes", () => {
+  assert.match(
+    source,
+    /if \(sttLoadingGeneration\.current === generation\) \{[\s\S]*await refreshSttStatus\(\);[\s\S]*if \(sttLoadingGeneration\.current === generation\) \{[\s\S]*setBusy\(null\)/,
   );
 });
 

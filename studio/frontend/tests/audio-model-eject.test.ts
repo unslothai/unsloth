@@ -54,6 +54,10 @@ test("Transcribe eject only unloads a sidecar owned by the current selection", (
     adapterSource,
     /unloadSttModel\(engine\?: SttEngine\)[\s\S]*\?engine=\$\{encodeURIComponent\(engine\)\}/,
   );
+  assert.match(
+    source,
+    /sttLoadedEngine !== selectedEngine[\s\S]*sttStatusRefreshGeneration\.current \+= 1;[\s\S]*setSelectedSttRepo\(null\)/,
+  );
 });
 
 test("selected and fallback clip actions remain named and downloadable", () => {
