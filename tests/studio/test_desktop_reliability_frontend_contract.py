@@ -302,10 +302,20 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     assert '("MPEG-4 video or audio", filter_extensions(["m4a", "mp4"]))' in dialogs
     assert '("WebM video or audio", filter_extensions(["webm"]))' in dialogs
     assert "async fn stream_url_to_path" in dialogs
-    assert "fn require_loopback_url" in dialogs
+    # Parsed, not sliced: in http://127.0.0.1:8888@evil.test the loopback part is userinfo.
+    assert "reqwest::Url::parse(url)" in dialogs
+    assert "parsed.username().is_empty()" in dialogs
+    assert "parsed.password().is_some()" in dialogs
     # The chooser has to come first, or the user waits on the body before being asked where.
     streaming = dialogs[dialogs.index("pub async fn save_native_file_from_url") :]
     assert streaming.index(".save_file(") < streaming.index("stream_url_to_path(&url")
+    # No proxy (the signed URL must not reach one) and no redirects (they would leave loopback
+    # after the check). The shared client keeps its own timeout; a streamed body outlasts one.
+    loopback = (REPO / "studio/src-tauri/src/loopback_http.rs").read_text(encoding = "utf-8")
+    assert "fn streaming_client" in loopback
+    assert "redirect(reqwest::redirect::Policy::none())" in loopback
+    assert loopback.count(".no_proxy()") == 2
+    assert "loopback_http::streaming_client" in dialogs
     main_rs = (REPO / "studio/src-tauri/src/main.rs").read_text(encoding = "utf-8")
     assert "native_file_dialogs::save_native_file_from_url," in main_rs
 

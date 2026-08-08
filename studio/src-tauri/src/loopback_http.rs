@@ -7,6 +7,19 @@ pub(crate) fn client(timeout: Duration) -> Result<reqwest::Client, reqwest::Erro
         .build()
 }
 
+/// A client for streaming a body down: the deadline covers the connect only, since a whole
+/// gallery clip will outlast any sane total timeout, and redirects are refused so a loopback
+/// URL cannot be bounced to another host after it was checked.
+pub(crate) fn streaming_client(
+    connect_timeout: Duration,
+) -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(connect_timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};

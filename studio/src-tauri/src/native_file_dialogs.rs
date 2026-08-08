@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tauri::{AppHandle, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
@@ -164,20 +165,29 @@ fn save_selected_file(
 
 /// Only the local backend. Without this the webview could aim the streaming save at any
 /// host and write the reply to disk.
+///
+/// Parsed rather than sliced: in `http://127.0.0.1:8888@evil.test/clip` the loopback-looking
+/// part is userinfo, and the client would connect to `evil.test`.
 fn require_loopback_url(url: &str) -> Result<(), String> {
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or_else(|| "Only local http URLs can be saved.".to_string())?;
-    let host = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("")
-        .rsplit_once(':')
-        .map(|(host, _port)| host)
-        .unwrap_or_else(|| rest.split(['/', '?', '#']).next().unwrap_or(""));
-    match host {
-        "127.0.0.1" | "localhost" | "[::1]" => Ok(()),
-        _ => Err("Only local http URLs can be saved.".to_string()),
+    const REJECT: &str = "Only local http URLs can be saved.";
+    let parsed = reqwest::Url::parse(url).map_err(|_| REJECT.to_string())?;
+    if parsed.scheme() != "http" || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(REJECT.to_string());
+    }
+    let host = parsed.host_str().ok_or_else(|| REJECT.to_string())?;
+    // host_str keeps the brackets on an IPv6 literal.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    let loopback = bare
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(host == "localhost");
+    if loopback {
+        Ok(())
+    } else {
+        Err(REJECT.to_string())
     }
 }
 
@@ -337,9 +347,13 @@ pub async fn save_native_file_from_url(
 }
 
 async fn stream_url_to_path(url: &str, path: &Path) -> Result<(), String> {
-    let mut response = reqwest::get(url)
+    let mut response = crate::loopback_http::streaming_client(Duration::from_secs(10))
+        .map_err(|error| format!("Download failed: {error}"))?
+        .get(url)
+        .send()
         .await
         .map_err(|error| format!("Download failed: {error}"))?;
+    // Redirects are refused rather than followed, so a 3xx is a rejection here, not a hop.
     if !response.status().is_success() {
         return Err(format!(
             "Download failed with status {}.",
@@ -536,6 +550,15 @@ mod tests {
         assert_save_filter("voice.webm", "WebM video or audio", &["webm"]);
     }
 
+    /// A current-thread runtime: the default one starts a worker per core, and this test
+    /// binary runs in parallel with a load-sensitive profile-lock test.
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
     /// A one-shot loopback server, so the streaming save is exercised over real HTTP.
     fn serve_once(body: Vec<u8>, status: &'static str) -> (String, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -561,8 +584,7 @@ mod tests {
         let (url, server) = serve_once(body.clone(), "200 OK");
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("clip.mp4");
-        tokio::runtime::Runtime::new()
-            .unwrap()
+        test_runtime()
             .block_on(stream_url_to_path(&url, &dest))
             .unwrap();
         server.join().unwrap();
@@ -581,8 +603,7 @@ mod tests {
         let (url, server) = serve_once(b"nope".to_vec(), "401 Unauthorized");
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("clip.mp4");
-        let error = tokio::runtime::Runtime::new()
-            .unwrap()
+        let error = test_runtime()
             .block_on(stream_url_to_path(&url, &dest))
             .unwrap_err();
         server.join().unwrap();
@@ -600,17 +621,51 @@ mod tests {
         ] {
             assert!(require_loopback_url(url).is_ok(), "should allow {url}");
         }
-        // Anything else would let the webview write an arbitrary response to disk.
+        // Anything else would let the webview write an arbitrary response to disk. The
+        // userinfo forms are the ones a naive authority split accepts: everything before
+        // the '@' is credentials, so the real host is the part that looks like a path.
         for url in [
             "http://evil.test/x.mp4",
             "https://127.0.0.1:8888/x.mp4",
             "file:///etc/passwd",
             "http://127.0.0.1.evil.test/x.mp4",
             "http://user@evil.test/x.mp4",
+            "http://127.0.0.1:8888@evil.test/video",
+            "http://127.0.0.1@evil.test/video",
+            "http://localhost:8888@evil.test/video",
+            "http://[::1]:8888@evil.test/video",
+            "http://10.0.0.5/x.mp4",
+            "http://169.254.169.254/latest/meta-data",
             "",
         ] {
             assert!(require_loopback_url(url).is_err(), "should reject {url}");
         }
+    }
+
+    #[test]
+    fn a_redirect_off_loopback_is_refused_not_followed() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut discard = [0_u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut discard);
+            let _ = stream.write_all(
+                b"HTTP/1.1 302 Found\r\nLocation: http://evil.test/x.mp4\r\n\
+                  Content-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("clip.mp4");
+        let error = test_runtime()
+            .block_on(stream_url_to_path(
+                &format!("http://127.0.0.1:{port}/clip.mp4"),
+                &dest,
+            ))
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("302"), "{error}");
+        assert!(!dest.exists(), "a redirect must not produce a file");
     }
 
     #[test]
