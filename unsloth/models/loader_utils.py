@@ -241,7 +241,11 @@ def _resolve_with_mappers(
     )
 
 
-def _prefer_legacy_lowercase_cache(repo_id, cache_dir = None, local_files_only = False):
+def _prefer_legacy_lowercase_cache(
+    repo_id,
+    cache_dir = None,
+    local_files_only = False,
+):
     """Use a pre-fix lowercase cache only when offline and no canonical cache exists."""
     if (
         not (local_files_only or _env_says_offline())
@@ -265,10 +269,13 @@ def _prefer_legacy_lowercase_cache(repo_id, cache_dir = None, local_files_only =
         )
     except Exception:
         return repo_id
+
     def _has_snapshot(repo_cache):
         snapshots = os.path.join(repo_cache, "snapshots")
         try:
-            return any(os.path.isdir(os.path.join(snapshots, name)) for name in os.listdir(snapshots))
+            return any(
+                os.path.isdir(os.path.join(snapshots, name)) for name in os.listdir(snapshots)
+            )
         except OSError:
             return False
 
@@ -297,9 +304,7 @@ def get_model_name(
     )
 
     if new_model_name is not None:
-        new_model_name = _prefer_legacy_lowercase_cache(
-            new_model_name, cache_dir, local_files_only
-        )
+        new_model_name = _prefer_legacy_lowercase_cache(new_model_name, cache_dir, local_files_only)
     # Remap "bad" names (e.g. oversized dynamic quants or MoEs)
     if (
         new_model_name is not None
