@@ -16,6 +16,7 @@ untouched.
 
 import importlib
 import importlib.util
+import inspect
 import sys
 import types
 from pathlib import Path
