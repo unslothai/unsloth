@@ -1590,7 +1590,7 @@ def test_a_streamed_reply_alone_reports_no_decode_span():
     # "1000" is absent on purpose: _finite_float_or_none coerces a numeric string, the
     # same as it already does for tok_per_sec and prompt_ms.
     "predicted_ms",
-    [float("inf"), float("nan"), -1, "abc", None, 1e308, 10 ** 400, {}, []],
+    [float("inf"), float("nan"), -1, "abc", None, 1e308, 10**400, {}, []],
 )
 def test_a_bad_predicted_ms_is_dropped_rather_than_raising(monkeypatch, predicted_ms):
     """json.loads accepts a bare Infinity, and this runs inside streaming generators
