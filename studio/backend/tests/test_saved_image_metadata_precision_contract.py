@@ -22,12 +22,14 @@ They also pin ``image_gallery._REQUIRED_META``: the build keys are additive, so 
 written before they existed must still list rather than be dropped as foreign.
 
 Hermetic: torch / diffusers are stubbed via ``sys.modules`` (same approach as
-``test_diffusion_backend.py``), and the route half runs against a fake backend.
+``test_diffusion_backend.py``, stubbed as packages so the loader's submodule imports resolve
+without a real install), and the route half runs against a fake backend.
 """
 
 from __future__ import annotations
 
 import contextlib
+import importlib.machinery
 import io
 import json
 import sys
@@ -130,10 +132,33 @@ class _FakeTransformer:
         return object()
 
 
+def _stub_package(name: str) -> types.ModuleType:
+    """A stub module the import machinery will treat as a PACKAGE.
+
+    ``types.ModuleType`` alone has no ``__path__``, so ``import torch.nn.functional`` cannot
+    resolve a submodule through it -- see ``stub_runtime`` for why that matters.
+    """
+    module = types.ModuleType(name)
+    module.__path__ = []  # empty: submodules are registered by hand, never found on disk
+    module.__spec__ = importlib.machinery.ModuleSpec(name, loader = None, is_package = True)
+    return module
+
+
 @pytest.fixture
 def stub_runtime(monkeypatch):
-    """Enough torch / diffusers for a z-image GGUF load + one txt2img generate."""
-    torch = types.ModuleType("torch")
+    """Enough torch / diffusers for a z-image GGUF load + one txt2img generate.
+
+    ``load_pipeline`` lazily imports ``diffusion_eager_patches``, whose module body runs
+    ``import torch.nn.functional as F``, and the GGUF prefix-strip shim imports
+    ``diffusers.loaders.single_file_model``. Neither resolves through a bare ``ModuleType``.
+    A dev box hides that -- something (``tests/conftest.py`` -> ``unsloth_zoo`` -> ``import
+    torch``) has usually already seeded ``sys.modules["torch.nn.functional"]``, so the import
+    short-circuits on the cached entry and never looks at the stub's missing ``__path__``. On a
+    clean CPU-only CI interpreter nothing seeds it and the load dies with "'torch' is not a
+    package". So register the submodules explicitly and make the stubs real packages: same
+    hermetic runtime in both environments, whatever ran before.
+    """
+    torch = _stub_package("torch")
     torch.bfloat16 = _FakeDtype("bfloat16")
     torch.float16 = _FakeDtype("float16")
     torch.float32 = _FakeDtype("float32")
@@ -141,14 +166,37 @@ def stub_runtime(monkeypatch):
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
     torch.backends = types.SimpleNamespace(mps = None)
     torch.inference_mode = lambda: contextlib.nullcontext()
+    # torch.nn.functional: imported by diffusion_eager_patches. Empty -- the patch installers
+    # only probe it (hasattr F, "rms_norm") and no patched forward runs under the fake pipe.
+    torch_nn = _stub_package("torch.nn")
+    torch_nn_functional = types.ModuleType("torch.nn.functional")
+    torch_nn.functional = torch_nn_functional
+    torch.nn = torch_nn
 
-    diffusers = types.ModuleType("diffusers")
+    diffusers = _stub_package("diffusers")
     diffusers.GGUFQuantizationConfig = lambda compute_dtype = None: ("quant", compute_dtype)
     diffusers.ZImagePipeline = _FakePipeline
     diffusers.ZImageTransformer2DModel = _FakeTransformer
+    # diffusers.loaders.single_file_model: the GGUF prefix-strip shim looks the transformer class
+    # up in this registry. Empty -> the shim finds no entry and returns, the same no-op it
+    # performs against a real diffusers that has no converter for the class.
+    diffusers_loaders = _stub_package("diffusers.loaders")
+    single_file_model = types.ModuleType("diffusers.loaders.single_file_model")
+    single_file_model.SINGLE_FILE_LOADABLE_CLASSES = {}
+    diffusers_loaders.single_file_model = single_file_model
+    diffusers.loaders = diffusers_loaders
 
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+    for name, module in (
+        ("torch", torch),
+        ("torch.nn", torch_nn),
+        ("torch.nn.functional", torch_nn_functional),
+        ("diffusers", diffusers),
+        ("diffusers.loaders", diffusers_loaders),
+        ("diffusers.loaders.single_file_model", single_file_model),
+    ):
+        # setitem restores the previous entry (or deletes it, if there was none) on teardown,
+        # so a real torch/diffusers imported by another test is left untouched.
+        monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", lambda: None)
     _FakeTransformer.last = {}
     yield torch
