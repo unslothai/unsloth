@@ -78,7 +78,7 @@ def test_a_scope_whose_payload_is_lost_reads_back_as_a_digest(monkeypatch, tmp_p
     download_manifest.write_cancel_marker(
         "model", "Org/Model", "@diffusion", transport = "xet", hub_cache = str(hub_cache)
     )
-    (variant, path), = download_manifest.iter_variant_markers(
+    ((variant, path),) = download_manifest.iter_variant_markers(
         "model", "Org/Model", hub_cache = str(hub_cache)
     )
     assert variant == "@diffusion"  # intact while the payload is readable
@@ -86,10 +86,13 @@ def test_a_scope_whose_payload_is_lost_reads_back_as_a_digest(monkeypatch, tmp_p
 
     payload = json.loads(path.read_text(encoding = "utf-8"))
     payload.pop("variant")
-    for name, expected_tag in ((path.name, "@sha256-"), (path.name.replace("@sha256-", "sha256-"), "sha256-")):
+    for name, expected_tag in (
+        (path.name, "@sha256-"),
+        (path.name.replace("@sha256-", "sha256-"), "sha256-"),
+    ):
         target = path.with_name(name)
         _write_manifest(target, payload)
-        (recovered, _), = download_manifest.iter_variant_markers(
+        ((recovered, _),) = download_manifest.iter_variant_markers(
             "model", "Org/Model", hub_cache = str(hub_cache)
         )
         assert recovered.startswith(expected_tag)
