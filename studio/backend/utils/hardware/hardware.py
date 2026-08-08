@@ -601,6 +601,58 @@ def export_capability() -> dict:
     }
 
 
+def video_capability() -> dict:
+    """Whether video generation can run here, with a torch-aware reason when it cannot.
+
+    Video runs through the diffusers pipelines in core/inference/video.py, which have no Apple
+    path: no MLX backend, and the families ship no MPS-tested route, so macOS is reported as
+    unsupported rather than left to fail at load. Supported iff ``get_device() in {CUDA, XPU}``.
+    Safe to call without torch.
+
+    Returns {video_supported, video_unsupported_reason, video_unsupported_message}.
+    """
+    if get_device() in (DeviceType.CUDA, DeviceType.XPU):
+        return {
+            "video_supported": True,
+            "video_unsupported_reason": None,
+            "video_unsupported_message": None,
+        }
+    # Detection failure first, as in export_capability: the branches below all describe a
+    # measured host, so a broken probe would tell a GPU box to go buy a GPU.
+    if CHAT_ONLY_REASON == "detection_failed":
+        reason = "detection_failed"
+        message = (
+            "Hardware detection failed on this host, so video generation is disabled. The server "
+            "log records the underlying error; restart Unsloth Studio to retry detection."
+        )
+    elif platform.system() == "Darwin" or get_device() == DeviceType.MLX:
+        # Every Mac, not just Apple Silicon. An Intel Mac detects as plain CPU, so an
+        # is_apple_silicon() test drops it into the branches below and tells the user to
+        # install PyTorch or add a GPU. Neither enables video here: the pipelines have no
+        # supported macOS path at all, so the honest answer is the same on both Macs.
+        # The MLX arm covers an Apple host whose platform probe somehow disagrees.
+        reason = "macos_unsupported"
+        message = "Video generation on macOS is coming soon."
+    elif not _has_torch():
+        reason = "pytorch_not_installed"
+        message = (
+            "PyTorch is not installed. Video generation requires PyTorch with an NVIDIA, AMD or "
+            "Intel GPU. Install PyTorch to enable video generation."
+        )
+    else:
+        reason = "no_accelerator"
+        message = (
+            "Video generation requires an NVIDIA, AMD or Intel GPU. No supported accelerator was "
+            "found on this host. (PyTorch is installed, but the video pipelines cannot run on CPU "
+            "only.)"
+        )
+    return {
+        "video_supported": False,
+        "video_unsupported_reason": reason,
+        "video_unsupported_message": message,
+    }
+
+
 def clear_gpu_cache():
     """
     Clear GPU memory cache for the current device.
@@ -2216,6 +2268,11 @@ def _get_hf_safetensors_total_params(
     model_name: str, hf_token: Optional[str] = None
 ) -> Optional[int]:
     try:
+        from utils.utils import hf_env_offline
+
+        if hf_env_offline():
+            return None
+
         from huggingface_hub import model_info as hf_model_info
 
         info = hf_model_info(model_name, token = hf_token)

@@ -41,6 +41,7 @@ import {
   listKnowledgeBases,
   updateKnowledgeBase,
 } from "../api/rag-api";
+import { useRagAvailabilityStore } from "../api/rag-availability";
 import {
   type KnowledgeBase,
   RAG_UPLOAD_ACCEPT,
@@ -71,8 +72,18 @@ export function KnowledgeBaseDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
-  const [confirmingDelete, setConfirmingDelete] =
-    useState<KnowledgeBase | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<KnowledgeBase | null>(
+    null,
+  );
+  // Measured only: while the answer is unknown this stays false and the dialog renders
+  // exactly as it always has. See api/rag-availability.
+  const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  const ragUnavailableReason = useRagAvailabilityStore((s) =>
+    s.unavailableReason(),
+  );
+  const ragUnavailableHint = ragUnavailable
+    ? (ragUnavailableReason ?? undefined)
+    : undefined;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -110,6 +121,14 @@ export function KnowledgeBaseDialog({
   }
 
   async function submitForm() {
+    // The button is disabled for this, but the form is also reachable by keyboard and
+    // the verdict can land while it is open. A 503 toast is not an explanation.
+    if (ragUnavailable) {
+      toast.error("Knowledge bases are unavailable", {
+        description: ragUnavailableReason ?? undefined,
+      });
+      return;
+    }
     const trimmed = name.trim();
     if (!trimmed) {
       toast.error("Name is required");
@@ -195,7 +214,7 @@ export function KnowledgeBaseDialog({
               <Button variant="ghost" onClick={backToList} disabled={saving}>
                 Cancel
               </Button>
-              <Button onClick={submitForm} disabled={saving}>
+              <Button onClick={submitForm} disabled={saving || ragUnavailable}>
                 {saving ? <Spinner /> : null}
                 {view.kind === "edit" ? "Save changes" : "Create"}
               </Button>
@@ -204,7 +223,12 @@ export function KnowledgeBaseDialog({
         ) : (
           <div className="flex min-w-0 flex-col gap-3">
             <div className="flex justify-end">
-              <Button size="sm" onClick={startCreate}>
+              <Button
+                size="sm"
+                onClick={startCreate}
+                disabled={ragUnavailable}
+                title={ragUnavailableHint}
+              >
                 <HugeiconsIcon icon={PlusSignIcon} size={14} />
                 New knowledge base
               </Button>
@@ -212,6 +236,11 @@ export function KnowledgeBaseDialog({
             {loading ? (
               <div className="flex justify-center py-6">
                 <Spinner />
+              </div>
+            ) : ragUnavailable ? (
+              // An empty list on this host is not an empty store, so say which one it is.
+              <div className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+                {ragUnavailableReason ?? "Knowledge bases are unavailable."}
               </div>
             ) : kbs.length === 0 ? (
               <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">

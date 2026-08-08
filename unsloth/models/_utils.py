@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.8.7"
+__version__ = "2026.8.8"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -451,12 +451,40 @@ def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
 
 
+# Ampere. Below it the flex HOP runs its eager `sdpa_dense` fallback, whose
+# backward does `softmax_scores.to(query.dtype) @ grad_out` -- casting the scores
+# but not `grad_out`. Such a card also forces fp16 here, so query is Half against
+# a Float grad and the matmul is refused.
+_FLEX_ATTENTION_MIN_CAPABILITY = (8, 0)
+
+
+def _flex_attention_gpu_is_supported():
+    """False only for NVIDIA cards below Ampere.
+
+    ROCm, XPU, MPS, CPU and an unreadable device are left alone, so this can
+    only ever remove a path that was already broken.
+    """
+    try:
+        if getattr(torch.version, "hip", None):
+            return True
+        if not torch.cuda.is_available():
+            return True
+        return all(
+            torch.cuda.get_device_capability(index) >= _FLEX_ATTENTION_MIN_CAPABILITY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return True
+
+
 def _supports_flex_attention(model_class, config, model_type):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
     if not getattr(model_class, "_supports_flex_attn", False):
         return False
     if _is_flex_excluded(model_type):
+        return False
+    if not _flex_attention_gpu_is_supported():
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0

@@ -67,6 +67,7 @@ import {
   ensureResearchRunFollowed,
   ingestResearchUpdate,
   isSettledResearchRun,
+  researchProgressSummary,
   useResearchRunStore,
 } from "../stores/research-run-store";
 import type { ResearchRunStatus } from "../types/research";
@@ -300,6 +301,7 @@ const ActivityRow = memo(function ActivityRow({
     activity.reasoning ||
       activity.plan ||
       activity.input ||
+      activity.previewLabels?.length ||
       activity.sources?.length ||
       activity.evidenceSources?.length ||
       activity.excerpt ||
@@ -317,6 +319,23 @@ const ActivityRow = memo(function ActivityRow({
         >
           {activity.input}
         </p>
+      ) : null}
+      {activity.previewLabels?.length ? (
+        <ul className="space-y-1 rounded-xl bg-muted/35 px-3 py-2">
+          {activity.previewLabels.map((label, index) => (
+            <li
+              key={`${activity.id}-preview-${index}`}
+              className="flex gap-2 leading-relaxed"
+            >
+              <span aria-hidden className="text-primary/70">
+                ·
+              </span>
+              <span className="min-w-0 break-words text-foreground/80">
+                {label}
+              </span>
+            </li>
+          ))}
+        </ul>
       ) : null}
       {activity.reasoning ? (
         <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-muted/35 px-3 py-2 leading-relaxed text-foreground/80">
@@ -792,11 +811,6 @@ export function ResearchActivityPanel({
   }
   const { run, activities } = session;
   const elapsedEnd = run.completedAt ?? elapsedNow ?? run.updatedAt;
-  // Count web and document sources together so a RAG-only run is not shown as 0.
-  const documentCount = new Set(
-    (run.documentSources ?? []).map((source) => source.documentId ?? source.filename),
-  ).size;
-  const sourceCount = run.sources.length + documentCount;
   const allowedDomains = run.config?.websitePolicy?.allowedDomains ?? [];
   const blockedDomains = run.config?.websitePolicy?.blockedDomains ?? [];
   const websiteLimitLabel = allowedDomains.length
@@ -816,7 +830,10 @@ export function ResearchActivityPanel({
   return (
     <aside
       aria-label="Research activity"
-      className="relative flex min-h-0 flex-col bg-background text-foreground"
+      className={cn(
+        "relative flex min-h-0 flex-col bg-background text-foreground",
+        variant === "sheet" && "h-full",
+      )}
       style={
         variant === "panel"
           ? {
@@ -825,11 +842,7 @@ export function ResearchActivityPanel({
               marginTop:
                 "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px))",
             }
-          : {
-              height:
-                "calc(100% - var(--studio-custom-titlebar-height, 0px))",
-              marginTop: "var(--studio-custom-titlebar-height, 0px)",
-            }
+          : undefined
       }
     >
       <header className="shrink-0 border-b border-border/70 px-4 py-3.5">
@@ -867,10 +880,10 @@ export function ResearchActivityPanel({
               </p>
             ) : null}
             <p className="mt-1 text-ui-10p5 tabular-nums text-muted-foreground">
-              {formatElapsed(run.createdAt, elapsedEnd)} · {sourceCount}{" "}
-              sources ·{" "}
-              {run.steps.filter((step) => step.status === "completed").length}{" "}
-              actions
+              {researchProgressSummary(
+                run,
+                formatElapsed(run.createdAt, elapsedEnd),
+              )}
             </p>
           </div>
           <Button

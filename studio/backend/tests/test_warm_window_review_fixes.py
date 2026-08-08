@@ -164,13 +164,17 @@ def test_building_the_orchestrator_makes_no_outbound_request():
     init = next(
         node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "__init__"
     )
+    # Both names. The fetch is now started through the public wrapper, so scanning only
+    # for the private one let `self._start_top_models_fetch()` back into __init__ -- which
+    # restores the huggingface.co call on every boot, exactly what this guards against.
+    _BOOT_FETCH_NAMES = ("_fetch_top_models", "_start_top_models_fetch")
     offenders = [
-        sub
+        sub.attr
         for sub in ast.walk(init)
-        if isinstance(sub, ast.Attribute) and sub.attr == "_fetch_top_models"
+        if isinstance(sub, ast.Attribute) and sub.attr in _BOOT_FETCH_NAMES
     ]
     assert not offenders, (
-        "the orchestrator constructor references _fetch_top_models again; building "
+        f"the orchestrator constructor references {offenders} again; building "
         "it on the warm thread then reaches huggingface.co on every boot, before "
         "anyone signs in"
     )
@@ -700,6 +704,24 @@ def test_detection_wait_requires_a_device_not_just_the_event():
         and sub.left.attr == "DEVICE"
         and any(isinstance(op, (ast.IsNot, ast.Is)) for op in sub.ops)
     ]
+
+    # Bind to the SITES, not to a count. The function has three DEVICE comparisons (the
+    # kill-switch return, the fast path, the poll loop), so `>= 2` stayed green after
+    # deleting the poll loop's -- the very guard whose absence serves a torn verdict.
+    def _requires_device(node) -> bool:
+        return any(
+            isinstance(sub, ast.Attribute) and sub.attr == "DEVICE" for sub in ast.walk(node)
+        )
+
+    whiles = [sub for sub in ast.walk(fn) if isinstance(sub, ast.While)]
+    assert whiles and all(_requires_device(w.test) for w in whiles), (
+        "the detection poll loop no longer requires DEVICE, so a torn "
+        "event-set/DEVICE-None state ends the wait and nothing re-detects"
+    )
+    assert any(_requires_device(sub.test) for sub in ast.walk(fn) if isinstance(sub, ast.If)), (
+        "the fast path no longer requires DEVICE, so a torn event-set/DEVICE-None "
+        "state is reported as detected"
+    )
     assert len(device_tests) >= 2, (
         f"found {len(device_tests)} DEVICE comparison(s); both the fast path and "
         f"the poll loop must require a device, or a torn event-set/DEVICE-None "

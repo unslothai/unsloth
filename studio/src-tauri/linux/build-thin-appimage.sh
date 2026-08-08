@@ -129,6 +129,83 @@ missing=$(
   ldd "$binary" 2>/dev/null |
     sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*not found.*$/\1/p'
 )
+
+# The tray crate dlopens AppIndicator, so it never appears in the binary's ldd
+# output. libappindicator-sys tries the versioned sonames then the unversioned
+# ones, so accept all four in that order or we reject hosts whose tray works.
+appindicator_names="libayatana-appindicator3.so.1 libappindicator3.so.1"
+appindicator_names="$appindicator_names libayatana-appindicator3.so libappindicator3.so"
+
+appindicator_is_usable() {
+  [ -r "$1" ] || return 1
+  # An absent ldd is inconclusive, as in the guard above: the loader, not ldd,
+  # decides whether a readable candidate can load.
+  command -v ldd >/dev/null 2>&1 || return 0
+  appindicator_ldd=$(ldd "$1" 2>&1) || return 1
+  ! printf '%s\n' "$appindicator_ldd" | grep -q 'not found'
+}
+
+# Every path the loader tries for a dlopen name, in order: LD_LIBRARY_PATH,
+# the ldconfig cache, then the default directories.
+appindicator_candidates() {
+  library_name="$1"
+
+  if [ "${LD_LIBRARY_PATH+x}" = x ]; then
+    # The loader accepts ':' and ';', and an empty component means the current
+    # directory. The appended separator keeps a trailing empty one visible.
+    library_path="${LD_LIBRARY_PATH}:"
+    while [ -n "$library_path" ]; do
+      library_dir=${library_path%%[:;]*}
+      library_path=${library_path#*[:;]}
+      [ -n "$library_dir" ] || library_dir=.
+      printf '%s\n' "$library_dir/$library_name"
+    done
+  fi
+
+  if command -v ldconfig >/dev/null 2>&1; then
+    ldconfig -p 2>/dev/null | awk -v name="$library_name" '$1 == name { print $NF }'
+  fi
+
+  printf '%s\n' \
+    /lib/"$library_name" \
+    /lib/*-linux-gnu/"$library_name" \
+    /lib64/"$library_name" \
+    /usr/lib/"$library_name" \
+    /usr/lib/*-linux-gnu/"$library_name" \
+    /usr/lib64/"$library_name" \
+    /usr/local/lib/"$library_name"
+}
+
+find_appindicator() {
+  for library_name in $appindicator_names; do
+    # The loader commits to the first file it finds for a name, so stop there:
+    # skipping ahead would pass a host whose dlopen still fails.
+    first_candidate=$(
+      appindicator_candidates "$library_name" |
+        while IFS= read -r candidate; do
+          if [ -r "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            break
+          fi
+        done
+    )
+    [ -n "$first_candidate" ] || continue
+    if appindicator_is_usable "$first_candidate"; then
+      printf '%s\n' "$first_candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! find_appindicator >/dev/null; then
+  if [ -n "$missing" ]; then
+    missing="$missing
+"
+  fi
+  missing="${missing}libayatana-appindicator3.so.1 or libappindicator3.so.1"
+fi
+
 if [ -n "$missing" ]; then
   message="Unsloth cannot start because required Linux libraries are missing:
 
@@ -167,7 +244,8 @@ fi
 )
 assert_thin_appdir "$verify_dir/squashfs-root"
 
-if grep -q 'LD_LIBRARY_PATH' "$verify_dir/squashfs-root/AppRun"; then
+if grep -Eq '(^|[[:space:]])(export[[:space:]]+)?LD_LIBRARY_PATH=' \
+  "$verify_dir/squashfs-root/AppRun"; then
   echo "Thin AppImage must not override the host library search path." >&2
   exit 1
 fi

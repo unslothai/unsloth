@@ -50,10 +50,18 @@ from core.inference.stt_sidecar import (
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
+    _capture_stt_hub_cache,
+    _claim_stt_repository,
     _decode_audio_bounded,
+    _downloaded_file_bytes,
+    _fallback_revisions,
+    _HF_COMMIT_SHA,
     _known_whisper_languages,
+    _prepare_stt_cache_for_http,
+    _read_revision_record,
     _TARGET_SAMPLE_RATE,
     _training_active,
+    _write_revision_record,
     normalize_whisper_language,
 )
 from utils.prebuilt.child_env import isolate_home, scrub_env, wsl_system_rocm_lib_dirs
@@ -339,23 +347,48 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _cached_model_path(model_id: str) -> Optional[str]:
+def _cached_model_path(
+    model_id: str,
+    *,
+    hub_cache: Optional[Path] = None,
+    revision: Optional[str] = None,
+) -> Optional[str]:
     """Path of a fully downloaded GGML file in the shared HF cache, else None."""
     from huggingface_hub import hf_hub_download
 
     from core.inference.stt_sidecar import _active_hf_hub_cache
 
-    try:
-        return hf_hub_download(
-            repo_id = GGML_STT_REPOS[model_id],
-            filename = GGML_STT_MODELS[model_id],
-            local_files_only = True,
-            # The worker spawns with get_hf_cache_paths(), so a cache relocated
-            # in Studio settings is written there and has to be read there too.
-            cache_dir = str(_active_hf_hub_cache()),
-        )
-    except Exception:
-        return None
+    repo_id = GGML_STT_REPOS[model_id]
+    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
+
+    def cached_at(candidate_revision: str) -> Optional[str]:
+        try:
+            return hf_hub_download(
+                repo_id = repo_id,
+                filename = GGML_STT_MODELS[model_id],
+                revision = candidate_revision,
+                local_files_only = True,
+                cache_dir = str(root),
+            )
+        except Exception:
+            return None
+
+    # Explicit revisions keep verification on the downloaded commit.
+    if revision is not None:
+        return cached_at(revision)
+
+    recorded = _read_revision_record(repo_id)
+    if recorded:
+        cached = cached_at(recorded)
+        if cached is not None:
+            return cached
+
+    for candidate in _fallback_revisions(repo_id, hub_cache = root):
+        cached = cached_at(candidate)
+        if cached is not None:
+            _write_revision_record(repo_id, candidate)
+            return cached
+    return None
 
 
 class _GgmlDownloadState:
@@ -369,19 +402,30 @@ class _GgmlDownloadState:
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._etag: Optional[str] = None
+        self._revision: Optional[str] = None
+        self._hub_cache: Optional[Path] = None
         self._cancelled = False
 
     def status(self) -> dict:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
-            return {
+            snapshot = {
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if downloading else None,
-                "bytes_done": self._incomplete_bytes() if downloading else None,
             }
+            captured = (
+                self._model_id,
+                self._etag,
+                self._total_bytes,
+                self._hub_cache,
+                self._revision,
+            )
+        # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
+        snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
+        return snapshot
 
     def cancel(self) -> bool:
         """Stop an in-flight download. False when none was running.
@@ -394,34 +438,40 @@ class _GgmlDownloadState:
             self._cancelled = True
             process = self._process
         if process is not None and process.poll() is None:
-            process.terminate()
+            from core.inference.stt_download_worker import terminate_download
+            terminate_download(process)
         return True
 
-    def _incomplete_bytes(self) -> Optional[int]:
-        """Best-effort progress: size of the in-flight blob in the HF cache.
+    def _downloaded_bytes(
+        self,
+        model_id: Optional[str] = None,
+        etag: Optional[str] = None,
+        total: Optional[int] = None,
+        hub_cache: Optional[Path] = None,
+        revision: Optional[str] = None,
+    ) -> Optional[int]:
+        """Count this file across partial, finalized, and snapshot locations.
 
-        hf_hub_download writes ``blobs/<etag>.incomplete``; prefer this file's
-        etag, else the largest in-flight blob.
+        status() captures these under the lock and passes them in: reading them
+        here would let a run that starts mid-probe pair its bytes with the total
+        of the run that just ended.
         """
         try:
-            from core.inference.stt_sidecar import _repo_cache_dir
-
-            # Caller may hold the non-reentrant self._lock; bare reads are safe.
-            model_id = self._model_id
-            if not model_id:
+            model_id = model_id if model_id is not None else self._model_id
+            etag = etag if etag is not None else self._etag
+            total = total if total is not None else self._total_bytes
+            hub_cache = hub_cache if hub_cache is not None else self._hub_cache
+            revision = revision if revision is not None else self._revision
+            if not model_id or not etag or total is None or hub_cache is None:
                 return None
-            # The active cache, not the import-time constant: the worker writes
-            # to whichever one Studio settings point at.
-            repo_dir = _repo_cache_dir(GGML_STT_REPOS[model_id]) / "blobs"
-            if not repo_dir.is_dir():
-                return None
-            etag = self._etag
-            if etag:
-                target = repo_dir / f"{etag}.incomplete"
-                if target.is_file():
-                    return target.stat().st_size
-            sizes = [p.stat().st_size for p in repo_dir.glob("*.incomplete") if p.is_file()]
-            return max(sizes) if sizes else None
+            return _downloaded_file_bytes(
+                hub_cache = hub_cache,
+                repo = GGML_STT_REPOS[model_id],
+                filename = GGML_STT_MODELS[model_id],
+                size = total,
+                blob_key = etag,
+                revision = revision,
+            )
         except Exception:
             return None
 
@@ -431,10 +481,16 @@ class _GgmlDownloadState:
         hf_token: Optional[str] = None,
     ) -> None:
         model_id = resolve_ggml_model_id(model_id)
+        hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    return
+                    # Joining a cancelling run would silently download nothing.
+                    if not self._cancelled:
+                        return
+                    raise SttModelIdError(
+                        f"'{model_id}' is still cancelling; try again in a moment."
+                    )
                 raise SttModelIdError(
                     f"Another GGUF dictation model ('{self._model_id}') is still "
                     "downloading; wait for it to finish."
@@ -443,44 +499,108 @@ class _GgmlDownloadState:
             self._error = None
             self._total_bytes = None
             self._etag = None
+            self._revision = None
+            self._hub_cache = hub_cache
             self._cancelled = False
             self._process = None
-            thread = threading.Thread(target = self._run, args = (model_id, hf_token), daemon = True)
+            thread = threading.Thread(
+                target = self._run,
+                args = (model_id, hf_token),
+                daemon = True,
+            )
             self._thread = thread
             thread.start()
 
-    def _run(self, model_id: str, hf_token: Optional[str]) -> None:
+    def _run(
+        self,
+        model_id: str,
+        hf_token: Optional[str],
+        hub_cache: Optional[Path] = None,
+    ) -> None:
+        if hub_cache is None:
+            from core.inference.stt_sidecar import _active_hf_hub_cache
+            hub_cache = self._hub_cache or _active_hf_hub_cache()
         repo_id = GGML_STT_REPOS[model_id]
         filename = GGML_STT_MODELS[model_id]
+        registry = None
+        owner = None
         try:
             from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
             try:
-                # One HEAD request for the total and etag.
                 meta = get_hf_file_metadata(hf_hub_url(repo_id, filename), token = hf_token or None)
-                with self._lock:
-                    self._total_bytes = meta.size
-                    self._etag = meta.etag
-            except Exception:
-                pass
+                total_bytes = int(meta.size or 0)
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise RuntimeError("could not resolve GGML download metadata") from exc
+            revision = meta.commit_hash
+            etag = meta.etag
+            if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):
+                raise RuntimeError("could not resolve an immutable GGML revision")
+            if not isinstance(etag, str) or not etag:
+                raise RuntimeError("could not resolve the GGML blob identity")
+            if total_bytes <= 0:
+                raise RuntimeError("could not resolve the GGML file size")
+            # A cancel during metadata has no child to stop. Without these the
+            # run still reserves the repo and rewrites the cache after the stop.
+            with self._lock:
+                if self._cancelled:
+                    return
+            registry, owner = _claim_stt_repository(repo_id)
+            with self._lock:
+                if self._cancelled:
+                    return
+            _prepare_stt_cache_for_http(repo_id, hub_cache)
+            with self._lock:
+                self._total_bytes = total_bytes
+                self._etag = etag
+                self._revision = revision
             # Out of process so cancel() can terminate it; a thread blocked in
             # hf_hub_download could not be interrupted.
-            from core.inference.stt_download_worker import spawn_download
+            from core.inference.stt_download_worker import (
+                reap_download,
+                spawn_download,
+                terminate_download,
+            )
 
+            args = [
+                "--repo-id",
+                repo_id,
+                "--revision",
+                revision,
+                "--filename",
+                filename,
+            ]
             process = spawn_download(
-                ["--repo-id", repo_id, "--filename", filename],
+                args,
                 hf_token = hf_token or None,
+                hub_cache = hub_cache,
             )
             with self._lock:
                 if self._cancelled:
                     # cancel() landed between start() and the spawn.
-                    process.terminate()
+                    terminate_download(process)
                 self._process = process
-            _, stderr = process.communicate()
-            if process.returncode == 0:
+            # reap_download(), not communicate(): only it drops the adopted PID,
+            # which could otherwise be reused and then signalled by terminate_all.
+            stderr = reap_download(process)
+            with self._lock:
+                if self._process is process:
+                    self._process = None
+                cancelled = self._cancelled
+            if process.returncode == 0 and not cancelled:
+                if (
+                    _cached_model_path(
+                        model_id,
+                        hub_cache = hub_cache,
+                        revision = revision,
+                    )
+                    is None
+                ):
+                    raise RuntimeError("downloaded file is missing from the captured cache")
+                _write_revision_record(repo_id, revision)
                 return
             with self._lock:
-                if self._cancelled or process.returncode < 0:
+                if cancelled or process.returncode < 0:
                     self._cancelled = True
                     return
             detail = (stderr or b"").decode("utf-8", "replace").strip()
@@ -488,9 +608,13 @@ class _GgmlDownloadState:
             with self._lock:
                 self._error = f"Download failed for '{model_id}'."
         except Exception as exc:
-            logger.warning("GGUF STT download failed for %s: %s", model_id, exc)
             with self._lock:
-                self._error = f"Download failed for '{model_id}'."
+                if not self._cancelled:
+                    logger.warning("GGUF STT download failed for %s: %s", model_id, exc)
+                    self._error = f"Download failed for '{model_id}'."
+        finally:
+            if registry is not None and owner is not None:
+                registry.release_repository_owner(repo_id, owner)
 
 
 _download_state = _GgmlDownloadState()
