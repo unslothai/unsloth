@@ -523,11 +523,14 @@ def _try_http_retry(
         )
         if claimed:
             break
-        if conflict_state == "deleting":
+        # An STT owner is not an active job, so mark_pending_cancel cannot reach
+        # this loop; waiting it out here would be an uninterruptible spin.
+        if conflict_state in ("deleting", "repository_owned"):
             logger.debug(
-                "%s XET retry claim rejected for %s; repo is being deleted",
+                "%s XET retry claim rejected for %s; blocked by %s",
                 log_prefix,
                 label,
+                conflict_state,
             )
             _set_retry_failure_state(
                 registry,
