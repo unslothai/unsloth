@@ -648,9 +648,9 @@ def test_image_page_header_tracks_the_preview_and_compacts_before_collision():
     """
     source = IMAGES_PAGE.read_text(encoding = "utf-8")
     shell = source.split('className="diffusion-surface', 1)[1].split(">", 1)[0]
-    header = source.split("Mirror the Create workspace's 408px rail", 1)[1].split(
-        "Train mode:", 1
-    )[0]
+    header = source.split("Mirror the Create workspace's 408px rail", 1)[1].split("Train mode:", 1)[
+        0
+    ]
 
     assert "@container" in shell
     assert "grid-cols-[minmax(0,1fr)_auto]" in header
