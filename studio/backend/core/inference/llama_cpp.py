@@ -12430,9 +12430,7 @@ class LlamaCppBackend:
                             # The drafter came back with the replay, so the
                             # speculative-disable diagnosis no longer applies.
                             self._spec_fallback_reason = None
-                        elif _try_auto_vulkan_cpu_fallback(
-                            _drafterless_cpu_replay_cmd, _crash_rc
-                        ):
+                        elif _try_auto_vulkan_cpu_fallback(_drafterless_cpu_replay_cmd, _crash_rc):
                             _replayed = True
                         if _replayed:
                             healthy = True
