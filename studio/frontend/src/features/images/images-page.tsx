@@ -1184,7 +1184,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const lastLoadSig = useRef<string | null>(null);
   // The quant to restore if the optimistic swap fails: a same-repo change sets `quant` immediately for picker feedback, but a
   // load failing AFTER starting leaves the old pipeline. `{ prev }` distinguishes "revert to null" from "nothing pending".
-  const quantRevert = useRef<{ prev: string | null } | null>(null);
+  // The whole optimistic selection, not just the label: a pick also applies the new model's
+  // steps/guidance defaults, and a rejected pick leaves the PREVIOUS pipeline resident. Reverting
+  // the label alone would have the next generation run the old model at the new model's settings.
+  const quantRevert = useRef<
+    { prev: string | null; prevSteps: number; prevGuidance: number } | null
+  >(null);
   // The Reapply target to restore if the optimistic swap fails: handleLoad overwrites lastLoad.current at load start, and a
   // load failing after that leaves the previous pipeline resident. Mirrors quantRevert.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
@@ -1574,6 +1579,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // A load that failed AFTER starting leaves the previous pipeline loaded, so roll the optimistic quant label back.
         if (quantRevert.current) {
           setQuant(quantRevert.current.prev);
+          setSteps(quantRevert.current.prevSteps);
+          setGuidance(quantRevert.current.prevGuidance);
           quantRevert.current = null;
         }
         // Same rollback for the Reapply target: the previous pipeline is still resident.
@@ -1593,6 +1600,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // Same optimistic-quant rollback as the error path: the swap did not take.
         if (quantRevert.current) {
           setQuant(quantRevert.current.prev);
+          setSteps(quantRevert.current.prevSteps);
+          setGuidance(quantRevert.current.prevGuidance);
           quantRevert.current = null;
         }
         // Restore the Reapply target too, so it never lingers on the failed pick after a cancel or eviction.
@@ -1977,7 +1986,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // or LATER in the poll: the old pipeline stays loaded either way. The poll owns the after-start revert via quantRevert.
       if (meta.ggufVariant && meta.ggufFilename) {
         const prevQuant = quant;
-        quantRevert.current = { prev: prevQuant };
+        const prevSteps = steps;
+        const prevGuidance = guidance;
+        quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance };
         setQuant(meta.ggufVariant);
         const dq = defaultsFor(id);
         setSteps(dq.steps);
@@ -1989,6 +2000,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         ).then((started) => {
           if (!started) {
             setQuant(prevQuant);
+            setSteps(prevSteps);
+            setGuidance(prevGuidance);
             quantRevert.current = null;
           }
         });
@@ -2008,7 +2021,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // A direct pick carries no curated variant label; surface the filename so the selector stops advertising the old quant.
         // Optimistic, reverted if the load fails to start OR later in the poll (mirrors the curated branch above).
         const prevQuant = quant;
-        quantRevert.current = { prev: prevQuant };
+        const prevSteps = steps;
+        const prevGuidance = guidance;
+        quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance };
         setQuant(filename);
         const dq2 = defaultsFor(id);
         setSteps(dq2.steps);
@@ -2016,6 +2031,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
           if (!started) {
             setQuant(prevQuant);
+            setSteps(prevSteps);
+            setGuidance(prevGuidance);
             quantRevert.current = null;
           }
         });
@@ -2029,7 +2046,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
         const prevQuant = quant;
-        quantRevert.current = { prev: prevQuant };
+        const prevSteps = steps;
+        const prevGuidance = guidance;
+        quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance };
         setQuant(filename);
         const dsf = defaultsFor(id);
         setSteps(dsf.steps);
@@ -2037,6 +2056,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
           if (!started) {
             setQuant(prevQuant);
+            setSteps(prevSteps);
+            setGuidance(prevGuidance);
             quantRevert.current = null;
           }
         });
@@ -2049,7 +2070,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       // Optimistically clear the quant label, revert it if the load never starts.
       const prevQuant = quant;
-      quantRevert.current = { prev: prevQuant };
+      const prevSteps = steps;
+      const prevGuidance = guidance;
+      quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance };
       setQuant(null);
       const d = defaultsFor(id);
       setSteps(d.steps);
@@ -2057,11 +2080,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded).then((started) => {
         if (!started) {
           setQuant(prevQuant);
+          setSteps(prevSteps);
+          setGuidance(prevGuidance);
           quantRevert.current = null;
         }
       });
     },
-    [busy, handleLoad, loadOrStage, quant],
+    [busy, handleLoad, loadOrStage, quant, steps, guidance],
   );
 
   // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base, and queue the adapter for the LoRA discovery effect.

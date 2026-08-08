@@ -25,6 +25,8 @@ copies, ``canonical_base`` maps it back, and it is checked like its upstream.)
 
 from __future__ import annotations
 
+import hashlib
+import os
 import threading
 import time
 from pathlib import Path
@@ -48,14 +50,45 @@ _HEADER_TIMEOUT_SECONDS = 15
 # How long to wait for an interrupted read to notice before leaving it to the GC.
 _ABANDON_GRACE_SECONDS = 0.5
 
-# (repo_id, gguf_filename, has_token) -> inner_dim or None. Bounded and process-local. It memoises
-# the MISS too -- the three checks on one pick would otherwise re-probe an unreachable Hub three
-# times, and a sticky None is precisely the degradation this module promises anyway -- which is why
-# the token's PRESENCE is part of the key: a gated GGUF probed anonymously misses, and pasting a
-# token afterwards has to earn a fresh probe rather than inherit that None for the session.
-_INNER_DIM_CACHE: dict[tuple[str, str, bool], Optional[int]] = {}
+# (repo_id, gguf_filename, token fingerprint, local file identity) -> inner_dim or None. Bounded
+# and process-local. It memoises the MISS too -- the three checks on one pick would otherwise
+# re-probe an unreachable Hub three times, and a sticky None is the degradation this module
+# promises anyway. Which is exactly why the last two key parts exist: a sticky None must not
+# outlive its cause.
+#
+#   * the TOKEN, fingerprinted rather than stored. Keying on mere presence made every non-empty
+#     token one key, so a first probe with an expired credential poisoned the valid one that
+#     replaced it for the rest of the process.
+#   * the local file's IDENTITY (path, size, mtime). A checkpoint swapped in place keeps its path,
+#     so keying on the name alone answers the new file with the old file's dim -- refusing a valid
+#     9B pairing, or handing sd.cpp the 4B text encoders. It also makes the file ARRIVING a new
+#     key, so a miss taken before a download finished re-probes off disk for free.
+_INNER_DIM_CACHE: dict[tuple[str, str, str, Optional[tuple]], Optional[int]] = {}
 _INNER_DIM_CACHE_MAX = 256
 _CACHE_LOCK = threading.Lock()
+
+
+def _token_fingerprint(token: Optional[str]) -> str:
+    """A stable, non-reversible tag for a token, or "" for none. Never the token itself: this
+    lands in a process-global dict that a traceback or a heap dump would render."""
+    if not token:
+        return ""
+    return hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _file_identity(path: Optional[str]) -> Optional[tuple]:
+    """(path, size, mtime_ns) for a local checkpoint, or None when the pick is remote.
+
+    A file replaced under the same name is a different checkpoint, and stat is the cheapest thing
+    that says so. An unreadable stat returns a unique object rather than a constant, so a file we
+    cannot identify is never memoised as equal to anything else."""
+    if path is None:
+        return None
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return (path, object())
+    return (path, stat.st_size, stat.st_mtime_ns)
 
 
 def _local_gguf_path(repo_id: str, gguf_filename: str) -> Optional[str]:
@@ -206,26 +239,15 @@ def flux2_inner_dim_for_pick(
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
     token = (hf_token or "").strip() or None
-    key = (repo_id, gguf_filename, token is not None)
-    with _CACHE_LOCK:
-        if key in _INNER_DIM_CACHE:
-            memo = _INNER_DIM_CACHE[key]
-            if memo is not None:
-                return memo
-            cached_negative = True
-        else:
-            cached_negative = False
+    # Resolved BEFORE the memo is consulted, because the file's identity is part of the key. Two
+    # stats, against a probe that is otherwise an HTTP round trip.
     local = _local_gguf_path(repo_id, gguf_filename)
     if local is None and not allow_network:
         return None
-    if cached_negative and local is None:
-        # A remembered "no opinion" stops the picker re-probing the Hub on every check, which is
-        # the point of the memo. But it must not outlive its cause: a Hub blip, or a probe that
-        # simply ran BEFORE the download finished, would otherwise disable the free on-disk read
-        # for the rest of the process and leave the guard permanently silent on a pick that is
-        # now sitting in the cache. Re-reading disk costs nothing, so only the network half of
-        # the negative is honoured.
-        return None
+    key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))
+    with _CACHE_LOCK:
+        if key in _INNER_DIM_CACHE:
+            return _INNER_DIM_CACHE[key]
     if local is not None:
         # Same prefix parse as the remote path, so both read the file the same way: the loader's
         # backstop memory-maps the whole multi-GB checkpoint and builds a view over every tensor,

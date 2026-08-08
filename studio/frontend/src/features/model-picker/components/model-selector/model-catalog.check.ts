@@ -582,6 +582,8 @@ console.log("model-catalog check: all assertions passed");
 const HF_API = "https://huggingface.co/api/models";
 const HF_RESOLVE = "https://huggingface.co";
 const NETWORK_ATTEMPTS = 3;
+/** Per-attempt wall clock, headers and body together. Three of these still fit the job budget. */
+const NETWORK_TIMEOUT_MS = 20_000;
 const NETWORK_BATCH = 4;
 
 interface HubRepo {
@@ -601,19 +603,28 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function fetchWithRetry(
   url: string,
   init?: RequestInit,
-): Promise<{ response: Response | null; why: string }> {
+): Promise<{ response: Response | null; body: string; why: string }> {
   let why = "unknown";
   for (let attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++) {
     try {
-      const response = await fetch(url, init);
-      if (response.status !== 429 && response.status < 500) return { response, why: "" };
+      // A per-attempt deadline, or a peer that accepts the connection and then stalls has no
+      // retry and no fail-open: fetch simply never settles, and the scheduled job dies on its own
+      // 10-minute timeout as a RED run. Which is the one outcome this check promises not to
+      // produce for a network blip.
+      const response = await fetch(url, { ...init, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
+      // Read the body HERE, under that same deadline. Headers can arrive promptly and the body
+      // still stall, and the caller parses outside this function where an abort would surface as
+      // "the Hub answered 200 with unreadable JSON" -- a catalog failure, for a stalled socket.
+      // It also drains the 429/5xx responses we are about to retry, rather than leaking them.
+      const body = init?.method === "HEAD" ? "" : await response.text();
+      if (response.status !== 429 && response.status < 500) return { response, body, why: "" };
       why = `HTTP ${response.status}`;
     } catch (err) {
       why = String(err);
     }
     if (attempt < NETWORK_ATTEMPTS) await sleep(500 * 2 ** (attempt - 1));
   }
-  return { response: null, why };
+  return { response: null, body: "", why };
 }
 
 /** Run `work` over `items`, a few at a time: ~35 repos, and the Hub does not need a thundering herd. */
@@ -637,7 +648,7 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
   }
 
   await inBatches([...artifactsByRepo.entries()], async ([repoId, artifacts]) => {
-    const { response, why } = await fetchWithRetry(`${HF_API}/${repoId}`);
+    const { response, body, why } = await fetchWithRetry(`${HF_API}/${repoId}`);
     if (response === null) {
       console.warn(
         `::warning::${repoId}: the Hub did not answer after ${NETWORK_ATTEMPTS} attempts (${why}). Not a verdict about the catalog.`,
@@ -654,7 +665,7 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
     }
     let repo: HubRepo;
     try {
-      repo = (await response.json()) as HubRepo;
+      repo = JSON.parse(body) as HubRepo;
     } catch (err) {
       // A 200 that is not JSON is a captive portal or a proxy, not a catalog problem. Reject the
       // run rather than throwing out of Promise.all with a raw stack.

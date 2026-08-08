@@ -554,6 +554,65 @@ def test_a_remembered_hub_failure_still_suppresses_a_re_probe_while_nothing_is_o
     assert len(requests) == 1
 
 
+def test_a_checkpoint_swapped_in_place_is_read_again(monkeypatch, tmp_path):
+    """Same directory, same filename, different checkpoint. Keying the memo on the name alone
+    answers the new file with the old one's dim, which refuses a valid 9B pairing and hands the
+    native backend the 4B text encoders until the process restarts."""
+    local = tmp_path / "on-device"
+    local.mkdir()
+    target = local / KLEIN_4B_FILE
+    target.write_bytes(_gguf_header(3072, tmp_path))
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.flux2_inner_dim_for_pick(str(local), KLEIN_4B_FILE) == 3072
+
+    # Rewritten in place. os.stat resolution is coarse enough that a same-size overwrite inside
+    # one tick could tie, so the two headers differ in length as well -- which is also what a real
+    # 4B-for-9B swap looks like.
+    target.write_bytes(_gguf_header(4096, tmp_path, siblings = 9))
+
+    assert diffusion_compat.flux2_inner_dim_for_pick(str(local), KLEIN_4B_FILE) == 4096, (
+        "the memo answered for the file that used to be at this path"
+    )
+
+
+def test_a_bad_token_does_not_poison_the_good_one_that_replaces_it(monkeypatch, tmp_path):
+    """Keying on the token's mere PRESENCE made every non-empty credential one key. A first probe
+    with an expired token cached its miss there, and pasting a working token afterwards inherited
+    it for the rest of the process -- the preflight silently off for that pick."""
+    served: dict[str, bytes] = {}
+    requests: list[tuple[str, str]] = []
+
+    class _GatedSession:
+        def get(self, url, headers = None, timeout = None, stream = False):
+            token = (headers or {}).get("authorization", "")
+            requests.append((url, token))
+            if "good" not in token:
+                return _FakeResponse(401)
+            return _FakeResponse(206, served[KLEIN_4B_FILE])
+
+    served[KLEIN_4B_FILE] = _gguf_header(4096, tmp_path)
+    monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: _GatedSession())
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    diffusion_compat._reset_inner_dim_cache()
+
+    assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE, "expired") is None
+    assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE, "good") == 4096
+    # ...and each token still memoises on its own: the second good probe costs nothing.
+    before = len(requests)
+    assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE, "good") == 4096
+    assert len(requests) == before
+
+
+def test_the_memo_never_holds_the_token_itself():
+    """It is a process-global dict; a traceback or a heap dump renders it."""
+    diffusion_compat._reset_inner_dim_cache()
+    secret = "hf_averyrealsecrettoken"
+    assert secret not in diffusion_compat._token_fingerprint(secret)
+    assert diffusion_compat._token_fingerprint(None) == ""
+    assert diffusion_compat._token_fingerprint("a") != diffusion_compat._token_fingerprint("b")
+
+
 def test_a_gguf_already_on_disk_is_read_instead_of_fetched(monkeypatch, tmp_path):
     # A cached or On Device checkpoint answers for free, and it is the same file the loader opens.
     local = tmp_path / "local-repo"
