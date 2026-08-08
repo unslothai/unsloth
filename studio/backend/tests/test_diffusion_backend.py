@@ -5695,7 +5695,14 @@ def test_download_plan_stages_a_file_a_stale_live_copy_shadows(monkeypatch):
     _fake_hf_api(monkeypatch, {"unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS})
     shadowed = {"model_index.json"}
 
-    def probe(repo_id, filename, revision = None, expected_size = None, roots = None, **kwargs):
+    def probe(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+        roots = None,
+        **kwargs,
+    ):
         asks_live = roots is not None and roots != (None,)
         if filename in shadowed:
             # Present in the live root but the wrong bytes; correct in the other root.
@@ -5707,7 +5714,9 @@ def test_download_plan_stages_a_file_a_stale_live_copy_shadows(monkeypatch):
     plan = DiffusionBackend().download_plan("unsloth/Z-Image-Turbo", model_kind = "pipeline")
 
     staged = {f for entry in plan["entries"] for f in entry["files"]}
-    assert staged == shadowed, "a stale live copy must be restaged, not trusted as an other-root hit"
+    assert (
+        staged == shadowed
+    ), "a stale live copy must be restaged, not trusted as an other-root hit"
 
 
 def test_download_plan_stages_nothing_for_a_base_wholly_in_the_other_root(monkeypatch):
