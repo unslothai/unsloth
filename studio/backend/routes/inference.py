@@ -13494,9 +13494,15 @@ _SANDBOX_MEDIA_TYPES = {
 }
 
 
-def _sandbox_dir_for(session_id: str) -> str:
-    from core.inference.tools import get_sandbox_workdir
-    return os.path.realpath(get_sandbox_workdir(session_id))
+def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
+    """The session's sandbox directory.
+
+    ``create=False`` resolves the path without materialising it, so a read-only
+    request cannot leave a directory behind for every id it is asked about.
+    """
+    from core.inference.tools import get_sandbox_workdir, resolve_sandbox_workdir
+    resolver = get_sandbox_workdir if create else resolve_sandbox_workdir
+    return os.path.realpath(resolver(session_id))
 
 
 def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
@@ -13510,7 +13516,7 @@ def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
         raise HTTPException(status_code = 404, detail = "Not found")
     if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", safe_filename):
         raise HTTPException(status_code = 404, detail = "Not found")
-    sandbox_dir = _sandbox_dir_for(session_id)
+    sandbox_dir = _sandbox_dir_for(session_id, create = False)
     file_path = os.path.realpath(os.path.join(sandbox_dir, safe_filename))
     if file_path != sandbox_dir and not file_path.startswith(sandbox_dir + os.sep):
         raise HTTPException(
@@ -13533,7 +13539,7 @@ async def list_sandbox_files(
     """
     await _authenticate_header_or_query(request, token)
 
-    sandbox_dir = _sandbox_dir_for(session_id)
+    sandbox_dir = _sandbox_dir_for(session_id, create = False)
     files = []
     if os.path.isdir(sandbox_dir):
         try:

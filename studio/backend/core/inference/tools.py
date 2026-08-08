@@ -7110,14 +7110,27 @@ _workdirs: dict[str, str] = {}
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
 _SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,64}\Z")
+# Reserved on Windows even as a directory name, and an API caller picks this id.
+_WINDOWS_DEVICE_NAMES = frozenset(
+    ["con", "prn", "aux", "nul"]
+    + [f"com{i}" for i in range(1, 10)]
+    + [f"lpt{i}" for i in range(1, 10)]
+)
 _PROJECT_SESSION_PREFIX = "project-"
+
+
+def _usable_session_id(session_id: str) -> bool:
+    """Matches the id charset and is a name every OS can hold as a directory."""
+    if not _SESSION_ID_RE.match(session_id):
+        return False
+    return session_id.split(".")[0].lower() not in _WINDOWS_DEVICE_NAMES
 
 
 def _get_project_workdir(session_id: str) -> str | None:
     if not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
     project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
-    if not project_id or not _SESSION_ID_RE.match(project_id):
+    if not project_id or not _usable_session_id(project_id):
         return None
     try:
         from storage.studio_db import ensure_chat_project_workspace
@@ -7210,12 +7223,12 @@ def _get_workdir(session_id: str | None = None) -> str:
         _migrate_legacy_sandbox(sandbox_root_path)
         project_workdir = (
             _get_project_workdir(session_id)
-            if session_id and _SESSION_ID_RE.match(session_id)
+            if session_id and _usable_session_id(session_id)
             else None
         )
         if project_workdir:
             workdir = project_workdir
-        elif session_id and _SESSION_ID_RE.match(session_id):
+        elif session_id and _usable_session_id(session_id):
             workdir = os.path.join(sandbox_root_path, session_id)
             if not os.path.realpath(workdir).startswith(
                 os.path.realpath(sandbox_root_path) + os.sep
@@ -7242,6 +7255,27 @@ def get_sandbox_workdir(session_id: str | None = None) -> str:
     return _get_workdir(session_id)
 
 
+def resolve_sandbox_workdir(session_id: str | None = None) -> str:
+    """Where a session's sandbox would be, without creating it.
+
+    For read-only callers: serving a file must not materialise a directory for
+    every id someone asks about.
+    """
+    if session_id:
+        project = _get_project_workdir(session_id) if _usable_session_id(session_id) else None
+        if project:
+            return project
+    cached = _workdirs.get(session_id or "_default")
+    if cached:
+        return cached
+    root = sandbox_root()
+    if not session_id:
+        return os.path.join(root, "_default")
+    if not _usable_session_id(session_id):
+        return os.path.join(root, "_invalid")
+    return os.path.join(root, session_id)
+
+
 def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     """Drop a deleted chat's sandbox. True when something was removed.
 
@@ -7250,7 +7284,7 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     need ``delete_files``, since they are the user's and are downloadable from
     the chat. Project workspaces are shared and have their own delete flow.
     """
-    if not session_id or not _SESSION_ID_RE.match(session_id):
+    if not session_id or not _usable_session_id(session_id):
         return False
     if session_id.startswith(_PROJECT_SESSION_PREFIX):
         return False

@@ -98,10 +98,7 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
                            (e.g., ["Unsloth*Trainer.py"]). If None or empty,
                            the entire cache directory is deleted (legacy behavior).
     """
-    for cache_dir in _CACHE_DIRS:
-        if not cache_dir.exists():
-            continue
-
+    for cache_dir in get_existing_cache_dirs():
         if preserve_patterns:
             logger.info(
                 f"Cleaning unsloth compiled cache (preserving {preserve_patterns}): " f"{cache_dir}"

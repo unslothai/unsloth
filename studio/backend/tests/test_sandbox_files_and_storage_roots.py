@@ -255,5 +255,52 @@ def test_sandbox_removal_cannot_escape_the_root(tmp_path, monkeypatch):
     assert outside.is_dir()
 
 
+def test_a_windows_device_name_never_becomes_a_directory(tmp_path, monkeypatch):
+    """CON, NUL and friends are reserved on Windows even as folder names, and
+    the session id comes from the caller."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    for reserved in ("con", "NUL", "aux", "COM1", "lpt9", "nul.txt"):
+        workdir = Path(tools.get_sandbox_workdir(reserved))
+        assert workdir.name == "_invalid", reserved
+        assert tools.remove_session_sandbox(reserved, delete_files=True) is False
+
+
+def test_reading_a_sandbox_never_creates_it(tmp_path, monkeypatch):
+    """A GET must not leave a folder behind for every id it is asked about."""
+    root = tmp_path / "sb"
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    resolved = Path(tools.resolve_sandbox_workdir("__LOCALID_ghost"))
+    assert resolved == root / "__LOCALID_ghost"
+    assert not resolved.exists()
+    assert not root.exists()
+    # The creating resolver still agrees on the path.
+    assert Path(tools.get_sandbox_workdir("__LOCALID_ghost")) == resolved
+    assert resolved.is_dir()
+
+
+def test_clearing_the_compiled_cache_covers_the_configured_location(tmp_path, monkeypatch):
+    """The cleanup must follow UNSLOTH_COMPILE_LOCATION, not just the defaults."""
+    pinned = tmp_path / "home" / "compiled_cache"
+    pinned.mkdir(parents=True)
+    (pinned / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
+    (pinned / "UnslothSFTTrainer.py").write_text("x = 1\n")
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(pinned))
+
+    from utils import cache_cleanup
+
+    assert pinned in cache_cleanup.get_existing_cache_dirs()
+    cache_cleanup.clear_unsloth_compiled_cache(preserve_patterns=["Unsloth*Trainer.py"])
+    assert not (pinned / "unsloth_compiled_module_gemma3.py").exists()
+    assert (pinned / "UnslothSFTTrainer.py").is_file()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
