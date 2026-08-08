@@ -17,6 +17,9 @@ interface NativeIntentState {
   // single chat re-keys from "single:new" the moment the thread is created --
   // and the OS drop went to the window, which has one composer to send from.
   registeringImageDrops: number;
+  // Bumped when a drop fails before it reaches a queue. The composer watches
+  // this to drop a parked send rather than let it go out without the image.
+  imageDropFailures: number;
   addIntent: (intent: NativeIntent) => void;
   addAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   addImageAttachments: (targetKey: string, intents: NativeIntent[]) => void;
@@ -24,6 +27,7 @@ interface NativeIntentState {
   takeImageAttachments: (targetKey: string) => NativeIntent[];
   beginImageDropRegistration: () => void;
   endImageDropRegistration: () => void;
+  failImageDropRegistration: () => void;
   clearModelIntent: (intentId?: string) => void;
 }
 
@@ -32,6 +36,7 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   pendingAttachments: {},
   pendingImageAttachments: {},
   registeringImageDrops: 0,
+  imageDropFailures: 0,
   addAttachments: (targetKey, intents) => {
     const current = get().pendingAttachments;
     const pendingAttachments = enqueueNativeAttachments(
@@ -81,6 +86,9 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   },
   endImageDropRegistration: () => {
     set({ registeringImageDrops: Math.max(0, get().registeringImageDrops - 1) });
+  },
+  failImageDropRegistration: () => {
+    set({ imageDropFailures: get().imageDropFailures + 1 });
   },
   addIntent: (intent) => {
     if (intent.kind !== "model") {

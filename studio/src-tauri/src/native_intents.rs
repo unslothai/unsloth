@@ -545,24 +545,50 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
     }
 }
 
-#[tauri::command]
-pub fn read_native_attachment_file(
-    window: WebviewWindow,
-    state: tauri::State<'_, NativeIntakeState>,
-    token: String,
-) -> Result<NativeAttachmentFile, String> {
-    ensure_main_window(&window)?;
-    let entry = state.path_for_operation(&token, NativePathOperation::Attach)?;
+// Same shape as the clipboard reader: never traverse a link swapped in after
+// the path was validated, and never block the caller on a FIFO.
+fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
+    let unavailable = || "Path is no longer available.".to_string();
+    let metadata = fs::symlink_metadata(path).map_err(|_| unavailable())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(unavailable());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|_| unavailable())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::File::open(path).map_err(|_| unavailable())
+    }
+}
+
+fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFile, String> {
     let path = &entry.canonical_path;
     let mime_type = attachment_mime_type(path).ok_or_else(|| {
         "Only chat image attachments can be read for vision input.".to_string()
     })?;
-    let file = fs::File::open(path).map_err(|e| format!("Path is no longer available: {e}"))?;
+    let file = open_attachment_file(path)?;
     let metadata = file
         .metadata()
         .map_err(|e| format!("Path is no longer available: {e}"))?;
     if !metadata.is_file() || metadata.len() > MAX_NATIVE_ATTACHMENT_BYTES {
         return Err("Image attachment is unavailable or too large.".to_string());
+    }
+    // path_for_operation validated a fingerprint against the path; bind the
+    // handle we are about to read to that same one, or a swap in between wins.
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis() as u64);
+    if Some(metadata.len()) != entry.size_bytes || modified_ms != entry.modified_ms {
+        return Err("Native path changed after it was selected.".to_string());
     }
     // The file can still grow between the stat and the read, so cap the reader
     // itself rather than trusting the size we just measured.
@@ -584,6 +610,17 @@ pub fn read_native_attachment_file(
     })
 }
 
+#[tauri::command]
+pub fn read_native_attachment_file(
+    window: WebviewWindow,
+    state: tauri::State<'_, NativeIntakeState>,
+    token: String,
+) -> Result<NativeAttachmentFile, String> {
+    ensure_main_window(&window)?;
+    let entry = state.path_for_operation(&token, NativePathOperation::Attach)?;
+    read_attachment_payload(&entry)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,6 +636,61 @@ mod tests {
             "unsloth-native-intents-{name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    fn attachment_entry(path: &Path) -> (NativeIntakeState, NativePathEntry) {
+        let state = new_native_intake_state();
+        state.note_dropped_paths(std::slice::from_ref(&path.to_path_buf()));
+        let intent = state
+            .register_attachment_path(path, NativePathSourceKind::Drop)
+            .unwrap();
+        let entry = state
+            .path_for_operation(&intent.path.token, NativePathOperation::Attach)
+            .unwrap();
+        (state, entry)
+    }
+
+    #[test]
+    fn image_read_round_trips_and_names_the_file() {
+        let path = temp_path("photo").with_extension("png");
+        fs::write(&path, b"\x89PNG\r\n\x1a\n").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let payload = read_attachment_payload(&entry).unwrap();
+        assert_eq!(payload.mime_type, "image/png");
+        assert_eq!(BASE64.decode(payload.base64).unwrap(), b"\x89PNG\r\n\x1a\n");
+        assert!(payload.name.ends_with(".png"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn document_token_is_refused_by_the_image_reader() {
+        let path = temp_path("note").with_extension("pdf");
+        fs::write(&path, b"%PDF-1.4").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let err = read_attachment_payload(&entry).unwrap_err();
+        assert!(err.contains("Only chat image attachments"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn image_read_rejects_a_file_swapped_in_after_validation() {
+        let path = temp_path("swap").with_extension("png");
+        fs::write(&path, b"the dropped image").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        fs::write(&path, b"a different file entirely").unwrap();
+        let err = read_attachment_payload(&entry).unwrap_err();
+        assert!(err.contains("changed"), "unexpected error: {err}");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn image_read_refuses_more_than_the_cap() {
+        let path = temp_path("huge").with_extension("png");
+        fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let err = read_attachment_payload(&entry).unwrap_err();
+        assert!(err.contains("too large"), "unexpected error: {err}");
+        let _ = fs::remove_file(path);
     }
 
     #[test]

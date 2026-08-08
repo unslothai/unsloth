@@ -26,6 +26,9 @@ const RUST_IMAGE_ATTACHMENT_EXTS_RE = /IMAGE_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)
 const DOTTED_EXTENSION_RE = /"(\.[^"]+)"/g;
 const RUST_EXTENSION_RE = /"([^"]+)"/g;
 const RUST_MIME_ARM_RE = /Some\("(image\/[^"]+)"\)/g;
+const MIME_MATCH_BODY_RE = /fn attachment_mime_type[\s\S]*?match ext\.as_str\(\) \{([\s\S]*?)\n {4}\}/;
+const MIME_ARM_EXTENSION_RE = /^\s*((?:"[^"]+"\s*\|?\s*)+)=>\s*Some\("image\//gm;
+const COMPOSER_IMAGE_ACCEPT_RE = /const IMAGE_ACCEPT\s*=\s*"([^"]+)"/;
 const VISION_ADAPTER_ACCEPT_RE =
   /class VisionImageAdapter[^{]*\{\s*accept\s*=\s*"([^"]+)"/s;
 
@@ -230,4 +233,67 @@ test("every MIME type Rust stamps is one the vision adapter claims", () => {
 
   assert.ok(stamped.length > 0, "no image MIME arms found in native_intents.rs");
   assert.deepEqual(stamped, accepted);
+});
+
+// The join between the two tests above. Without it an extension can be added to
+// both allow-lists with no MIME arm: the drop is accepted, queued, and only
+// then refused by the reader, one toast per file.
+test("every accepted image extension has a Rust MIME arm", () => {
+  const policySource = readFileSync(
+    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
+    "utf8",
+  );
+  const accepted = [
+    ...(policySource
+      .match(RUST_IMAGE_ATTACHMENT_EXTS_RE)?.[1]
+      .matchAll(RUST_EXTENSION_RE) ?? []),
+  ]
+    .map((match) => match[1])
+    .sort();
+
+  const intentsSource = readFileSync(
+    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
+    "utf8",
+  );
+  const body = intentsSource.match(MIME_MATCH_BODY_RE)?.[1];
+  assert.ok(body, "attachment_mime_type match block not found");
+  const mapped = [...body.matchAll(MIME_ARM_EXTENSION_RE)]
+    .flatMap((match) => [...match[1].matchAll(/"([^"]+)"/g)].map((ext) => ext[1]))
+    .sort();
+
+  assert.ok(accepted.length > 0, "no IMAGE_ATTACHMENT_EXTS found");
+  assert.deepEqual(mapped, accepted);
+});
+
+// The one constant drop-paths.ts names in its own "keep in sync" comment.
+test("the drop image list matches the composer's file picker", () => {
+  const composerSource = readFileSync(
+    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
+    "utf8",
+  );
+  const picker = composerSource
+    .match(COMPOSER_IMAGE_ACCEPT_RE)?.[1]
+    .split(",")
+    .map((type) => type.trim().replace("image/", ""))
+    .sort();
+  const dropped = CHAT_IMAGE_DROP_ACCEPT.split(",")
+    .map((ext) => ext.trim().toLowerCase().replace(".", ""))
+    .map((ext) => (ext === "jpg" ? "jpeg" : ext))
+    .sort();
+
+  assert.ok(picker, "IMAGE_ACCEPT not found in shared-composer.tsx");
+  assert.deepEqual([...new Set(dropped)], picker);
+});
+
+test("document and image drop extensions stay disjoint", () => {
+  // classifyDropPaths sums the two filters, so an overlap silently turns a
+  // perfectly good drop into "unsupported".
+  const docs = RAG_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
+  const images = CHAT_IMAGE_DROP_ACCEPT.split(",").map((ext) =>
+    ext.trim().toLowerCase(),
+  );
+  assert.deepEqual(
+    images.filter((ext) => docs.includes(ext)),
+    [],
+  );
 });

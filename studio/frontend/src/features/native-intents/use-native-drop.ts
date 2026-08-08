@@ -83,29 +83,65 @@ function dropStateForPaths(
   };
 }
 
+interface RegisteredDrop {
+  docs: NativeIntent[];
+  images: NativeIntent[];
+  docsFailed: number;
+  imagesFailed: number;
+  error?: Error;
+}
+
+// Per path, not all-or-nothing: one bad file in a batch used to discard every
+// sibling that had already registered, leaving their leases to expire unused.
+async function registerEach(paths: string[]) {
+  const settled = await Promise.allSettled(
+    paths.map(registerNativeAttachmentPath),
+  );
+  const intents = settled.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+  const rejection = settled.find((result) => result.status === "rejected");
+  return {
+    intents,
+    failed: settled.length - intents.length,
+    error:
+      rejection && rejection.status === "rejected"
+        ? rejection.reason instanceof Error
+          ? rejection.reason
+          : new Error(String(rejection.reason))
+        : undefined,
+  };
+}
+
 async function registerDroppedAttachments(
   dropped: Extract<
     ReturnType<typeof classifyDropPaths>,
     { kind: "docs" | "images" | "attach" }
   >,
-): Promise<{ docs: NativeIntent[]; images: NativeIntent[] }> {
-  if (dropped.kind === "docs") {
-    const docs = await Promise.all(
-      dropped.paths.map(registerNativeAttachmentPath),
-    );
-    return { docs, images: [] };
-  }
-  if (dropped.kind === "images") {
-    const images = await Promise.all(
-      dropped.paths.map(registerNativeAttachmentPath),
-    );
-    return { docs: [], images };
-  }
+): Promise<RegisteredDrop> {
+  const docPaths =
+    dropped.kind === "docs"
+      ? dropped.paths
+      : dropped.kind === "attach"
+        ? dropped.docs
+        : [];
+  const imagePaths =
+    dropped.kind === "images"
+      ? dropped.paths
+      : dropped.kind === "attach"
+        ? dropped.images
+        : [];
   const [docs, images] = await Promise.all([
-    Promise.all(dropped.docs.map(registerNativeAttachmentPath)),
-    Promise.all(dropped.images.map(registerNativeAttachmentPath)),
+    registerEach(docPaths),
+    registerEach(imagePaths),
   ]);
-  return { docs, images };
+  return {
+    docs: docs.intents,
+    images: images.intents,
+    docsFailed: docs.failed,
+    imagesFailed: images.failed,
+    error: docs.error ?? images.error,
+  };
 }
 
 export function useNativeModelDrop(options: NativeModelDropOptions): NativeModelDropState {
@@ -171,20 +207,31 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           const store = useNativeIntentStore.getState();
           if (needsImages) store.beginImageDropRegistration();
           try {
-            const { docs, images } = await registerDroppedAttachments(dropped);
-            if (disposed) return;
+            const registered = await registerDroppedAttachments(dropped);
             const latestOptions = optionsRef.current;
+            // Both callbacks only enqueue against a target key, so a drop that
+            // outlived this listener still reaches the chat it landed on.
             const attachOptions =
+              !disposed &&
               latestOptions.attachmentScope === currentOptions.attachmentScope
                 ? latestOptions
                 : currentOptions;
-            if (docs.length > 0) {
-              await attachOptions.onAttach?.(docs);
+            if (registered.docs.length > 0) {
+              await attachOptions.onAttach?.(registered.docs);
             }
-            if (images.length > 0) {
-              await attachOptions.onAttachImages?.(images);
+            if (registered.images.length > 0) {
+              await attachOptions.onAttachImages?.(registered.images);
+            }
+            if (registered.imagesFailed > 0) {
+              store.failImageDropRegistration();
+            }
+            if (registered.docsFailed + registered.imagesFailed > 0) {
+              toast.error("Could not attach dropped files", {
+                description: registered.error?.message ?? "Some files were skipped.",
+              });
             }
           } catch (error) {
+            if (needsImages) store.failImageDropRegistration();
             toast.error("Could not attach dropped files", {
               description: error instanceof Error ? error.message : String(error),
             });
