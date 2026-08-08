@@ -302,7 +302,27 @@ if DEVICE_TYPE == "cuda":
         torch.cuda.is_bf16_supported = is_bf16_supported
     del major_version, minor_version
 elif DEVICE_TYPE == "hip":
-    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
+    old_is_bf16_supported = torch.cuda.is_bf16_supported
+    try:
+        gcn_arch = (
+            str(torch.cuda.get_device_properties(0).gcnArchName)
+            .split(":", 1)[0]
+            .strip()
+            .lower()
+        )
+    except Exception:
+        gcn_arch = ""
+
+    # torch.cuda.is_bf16_supported() reports True on some RDNA 1/2 GPUs even
+    # though gfx10 has no native BF16 arithmetic. Triton then selects BF16 dot
+    # product intrinsics which LLVM cannot lower for these targets.
+    SUPPORTS_BFLOAT16 = not gcn_arch.startswith("gfx10") and old_is_bf16_supported()
+
+    def is_bf16_supported(*args, **kwargs):
+        return SUPPORTS_BFLOAT16
+
+    torch.cuda.is_bf16_supported = is_bf16_supported
+    del gcn_arch, old_is_bf16_supported
 elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
