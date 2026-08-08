@@ -7128,11 +7128,6 @@ def _session_in_flight(session_id: "str | None"):
                 _active_sessions[key] -= 1
 
 
-def _session_is_busy(session_id: str) -> bool:
-    with _active_sessions_lock:
-        return _active_sessions.get(session_id, 0) > 0
-
-
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
 _SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,64}\Z")
 # Reserved on Windows even as a directory name, and an API caller picks this id.
@@ -7371,13 +7366,22 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
         return False
     if session_id.startswith(_PROJECT_SESSION_PREFIX):
         return False
-    if _session_is_busy(session_id):
-        # A running tool still has this as its cwd. Leaving the folder is the
-        # recoverable outcome; the next delete or clear picks it up.
-        return False
     # Deleting a chat can be the first thing that happens after an upgrade, and
-    # the folder to remove may still be at the legacy root.
+    # the folder to remove may still be at the legacy root. Outside the lock
+    # below: it can move a whole tree, and it takes a lock of its own.
     _migrate_legacy_sandbox(sandbox_root())
+    # Held across the decision AND the unlink: checking first and deleting after
+    # leaves a window for a tool to start in between, and it would then be
+    # running in a directory this call is about to remove.
+    with _active_sessions_lock:
+        if _active_sessions.get(session_id, 0) > 0:
+            # Leaving the folder is the recoverable outcome; the next delete or
+            # clear picks it up.
+            return False
+        return _remove_session_sandbox_locked(session_id, delete_files)
+
+
+def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     root = os.path.realpath(sandbox_root())
     entry = os.path.join(root, session_id)
     # The entry itself, not what it resolves to: a session directory replaced by

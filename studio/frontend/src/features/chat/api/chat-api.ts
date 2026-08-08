@@ -795,12 +795,15 @@ export async function getForkCount(
   return data.count;
 }
 
-export async function deleteChatThreads(threadIds: string[]): Promise<void> {
+export async function deleteChatThreads(
+  threadIds: string[],
+  args: { deleteFiles?: boolean } = {},
+): Promise<void> {
   if (threadIds.length === 0) return;
   const response = await authFetch("/api/chat/threads", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: threadIds }),
+    body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
   });
   await parseJsonOrThrow<unknown>(response);
   notifyChatHistoryUpdated();

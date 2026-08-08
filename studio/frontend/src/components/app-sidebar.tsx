@@ -1212,21 +1212,32 @@ export function AppSidebar() {
     closeMobileIfOpen();
   }
 
-  async function handleDeleteThread(item: Parameters<typeof deleteChatItem>[0]) {
-    await deleteChatItem(item, activeThreadId, (view) => {
-      navigate({
-        to: "/chat",
-        search: item.projectId
-          ? { project: item.projectId }
-          : { new: view.newThreadNonce },
-      });
-    });
+  async function handleDeleteThread(
+    item: Parameters<typeof deleteChatItem>[0],
+    args: { deleteFiles?: boolean } = {},
+  ) {
+    await deleteChatItem(
+      item,
+      activeThreadId,
+      (view) => {
+        navigate({
+          to: "/chat",
+          search: item.projectId
+            ? { project: item.projectId }
+            : { new: view.newThreadNonce },
+        });
+      },
+      args,
+    );
   }
 
   // Shared chat delete: same error toast and pin cleanup with or without the confirm dialog.
-  async function deleteChatWithCleanup(item: SidebarItem) {
+  async function deleteChatWithCleanup(
+    item: SidebarItem,
+    args: { deleteFiles?: boolean } = {},
+  ) {
     try {
-      await handleDeleteThread(item);
+      await handleDeleteThread(item, args);
       unpinChat(item.id);
     } catch (err) {
       toast.error(translate("shell.toast.failedToDeleteChat"), {
@@ -1391,11 +1402,14 @@ export function AppSidebar() {
     if (!target) return;
     const shouldDeleteProjectFiles =
       target.kind === "project" && deleteProjectFiles;
+    const shouldDeleteChatFiles = target.kind === "chat" && deleteProjectFiles;
     setConfirmingDelete(null);
-    // Reset so the next project delete never inherits this checkbox.
+    // Reset so the next delete never inherits this switch.
     setDeleteProjectFiles(false);
     if (target.kind === "chat") {
-      await deleteChatWithCleanup(target.item);
+      await deleteChatWithCleanup(target.item, {
+        deleteFiles: shouldDeleteChatFiles,
+      });
       return;
     }
     if (target.kind === "project") {
@@ -2778,23 +2792,24 @@ export function AppSidebar() {
             ) : null}
           </DialogDescription>
         </DialogHeader>
-        {confirmingDelete?.kind === "project" ? (
+        {confirmingDelete ? (
           <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
             <label htmlFor="delete-project-files" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 Delete files and sandbox folder
               </span>
               <span className="block break-words text-xs leading-5 text-muted-foreground">
-                {confirmingDelete.project.rootPath
-                  ? confirmingDelete.project.rootPath
-                  : "The project workspace folder will be removed from disk."}
+                {confirmingDelete.kind === "project"
+                  ? (confirmingDelete.project.rootPath ??
+                    "The project workspace folder will be removed from disk.")
+                  : "Anything this chat's tools wrote is removed from disk. Off keeps the folder."}
               </span>
             </label>
             <Switch
               id="delete-project-files"
               checked={deleteProjectFiles}
               onCheckedChange={setDeleteProjectFiles}
-              aria-label="Delete project files and sandbox folder"
+              aria-label="Delete files and sandbox folder"
             />
           </div>
         ) : null}
@@ -2811,9 +2826,7 @@ export function AppSidebar() {
             variant="destructive"
             onClick={() => void commitDelete()}
           >
-            {confirmingDelete?.kind === "project" && deleteProjectFiles
-              ? "Delete all"
-              : t("common.delete")}
+            {deleteProjectFiles ? "Delete all" : t("common.delete")}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -1367,5 +1367,66 @@ def test_a_directory_studio_creates_is_marked(tmp_path, monkeypatch):
     assert (pinned / cache_cleanup.CACHE_MARKER).is_file()
 
 
+def test_removal_and_the_busy_check_are_one_decision(tmp_path, monkeypatch):
+    """Checking first and deleting after leaves a window for a tool to start in
+    between, and it would then be running in a directory this call removes."""
+    import threading
+    import time
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_race111"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    started = threading.Event()
+    entered = threading.Event()
+
+    real_rmdir = tools.os.rmdir
+
+    def slow_rmdir(path):
+        # Stand in for the window between deciding and unlinking.
+        entered.set()
+        time.sleep(0.3)
+        return real_rmdir(path)
+
+    monkeypatch.setattr(tools.os, "rmdir", slow_rmdir)
+    result = {}
+
+    def remover():
+        result["removed"] = tools.remove_session_sandbox(session)
+
+    def tool():
+        entered.wait(timeout = 5)
+        with tools._session_in_flight(session):
+            started.set()
+            time.sleep(0.05)
+
+    threads = [threading.Thread(target = remover), threading.Thread(target = tool)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout = 10)
+
+    # The tool could only take the lock after the removal finished, so it never
+    # ran inside a directory that was being deleted.
+    assert started.is_set()
+    assert result["removed"] is True
+    assert tools._active_sessions == {}
+
+
+def test_the_delete_dialog_offers_the_same_choice_for_a_chat():
+    """Without it every deleted chat that wrote a file leaves its sandbox
+    behind with nothing left to reach it."""
+    root = Path(__file__).resolve().parents[2] / "frontend" / "src"
+    sidebar = (root / "components" / "app-sidebar.tsx").read_text(encoding = "utf-8")
+    assert "shouldDeleteChatFiles" in sidebar
+    assert "deleteChatWithCleanup(target.item, {" in sidebar
+
+    api = (root / "features" / "chat" / "api" / "chat-api.ts").read_text(encoding = "utf-8")
+    assert "delete_files: !!args.deleteFiles" in api
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
