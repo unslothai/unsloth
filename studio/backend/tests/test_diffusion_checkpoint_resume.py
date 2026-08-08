@@ -1725,7 +1725,9 @@ def test_the_sampler_reports_whether_it_restored():
     saved = sampler.state_dict()
     assert PermutationBatchSampler(4, __import__("random").Random(1)).load_state_dict(saved) is True
     for bad in (None, {}, {"n": 4, "order": "nope", "pos": 0}, {"n": 9, "order": [0], "pos": 0}):
-        assert PermutationBatchSampler(4, __import__("random").Random(1)).load_state_dict(bad) is False
+        assert (
+            PermutationBatchSampler(4, __import__("random").Random(1)).load_state_dict(bad) is False
+        )
 
 
 def test_the_identity_records_the_precision_the_run_will_actually_use(monkeypatch, run_dir):
@@ -1745,9 +1747,9 @@ def test_the_identity_records_the_precision_the_run_will_actually_use(monkeypatc
     new_card = dc.identity_for_config(cfg)
 
     assert old_card.precision == "fp16" and new_card.precision == "bf16"
-    assert old_card.mismatch_reason(new_card) is not None, (
-        "moving the same request between the two cards must not read as the same run"
-    )
+    assert (
+        old_card.mismatch_reason(new_card) is not None
+    ), "moving the same request between the two cards must not read as the same run"
 
 
 def test_the_revision_is_pinned_once_the_base_is_on_disk(monkeypatch, run_dir):
@@ -1775,9 +1777,7 @@ def test_both_trainers_pin_the_revision_after_the_load():
     """Source-ordered: the loop needs a GPU, so this asserts the call sits after the load event
     and before the restore that validates against it."""
     for name in ("diffusion_lora_trainer", "diffusion_dit_trainer"):
-        src = (
-            Path(dc.__file__).resolve().parent / f"{name}.py"
-        ).read_text(encoding = "utf-8")
+        src = (Path(dc.__file__).resolve().parent / f"{name}.py").read_text(encoding = "utf-8")
         pin = src.index("identity = with_resolved_revision(")
         load = src.index('"model_load_completed"')
         restore = src.index("restore_resume_state(")

@@ -612,11 +612,7 @@ class DiffusionTrainingService:
                     # calculation back to the checkpoint manifest's older target, which then
                     # reported "nothing left to train" for a run whose whole point was a
                     # raised target.
-                    total_steps = int(
-                        s.get("total_steps")
-                        or cfg.get("train_steps")
-                        or 0
-                    ),
+                    total_steps = int(s.get("total_steps") or cfg.get("train_steps") or 0),
                     write_error = s.get("resume_blocked_reason"),
                 ),
                 "config": cfg,
