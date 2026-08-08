@@ -133,7 +133,9 @@ _MODULE_EXTENSIONS = {
 _EXTENSION_MODULES = {
     extension: module for module, names in _MODULE_EXTENSIONS.items() for extension in names.split()
 }
-_CASE_INSENSITIVE_MODULES = _exts("imagefolder audiofolder videofolder pdffolder")
+# The folder builders. They are the only ones datasets registers in both letter cases and
+# the only ones with a non-empty metadata allow-list.
+_FOLDER_MODULES = _exts("imagefolder audiofolder videofolder pdffolder")
 # datasets' tie-break after the count, before falling back to the extension string itself.
 _EXTENSION_PRIORITY = (".parquet", ".jsonl", ".json", ".csv")
 # Folder-builder metadata loses every tie-break in datasets, so it never picks a split's
@@ -145,11 +147,10 @@ _MAX_MODULE_INFERENCE_FILES = 200
 # lets that error out of DatasetCard.load, so nothing in the snapshot is loadable.
 _UNPARSABLE_METADATA = object()
 _STANDALONE_YAML = ".huggingface.yaml"
-# huggingface_hub's REGEX_YAML_BLOCK, which is what actually decides whether a README
-# has front matter. An opening --- followed by anything but a newline is plain text.
-_CARD_BLOCK_RE = re.compile(
-    r"^(\s*---(?:\r\n|\r|\n))([\S\s]*?)((?:\r\n|\r|\n)---[ \t]*(\r\n|\n|$))"
-)
+# huggingface_hub's REGEX_YAML_BLOCK, which is what actually decides whether a README has
+# front matter, as pinned at 0.36.2. Neither delimiter tolerates trailing spaces there; 1.x
+# added them to the closing one, so a padded close is a card we deliberately do not read.
+_CARD_BLOCK_RE = re.compile(r"^(\s*---[\r\n]+)([\S\s]*?)([\r\n]+---(\r\n|\n|$))")
 # A snapshot file and the module datasets would build it with, None when it is not data.
 _DataFile = tuple[PurePosixPath, Optional[str]]
 _CONFIG_RE = re.compile(r"[^<>:/\\|?*\x00-\x1f\x7f]+")
@@ -211,16 +212,26 @@ def _safe_data_dir(value: Any) -> Optional[str]:
     return value
 
 
-def _declared_configs(payload: Any) -> Any:
-    """Declared config -> data_dir for configs datasets would infer, or _UNPARSABLE_METADATA.
+def _valid_declared_data_files(entries: Any) -> bool:
+    """datasets checks every config's data_files shape before it builds any of them."""
+    if entries is None or isinstance(entries, str):
+        return True
+    if not isinstance(entries, list):
+        return False
+    for item in entries:
+        if isinstance(item, str):
+            continue
+        if not isinstance(item, dict) or len(item) != 2 or "split" not in item:
+            return False
+        if not isinstance(item["split"], str) or _SPLIT_RE.fullmatch(item["split"]) is None:
+            return False
+        if not isinstance(item.get("path"), (str, list)):
+            return False
+    return True
 
-    datasets keys its metadata configs by name, so a repeated name is last-wins, it infers
-    each config under its own data_dir, and it treats an empty configs list as no configs.
-    Only a config with no data_files field at all is inferred; an empty one resolves to
-    nothing and raises.
-    """
-    if payload is None or payload == []:
-        return {}
+
+def _collapsed_configs(payload: Any) -> Any:
+    """Declared configs keyed by name the way datasets keys them, or _UNPARSABLE_METADATA."""
     if not isinstance(payload, list):
         return _UNPARSABLE_METADATA
     # Every entry is checked, including past the cap: one unusable name anywhere makes
@@ -235,11 +246,29 @@ def _declared_configs(payload: Any) -> Any:
             # so nothing in the snapshot is loadable and inference must not step in.
             return _UNPARSABLE_METADATA
         entries = item.get("data_files")
+        if not _valid_declared_data_files(entries):
+            return _UNPARSABLE_METADATA
         if entries is not None and not entries:
             # Resolved while the builder is picked, so this raises whichever config the
             # caller asks for and every sibling option is dead too.
             return _UNPARSABLE_METADATA
         collapsed[name] = item
+    return collapsed
+
+
+def _declared_configs(payload: Any) -> Any:
+    """Declared config -> data_dir for configs datasets would infer, or _UNPARSABLE_METADATA.
+
+    datasets keys its metadata configs by name, so a repeated name is last-wins, it infers
+    each config under its own data_dir, and it treats an empty configs list as no configs.
+    Only a config with no data_files field at all is inferred; an empty one resolves to
+    nothing and raises.
+    """
+    if payload is None or payload == []:
+        return {}
+    collapsed = _collapsed_configs(payload)
+    if collapsed is _UNPARSABLE_METADATA:
+        return _UNPARSABLE_METADATA
     first = next(iter(collapsed.values()))
     if "data_files" in first and first["data_files"] is None:
         # datasets sanitizes the first config's declaration before it looks at a file, and a
@@ -431,7 +460,8 @@ def _read_card_metadata(path: Path) -> Any:
     try:
         content = path.read_text(encoding = "utf-8")
     except (OSError, UnicodeError, ValueError):
-        return None
+        # DatasetCard.load opens the file whenever it is there and lets the error out.
+        return _UNPARSABLE_METADATA
     block = _CARD_BLOCK_RE.search(content)
     if block is None:
         # RepoCard's own grammar, so a delimiter it will not accept leaves the card empty
@@ -486,8 +516,9 @@ def _snapshot_card_data(snapshot: Path) -> Any:
             except (YAMLError, OSError, UnicodeError, ValueError):
                 # The loader opens this file unconditionally and lets the error out.
                 return _UNPARSABLE_METADATA
-        if payload is not None and not isinstance(payload, dict):
-            # The loader feeds this straight to dict.update, which raises on a scalar.
+        if payload and not isinstance(payload, dict):
+            # The loader skips a falsy block and feeds anything else straight to dict.update,
+            # which raises on a scalar.
             return _UNPARSABLE_METADATA
         if payload:
             card.update(payload)
@@ -510,7 +541,7 @@ def _extension_module(extension: str) -> Optional[str]:
     if module is not None:
         return module
     module = _EXTENSION_MODULES.get(extension.lower())
-    return module if module in _CASE_INSENSITIVE_MODULES else None
+    return module if module in _FOLDER_MODULES else None
 
 
 def _file_modules(filename: str) -> set:
@@ -559,6 +590,9 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
             if len(files) >= _MAX_SNAPSHOT_DATA_FILES:
                 return None
             files.append((PurePosixPath((relative / filename).as_posix()), _file_module(filename)))
+    # os.walk yields directory order, but the loader globs through fsspec and sorts, and
+    # only the first files of a split decide its module.
+    files.sort(key = lambda entry: entry[0].as_posix())
     return files
 
 
@@ -646,7 +680,9 @@ def _offerable_split(
         retained = (
             module in _file_modules(path.name)
             or _INDETERMINATE_MODULE in _file_modules(path.name)
-            or path.name in _METADATA_FILENAMES
+            # The metadata allow-list is empty for every non-folder builder, so a csv builder
+            # never reads metadata.csv the way an imagefolder one does.
+            or (module in _FOLDER_MODULES and path.name in _METADATA_FILENAMES)
         )
         if not retained:
             continue
@@ -656,46 +692,94 @@ def _offerable_split(
     return trainable
 
 
-def _declared_module(payload: Any) -> Optional[str]:
-    """The builder datasets picks for the whole dataset from the first config's data_files.
+def _declared_paths(item: dict[str, Any]) -> list[str]:
+    """The globs a config declares, flattened. A declared path is one glob or a list."""
+    entries = item.get("data_files")
+    if isinstance(entries, str):
+        values: list[Any] = [entries]
+    elif isinstance(entries, list):
+        values = []
+        for entry in entries:
+            value = entry.get("path") if isinstance(entry, dict) else entry
+            values.extend(value if isinstance(value, list) else [value])
+    else:
+        return []
+    return [value for value in values if isinstance(value, str)]
 
-    It infers one module before it builds any config, so a config it has to infer patterns
-    for is still built with the module the declared ones produced.
-    """
-    if not isinstance(payload, list):
+
+def _paths_module(paths: Iterable[str]) -> Optional[str]:
+    named = [(candidate, _file_module(candidate.name)) for path in paths if (candidate := PurePosixPath(path))]
+    if not named:
         return None
-    for item in payload:
-        if not isinstance(item, dict) or "data_files" not in item:
-            continue
-        entries = item["data_files"]
-        if isinstance(entries, str):
-            paths = [entries]
-        elif isinstance(entries, dict):
-            paths = [value for value in entries.values() if isinstance(value, str)]
-        elif isinstance(entries, list):
-            # A declared path is one glob or a list of them.
-            paths = []
-            for entry in entries:
-                value = entry.get("path") if isinstance(entry, dict) else entry
-                paths.extend(value if isinstance(value, list) else [value])
-        else:
-            continue
-        named = [
-            (candidate, _file_module(candidate.name))
-            for path in paths
-            if isinstance(path, str) and (candidate := PurePosixPath(path))
-        ]
-        if named:
-            # An extensionless glob names no module, and the loader would settle one by
-            # resolving it, so we cannot claim a sibling config agrees with it.
-            return _split_module(named) or _INDETERMINATE_MODULE
-    return None
+    # An extensionless glob names no module, and the loader would settle one by resolving it,
+    # so we cannot claim a sibling config agrees with it.
+    return _split_module(named) or _INDETERMINATE_MODULE
+
+
+def _declared_module(payload: Any) -> Optional[str]:
+    """The builder datasets picks for the whole dataset, or None when the snapshot picks it.
+
+    It settles one module before it builds any config, and only the first effective config's
+    data_files feed that choice. If the first one declares none, the module comes from the
+    snapshot's own patterns instead and every config is still built with it.
+    """
+    collapsed = _collapsed_configs(payload)
+    if collapsed is _UNPARSABLE_METADATA or not collapsed:
+        return None
+    return _paths_module(_declared_paths(next(iter(collapsed.values()))))
+
+
+def _mismatched_configs(payload: Any, required: str) -> set[str]:
+    """Declared configs whose own files the settled builder could not read."""
+    collapsed = _collapsed_configs(payload)
+    if collapsed is _UNPARSABLE_METADATA:
+        return set()
+    mismatched = set()
+    for name, item in collapsed.items():
+        module = _paths_module(_declared_paths(item))
+        if module is not None and module != _INDETERMINATE_MODULE and module != required:
+            mismatched.add(name)
+    return mismatched
+
+
+def _grouped_splits(files: list[_DataFile]) -> Optional[dict[str, list[_DataFile]]]:
+    """The splits datasets would resolve, by the first stage that names any."""
+    grouped = _sharded_split_files(files)
+    if grouped is None:
+        return None
+    if not grouped:
+        grouped = _keyword_split_files(files, _DIR_NAME_SPLITS)
+    if not grouped:
+        grouped = _keyword_split_files(files, _FILENAME_SPLITS)
+    if not grouped:
+        grouped = {"train": files}
+    return grouped
+
+
+def _grouped_module(grouped: dict[str, list[_DataFile]]) -> Optional[str]:
+    """The one module these splits agree on. A split with no data at all makes datasets
+    raise, and one whose module we cannot pin down could disagree with the others."""
+    modules = {_split_module(entries) for entries in grouped.values()}
+    if len(modules) != 1 or modules & {None, _INDETERMINATE_MODULE}:
+        return None
+    return modules.pop()
+
+
+def _snapshot_module(snapshot: Path, scans: dict[str, Optional[list]]) -> str:
+    """The module datasets settles on from the snapshot's own patterns, or one no config can
+    match when it would not settle on any."""
+    if "" not in scans:
+        scans[""] = _snapshot_data_files(snapshot)
+    files = scans[""]
+    grouped = _grouped_splits(files) if files else None
+    return (grouped and _grouped_module(grouped)) or _INDETERMINATE_MODULE
 
 
 def _inferred_snapshot_options(
     snapshot: Path,
     configs: Iterable[tuple[str, str]] = (("default", ""),),
     required_module: Optional[str] = None,
+    scans: Optional[dict[str, Optional[list]]] = None,
 ) -> set[tuple[str, str]]:
     """Mirror datasets' default local-file split inference without importing it.
 
@@ -705,32 +789,21 @@ def _inferred_snapshot_options(
     than read out of the archive, and external symlinks stay rejected for cache safety.
     """
     options: set[tuple[str, str]] = set()
-    scans: dict[str, Optional[list]] = {}
+    scans = {} if scans is None else scans
     for config, data_dir in configs:
         root = data_dir.strip("/")
         if root not in scans:
-            # Cards may name thousands of configs; one scan per directory serves them all.
             scans[root] = _snapshot_data_files(snapshot / root if root else snapshot)
         files = scans[root]
         if not files:
             continue
 
-        grouped = _sharded_split_files(files)
+        grouped = _grouped_splits(files)
         if grouped is None:
             continue
-        if not grouped:
-            grouped = _keyword_split_files(files, _DIR_NAME_SPLITS)
-        if not grouped:
-            grouped = _keyword_split_files(files, _FILENAME_SPLITS)
-        if not grouped:
-            grouped = {"train": files}
-
-        # A split with no data at all makes datasets raise, and one whose module we cannot
-        # pin down could disagree with the others, so neither leaves anything to offer.
-        modules = {_split_module(entries) for entries in grouped.values()}
-        if len(modules) != 1 or modules & {None, _INDETERMINATE_MODULE}:
+        module = _grouped_module(grouped)
+        if module is None:
             continue
-        module = modules.pop()
         if required_module is not None and module != required_module:
             # One module is chosen for the whole dataset, so this config would be built with
             # a builder that cannot read its files.
@@ -748,6 +821,8 @@ def _inferred_snapshot_options(
 
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     options: set[tuple[str, str]] = set()
+    # Cards may name thousands of configs; one scan per directory serves them all.
+    scans: dict[str, Optional[list]] = {}
 
     card_data = _snapshot_card_data(snapshot)
     if card_data is _UNPARSABLE_METADATA:
@@ -785,14 +860,15 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         if data_dir is not None and not any(existing == config for existing, _split in options)
     ]
     if declared_configs:
+        required = _declared_module(card_data.get("configs")) or _snapshot_module(snapshot, scans)
+        # One builder serves every config, so a config declaring another format is dead:
+        # it either fails to generate or silently misreads its own files.
+        mismatched = _mismatched_configs(card_data.get("configs"), required)
+        options = {(config, split) for config, split in options if config not in mismatched}
         if pending:
-            options.update(
-                _inferred_snapshot_options(
-                    snapshot, pending, _declared_module(card_data.get("configs"))
-                )
-            )
+            options.update(_inferred_snapshot_options(snapshot, pending, required, scans))
     elif not options:
-        options.update(_inferred_snapshot_options(snapshot))
+        options.update(_inferred_snapshot_options(snapshot, scans = scans))
     return options
 
 

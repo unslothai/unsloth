@@ -1043,7 +1043,7 @@ def test_snapshot_options_ignore_front_matter_the_card_parser_will_not_take(tmp_
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
 
-def test_snapshot_options_read_front_matter_whose_closing_delimiter_is_padded(tmp_path):
+def test_snapshot_options_ignore_front_matter_whose_closing_delimiter_is_padded(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
     snapshot.mkdir(parents = True)
     (snapshot / "README.md").write_text(
@@ -1051,7 +1051,8 @@ def test_snapshot_options_read_front_matter_whose_closing_delimiter_is_padded(tm
     )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
-    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+    # The pinned huggingface_hub 0.36.2 does not allow padding on either delimiter.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
 
 def test_snapshot_options_do_not_infer_past_an_unsafe_card_symlink(tmp_path):
@@ -1065,3 +1066,89 @@ def test_snapshot_options_do_not_infer_past_an_unsafe_card_symlink(tmp_path):
     (snapshot / "README.md").symlink_to(outside)
 
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_infer_past_an_empty_standalone_yaml(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / ".huggingface.yaml").write_text("[]\n", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # The loader only merges a truthy block, so a falsy one is not the scalar that raises.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_scalar_standalone_yaml(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / ".huggingface.yaml").write_text("- a\n", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_ignore_folder_metadata_for_a_non_folder_module(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "train").mkdir(parents = True)
+    (snapshot / "train" / "data.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    outside = tmp_path / "metadata.csv"
+    outside.write_text("text\nrow\n", encoding = "utf-8")
+    (snapshot / "train" / "metadata.csv").symlink_to(outside)
+
+    # The json builder's metadata allow-list is empty, so it never reads that file.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_declared_data_files_shape_the_loader_refuses(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_files:\n  - path: a/train.jsonl\n- config_name: b\n  data_dir: b\n")
+    for name in ("a", "b"):
+        (snapshot / name).mkdir()
+        (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_take_the_module_from_the_collapsed_first_config(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: foo\n  data_files: foo/train.csv\n- config_name: foo\n  data_files: foo/train.jsonl\n- config_name: bar\n  data_dir: bar\n")
+    (snapshot / "foo").mkdir()
+    (snapshot / "foo" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+    (snapshot / "foo" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "bar").mkdir()
+    (snapshot / "bar" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("foo", "train"), ("bar", "train")}
+
+
+def test_snapshot_options_do_not_let_a_later_config_pick_the_module(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_dir: a\n- config_name: b\n  data_files: b/train.csv\n")
+    (snapshot / "a").mkdir()
+    (snapshot / "a" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b").mkdir()
+    (snapshot / "b" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    # The snapshot's own patterns settle on json, so a is offered and the csv config is not.
+    assert local_options._snapshot_options(snapshot) == {("a", "train")}
+
+
+def test_snapshot_options_reject_a_card_that_is_not_utf_8(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_bytes(b"\xff\xfe---\nconfigs: x\n---\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_data_files_come_back_in_resolved_order(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "b").mkdir(parents = True)
+    (snapshot / "a").mkdir()
+    for name in ("b/z.jsonl", "a/y.jsonl", "b/a.jsonl"):
+        (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    files = local_options._snapshot_data_files(snapshot)
+    paths = [path.as_posix() for path, _module in files]
+    assert paths == sorted(paths)
