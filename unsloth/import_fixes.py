@@ -981,14 +981,19 @@ def _infer_required_torchvision(torch_major, torch_minor):
     return None
 
 
-# What a torchvision built against a different torch looks like when it loads.
+# Unambiguous on their own: only a torchvision/torch mismatch produces these.
 _TORCHVISION_ABI_MARKERS = (
     "torchvision::",
-    "undefined symbol",
-    "cannot open shared object file",
     "torchvision.io.video",
     "torchvision.io._video",
 )
+# A loader failure is a torchvision break only when it names torchvision or the
+# torch libraries it links. The probe below imports torchvision where nothing
+# used to, so a box whose torchvision cannot load for an UNRELATED reason (a
+# missing CUDA library, say) must keep importing unsloth exactly as before
+# instead of being handed a hard "reinstall torchvision".
+_LOADER_FAILURE_MARKERS = ("undefined symbol", "cannot open shared object file")
+_TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
 
 
 def _is_broken_torchvision_error(error) -> bool:
@@ -998,6 +1003,9 @@ def _is_broken_torchvision_error(error) -> bool:
         checked.add(id(current))
         message = str(current)
         if any(marker in message for marker in _TORCHVISION_ABI_MARKERS):
+            return True
+        if (any(m in message for m in _LOADER_FAILURE_MARKERS)
+                and any(m in message for m in _TORCH_LIBRARY_MARKERS)):
             return True
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
