@@ -7346,7 +7346,17 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     # the folder to remove may still be at the legacy root.
     _migrate_legacy_sandbox(sandbox_root())
     root = os.path.realpath(sandbox_root())
-    target = os.path.realpath(os.path.join(root, session_id))
+    entry = os.path.join(root, session_id)
+    # The entry itself, not what it resolves to: a session directory replaced by
+    # a symlink to a sibling still passes the containment check below, and would
+    # take the other chat's files with it. Drop the link, keep the target.
+    if os.path.islink(entry):
+        try:
+            os.unlink(entry)
+            return True
+        except OSError:
+            return False
+    target = os.path.realpath(entry)
     if os.path.dirname(target) != root or not os.path.isdir(target):  # contained
         return False
     _workdirs.pop(session_id, None)
@@ -10613,12 +10623,10 @@ def _python_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
-            return ended + (_created_file_sentinels(workdir, _before) if session_id else "")
+            return ended + _created_file_sentinels(workdir, _before)
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled." + (
-                _created_file_sentinels(workdir, _before) if session_id else ""
-            )
+            return "Execution cancelled." + _created_file_sentinels(workdir, _before)
 
         result = output or ""
         if proc.returncode != 0:
@@ -10632,8 +10640,9 @@ def _python_exec(
         result += hint
 
         # Tell the frontend what this call created, so the user can open it.
-        if session_id:
-            result += _created_file_sentinels(workdir, _before)
+        # No session id yet on a chat's first turn, and that call still runs in
+        # a real workdir (_default), which the UI and the route both resolve.
+        result += _created_file_sentinels(workdir, _before)
 
         return result
 
@@ -10730,12 +10739,10 @@ def _bash_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
-            return ended + (_created_file_sentinels(workdir, _before) if session_id else "")
+            return ended + _created_file_sentinels(workdir, _before)
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled." + (
-                _created_file_sentinels(workdir, _before) if session_id else ""
-            )
+            return "Execution cancelled." + _created_file_sentinels(workdir, _before)
 
         result = output or ""
         if proc.returncode != 0:
@@ -10744,8 +10751,7 @@ def _bash_exec(
         hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
         result += hint
-        if session_id:
-            result += _created_file_sentinels(workdir, _before)
+        result += _created_file_sentinels(workdir, _before)
         return result
 
     except Exception as e:

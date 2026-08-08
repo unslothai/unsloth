@@ -783,7 +783,9 @@ def test_a_marked_directory_is_cleared(tmp_path, monkeypatch):
     (cache / cache_cleanup.CACHE_MARKER).touch()
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(cache))
     cache_cleanup.clear_unsloth_compiled_cache()
-    assert not cache.exists()
+    assert not (cache / "helper.py").exists()
+    # Emptied, not unmade: the marker is what keeps it ours next time.
+    assert list(cache.iterdir()) == [cache / cache_cleanup.CACHE_MARKER]
 
 
 def test_generated_modules_identify_a_cache_without_a_marker(tmp_path, monkeypatch):
@@ -887,7 +889,8 @@ def test_a_marked_shared_directory_is_still_cleared_whole(tmp_path, monkeypatch)
     (cache / "leftover.txt").write_text("x")
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(cache))
     cache_cleanup.clear_unsloth_compiled_cache()
-    assert not cache.exists()
+    assert not (cache / "leftover.txt").exists()
+    assert list(cache.iterdir()) == [cache / cache_cleanup.CACHE_MARKER]
 
 
 def test_many_empty_directories_do_not_stall_the_snapshot(tmp_path, monkeypatch):
@@ -1040,6 +1043,72 @@ def test_a_collision_is_not_a_retryable_failure(tmp_path, monkeypatch):
     tools._migrate_legacy_sandbox(str(root))
     assert tools._legacy_sandbox_migrated is True
     assert (legacy / "old.csv").is_file(), "the legacy copy was not left behind"
+
+
+def test_deleting_a_symlinked_session_spares_the_chat_it_points_at(tmp_path, monkeypatch):
+    """realpath containment passes for a sibling, so a link left in the sandbox
+    could take another chat's files."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    victim = Path(tools.get_sandbox_workdir("__LOCALID_victim1"))
+    (victim / "report.csv").write_text("a,b\n")
+    link = victim.parent / "__LOCALID_link111"
+    link.symlink_to(victim)
+
+    assert tools.remove_session_sandbox("__LOCALID_link111", delete_files = True) is True
+    assert not link.exists(), "the stale link stayed behind"
+    assert (victim / "report.csv").read_text() == "a,b\n", "the other chat lost its files"
+    assert victim.is_dir()
+
+
+def test_the_marker_survives_a_cache_clear(tmp_path, monkeypatch):
+    """Startup clears the cache it just created, and nothing else rewrites the
+    marker, so without this our own cache is demoted to 'shared'."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+
+    from utils import cache_cleanup
+    from utils.paths import storage_roots
+
+    storage_roots.setup_cache_env()
+    pinned = Path(os.environ["UNSLOTH_COMPILE_LOCATION"])
+    (pinned / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert (pinned / cache_cleanup.CACHE_MARKER).is_file()
+    assert not (pinned / "unsloth_compiled_module_gemma3.py").exists()
+
+    # Still ours on the next pass, so a __pycache__ left by the compiler goes too.
+    (pinned / "__pycache__").mkdir()
+    (pinned / "UnslothSFTTrainer.py").write_text("trainer\n")
+    cache_cleanup.clear_unsloth_compiled_cache(preserve_patterns = ["Unsloth*Trainer.py"])
+    assert not (pinned / "__pycache__").exists()
+    assert (pinned / "UnslothSFTTrainer.py").is_file()
+    assert (pinned / cache_cleanup.CACHE_MARKER).is_file()
+
+
+def test_the_first_turn_of_a_chat_still_reports_its_files(tmp_path, monkeypatch):
+    """A tool can run before the thread id exists; that call writes into the
+    _default workdir, which the UI and the download route both resolve."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    result = tools._python_exec("open('first.csv','w').write('a,b\\n')")
+    assert "__FILES__:" in result, result
+    assert "first.csv" in result
+
+    bash_result = tools._bash_exec("printf 'a,b\\n' > second.csv")
+    assert "second.csv" in bash_result, bash_result
+
+    # And that is where the route looks for them.
+    workdir = Path(tools.resolve_sandbox_workdir("_default"))
+    assert (workdir / "first.csv").is_file()
+    assert workdir == Path(tools.resolve_sandbox_workdir(None))
 
 
 if __name__ == "__main__":

@@ -96,6 +96,16 @@ def _holds_generated_modules(path: Path) -> bool:
         return False
 
 
+def _builtin_cache_paths() -> set:
+    """Paths that are ours by construction, so they need no marker."""
+    paths = {str(p) for p in _CACHE_DIRS}
+    try:
+        paths.add(str(Path.cwd() / "unsloth_compiled_cache"))
+    except OSError:
+        pass
+    return paths
+
+
 def _cleanable_cache_dirs() -> "List[tuple]":
     """``(directory, dedicated)`` for every cache dir something may be removed from.
 
@@ -104,11 +114,7 @@ def _cleanable_cache_dirs() -> "List[tuple]":
     carrying the marker, are ours whole. Anywhere else only the generated files
     are ours, so only those may go.
     """
-    builtin = {str(p) for p in _CACHE_DIRS}
-    try:
-        builtin.add(str(Path.cwd() / "unsloth_compiled_cache"))
-    except OSError:
-        pass
+    builtin = _builtin_cache_paths()
     cleanable: "List[tuple]" = []
     for cache_dir in get_existing_cache_dirs():
         if str(cache_dir) in builtin or _is_dedicated_cache(cache_dir):
@@ -193,3 +199,13 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
             # Legacy: remove the entire directory
             logger.info(f"Removing unsloth compiled cache: {cache_dir}")
             shutil.rmtree(cache_dir, ignore_errors = True)
+        # The marker goes with whatever was cleared, and nothing rewrites it
+        # (setup_cache_env only writes it when it first sets the variable), so
+        # the next cleanup would demote our own cache to "shared". Built-in
+        # paths are recognised without one and stay deleted.
+        if dedicated and str(cache_dir) not in _builtin_cache_paths():
+            try:
+                cache_dir.mkdir(parents = True, exist_ok = True)
+                (cache_dir / CACHE_MARKER).touch(exist_ok = True)
+            except OSError as e:
+                logger.debug(f"Could not restore the cache marker in {cache_dir}: {e}")
