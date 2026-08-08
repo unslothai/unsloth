@@ -144,7 +144,9 @@ def register_compiled_cache_on_path() -> None:
 
     # Iterate in reverse so earlier _CACHE_DIRS entries (higher priority) are
     # inserted last and thus end up first in sys.path / PYTHONPATH.
-    for cache_dir in reversed(get_existing_cache_dirs()):
+    # Same ownership test as cleanup: a directory in the launch dir that merely
+    # has the name would otherwise shadow real dependencies for every worker.
+    for cache_dir in reversed([d for d, _dedicated in _cleanable_cache_dirs()]):
         resolved = str(cache_dir.resolve())
         if resolved not in sys.path:
             sys.path.insert(0, resolved)

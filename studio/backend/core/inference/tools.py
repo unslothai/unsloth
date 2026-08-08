@@ -10481,7 +10481,11 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     return snapshot
 
 
-def _created_file_sentinels(workdir: str | None, before: "dict[str, tuple]") -> str:
+def _created_file_sentinels(
+    workdir: str | None,
+    before: "dict[str, tuple]",
+    exclude: "str | None" = None,
+) -> str:
     """Sentinels naming the files this call created or overwrote.
 
     ``__IMAGES__`` renders inline as before; ``__FILES__`` carries every file
@@ -10489,8 +10493,12 @@ def _created_file_sentinels(workdir: str | None, before: "dict[str, tuple]") -> 
     model sees the result.
     """
     after = _snapshot_workdir_files(workdir)
+    # ``exclude`` is this call's own scratch script by exact name, not a pattern
+    # reserved over names a tool might pick.
     changed = sorted(
-        name for name, key in after.items() if name not in before or before[name] != key
+        name
+        for name, key in after.items()
+        if name != exclude and (name not in before or before[name] != key)
     )
     if not changed:
         return ""
@@ -10554,16 +10562,18 @@ def _python_exec(
         )
 
     tmp_path = None
+    _scratch_name = None
     workdir = _get_workdir(session_id)
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
     try:
-        # Outside the sandbox: keeping it in the workdir meant reserving a
-        # filename pattern, and a script writing studio_exec_results.py then
-        # lost its file to the executor's own housekeeping.
-        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_")
+        # In the workdir: it is what Python puts on sys.path[0], so an earlier
+        # call's helper.py stays importable, __file__ resolves inside the
+        # sandbox, and the script's directory is 0o700 rather than shared /tmp.
+        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
         # utf-8 so non-ASCII in model-written code survives the OS default codec
         # (Windows cp1252 would otherwise raise UnicodeEncodeError).
+        _scratch_name = os.path.basename(tmp_path)
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
 
@@ -10617,10 +10627,14 @@ def _python_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
-            return ended + _created_file_sentinels(workdir, _before)
+            return ended + (
+                _created_file_sentinels(workdir, _before, _scratch_name) if session_id else ""
+            )
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled." + _created_file_sentinels(workdir, _before)
+            return "Execution cancelled." + (
+                _created_file_sentinels(workdir, _before, _scratch_name) if session_id else ""
+            )
 
         result = output or ""
         if proc.returncode != 0:
@@ -10636,7 +10650,12 @@ def _python_exec(
         # Tell the frontend what this call created, so the user can open it.
         # No session id yet on a chat's first turn, and that call still runs in
         # a real workdir (_default), which the UI and the route both resolve.
-        result += _created_file_sentinels(workdir, _before)
+        # Only for a chat that has an id. Without one every first turn shares
+        # the _default workdir, and a card pinned to it would later download
+        # whatever the next new chat wrote there. Reporting these needs a
+        # per-chat sandbox allocated before tools run, not this.
+        if session_id:
+            result += _created_file_sentinels(workdir, _before, _scratch_name)
 
         return result
 
@@ -10733,10 +10752,14 @@ def _bash_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
-            return ended + _created_file_sentinels(workdir, _before)
+            return ended + (
+                _created_file_sentinels(workdir, _before) if session_id else ""
+            )
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled." + _created_file_sentinels(workdir, _before)
+            return "Execution cancelled." + (
+                _created_file_sentinels(workdir, _before) if session_id else ""
+            )
 
         result = output or ""
         if proc.returncode != 0:
@@ -10745,7 +10768,12 @@ def _bash_exec(
         hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
         result += hint
-        result += _created_file_sentinels(workdir, _before)
+        # Only for a chat that has an id. Without one every first turn shares
+        # the _default workdir, and a card pinned to it would later download
+        # whatever the next new chat wrote there. Reporting these needs a
+        # per-chat sandbox allocated before tools run, not this.
+        if session_id:
+            result += _created_file_sentinels(workdir, _before)
         return result
 
     except Exception as e:

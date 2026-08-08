@@ -1090,27 +1090,6 @@ def test_the_marker_survives_a_cache_clear(tmp_path, monkeypatch):
     assert (pinned / cache_cleanup.CACHE_MARKER).is_file()
 
 
-def test_the_first_turn_of_a_chat_still_reports_its_files(tmp_path, monkeypatch):
-    """A tool can run before the thread id exists; that call writes into the
-    _default workdir, which the UI and the download route both resolve."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    result = tools._python_exec("open('first.csv','w').write('a,b\\n')")
-    assert "__FILES__:" in result, result
-    assert "first.csv" in result
-
-    bash_result = tools._bash_exec("printf 'a,b\\n' > second.csv")
-    assert "second.csv" in bash_result, bash_result
-
-    # And that is where the route looks for them.
-    workdir = Path(tools.resolve_sandbox_workdir("_default"))
-    assert (workdir / "first.csv").is_file()
-    assert workdir == Path(tools.resolve_sandbox_workdir(None))
-
-
 def test_an_unrelated_cache_named_folder_in_the_cwd_is_not_ours(tmp_path, monkeypatch):
     """Studio is launched from wherever the shell happens to be, so the name
     alone cannot license an rmtree."""
@@ -1212,6 +1191,100 @@ def test_studios_own_sandbox_bookkeeping_is_not_a_user_file(tmp_path, monkeypatc
     # Other dotfiles are still the user's.
     assert ".gitignore" in snapshot
     assert inference._sandbox_listing_names(str(workdir)) == [".gitignore"]
+
+
+def test_a_module_written_by_an_earlier_call_is_importable(tmp_path, monkeypatch):
+    """The scratch script is what Python puts on sys.path[0], so moving it out
+    of the sandbox broke `import helper` and sent __file__ outside."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_import1"
+    tools._python_exec('open("helper.py", "w").write("VALUE = 42")', session_id = session)
+    result = tools._python_exec("import helper; print(helper.VALUE)", session_id = session)
+    assert "42" in result, result
+
+    where = tools._python_exec("print(__file__)", session_id = session)
+    workdir = tools.get_sandbox_workdir(session)
+    assert workdir in where, where
+
+
+def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
+    """Excluded by its exact name for this one call, so a tool writing
+    studio_exec_results.py still keeps it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_scratch2"
+    result = tools._python_exec(
+        'open("studio_exec_results.py", "w").write("x = 1")', session_id = session
+    )
+    files = result.split("__FILES__:")[1]
+    assert "studio_exec_results.py" in files
+    workdir = Path(tools.get_sandbox_workdir(session))
+    # Only the user's file is left; the executor cleaned up after itself.
+    assert sorted(p.name for p in workdir.iterdir()) == ["studio_exec_results.py"]
+    assert json.loads(files) == [
+        {"name": "studio_exec_results.py", "size": 5},
+    ]
+
+
+def test_a_turn_without_a_chat_id_reports_no_files(tmp_path, monkeypatch):
+    """Every such turn shares the _default workdir, so a card pinned to it
+    would later download whatever the next new chat wrote there."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    result = tools._python_exec('open("first.csv", "w").write("a")')
+    assert "__FILES__" not in result, result
+    assert "__IMAGES__" not in result
+    bash_result = tools._bash_exec('printf a > second.csv')
+    assert "__FILES__" not in bash_result, bash_result
+
+
+def test_an_unowned_cwd_cache_is_not_put_on_the_import_path(tmp_path, monkeypatch):
+    """Registering it would shadow real dependencies for every spawned worker."""
+    launch_dir = tmp_path / "someproject"
+    cache = launch_dir / "unsloth_compiled_cache"
+    cache.mkdir(parents = True)
+    (cache / "numpy.py").write_text("raise SystemExit('shadowed')\n")
+    monkeypatch.chdir(launch_dir)
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+    monkeypatch.setenv("PYTHONPATH", "")
+
+    from utils import cache_cleanup
+
+    before = list(sys.path)
+    try:
+        cache_cleanup.register_compiled_cache_on_path()
+        assert str(cache.resolve()) not in sys.path
+        assert str(cache.resolve()) not in os.environ.get("PYTHONPATH", "")
+    finally:
+        sys.path[:] = before
+
+
+def test_a_marked_cwd_cache_is_still_registered(tmp_path, monkeypatch):
+    launch_dir = tmp_path / "studioproject"
+    cache = launch_dir / "unsloth_compiled_cache"
+    cache.mkdir(parents = True)
+    monkeypatch.chdir(launch_dir)
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+
+    from utils import cache_cleanup
+
+    (cache / cache_cleanup.CACHE_MARKER).touch()
+    before = list(sys.path)
+    try:
+        cache_cleanup.register_compiled_cache_on_path()
+        assert str(cache.resolve()) in sys.path
+    finally:
+        sys.path[:] = before
 
 
 if __name__ == "__main__":
