@@ -186,6 +186,11 @@ async function probeHydratedIdleProgress(
       finalize(key, "complete", { bytes: updated.downloadedBytes });
       return "settled";
     }
+    // The high-water mark, not the raw reading: a poll that cannot resolve a
+    // variant's expected files reports zero, and evicting a live job on one of
+    // those is how a finished download lost its card. A persisted job whose
+    // cache really was wiped therefore no longer reads "gone" here; it adopts
+    // and the poll loop's idle-evict grace removes it instead.
     return downloadedBytes > 0 ? "active" : "gone";
   } catch {
     return "active";
