@@ -76,10 +76,13 @@ setup_fail() {
     local message
     message=$(printf '%s' "$*" | tr '\r\n' '  ')
     # Match setup.ps1: update.rs sets UNSLOTH_TAURI_UPDATE on every platform, and
-    # promotes this line over the generic "Update exited with code N".
-    case "${UNSLOTH_TAURI_MODE:-0},${UNSLOTH_TAURI_UPDATE:-0}" in
-        1,*|true,*|*,1|*,true) printf '[TAURI:ERROR] %s\n' "$message" ;;
-    esac
+    # promotes this line over the generic "Update exited with code N". Test each
+    # variable separately; one joined subject lets a comma inside either value
+    # alias the other's arm and print the marker on a plain CLI run.
+    local tauri_marker=0
+    case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) tauri_marker=1 ;; esac
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) tauri_marker=1 ;; esac
+    if [ "$tauri_marker" -eq 1 ]; then printf '[TAURI:ERROR] %s\n' "$message"; fi
     exit "$exit_code"
 }
 

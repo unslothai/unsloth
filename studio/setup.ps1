@@ -1800,7 +1800,9 @@ function Clear-WebViewCaches {
 # Keep environment override precedence consistent with the other resolvers.
 # Every resolver below joins onto USERPROFILE; stop here so a blank one reports
 # through Exit-SetupFailure instead of throwing a raw binding error under "Stop".
-if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+# Null or empty only: Join-Path accepts a whitespace-only value, and that used to
+# run to completion when UNSLOTH_STUDIO_HOME was fully qualified.
+if ([string]::IsNullOrEmpty($env:USERPROFILE)) {
     Write-Host "ERROR: USERPROFILE is not set." -ForegroundColor Red
     Exit-SetupFailure "USERPROFILE is not set"
 }

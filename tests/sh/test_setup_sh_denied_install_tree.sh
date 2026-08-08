@@ -156,6 +156,31 @@ else
 fi
 chmod 755 "$OURS"
 
+# setup_fail gates [TAURI:ERROR] on two variables. Test them separately: one joined
+# case subject would let a comma inside either value alias the other's arm.
+python3 - "$SETUP_SH" "$WORK/gate.sh" <<'PY'
+import sys, pathlib
+src = pathlib.Path(sys.argv[1]).read_text()
+i = src.index("setup_fail() {")
+pathlib.Path(sys.argv[2]).write_text(src[i:src.index("\n}\n", i) + 3])
+PY
+gate_marker() {  # $1=MODE ("-" for unset), $2=UPDATE ("-" for unset)
+    env -u UNSLOTH_TAURI_MODE -u UNSLOTH_TAURI_UPDATE \
+        ${1:+$([ "$1" = - ] || echo UNSLOTH_TAURI_MODE="$1")} \
+        ${2:+$([ "$2" = - ] || echo UNSLOTH_TAURI_UPDATE="$2")} \
+        bash -c '. "$1"; setup_fail 1 boom' _ "$WORK/gate.sh" 2>/dev/null | grep -c 'TAURI:ERROR' || true
+}
+[ "$(gate_marker 1 -)" = 1 ] && ok "the Tauri marker prints for UNSLOTH_TAURI_MODE=1" \
+                             || bad "the Tauri marker prints for UNSLOTH_TAURI_MODE=1"
+[ "$(gate_marker - 1)" = 1 ] && ok "the Tauri marker prints for UNSLOTH_TAURI_UPDATE=1" \
+                             || bad "the Tauri marker prints for UNSLOTH_TAURI_UPDATE=1"
+[ "$(gate_marker - -)" = 0 ] && ok "a plain CLI run prints no Tauri marker" \
+                             || bad "a plain CLI run prints no Tauri marker"
+[ "$(gate_marker 0 'a,1')" = 0 ] && ok "a comma in UNSLOTH_TAURI_UPDATE does not alias the marker" \
+                                 || bad "a comma in UNSLOTH_TAURI_UPDATE does not alias the marker"
+[ "$(gate_marker '1,2' -)" = 0 ] && ok "a comma in UNSLOTH_TAURI_MODE does not alias the marker" \
+                                 || bad "a comma in UNSLOTH_TAURI_MODE does not alias the marker"
+
 # Mode 111 is searchable but not listable, and still breaks install_llama_prebuilt.py.
 NOLIST="$WORK/nolist"; mkdir -p "$NOLIST"; : > "$NOLIST/UNSLOTH_PREBUILT_INFO.json"
 chmod 111 "$NOLIST"
