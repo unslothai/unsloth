@@ -2639,7 +2639,11 @@ def test_h3_names_the_component_when_a_download_is_refused():
     assert "not published yet" in text
 
     # The same repo serves the encoder, so the component name has to come from the FILE.
-    encoder = str(h3_download_error("unsloth/MiniMax-H3-GGUF", H3_QWEN_Q2, _hub_error(RepositoryNotFoundError)))
+    encoder = str(
+        h3_download_error(
+            "unsloth/MiniMax-H3-GGUF", H3_QWEN_Q2, _hub_error(RepositoryNotFoundError)
+        )
+    )
     assert "text encoder" in encoder and "denoiser" not in encoder
 
     # A gated repo has a different remedy, so it must not reuse the private wording.
