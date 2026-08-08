@@ -5551,15 +5551,19 @@ def test_a_partial_scan_cannot_report_the_target_as_gone(monkeypatch, tmp_path):
     (entry / "blobs").mkdir(parents = True)
     (entry / "snapshots" / "rev0").mkdir(parents = True)
 
-    def _one_root_failed(_repo_type, _repo_id, force_active = False, scan_errors = None, **kw):
+    def _one_root_failed(
+        _repo_type,
+        _repo_id,
+        force_active = False,
+        scan_errors = None,
+        **kw,
+    ):
         if scan_errors is not None:
             scan_errors.append(PermissionError("denied"))
         return [entry]
 
     monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", _one_root_failed)
-    monkeypatch.setattr(
-        snapshot_progress.download_manifest, "read_manifest", lambda *a, **k: None
-    )
+    monkeypatch.setattr(snapshot_progress.download_manifest, "read_manifest", lambda *a, **k: None)
 
     result = snapshot_progress.compute_snapshot_progress(
         repo_type = "model",
@@ -5590,9 +5594,7 @@ def test_a_complete_scan_still_reports_the_target_as_gone(monkeypatch, tmp_path)
         "preferred_repo_cache_dirs",
         lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
     )
-    monkeypatch.setattr(
-        snapshot_progress.download_manifest, "read_manifest", lambda *a, **k: None
-    )
+    monkeypatch.setattr(snapshot_progress.download_manifest, "read_manifest", lambda *a, **k: None)
 
     result = snapshot_progress.compute_snapshot_progress(
         repo_type = "model",

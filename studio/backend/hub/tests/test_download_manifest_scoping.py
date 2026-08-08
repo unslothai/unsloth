@@ -447,9 +447,7 @@ def test_variant_delete_clears_legacy_scope_when_handed_a_RESOLVED_root(monkeypa
     )
     legacy = _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
 
-    removed = download_manifest.purge_state(
-        "model", "Org/Model", "Q4_K_M", hub_cache = str(resolved)
-    )
+    removed = download_manifest.purge_state("model", "Org/Model", "Q4_K_M", hub_cache = str(resolved))
 
     assert removed is True
     assert not legacy.is_file()

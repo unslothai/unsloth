@@ -424,7 +424,9 @@ def test_list_cached_gguf_load_id_breaks_mtime_ties_like_variant_discovery(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [legacy], raising = False)
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [legacy], raising = False
+    )
 
     rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
 
