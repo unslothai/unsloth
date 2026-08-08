@@ -9,6 +9,7 @@ selectively between model loads, preserving model-agnostic components (Trainers)
 that spawned subprocesses need.
 """
 
+import os
 import shutil
 import structlog
 from loggers import get_logger
@@ -197,16 +198,18 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
                     # Always clear __pycache__ and other subdirectories
                     shutil.rmtree(item, ignore_errors = True)
         else:
-            # Legacy: remove the entire directory
+            # Legacy: remove the entire directory. Resolved first: rmtree refuses
+            # a symlink, and ignore_errors would leave the whole cache in place.
             logger.info(f"Removing unsloth compiled cache: {cache_dir}")
-            shutil.rmtree(cache_dir, ignore_errors = True)
+            shutil.rmtree(Path(os.path.realpath(cache_dir)), ignore_errors = True)
         # The marker goes with whatever was cleared, and nothing rewrites it
         # (setup_cache_env only writes it when it first sets the variable), so
         # the next cleanup would demote our own cache to "shared". Built-in
         # paths are recognised without one and stay deleted.
         if dedicated and str(cache_dir) not in _builtin_cache_paths():
             try:
-                cache_dir.mkdir(parents = True, exist_ok = True)
-                (cache_dir / CACHE_MARKER).touch(exist_ok = True)
+                restored = Path(os.path.realpath(cache_dir))
+                restored.mkdir(parents = True, exist_ok = True)
+                (restored / CACHE_MARKER).touch(exist_ok = True)
             except OSError as e:
                 logger.debug(f"Could not restore the cache marker in {cache_dir}: {e}")

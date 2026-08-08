@@ -1397,12 +1397,28 @@ export function AppSidebar() {
     useState<DeleteTarget | null>(null);
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
 
+  /** Always through here: a stale switch would delete an unrelated sandbox. */
+  function openDeleteDialog(target: DeleteTarget) {
+    setDeleteFilesOnDelete(false);
+    setConfirmingDelete(target);
+  }
+
+  /** Only where a sandbox can actually be removed. A training run has none, and
+   *  a chat in a project shares the project workspace, which chat deletion does
+   *  not touch. */
+  function deleteTargetHasFiles(target: DeleteTarget | null): boolean {
+    if (!target) return false;
+    if (target.kind === "project") return true;
+    return target.kind === "chat" && !target.item.projectId;
+  }
+
   async function commitDelete() {
     const target = confirmingDelete;
     if (!target) return;
     const shouldDeleteProjectFiles =
       target.kind === "project" && deleteFilesOnDelete;
-    const shouldDeleteChatFiles = target.kind === "chat" && deleteFilesOnDelete;
+    const shouldDeleteChatFiles =
+      deleteTargetHasFiles(target) && target.kind === "chat" && deleteFilesOnDelete;
     setConfirmingDelete(null);
     // Reset so the next delete never inherits this switch.
     setDeleteFilesOnDelete(false);
@@ -1805,7 +1821,7 @@ export function AppSidebar() {
               variant="destructive"
               onSelect={() =>
                 confirmDeleteChats
-                  ? setConfirmingDelete({ kind: "chat", item })
+                  ? openDeleteDialog({ kind: "chat", item })
                   : void deleteChatWithCleanup(item)
               }
             >
@@ -2319,9 +2335,7 @@ export function AppSidebar() {
                                 variant="destructive"
                                 onSelect={() => {
                                   // Start each delete with the file toggle off: Cancel closes programmatically and skips the
-                                  // dialog onOpenChange reset.
-                                  setDeleteFilesOnDelete(false);
-                                  setConfirmingDelete({ kind: "project", project });
+                                  openDeleteDialog({ kind: "project", project });
                                 }}
                               >
                                 <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
@@ -2481,7 +2495,7 @@ export function AppSidebar() {
                               variant="destructive"
                               disabled={run.status === "running"}
                               onSelect={() =>
-                                setConfirmingDelete({ kind: "run", run })
+                                openDeleteDialog({ kind: "run", run })
                               }
                             >
                               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
@@ -2792,14 +2806,14 @@ export function AppSidebar() {
             ) : null}
           </DialogDescription>
         </DialogHeader>
-        {confirmingDelete ? (
+        {deleteTargetHasFiles(confirmingDelete) ? (
           <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
             <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 Delete files and sandbox folder
               </span>
               <span className="block break-words text-xs leading-5 text-muted-foreground">
-                {confirmingDelete.kind === "project"
+                {confirmingDelete?.kind === "project"
                   ? (confirmingDelete.project.rootPath ??
                     "The project workspace folder will be removed from disk.")
                   : "Anything this chat's tools wrote is removed from disk. Off keeps the folder."}
@@ -2826,7 +2840,9 @@ export function AppSidebar() {
             variant="destructive"
             onClick={() => void commitDelete()}
           >
-            {deleteFilesOnDelete ? "Delete all" : t("common.delete")}
+            {deleteTargetHasFiles(confirmingDelete) && deleteFilesOnDelete
+              ? "Delete all"
+              : t("common.delete")}
           </Button>
         </DialogFooter>
       </DialogContent>

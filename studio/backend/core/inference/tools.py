@@ -7110,6 +7110,9 @@ _workdirs: dict[str, str] = {}
 # Sessions with a tool call in flight. Deleting a chat unlinks its workdir, and
 # a process whose cwd has been removed fails every relative write with ENOENT.
 _active_sessions: "dict[str, int]" = {}
+# Deletions that arrived while a call was in flight. The thread is already gone
+# from history by then, so nothing would ever ask for this folder again.
+_pending_removals: "dict[str, bool]" = {}
 _active_sessions_lock = threading.Lock()
 
 
@@ -7124,6 +7127,8 @@ def _session_in_flight(session_id: "str | None"):
         with _active_sessions_lock:
             if _active_sessions.get(key, 0) <= 1:
                 _active_sessions.pop(key, None)
+                if key in _pending_removals:
+                    _remove_session_sandbox_locked(key, _pending_removals.pop(key))
             else:
                 _active_sessions[key] -= 1
 
@@ -7375,8 +7380,11 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     # running in a directory this call is about to remove.
     with _active_sessions_lock:
         if _active_sessions.get(session_id, 0) > 0:
-            # Leaving the folder is the recoverable outcome; the next delete or
-            # clear picks it up.
+            # Queued rather than dropped: the chat is already gone from history,
+            # so no later delete or clear would ever name this session again.
+            _pending_removals[session_id] = delete_files or _pending_removals.get(
+                session_id, False
+            )
             return False
         return _remove_session_sandbox_locked(session_id, delete_files)
 

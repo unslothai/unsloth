@@ -1316,8 +1316,7 @@ def test_a_chat_deleted_mid_call_keeps_its_sandbox(tmp_path, monkeypatch):
         may_finish.set()
         worker.join(timeout = 10)
 
-    # And once nothing is using it, the empty folder goes as before.
-    assert tools.remove_session_sandbox(session) is True
+    # The refused request was queued, so leaving the call performs it.
     assert not workdir.exists()
 
 
@@ -1426,6 +1425,77 @@ def test_the_delete_dialog_offers_the_same_choice_for_a_chat():
 
     api = (root / "features" / "chat" / "api" / "chat-api.ts").read_text(encoding = "utf-8")
     assert "delete_files: !!args.deleteFiles" in api
+
+
+def test_a_delete_during_a_call_happens_once_the_call_ends(tmp_path, monkeypatch):
+    """The thread is gone from history by then, so a dropped request would
+    strand the folder for good."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._pending_removals.clear()
+    session = "__LOCALID_defer11"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n")
+
+    with tools._session_in_flight(session):
+        assert tools.remove_session_sandbox(session, delete_files = True) is False
+        assert workdir.is_dir(), "removed under a running tool"
+    # Queued, so leaving the call performs it.
+    assert not workdir.exists()
+    assert tools._pending_removals == {}
+
+
+def test_a_queued_delete_keeps_the_strongest_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._pending_removals.clear()
+    session = "__LOCALID_defer22"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n")
+
+    with tools._session_in_flight(session):
+        tools.remove_session_sandbox(session, delete_files = False)
+        tools.remove_session_sandbox(session, delete_files = True)
+    assert not workdir.exists()
+
+
+def test_a_symlinked_cache_location_is_still_cleared(tmp_path, monkeypatch):
+    """rmtree refuses a symlink, and ignore_errors made that silent."""
+    real = tmp_path / "real_cache"
+    real.mkdir()
+    link = tmp_path / "link_cache"
+    link.symlink_to(real, target_is_directory = True)
+
+    from utils import cache_cleanup
+
+    (real / cache_cleanup.CACHE_MARKER).touch()
+    (real / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(link))
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert not (real / "unsloth_compiled_module_gemma3.py").exists()
+    assert (real / cache_cleanup.CACHE_MARKER).is_file(), "still ours next time"
+
+
+def test_the_delete_switch_only_appears_where_it_works():
+    """A training run has no sandbox, and a chat in a project shares the project
+    workspace, which chat deletion does not touch."""
+    sidebar = (
+        Path(__file__).resolve().parents[2]
+        / "frontend" / "src" / "components" / "app-sidebar.tsx"
+    ).read_text(encoding = "utf-8")
+    assert "function deleteTargetHasFiles" in sidebar
+    assert 'return target.kind === "chat" && !target.item.projectId;' in sidebar
+    assert "{deleteTargetHasFiles(confirmingDelete) ? (" in sidebar
+    # And every opener clears the switch, so it can never arrive preselected.
+    assert "function openDeleteDialog" in sidebar
+    assert "setConfirmingDelete({ kind:" not in sidebar
 
 
 if __name__ == "__main__":
