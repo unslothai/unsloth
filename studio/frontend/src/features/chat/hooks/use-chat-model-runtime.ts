@@ -1516,8 +1516,8 @@ export function useChatModelRuntime() {
                   // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
-                  // A recovered Vulkan model needs its staged CPU-only runtime
-                  // after the failed target load has unloaded the live server.
+                  // A recovered Vulkan model needs its staged CPU-only runtime back
+                  // after the failed target load unloaded the live server.
                   cpu_fallback: stateBeforeUnload.loadedCpuFallback,
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,

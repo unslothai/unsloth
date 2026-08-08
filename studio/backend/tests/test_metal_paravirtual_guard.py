@@ -636,8 +636,8 @@ def test_the_drop_precedes_everything_the_projector_feeds():
     gate_at = src.index("_pv_mmproj_unpinnable = bool(")
     assert gate_at < src.index('cmd.extend(["--mmproj", launch_mmproj_path])')
     assert gate_at < src.index("self._mmproj_vram_bytes(launch_mmproj_path)")
-    # The probe reads launch_mmproj_path, or the env projector only when the gate
-    # dropped nothing, so both the gate and that choice precede it.
+    # The probe reads launch_mmproj_path, or the env projector only if the gate dropped
+    # nothing, so both the gate and that choice precede it.
     assert gate_at < src.index("_audio_probe = launch_mmproj_path or (")
     assert gate_at < src.index("read_mmproj_audio_capability(_audio_probe)")
     # ...and the session flag the frontend reads follows the same variable.

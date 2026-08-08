@@ -193,8 +193,8 @@ class _CpuFallbackRuntime(NamedTuple):
     tempdir: tempfile.TemporaryDirectory
     source_binary: Path
     staged_binary: Path
-    # An update swaps the install directory in place, so the source path alone
-    # cannot tell a refreshed build from the staged copy of the old one.
+    # An update swaps the install dir in place, so the path alone cannot tell a
+    # refreshed build from the staged copy of the old one.
     source_stamp: tuple
 
 
@@ -3004,7 +3004,6 @@ def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
 
 def _resolve_llama_binary(binary: str) -> Path:
     """Resolve a managed symlink or shell entrypoint to the real server."""
-    # Managed entrypoints are symlinks or shell wrappers into build/bin.
     resolved = Path(binary).resolve()
     try:
         with open(resolved, "rb") as _f:
@@ -8886,12 +8885,9 @@ class LlamaCppBackend:
         if not source_matches and not self.matches_load_source(intent):
             return intent
         extras = list(intent.extra_args) if intent.extra_args is not None else None
-        # Judge the environment the replay actually runs with, not this process's:
-        # _cpu_isolated_replay pops every main-model placement var before the CPU
-        # child starts, and the launch-time gate is measured after the same scrubs.
-        # Reading os.environ here instead would decline to preserve a recovery over
-        # an inherited value no child ever saw, tearing down the healthy CPU server
-        # and re-running the Vulkan crash on every reload.
+        # Judge the env the replay runs with, not this process's: _cpu_isolated_replay
+        # pops every main-model placement var first. Using os.environ would drop the
+        # recovery over a value no child saw, re-running the crash on every reload.
         replay_env = {
             name: value
             for name, value in os.environ.items()
@@ -8957,11 +8953,10 @@ class LlamaCppBackend:
 
         replay = cls._strip_cpu_fallback_main_placement(original)
         if drop_full_offload_threads:
-            # The Windows full-offload tuning pins 2 threads and PASSIVE OpenMP
-            # because the GPU was doing the work. This replay is that premise
-            # falsified, so a recovered CPU session would decode on 2 cores.
-            # Only ever the values Unsloth injected: the caller reports a user
-            # --threads / -t override, and the env vars were setdefault'd.
+            # Windows full-offload tuning pins 2 threads and PASSIVE OpenMP because
+            # the GPU was doing the work, so a CPU replay would decode on 2 cores.
+            # Only Unsloth's own values: a user --threads override is reported by
+            # the caller, and the env vars were setdefault'd.
             replay = _strip_flag_pairs(replay, _THREAD_OVERRIDE_FLAGS)
             for name in ("OMP_NUM_THREADS", "OMP_WAIT_POLICY"):
                 env.pop(name, None)
@@ -8984,8 +8979,8 @@ class LlamaCppBackend:
         *,
         drop_full_offload_threads: bool = False,
     ) -> Optional[tuple[list[str], Optional[str]]]:
-        # The staged runtime only removes GPU backends; replaying a non-Vulkan
-        # install would report a Vulkan crash that never happened.
+        # Staging only removes GPU backends; a non-Vulkan install would report a
+        # Vulkan crash that never happened.
         if not self._is_vulkan_backend(binary):
             return None
         replay = self._cpu_isolated_replay(
@@ -9000,10 +8995,8 @@ class LlamaCppBackend:
         loader_path = "PATH" if sys.platform == "win32" else "LD_LIBRARY_PATH"
         env[loader_path] = loader_env[loader_path]
         replay[0] = cpu_binary
-        # Relative paths in user-supplied extra arguments resolve from Studio's
-        # working directory on the original launch. The staged runtime is only
-        # for the executable and libraries, so keep that working directory for
-        # the replay as well.
+        # Staging covers only the executable and libraries, so keep Studio's working
+        # directory: relative paths in user extra args resolve against it.
         return replay, None
 
     def _cpu_isolated_binary(self, binary: Optional[str]) -> Optional[str]:
@@ -9035,8 +9028,8 @@ class LlamaCppBackend:
                 dir = runtime_root,
             )
             staged_dir = Path(staged_runtime.name)
-            # A kill -9 skips TemporaryDirectory's atexit hook, so record the
-            # owner and let the next stage collect what no live Studio holds.
+            # A kill -9 skips TemporaryDirectory's atexit hook, so stamp the owner
+            # and let the next stage collect what no live Studio holds.
             (staged_dir / _CPU_RUNTIME_OWNER_FILE).write_text(str(os.getpid()), encoding = "utf-8")
             lib_dir = _llama_lib_dir(str(source_binary))
             gpu_backend = re.compile(
@@ -9091,9 +9084,8 @@ class LlamaCppBackend:
     def _cleanup_cpu_fallback_runtime(self) -> None:
         runtime = getattr(self, "_cpu_fallback_runtime", None)
         self._cpu_fallback_runtime = None
-        # cleanup() detaches its finalizer before removing the tree, so dropping
-        # a failed one (a locked DLL on Windows) would orphan it for good. Hold
-        # the handle and retry it on the next cleanup instead.
+        # cleanup() detaches its finalizer before removing the tree, so dropping a
+        # failed one (locked DLL on Windows) orphans it. Retry it on the next call.
         pending = getattr(self, "_pending_cpu_fallback_cleanups", [])
         if runtime is not None:
             pending.append(runtime.tempdir)
@@ -10908,9 +10900,9 @@ class LlamaCppBackend:
                         raise RuntimeError(_ram_msg)
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
-                # independent of token names. A projector reaching the child only
-                # through LLAMA_ARG_MMPROJ never lands in launch_mmproj_path, so
-                # probe that too, but never one the unpinnable guard just dropped.
+                # independent of token names. A projector passed only via
+                # LLAMA_ARG_MMPROJ misses launch_mmproj_path, so probe that too,
+                # but never one the unpinnable guard just dropped.
                 self._mmproj_has_audio = False
                 _audio_probe = launch_mmproj_path or (
                     "" if _pv_mmproj_unpinnable else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
@@ -11088,8 +11080,8 @@ class LlamaCppBackend:
                 )
                 threads_overridden = _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS)
                 full_offload_tuning_active = fully_gpu_offloaded and not offload_overridden
-                # The CPU replay must undo whatever this launch pins for a GPU
-                # that will not be there; a user's own --threads still wins.
+                # The CPU replay must undo what this launch pins for an absent GPU;
+                # a user's own --threads still wins.
                 _drop_full_offload_threads = (
                     sys.platform == "win32"
                     and full_offload_tuning_active
@@ -11711,9 +11703,8 @@ class LlamaCppBackend:
                 if gpu_ids is not None:
                     self._clear_device_placement_env(env)
 
-                # After the scrubs above, so a stale inherited placement this
-                # launch already dropped cannot disqualify the replay of a child
-                # that never saw it.
+                # After the scrubs above, so a placement this launch already dropped
+                # cannot disqualify the replay of a child that never saw it.
                 _cpu_fallback_eligible = self._auto_vulkan_cpu_fallback_eligible(
                     binary,
                     intent,
@@ -12039,10 +12030,9 @@ class LlamaCppBackend:
                     """
                     nonlocal intent, gpu_memory_mode, gpu_layers, n_cpu_moe
                     nonlocal tensor_parallel, tensor_split, gpu_indices, use_fit, _spawn_cwd
-                    # Cancel check like every other retry here: an /unload racing
-                    # the crash must not leave a CPU server running behind it.
                     # GGML_ASSERT is a signal on POSIX and a CRT abort (exit 3) on
-                    # MSVC, so Windows needs both to reach the same recovery.
+                    # MSVC, so Windows needs both. Cancel-checked like every retry
+                    # here: an /unload racing the crash must not leave a server up.
                     _crashed = self._is_signal_crash(failed_rc) or (
                         sys.platform == "win32" and self._is_abort_exit(failed_rc)
                     )
@@ -12059,9 +12049,9 @@ class LlamaCppBackend:
                     if prepared is None:
                         return False
                     if self._cancel_event.is_set():
-                        # Staging copies a whole runtime, so an /unload can land
-                        # after the gate above. unload_model() saw no runtime to
-                        # remove yet, so this one has to take it back itself.
+                        # Staging copies a whole runtime, so an /unload can land after
+                        # the gate above with no runtime yet for unload_model() to
+                        # remove; take it back here.
                         self._cleanup_cpu_fallback_runtime()
                         return False
                     replay, _spawn_cwd = prepared
@@ -12072,10 +12062,9 @@ class LlamaCppBackend:
                     )
                     if not _spawn_and_wait(replay, label = "-cpu"):
                         if not terminal:
-                            # The drafter this argv carries can be the reason it
-                            # cannot start anywhere, which the GPU crash says
-                            # nothing about. Reap the child and keep the staged
-                            # runtime so the caller's next argv can reuse it.
+                            # This argv's drafter may be why it cannot start at all,
+                            # which the GPU crash says nothing about. Reap the child
+                            # and keep the staged runtime for the caller's next argv.
                             self._kill_process()
                             return False
                         cpu_rc = self._process.poll() if self._process is not None else None
@@ -12142,13 +12131,10 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
 
-                # A runtime that is no longer the Vulkan build the recovery came
-                # from has nothing to replay, so run the request as sent rather
-                # than failing a load the current backend can serve.
-                # LoadRequest carries this flag, so a stale rollback or an API
-                # caller can ask for a replay the runtime never produced. Hold it
-                # to the same bar as the crash path (managed auto Vulkan, no
-                # explicit placement) and otherwise run the request as sent.
+                # LoadRequest carries this flag, so a stale rollback, an API caller or
+                # a swapped-out runtime can ask for a replay that never happened. Hold
+                # it to the crash path's bar (managed auto Vulkan, no explicit
+                # placement) and otherwise run the request as sent.
                 if intent.cpu_fallback:
                     if self._auto_vulkan_cpu_fallback_eligible(
                         binary, intent, extra_args, env, allow_manual_cpu = True
@@ -12166,10 +12152,9 @@ class LlamaCppBackend:
                                 "`unsloth studio update` to repair the managed llama.cpp runtime."
                             )
                         cmd, _spawn_cwd = prepared
-                        # Same normalization the crash path applies, so a client
-                        # that sent only the flag cannot leave the session
-                        # reporting an Auto/GPU placement for a CPU-only server
-                        # (which then fails holds_no_vram and keeps chat's GPU).
+                        # Same normalization the crash path applies, so a client that
+                        # sent only the flag cannot leave a CPU-only server reporting
+                        # an Auto/GPU placement (which then fails holds_no_vram).
                         intent = self._apply_cpu_fallback_state(
                             intent,
                             is_vision = self._is_vision,
@@ -12183,10 +12168,9 @@ class LlamaCppBackend:
                         gpu_indices = None
                         use_fit = False
                     else:
-                        # Phase 1 kept the recovery state for a replay this request
-                        # turned out not to qualify for. Drop it now, or this load
-                        # reports the old Vulkan crash and _preserve_cpu_fallback_intent
-                        # rewrites later reloads of a model that never recovered.
+                        # Phase 1 kept recovery state for a replay this request does
+                        # not qualify for. Drop it, or this load reports the old crash
+                        # and _preserve_cpu_fallback_intent rewrites later reloads.
                         intent = replace(intent, cpu_fallback = False)
                         self._cpu_fallback_reason = None
                         self._cleanup_cpu_fallback_runtime()
@@ -12312,9 +12296,9 @@ class LlamaCppBackend:
                 # _requested_spec_mode so a duplicate /load doesn't thrash. The
                 # cancel check stops an /unload-killed attempt respawning. A
                 # decode-probe failure above also routes here.
-                # The retry replaces _last_spawn_cmd with a drafterless argv, but a
-                # GPU init crash is not the drafter's fault: keep the requested
-                # launch so the CPU replay below can still run it.
+                # The retry replaces _last_spawn_cmd with a drafterless argv, but a GPU
+                # init crash is not the drafter's fault: keep the requested launch so
+                # the CPU replay below can still run it.
                 _spec_cpu_replay_cmd: Optional[List[str]] = None
                 if (
                     not healthy
@@ -12472,10 +12456,9 @@ class LlamaCppBackend:
                             # an OS-killed text-only retry still gets the OOM message.
                             _retry_rc = self._process.poll() if self._process is not None else None
                             self._kill_process()
-                            # The text-only signal is independent evidence of a GPU
-                            # startup fault. Keep a confirmed incompatible projector
-                            # out of the CPU replay; a guessed projector crash still
-                            # gets one CPU attempt with vision preserved.
+                            # A text-only signal crash is independent evidence of a GPU
+                            # startup fault. Keep a confirmed bad projector out of the
+                            # replay; a guessed one still gets a CPU try with vision.
                             if self._is_signal_crash(_retry_rc):
                                 _cpu_replay_cmd = (
                                     _last_spawn_cmd if _projector_msg else _vision_cpu_replay_cmd
@@ -12504,11 +12487,10 @@ class LlamaCppBackend:
                                     )
                                 )
                     else:
-                        # Try the drafter launch first; a build that can neither
-                        # pin one to CPU nor start with it at all still recovers
-                        # on the drafterless argv, so keep that attempt
-                        # non-terminal and snapshot its argv -- a spawned replay
-                        # rebinds _last_spawn_cmd to its own command line.
+                        # Try the drafter launch first, non-terminally: a build that
+                        # can neither pin one to CPU nor start with it still recovers
+                        # on the drafterless argv. Snapshot that argv, since a spawned
+                        # replay rebinds _last_spawn_cmd to its own command line.
                         _drafterless_cpu_replay_cmd = list(_last_spawn_cmd)
                         _replayed = _spec_cpu_replay_cmd is not None and (
                             _try_auto_vulkan_cpu_fallback(
@@ -12517,7 +12499,7 @@ class LlamaCppBackend:
                         )
                         if _replayed:
                             # The drafter came back with the replay, so the
-                            # speculative-disable diagnosis no longer applies.
+                            # speculative-disable diagnosis no longer holds.
                             self._spec_fallback_reason = None
                         elif _try_auto_vulkan_cpu_fallback(_drafterless_cpu_replay_cmd, _crash_rc):
                             _replayed = True
@@ -13804,9 +13786,8 @@ class LlamaCppBackend:
         logging.raiseExceptions = False
         try:
             self._kill_process()
-            # TemporaryDirectory's own exit hook is registered after this one, so
-            # it runs first and cannot delete a staged runtime whose server is
-            # still alive (Windows locks the running exe). Retry after the kill.
+            # TemporaryDirectory's exit hook runs first and cannot delete a staged
+            # runtime whose server is alive (Windows locks the exe). Retry post-kill.
             self._cleanup_cpu_fallback_runtime()
         except Exception:
             # atexit swallows this anyway, and there is nowhere left to report it.

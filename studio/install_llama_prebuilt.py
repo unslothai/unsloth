@@ -2773,9 +2773,9 @@ def _apply_host_overrides(
             # [gfx], so the driver-only host the forward exists for keeps auto-Vulkan.
             rocm_gfx_targets = list(dict.fromkeys([*_physical, gfx])),
         )
-    # The arch a previous install recorded, replayed by the updater. It is a
-    # remembered probe result, not an operator override, so it only fills a gap:
-    # a host whose GPU changed must keep whatever its own probe now reports.
+    # The arch a previous install recorded, replayed by the updater. A remembered
+    # probe result, not an operator override, so it only fills a gap: a host whose
+    # GPU changed keeps whatever its own probe now reports.
     remembered = _normalize_forwarded_gfx(os.environ.get("UNSLOTH_ROCM_GFX_REMEMBERED"))
     if remembered and not _active_rocm_gfx_target(host):
         return dataclasses_replace(
@@ -5781,11 +5781,10 @@ def write_prebuilt_metadata(
         # recorded as "auto" so runtime recovery can distinguish them.
         "llama_backend": _persisted_backend,
         # The AMD gfx an AUTOMATIC route was decided on. A Vulkan asset name carries
-        # no arch for rocm_install_args() to rebuild, and the Windows driver-only
-        # hosts that reach Vulkan automatically have no probe of their own
-        # (hipinfo/amd-smi absent), so the updater would re-detect a ROCm-less host
-        # and drop the bundle to CPU. Recorded nowhere else: on every other install
-        # the asset names the arch, and a stale copy would outlive its GPU.
+        # no arch, and the Windows driver-only hosts that reach Vulkan automatically
+        # have no probe (hipinfo/amd-smi absent), so the updater would re-detect a
+        # ROCm-less host and drop to CPU. Automatic only: elsewhere the asset names
+        # the arch, and a stale copy would outlive its GPU.
         **({"rocm_gfx": rocm_gfx} if rocm_gfx and _persisted_backend == "auto" else {}),
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
@@ -5939,8 +5938,8 @@ def sync_marker_rocm_gfx(install_dir: Path, rocm_gfx: str | None) -> None:
         return
     if not isinstance(marker, dict) or marker.get("rocm_gfx") == rocm_gfx:
         return
-    # Only the automatic route needs it: every other install names its arch in
-    # the asset, and a stale one would outlive the GPU it describes.
+    # Only the automatic route needs it: elsewhere the asset names the arch, and a
+    # stale one would outlive the GPU it describes.
     if marker.get("llama_backend") != "auto":
         return
     marker["rocm_gfx"] = rocm_gfx
@@ -6751,8 +6750,8 @@ def _route_to_vulkan_prebuilt(
     """
     forced = force_vulkan_requested(llama_backend)
     explicit_backend = resolved_llama_backend(llama_backend)
-    # Host-only test, so a forced Vulkan run can still tell that this box would
-    # have routed itself to Vulkan regardless.
+    # Host-only test, so a forced Vulkan run can still tell this box would have
+    # routed itself to Vulkan anyway.
     amd_no_hip_host = _should_auto_vulkan_for_amd_windows(host, published_repo)
     # Auto-fall back only when the run named no backend: an explicit hip/cpu is the opt-out.
     auto_no_hip = explicit_backend is None and amd_no_hip_host
@@ -6794,10 +6793,9 @@ def _route_to_vulkan_prebuilt(
             "prebuilt instead of the detected GPU backend"
         )
         host = _vulkan_only_host(host)
-        # A host with no HIP-capable AMD GPU routes here automatically anyway, so
-        # the bundle is the same either way. Persist it as automatic so pre-#8050
-        # installs (and the --llama-backend vulkan every update re-asserts) stop
-        # looking like a deliberate opt-out of the Vulkan CPU crash recovery.
+        # A host with no HIP-capable AMD GPU routes here anyway, so the bundle is the
+        # same. Persist it as automatic so pre-#8050 installs (and the --llama-backend
+        # vulkan every update re-asserts) stay eligible for the CPU crash recovery.
         persist_backend = "auto" if amd_no_hip_host else "vulkan"
     else:
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
@@ -6998,9 +6996,8 @@ def install_prebuilt(
     # An explicit Vulkan choice only. The Windows-AMD auto-fallback is a rescue
     # from a missing HIP arch, so it must keep the CPU plans it can still use.
     strict_vulkan = force_vulkan_requested(llama_backend) and not force_cpu and not host.is_macos
-    # Read before the route, which rewrites the host to a Vulkan-only profile and
-    # drops the AMD arch with it. Recorded in the marker so the next update can
-    # forward the same --rocm-gfx setup.ps1 supplied and reach the same decision.
+    # Read before the route, which rewrites the host to Vulkan-only and drops the AMD
+    # arch. Kept in the marker so the next update forwards the same --rocm-gfx.
     persist_rocm_gfx = _active_rocm_gfx_target(host)
     host, published_repo, published_release_tag, persist_llama_backend = _route_to_vulkan_prebuilt(
         host,

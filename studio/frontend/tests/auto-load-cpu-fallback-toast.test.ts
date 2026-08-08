@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-// Asserted against the source, like the other chat-adapter tests: importing the
+// Asserted against the source like the other chat-adapter tests: importing the
 // module would drag in the stores and the toast layer for one closure.
 const source = readFileSync(
   fileURLToPath(

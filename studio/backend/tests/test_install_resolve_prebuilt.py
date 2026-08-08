@@ -1344,10 +1344,9 @@ def test_route_to_vulkan_prebuilt_hip_masked_host_still_honours_explicit_optin(m
 
 
 def test_forced_vulkan_on_an_auto_routing_amd_host_persists_as_automatic(monkeypatch):
-    # This box has no HIP-capable AMD GPU, so it routes to Vulkan either way and
-    # the bundle is identical. Persisting it as automatic is what lets pre-#8050
-    # installs (whose every update re-asserts --llama-backend vulkan) stay
-    # eligible for the Vulkan CPU crash recovery.
+    # This box has no HIP-capable AMD GPU, so it routes to Vulkan either way. Persisting
+    # that as automatic keeps pre-#8050 installs (whose updates re-assert
+    # --llama-backend vulkan) eligible for the Vulkan CPU crash recovery.
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     host = _windows_amd_host(rocm_gfx_target = "gfx1034", rocm_gfx_targets = ["gfx1034"])
     _routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(

@@ -2369,8 +2369,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         : undefined,
     });
   };
-  // Mirrors the interactive load toast: an auto-load that silently lost GPU
-  // acceleration must not read as a plain success.
+  // Like the interactive load toast: an auto-load that lost GPU acceleration
+  // must not read as a plain success.
   const showAutoLoadSuccess = (
     message: string,
     cpuFallbackReason?: CpuFallbackReason | null,

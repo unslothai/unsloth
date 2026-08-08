@@ -479,11 +479,10 @@ def _run_llama_phase(
         if llama_backend == "vulkan":
             env["UNSLOTH_FORCE_VULKAN"] = "1"
             env["UNSLOTH_LLAMA_CPP_BACKEND"] = "vulkan"
-        # A Vulkan asset name carries no arch, so the marker is the only record of
-        # the gfx an automatic AMD route was decided on. Automatic markers only: on
-        # any other install the arch is recoverable from the asset, and replaying it
-        # would assert ROCm on a host whose AMD GPU is gone. Advisory even then: the
-        # installer applies it only when this host's own probe finds none.
+        # A Vulkan asset name carries no arch, so the marker is the only record of the
+        # gfx an automatic AMD route used. Automatic only: elsewhere the asset has the
+        # arch, and replaying it would assert ROCm on a host whose AMD GPU is gone.
+        # Advisory even then, applied only if this host's own probe finds none.
         if rocm_gfx and llama_backend == "auto":
             env["UNSLOTH_ROCM_GFX_REMEMBERED"] = rocm_gfx
         _flow.stream_installer(
@@ -620,12 +619,10 @@ def _plan_llama_phase() -> dict:
         force_cpu = bool(marker.get("force_cpu"))
         llama_backend = marker.get("llama_backend")
         rocm_gfx = marker.get("rocm_gfx")
-        # Markers written before #7188 lack llama_backend, so an explicit
-        # Vulkan selection cannot be distinguished from the earlier automatic
-        # Intel route. Preserve the existing bundle rather than silently
-        # switching backends. Newer automatic Intel installs carry the key
-        # with a null value and rerun detection to remain eligible for CPU
-        # recovery.
+        # Markers written before #7188 lack llama_backend, so an explicit Vulkan
+        # choice is indistinguishable from the old automatic Intel route: keep the
+        # existing bundle rather than switching backends. Newer automatic installs
+        # carry the key as null and rerun detection to stay eligible for CPU recovery.
         if "llama_backend" not in marker and asset and "vulkan" in str(asset).lower():
             llama_backend = "vulkan"
         # Install exactly the release the banner offered: the installer's own

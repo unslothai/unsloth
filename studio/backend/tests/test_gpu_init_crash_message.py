@@ -317,8 +317,7 @@ class TestPlatformMatrix:
             str(binary), [str(binary), "-m", "m.gguf"], {}, {"found": True}
         )
 
-        # Backend detection reads .so / .dll only, so a macOS bundle is never
-        # Vulkan and the whole path stays unreachable there.
+        # Backend detection reads .so / .dll only, so a macOS bundle is never Vulkan.
         expected = os_key != "macos" and runtime == "vulkan"
         assert (prepared is not None) is expected
         if not expected:

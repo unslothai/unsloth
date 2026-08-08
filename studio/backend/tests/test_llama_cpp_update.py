@@ -473,9 +473,9 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
 def test_start_update_preserves_vulkan_selection(
     monkeypatch, tmp_path, llama_backend, include_llama_backend, expect_forced
 ):
-    # A legacy markerless Vulkan asset was an explicit selection. New automatic
-    # Intel and Windows AMD installs carry llama_backend (None or "auto") and
-    # rerun hardware detection so they remain eligible for CPU crash recovery.
+    # A legacy markerless Vulkan asset was an explicit selection. New automatic Intel
+    # and Windows AMD installs carry llama_backend (None or "auto") and rerun hardware
+    # detection so they stay eligible for CPU crash recovery.
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     install_dir = tmp_path / "llama.cpp"
