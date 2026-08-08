@@ -7,7 +7,7 @@ import json
 import os
 import re
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from hub.schemas.datasets import (
     DatasetSplitOption,
@@ -41,6 +41,24 @@ _SHARDED_DATA_RE = re.compile(
     r"^data/(?P<split>[^/]+)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]+$",
     re.IGNORECASE,
 )
+# datasets drops these by basename (FILES_TO_IGNORE) before it infers anything, so a
+# metadata-only cache is empty rather than a bogus train split.
+_IGNORED_DATA_FILENAMES = frozenset(
+    {
+        "README.md",
+        "config.json",
+        "dataset_info.json",
+        "dataset_infos.json",
+        "dataset_dict.json",
+        "dummy_data.zip",
+    }
+)
+# datasets' own _split_re. A sharded name outside it raises before any split loads.
+_SHARDED_SPLIT_RE = re.compile(r"\w+(?:\.\w+)*")
+# datasets builds every split with one module, so mixed families load nothing.
+_EXTENSION_MODULES = {".parquet": "parquet", ".jsonl": "json", ".json": "json", ".csv": "csv"}
+# Its tie-break when a split mixes extensions: most files, then this order.
+_EXTENSION_PRIORITY = {ext: rank for rank, ext in enumerate(reversed(list(_EXTENSION_MODULES)))}
 # The picker starts these, so they have to be the grammar TrainingStartRequest accepts:
 # anything looser is offered and then 422s, anything tighter hides a usable option.
 # _check_subset and _check_split_name in models/training.py are the authority.
@@ -276,7 +294,9 @@ def _snapshot_data_files(snapshot: Path) -> list[PurePosixPath]:
             if not name.startswith((".", "__")) and not (base / name).is_symlink()
         ]
         for filename in filenames:
-            if filename.startswith((".", "__")) or not _has_snapshot_data_extension(filename):
+            if filename.startswith((".", "__")) or filename in _IGNORED_DATA_FILENAMES:
+                continue
+            if not _has_snapshot_data_extension(filename):
                 continue
             source_path = (relative / filename).as_posix()
             if resolved_dataset_snapshot_file(snapshot, source_path) is None:
@@ -292,32 +312,73 @@ def _keyword_splits(parts: Iterable[str]) -> set[str]:
     return {split for split, keywords in _SPLIT_KEYWORDS.items() if tokens.intersection(keywords)}
 
 
-def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
-    """Mirror datasets' default local-file split inference without importing it."""
-    files = _snapshot_data_files(snapshot)
-    if not files:
-        return set()
-
-    sharded_splits: set[str] = set()
+def _sharded_split_files(
+    files: Iterable[PurePosixPath],
+) -> Optional[dict[str, list[PurePosixPath]]]:
+    """Sharded splits, or None when a name datasets rejects makes the snapshot unloadable."""
+    grouped: dict[str, list[PurePosixPath]] = {}
     for path in files:
         match = _SHARDED_DATA_RE.fullmatch(path.as_posix())
         if match is None:
             continue
-        split = _valid_option(match.group("split"), _SPLIT_RE, reject_dotdot = True)
-        if split is not None:
-            sharded_splits.add(split)
-    if sharded_splits:
-        return {("default", split) for split in sharded_splits}
+        raw = match.group("split")
+        split = _valid_option(raw, _SPLIT_RE, reject_dotdot = True)
+        if split is None or _SHARDED_SPLIT_RE.fullmatch(raw) is None:
+            return None
+        grouped.setdefault(split, []).append(path)
+    return grouped
 
-    directory_splits = _keyword_splits(part for path in files for part in path.parent.parts)
-    if directory_splits:
-        return {("default", split) for split in directory_splits}
 
-    filename_splits = _keyword_splits(path.name for path in files)
-    if filename_splits:
-        return {("default", split) for split in filename_splits}
+def _keyword_split_files(
+    files: Iterable[PurePosixPath], naming: Callable[[PurePosixPath], Iterable[str]]
+) -> dict[str, list[PurePosixPath]]:
+    grouped: dict[str, list[PurePosixPath]] = {}
+    for path in files:
+        for split in _keyword_splits(naming(path)):
+            grouped.setdefault(split, []).append(path)
+    return grouped
 
-    return {("default", "train")}
+
+def _split_module(files: Iterable[PurePosixPath]) -> Optional[str]:
+    counts: dict[str, int] = {}
+    for path in files:
+        for suffix in path.name.lower().split(".")[1:]:
+            extension = "." + suffix
+            if extension in _EXTENSION_MODULES:
+                counts[extension] = counts.get(extension, 0) + 1
+    if not counts:
+        return None
+    best = max(counts, key = lambda extension: (counts[extension], _EXTENSION_PRIORITY[extension]))
+    return _EXTENSION_MODULES[best]
+
+
+def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
+    """Mirror datasets' default local-file split inference without importing it.
+
+    Known gaps: split names are ASCII where datasets' \\w is unicode, `__` files are
+    skipped though datasets only skips `__` directories, only TRAINING_DATA_EXTS is
+    considered, and external symlinks stay rejected for cache safety, all of which hide
+    an option rather than offer a dead one. Keyword matching is case-insensitive, which
+    can name a split datasets would call train on a case-sensitive filesystem.
+    """
+    files = _snapshot_data_files(snapshot)
+    if not files:
+        return set()
+
+    grouped = _sharded_split_files(files)
+    if grouped is None:
+        return set()
+    if not grouped:
+        grouped = _keyword_split_files(files, lambda path: path.parent.parts)
+    if not grouped:
+        grouped = _keyword_split_files(files, lambda path: (path.name,))
+    if not grouped:
+        grouped = {"train": files}
+
+    modules = {_split_module(paths) for paths in grouped.values()}
+    if len(modules) > 1 or modules == {None}:
+        return set()
+    return {("default", split) for split in grouped}
 
 
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:

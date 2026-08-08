@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import gzip
 import json
+
+import pytest
 
 from hub.schemas.datasets import LocalDatasetOptionsRequest
 from hub.services.datasets import local_options
@@ -184,9 +187,9 @@ def test_snapshot_options_infer_undeclared_splits_from_loadable_files(tmp_path):
         "---\nlanguage:\n- en\n---\nDataset card without split metadata.\n",
         encoding = "utf-8",
     )
-    (snapshot / "train.jsonl").write_text('{"text":"train"}\n', encoding = "utf-8")
-    (snapshot / "test.csv").write_text("text\ntest\n", encoding = "utf-8")
-    (snapshot / "val.parquet").write_bytes(b"parquet")
+    # The multi30k shape from the report: one format, so datasets can build every split.
+    for name in ("train.jsonl", "test.jsonl", "val.jsonl"):
+        (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert [
         item.model_dump()
@@ -198,12 +201,54 @@ def test_snapshot_options_infer_undeclared_splits_from_loadable_files(tmp_path):
     ]
 
 
+def test_snapshot_options_do_not_infer_splits_that_mix_formats(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text('{"text":"train"}\n', encoding = "utf-8")
+    (snapshot / "test.csv").write_text("text\ntest\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
 def test_snapshot_options_infer_default_train_for_unlabelled_data(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
     snapshot.mkdir(parents = True)
-    (snapshot / "records.jsonl.gz").write_bytes(b"compressed")
+    (snapshot / "records.jsonl.gz").write_bytes(gzip.compress(b'{"text":"row"}\n'))
 
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["dataset_infos.json", "dataset_info.json", "config.json", "dataset_dict.json"],
+)
+def test_snapshot_options_do_not_infer_from_reserved_metadata(tmp_path, filename):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / filename).write_text("{}", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_ignore_reserved_metadata_when_choosing_a_split(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "test").mkdir(parents = True)
+    (snapshot / "test" / "dataset_infos.json").write_text("{}", encoding = "utf-8")
+    (snapshot / "records.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+@pytest.mark.parametrize("split", ["train-clean", "my split"])
+def test_snapshot_options_do_not_infer_sharded_names_datasets_rejects(tmp_path, split):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    data = snapshot / "data"
+    data.mkdir(parents = True)
+    (data / "train-00000-of-00002.parquet").write_bytes(b"parquet")
+    (data / f"{split}-00001-of-00002.parquet").write_bytes(b"parquet")
+
+    # datasets raises on the bad name before any split loads, so offer nothing at all.
+    assert local_options._snapshot_options(snapshot) == set()
 
 
 def test_snapshot_options_infer_sharded_custom_split(tmp_path):
