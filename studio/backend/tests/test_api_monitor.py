@@ -790,3 +790,47 @@ def test_non_streamed_reply_reports_no_decode_window():
     assert row["decode_ms"] is None
     assert row["decode_ms_authoritative"] is False
     assert row["duration_ms"] is not None
+
+
+def test_timings_only_final_chunk_still_sets_the_decode_window(monkeypatch):
+    """llama-server can end a stream with a metadata chunk carrying timings and no
+    usage. Returning early there drops the only decode measure the rate trusts."""
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    inference_route._monitor_usage(entry_id, None, None, {"predicted_ms": 1000})
+    monitor.finish(entry_id)
+
+    [row] = monitor.snapshot()
+    assert row["decode_ms"] == 1000
+    assert row["decode_ms_authoritative"] is True
+
+
+def test_monitor_usage_still_returns_early_without_usage_or_timings(monkeypatch):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    inference_route._monitor_usage(entry_id, None, 4096, {"prompt_ms": 900})
+    monitor.finish(entry_id)
+
+    [row] = monitor.snapshot()
+    assert row["decode_ms"] is None
+    assert row["decode_ms_authoritative"] is False
+    assert row["context_length"] is None, "no usage means nothing to record"
+
+
+def test_predicted_ms_is_read_off_engine_timings():
+    assert inference_route._timings_predicted_ms({"predicted_ms": 1234}) == 1234.0
+    assert inference_route._timings_predicted_ms({"predicted_ms": -1}) is None
+    assert inference_route._timings_predicted_ms({"predicted_ms": "1234"}) is None
+    assert inference_route._timings_predicted_ms(None) is None

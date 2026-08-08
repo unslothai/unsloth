@@ -3030,21 +3030,29 @@ def _monitor_prompt_from_messages(messages) -> str:
     return "\n\n".join(lines)
 
 
+def _timings_predicted_ms(timings: Optional[dict]) -> Optional[float]:
+    """The engine's own decode span. Absent on external providers, which fall back to
+    the streamed window."""
+    if not isinstance(timings, dict):
+        return None
+    predicted = timings.get("predicted_ms")
+    if isinstance(predicted, (int, float)) and predicted >= 0:
+        return float(predicted)
+    return None
+
+
 def _monitor_usage(
     monitor_id: Optional[str],
     usage: Optional[dict],
     context_length = None,
     timings: Optional[dict] = None,
 ):
-    if not usage:
+    decode_ms = _timings_predicted_ms(timings)
+    # A final chunk can carry timings with no usage: keep predicted_ms rather than drop
+    # the only decode measure the rate trusts.
+    if not usage and decode_ms is None:
         return
-    # llama.cpp times the decode phase itself. Absent on external providers, which fall
-    # back to the streamed window.
-    decode_ms = None
-    if isinstance(timings, dict):
-        predicted = timings.get("predicted_ms")
-        if isinstance(predicted, (int, float)) and predicted >= 0:
-            decode_ms = float(predicted)
+    usage = usage or {}
     api_monitor.set_usage(
         monitor_id,
         prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens"),
@@ -10956,6 +10964,7 @@ async def openai_chat_completions(
                 full_text = ""
                 usage = None
                 finish = None
+                timings = None
                 gen = gguf_generate_with_tools()
                 try:
                     for event in gen:
@@ -10964,6 +10973,8 @@ async def openai_chat_completions(
                         if event.get("type") == "metadata":
                             usage = event.get("usage")
                             finish = event.get("finish_reason")
+                            # Carries predicted_ms across every tool iteration.
+                            timings = event.get("timings")
                         elif event.get("type") == "content":
                             # Content is cumulative within a turn and resets
                             # between turns, so the last event holds the final
@@ -10975,7 +10986,7 @@ async def openai_chat_completions(
                                 auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                                 enabled_tool_names = _gguf_display_tool_names,
                             )
-                    return full_text, usage, finish
+                    return full_text, usage, finish, timings
                 finally:
                     # Close the generator on early break/cancel so the underlying
                     # llama-server stream socket is released, like the SSE path.
@@ -11038,7 +11049,9 @@ async def openai_chat_completions(
                     cancel_event = cancel_event,
                 )
                 drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_tool_loop))
-                full_text, completion_usage, completion_finish = await asyncio.shield(drain_task)
+                full_text, completion_usage, completion_finish, completion_timings = (
+                    await asyncio.shield(drain_task)
+                )
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
                     parse_think_markers = _responses_should_parse_think_markers(
@@ -11079,6 +11092,7 @@ async def openai_chat_completions(
                         "total_tokens": _prompt_tokens + _completion_tokens,
                     },
                     _monitor_context_length(),
+                    timings = completion_timings,
                 )
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
@@ -11629,6 +11643,8 @@ async def openai_chat_completions(
                     _prompt_tokens = 0
                     _sum_completion = 0
                     _prompt_details = None
+                    # n choices are generated one after another, so their decode spans add.
+                    _predicted_ms = 0.0
                     for _idx in range(_n):
                         # Stop spawning the remaining choices once cancelled.
                         if cancel_event.is_set():
@@ -11641,6 +11657,8 @@ async def openai_chat_completions(
                                 if token.get("type") == "metadata":
                                     completion_usage = token.get("usage")
                                     completion_finish = token.get("finish_reason")
+                                    _t = token.get("timings")
+                                    _predicted_ms += _timings_predicted_ms(_t) or 0.0
                                 continue
                             full_text = token
 
@@ -11677,6 +11695,7 @@ async def openai_chat_completions(
                         _prompt_tokens,
                         _sum_completion,
                         _prompt_details,
+                        _predicted_ms,
                     )
 
                 drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_choices))
@@ -11687,6 +11706,7 @@ async def openai_chat_completions(
                     _prompt_tokens,
                     _sum_completion,
                     _prompt_details,
+                    _predicted_ms,
                 ) = await asyncio.shield(drain_task)
 
                 response = ChatCompletion(
@@ -11715,6 +11735,7 @@ async def openai_chat_completions(
                         "total_tokens": _prompt_tokens + _sum_completion,
                     },
                     _monitor_context_length(),
+                    timings = {"predicted_ms": _predicted_ms} if _predicted_ms else None,
                 )
                 api_monitor.finish(monitor_id)
                 return _model_json_response(response)
@@ -14164,7 +14185,7 @@ async def _responses_non_streaming(
             instructions = payload.instructions,
         )
         api_monitor.set_reply(monitor_id, text or _monitor_tool_calls_text(tool_calls))
-        _monitor_usage(monitor_id, usage_data, _monitor_context_length())
+        _monitor_usage(monitor_id, usage_data, _monitor_context_length(), body.get("timings"))
         api_monitor.finish(monitor_id)
         return _model_json_response(response)
     except asyncio.CancelledError:
@@ -14428,13 +14449,12 @@ async def _responses_stream(
             next_output_index += 1
             return output_index
 
-        def _apply_usage(u) -> None:
+        def _apply_usage(u, timings = None) -> None:
             nonlocal input_tokens, output_tokens
-            if not u:
-                return
-            input_tokens = u.get("prompt_tokens", input_tokens)
-            output_tokens = u.get("completion_tokens", output_tokens)
-            _monitor_usage(monitor_id, u, llama_backend.context_length)
+            if u:
+                input_tokens = u.get("prompt_tokens", input_tokens)
+                output_tokens = u.get("completion_tokens", output_tokens)
+            _monitor_usage(monitor_id, u, llama_backend.context_length, timings)
 
         def _ensure_reasoning_open() -> list[str]:
             if reasoning_state["opened"]:
@@ -14797,7 +14817,7 @@ async def _responses_stream(
 
                 choices = chunk_data.get("choices", [])
                 if not choices:
-                    _apply_usage(chunk_data.get("usage"))
+                    _apply_usage(chunk_data.get("usage"), chunk_data.get("timings"))
                     continue
 
                 delta = choices[0].get("delta", {}) or {}
@@ -14870,7 +14890,7 @@ async def _responses_stream(
                     for event in _tool_call_delta_events(tc):
                         yield event
 
-                _apply_usage(chunk_data.get("usage"))
+                _apply_usage(chunk_data.get("usage"), chunk_data.get("timings"))
         except asyncio.CancelledError:
             disconnect_event.set()
             api_monitor.finish(monitor_id, "cancelled")
