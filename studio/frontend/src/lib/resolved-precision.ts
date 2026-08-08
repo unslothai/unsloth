@@ -184,6 +184,23 @@ export function resolvedSeedKey(
 }
 
 /**
+ * Whether a status describes the native sd.cpp engine rather than a diffusers pipeline.
+ *
+ * It reports `dtype: "gguf"` and no `engine`/`model_kind` of its own, and the two behave
+ * differently in ways the Loaded-build panel has to say out loud -- its attention is chosen by
+ * native flags, not by the PyTorch dispatcher, and its components are whatever the checkpoint
+ * and its companion bundle hold.
+ */
+export function isNativeEngineStatus(status: {
+  engine?: string | null;
+  dtype?: string | null;
+}): boolean {
+  const engine = String(status.engine ?? "").trim().toLowerCase();
+  if (engine) return engine.includes("sd_cpp") || engine.includes("sd.cpp") || engine === "native";
+  return status.dtype === "gguf";
+}
+
+/**
  * The Loaded-build panel's Transformer row when no dense quant engaged.
  *
  * Shared by the image and video pages because the mistake it prevents is the same on both: the
@@ -201,6 +218,23 @@ export function denseTransformerBuildLabel(status: {
 }): string {
   if (status.model_kind === "gguf" || status.dtype === "gguf") return "GGUF (as-is)";
   if (status.model_kind === "single_file") return "As in checkpoint";
+  return denseDtypeLabel(status.dtype);
+}
+
+/**
+ * The dtype the pipeline actually loaded in, not the one the happy path uses.
+ *
+ * A CPU diffusers load reports float32, an older accelerator resolves to float16, and an
+ * fp16-incompatible family is promoted to float32 by the video loader -- and all three were
+ * labelled BF16 by the panel whose whole job is to say what loaded. Unknown falls back to BF16,
+ * which is what a diffusers load that reports nothing is.
+ */
+function denseDtypeLabel(dtype: string | null | undefined): string {
+  const text = String(dtype ?? "").trim().toLowerCase();
+  if (text.includes("bfloat16") || text === "bf16") return "BF16";
+  if (text.includes("float16") || text === "fp16") return "FP16";
+  if (text.includes("float32") || text === "fp32") return "FP32";
+  if (text.includes("float64")) return "FP64";
   return "BF16";
 }
 
@@ -213,5 +247,5 @@ export function denseTransformerBuildLabel(status: {
  * `t5xxl_fp16.safetensors`). A null on that engine means "as stored", not BF16.
  */
 export function denseTextEncoderBuildLabel(status: { dtype?: string | null }): string {
-  return status.dtype === "gguf" ? "As in checkpoint" : "BF16";
+  return status.dtype === "gguf" ? "As in checkpoint" : denseDtypeLabel(status.dtype);
 }

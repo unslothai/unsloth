@@ -75,6 +75,12 @@ class _FakeBackend:
         self.last_precision_kwargs = dict(kwargs)
         return None
 
+    def download_plan(self, model_path, **kwargs):
+        # The plan route's staging answer. The fake records what it was asked so a test can prove
+        # the precision refusal ran BEFORE the plan was built (this never gets called then).
+        self.last_plan_kwargs = dict(kwargs)
+        return {"entries": [], "total_bytes": 0, "incompatible_reason": None}
+
     def begin_load(self, model_path, **kwargs):
         # The real backend loads on a thread; the fake completes instantly.
         self.loaded = True
@@ -1363,6 +1369,70 @@ def test_the_native_engine_still_loads_when_nothing_was_promised(client, monkeyp
     if quant is not None:
         payload["transformer_quant"] = quant
     resp = client.post("/api/inference/images/load", json = payload)
+    assert resp.status_code == 200, resp.text
+
+
+def test_the_plan_refuses_an_impossible_precision_before_anything_is_staged(client, monkeypatch):
+    """The UI plans first and stages every entry it gets back, so a refusal that only lives in
+    /images/load arrives AFTER the download it should have prevented -- the GGUF and its
+    companions on the image side, tens of GB on the video one. Both checks are network-free, so
+    doing them here costs nothing."""
+    from core.inference.diffusion_auto_policy import precision_refusal_message
+
+    backend = diffusion_module.get_diffusion_backend()
+    refusal = precision_refusal_message(
+        "transformer_quant",
+        "fp8",
+        "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)",
+        off_label = "Off to run the checkpoint as-is",
+    )
+
+    def _refuse(fam, **kwargs):
+        raise RuntimeError(refusal)
+
+    monkeypatch.setattr(backend, "assert_precision_available", _refuse)
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda *a, **k: pytest.fail("the plan was built for a precision that cannot be honoured"),
+    )
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+            "transformer_quant": "fp8",
+        },
+    )
+    assert resp.status_code == 409, resp.text
+    assert "transformer_quant='fp8' could not be used" in resp.json()["detail"]
+
+
+def test_the_native_plan_refuses_the_same_request_the_native_load_would(client, monkeypatch):
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: ENGINE_SD_CPP)
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+            "transformer_quant": "fp8",
+        },
+    )
+    assert resp.status_code == 409, resp.text
+    assert "native engine" in resp.json()["detail"]
+
+
+def test_the_plan_still_answers_when_nothing_was_promised(client):
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+        },
+    )
     assert resp.status_code == 200, resp.text
 
 

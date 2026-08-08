@@ -80,6 +80,7 @@ import {
   PRECISION_REFUSAL_TITLE,
   denseTextEncoderBuildLabel,
   denseTransformerBuildLabel,
+  isNativeEngineStatus,
   formatResolvedValue,
   isPrecisionRefusal,
   resolvedBadge,
@@ -1041,13 +1042,18 @@ function RecipePopover({
           {image.text_encoder_quant ? (
             <RecipeRow label="TE quant" value={image.text_encoder_quant} />
           ) : null}
-          {image.memory_mode ? (
+          {/* Either field is placement information. The native engine reports no memory_mode at
+              all (it has no torchao path to choose one for) while still recording an active
+              offload, so gating on memory_mode hid the offload on exactly the configuration
+              this row was extended for. */}
+          {image.memory_mode ||
+          (image.offload_policy && image.offload_policy !== "none") ? (
             <RecipeRow
               label="Memory"
               value={
                 image.offload_policy && image.offload_policy !== "none"
-                  ? `${image.memory_mode} (${image.offload_policy} offload)`
-                  : image.memory_mode
+                  ? `${image.memory_mode ?? "auto"} (${image.offload_policy} offload)`
+                  : (image.memory_mode ?? "")
               }
             />
           ) : null}
@@ -1135,7 +1141,12 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
         value={
           status.attention_backend
             ? formatResolvedValue("attention_backend", status.attention_backend)
-            : "Native SDPA"
+            : // The sd.cpp engine reports no backend because it has none of ours: its attention
+              // is chosen by native flags, not by the diffusers/PyTorch dispatcher, so calling it
+              // "Native SDPA" is wrong on the default CPU image path.
+              isNativeEngineStatus(status)
+              ? "sd.cpp built-in"
+              : "Native SDPA"
         }
       />
     </div>

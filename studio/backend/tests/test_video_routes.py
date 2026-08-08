@@ -949,6 +949,42 @@ def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
     assert seen["hf_token"] == "hf_secret"
 
 
+def test_the_video_plan_refuses_an_impossible_precision_before_anything_is_staged(
+    client, monkeypatch
+):
+    # The video weights are the tens-of-GB case: /video/load refuses a precision this host cannot
+    # honour, but the UI plans and stages first, so the refusal used to arrive after the download.
+    import core.inference.video as video_core
+
+    backend = video_module.get_video_backend()
+
+    def _refuse(fam, **kwargs):
+        raise RuntimeError(
+            "text_encoder_quant='fp8' could not be used: this device cannot cast the encoder."
+        )
+
+    monkeypatch.setattr(video_core, "assert_video_precision_available", _refuse)
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda *a, **k: pytest.fail("the plan was built for a precision that cannot be honoured"),
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "text_encoder_quant": "fp8",
+        },
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert "could not be used" in resp.json()["detail"]
+
+
 def test_video_load_guard_still_checks_diffusion_when_the_llm_probe_raises(client, monkeypatch):
     # Same independence rule as the image guard: a raising LLM probe used to return early, so a video load ran into an active diffusion trainer on the same GPU.
     import core.training as core_training

@@ -86,7 +86,11 @@ async def video_download_plan(
     """The repos + files this pick needs, so the frontend stages them through the Hub
     download manager instead of the load downloading inline. Mirrors /images/download-plan."""
     from core.inference.diffusion import resolve_local_single_file
-    from core.inference.video import get_video_backend, resolve_video_model_kind
+    from core.inference.video import (
+        assert_video_precision_available,
+        get_video_backend,
+        resolve_video_model_kind,
+    )
     from utils.native_path_leases import redact_native_paths
 
     backend = get_video_backend()
@@ -97,7 +101,7 @@ async def video_download_plan(
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_video_model_kind(sole, None)
-        await asyncio.to_thread(
+        fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
             gguf_filename = request.gguf_filename,
@@ -105,6 +109,17 @@ async def video_download_plan(
             model_kind = kind,
             base_repo = request.base_repo,
         )
+        # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this
+        # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
+        # unsupported host paid for tens of GB of weights to be told afterwards. Network-free.
+        if fam is not None:
+            await asyncio.to_thread(
+                assert_video_precision_available,
+                fam,
+                model_kind = kind,
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+            )
         plan = await asyncio.to_thread(
             backend.download_plan,
             request.model_path,
@@ -119,6 +134,10 @@ async def video_download_plan(
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+    except RuntimeError as exc:
+        # Mirrors /video/load and /images/download-plan: the precision gate above raises
+        # RuntimeError, and that refusal is a 409, not a server fault.
+        raise HTTPException(status_code = 409, detail = redact_native_paths(str(exc)))
 
 
 @router.post("/video/load", response_model = VideoStatusResponse)

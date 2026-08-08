@@ -20125,6 +20125,24 @@ async def diffusion_download_plan(
         if fam is not None and predict_engine(fam, model_kind = kind) == ENGINE_SD_CPP:
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
+        # BEFORE the plan is handed back and staged. The load route refuses a precision this
+        # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
+        # unsupported host paid for the GGUF and its companions -- or tens of GB of video
+        # weights -- and then got the predictable 409. Both checks are network-free.
+        if fam is not None:
+            if planner is backend:
+                await asyncio.to_thread(
+                    backend.assert_precision_available,
+                    fam,
+                    model_kind = kind,
+                    transformer_quant = request.transformer_quant,
+                    text_encoder_quant = request.text_encoder_quant,
+                )
+            else:
+                _assert_native_precision_unset(
+                    transformer_quant = request.transformer_quant,
+                    text_encoder_quant = request.text_encoder_quant,
+                )
         plan = await asyncio.to_thread(
             planner.download_plan,
             request.model_path,
@@ -20146,6 +20164,11 @@ async def diffusion_download_plan(
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+    except RuntimeError as exc:
+        # Same status the load route gives the same refusal, so the UI can reuse one handler:
+        # the precision gate above raises RuntimeError, and a 500 here would read as a server
+        # fault rather than the deliberate "this host cannot honour that pick" answer.
+        raise HTTPException(status_code = 409, detail = redact_native_paths(str(exc)))
 
 
 def _assert_native_precision_unset(
@@ -20175,7 +20198,10 @@ def _assert_native_precision_unset(
     if not asked:
         return
     raise RuntimeError(
-        f"{' and '.join(asked)} cannot be used: this pick runs on the native engine, which "
+        # "could not be used", the same wording the diffusers refusals use: the frontend
+        # classifies a precision refusal by that phrase and rendered this one as a generic
+        # one-line error instead of under the actionable title.
+        f"{' and '.join(asked)} could not be used: this pick runs on the native engine, which "
         "loads a GGUF checkpoint as it is and has no torchao quantisation path. Leave the "
         "precision on 'auto', or pick a model that loads through diffusers."
     )
