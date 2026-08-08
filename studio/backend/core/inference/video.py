@@ -1677,8 +1677,7 @@ class VideoBackend:
                         # Honored when the quant engaged AND when the ask was "off" (bf16 is what
                         # that asks for). Only reached with the escape hatch set for a pinned ask.
                         RESOLVED_APPLIED
-                        if transformer_quant_engaged is not None
-                        or transformer_quant_pinned is None
+                        if transformer_quant_engaged is not None or transformer_quant_pinned is None
                         else transformer_quant_decline_status,
                     ),
                     "text_encoder_quant": (

@@ -300,9 +300,7 @@ def _resolved_values_match(explicit: Any, engaged: Any) -> bool:
     return _resolved_norm(explicit) == _resolved_norm(engaged)
 
 
-def build_resolved_record(
-    controls: dict[str, tuple],
-) -> dict[str, dict[str, Any]]:
+def build_resolved_record(controls: dict[str, tuple]) -> dict[str, dict[str, Any]]:
     """The per-control ``resolved`` record for status: engaged value + provenance.
 
     ``controls`` maps a control name to ``(explicit, engaged, reason)`` or

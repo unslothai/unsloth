@@ -911,9 +911,7 @@ class DiffusionBackend:
                     "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
                 )
             elif (
-                select_transformer_quant_scheme(
-                    target, pinned, family = getattr(fam, "name", None)
-                )
+                select_transformer_quant_scheme(target, pinned, family = getattr(fam, "name", None))
                 is None
             ):
                 # An explicit scheme is never swapped for another, so a None means this GPU (or the
@@ -3583,9 +3581,7 @@ class DiffusionBackend:
         if isinstance(state.resolved, dict) and "attention_backend" in state.resolved:
             entry = dict(state.resolved["attention_backend"])
             entry["value"] = attention_engaged or "native"
-            object.__setattr__(
-                state, "resolved", {**state.resolved, "attention_backend": entry}
-            )
+            object.__setattr__(state, "resolved", {**state.resolved, "attention_backend": entry})
         gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
         if compile_eligible(target, is_gguf = gguf_transformer, family = state.family):
             compile_ctx = compile_cache.begin(

@@ -257,9 +257,7 @@ def test_quantize_int8_unsupported_hw_is_noop(monkeypatch):
     _stub_torch(monkeypatch, cc = (7, 5))
     monkeypatch.setattr(dp, "_cast_int8_selective", lambda *a: pytest.fail("must not cast"))
     pipe = types.SimpleNamespace(text_encoder = object())
-    assert (
-        quantize_text_encoders(pipe, _target(), mode = "int8", family = "qwen-image").mode is None
-    )
+    assert quantize_text_encoders(pipe, _target(), mode = "int8", family = "qwen-image").mode is None
 
 
 def test_quantize_te_skips_torchao_modes_under_offload(monkeypatch):
@@ -274,14 +272,10 @@ def test_quantize_te_skips_torchao_modes_under_offload(monkeypatch):
         dp, "_cast_int8_selective", lambda *a: pytest.fail("torchao caster must not run")
     )
     pipe = types.SimpleNamespace(text_encoder = object())
-    skipped = quantize_text_encoders(
-        pipe, _target(), mode = "fp8_dynamic", offload_active = True
-    )
+    skipped = quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic", offload_active = True)
     assert skipped.mode is None and skipped.status == "unsupported"
     assert "offload" in skipped.reason
-    assert (
-        quantize_text_encoders(pipe, _target(), mode = "nvfp4", offload_active = True).mode is None
-    )
+    assert quantize_text_encoders(pipe, _target(), mode = "nvfp4", offload_active = True).mode is None
     assert (
         quantize_text_encoders(
             pipe, _target(), mode = "int8", family = "qwen-image", offload_active = True

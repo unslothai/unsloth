@@ -2735,9 +2735,7 @@ def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(
 
 
 def test_load_speed_mode_gguf_auto_defaults_and_explicit(
-    fake_runtime,
-    tmp_path,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, allow_precision_fallback
 ):
     # No speed_mode on a GGUF model resolves to auto `default`; compile is CUDA-only, so nothing engages on this CPU stub.
     (tmp_path / "m.gguf").write_bytes(b"x")
@@ -2975,10 +2973,7 @@ def test_transformer_quant_prequant_load_fails_falls_back_to_dense(
 
 
 def test_prequant_failure_never_pulls_unprefetched_dense_shards(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # The prefetch skips the base repo's transformer/ shards whenever a prequant checkpoint is expected, so a failed prequant fetch
     # would send from_pretrained after them inside the load lock, after eviction, unpreemptable, past a 100% progress report.
@@ -3066,10 +3061,7 @@ def _stub_declining_dense_quant(backend, monkeypatch):
 
 
 def test_declined_explicit_precision_reports_the_ask_and_the_outcome(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # The headline of P1-2: FP8 requested on a Q4_K_M GGUF, transformer FP8 declined. With the
     # legacy escape hatch the GGUF still loads, and status has to carry BOTH sides -- the ask, the
@@ -3102,9 +3094,7 @@ def test_auto_precision_still_falls_back_silently(fake_runtime, tmp_path, monkey
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: False)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    status = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image"
-    )
+    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
     assert status["loaded"] is True
     assert status["transformer_quant"] is None
     resolved = status["resolved"]["transformer_quant"]
@@ -3251,10 +3241,7 @@ def test_begin_load_never_refuses_auto(fake_runtime, tmp_path, monkeypatch):
 
 
 def test_transformer_quant_falls_back_to_gguf_on_failure(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # A dense/quant failure (here quantize returns None) must fall back to the GGUF build, not error.
     from core.inference import diffusion as dmod
@@ -3282,10 +3269,7 @@ def test_transformer_quant_falls_back_to_gguf_on_failure(
 
 
 def test_transformer_quant_skipped_when_plan_offloads(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # The dense bf16 transformer only fits resident, so when the plan would offload (low_vram) the fast path is skipped.
     from core.inference import diffusion as dmod
@@ -3313,10 +3297,7 @@ def test_transformer_quant_skipped_when_plan_offloads(
 
 
 def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # The GGUF fits resident but the dense bf16 transformer does not: skip the fast path up front and load GGUF resident, not evicted then offloaded.
     from core.inference import diffusion as dmod
@@ -3367,10 +3348,7 @@ def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
 
 
 def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # With a prequant checkpoint a dense misfit must NOT decline the fast path, but the dense re-check still gates the in-loader fallback.
     from core.inference import diffusion as dmod
@@ -3426,10 +3404,7 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
 
 
 def test_dense_quant_replan_retries_once_on_transient_free_undercount(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # A transient foreign allocation makes an empty card look full and the replan declines resident, but the candidate fits total capacity, so the loader retries once on a fresh settled snapshot.
     import dataclasses
@@ -3498,10 +3473,7 @@ def test_dense_quant_replan_retries_once_on_transient_free_undercount(
 
 
 def test_dense_quant_replan_no_retry_when_capacity_truly_short(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # When the candidate does NOT fit total capacity, the decline is real: no retry.
     import dataclasses
@@ -3618,10 +3590,7 @@ def test_declined_dense_with_baked_loras_fails_instead_of_silent_drop(
 
 
 def test_declined_dense_without_loras_still_falls_back_to_gguf(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # The plain decline (no adapters requested) keeps the silent GGUF fallback: weight-0 adapters count as "none".
     backend = DiffusionBackend()
@@ -3851,10 +3820,7 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
 
 
 def test_dense_quant_unusable_prequant_path_runs_dense_refit(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # A request prequant path the loader refuses resolves to no usable source, so the dense-fit re-check must run and decline up front instead of OOMing after eviction.
     from core.inference import diffusion as dmod
@@ -3905,10 +3871,7 @@ def test_dense_quant_unusable_prequant_path_runs_dense_refit(
 
 
 def test_transformer_quant_unsupported_scheme_skips_dense_download(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # An explicit unsupported scheme must fail BEFORE materialising the multi-GB dense transformer, then fall back to GGUF.
     from core.inference import diffusion as dmod
@@ -4183,10 +4146,7 @@ def test_a_weighted_lora_is_still_treated_as_a_bake(fake_runtime, tmp_path, monk
 
 
 def test_an_explicit_quant_request_still_downloads_the_hosted_prequant(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # Only the AUTO-derived case is restricted: asking for fp8 asks for the artifact serving it.
     _stub_hosted_prequant(monkeypatch, cached = False)
@@ -4868,11 +4828,7 @@ def test_dense_transformer_bytes_read_the_other_root_and_treat_the_snapshot_as_a
 
 @pytest.mark.parametrize("staged", [False, True])
 def test_dense_fit_check_runs_for_a_base_the_live_cache_root_does_not_hold(
-    fake_runtime,
-    tmp_path,
-    monkeypatch,
-    staged,
-    allow_precision_fallback,
+    fake_runtime, tmp_path, monkeypatch, staged, allow_precision_fallback
 ):
     # End of the same hole, at the load: with no usable prequant the loader materialises the dense
     # bf16 transformer, so the fit re-check has to run, and it only runs when the size lookup finds
