@@ -32,7 +32,7 @@ export function MediaPageLink({
   tooltip?: string;
   /** Runs before the route change, for a destination whose mode lives in a store. */
   onNavigate?: () => void;
-  /** Responsive callers can visually collapse the label while the tooltip retains the name. */
+  /** Responsive callers can visually collapse the label while the button keeps its accessible name. */
   labelClassName?: string;
   /** Kept separate from the label because the outbound arrow is the first compact affordance to drop. */
   arrowClassName?: string;
@@ -50,6 +50,7 @@ export function MediaPageLink({
         <TooltipTrigger asChild={true}>
           <button
             type="button"
+            aria-label={label}
             onClick={() => {
               onNavigate?.();
               navigate({ to });
