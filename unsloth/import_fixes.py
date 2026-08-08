@@ -1028,7 +1028,11 @@ def _torchvision_repair_command(required = None):
     return f'pip install --force-reinstall --no-deps --no-cache-dir "{spec}"'
 
 
-def _probe_torchvision_binary(torch_version_raw, torchvision_version_raw, required = None):
+def _probe_torchvision_binary(
+    torch_version_raw,
+    torchvision_version_raw,
+    required = None,
+):
     """Import torchvision, so a broken binary is named here and not six frames
     deep in transformers.
 

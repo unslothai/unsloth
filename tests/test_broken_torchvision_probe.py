@@ -115,13 +115,13 @@ def test_the_repair_command_cannot_replace_torch():
     command = import_fixes._torchvision_repair_command((0, 26))
     assert "--no-deps" in command, "torch must not be a candidate for replacement"
     assert "--upgrade" not in command, "the newest release is not what repairs a binary"
-    assert 'torchvision==0.26.*' in command
+    assert "torchvision==0.26.*" in command
 
 
 def test_the_repair_command_names_the_companion_release():
     """The gate passes on a lower bound (torch 2.4 accepts torchvision >= 0.19),
     so an installed 0.20 reaches the probe; 0.19 is what repairs that box."""
-    assert 'torchvision==0.19.*' in import_fixes._torchvision_repair_command((0, 19))
+    assert "torchvision==0.19.*" in import_fixes._torchvision_repair_command((0, 19))
     # No table entry: still pinned to nothing rather than to the wrong thing.
     assert "torchvision" in import_fixes._torchvision_repair_command(None)
 
@@ -129,7 +129,9 @@ def test_the_repair_command_names_the_companion_release():
 def test_the_probe_is_told_which_release_the_table_wanted():
     """Otherwise the message cannot name the companion version."""
     source = ast.unparse(_check_function())
-    assert "_probe_torchvision_binary(torch_version_raw, torchvision_version_raw, required)" in source
+    assert (
+        "_probe_torchvision_binary(torch_version_raw, torchvision_version_raw, required)" in source
+    )
 
 
 def test_an_unrelated_import_error_is_left_alone():
