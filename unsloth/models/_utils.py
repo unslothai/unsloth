@@ -451,12 +451,42 @@ def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
 
 
+# Ampere. Below it, torch's flex attention has no Triton kernel to lower to and
+# the HOP runs its eager `sdpa_dense` fallback instead, whose backward does
+#     grad_value = softmax_scores.to(query.dtype).transpose(-2, -1) @ grad_out
+# casting the scores but not `grad_out`. On a pre-Ampere card Unsloth also forces
+# fp16, so query is Half against a Float grad and CUDA refuses the matmul.
+_FLEX_ATTENTION_MIN_CAPABILITY = (8, 0)
+
+
+def _flex_attention_gpu_is_supported():
+    """False only for NVIDIA cards below Ampere.
+
+    ROCm, XPU, MPS and CPU are left alone: a card whose vendor is not judged
+    here keeps exactly the behaviour it had. Any failure to read the device
+    also leaves it alone, so this can only ever remove a broken path.
+    """
+    try:
+        if getattr(torch.version, "hip", None):
+            return True
+        if not torch.cuda.is_available():
+            return True
+        return all(
+            torch.cuda.get_device_capability(index) >= _FLEX_ATTENTION_MIN_CAPABILITY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return True
+
+
 def _supports_flex_attention(model_class, config, model_type):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
     if not getattr(model_class, "_supports_flex_attn", False):
         return False
     if _is_flex_excluded(model_type):
+        return False
+    if not _flex_attention_gpu_is_supported():
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
