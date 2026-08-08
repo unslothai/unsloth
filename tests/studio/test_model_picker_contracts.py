@@ -1407,6 +1407,29 @@ def test_a_new_pick_drops_the_previous_staged_intent():
         ), f"{rel}: the dead intent keeps ownership of the rollback"
 
 
+def test_a_local_gguf_still_shows_its_remote_companion_footprint():
+    """Only the CHECKPOINT is on disk for a local GGUF directory. Its text encoder, VAE, tokenizer
+    and configs still come from the remote base, and both diffusion planners size them, so
+    suppressing the footprint request understated a local row by the larger half of the download.
+
+    The arithmetic differs though: a local checkpoint is not part of `required_bytes` at all, so
+    nothing may be subtracted for it, where a hub pick carries its checkpoint inside that total."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    effect = re.search(
+        r"setCompanionBytesByKey\(new Map\(\)\);(.*?)\n  \}, \[", src, re.S
+    )
+    assert effect, "footprint resolution effect not found"
+    body = effect.group(1)
+    guard = re.search(r"if \(!resolveDownloadFootprint([^)]*)\) \{", body)
+    assert guard, "the footprint effect has no bail-out guard"
+    assert "isLocalPath" not in guard.group(1), (
+        "a local pick skips the footprint request, hiding its remote companion set"
+    )
+    assert re.search(r"const checkpoint = isLocalPath\n?\s*\? 0", body), (
+        "a local checkpoint is subtracted from a total it was never part of"
+    )
+
+
 def test_staged_downloads_always_scope_their_files():
     """Every staged entry must go out as a scoped job carrying its file list, GGUF
     checkpoints included. A plain snapshot job drops *.gguf via the Hub's ignore list, so

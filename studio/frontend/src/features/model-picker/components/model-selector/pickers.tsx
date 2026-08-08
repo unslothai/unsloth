@@ -1422,7 +1422,10 @@ function GgufVariantExpander({
   useEffect(() => {
     let cancelled = false;
     setCompanionBytesByKey(new Map());
-    if (!resolveDownloadFootprint || isLocalPath) {
+    // A local path is resolved too: only the CHECKPOINT is on disk. Its text encoder, VAE,
+    // tokenizer and configs still come from the remote base, which is the larger half of the
+    // footprint, so suppressing the request understated a local row by many gigabytes.
+    if (!resolveDownloadFootprint) {
       return () => {
         cancelled = true;
       };
@@ -1431,7 +1434,8 @@ function GgufVariantExpander({
       const dependencyKey = footprintVariant.dependency_key ?? "";
       const expectedBytes = ggufVariantExpectedBytes(footprintVariant);
       void resolveDownloadFootprint(repoId, {
-        source: sourceOverride ?? "hub",
+        // Same source the row itself reports, so the plan describes the pick that would run.
+        source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
         ggufVariant: footprintVariant.quant,
         ggufFilename: footprintVariant.filename,
@@ -1441,8 +1445,13 @@ function GgufVariantExpander({
       })
         .then((footprint) => {
           if (cancelled || !footprint) return;
-          const checkpoint =
-            footprint.checkpointBytes > 0
+          // A local checkpoint is not part of required_bytes at all, so nothing may be
+          // subtracted for it: the whole figure IS the remote companion set. Only a hub pick
+          // carries its checkpoint inside the total, and expectedBytes stands in when the
+          // planner could not size it.
+          const checkpoint = isLocalPath
+            ? 0
+            : footprint.checkpointBytes > 0
               ? footprint.checkpointBytes
               : expectedBytes;
           const companion = footprint.requiredBytes - checkpoint;
