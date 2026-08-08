@@ -766,8 +766,16 @@ def reap_recorded_children(timeout: float = 5.0) -> "list[int]":
     if directory is None or not directory.is_dir():
         return []
     killed: "list[int]" = []
-    for path in sorted(directory.glob("*.json")):
-        killed.extend(_reap_one_record(path, timeout))
+    # Repeated while it keeps finding things: a worker's record is skipped while
+    # its owner is alive, and that owner may be terminated later in the same
+    # sweep by the record of the backend that spawned it.
+    for _pass in range(4):
+        found: "list[int]" = []
+        for path in sorted(directory.glob("*.json")):
+            found.extend(_reap_one_record(path, timeout))
+        killed.extend(found)
+        if not found:
+            break
     return killed
 
 
@@ -897,7 +905,13 @@ def _reap_orphaned_group(pgid: object, pid: int, timeout: float) -> bool:
         os.killpg(pgid, signal.SIGKILL)
     except Exception:
         pass
-    return True
+    # Only gone counts: a SIGKILL that could not be delivered leaves this record
+    # as the last handle on whatever is still holding the GPU.
+    try:
+        os.killpg(pgid, 0)
+        return False
+    except Exception:
+        return True
 
 
 def _windows_terminate_tree(pid: int) -> None:
@@ -906,13 +920,16 @@ def _windows_terminate_tree(pid: int) -> None:
     import subprocess
 
     try:
-        subprocess.run(
+        completed = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             capture_output = True,
             timeout = 15,
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        return
+        # check = False does not raise, so the status is the only signal that
+        # the tree is still standing. 128 is "already gone".
+        if completed.returncode in (0, 128):
+            return
     except (OSError, subprocess.SubprocessError):
         pass
     try:

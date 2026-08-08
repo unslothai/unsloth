@@ -907,5 +907,87 @@ def test_a_retained_child_keeps_its_group(tmp_path, monkeypatch):
     assert pl._tracked_pgids.get(4242) == 4242
 
 
+def test_a_worker_record_is_revisited_after_its_owner_dies(tmp_path, monkeypatch):
+    """A worker's record is skipped while its owner lives, and that owner can be
+    terminated later in the same sweep by the backend's own record."""
+    import json
+
+    from utils import process_lifetime as pl
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    directory = tmp_path / "children"
+    directory.mkdir(parents = True)
+
+    alive = {9000, 9001}  # 9000 is the worker, 9001 its llama-server
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid in alive)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_identity_or_none", lambda pid: "same" if pid in alive else None)
+    monkeypatch.setattr(pl, "_is_windows", lambda: False)
+
+    def terminate(pid, timeout = 5.0):
+        alive.discard(pid)
+
+    monkeypatch.setattr(pl, "_posix_terminate", terminate)
+
+    # Sorted lexicographically, so the worker's record is read first.
+    (directory / "9000.json").write_text(json.dumps({
+        "owner_pid": 9000, "owner_identity": "same",
+        "children": [{"pid": 9001, "identity": "same"}],
+    }), encoding = "utf-8")
+    (directory / "9999.json").write_text(json.dumps({
+        "owner_pid": 9999, "owner_identity": "a-backend-that-crashed",
+        "children": [{"pid": 9000, "identity": "same"}],
+    }), encoding = "utf-8")
+
+    killed = pl.reap_recorded_children(timeout = 1.0)
+    assert sorted(killed) == [9000, 9001], killed
+    assert list(directory.glob("*.json")) == []
+
+
+def test_a_group_that_survives_sigkill_keeps_its_record(monkeypatch):
+    """Reporting it resolved deletes the last handle on something still holding
+    the GPU."""
+    from utils import process_lifetime as pl
+
+    if pl._is_windows():
+        pytest.skip("POSIX only")
+
+    def killpg(pgid, sig):
+        if sig == 0:
+            return None  # always still there
+        if sig == signal.SIGKILL:
+            raise PermissionError("not permitted")
+
+    monkeypatch.setattr(pl.os, "killpg", killpg)
+    assert pl._reap_orphaned_group(4242, 4242, timeout = 0.2) is False
+
+
+def test_a_failed_taskkill_falls_through_to_the_leader(monkeypatch):
+    """check=False does not raise, so the status is the only signal."""
+    import subprocess as sp
+
+    from utils import process_lifetime as pl
+
+    monkeypatch.setattr(
+        pl.os, "kill", lambda pid, sig: fallbacks.append(pid)
+    )
+    fallbacks = []
+
+    class _Result:
+        returncode = 1
+
+    monkeypatch.setattr(sp, "run", lambda *a, **k: _Result())
+    pl._windows_terminate_tree(4242)
+    assert fallbacks == [4242], "a failed taskkill was treated as success"
+
+    class _Ok:
+        returncode = 0
+
+    fallbacks.clear()
+    monkeypatch.setattr(sp, "run", lambda *a, **k: _Ok())
+    pl._windows_terminate_tree(4242)
+    assert fallbacks == []
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
