@@ -10,13 +10,6 @@ import type {
 export const RESUME_UNAVAILABLE_MESSAGE =
   "This run has no checkpoint to continue from. Start a new run instead.";
 
-// Keys the previous run's own resume replaces rather than inherits: replaying them verbatim would
-// point the new run at whatever the OLD run resumed, and the secret is never persisted anyway.
-const REPLACED_KEYS = [
-  "hf_token",
-  "resume_from_checkpoint",
-  "resumed_from_job_id",
-] as const;
 
 /**
  * Replay a finished diffusion run's stored start config as a resume request.
@@ -49,12 +42,21 @@ export function buildDiffusionResumePayload(
     );
   }
 
-  const payload = { ...config } as Record<string, unknown>;
-  for (const key of REPLACED_KEYS) {
-    delete payload[key];
-  }
+  // Destructured out rather than deleted off a widened copy: these three are replaced below, not
+  // inherited. Replaying them verbatim would point the new run at whatever the OLD run resumed,
+  // and the token is never persisted anyway.
+  const {
+    hf_token: _replacedToken,
+    resume_from_checkpoint: _replacedCheckpoint,
+    resumed_from_job_id: _replacedJobId,
+    ...inherited
+  } = config;
   return {
-    ...(payload as DiffusionTrainingStartRequest),
+    ...inherited,
+    // Re-stated because the narrowing above proved them present, which `Partial` cannot carry.
+    base_model: config.base_model,
+    data_dir: config.data_dir,
+    output_dir: config.output_dir,
     // The EXACT bundle the backend advertised, when it named one. Sending only the run folder
     // would let the server re-pick "newest", which in a folder two runs share is not necessarily
     // the one whose step this UI is showing.
