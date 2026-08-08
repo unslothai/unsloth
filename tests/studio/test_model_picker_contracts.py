@@ -1292,6 +1292,30 @@ def test_a_pick_that_never_loads_restores_its_generation_recipe():
         ), f"{rel}: a rollback path restores the label without its recipe"
 
 
+def test_every_pick_replaces_the_rollback_it_leaves_behind():
+    """`quantRevert` is one ref and the staged cancel path reverts on identity. A branch that
+    changes the quant or the recipe WITHOUT writing a new entry leaves the previous pick's entry
+    in place, so an older staged download cancelling later still matches, and reverts to state
+    from before a selection this pick already replaced -- while this pick keeps no rollback of
+    its own. Every branch that moves the selection registers its own entry."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        select = re.search(
+            r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S
+        )
+        assert select, f"{rel}: handleModelSelect not found"
+        body = select.group(1)
+        assert body.count("const revert: PickRevert = { prev: quant, steps, guidance };") >= (
+            body.count("quantRevert.current = revert;")
+        ), f"{rel}: a revert entry is created without being installed"
+        # The curated non-GGUF branch is the one that historically had none.
+        curated = re.search(r'if \(spec && spec\.kind !== "gguf"\) \{(.*?)\n      \}', body, re.S)
+        assert curated, f"{rel}: curated non-gguf branch not found"
+        assert "quantRevert.current = revert;" in curated.group(1), (
+            f"{rel}: a curated pick moves the selection but leaves the previous pick's rollback live"
+        )
+
+
 def test_staged_downloads_always_scope_their_files():
     """Every staged entry must go out as a scoped job carrying its file list, GGUF
     checkpoints included. A plain snapshot job drops *.gguf via the Hub's ignore list, so
@@ -1329,12 +1353,14 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
     from a filename. A checkpoint is not always a GGUF (the curated LTX single-file
     artifact is one ~90GB .safetensors) and companion repos carry .safetensors too, so an
     extension test mislabelled the model itself as "Required assets". The staging page is
-    the only place that knows: the plan entry whose repo is the one the user picked."""
+    the only place that knows: the entry carrying the picked checkpoint file. Repo identity
+    alone is not enough -- a checkpoint sharing its repo with the companions, and already
+    cached, leaves an entry of companion files that would still claim to be the model."""
     for page in ("images/images-page.tsx", "video/video-page.tsx"):
         src = _read(f"features/{page}")
         entries = re.search(r"plan\.entries\.map\(\(e\) => \(\{.*?\}\)\)", src, re.S)
         assert entries, f"{page} does not map the plan entries into staged downloads"
-        assert "checkpoint: e.repo_id === repoId" in entries.group(
+        assert "e.files.includes(opts.filename)" in entries.group(
             0
         ), f"{page} does not mark the picked repo's entry as the checkpoint"
 

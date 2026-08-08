@@ -5537,6 +5537,37 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     assert plan["required_bytes"] == plan["total_bytes"] + 6 * GB
 
 
+def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypatch):
+    # load_pipeline forces an AUTO quant to "off" under Speed="off", which normalizes to None and
+    # skips the fast path, so nothing is fetched and the footprint must not claim it.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
+            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+    _stub_hosted_prequant(monkeypatch, cached = True)
+
+    auto = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf", speed_mode = "off"
+    )
+    assert auto["required_bytes"] == auto["total_bytes"]
+
+    # An EXPLICIT quant is not forced off, so it still loads the prequant and still pays for it.
+    explicit = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF",
+        gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf",
+        speed_mode = "off",
+        transformer_quant = "fp8",
+    )
+    assert explicit["required_bytes"] == explicit["total_bytes"] + 6 * GB
+
+
 def test_download_plan_omits_a_prequant_an_auto_pick_would_decline(monkeypatch):
     # Auto runs the GGUF as-is rather than download an uncached hosted checkpoint, so those bytes
     # never land and must not inflate the figure either. Only an explicit request pays for it.
@@ -5602,6 +5633,30 @@ def test_download_plan_restages_a_base_split_across_both_cache_roots(monkeypatch
     assert (
         staged == old_root_only
     ), "a split base must restage exactly the files the active root cannot see"
+
+
+def test_download_plan_restages_the_old_root_half_when_other_files_are_missing_too(monkeypatch):
+    # The mixed case that matters most: some files sit in the old root, others are absent entirely.
+    # Those absent ones land in the LIVE root when staged, so the repo ends up straddling both even
+    # though nothing looked split at plan time. The old-root half has to come along.
+    _fake_hf_api(monkeypatch, {"unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS})
+    old_root_only = {"model_index.json"}
+    absent = {"vae/diffusion_pytorch_model.safetensors"}
+
+    def probe(repo_id, filename, revision = None, expected_size = None, roots = None, **kwargs):
+        if filename in absent:
+            return False
+        asks_live = roots is not None and roots != (None,)
+        return (filename not in old_root_only) if asks_live else (filename in old_root_only)
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(probe))
+
+    plan = DiffusionBackend().download_plan("unsloth/Z-Image-Turbo", model_kind = "pipeline")
+
+    staged = {f for entry in plan["entries"] for f in entry["files"]}
+    assert staged == old_root_only | absent, (
+        "staging only the absent files would leave the old-root half stranded across two roots"
+    )
 
 
 def test_download_plan_stages_nothing_for_a_base_wholly_in_the_other_root(monkeypatch):

@@ -1955,10 +1955,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               files: e.files,
               bytes: e.bytes,
               ggufFilename: e.gguf_filename,
-              // The plan's entry for the repo the user picked is the checkpoint; the others are the
-              // companion repos it needs. Only here is that known, so tag it now: filenames cannot
-              // tell them apart once a checkpoint ships as .safetensors like its companions do.
-              checkpoint: e.repo_id === repoId,
+              // The entry carrying the picked checkpoint file, so the panel can label it without
+              // guessing: filenames cannot tell the two apart once a checkpoint ships as
+              // .safetensors like its companions do. Repo identity alone is not enough, because a
+              // checkpoint that shares its repo with the companions and is already cached leaves an
+              // entry of companion files only. A pipeline pick has no one file: the repo IS it.
+              checkpoint: opts.filename
+                ? e.files.includes(opts.filename)
+                : e.repo_id === repoId,
             })),
           );
           return true;
@@ -2037,11 +2041,23 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
+        // Registers its own rollback like every other branch. Leaving the previous pick's entry in
+        // place would let that older staged download, on cancelling, revert to state from before it
+        // -- over a selection this pick already replaced -- and leave this one with no rollback.
+        const revert: PickRevert = { prev: quant, steps, guidance };
+        quantRevert.current = revert;
         setQuant(null);
         const d = defaultsFor(id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.source);
+        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.source).then(
+          (started) => {
+            if (!started) {
+              revertPick(revert);
+              quantRevert.current = null;
+            }
+          },
+        );
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but revert if the load fails to START

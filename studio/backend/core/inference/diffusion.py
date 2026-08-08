@@ -1397,6 +1397,12 @@ class DiffusionBackend:
             raw = kwargs.get("transformer_quant")
             # Same tri-state as load_pipeline: unset or "auto" means the hardware ladder decides.
             auto = raw is None or str(raw).strip().lower() in ("", "auto")
+            # An AUTO quant under an explicit Speed="off" is forced to "off" by load_pipeline, which
+            # normalizes to None and skips the fast path entirely, so no prequant is ever fetched.
+            # An EXPLICIT quant still takes it: that force applies only to the auto tri-state.
+            speed = kwargs.get("speed_mode")
+            if auto and speed is not None and str(speed).strip().lower() == SPEED_OFF:
+                return 0
             mode = TQ_AUTO if auto else normalize_transformer_quant(raw)
             if mode is None:
                 return 0
@@ -1689,7 +1695,10 @@ class DiffusionBackend:
             # instead, or the load re-pulls it inline past the plan's own progress, cancel and disk
             # preflight, and fails offline after a plan that reported nothing left to do. A repo
             # living entirely in the other root is fine, which is what reuse_other_cache_root is for.
-            split = {w for w in where.values() if w} == {"live", "other"}
+            # A file that is missing everywhere will be downloaded INTO the live root, so it counts
+            # as live here: dropping it would read a genuinely-mixed repo as unsplit and stage only
+            # the missing part, manufacturing the very split this branch exists to avoid.
+            split = {w or "live" for w in where.values()} == {"live", "other"}
             missing = [n for n, w in where.items() if w is None or (split and w != "live")]
             if not missing:
                 return
