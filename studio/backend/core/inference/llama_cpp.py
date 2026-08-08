@@ -4500,10 +4500,7 @@ class LlamaCppBackend:
             # must agree, else an inherited ROCR mask reads back as "no mask",
             # ordinal 0 is labelled physical 0, and the child's new ROCR pin
             # re-exposes the GPU the inherited mask was hiding.
-            is_rocm = (
-                getattr(torch.version, "hip", None) is not None
-                or "rocm" in getattr(torch, "__version__", "").lower()
-            )
+            is_rocm = LlamaCppBackend._torch_is_rocm(torch)
         except Exception:
             is_rocm = False
         if is_rocm:
@@ -4756,6 +4753,15 @@ class LlamaCppBackend:
         return requested > n_layers
 
     @staticmethod
+    def _torch_is_rocm(torch) -> bool:
+        """Whether this torch is a ROCm build. AMD SDK wheels leave
+        ``version.hip`` unset and only encode "rocm" in ``__version__``."""
+        return (
+            getattr(torch.version, "hip", None) is not None
+            or "rocm" in getattr(torch, "__version__", "").lower()
+        )
+
+    @staticmethod
     def _rocm_arch_by_physical_id() -> dict[int, str]:
         """PHYSICAL id -> lowercased gfx arch for every visible ROCm GPU.
 
@@ -4766,7 +4772,7 @@ class LlamaCppBackend:
         try:
             import torch
 
-            if getattr(torch.version, "hip", None) is None:
+            if not LlamaCppBackend._torch_is_rocm(torch):
                 return {}
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return {}
@@ -5117,6 +5123,13 @@ class LlamaCppBackend:
                 )
                 shared = idx in unified_ids
                 raw_mib = free_bytes // (1024 * 1024)
+                if shared:
+                    # ROCm's free is unreliable on a shared pool (Windows HIP
+                    # reports free==total, #7072), and system RAM is the real
+                    # ceiling there, so cap before taking the reserve.
+                    avail = LlamaCppBackend._available_system_memory_mib()
+                    if avail is not None:
+                        raw_mib = min(raw_mib, avail)
                 free_mib = _apply_igpu_host_reserve_mib(raw_mib, shared)
                 if free_mib < raw_mib:
                     logger.info(

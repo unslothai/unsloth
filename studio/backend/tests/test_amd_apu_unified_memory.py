@@ -213,3 +213,68 @@ class TestTheGateStillFailsOpen:
     def test_a_good_one_still_works(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1151"]))
         assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is True
+
+
+class TestAmdSdkWheelsCountAsRocm:
+    """AMD SDK / Radeon wheels leave torch.version.hip unset and only encode
+    "rocm" in __version__, which _resolve_visible_physical_ids already handles.
+    The arch map must use the same predicate or an APU goes unrecognised there."""
+
+    @staticmethod
+    def _torch(hip, version, archs = ("gfx1151",)):
+        t = _fake_torch(hip, list(archs))
+        t.__version__ = version
+        return t
+
+    @pytest.mark.parametrize(
+        ("hip", "version", "expected"),
+        [
+            ("6.2.0", "2.5.0+rocm6.2", True),
+            (None, "2.11.0+rocm7.13", True),   # AMD SDK wheel
+            (None, "2.5.0+ROCm7.0", True),     # case-insensitive
+            (None, "2.5.0+cu124", False),
+            (None, "2.5.0", False),
+        ],
+    )
+    def test_the_arch_map_matches_the_id_resolver(self, monkeypatch, hip, version, expected):
+        monkeypatch.setitem(sys.modules, "torch", self._torch(hip, version))
+        assert bool(LlamaCppBackend._rocm_arch_by_physical_id()) is expected
+        assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is expected
+
+
+class TestTheApuBudgetIsCappedByHostRam:
+    """Windows HIP without the SDK reports free==total (#7072), so the ROCm free
+    figure cannot be trusted on a shared pool. System RAM is the real ceiling."""
+
+    @staticmethod
+    def _probe(monkeypatch, arch, free_mib, avail_mib):
+        t = _fake_torch("6.2.0", [arch])
+        t.cuda.mem_get_info = lambda i: (free_mib * 1024 * 1024, free_mib * 1024 * 1024)
+        monkeypatch.setitem(sys.modules, "torch", t)
+        for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_m, raising = False)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: avail_mib)
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "llama-server")
+        )
+        monkeypatch.setattr(
+            "core.inference.llama_cpp.subprocess.run",
+            lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no nvidia-smi")),
+        )
+        return LlamaCppBackend._get_gpu_memory()
+
+    def test_the_sentinel_is_capped(self, monkeypatch):
+        assert self._probe(monkeypatch, "gfx1151", 100_000, 12_000) == [(0, 12_000 - 1024, 0)]
+
+    def test_an_honest_smaller_free_wins(self, monkeypatch):
+        """The cap is a ceiling, never a floor."""
+        assert self._probe(monkeypatch, "gfx1151", 8_000, 64_000) == [(0, 8_000 - 1024, 0)]
+
+    def test_unreadable_system_ram_keeps_the_old_answer(self, monkeypatch):
+        assert self._probe(monkeypatch, "gfx1151", 100_000, None) == [(0, 100_000 - 1024, 0)]
+
+    def test_a_discrete_card_is_never_capped(self, monkeypatch):
+        assert self._probe(monkeypatch, "gfx1100", 100_000, 12_000) == [(0, 100_000, 100_000)]
