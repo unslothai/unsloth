@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
-import { createElement, useCallback, useRef, useState } from "react";
+import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   confirmTransformersUpgradeIfNeeded,
@@ -490,6 +491,20 @@ export function useChatModelRuntime() {
     (options?: { signal?: AbortSignal; includeLoras?: boolean }) =>
       syncInferenceStatusToStore(options),
     [],
+  );
+
+  // Nothing here polls /status: refresh runs on mount and when the model lists
+  // change, never on a timer. So an image or video load evicting the chat model
+  // (the GPU arbiter allows one owner) went unseen, and the header went on
+  // showing the evicted model as loaded until something else happened to
+  // refresh. Re-read whenever another runtime finishes a load.
+  useEffect(
+    () =>
+      subscribeModelLifecycle(({ runtime, loading }) => {
+        if (loading || runtime === "chat") return;
+        void refresh({ includeLoras: false });
+      }),
+    [refresh],
   );
 
   const cancelLoading = useCallback(() => {

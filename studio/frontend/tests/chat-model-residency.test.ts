@@ -108,3 +108,22 @@ test("a model still loading is not loaded yet", () => {
     false,
   );
 });
+
+// Nothing in the chat runtime polls /status: refresh runs on mount and when the
+// model lists change, never on a timer. So an eviction caused by the Images
+// page was never observed and residentCheckpoint stayed undefined, which reads
+// as loaded. The re-read has to be driven by the lifecycle event.
+test("another runtime finishing a load re-reads the chat status", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/chat/hooks/use-chat-model-runtime.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(hook, /subscribeModelLifecycle\(\(\{ runtime, loading \}\) => \{/);
+  assert.match(hook, /if \(loading \|\| runtime === "chat"\) return;/);
+  assert.match(hook, /void refresh\(\{ includeLoras: false \}\)/);
+  // And the branch it feeds still clears residency.
+  assert.match(hook, /residentCheckpoint: null,/);
+});
