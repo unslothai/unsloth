@@ -236,12 +236,59 @@ def _hostile_env(
     home.mkdir(parents = True, exist_ok = True)
     drive, tail = os.path.splitdrive(str(home))
     env.update({"HOME": str(home), "USERPROFILE": str(home), "HOMEDRIVE": drive, "HOMEPATH": tail})
+    # HOME on its own does not move $PROFILE on Unix. PowerShell reads $XDG_CONFIG_HOME first and
+    # only falls back to $HOME/.config when it is unset, and GitHub's ubuntu image writes
+    # XDG_CONFIG_HOME into /etc/environment, so an inherited value went on naming the real account
+    # while the fixture planted its profile under tmp_path -- the whole file's isolation leaked on
+    # a hosted runner and nowhere else. Pointed at the same directory HOME already implies, so the
+    # two rules agree whichever one the host applies. Windows ignores it: $PROFILE comes from the
+    # known-folder API there.
+    env["XDG_CONFIG_HOME"] = str(home / ".config")
     if path_override is not None:
         path_override.mkdir(parents = True, exist_ok = True)
         env["PATH"] = str(path_override)
     if path_prepend is not None:
         env["PATH"] = str(path_prepend) + os.pathsep + env.get("PATH", "")
     return env
+
+
+_PROFILE_SCOPES = (
+    "AllUsersAllHosts",
+    "AllUsersCurrentHost",
+    "CurrentUserAllHosts",
+    "CurrentUserCurrentHost",
+)
+
+
+def _profile_paths(env: dict[str, str]) -> dict[str, Path]:
+    """The four profile paths pwsh itself reports under `env`.
+
+    Asked rather than assumed. The path this replaces was hardcoded to the ".config under $HOME"
+    branch, which is only PowerShell's fallback when XDG_CONFIG_HOME is unset, so on a host that
+    exports it the fixture wrote a file pwsh never opened and the profile silently did not apply.
+    """
+    res = subprocess.run(
+        [
+            shutil.which("pwsh") or "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "foreach ($n in "
+            + ", ".join(_ps_literal(scope) for scope in _PROFILE_SCOPES)
+            + ') { "$n=$($PROFILE.$n)" }',
+        ],
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 120,
+        env = env,
+    )
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    reported = dict(
+        line.strip().split("=", 1) for line in res.stdout.splitlines() if "=" in line
+    )
+    return {scope: Path(reported.get(scope, "")) for scope in _PROFILE_SCOPES}
 
 
 def _run_with_profile(
@@ -302,8 +349,22 @@ def test_a_real_profile_reproduces_the_same_state(tmp_path):
     Only the probe lines are compared, so a system-wide profile that prints a banner does not
     turn this into a flake.
     """
-    home = tmp_path / "home"
-    profile = home / ".config" / "powershell" / "Microsoft.PowerShell_profile.ps1"
+    env = _hostile_env(tmp_path)
+    paths = _profile_paths(env)
+    # The two machine-wide profiles load into the real leg only, and no environment variable can
+    # move them, so one that touches any probed setting would read as a divergence that says
+    # nothing about the simulation. Neither file ships with PowerShell; this skip is for a host
+    # that has been administered, and it names the file so the reason is checkable.
+    for scope in ("AllUsersAllHosts", "AllUsersCurrentHost"):
+        if paths[scope].is_file():
+            pytest.skip(f"a machine-wide profile at {paths[scope]} loads into the real leg only")
+    profile = paths["CurrentUserCurrentHost"]
+    # Not an assert: on a host whose $PROFILE cannot be redirected into the fixture at all, the
+    # real leg would load whatever the actual account has (or nothing) and prove nothing either
+    # way. XDG_CONFIG_HOME in _hostile_env is what keeps this true on Linux and macOS, so the
+    # skip is unreachable there and a regression in the simulation still fails locally and in CI.
+    if tmp_path not in profile.parents:
+        pytest.skip(f"pwsh resolves $PROFILE to {profile}, which this fixture cannot plant into")
     profile.parent.mkdir(parents = True, exist_ok = True)
     profile.write_text(_HOSTILE_PROFILE, encoding = "utf-8")
     script = tmp_path / "real.ps1"
@@ -317,12 +378,14 @@ def test_a_real_profile_reproduces_the_same_state(tmp_path):
         encoding = "utf-8",
         errors = "replace",
         timeout = 120,
-        env = _hostile_env(tmp_path),
+        env = env,
     )
     assert real.returncode == 0, f"stdout={real.stdout!r} stderr={real.stderr!r}"
     simulated = _run_with_profile(tmp_path, _STATE_PROBE)
+    # All four probes coming back at their defaults means the file was planted somewhere pwsh
+    # does not read, which is a broken fixture rather than a divergence; the path says which.
     assert _probe_lines(real.stdout) == _probe_lines(simulated.stdout), (
-        f"dot-sourced profile diverges from a loaded one: "
+        f"dot-sourced profile diverges from the one pwsh loaded from {profile}: "
         f"{_probe_lines(simulated.stdout)} vs {_probe_lines(real.stdout)}"
     )
 
