@@ -123,6 +123,21 @@ def _variant_bytes_on_disk(
         return total
     if variant_file_matcher is None:
         return 0
+    return _materialized_bytes(snapshot_dir, variant_file_matcher)
+
+
+def _materialized_bytes(
+    snapshot_dir: Path,
+    variant_file_matcher: Optional["VariantFileMatcher"],
+) -> int:
+    """Bytes the snapshot dir actually presents, ``None`` matcher meaning all of them.
+
+    A finalized blob is not yet a usable download: HF writes the blob and then
+    links it into the snapshot dir, and a run killed between the two leaves the
+    first without the second. ``stat`` follows the link, so a dangling one
+    raises and contributes nothing, while the Windows copy layout is read as is.
+    """
+    total = 0
     try:
         entries = sorted(snapshot_dir.rglob("*"))
     except OSError:
@@ -130,7 +145,9 @@ def _variant_bytes_on_disk(
     for path in entries:
         try:
             relative = path.relative_to(snapshot_dir).as_posix()
-            if not variant_file_matcher(relative) or not path.is_file():
+            if variant_file_matcher is not None and not variant_file_matcher(relative):
+                continue
+            if not path.is_file():
                 continue
             total += path.stat().st_size
         except (OSError, ValueError):
@@ -152,6 +169,7 @@ def _snapshot_complete_on_disk(
     expected_hashes: frozenset[str],
     matched_hashes: frozenset[str],
     metadata_total: int,
+    variant_file_matcher: Optional["VariantFileMatcher"],
 ) -> bool:
     if expected_total <= 0 or completed_bytes < expected_total or in_progress_bytes > 0:
         return False
@@ -171,20 +189,33 @@ def _snapshot_complete_on_disk(
         return download_manifest.verify_against_disk(manifest, snapshot_dir).ok
     # No manifest, but the download can still be provably finished: HF metadata
     # named every blob this revision expects, all of them are on disk finalized,
-    # and their declared sizes are accounted for. That is the same evidence a
-    # manifest verify collects, so refusing it only kept a materialized snapshot
-    # partial forever -- a manifest that was never written (metadata was
-    # unreachable at the end of the run), was deleted, or was filed under a
-    # cache scope this reader can no longer name is not evidence of an
-    # unfinished download. Requires the expected set to have come from metadata:
-    # an empty hash set means "unknown", and a caller's catalog-hinted total is
-    # not something completion may be judged against.
-    return bool(
-        expected_hashes
-        and metadata_total > 0
-        and completed_bytes >= metadata_total
-        and expected_hashes <= matched_hashes
+    # and the snapshot dir presents at least their declared bytes. That is the
+    # same evidence a manifest verify collects, so refusing it only kept a
+    # materialized snapshot partial forever -- a manifest that was never written
+    # (metadata was unreachable at the end of the run), was deleted, or was
+    # filed under a cache scope this reader can no longer name is not evidence
+    # of an unfinished download.
+    #
+    # Every clause is load-bearing. The expected set has to have come from
+    # metadata, since an empty hash set means "unknown" and a caller's
+    # catalog-hinted total is not something completion may be judged against.
+    # Set containment, not just the byte total, so one oversized blob cannot
+    # stand in for a shard that never arrived. And the snapshot dir has to hold
+    # the bytes: a blob is written before it is linked, so a run killed in
+    # between leaves finalized blobs that no snapshot file points at. A variant
+    # shares that dir with its siblings, so it needs the caller's matcher to
+    # measure only its own files, and without one there is nothing to measure.
+    if not expected_hashes or metadata_total <= 0:
+        return False
+    if completed_bytes < metadata_total or not expected_hashes <= matched_hashes:
+        return False
+    if variant is not None and variant_file_matcher is None:
+        return False
+    materialized = _materialized_bytes(
+        snapshot_dir,
+        variant_file_matcher if variant is not None else None,
     )
+    return materialized >= metadata_total
 
 
 def compute_snapshot_progress(
@@ -319,6 +350,7 @@ def compute_snapshot_progress(
                     expected_hashes = expected_hashes,
                     matched_hashes = frozenset(matched_hashes),
                     metadata_total = meta_total,
+                    variant_file_matcher = variant_file_matcher,
                 ),
             )
         )

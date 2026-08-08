@@ -3604,6 +3604,56 @@ def test_gguf_progress_without_a_manifest_needs_every_expected_blob(monkeypatch,
     assert result["progress"] == 0.99  # capped, not settled
 
 
+def test_gguf_progress_without_a_manifest_needs_the_snapshot_materialized(monkeypatch, tmp_path):
+    """A finalized blob no one linked to is not a finished download.
+
+    HF writes the blob and then links it into the snapshot dir, so a run killed
+    between the two leaves bytes that nothing points at. With a manifest,
+    verify_against_disk catches it; without one, the blob evidence alone would
+    have called an unloadable snapshot complete.
+    """
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    (blobs / "mainhash").write_bytes(b"x" * 100)  # never linked into rev0
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_requirements",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            download_size_bytes = 100,
+            required_hashes = frozenset({"mainhash"}),
+        ),
+    )
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["complete_on_disk"] is False
+
+
 def test_running_job_never_reads_progress_from_a_remembered_cache(monkeypatch, tmp_path):
     """force_active means the active root and nothing else, even before it exists.
 
