@@ -220,9 +220,15 @@ def test_a_second_studio_does_not_erase_the_first_record(tmp_path, monkeypatch):
         import json
 
         other = records / "424242.json"
-        other.write_text(json.dumps({
-            "owner_pid": 424242, "owner_identity": "a-studio-that-is-gone", "children": [],
-        }))
+        other.write_text(
+            json.dumps(
+                {
+                    "owner_pid": 424242,
+                    "owner_identity": "a-studio-that-is-gone",
+                    "children": [],
+                }
+            )
+        )
         pl.adopt_pid(child.pid)  # rewrites ours only
         assert other.is_file(), "a sibling's record was erased"
         assert (records / f"{os.getpid()}.json").is_file()
@@ -247,10 +253,18 @@ def test_a_live_owner_is_never_reaped(tmp_path, monkeypatch):
         _kill(child.pid)
 
 
-@pytest.mark.parametrize("content", [
-    "", "not json", "[]", "null", '{"children": "nope"}',
-    '{"children": [1, 2]}', '{"children": [{"pid": "x"}]}',
-])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",
+        "not json",
+        "[]",
+        "null",
+        '{"children": "nope"}',
+        '{"children": [1, 2]}',
+        '{"children": [{"pid": "x"}]}',
+    ],
+)
 def test_a_malformed_record_never_blocks_startup(tmp_path, monkeypatch, content):
     """The sweep runs before the server binds, so it must not raise on a record
     written by an older build or truncated by a power cut."""
