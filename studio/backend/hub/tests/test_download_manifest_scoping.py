@@ -16,7 +16,13 @@ def _write_manifest(path, payload):
     path.write_text(json.dumps(payload), encoding = "utf-8")
 
 
-def _manifest_payload(repo_id, variant, hub_cache, *, size = 4):
+def _manifest_payload(
+    repo_id,
+    variant,
+    hub_cache,
+    *,
+    size = 4,
+):
     return {
         "version": 1,
         "repo_type": "model",
@@ -156,7 +162,11 @@ def test_manifest_under_the_pre_resolve_digest_is_still_found(monkeypatch, tmp_p
     assert manifest.expected_files[0].path == "model.gguf"
 
 
-def _legacy_scoped_variant_manifest(tmp_path, spelled, variant = "Q4_K_M"):
+def _legacy_scoped_variant_manifest(
+    tmp_path,
+    spelled,
+    variant = "Q4_K_M",
+):
     """Plant a variant manifest under the pre-resolve digest, as an old build would."""
     path = state_dir.manifest_path(
         "model",
@@ -243,9 +253,7 @@ def test_pre_resolve_digest_cancel_marker_is_cleared_by_a_new_attempt(monkeypatc
         },
     )
 
-    assert download_manifest.has_cancel_marker(
-        "model", "Org/Model", "Q4_K_M", hub_cache = spelled
-    )
+    assert download_manifest.has_cancel_marker("model", "Org/Model", "Q4_K_M", hub_cache = spelled)
     download_manifest.clear_cancel_marker("model", "Org/Model", "Q4_K_M", hub_cache = spelled)
     assert not marker.is_file()
     assert not download_manifest.has_cancel_marker(

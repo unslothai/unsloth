@@ -3353,7 +3353,12 @@ def test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes(mon
     assert result["progress"] == 0  # no ~0.78 backward dip
 
 
-def _unresolvable_variant_metadata(monkeypatch, entry, *, state = "running"):
+def _unresolvable_variant_metadata(
+    monkeypatch,
+    entry,
+    *,
+    state = "running",
+):
     """A repo whose model_info is failing: no requirement, no blob hashes.
 
     Reproduces the negatively-cached lookup -- a 401 on a gated repo whose token
@@ -3549,9 +3554,7 @@ def test_gguf_progress_settles_complete_from_disk_without_a_manifest(monkeypatch
     (blobs / "mainhash").write_bytes(b"x" * 100)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     assert (
-        download_manifest.read_manifest(
-            "model", "Org/Model-GGUF", "Q4_K_M", hub_cache = entry.parent
-        )
+        download_manifest.read_manifest("model", "Org/Model-GGUF", "Q4_K_M", hub_cache = entry.parent)
         is None
     )
 

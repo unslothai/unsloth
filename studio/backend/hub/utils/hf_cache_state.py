@@ -410,7 +410,6 @@ def _configured_hub_cache() -> Optional[Path]:
     # that surfaces as an empty progress reading -- the very card being fixed.
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
-
         configured = get_hf_cache_paths().hub_cache
         return Path(configured) if configured else None
     except Exception:
