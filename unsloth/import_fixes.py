@@ -1012,7 +1012,23 @@ def _is_broken_torchvision_error(error) -> bool:
     return False
 
 
-def _probe_torchvision_binary(torch_version_raw, torchvision_version_raw):
+def _torchvision_repair_command(required = None):
+    """The pip command to repair a broken torchvision binary in place.
+
+    Pinned and `--no-deps`, both deliberately. Every torchvision wheel requires
+    an exact `torch==X.Y.Z`, so an unpinned `pip install --upgrade
+    --force-reinstall torchvision` resolves the newest torchvision and then
+    replaces the user's torch to satisfy it -- on a Colab/Kaggle image that is
+    the pinned torch every other wheel was built against, vLLM included. The
+    pin also fixes the case where the version gate passed on its lower bound
+    (torch 2.4 accepts torchvision >= 0.19, so an installed 0.20 reaches here):
+    the companion release is what gets reinstalled, not the newest one.
+    """
+    spec = "torchvision" if required is None else f"torchvision=={required[0]}.{required[1]}.*"
+    return f'pip install --force-reinstall --no-deps --no-cache-dir "{spec}"'
+
+
+def _probe_torchvision_binary(torch_version_raw, torchvision_version_raw, required = None):
     """Import torchvision, so a broken binary is named here and not six frames
     deep in transformers.
 
@@ -1036,7 +1052,7 @@ def _probe_torchvision_binary(torch_version_raw, torchvision_version_raw):
             f"Unsloth: torchvision=={torchvision_version_raw} claims to match "
             f"torch=={torch_version_raw}, but its compiled operators do not "
             f"load ({type(error).__name__}: {error}). Reinstall it with "
-            f"`pip install --upgrade --force-reinstall --no-cache-dir torchvision`. "
+            f"`{_torchvision_repair_command(required)}`. "
             f"Set UNSLOTH_SKIP_TORCHVISION_CHECK=1 to skip this check."
         ) from error
 
@@ -1095,7 +1111,7 @@ def torchvision_compatibility_check():
             f"Unsloth: torch=={torch_version_raw} and "
             f"torchvision=={torchvision_version_raw} are compatible."
         )
-        _probe_torchvision_binary(torch_version_raw, torchvision_version_raw)
+        _probe_torchvision_binary(torch_version_raw, torchvision_version_raw, required)
         return
 
     # Version mismatch detected

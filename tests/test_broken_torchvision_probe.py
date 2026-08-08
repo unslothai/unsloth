@@ -82,7 +82,7 @@ def test_a_chained_cause_is_followed():
     assert import_fixes._is_broken_torchvision_error(outer)
 
 
-def _probe_with_import_raising(error):
+def _probe_with_import_raising(error, required = (0, 26)):
     """Run the probe with `import torchvision` raising `error`."""
     real_import = builtins.__import__
 
@@ -95,7 +95,7 @@ def _probe_with_import_raising(error):
         for name in [n for n in sys.modules if n.startswith("torchvision")]:
             sys.modules.pop(name, None)
         with mock.patch.object(builtins, "__import__", fake_import):
-            import_fixes._probe_torchvision_binary("2.11.0", "0.26.0")
+            import_fixes._probe_torchvision_binary("2.11.0", "0.26.0", required)
 
 
 def test_a_broken_binary_raises_something_actionable():
@@ -104,9 +104,32 @@ def test_a_broken_binary_raises_something_actionable():
     text = str(excinfo.value)
     # The cause, the fix, and the escape hatch, in the one message.
     assert "torchvision==0.26.0" in text and "torch==2.11.0" in text
-    assert "force-reinstall --no-cache-dir torchvision" in text
+    assert "force-reinstall --no-deps --no-cache-dir" in text
     assert "UNSLOTH_SKIP_TORCHVISION_CHECK=1" in text
     assert excinfo.value.__cause__ is _NMS
+
+
+def test_the_repair_command_cannot_replace_torch():
+    """Every torchvision wheel requires an exact `torch==X.Y.Z`, so an unpinned
+    upgrade resolves the newest torchvision and drags a new torch in with it."""
+    command = import_fixes._torchvision_repair_command((0, 26))
+    assert "--no-deps" in command, "torch must not be a candidate for replacement"
+    assert "--upgrade" not in command, "the newest release is not what repairs a binary"
+    assert 'torchvision==0.26.*' in command
+
+
+def test_the_repair_command_names_the_companion_release():
+    """The gate passes on a lower bound (torch 2.4 accepts torchvision >= 0.19),
+    so an installed 0.20 reaches the probe; 0.19 is what repairs that box."""
+    assert 'torchvision==0.19.*' in import_fixes._torchvision_repair_command((0, 19))
+    # No table entry: still pinned to nothing rather than to the wrong thing.
+    assert "torchvision" in import_fixes._torchvision_repair_command(None)
+
+
+def test_the_probe_is_told_which_release_the_table_wanted():
+    """Otherwise the message cannot name the companion version."""
+    source = ast.unparse(_check_function())
+    assert "_probe_torchvision_binary(torch_version_raw, torchvision_version_raw, required)" in source
 
 
 def test_an_unrelated_import_error_is_left_alone():
