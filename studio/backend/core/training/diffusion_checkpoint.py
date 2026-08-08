@@ -187,6 +187,7 @@ class CheckpointIdentity:
                 lora_rank = int(data.get("lora_rank") or 0),
                 lora_alpha = int(data.get("lora_alpha") or 0),
                 lora_dropout = _optional_float(data.get("lora_dropout")),
+                cfg_dropout = _optional_float(data.get("cfg_dropout")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
                 resolution = int(data.get("resolution") or 0),

@@ -1705,6 +1705,14 @@ def test_a_shortened_or_repeating_permutation_is_refused(run_dir):
     assert sampler.load_state_dict({"n": 4, "order": [0, 1, 1, 2], "pos": 0}) is False
     # Short: the cycle would reshuffle a batch early.
     assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2], "pos": 0}) is False
+    # And a position outside the permutation is a damaged manifest, not a rounding error:
+    # clamping it re-serves the order from the top or ends the cycle early, behind the same
+    # already-restored RNG.
+    assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2, 3], "pos": 9}) is False
+    assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2, 3], "pos": -1}) is False
+    assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2, 3], "pos": "two"}) is False
+    # The two ends of the range are both legitimate: 0 is untouched, len(order) is exhausted.
+    assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2, 3], "pos": 4}) is True
 
 
 def test_optimizer_moments_with_no_class_beside_them_are_refused(run_dir):
@@ -1787,6 +1795,11 @@ def test_the_identity_covers_cfg_dropout(run_dir):
     )
     assert older is not None
     assert older.mismatch_reason(dc.identity_for_config(changed.cfg)) is None
+    # But a manifest that DOES record it must read it back, or the optional-field rule turns
+    # every saved identity into "cannot tell" and the gate never fires on a real change.
+    saved = dc.CheckpointIdentity.from_dict(dc.identity_for_config(run.cfg).as_dict())
+    assert saved is not None and saved.cfg_dropout == 0.1
+    assert "caption dropout" in (saved.mismatch_reason(dc.identity_for_config(changed.cfg)) or "")
 
 
 def test_the_identity_covers_lora_dropout(run_dir):

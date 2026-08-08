@@ -858,8 +858,14 @@ class PermutationBatchSampler:
         try:
             pos = int(state.get("pos") or 0)
         except (TypeError, ValueError):
-            pos = 0
-        self._pos = max(0, min(pos, len(self._order)))
+            return False
+        # A position outside 0..len(order) is not a rounding error, it is a damaged manifest,
+        # and clamping it re-serves the permutation from the top or ends the cycle early --
+        # behind an RNG already restored past the draw. The same silent repeat-or-skip the
+        # order check above refuses, so refuse it rather than quietly correcting it.
+        if not 0 <= pos <= len(self._order):
+            return False
+        self._pos = pos
         return True
 
 
