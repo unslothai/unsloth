@@ -1535,3 +1535,139 @@ def test_a_resume_refuses_a_checkpoint_whose_ema_is_incomplete(run_dir):
             ema = wider,
         )
     assert "EMA state is missing or mis-shaped" in str(excinfo.value)
+
+
+def test_the_sdxl_trainer_binds_its_output_dir_before_scanning_checkpoints():
+    """`out_dir` was assigned only inside two early-return branches and at export time, so the
+    pre-run checkpoint snapshot read it before any binding existed: every normal SDXL run raised
+    UnboundLocalError after the whole model and cache setup, fresh and resumed alike. The loop
+    needs a GPU to drive, so the ordering is checked against the source."""
+    import inspect
+
+    from core.training import diffusion_lora_trainer
+
+    source = inspect.getsource(diffusion_lora_trainer).splitlines()
+    scan = next(
+        i for i, line in enumerate(source) if "snapshot_checkpoints(out_dir)" in line
+    )
+    # The binding that covers it has to be at the loop's own indentation -- one nested inside an
+    # `if` that returns does not run on the normal path.
+    scan_indent = len(source[scan]) - len(source[scan].lstrip())
+    bound = [
+        i
+        for i, line in enumerate(source[:scan])
+        if line.strip().startswith("out_dir = ")
+        and len(line) - len(line.lstrip()) <= scan_indent
+    ]
+    assert bound, "snapshot_checkpoints(out_dir) is reached before out_dir is bound"
+
+
+def test_a_bundle_overwritten_by_this_run_is_discarded_with_it(run_dir):
+    """Ownership by pathname alone kept a bundle this run REPLACED.
+
+    Resume checkpoint-10 in a folder that also holds checkpoint-15, periodically save at 15
+    (which overwrites it), then discard: the original is already gone, and matching on the name
+    preserved the replacement as though it were the bundle it destroyed.
+    """
+    seeded = _Run(run_dir)
+    seeded.save(10)
+    seeded.step_once(0.5)
+    seeded.save(15)
+    preexisting = dc.snapshot_checkpoints(run_dir)
+    assert {p.name for p, _ in preexisting} == {"checkpoint-10", "checkpoint-15"}
+
+    resumed = _Run(run_dir, seed = 3, resume_from_checkpoint = str(run_dir / "checkpoint-10"))
+    resumed.step_once(1.5)
+    path, error = resumed.save(15)
+    assert error is None and path == str(run_dir / "checkpoint-15")
+
+    dc.clear_own_checkpoints(run_dir, preexisting)
+
+    survivors = {p.name for p in dc.list_checkpoints(run_dir)}
+    assert survivors == {"checkpoint-10"}, (
+        f"the replacement written by the discarded run survived: {survivors}"
+    )
+
+
+def test_resuming_into_another_directory_is_not_treated_as_owning_it(run_dir, tmp_path):
+    from utils.paths import outputs_root
+
+    elsewhere = outputs_root() / "other-run"
+    elsewhere.mkdir(parents = True, exist_ok = True)
+    source = _Run(elsewhere)
+    source.save(20)
+
+    same_dir = _Run(run_dir, resume_from_checkpoint = str(run_dir / "checkpoint-3"))
+    assert dc.resumed_into_this_dir(same_dir.cfg, run_dir) is True
+    by_folder = _Run(run_dir, resume_from_checkpoint = str(run_dir))
+    assert dc.resumed_into_this_dir(by_folder.cfg, run_dir) is True
+
+    # ...but a bundle from ANOTHER directory says nothing about what is in this one.
+    cross = _Run(run_dir, resume_from_checkpoint = str(elsewhere / "checkpoint-20"))
+    assert dc.resumed_into_this_dir(cross.cfg, run_dir) is False
+    fresh = _Run(run_dir)
+    assert dc.resumed_into_this_dir(fresh.cfg, run_dir) is False
+
+
+def test_a_bundle_without_optimizer_state_is_refused(run_dir):
+    """Loading only the adapter and calling it a resume restarts Adam's moments from zero at
+    step N while reporting a clean continue -- a fresh run with a warm learning rate."""
+    from core.training.diffusion_checkpoint import ResumeError
+
+    run = _Run(run_dir)
+    path, error = run.save(4)
+    assert error is None and path is not None
+    (Path(path) / dc.OPTIMIZER_FILENAME).unlink()
+    manifest_path = Path(path) / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    manifest["files"].pop("optimizer", None)
+    manifest.get("file_sizes", {}).pop(dc.OPTIMIZER_FILENAME, None)
+    manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    resumed = _Run(run_dir, resume_from_checkpoint = path)
+    with pytest.raises(ResumeError, match = "no optimizer state"):
+        resumed.restore()
+
+
+def test_the_identity_covers_lora_dropout(run_dir):
+    """Both trainers pass lora_dropout to the LoRA constructor, so it changes the stochastic
+    forward the restored moments were produced against."""
+    run = _Run(run_dir, lora_dropout = 0.0)
+    path, error = run.save(5)
+    assert error is None
+
+    changed = _Run(run_dir, lora_dropout = 0.15, resume_from_checkpoint = path)
+    reason = dc.identity_for_config(run.cfg).mismatch_reason(
+        dc.identity_for_config(changed.cfg)
+    )
+    assert reason is not None and "dropout" in reason.lower()
+
+    # An identity from before the field existed reads as unknown, which must not be a mismatch.
+    older = dc.CheckpointIdentity.from_dict(
+        {**dc.identity_for_config(run.cfg).as_dict(), "lora_dropout": None}
+    )
+    assert older is not None
+    assert older.mismatch_reason(dc.identity_for_config(changed.cfg)) is None
+
+
+def test_the_resumed_event_seeds_the_live_counters(runs_dir):
+    """Until the first post-resume progress event, step and total_steps stayed at their idle
+    values: the UI showed 0/0 after restoring step 400 of 500, and an OOM on the first step
+    persisted an errored run with both recorded as zero. The event carries them."""
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    service = DiffusionTrainingService()
+    service._apply_event(
+        {
+            "type": "resumed",
+            "step": 400,
+            "total_steps": 500,
+            "checkpoint_path": "/x/checkpoint-400",
+        }
+    )
+    snapshot = service.status()
+    assert snapshot["step"] == 400
+    assert snapshot["total_steps"] == 500
+    # ...and still not a bundle this run wrote.
+    assert snapshot["resumed_from_step"] == 400
+    assert snapshot["checkpoint_step"] is None

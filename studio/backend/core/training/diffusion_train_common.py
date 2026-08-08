@@ -1320,10 +1320,26 @@ def restore_resume_state(
         # over a changed cfg.learning_rate -- the same semantics as HF Trainer's resume, and the
         # UI only ever replays the original run's config anyway.
         optimizer.load_state_dict(optimizer_state)
+    elif optimizer is not None:
+        # The bundle lists no optimizer at all. Every bundle this writer produces for a real run
+        # has one, so this is a hand-edited or half-written directory -- and continuing would
+        # restart Adam's moments from zero at step N while reporting a clean resume, which looks
+        # like a resume and trains like a fresh run with a warm LR.
+        raise ResumeError(
+            "This checkpoint carries no optimizer state, so the run cannot be continued from "
+            "it: the moments would restart from zero at the resumed step. Start a new run."
+        )
     scheduler_state = ckpt.torch_state("scheduler")
     if scheduler_state is not None:
         lr_scheduler.load_state_dict(scheduler_state)
         _reapply_lr_schedule(optimizer, lr_scheduler)
+    elif lr_scheduler is not None:
+        # Same for the schedule: a fresh LambdaLR at step 0 would re-warm the learning rate the
+        # restored optimizer already moved past.
+        raise ResumeError(
+            "This checkpoint carries no learning-rate scheduler state, so the schedule would "
+            "restart from step 0. Start a new run."
+        )
     if sampler is not None:
         sampler.load_state_dict(ckpt.sampler_state)
     if ema is not None:

@@ -72,6 +72,8 @@ from core.training.diffusion_train_common import (  # noqa: F401
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
     list_checkpoints,
+    resumed_into_this_dir,
+    snapshot_checkpoints,
     identity_for_config,
     preflight_resume,
 )
@@ -499,9 +501,18 @@ def run_diffusion_lora_training(
             rng_streams = rng_streams,
         )
         resumed = restored.step if restored is not None else 0
+        # Bound HERE, not at the export below: the checkpoint scan and the periodic saves both
+        # need it, and the two earlier assignments live inside early-return branches -- so on
+        # every normal run this read came before any binding at all.
+        out_dir = Path(cfg.output_dir).expanduser()
+        # Whether this run's source bundle lives in THIS directory. Resuming from
+        # directory A into a reused output_dir B leaves B's existing bundles as foreign
+        # as they would be for a fresh run -- so the first save has to clear them, or a
+        # higher-numbered one survives and a later resume by B picks it over this run.
+        resumed_here = bool(resumed) and resumed_into_this_dir(cfg, out_dir)
         # The bundles that were already here when this run started, so a discard below
         # removes only what this run wrote. A resumed run shares its source's directory.
-        preexisting_checkpoints = list_checkpoints(out_dir)
+        preexisting_checkpoints = snapshot_checkpoints(out_dir)
 
         unet.train()
         stopped = False
@@ -534,7 +545,7 @@ def run_diffusion_lora_training(
                 # A fresh run owns its output dir, so clear bundles an earlier run of the same
                 # adapter name left there: they carry higher step numbers and a later Resume
                 # would pick them over this run's.
-                discard_existing = not (wrote_checkpoint or resumed),
+                discard_existing = not (wrote_checkpoint or resumed_here),
             )
             # Only a bundle that actually landed retires the discard. A first save that failed
             # (a transient ENOSPC at the first save_steps interval, say) wrote nothing, so the
@@ -669,7 +680,6 @@ def run_diffusion_lora_training(
                 break
 
         # Export the LoRA in diffusers format, unless cancelled with save disabled.
-        out_dir = Path(cfg.output_dir).expanduser()
         lora_path: Optional[str] = None
         catalog_path: Optional[str] = None
         if not (stopped and not save_on_stop):

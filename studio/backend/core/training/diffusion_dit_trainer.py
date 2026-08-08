@@ -64,6 +64,8 @@ from core.training.diffusion_train_common import (
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
     list_checkpoints,
+    resumed_into_this_dir,
+    snapshot_checkpoints,
     identity_for_config,
     preflight_resume,
 )
@@ -1781,9 +1783,14 @@ def _train_dit(
         rng_streams = rng_streams,
     )
     resumed = restored.step if restored is not None else 0
+    # Whether this run's source bundle lives in THIS directory. Resuming from
+    # directory A into a reused output_dir B leaves B's existing bundles as foreign
+    # as they would be for a fresh run -- so the first save has to clear them, or a
+    # higher-numbered one survives and a later resume by B picks it over this run.
+    resumed_here = bool(resumed) and resumed_into_this_dir(cfg, out_dir)
     # The bundles that were already here when this run started, so a discard below
     # removes only what this run wrote. A resumed run shares its source's directory.
-    preexisting_checkpoints = list_checkpoints(out_dir)
+    preexisting_checkpoints = snapshot_checkpoints(out_dir)
     if restored is not None:
         was = restored.progress.get("resolved_base_precision")
         if was and was != base_precision:
@@ -1831,7 +1838,7 @@ def _train_dit(
             progress = {"running_loss": running_loss, "resolved_base_precision": base_precision},
             # A fresh run owns its output dir, so clear bundles an earlier run of the same adapter
             # name left there: they carry higher step numbers and a later Resume would pick them.
-            discard_existing = not (wrote_checkpoint or resumed),
+            discard_existing = not (wrote_checkpoint or resumed_here),
         )
         # Only a bundle that actually landed retires the discard; see the LoRA trainer.
         if written:

@@ -663,6 +663,15 @@ class DiffusionTrainingService:
                     resumed_from_step = ev.get("step"),
                     message = f"Resuming from step {ev.get('step')}...",
                 )
+                # Seed the LIVE counters from the same event. They are what the UI renders and
+                # what an errored run persists, and until the first post-resume progress event
+                # they still read 0/0 -- so a resume of step 400 of 500 shows "0/0", and an OOM
+                # on the first step records a failed run at step 0 with a target of 0.
+                # checkpoint_step stays untouched: this bundle is not one this run wrote.
+                if ev.get("step") is not None:
+                    s["step"] = int(ev["step"])
+                if ev.get("total_steps") is not None:
+                    s["total_steps"] = int(ev["total_steps"])
             elif etype == "checkpoint_saved":
                 # Folded as each bundle lands, not only at the end, so a run that later crashes is
                 # still reported as resumable. A good write also clears an earlier write's failure.

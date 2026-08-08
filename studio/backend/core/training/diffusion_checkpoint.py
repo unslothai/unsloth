@@ -88,13 +88,14 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("lora_target_modules", "LoRA target modules"),
     ("lora_rank", "LoRA rank"),
     ("lora_alpha", "LoRA alpha"),
+    ("lora_dropout", "LoRA dropout"),
     ("precision", "mixed precision"),
     ("base_precision", "base precision"),
 )
 # Fields whose value can legitimately be unknown on one side (an uncached Hub repo has no
 # resolvable revision; the start route knows the dataset only after its own discovery pass).
 # Unknown on either side means "cannot tell", which must not be reported as a mismatch.
-_OPTIONAL_IDENTITY_FIELDS = frozenset({"base_revision", "dataset_fingerprint"})
+_OPTIONAL_IDENTITY_FIELDS = frozenset({"base_revision", "dataset_fingerprint", "lora_dropout"})
 # What source_revision() returns when it cannot resolve a revision offline.
 _UNRESOLVED_REVISION = "unresolved"
 
@@ -133,6 +134,7 @@ class CheckpointIdentity:
     kind: str = "image"
     base_revision: Optional[str] = None
     dataset_fingerprint: Optional[str] = None
+    lora_dropout: Optional[float] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -144,6 +146,11 @@ class CheckpointIdentity:
             "lora_target_modules": list(self.lora_target_modules),
             "lora_rank": int(self.lora_rank),
             "lora_alpha": int(self.lora_alpha),
+            # Both trainers pass this to the LoRA constructor, so it changes the stochastic
+            # forward pass the restored optimizer moments were produced against. Written as a
+            # rounded float: a manifest from before this field existed reads as None, which the
+            # optional-field rule below skips rather than reporting as a mismatch.
+            "lora_dropout": self.lora_dropout,
             "precision": self.precision,
             "base_precision": self.base_precision,
             # Recorded for the UI / debugging only; a resolution change is a different training
@@ -167,6 +174,7 @@ class CheckpointIdentity:
                 lora_target_modules = tuple(str(t) for t in targets),
                 lora_rank = int(data.get("lora_rank") or 0),
                 lora_alpha = int(data.get("lora_alpha") or 0),
+                lora_dropout = _optional_float(data.get("lora_dropout")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
                 resolution = int(data.get("resolution") or 0),
@@ -188,7 +196,10 @@ class CheckpointIdentity:
         mine, theirs = self.as_dict(), other.as_dict()
         for field, label in _IDENTITY_LABELS:
             a, b = mine.get(field), theirs.get(field)
-            if field in _OPTIONAL_IDENTITY_FIELDS and (not a or not b):
+            # None / "" is "cannot tell". NOT falsiness: a lora_dropout of 0.0 is a real value
+            # and the commonest one, so truthiness would skip exactly the comparison that
+            # matters -- 0.0 against 0.15.
+            if field in _OPTIONAL_IDENTITY_FIELDS and (a in (None, "") or b in (None, "")):
                 continue
             if field == "base_revision" and not (
                 _revision_is_comparable(a) and _revision_is_comparable(b)
@@ -214,6 +225,17 @@ def _optional_str(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    """A rounded float, or None for anything unreadable (including a manifest that predates
+    the field). None is the "cannot tell" the optional-field rule skips."""
+    if value is None:
+        return None
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError):
+        return None
 
 
 def _render(value: Any) -> str:
@@ -320,6 +342,7 @@ def identity_for_config(
         lora_target_modules = targets,
         lora_rank = int(cfg.lora_rank),
         lora_alpha = int(cfg.lora_alpha if cfg.lora_alpha is not None else cfg.lora_rank),
+        lora_dropout = round(float(getattr(cfg, "lora_dropout", 0.0) or 0.0), 6),
         precision = str(cfg.mixed_precision or ""),
         base_precision = str(getattr(cfg, "base_precision", "") or ""),
         resolution = int(cfg.resolution),
@@ -789,8 +812,37 @@ def clear_checkpoints(output_dir: str | os.PathLike[str]) -> None:
         shutil.rmtree(stale, ignore_errors = True)
 
 
+def resumed_into_this_dir(cfg: Any, output_dir: "str | os.PathLike[str]") -> bool:
+    """Whether the bundle this run resumed FROM lives in ``output_dir``.
+
+    The usual case, and the one the first-save discard is skipped for: a resumed run shares its
+    source's directory, so clearing "everything that was here" would take the source with it.
+    An API caller can instead resume from directory A into a reused output_dir B, and then B's
+    contents are as foreign as they would be to a fresh run -- keeping them lets a higher-step
+    bundle outlive this run and be picked by a later resume by directory."""
+    source = getattr(cfg, "resume_from_checkpoint", None)
+    if not source:
+        return False
+    try:
+        root = Path(output_dir).expanduser().resolve()
+        candidate = Path(str(source)).expanduser().resolve()
+    except OSError:
+        return False
+    # The request names either the bundle itself or the directory holding it.
+    return candidate == root or candidate.parent == root
+
+
+def snapshot_checkpoints(output_dir: str | os.PathLike[str]) -> list[tuple[Path, Optional[tuple]]]:
+    """The bundles in ``output_dir`` right now, each with its identity.
+
+    Captured BEFORE the run's first write, because ownership cannot be decided by pathname at
+    cleanup time: a resumed run can overwrite a bundle that was already there, and by then the
+    directory holds this run's state under the old name."""
+    return [(path, _bundle_identity(path)) for path in list_checkpoints(output_dir)]
+
+
 def clear_own_checkpoints(
-    output_dir: str | os.PathLike[str], preexisting: "Iterable[Path]"
+    output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]"
 ) -> None:
     """Remove the bundles THIS run wrote, leaving the ones it found.
 
@@ -800,11 +852,39 @@ def clear_own_checkpoints(
     thing the user was trying not to disturb. Bundles are identified by the set captured before
     the run's first write, not by step number, because a resume writes lower numbers than the
     ones already there."""
-    keep = {Path(p) for p in preexisting}
+    # Keyed by path AND by the bundle's own identity, not by path alone. A resumed run can
+    # periodically save at a step whose directory was already there (resume checkpoint-10 in a
+    # folder that also holds checkpoint-15, save at 15), which REPLACES that bundle: the
+    # original is gone either way, and matching on the name alone then preserved the discarded
+    # run's replacement as though it were the bundle it overwrote.
+    keep: dict[Path, Optional[tuple]] = {}
+    for entry in preexisting:
+        # A bare path (an older caller) keeps the pathname-only behaviour for that entry.
+        if isinstance(entry, tuple):
+            path, identity = entry
+            keep[Path(path)] = identity
+        else:
+            keep[Path(entry)] = _bundle_identity(Path(entry))
     for stale in list_checkpoints(output_dir):
-        if stale in keep:
+        if stale in keep and keep[stale] == _bundle_identity(stale):
             continue
         shutil.rmtree(stale, ignore_errors = True)
+
+
+def _bundle_identity(path: Path) -> Optional[tuple]:
+    """What distinguishes one bundle at this path from another written over it.
+
+    The manifest is written last and carries the writing run's own start time, so it separates
+    "the bundle that was here" from "the bundle this run put here" without hashing tensors.
+    None for an unreadable or absent manifest, which compares equal to itself and so leaves an
+    unreadable pre-existing directory alone."""
+    try:
+        manifest = json.loads((path / TRAINER_STATE_FILENAME).read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    # created_at is the moment THIS bundle's manifest was written -- the completion marker, so
+    # it exists on every valid bundle and differs between two writes at the same step.
+    return (manifest.get("created_at"), manifest.get("global_step"))
 
 
 # ── reading + validation ──────────────────────────────────────────────────────
