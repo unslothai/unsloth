@@ -709,13 +709,33 @@ def _pid_is_zombie(pid: int) -> bool:
         return False
 
 
+def _identity_for_record(pid: int, attempts: int = 3) -> Optional[str]:
+    """Identity to persist for *pid*, retried while it is still running.
+
+    A `ps` that timed out once would otherwise be recorded as "no identity",
+    and an entry with no identity is never signalled, so that child survives
+    every later launch.
+    """
+    import time
+
+    for attempt in range(attempts):
+        identity = _pid_identity(pid)
+        if identity is not None:
+            return identity
+        if not _pid_alive(pid):
+            break  # already gone: there is nothing left to identify
+        if attempt + 1 < attempts:
+            time.sleep(0.05 * (attempt + 1))
+    return None
+
+
 def adopt_pid(pid: Optional[int]) -> None:
     """Track a child (e.g. a multiprocessing worker started after the parent job
     was set up) and, on Windows, assign it to the job as belt-and-suspenders.
     Tolerates a None or already-exited pid."""
     if not pid:
         return
-    identity = _pid_identity(pid)
+    identity = _identity_for_record(pid)
     pgid = _own_process_group(pid)
     with _record_lock:
         _tracked_pids[pid] = identity

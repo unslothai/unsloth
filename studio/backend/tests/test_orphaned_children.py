@@ -1267,5 +1267,41 @@ def test_the_update_hook_asks_the_native_side_after_a_remount():
     assert "kill_on_close_armed" in (tauri / "windows_job.rs").read_text(encoding = "utf-8")
 
 
+def test_a_transient_identity_failure_is_not_recorded_as_none(monkeypatch):
+    """None is permanent: an entry with no identity is never signalled, so that
+    child would survive every later launch."""
+    from utils import process_lifetime as pl
+
+    answers = iter([None, None, "started-at"])
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: next(answers, "started-at"))
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    assert pl._identity_for_record(os.getpid()) == "started-at"
+
+
+def test_identity_capture_stops_once_the_child_is_gone(monkeypatch):
+    from utils import process_lifetime as pl
+
+    calls = []
+
+    def _identity(pid):
+        calls.append(pid)
+        return None
+
+    monkeypatch.setattr(pl, "_pid_identity", _identity)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: False)
+    assert pl._identity_for_record(4242) is None
+    assert calls == [4242], "kept retrying a process that had already exited"
+
+
+def test_an_unanswerable_cleanup_query_counts_as_disarmed():
+    hook = (
+        Path(__file__).resolve().parents[2]
+        / "frontend" / "src" / "hooks" / "use-tauri-update.ts"
+    ).read_text(encoding = "utf-8")
+    gate = hook[hook.index("async function crashCleanupReady"):]
+    gate = gate[: gate.index("\n  }")]
+    assert "cleanupRearmedRef.current = !isTauri;" in gate, "a failed query still reads as armed"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

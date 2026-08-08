@@ -484,7 +484,9 @@ export function useTauriUpdate(isExternalServer = false) {
         const { invoke } = await import("@tauri-apps/api/core");
         cleanupRearmedRef.current = await invoke<boolean>("desktop_update_cleanup_armed");
       } catch {
-        // Not a desktop build, or the command is unavailable: nothing to correct.
+        // On the desktop this is the one answer we cannot assume: fail closed
+        // and let the gate below re-arm. In the browser there is no job at all.
+        cleanupRearmedRef.current = !isTauri;
       }
     }
     if (cleanupRearmedRef.current) return true;
