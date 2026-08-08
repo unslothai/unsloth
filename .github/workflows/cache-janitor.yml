@@ -63,8 +63,14 @@ jobs:
           all="$RUNNER_TEMP/caches.tsv"
           grouped="$RUNNER_TEMP/grouped.tsv"
 
+          # A non-numeric keep makes `[ n -le KEEP ]` exit 2, and since that test
+          # is the left operand of `&&` set -e does not fire: the `continue` is
+          # skipped and every generation gets deleted, exit 0. Clamp instead.
+          case "$KEEP" in ""|*[!0-9]*) echo "::warning::invalid keep=$KEEP, using 2"; KEEP=2 ;; esac
+          [ "$KEEP" -lt 1 ] && KEEP=1
+
           gh api --paginate "repos/$repo/actions/caches?per_page=100" \
-            -q '.actions_caches[] | [.id, .created_at, .size_in_bytes, .key] | @tsv' \
+            -q '.actions_caches[] | [.id, .created_at, .size_in_bytes, .ref, .key] | @tsv' \
             > "$all" || true
 
           total=$(awk -F'\t' '{s+=$3} END {printf "%d", s+0}' "$all")
@@ -72,7 +78,7 @@ jobs:
           echo "$count caches, $(( total / 1073741824 )) GiB, delete=$DELETE keep=$KEEP"
 
           : > "$grouped"
-          while IFS=$'\t' read -r id created size key; do
+          while IFS=$'\t' read -r id created size ref key; do
             [ -z "${id:-}" ] && continue
             case "$key" in
               codeql-overlay-base-database-*)
@@ -84,7 +90,11 @@ jobs:
             # Unshortened means the suffix did not match, which would make
             # generation 1 look like generation N. Skip rather than guess.
             [ "$pre" = "$key" ] && continue
-            printf '%s\t%s\t%s\t%s\n' "$pre" "$created" "$id" "$size" >> "$grouped"
+            # Group per ref, not per key. Caches are ref-scoped: a branch cannot
+            # restore a sibling's, but every branch can restore the default
+            # branch's. Ranking all refs together lets two branch-scoped copies
+            # rank newest and evict the default-branch copy everyone shares.
+            printf '%s\t%s\t%s\t%s\n' "$ref|$pre" "$created" "$id" "$size" >> "$grouped"
           done < "$all"
 
           sort -t"$(printf '\t')" -k1,1 -k2,2r -o "$grouped" "$grouped"
