@@ -142,9 +142,7 @@ def test_flash_attn_kernel_coverage_is_unknown_without_a_launch(monkeypatch, cap
     flash-attn exposes no list of the architectures it was compiled for, and this child
     never launches a kernel, so nothing here can establish support."""
     monkeypatch.setitem(sys.modules, "flash_attn", types.ModuleType("flash_attn"))
-    monkeypatch.setitem(
-        sys.modules, "flash_attn.flash_attn_interface", types.ModuleType("iface")
-    )
+    monkeypatch.setitem(sys.modules, "flash_attn.flash_attn_interface", types.ModuleType("iface"))
     monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: capabilities)
 
     entry = probe.probe_flash_attn()

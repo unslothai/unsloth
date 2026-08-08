@@ -386,7 +386,7 @@ def test_the_model_code_reads_the_probed_verdict_not_the_bare_import():
 
 
 def test_an_exclusive_mode_refusal_keeps_xformers_on(monkeypatch):
-    """"device is currently in use by another process" is the driver saying the GPU is
+    """ "device is currently in use by another process" is the driver saying the GPU is
     someone else's right now, not that the wheel is broken. Recorded as conclusive, it turned
     a transient into a process-wide 2x memory regression -- caused by the diagnostic."""
     monkeypatch.setattr(
@@ -397,9 +397,9 @@ def test_an_exclusive_mode_refusal_keeps_xformers_on(monkeypatch):
         ),
     )
     assert ad._xformers_runs_on_device() is False
-    assert ad.XFORMERS_PROBE_INCONCLUSIVE is True, (
-        "an inconclusive failure must leave xformers enabled for the real forward to decide"
-    )
+    assert (
+        ad.XFORMERS_PROBE_INCONCLUSIVE is True
+    ), "an inconclusive failure must leave xformers enabled for the real forward to decide"
 
 
 def test_the_probed_device_follows_the_caller_selection(monkeypatch):
