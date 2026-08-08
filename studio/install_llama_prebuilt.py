@@ -2782,9 +2782,7 @@ def _apply_host_overrides(
             host,
             has_rocm = True,
             rocm_gfx_target = remembered,
-            rocm_gfx_targets = list(
-                dict.fromkeys([*_host_rocm_gfx_targets(host), remembered])
-            ),
+            rocm_gfx_targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), remembered])),
         )
     if override_has_rocm and not host.has_rocm:
         return dataclasses_replace(host, has_rocm = True)
