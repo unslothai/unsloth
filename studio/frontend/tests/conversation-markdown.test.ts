@@ -994,3 +994,100 @@ test("closes a template element before emitting the next turn", () => {
     "<template>\n<td>a</td>\n</template>",
   );
 });
+
+test("keeps scanning the line a literal block ended part way through", () => {
+  // The terminator only ends the block, not the line: a details opened after
+  // it is live, and skipping the rest of the line loses its closer.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<!--\n--> <details>" }]),
+    "<!--\n--> <details>\n\n</details>",
+  );
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<?\n?> <script>" }]),
+    "<?\n?> <script>\n</script>",
+  );
+});
+
+test("reduces an imported role to one line of plain text", () => {
+  // An imported transcript keeps its own role strings, and this one lands in a
+  // heading that closeOpenBlocks never sees.
+  assert.equal(
+    buildConversationMarkdown([{ role: "user\n\n<details>", content: "hi" }]),
+    "## User details\n\nhi\n",
+  );
+  assert.equal(
+    buildConversationMarkdown([{ role: "   ", content: "hi" }]),
+    "## Message\n\nhi\n",
+  );
+  // The ordinary roles are untouched.
+  assert.equal(
+    buildConversationMarkdown([{ role: "reviewer", content: "hi" }]),
+    "## Reviewer\n\nhi\n",
+  );
+});
+
+test("keeps every line of an indented code block literal", () => {
+  // Only the first line follows a blank one, so without the state the rest of
+  // the sample is scanned as live html and rewritten.
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "look:\n\n    first\n    <script>" },
+    ]),
+    "look:\n\n    first\n    <script>",
+  );
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "look:\n\n    first\n    <div class=\"x" },
+    ]),
+    "look:\n\n    first\n    <div class=\"x",
+  );
+  // A closer in there must not spend the closer of a real open element.
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "<details>\nreal\n\ntext\n\n    a\n    </details>" },
+    ]),
+    "<details>\nreal\n\ntext\n\n    a\n    </details>\n\n</details>",
+  );
+});
+
+test("reads a fence against its block quote rather than the raw line", () => {
+  // The marker keeps FENCE_LINE_PATTERN from matching, so quoted code was
+  // scanned as live html.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "> ```\n> <script>\n> ```" }]),
+    "> ```\n> <script>\n> ```",
+  );
+  // The quote ending ends the fence, so nothing is appended for it.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "> ```js\n> var a = 1;" }]),
+    "> ```js\n> var a = 1;",
+  );
+});
+
+test("treats a backtick run as one delimiter at both ends", () => {
+  // ```x`` has no matching run, so it is live text: masking it as a span would
+  // hide the opener it carries.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "```<script>``" }]),
+    "```<script>``\n</script>",
+  );
+  // A real span still masks.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "`<script>`" }]),
+    "`<script>`",
+  );
+});
+
+test("reads an angle bracket link destination as a url", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "[x](<details>)" }]),
+    "[x](<details>)",
+  );
+  // And it must not spend the closer of a real open element either.
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "<details>\nreal\n\n[x](</details>)" },
+    ]),
+    "<details>\nreal\n\n[x](</details>)\n\n</details>",
+  );
+});

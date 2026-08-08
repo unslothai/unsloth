@@ -22,8 +22,14 @@ function roleLabel(role: string): string {
   if (knownLabel) {
     return knownLabel;
   }
-  return role.length > 0
-    ? `${role[0]?.toUpperCase()}${role.slice(1)}`
+  // An imported transcript carries its own role strings (oaiMessagesToRecords
+  // keeps them verbatim), and this one is interpolated into a ## heading that
+  // sits outside closeOpenBlocks. A line break would end the heading and a tag
+  // would open an element nothing later closes, so the label is reduced to one
+  // line of text before it is trusted with the document's own structure.
+  const label = role.replace(/[\s]+/g, " ").replace(/[<>&\\[\]`*_#]/g, "").trim();
+  return label.length > 0
+    ? `${label[0]?.toUpperCase()}${label.slice(1)}`
     : "Message";
 }
 
@@ -74,12 +80,22 @@ const INDENTED_CODE_PATTERN = /^(?: {4}|\t)/;
 // Equal-length delimiters, so a wide span may hold a narrower run: `` `x` ``
 // is one span, not two. The lookahead keeps a closer from matching a prefix of
 // a longer run.
-const CODE_SPAN_PATTERN = /(`+)[\s\S]*?\1(?!`)/g;
+// CommonMark 6.1 reads the whole contiguous run as one delimiter, so neither
+// end may sit inside a longer one: ```x`` is not a two-backtick span, it is
+// live text, and masking it would hide the tags it holds. The leading capture
+// pins the opener to the start of its run the way a lookbehind would, without
+// needing one -- Safari only gained those in 16.4, and an unparseable pattern
+// takes the whole bundle down rather than this one line.
+const CODE_SPAN_PATTERN = /(^|[^`])(`+)(?!`)[\s\S]*?\2(?!`)/g;
 // The html tokenizer ends a tag name at whitespace, a solidus or >.
 const TAG_OPEN_PATTERN = /^<(\/?)([A-Za-z][^\s/>]*)/;
 // Block quote markers are structure, not content: a > that opens a quoted line
 // is not the > that finishes a tag left open on the line above.
 const BLOCKQUOTE_PATTERN = /^(?: {0,3}>)+/;
+// CommonMark 6.3: a destination in angle brackets is a url, so [x](<details>)
+// is a link and not an element. Reading it as one would emit a closer the
+// message never opened, or spend the closer of one it did.
+const LINK_DESTINATION_PATTERN = /\]\(\s*<[^<>]*>/g;
 // A comment, a processing instruction and a cdata section are read to their
 // own terminator, not
 // to a blank line or a tag, so one left open swallows the rest of the file.
@@ -135,9 +151,13 @@ const PERSISTENT_ELEMENTS: ReadonlySet<string> = new Set([
 function closeOpenBlocks(text: string): string {
   // Split keeping the separators, so a repaired line can be put back verbatim.
   const parts = text.split(/(\r\n|[\r\n])/);
-  let fence: { readonly run: string; readonly indent: string } | null = null;
+  let fence: { readonly run: string; readonly indent: string; readonly quoted: boolean } | null =
+    null;
   let block: (typeof LITERAL_BLOCKS)[number] | null = null;
   let blankBefore = true;
+  // An indented code block runs through blank lines to the first line that is
+  // not indented, so the state has to outlive the line that opened it.
+  let indented = false;
   // Tag starts whose > has not arrived yet, and the quote a value is inside.
   // Once a tag is unfinished every < after it is inside that tag, but each one
   // becomes a tag start again as soon as the one before it is neutralised.
@@ -148,17 +168,30 @@ function closeOpenBlocks(text: string): string {
   const escapes: { readonly part: number; readonly column: number }[] = [];
 
   for (let part = 0; part < parts.length; part += 2) {
-    const line = parts[part] as string;
+    let line = parts[part] as string;
     const blankLine = line.trim() === "";
     const afterBlank = blankBefore;
     blankBefore = blankLine;
     if (block !== null) {
-      if (line.includes(block.terminator)) block = null;
-      continue;
+      const end = line.indexOf(block.terminator);
+      if (end === -1) continue;
+      // The rest of the line is live again, so blank what the block held and
+      // keep scanning rather than skipping to the next line.
+      const consumed = end + block.terminator.length;
+      line = " ".repeat(consumed) + line.slice(consumed);
+      block = null;
     }
+    // A fence, an indent and a tag all mean different things inside a block
+    // quote than at the top level, so read them against the quoted content.
+    // Blanking rather than slicing keeps every column where it was.
+    const marker = BLOCKQUOTE_PATTERN.exec(line)?.[0] ?? "";
+    const content = line.slice(marker.length);
+    // The quote ending ends the fence with it, so an unclosed fence inside one
+    // never reaches the next turn.
+    if (fence !== null && fence.quoted && marker === "") fence = null;
     const literal = open.some((name) => CONDITION_1_ELEMENTS.has(name));
     const [, indent = "", run, info = ""] =
-      unfinished.length || literal ? [] : FENCE_LINE_PATTERN.exec(line) ?? [];
+      unfinished.length || literal ? [] : FENCE_LINE_PATTERN.exec(content) ?? [];
     if (fence !== null) {
       // A closer repeats the opener's character, is at least as long, and
       // carries no info string.
@@ -167,22 +200,31 @@ function closeOpenBlocks(text: string): string {
       }
       continue;
     }
-    if (run) {
-      // A backtick opener cannot carry a backtick in its info string; that line
-      // is a paragraph, and treating it as a fence would open a real one.
-      if (run[0] === "~" || !info.includes("`")) fence = { run, indent };
+    if (run && (run[0] === "~" || !info.includes("`"))) {
+      fence = { run, indent, quoted: marker !== "" };
       continue;
     }
+    // A backtick opener carrying a backtick in its info string is not a fence,
+    // so the line is an ordinary paragraph and falls through: its tags are
+    // live, and skipping it would leave whatever it opens unclosed.
     // Indented code, code spans and closed comments are literal text, so a <
     // or a <!-- inside one opens nothing. Indented code only starts after a
     // blank line; otherwise the line is a lazy continuation of the paragraph
     // above and its content is live.
-    if (!unfinished.length && !literal && afterBlank && INDENTED_CODE_PATTERN.test(line)) continue;
+    if (!unfinished.length && !literal) {
+      indented = indented
+        ? blankLine || INDENTED_CODE_PATTERN.test(content)
+        : afterBlank && INDENTED_CODE_PATTERN.test(content);
+      if (indented) continue;
+    }
     // Every substitution below is length preserving, so a column found here is
     // still the right column in the original line.
     let prose = line
       .replace(BLOCKQUOTE_PATTERN, (marker) => " ".repeat(marker.length))
-      .replace(CODE_SPAN_PATTERN, (span) => " ".repeat(span.length))
+      .replace(CODE_SPAN_PATTERN, (span: string, lead: string) =>
+        lead + " ".repeat(span.length - lead.length),
+      )
+      .replace(LINK_DESTINATION_PATTERN, (link) => " ".repeat(link.length))
       .replace(CLOSED_LITERAL_PATTERN, (span) => " ".repeat(span.length));
     // The backslash is the markdown parser's, so it only holds where that
     // parser is reading inlines, not inside a raw text element.
@@ -274,7 +316,7 @@ function closeOpenBlocks(text: string): string {
   if (block !== null) out += block.ownLine ? `${eol}${block.terminator}` : block.terminator;
   // Indented back to the opener's column: a closer at column zero would end the
   // list the opener sits in, then open a block of its own.
-  if (fence !== null) out += `${eol}${fence.indent}${fence.run}`;
+  if (fence !== null && !fence.quoted) out += `${eol}${fence.indent}${fence.run}`;
   // Innermost first, so the closers nest the way the openers did, and each on
   // its own line after a blank one so it is a block rather than a lazy
   // continuation of the paragraph above.
