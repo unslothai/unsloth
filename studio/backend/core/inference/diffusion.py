@@ -1457,17 +1457,19 @@ class DiffusionBackend:
             logger.warning("diffusion.te_prequant_plan_failed: %s", exc)
             return {}
 
-    def _dit_prequant_plan_bytes(
+    def _dit_prequant_plan_source(
         self, fam: Any, kind: str, hf_token: Optional[str], kwargs: dict[str, Any]
-    ) -> int:
-        """Declared size of the hosted PRE-QUANTIZED transformer this pick loads INSTEAD of the
-        base repo's dense shards, or 0 when no such artifact is used.
+    ) -> Optional[tuple[str, str, int]]:
+        """The hosted PRE-QUANTIZED transformer this pick loads INSTEAD of the base repo's dense
+        shards, as ``(repo, filename, declared_size)``, or None when no such artifact is used.
 
-        Those shards are already excluded for a GGUF pick, so without this ``required_bytes``
-        reports a footprint missing the multi-GB denoiser the load really keeps on disk. Mirrors
-        the prequant gates in ``_load_dense_quant_pipeline`` so the plan and the load agree."""
+        Those shards are already excluded for a GGUF pick, so without this the plan neither counts
+        nor stages the multi-GB denoiser the load really keeps on disk: the footprint reads short
+        and the file is pulled INLINE during the load, outside the manager's progress, cancel and
+        disk preflight. Mirrors the prequant gates in ``_load_dense_quant_pipeline`` so the plan
+        and the load agree."""
         if kind != "gguf" or fam is None:
-            return 0
+            return None
         try:
             raw = kwargs.get("transformer_quant")
             # Same tri-state as load_pipeline: unset or "auto" means the hardware ladder decides.
@@ -1477,22 +1479,22 @@ class DiffusionBackend:
             # An EXPLICIT quant still takes it: that force applies only to the auto tri-state.
             speed = kwargs.get("speed_mode")
             if auto and speed is not None and str(speed).strip().lower() == SPEED_OFF:
-                return 0
+                return None
             mode = TQ_AUTO if auto else normalize_transformer_quant(raw)
             if mode is None:
-                return 0
+                return None
             # A LoRA bake forces the DENSE path, so no prequant is fetched.
             if _has_active_lora(kwargs.get("loras")):
-                return 0
+                return None
             # A definite-offload policy keeps the GGUF: the fast path needs either a plan with no
             # offload or a quant-sized replan that came back with none, and balanced/low_vram
             # offload BY MODE, so no replan can clear it. Same gate _dense_quant_prefetch_needed
             # applies, for the same reason.
             mm = normalize_memory_mode(kwargs.get("memory_mode"))
             if mm in (MEMORY_MODE_BALANCED, MEMORY_MODE_LOW_VRAM):
-                return 0
+                return None
             if mm is None and kwargs.get("cpu_offload"):
-                return 0
+                return None
             target = self._resolve_device_target(fam)
             # An auto quant DECLINES an uncached hosted checkpoint and runs the GGUF as-is, so
             # those bytes never land. Only a cached one, or an explicit request, counts.
@@ -1507,12 +1509,12 @@ class DiffusionBackend:
                 )
                 is not None
             ):
-                return 0
+                return None
             scheme = select_transformer_quant_scheme(
                 target, mode, family = getattr(fam, "name", None)
             )
             if scheme is None:
-                return 0
+                return None
             source = usable_prequant_source(
                 fam,
                 scheme,
@@ -1521,7 +1523,7 @@ class DiffusionBackend:
             )
             # A local override is the operator's own file: already on disk, never downloaded.
             if source is None or source.kind != "repo":
-                return 0
+                return None
             from huggingface_hub import HfApi
 
             info = HfApi(token = hf_token or None).model_info(source.location, files_metadata = True)
@@ -1529,11 +1531,11 @@ class DiffusionBackend:
             # Primary name first, then the legacy one, in the order the loader tries them.
             for name in (source.filename, source.fallback_filename):
                 if name and name in sizes:
-                    return sizes[name]
-            return 0
+                    return (source.location, name, int(sizes[name]))
+            return None
         except Exception as exc:  # noqa: BLE001 -- an unsizable prequant must not fail the plan
             logger.warning("diffusion.dit_prequant_plan_failed: %s", exc)
-            return 0
+            return None
 
     @staticmethod
     def _estimate_download_bytes(
@@ -1739,9 +1741,11 @@ class DiffusionBackend:
         # The dense transformer/ shards are excluded for a GGUF pick, so a hosted prequant that
         # replaces them is real footprint the plan would otherwise never report. Sized against the
         # RESOLVED base, as the load passes it: a variant base picks its own prequant repo.
-        required_total += self._dit_prequant_plan_bytes(
+        dit_prequant = self._dit_prequant_plan_source(
             fam, kind, hf_token, {**load_kwargs, "base_repo": base}
         )
+        if dit_prequant is not None:
+            required_total += dit_prequant[2]
 
         def add_missing_entry(
             repo: str,
@@ -1847,6 +1851,13 @@ class DiffusionBackend:
                 # pick the base is a companion, so it stays unflagged.
                 checkpoint = kind == "pipeline",
             )
+        if dit_prequant is not None:
+            # Staged, not just counted: _load_dense_quant_pipeline fetches this checkpoint during the
+            # load, under the load lock and after the previous pipeline was evicted, so leaving it
+            # out means a multi-GB inline pull with no progress, no cancel and no disk preflight.
+            # A companion of the checkpoint, never the selected model itself.
+            prequant_repo, prequant_file, prequant_size = dit_prequant
+            add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
         return {
             "entries": entries,
             "total_bytes": sum(entry["bytes"] for entry in entries),

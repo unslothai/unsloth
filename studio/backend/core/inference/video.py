@@ -1043,7 +1043,8 @@ class VideoBackend:
                 return None
             from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-            snapshot_root: Optional[Path] = None
+            snapshot_root: Optional[str] = None
+            roots: set[str] = set()
             for name, _ in files:
                 # Explicit check: a cached file returns without consulting the event, so a warm-cache sweep would run to completion after a cancel.
                 if cancel.is_set():
@@ -1058,9 +1059,22 @@ class VideoBackend:
                         reuse_other_cache_root = True,
                     )
                 )
+                # The resolved path minus the file's own relative parts, so a subfolder entry yields
+                # the same root as a top-level one. Not resolve()d: that follows the link into blobs/.
+                try:
+                    root = str(local.parents[len(Path(name).parts) - 1])
+                except (IndexError, ValueError, OSError):
+                    root = ""
+                roots.add(root)
                 if name == "model_index.json":
-                    snapshot_root = local.parent
-            return str(snapshot_root) if snapshot_root is not None else None
+                    snapshot_root = root or None
+            # Only hand back a snapshot the WHOLE set lives in. reuse_other_cache_root resolves each
+            # file through whichever root holds it, so a moved cache can serve the manifest from the
+            # old root while the rest land in the live one, and from_pretrained would then be pointed
+            # at a tree missing the others. Mirrors the image prefetch path.
+            if snapshot_root is not None and roots != {snapshot_root}:
+                return None
+            return snapshot_root
         except Exception as exc:  # noqa: BLE001 -- fall back to from_pretrained's own pull
             if cancel.is_set():
                 raise

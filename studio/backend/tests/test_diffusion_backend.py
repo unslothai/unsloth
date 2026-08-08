@@ -5553,9 +5553,20 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
         transformer_quant = "fp8",
     )
 
-    # Staging is unchanged: this is a footprint correction, not a new download entry.
-    assert not any(f.endswith(".pt") for e in plan["entries"] for f in e["files"])
-    assert plan["required_bytes"] == plan["total_bytes"] + 6 * GB
+    # Counted AND staged: the load fetches this checkpoint inline otherwise, under the load lock
+    # and past the manager's progress, cancel and disk preflight.
+    staged = {(e["repo_id"], f) for e in plan["entries"] for f in e["files"]}
+    assert ("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt") in staged
+    assert plan["required_bytes"] == plan["total_bytes"]
+    # Measured against the same pick without the quant, so the base's small configs do not have
+    # to be enumerated here: the delta is exactly the prequant checkpoint.
+    baseline = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf"
+    )
+    assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
+    # A companion, never the selected model.
+    prequant = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/Z-Image-Turbo-FP8")
+    assert prequant["checkpoint"] is False
 
 
 def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkeypatch):
@@ -5588,6 +5599,7 @@ def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkey
             **kwargs,
         )
         assert plan["required_bytes"] == plan["total_bytes"], kwargs
+        assert not any(f.endswith("-FP8.pt") for e in plan["entries"] for f in e["files"]), kwargs
 
     # A resident-capable pick still pays for it, so the gate cannot just zero everything.
     resident = DiffusionBackend().download_plan(
@@ -5595,7 +5607,7 @@ def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkey
         gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf",
         transformer_quant = "fp8",
     )
-    assert resident["required_bytes"] == resident["total_bytes"] + 6 * GB
+    assert any(f.endswith("-FP8.pt") for e in resident["entries"] for f in e["files"])
 
 
 def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypatch):
@@ -5617,7 +5629,7 @@ def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypa
     auto = DiffusionBackend().download_plan(
         "unsloth/Z-Image-GGUF", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf", speed_mode = "off"
     )
-    assert auto["required_bytes"] == auto["total_bytes"]
+    assert not any(f.endswith("-FP8.pt") for e in auto["entries"] for f in e["files"])
 
     # An EXPLICIT quant is not forced off, so it still loads the prequant and still pays for it.
     explicit = DiffusionBackend().download_plan(
@@ -5626,7 +5638,7 @@ def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypa
         speed_mode = "off",
         transformer_quant = "fp8",
     )
-    assert explicit["required_bytes"] == explicit["total_bytes"] + 6 * GB
+    assert any(f.endswith("-FP8.pt") for e in explicit["entries"] for f in e["files"])
 
 
 def test_download_plan_omits_a_prequant_an_auto_pick_would_decline(monkeypatch):
