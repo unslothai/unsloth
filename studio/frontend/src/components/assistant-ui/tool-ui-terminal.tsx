@@ -18,9 +18,12 @@ import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
 import { SandboxFiles } from "./sandbox-files-view";
 import type { SandboxFile } from "./sandbox-files";
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
-  preferFullToolOutput,
+  preferSanitizedFullToolOutput,
   useToolAwaitingApproval,
   useToolOutputFor,
   useToolPaneScope,
@@ -45,13 +48,12 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
       : null;
   const files = structured?.files ?? [];
   const sessionId = structured?.sessionId ?? "";
-  const output = structured
-    ? structured.text
-    : typeof result === "string"
-      ? result
-      : result
-        ? JSON.stringify(result, null, 2)
-        : "";
+  const output =
+    structured !== null
+      ? stringifyToolResult(structured.text)
+      : result == null
+        ? ""
+        : stringifyToolResult(result);
 
   // Show the fuller live stream over a truncated result, keeping its exit
   // status. Session-transient: after a reload only the result remains.
@@ -61,7 +63,10 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
     paneScope,
     toolCallId,
   );
-  const displayOutput = preferFullToolOutput(fullOutput, output);
+  // Compare the same plain-text representation on both sides. Otherwise a raw
+  // SGR-prefixed stream cannot match its cleaned truncated result and the
+  // reconciliation helper appends a duplicate prefix.
+  const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
   // The gate only opens once the call parsed, so a pending approval means the command is
   // written even while the args status still reads as streaming.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);

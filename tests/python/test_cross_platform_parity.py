@@ -847,13 +847,14 @@ class TestInstallOutputRedactionParity:
     def test_helper_wired_into_failure_print(self):
         # install.sh dumps the captured log through the redactor on failure.
         assert '_redact_install_output "$_log"' in INSTALL_SH.read_text(encoding = "utf-8")
-        # Both ps1 installers redact the captured $output before Write-Host on non-zero exit.
+        # Both ps1 installers redact the captured $output before printing it on a
+        # non-zero exit. Write-StudioLine is the UTF-8 stdout sink both now use.
         assert (
-            "Write-Host (Redact-InstallOutput $output) -ForegroundColor Red"
+            "Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red"
             in INSTALL_PS1.read_text(encoding = "utf-8")
         )
         assert (
-            "Write-Host (Redact-InstallOutput $output) -ForegroundColor Red"
+            "Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red"
             in SETUP_PS1.read_text(encoding = "utf-8")
         )
         # Python redacts the captured stdout before printing.

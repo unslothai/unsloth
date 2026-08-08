@@ -5,6 +5,8 @@
 
 import { type ToolCallMessagePartComponent, useAuiState } from "@assistant-ui/react";
 import { GlobeIcon } from "lucide-react";
+
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo, useEffect, useState } from "react";
 import { Source, SourceIcon, SourceTitle } from "./sources";
 import {
@@ -97,11 +99,8 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
     }
   })();
   const isRunning = status?.type === "running";
-  const sources = result
-    ? parseSearchResults(
-        typeof result === "string" ? result : JSON.stringify(result),
-      )
-    : [];
+  const resultText = result == null ? "" : stringifyToolResult(result);
+  const sources = resultText ? parseSearchResults(resultText) : [];
 
   // Collapse when LLM starts generating text after the tool call
   const hasText = useAuiState(({ message }) =>
@@ -154,12 +153,10 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
               </Source>
             ))}
           </div>
-        ) : result ? (
+        ) : resultText ? (
           <div>
             <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {typeof result === "string"
-                ? result
-                : JSON.stringify(result, null, 2)}
+              {resultText}
             </pre>
           </div>
         ) : null}
