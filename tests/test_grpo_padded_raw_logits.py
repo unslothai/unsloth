@@ -143,7 +143,12 @@ def _eager_chunked_hidden_states_selective_log_softmax(
     return out.reshape((hidden_states.shape[0], hidden_states.shape[1]))
 
 
-def _eager_chunked_selective_log_softmax(logits, index, temperature = 1.0, chunks = 4):
+def _eager_chunked_selective_log_softmax(
+    logits,
+    index,
+    temperature = 1.0,
+    chunks = 4,
+):
     all_per_token_logps = []
     for chunk_logits, chunk_index in zip(
         torch.chunk(logits.reshape(-1, logits.shape[-1]), chunks = chunks, dim = 0),
@@ -210,9 +215,18 @@ class _StubModel:
         self.returns_hidden_states = returns_hidden_states
         self.calls = []
 
-    def __call__(self, input_ids = None, logits_to_keep = None, **kwargs):
+    def __call__(
+        self,
+        input_ids = None,
+        logits_to_keep = None,
+        **kwargs,
+    ):
         hidden = self.embedding[input_ids]
-        out = hidden if self.returns_hidden_states else hidden.to(self.lm_head.dtype) @ self.lm_head.t()
+        out = (
+            hidden
+            if self.returns_hidden_states
+            else hidden.to(self.lm_head.dtype) @ self.lm_head.t()
+        )
         if logits_to_keep is not None:
             out = out[:, -logits_to_keep:, :]
         self.calls.append({"logits_to_keep": logits_to_keep, "width": out.shape[-1]})
@@ -255,7 +269,9 @@ def _reference_logprobs(
     return torch.gather(predictions, dim = -1, index = targets.unsqueeze(-1)).squeeze(-1)
 
 
-def _build_namespace(data, stub, *, is_vlm, temperature, logit_softcapping, logit_scale_multiply, logit_scale_divide):
+def _build_namespace(
+    data, stub, *, is_vlm, temperature, logit_softcapping, logit_scale_multiply, logit_scale_divide
+):
     rows = [
         (
             data.input_ids[i : i + 1],
@@ -335,10 +351,15 @@ def test_extracted_block_is_the_padded_loop():
     loops = [stmt for stmt in with_node.body if isinstance(stmt, ast.For)]
     assert len(loops) == 1
     assert isinstance(loops[0].iter, ast.Name) and loops[0].iter.id == _LOOP_ITERABLE
+
     # Both arms of the branch inside the loop must dispatch on width, i.e. compare
     # one `.shape[...]` against another. Counted structurally, never by text search.
     def _is_shape_subscript(node):
-        return isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == "shape"
+        return (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "shape"
+        )
 
     width_tests = [
         node
@@ -349,9 +370,9 @@ def test_extracted_block_is_the_padded_loop():
         and _is_shape_subscript(node.left)
         and _is_shape_subscript(node.comparators[0])
     ]
-    assert len(width_tests) >= 2, (
-        f"expected a shape-vs-shape width dispatch in both the text and the VLM arm, found {len(width_tests)}"
-    )
+    assert (
+        len(width_tests) >= 2
+    ), f"expected a shape-vs-shape width dispatch in both the text and the VLM arm, found {len(width_tests)}"
 
 
 def test_block_free_variables_are_all_stubbed():
@@ -388,7 +409,9 @@ def test_text_branch_with_hidden_states_matches_reference():
     torch.testing.assert_close(result.logprobs, expected, rtol = 1e-5, atol = 1e-5)
 
 
-@pytest.mark.parametrize("returns_hidden_states", [True, False], ids = ["hidden_states", "raw_logits"])
+@pytest.mark.parametrize(
+    "returns_hidden_states", [True, False], ids = ["hidden_states", "raw_logits"]
+)
 def test_vlm_branch_matches_reference(returns_hidden_states):
     """The VLM arm keeps its own slicing and stays correct at both widths."""
     result = _run_padded_loop(returns_hidden_states = returns_hidden_states, is_vlm = True)
@@ -421,9 +444,9 @@ def test_raw_logits_skip_scale_and_softcap(is_vlm):
     data = _make_data()
     with_softcap = _reference_logprobs(data, is_vlm = is_vlm, logit_softcapping = softcapping)
     without_softcap = _reference_logprobs(data, is_vlm = is_vlm, logit_softcapping = 0.0)
-    assert not torch.allclose(with_softcap, without_softcap, rtol = 1e-3, atol = 1e-3), (
-        "the two references are indistinguishable, so this test would prove nothing"
-    )
+    assert not torch.allclose(
+        with_softcap, without_softcap, rtol = 1e-3, atol = 1e-3
+    ), "the two references are indistinguishable, so this test would prove nothing"
 
     raw = _run_padded_loop(
         returns_hidden_states = False,

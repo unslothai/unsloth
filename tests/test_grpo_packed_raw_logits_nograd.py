@@ -47,7 +47,12 @@ PAD_ID, SEQ_LEN, KEEP = 0, 8, 4
 # ---------------------------------------------------------------------------
 
 
-def _fallback_chunked_selective_log_softmax(logits, index, temperature = 1.0, chunks = 4):
+def _fallback_chunked_selective_log_softmax(
+    logits,
+    index,
+    temperature = 1.0,
+    chunks = 4,
+):
     chunked_logits = torch.chunk(logits.reshape(-1, logits.shape[-1]), chunks = chunks, dim = 0)
     chunked_index = torch.chunk(index.reshape(-1), chunks = chunks, dim = 0)
     all_per_token_logps = []
@@ -56,7 +61,9 @@ def _fallback_chunked_selective_log_softmax(logits, index, temperature = 1.0, ch
         if temperature != 1.0:
             chunk_logits = chunk_logits / temperature
         selected_logits = torch.gather(
-            chunk_logits, dim = -1, index = chunk_index.unsqueeze(-1),
+            chunk_logits,
+            dim = -1,
+            index = chunk_index.unsqueeze(-1),
         ).squeeze(-1)
         logsumexp_values = torch.logsumexp(chunk_logits, dim = -1)
         all_per_token_logps.append(selected_logits - logsumexp_values)
@@ -65,9 +72,14 @@ def _fallback_chunked_selective_log_softmax(logits, index, temperature = 1.0, ch
 
 
 def _fallback_chunked_hidden_states_selective_log_softmax(
-    hidden_states, lm_head, index, chunks = 4,
-    logit_scale_multiply = 0.0, logit_scale_divide = 0.0,
-    logit_softcapping = 0.0, temperature = 1.0,
+    hidden_states,
+    lm_head,
+    index,
+    chunks = 4,
+    logit_scale_multiply = 0.0,
+    logit_scale_divide = 0.0,
+    logit_softcapping = 0.0,
+    temperature = 1.0,
 ):
     flat_hidden_states = hidden_states.reshape(-1, hidden_states.shape[-1])
     chunked_hidden_states = torch.chunk(flat_hidden_states, chunks = chunks, dim = 0)
@@ -85,7 +97,9 @@ def _fallback_chunked_hidden_states_selective_log_softmax(
         if temperature != 1.0:
             chunk_logits = chunk_logits / temperature
         selected_logits = torch.gather(
-            chunk_logits, dim = -1, index = chunk_index.unsqueeze(-1),
+            chunk_logits,
+            dim = -1,
+            index = chunk_index.unsqueeze(-1),
         ).squeeze(-1)
         logsumexp_values = torch.logsumexp(chunk_logits, dim = -1)
         all_per_token_logps.append(selected_logits - logsumexp_values)
@@ -100,7 +114,7 @@ def _fallback_calculate_pad_tokens_in_prompt(input_ids, logits_to_keep, pad_toke
 
 
 def _fallback_create_completion_attention_mask(
-    completion_input_ids, left_pad_tokens_per_prompt, max_left_pad, pad_token_id,
+    completion_input_ids, left_pad_tokens_per_prompt, max_left_pad, pad_token_id
 ):
     completion_len = completion_input_ids.shape[1]
     num_tokens_to_mask = max_left_pad - left_pad_tokens_per_prompt
@@ -117,8 +131,7 @@ def _resolve_helpers():
         "calculate_pad_tokens_in_prompt",
     )
     fallbacks = {
-        "chunked_hidden_states_selective_log_softmax":
-            _fallback_chunked_hidden_states_selective_log_softmax,
+        "chunked_hidden_states_selective_log_softmax": _fallback_chunked_hidden_states_selective_log_softmax,
         "chunked_selective_log_softmax": _fallback_chunked_selective_log_softmax,
         "create_completion_attention_mask": _fallback_create_completion_attention_mask,
         "calculate_pad_tokens_in_prompt": _fallback_calculate_pad_tokens_in_prompt,
@@ -158,8 +171,13 @@ class _Model(torch.nn.Module):
         self.calls = []
 
     def forward(
-        self, input_ids = None, position_ids = None, attention_mask = None,
-        packed_seq_lengths = None, use_cache = None, **kwargs,
+        self,
+        input_ids = None,
+        position_ids = None,
+        attention_mask = None,
+        packed_seq_lengths = None,
+        use_cache = None,
+        **kwargs,
     ):
         self.calls.append(
             SimpleNamespace(
@@ -230,7 +248,8 @@ def _packed_block_source():
     found = []
     for seq in _statement_lists(inner):
         start = next(
-            (i for i, s in enumerate(seq) if _assigns_none(s, "_pk_result")), None,
+            (i for i, s in enumerate(seq) if _assigns_none(s, "_pk_result")),
+            None,
         )
         if start is None:
             continue
@@ -265,7 +284,7 @@ def _batch():
 def _run_packed_block(hidden_states = False):
     """Exec the real packed + verify block and hand back its locals."""
     model = _Model(hidden_states = hidden_states)
-    lm_head = model.head.weight                      # [vocab, hidden]
+    lm_head = model.head.weight  # [vocab, hidden]
     input_ids = _batch()
     left_pad = _left_pad_of(input_ids, KEEP, PAD_ID)
     max_left_pad = int(left_pad.max())
@@ -273,8 +292,9 @@ def _run_packed_block(hidden_states = False):
     namespace = {
         "os": __import__("os"),
         "torch": torch,
-        "chunked_hidden_states_selective_log_softmax":
-            HELPERS["chunked_hidden_states_selective_log_softmax"],
+        "chunked_hidden_states_selective_log_softmax": HELPERS[
+            "chunked_hidden_states_selective_log_softmax"
+        ],
         "chunked_selective_log_softmax": HELPERS["chunked_selective_log_softmax"],
         "create_completion_attention_mask": HELPERS["create_completion_attention_mask"],
         "calculate_pad_tokens_in_prompt": HELPERS["calculate_pad_tokens_in_prompt"],
@@ -354,7 +374,7 @@ def test_packed_result_matches_the_per_row_logprobs(hidden_states):
     if not namespace["_pk_use"]:
         pytest.fail("packed path declined the batch, so there is nothing to compare")
     mask = _completion_mask_of(
-        input_ids[:, -(KEEP + max_left_pad):],
+        input_ids[:, -(KEEP + max_left_pad) :],
         _left_pad_of(input_ids, KEEP, PAD_ID),
         max_left_pad,
         PAD_ID,
@@ -362,7 +382,8 @@ def test_packed_result_matches_the_per_row_logprobs(hidden_states):
     reference = _reference_logprobs(model, input_ids, max_left_pad)
     got = namespace["_pk_result"].detach().float()
     assert torch.allclose(got * mask, reference * mask, atol = 1e-5), (
-        got * mask, reference * mask,
+        got * mask,
+        reference * mask,
     )
 
 
@@ -372,18 +393,18 @@ def test_first_use_verify_branch_runs_the_per_row_forwards():
     and the verifier never runs."""
     namespace, model, input_ids, _max_left_pad = _run_packed_block(hidden_states = False)
 
-    assert "_pk_ref" in namespace and namespace["_pk_ref"] is not None, (
-        "the first-use verify branch never ran, so the verifier call site is untested"
-    )
-    assert "_pk_diff" in namespace, (
-        "the verifier raised before it could compare packed against per-row"
-    )
+    assert (
+        "_pk_ref" in namespace and namespace["_pk_ref"] is not None
+    ), "the first-use verify branch never ran, so the verifier call site is untested"
+    assert (
+        "_pk_diff" in namespace
+    ), "the verifier raised before it could compare packed against per-row"
     packed_calls = [call for call in model.calls if call.packed]
     per_row_calls = [call for call in model.calls if not call.packed]
     assert len(packed_calls) == 1
-    assert len(per_row_calls) == input_ids.shape[0], (
-        f"expected one per-row verify forward per row, got {per_row_calls}"
-    )
+    assert (
+        len(per_row_calls) == input_ids.shape[0]
+    ), f"expected one per-row verify forward per row, got {per_row_calls}"
     assert namespace["_pk_diff"] < 7e-1
     assert namespace["_pk_use"] is True
     assert getattr(model, "_unsloth_seq_packing_nograd_ok", None) is True

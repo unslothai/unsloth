@@ -40,8 +40,7 @@ TREE = ast.parse(open(SOURCE_PATH, "r", encoding = "utf-8").read())
 
 def _logprob_function():
     for node in ast.walk(TREE):
-        if isinstance(node, ast.FunctionDef) and \
-                node.name == "_get_per_token_logps_and_entropies":
+        if isinstance(node, ast.FunctionDef) and node.name == "_get_per_token_logps_and_entropies":
             return node
     return None
 
@@ -53,7 +52,8 @@ def _matmul_calls(scope):
     rather than calling it, so it is deliberately not one of these.
     """
     return [
-        node for node in ast.walk(scope)
+        node
+        for node in ast.walk(scope)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == HIDDEN_STATES_HELPER
@@ -87,10 +87,10 @@ def _is_width_test(test):
     lm_head_side = {s for s in sides if s[1] == "lm_head"}
     if len(lm_head_side) != 1:
         return False
-    (index, _), = lm_head_side
+    ((index, _),) = lm_head_side
     if index != "1":
         return False
-    other, = sides - lm_head_side
+    (other,) = sides - lm_head_side
     return other[0] == "-1"
 
 
@@ -184,14 +184,15 @@ def test_the_padded_text_branch_is_guarded():
     """
     function = _logprob_function()
     branches = [
-        node for node in ast.walk(function)
+        node
+        for node in ast.walk(function)
         if isinstance(node, ast.If)
         and isinstance(node.test, ast.Compare)
         and ast.unparse(node.test) == "pixel_values is None"
         and _matmul_calls(ast.Module(body = node.body, type_ignores = []))
     ]
     assert len(branches) == 1, [node.lineno for node in branches]
-    text_branch, = branches
+    (text_branch,) = branches
     calls = _matmul_calls(ast.Module(body = text_branch.body, type_ignores = []))
     assert len(calls) == 1, [call.lineno for call in calls]
     assert _guard_for(calls[0]) is not None, (
@@ -209,11 +210,9 @@ def test_the_packing_sites_are_guarded():
     """
     function = _logprob_function()
     packed = [
-        call for call in _matmul_calls(function)
-        if any(
-            isinstance(node, ast.Name) and node.id.startswith("_pk_")
-            for node in ast.walk(call)
-        )
+        call
+        for call in _matmul_calls(function)
+        if any(isinstance(node, ast.Name) and node.id.startswith("_pk_") for node in ast.walk(call))
     ]
     assert len(packed) == 2, [call.lineno for call in packed]
     unguarded = [call.lineno for call in packed if _guard_for(call) is None]
