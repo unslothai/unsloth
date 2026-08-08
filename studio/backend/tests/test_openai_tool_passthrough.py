@@ -1991,14 +1991,20 @@ class TestDropEmptyAssistantSentinels:
         on every local dispatch, so the contract has to hold on the composition."""
         from routes.inference import _strip_provider_synthetic_tool_history
 
-        synthetic = [{
-            "id": "call_0", "type": "function",
-            "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
-        }]
-        real = [{
-            "id": "call_1", "type": "function",
-            "function": {"name": "lookup", "arguments": '{"q": "x"}'},
-        }]
+        synthetic = [
+            {
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
+            }
+        ]
+        real = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q": "x"}'},
+            }
+        ]
         cases = []
         for content in (None, "", "text"):
             for calls in (None, synthetic, real, synthetic + real):
