@@ -1081,6 +1081,20 @@ export const ko = {
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
+      python: "Python",
+      accelerator: {
+        sectionTitle: "최적화 커널",
+        sectionDescription:
+          "더 빠른 어텐션 및 양자화 커널입니다. 각각 하나의 PyTorch 빌드에 맞춰 컴파일되므로 버전이 맞지 않으면 아무것도 로드되지 않고 Unsloth는 조용히 느린 기본 경로로 전환합니다.",
+        working: "정상 작동",
+        notLoading: "로드되지 않음",
+        notInstalled: "설치되지 않음",
+        notChecked: "확인하지 않음",
+        builtFor: "{build}용으로 빌드됨",
+        bannerTitle: "최적화 커널이 설치되어 있지만 로드되지 않습니다",
+        bannerBody:
+          "{packages}을(를) 여기서 로드할 수 없어 Unsloth가 느린 기본 경로로 전환합니다. 학습과 추론은 계속 작동하지만 메모리와 시간을 더 사용합니다.",
+      },
       updates: "업데이트",
       help: "도움말",
       documentation: "문서",

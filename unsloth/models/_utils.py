@@ -22,6 +22,8 @@ __all__ = [
     "xformers",
     "xformers_attention",
     "xformers_version",
+    "XFORMERS_BUILD_METADATA",
+    "XFORMERS_BROKEN_REASON",
     "__version__",
     "importlib_version",
     "HAS_FLASH_ATTENTION",
@@ -96,7 +98,7 @@ __all__ = [
 
 import torch
 from typing import Union, Optional, List, Any, Callable, Tuple, Iterator
-from platform import system as platform_system
+from platform import python_version as _python_version, system as platform_system
 
 platform_system = platform_system()
 import numpy as np
@@ -2205,13 +2207,146 @@ elif DEVICE_TYPE == "xpu":
 
 # =============================================
 # Get Xformers
-# Silence xformers CUDA mismatch warnings before import
+from ..xformers_compat import (
+    describe_xformers_mismatch,
+    xformers_build_metadata,
+    xformers_for_torch,
+)
+
+# The installed wheel's own cpp_lib.json (torch / CUDA / Python it was compiled against),
+# and a one-line reason when its kernels cannot load here. Both are exported so the Studio
+# hardware report and any diagnostic can say WHAT broke instead of just going quiet.
+XFORMERS_BUILD_METADATA = xformers_build_metadata()
+XFORMERS_BROKEN_REASON = None
+
+# Resolved from the wheel on disk BEFORE importing xformers: reading cpp_lib.json costs no
+# import and fires no warning, so the mismatch is known in time to decide whether to
+# silence xformers' own diagnostic below.
 try:
-    _xformers_logger = logging.getLogger("xformers")
-    _xformers_logger.setLevel(logging.ERROR)
-    del _xformers_logger
-except:
-    pass
+    _xformers_dist_version = importlib_version("xformers")
+except Exception:
+    _xformers_dist_version = None
+try:
+    _xformers_predicted_break = describe_xformers_mismatch(
+        torch_version = torch.__version__,
+        torch_cuda = getattr(torch.version, "cuda", None),
+        xformers_version = _xformers_dist_version,
+        build_metadata = XFORMERS_BUILD_METADATA,
+        python_version = _python_version(),
+    )
+except Exception:
+    # Diagnostics must never be the thing that stops unsloth importing.
+    _xformers_predicted_break = None
+
+# Silence xformers' CUDA mismatch chatter before the import -- EXCEPT when the wheel on
+# disk already tells us it does not match this runtime. That warning is the only
+# first-party diagnostic for a cu128-built wheel sitting beside a cu130 torch, so
+# suppressing it in exactly that case is suppressing the bug report.
+if _xformers_predicted_break is None:
+    try:
+        _xformers_logger = logging.getLogger("xformers")
+        _xformers_logger.setLevel(logging.ERROR)
+        del _xformers_logger
+    except:
+        pass
+
+_XFORMERS_BREAKAGE_ANNOUNCED = False
+
+
+def _announce_xformers_breakage(
+    reason,
+    error = None,
+    build_mismatch = False,
+):
+    """Print the xformers breakage once per process, on the default path.
+
+    Deliberately not behind UNSLOTH_ENABLE_LOGGING: silently dropping to SDPA is how a
+    wheel built for the wrong torch shipped to users unnoticed.
+
+    Two shapes, because this arm also catches failures that are not ABI mismatches at all
+    -- the sm_100/110/120 FA3 guard and the old-torch guards above both raise here with
+    their own multi-line, fenced, already-actionable messages. Reflowing one of those into
+    "its optimized kernels cannot load ... install the matching build" states the wrong
+    cause and mangles the text. Only ``build_mismatch`` gets the version-pin treatment;
+    everything else is passed through verbatim.
+    """
+    global _XFORMERS_BREAKAGE_ANNOUNCED
+    if _XFORMERS_BREAKAGE_ANNOUNCED:
+        return
+    _XFORMERS_BREAKAGE_ANNOUNCED = True
+    if build_mismatch:
+        print(
+            "Unsloth: Xformers is installed but its optimized kernels cannot load.\n"
+            f"{str(reason).strip().rstrip('.')}.\n"
+            "Falling back to PyTorch SDPA attention - training still works, but it uses "
+            "more memory.\n"
+            f"{_xformers_fix_hint()}"
+        )
+    else:
+        print(
+            "Unsloth: Xformers is installed but could not be used. Falling back to PyTorch "
+            "SDPA attention - training still works, but it uses more memory.\n"
+            f"{reason}"
+        )
+    if UNSLOTH_ENABLE_LOGGING and error is not None:
+        print(str(error))
+
+
+def _xformers_torch_index_url():
+    """The download.pytorch.org index serving wheels for the resident CUDA build, or None.
+
+    ``torch.version.cuda`` ('13.0') is the authority for the family, not the local tag,
+    which a source or nightly build may not carry. None on a CPU / ROCm / XPU torch, where
+    there is no CUDA-matched xformers index to point at.
+    """
+    try:
+        cuda = getattr(getattr(torch, "version", None), "cuda", None)
+        if not cuda:
+            return None
+        major, _, minor = str(cuda).partition(".")
+        family = f"cu{int(major)}{int(minor or 0)}"
+    except Exception:
+        return None
+    import os
+
+    base = os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
+    return f"{base.rstrip('/')}/{family}"
+
+
+def _xformers_fix_hint():
+    """How to repair the install, pinned when we know the matching release.
+
+    On a torch newer than any xformers release there IS no version to pin -- naming one
+    would send the user straight back into the same mismatch -- so say so instead.
+    """
+    try:
+        matching = xformers_for_torch(torch.__version__)
+    except Exception:
+        matching = None
+    if matching is not None:
+        # WHERE from, not just which version. cu126 / cu128 / cu130 publish the same
+        # xformers version string, and PyPI carries only the CUDA-12.8 flavour -- so a
+        # bare version pin on the reported case (torch cu130 beside a cu128-built 0.0.34)
+        # force-reinstalls the very wheel that is already broken and changes nothing.
+        # Naming the matching CUDA index is what actually repairs it.
+        index = _xformers_torch_index_url()
+        index_flag = f" --index-url {index}" if index else ""
+        return (
+            "To fix, install the xformers build that matches your torch:\n"
+            f'\npip install --no-deps --force-reinstall{index_flag} "xformers=={matching}"\n'
+            "\nRun `python -m xformers.info` to see xformers' own report."
+        )
+    return (
+        f"No xformers release is built for torch {torch.__version__.split('+')[0]} yet. "
+        "Either downgrade torch to a version xformers ships wheels for, or build xformers "
+        "from source:\n"
+        "\npip install ninja\n"
+        "pip install -v --no-build-isolation -U "
+        "git+https://github.com/facebookresearch/xformers.git@main#egg=xformers\n"
+        "\nRun `python -m xformers.info` to see xformers' own report."
+    )
+
+
 try:
     from xformers import __version__ as xformers_version
 
@@ -2284,14 +2419,36 @@ try:
     import xformers.ops.fmha as xformers
 
     xformers_attention = xformers.memory_efficient_attention
+    # The extensions loaded, so whatever the tables predicted did not happen. Never cry
+    # wolf: a working xformers must not be reported as broken.
+    XFORMERS_BROKEN_REASON = None
+    # And put the logger back where the unpredicted case leaves it. The silencing above is
+    # skipped on a PREDICTED break so xformers' own diagnostic can get through, but the
+    # prediction is read off cpp_lib.json and is wrong in the healthy direction whenever a
+    # wheel records a torch patch it still loads against. Leaving the logger open then is
+    # permanent and process-wide, so unrelated xformers warnings -- flash3's "package can't
+    # be used", which fires on exactly this hardware -- start reaching users who have
+    # nothing wrong with their install.
+    if _xformers_predicted_break is not None:
+        try:
+            logging.getLogger("xformers").setLevel(logging.ERROR)
+        except Exception:
+            pass
 except ModuleNotFoundError:
+    # Not installed at all. Nothing to warn about - SDPA is the expected path here.
     xformers = None
     xformers_attention = None
     xformers_version = None
 except Exception as e:
-    if UNSLOTH_ENABLE_LOGGING:
-        print("========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n")
-        print(str(e))
+    # Installed but dead. Prefer the reason read off cpp_lib.json (it names the torch and
+    # CUDA the wheel was built for) over the raised message, which for the ABI case is
+    # xformers' own text with the CUDA version printed as a raw integer like 1208.
+    XFORMERS_BROKEN_REASON = _xformers_predicted_break or str(e)
+    _announce_xformers_breakage(
+        XFORMERS_BROKEN_REASON,
+        e,
+        build_mismatch = _xformers_predicted_break is not None,
+    )
     xformers = None
     xformers_attention = None
     xformers_version = None

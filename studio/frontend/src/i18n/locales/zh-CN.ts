@@ -1051,6 +1051,20 @@ export const zhCN = {
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
+      python: "Python",
+      accelerator: {
+        sectionTitle: "优化内核",
+        sectionDescription:
+          "更快的注意力与量化内核。每个内核只针对一个 PyTorch 版本编译，版本不匹配时不会加载任何内核，Unsloth 会静默回退到较慢的默认实现。",
+        working: "正常",
+        notLoading: "无法加载",
+        notInstalled: "未安装",
+        notChecked: "未检查",
+        builtFor: "为 {build} 编译",
+        bannerTitle: "优化内核已安装但无法加载",
+        bannerBody:
+          "{packages} 无法在此加载，Unsloth 正回退到较慢的默认实现。训练和推理仍可运行，但会占用更多显存和时间。",
+      },
       updates: "更新",
       help: "帮助",
       documentation: "文档",

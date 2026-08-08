@@ -36,6 +36,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { AcceleratorBanner } from "./components/accelerator-status";
 import {
   SETTINGS_SEARCH_KEYWORDS,
   createSettingsSearchIndex,
@@ -465,6 +466,10 @@ export function SettingsDialog() {
                 ref={mainScrollRef}
                 className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
               >
+                {/* Above every tab, not just About: an optimized kernel that is
+                    installed and cannot load produces no other symptom than being
+                    slower, so nothing else would ever tell the user. */}
+                <AcceleratorBanner />
                 {renderTab(panelTab)}
               </div>
             </main>

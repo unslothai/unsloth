@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
 
+
 export interface GpuDevice {
     name: string | null;
     vramTotalGb: number | null;
@@ -28,6 +29,9 @@ export interface HardwareInfo {
     transformers: string | null;
     unsloth: string | null;
     llamaCpp: string | null;
+    // The Python the backend runs on. Half of every "built for 3.10, running 3.13" report,
+    // and previously not shown anywhere in the app.
+    python: string | null;
     // Whether export can run here (true only on a supported accelerator), with a torch-aware
     // reason. `null` until the authoritative response lands, so callers don't briefly enable
     // export; `loaded` flips true once a real (non-error) response arrives.
@@ -55,6 +59,7 @@ const DEFAULT: HardwareInfo = {
     transformers: null,
     unsloth: null,
     llamaCpp: null,
+    python: null,
     exportSupported: null,
     exportUnsupportedReason: null,
     exportUnsupportedMessage: null,
@@ -115,6 +120,7 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 transformers: data?.versions?.transformers ?? null,
                 unsloth: data?.versions?.unsloth ?? null,
                 llamaCpp: data?.llama_cpp ?? null,
+                python: data?.versions?.python ?? null,
                 exportSupported: data?.export_supported ?? null,
                 exportUnsupportedReason: data?.export_unsupported_reason ?? null,
                 exportUnsupportedMessage: data?.export_unsupported_message ?? null,
