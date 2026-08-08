@@ -1023,7 +1023,7 @@ def test_owner_cancel_at_capacity_keeps_other_live_cancellations():
     cancellation, so a delayed /start for that id could spawn the job we just cancelled.
     The owner overshoots the cap instead; there is only ever one active start."""
     backend = TrainingBackend()
-    backend.cancel_start_request("victim-race")          # cancel-before-start race
+    backend.cancel_start_request("victim-race")  # cancel-before-start race
     backend.reserve_start_request("owner", "job-owner")
     backend.resolve_start_request("owner", state = "accepted", message = "Training queued")
     backend.current_start_request_id = "owner"

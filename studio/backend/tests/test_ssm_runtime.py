@@ -628,8 +628,7 @@ def test_renamed_local_checkpoint_resolves_causal_conv1d_from_its_config(tmp_pat
     assert ssm_runtime.resolved_model_wants_causal_conv1d(target, target, None) is True
     # Same for a renamed Hub id pointing at a local snapshot.
     assert (
-        ssm_runtime.resolved_model_wants_causal_conv1d("acme/internal-llm-v3", target, None)
-        is True
+        ssm_runtime.resolved_model_wants_causal_conv1d("acme/internal-llm-v3", target, None) is True
     )
 
 
