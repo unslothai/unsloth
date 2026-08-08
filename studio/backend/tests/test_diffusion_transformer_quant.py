@@ -86,9 +86,7 @@ def test_dense_transformer_supported_requires_cuda_bf16(monkeypatch):
 
 def _allow(monkeypatch, allowed):
     """Force ``_scheme_supported`` to accept only ``allowed`` (simulates smoke results)."""
-    monkeypatch.setattr(
-        tq, "_scheme_supported", lambda scheme, device, **kw: scheme in allowed
-    )
+    monkeypatch.setattr(tq, "_scheme_supported", lambda scheme, device, **kw: scheme in allowed)
 
 
 def test_auto_blackwell_prefers_fp8_then_falls_back(monkeypatch):
@@ -837,7 +835,12 @@ def test_the_pre_eviction_gate_does_not_refuse_on_an_indeterminate_probe(monkeyp
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
     seen: list = []
 
-    def _supported(scheme, device, *, unproven_ok = False):
+    def _supported(
+        scheme,
+        device,
+        *,
+        unproven_ok = False,
+    ):
         seen.append(unproven_ok)
         return unproven_ok
 

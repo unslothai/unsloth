@@ -1353,9 +1353,9 @@ def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
     # select reseeds to none, so after the user changes Speed and reloads, quantisation stays
     # pinned off for no reason they can see.
     resolved = status["resolved"]["transformer_quant"]
-    assert resolved["requested"] is None, (
-        f"the record reports {resolved['requested']!r} as the user's request; nothing was asked for"
-    )
+    assert (
+        resolved["requested"] is None
+    ), f"the record reports {resolved['requested']!r} as the user's request; nothing was asked for"
     assert resolved["source"] == "auto"
 
     # Control: with speed NOT off the auto precision promotion still engages, so the suppression above is specific to speed=off.

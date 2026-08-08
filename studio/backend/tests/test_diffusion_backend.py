@@ -3247,7 +3247,10 @@ def test_explicit_text_encoder_quant_refuses_a_partial_cast(fake_runtime, tmp_pa
         dmod,
         "quantize_text_encoders",
         lambda *a, **k: TEQuantOutcome(
-            "fp8", "'fp8' engaged on text_encoder but text_encoder_2 stayed dense", "fell_back", True
+            "fp8",
+            "'fp8' engaged on text_encoder but text_encoder_2 stayed dense",
+            "fell_back",
+            True,
         ),
     )
     with pytest.raises(RuntimeError) as excinfo:
