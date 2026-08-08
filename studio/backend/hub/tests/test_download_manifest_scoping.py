@@ -60,3 +60,42 @@ def test_purge_state_removes_legacy_owned_by_the_deleted_cache(monkeypatch, tmp_
 
     assert removed is True
     assert not legacy.is_file()  # owned by the deleted cache -> purged
+
+
+def test_a_scope_whose_payload_is_lost_reads_back_as_a_digest(monkeypatch, tmp_path):
+    """A scope is unspellable in a filename, so it is stored hashed. Lose the
+    payload and the reader falls back to that filename, handing the caller the
+    digest instead of "@diffusion" -- and the older tag spells it without the
+    "@" a scope test would look for. Both have to be recognisable as digests."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir(parents = True)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = str(hub_cache)),
+    )
+
+    download_manifest.write_cancel_marker(
+        "model", "Org/Model", "@diffusion", transport = "xet", hub_cache = str(hub_cache)
+    )
+    (variant, path), = download_manifest.iter_variant_markers(
+        "model", "Org/Model", hub_cache = str(hub_cache)
+    )
+    assert variant == "@diffusion"  # intact while the payload is readable
+    assert "--variant--@sha256-" in path.name
+
+    payload = json.loads(path.read_text(encoding = "utf-8"))
+    payload.pop("variant")
+    for name, expected_tag in ((path.name, "@sha256-"), (path.name.replace("@sha256-", "sha256-"), "sha256-")):
+        target = path.with_name(name)
+        _write_manifest(target, payload)
+        (recovered, _), = download_manifest.iter_variant_markers(
+            "model", "Org/Model", hub_cache = str(hub_cache)
+        )
+        assert recovered.startswith(expected_tag)
+        assert state_dir.variant_is_hashed_fragment(recovered)
+        target.unlink()
+
+    # A real quant label is never mistaken for one.
+    for quant in ("Q4_K_M", "UD-Q4_K_XL", "sha256-short"):
+        assert not state_dir.variant_is_hashed_fragment(quant)

@@ -57,6 +57,9 @@ _MAX_VARIANT_FRAGMENT_LENGTH = 64
 _CACHE_SCOPE_DIGEST_LENGTH = 32
 _HASH_PREFIXES = ("sha256-", "@sha256-")
 _LEGACY_HASH_FRAGMENT = re.compile(r"sha256-[0-9a-f]{32}")
+# Either tag _variant_fragment can stamp, so a reader can spot a digest it was
+# handed in place of a variant name.
+_HASHED_FRAGMENT = re.compile(r"@?sha256-[0-9a-f]{32}")
 
 
 def state_root(*, create: bool = False) -> Optional[Path]:
@@ -103,6 +106,17 @@ def _filename_bytes(name: str) -> int:
 def _state_filename_fits(entry_key: str) -> bool:
     filename = f"{entry_key}{_STATE_EXTENSION}"
     return _filename_bytes(filename) + _ATOMIC_WRITE_TMP_OVERHEAD <= _MAX_STATE_BASENAME_BYTES
+
+
+def variant_is_hashed_fragment(variant: str) -> bool:
+    """Whether *variant* is a digest fragment rather than a variant name.
+
+    A state file whose payload is unreadable falls back to its own filename, and
+    for a variant :func:`_variant_fragment` had to hash that is this digest. It
+    names nothing: it cannot be spelled back, and re-keying it would hash the
+    digest again. Both tags count, the older one carrying no "@" at all.
+    """
+    return bool(_HASHED_FRAGMENT.fullmatch(variant.strip().lower()))
 
 
 def state_filename_is_ambiguous(name: str) -> bool:

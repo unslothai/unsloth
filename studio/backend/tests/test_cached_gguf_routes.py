@@ -4310,3 +4310,56 @@ def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, 
         )
     )
     assert [(v.quant, v.partial) for v in response.variants] == [("Q6_K", True)]
+
+
+def test_a_digest_left_by_a_lost_payload_is_not_a_quant(monkeypatch, tmp_path):
+    """A scope is stored hashed, so a state file whose payload is gone reads back
+    as the digest, not as "@diffusion". The older tag spells that digest with no
+    "@" at all, which is what an install predating it still holds on disk, so the
+    scope test alone lets it through and the repo lists a sha256-....gguf nobody
+    downloaded. A quant beside it still has to survive."""
+    repo_dir = tmp_path / "models--org--repo"
+    (repo_dir / "snapshots" / "rev").mkdir(parents = True)
+    digest = "sha256-" + "0" * 32
+
+    monkeypatch.setattr(GV, "select_gguf_cache_snapshot", lambda repo_id, root = None: None)
+    monkeypatch.setattr(
+        GV,
+        "list_partial_gguf_variants_from_state",
+        lambda *a, **k: (
+            [
+                SimpleNamespace(
+                    filename = f"{tag}{digest}.gguf",
+                    quant = f"{tag}{digest}",
+                    display_label = None,
+                    size_bytes = 0,
+                    download_size_bytes = 0,
+                )
+                for tag in ("", "@")
+            ]
+            + [
+                SimpleNamespace(
+                    filename = "m-Q6_K.gguf",
+                    quant = "Q6_K",
+                    display_label = None,
+                    size_bytes = 20,
+                    download_size_bytes = 20,
+                )
+            ],
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            offline = True,
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert [v.quant for v in response.variants] == ["Q6_K"]
