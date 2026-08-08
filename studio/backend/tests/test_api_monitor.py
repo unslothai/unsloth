@@ -734,6 +734,26 @@ def test_decode_window_excludes_the_wait_before_the_first_token():
     assert row["decode_ms_authoritative"] is False
 
 
+def test_a_whole_reply_landing_at_once_dates_no_first_token():
+    """_monitor_openai_chunk feeds a non-streamed response through append_reply just
+    before finish. Dating the first token by it would report the request's own duration
+    as TTFT and leave a near-zero window that divides into an absurd rate."""
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.append_reply(entry_id, "the whole reply", streamed = False)
+    monitor.finish(entry_id)
+
+    [row] = monitor.snapshot()
+    assert row["ttft_ms"] is None
+    assert row["decode_ms"] is None
+    assert row["decode_ms_authoritative"] is False
+
+
 def test_engine_reported_decode_ms_wins_over_the_streamed_window():
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(

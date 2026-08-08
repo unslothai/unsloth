@@ -3093,7 +3093,7 @@ def _monitor_openai_chunk(
 ):
     if not monitor_id:
         return
-    _monitor_usage(monitor_id, data.get("usage"), context_length)
+    _monitor_usage(monitor_id, data.get("usage"), context_length, data.get("timings"))
     # Defensive: ignore malformed shapes so the helper never raises into the
     # streaming generator and aborts the user's response.
     choices = data.get("choices")
@@ -3127,11 +3127,12 @@ def _monitor_openai_chunk(
     if not reply_parts:
         return
     if len(choices) == 1:
-        api_monitor.append_reply(monitor_id, reply_parts[0][1])
+        api_monitor.append_reply(monitor_id, reply_parts[0][1], streamed = False)
         return
     api_monitor.append_reply(
         monitor_id,
         "\n\n".join(f"Choice {idx + 1}:\n{text}" for idx, text in reply_parts),
+        streamed = False,
     )
 
 
@@ -10756,7 +10757,12 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
+                    _monitor_usage(
+                        monitor_id,
+                        _stream_usage,
+                        _monitor_context_length(),
+                        timings = _stream_timings,
+                    )
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                     )
@@ -11307,7 +11313,12 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
+                    _monitor_usage(
+                        monitor_id,
+                        _stream_usage,
+                        _monitor_context_length(),
+                        timings = _stream_timings,
+                    )
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                     )
@@ -12097,7 +12108,7 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    _monitor_usage(monitor_id, _stats.get("usage"))
+                    _monitor_usage(monitor_id, _stats.get("usage"), timings = _stats.get("timings"))
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
@@ -12189,7 +12200,7 @@ async def openai_chat_completions(
             api_monitor.set_reply(monitor_id, _visible_text)
             _stats = _sf_stats_holder.get("stats")
             if _stats:
-                _monitor_usage(monitor_id, _stats.get("usage"))
+                _monitor_usage(monitor_id, _stats.get("usage"), timings = _stats.get("timings"))
             api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
             _sf_msg_kwargs = {"content": _visible_text}
             if _reasoning_text:
@@ -12537,7 +12548,7 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    _monitor_usage(monitor_id, _stats.get("usage"))
+                    _monitor_usage(monitor_id, _stats.get("usage"), timings = _stats.get("timings"))
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
@@ -12703,7 +12714,7 @@ async def openai_chat_completions(
             api_monitor.set_reply(monitor_id, _monitor_reply)
             _stats = stats_holder.get("stats")
             if _stats:
-                _monitor_usage(monitor_id, _stats.get("usage"))
+                _monitor_usage(monitor_id, _stats.get("usage"), timings = _stats.get("timings"))
             api_monitor.finish(monitor_id)
             return _model_json_response(response)
 
@@ -13506,13 +13517,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         api_monitor.fail(monitor_id, resp.text[:500])
     else:
         try:
-            _body = resp.json()
-            _monitor_usage(
-                monitor_id,
-                _body.get("usage"),
-                _monitor_context_length(),
-                timings = _body.get("timings"),
-            )
+            _monitor_usage(monitor_id, resp.json().get("usage"), _monitor_context_length())
         except Exception:
             pass
         api_monitor.finish(monitor_id)

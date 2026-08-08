@@ -4,8 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ApiMonitorEntry } from "../src/features/chat/types/api.ts";
 import { computeStats } from "../src/features/api-monitor/stats.ts";
+import type { ApiMonitorEntry } from "../src/features/chat/types/api.ts";
 
 // A request that waited 9s behind a busy slot, then generated 50 tokens in 1s.
 // Rated against the whole request that is 5 tok/s; against the decode window, 50.
@@ -26,25 +26,26 @@ function queuedEntry(overrides: Partial<ApiMonitorEntry> = {}): ApiMonitorEntry 
     duration_ms: 10_000,
     ttft_ms: 9_000,
     decode_ms: 1_000,
-    decode_ms_authoritative: false,
-    completion_tokens: 51,
+    decode_ms_authoritative: true,
+    completion_tokens: 50,
     ...overrides,
   } as ApiMonitorEntry;
 }
 
 test("throughput rates the decode window, not the queue wait", () => {
   const stats = computeStats([queuedEntry()]);
-  // 51 streamed tokens: the first opened the window, 50 were produced inside it.
   assert.equal(stats.tokensPerSecond, 50);
   // The wait is still visible as duration, just not charged to the model.
   assert.equal(stats.avgDurationMs, 10_000);
 });
 
-test("an engine-reported window covers every predicted token", () => {
+test("a streamed window without engine timings is not rated", () => {
+  // How many tokens rode in the first chunk is unknowable here, and reasoning tokens
+  // are counted in the usage but generated before the window opens. Both inflate.
   const stats = computeStats([
-    queuedEntry({ decode_ms_authoritative: true, completion_tokens: 50 }),
+    queuedEntry({ decode_ms_authoritative: false }),
   ]);
-  assert.equal(stats.tokensPerSecond, 50);
+  assert.equal(stats.tokensPerSecond, null);
 });
 
 test("a reply with no decode window is left out of the rate", () => {
@@ -53,5 +54,14 @@ test("a reply with no decode window is left out of the rate", () => {
   ]);
   // Not folded back in at the whole-request rate, which would report 5 tok/s.
   assert.equal(stats.tokensPerSecond, null);
-  assert.equal(stats.totalTokens, 51);
+  assert.equal(stats.totalTokens, 50);
+});
+
+test("rating is total tokens over total decode time, not a mean of rates", () => {
+  // One tiny request must not outweigh a long one.
+  const stats = computeStats([
+    queuedEntry({ id: "a", completion_tokens: 1, decode_ms: 1_000 }),
+    queuedEntry({ id: "b", completion_tokens: 99, decode_ms: 1_000 }),
+  ]);
+  assert.equal(stats.tokensPerSecond, 50);
 });

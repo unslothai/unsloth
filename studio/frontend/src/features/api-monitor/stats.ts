@@ -84,17 +84,25 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
       maxDurationMs =
         maxDurationMs == null ? duration : Math.max(maxDurationMs, duration);
       const generated = completionTokens(entry);
-      // Rate the decode window, not the whole request: duration_ms carries queue wait
-      // and prefill, which reports a model generating at 50 tok/s as 5 behind a busy
-      // slot. predicted_ms covers every predicted token, the streamed window one fewer.
-      // A reply with neither window is left out rather than dragged in at the old rate.
+      // Rate the engine's decode window, not the whole request: duration_ms carries
+      // queue wait and prefill, which reports a model generating at 50 tok/s as 5
+      // behind a busy slot.
+      // Only predicted_ms is used. Timing the stream instead cannot say how many
+      // tokens rode in the first chunk (providers coalesce deltas, speculative
+      // decoding accepts several at once) and never sees reasoning tokens, which are
+      // generated before the first visible one but still counted in the usage.
+      // Guessing there inflates the rate, so a request without engine timings is left
+      // out rather than dragged in at the old whole-request rate.
       const decodeMs = entry.decode_ms;
-      if (decodeMs != null && decodeMs > 0 && generated != null) {
-        const decoded = entry.decode_ms_authoritative ? generated : generated - 1;
-        if (decoded > 0) {
-          generatedTokens += decoded;
-          generatedDurationMs += decodeMs;
-        }
+      if (
+        entry.decode_ms_authoritative &&
+        decodeMs != null &&
+        decodeMs > 0 &&
+        generated != null &&
+        generated > 0
+      ) {
+        generatedTokens += generated;
+        generatedDurationMs += decodeMs;
       }
     }
   }

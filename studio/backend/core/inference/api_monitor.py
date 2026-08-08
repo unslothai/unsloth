@@ -59,8 +59,7 @@ class ApiMonitorEntry:
     # First streamed chunk. Everything before it is queue wait, model load and prefill,
     # so only the span after it is generation. None on a non-streamed reply.
     first_token_monotonic: Optional[float] = None
-    # llama.cpp's timings.predicted_ms. Preferred over the streamed window: the engine's
-    # own measurement, and the only one available for a non-streamed reply.
+    # The engine's own timings.predicted_ms. The only decode measure the rate trusts.
     reported_decode_ms: Optional[int] = None
     reply: str = ""
     finished_at: Optional[float] = None
@@ -125,8 +124,9 @@ class ApiMonitorEntry:
             "duration_ms": duration_ms,
             "ttft_ms": ttft_ms,
             "decode_ms": decode_ms,
-            # predicted_ms spans every predicted token; the streamed window opens at the
-            # first chunk and so covers one fewer. The reader needs to know which.
+            # True when decode_ms is the engine's predicted_ms, which spans every
+            # predicted token. The streamed window is display only: it cannot tell how
+            # many tokens rode in the first chunk, so it must not be rated.
             "decode_ms_authoritative": self.reported_decode_ms is not None,
             "context_length": self.context_length,
             "context_usage": context_usage,
@@ -280,7 +280,12 @@ class ApiMonitor:
             if entry is not None:
                 self._entries.remove(entry)
 
-    def append_reply(self, entry_id: Optional[str], text: str) -> None:
+    def append_reply(
+        self, entry_id: Optional[str], text: str, *, streamed: bool = True
+    ) -> None:
+        """``streamed = False`` for a whole reply landing at once: it arrives after
+        generation ended, so dating the first token by it would report the request's
+        own duration as time to first token."""
         if not entry_id or not text:
             return
         with self._lock:
@@ -288,7 +293,7 @@ class ApiMonitor:
             if entry is None:
                 return
             # Ahead of the preview cap's early return, which skips long generations.
-            if entry.first_token_monotonic is None:
+            if streamed and entry.first_token_monotonic is None:
                 entry.first_token_monotonic = time.monotonic()
             # Preview is capped: once the "..." marker is present the head is
             # frozen, so skip the per-chunk re-concat (avoids O(n^2) on long
