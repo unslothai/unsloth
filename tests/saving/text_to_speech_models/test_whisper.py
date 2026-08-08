@@ -1,13 +1,24 @@
-from unsloth import FastLanguageModel, FastModel
-from transformers import WhisperForConditionalGeneration, WhisperProcessor
-import torch
-
 # ruff: noqa
+import pytest
+
+try:
+    # unsloth first, so it can patch transformers/peft
+    from unsloth import FastLanguageModel, FastModel
+    from transformers import WhisperForConditionalGeneration, WhisperProcessor
+    import torch
+    from peft import PeftModel
+    import requests
+except ImportError as exc:
+    # Imported at collection time, so an absent runtime dep (triton on the
+    # Windows CI runner) is a collection error that reports no results at all.
+    pytest.skip(
+        f"requires the full unsloth runtime: {exc}",
+        allow_module_level = True,
+    )
+
 import sys
 from pathlib import Path
-from peft import PeftModel
 import warnings
-import requests
 
 
 REPO_ROOT = Path(__file__).parents[3]
@@ -22,9 +33,9 @@ require_python_package("soundfile")
 
 import soundfile as sf
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 1: Loading Model and LoRA Adapters")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 model, tokenizer = FastModel.from_pretrained(
@@ -62,17 +73,17 @@ model = FastModel.get_peft_model(
 print("✅ Model and LoRA adapters loaded successfully!")
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 2: Checking Model Class Type")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 assert isinstance(model, PeftModel), "Model should be an instance of PeftModel"
 print("✅ Model is an instance of PeftModel!")
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 3: Checking Config Model Class Type")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 def find_lora_base_model(model_to_inspect):
@@ -92,9 +103,9 @@ assert (
 print("✅ config_model returns correct Base Model class:", str(base_model_class))
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 4: Saving and Merging Model")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 with warnings.catch_warnings():
     warnings.simplefilter("error")  # Treat warnings as errors
@@ -104,9 +115,9 @@ with warnings.catch_warnings():
     except Exception as e:
         assert False, f"Model saving/merging failed with exception: {e}"
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 5: Loading Model for Inference")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 model, tokenizer = FastModel.from_pretrained(
@@ -124,9 +135,9 @@ model, tokenizer = FastModel.from_pretrained(
 
 print("✅ Model loaded for inference successfully!")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 6: Downloading Sample Audio File")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 audio_url = "https://upload.wikimedia.org/wikipedia/commons/5/5b/Speech_12dB_s16.flac"
 audio_file = "Speech_12dB_s16.flac"
@@ -141,11 +152,18 @@ try:
         f.write(response.content)
     print("✅ Audio file downloaded successfully!")
 except Exception as e:
-    assert False, f"Failed to download audio file: {e}"
+    # This runs at module import, so `assert False` is a collection error and
+    # the whole file reports no results. Wikimedia rate-limits and this URL has
+    # answered 429 in a batch run; a fixture we could not fetch says nothing
+    # about unsloth, so skip rather than fail.
+    pytest.skip(
+        f"could not download the test audio fixture from {audio_url}: {e}",
+        allow_module_level = True,
+    )
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 7: Running Inference")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 from transformers import pipeline

@@ -886,18 +886,71 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_push_to_hub_token)
 
 
 # Autocast precision for GRPO
+def _unsloth_grpo_autocast(self):
+    """Decide the GRPO autocast once and latch it on the trainer.
+
+    ACCELERATE_MIXED_PRECISION is process wide, so a trainer built after this
+    one but before it runs would rewrite it and hand this trainer the other
+    trainer's precision. args belongs to this trainer alone, so ask it first.
+    """
+    if not hasattr(self, "_autocast_enabled"):
+        args = getattr(self, "args", None)
+        precision = getattr(args, "mixed_precision", None)
+        use_bf16 = getattr(args, "bf16", None)
+        use_fp16 = getattr(args, "fp16", None)
+        if not isinstance(precision, str):
+            # transformers < 5 has no args.mixed_precision, but rl.py sets the
+            # fp16 / bf16 flags on this same args for every branch it takes.
+            if isinstance(use_bf16, bool) and isinstance(use_fp16, bool):
+                precision = "bf16" if use_bf16 else ("fp16" if use_fp16 else "no")
+            else:
+                precision = os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16")
+        self._autocast_dtype = torch.float16 if precision == "fp16" else torch.bfloat16
+        # "no" is a real value: full finetuning and an explicit float32 load
+        # both set it, and reading it as bfloat16 raises on a T4 or V100.
+        self._autocast_enabled = precision != "no"
+        self._autocast_force_float32 = False
+        # from_pretrained stamps this on the model it loaded. UNSLOTH_FORCE_FLOAT32
+        # is process wide and every load rewrites it, so a model loaded after this
+        # trainer was built would otherwise answer for it here.
+        forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
+        if forced is None:
+            forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+        if forced and precision != "bf16":
+            # Gemma3 / gpt-oss set "no" as well, but still want float16 autocast.
+            # A trainer that picked bf16 anyway (full finetuning on a bf16 GPU)
+            # keeps it: float16 is the precision the forced list exists to avoid.
+            self._autocast_dtype = torch.float16
+            self._autocast_enabled = True
+            self._autocast_force_float32 = True
+
+    return self._autocast_enabled, self._autocast_dtype
+
+
+def _unsloth_grpo_autocast_kwargs(self, device_type = "cuda"):
+    """torch.amp.autocast keyword arguments for GRPO generation."""
+    enabled, dtype = _unsloth_grpo_autocast(self)
+    if not getattr(self, "_autocast_force_float32", False) and torch.is_autocast_enabled(
+        device_type
+    ):
+        # Already inside an autocast: inherit its dtype by not naming one.
+        # `dtype` has to be absent rather than a sentinel, since autocast hands
+        # whatever it is straight to set_autocast_dtype, which takes a
+        # torch.dtype and nothing else.
+        return {"enabled": enabled}
+    return {"enabled": enabled, "dtype": dtype}
+
+
 def grpo_trainer__prepare_inputs(function_name, function):
     if function_name != "_prepare_inputs":
         return function
 
-    # Add mixed precision training
+    # Add mixed precision training. The decision is latched on the trainer, so a
+    # second trainer's __init__ cannot change this trainer's autocast mid run.
     function = function.replace(
         "with torch.inference_mode():",
         "with torch.inference_mode(), "
-        "torch.amp.autocast(device_type = 'cuda', "
-        "dtype = ((torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16) "
-        "if not torch.is_autocast_enabled('cuda') else nullcontext())"
-        "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '0' else torch.float16):",
+        "torch.amp.autocast(device_type = 'cuda', **_unsloth_grpo_autocast_kwargs(self)):",
     )
     function = function.replace(
         "self.accelerator.unwrap_model(self.model)",
@@ -1367,17 +1420,14 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         if True:  # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
             return None  # Unsloth efficient GRPO
         # Otherwise, calculate normally:
-        if not hasattr(self, "_autocast_dtype"):
-            self._autocast_dtype = (
-                torch.float16
-                if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") == "fp16"
-                else torch.bfloat16
-            )
-            if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-                self._autocast_dtype = torch.float16
+        _unsloth_grpo_autocast(self)
 
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-        with torch.amp.autocast(device_type = DEVICE_TYPE, dtype = self._autocast_dtype):
+        with torch.amp.autocast(
+            device_type = DEVICE_TYPE,
+            dtype = self._autocast_dtype,
+            enabled = getattr(self, "_autocast_enabled", True),
+        ):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(
                 input_ids = input_ids,
@@ -1433,14 +1483,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
         if compute_efficient:
             return None, None
         else:
-            if not hasattr(self, "_autocast_dtype"):
-                self._autocast_dtype = (
-                    torch.float16
-                    if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") == "fp16"
-                    else torch.bfloat16
-                )
-                if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-                    self._autocast_dtype = torch.float16
+            _unsloth_grpo_autocast(self)
 
             compute_aux_loss = kwargs.get("compute_aux_loss", None)
 
@@ -1465,7 +1508,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             lm_head = self.model.get_output_embeddings().weight
 
-            dtype_bytes = 16 if self._autocast_dtype in [torch.float16, torch.bfloat16] else 32
+            # Size on the dtype the forward actually runs in. With autocast off
+            # that is the model's own dtype, which is float32 for an explicit
+            # float32 load but still bfloat16 for pure bfloat16 full finetuning.
+            forward_dtype = (
+                self._autocast_dtype if getattr(self, "_autocast_enabled", True) else lm_head.dtype
+            )
+            dtype_bytes = 16 if forward_dtype in [torch.float16, torch.bfloat16] else 32
             total_rows = input_ids.shape[0]
             seq_len = input_ids.shape[1]
             hidden_dim = lm_head.shape[1]
@@ -1731,7 +1780,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         def _pg_run_forward(_pg_layout = _pg_layout, _pg_chunks = _pg_chunks):
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
-                                    device_type = "cuda", dtype = self._autocast_dtype
+                                    device_type = "cuda",
+                                    dtype = self._autocast_dtype,
+                                    enabled = getattr(self, "_autocast_enabled", True),
                                 ):
                                     _pg_hidden = unwrapped_model(
                                         input_ids = _pg_layout.flat_ids,
@@ -1862,7 +1913,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
                         with _get_inference_mode_context_manager(model):
-                            with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
+                            with torch.amp.autocast(
+                                device_type = "cuda",
+                                dtype = self._autocast_dtype,
+                                enabled = getattr(self, "_autocast_enabled", True),
+                            ):
                                 # use_cache=False: a KV cache silently disables varlen packing
                                 _pk_hidden = unwrapped_model(
                                     input_ids = _pk_flat,
@@ -1911,7 +1966,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             _pk_ref = torch.zeros_like(_pk_result)
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
-                                    device_type = "cuda", dtype = self._autocast_dtype
+                                    device_type = "cuda",
+                                    dtype = self._autocast_dtype,
+                                    enabled = getattr(self, "_autocast_enabled", True),
                                 ):
                                     for _pk_i in range(total_rows):
                                         _pk_ni = _pk_len_cpu[_pk_i]
@@ -2085,7 +2142,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
                     if mm_token_type_ids_chunk is not None:
                         _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
-                    with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
+                    with torch.amp.autocast(
+                        device_type = "cuda",
+                        dtype = self._autocast_dtype,
+                        enabled = getattr(self, "_autocast_enabled", True),
+                    ):
                         if pixel_values is None:
                             outputs = unwrapped_model(
                                 input_ids = input_ids_chunk,
@@ -2251,6 +2312,8 @@ grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))

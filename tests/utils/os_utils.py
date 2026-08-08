@@ -6,11 +6,13 @@ import importlib
 
 
 def _missing_dependency(message):
-    """Skip under pytest, since exiting at import time aborts the whole session."""
+    """Skip under pytest, since exiting at import time aborts the whole session.
+
+    Returns under a plain script so the caller can print its install guidance
+    before exiting; skipping first keeps that wall of text out of a test run."""
     if "pytest" in sys.modules:
         import pytest
         pytest.skip(message, allow_module_level = True)
-    sys.exit(1)
 
 
 def detect_package_manager():
@@ -79,6 +81,8 @@ def require_package(package_name, executable_name = None):
         print(f"✓ Package {package_name} is installed")
         return
 
+    _missing_dependency(f"requires the system package '{package_name}'")
+
     print(f"❌ Error: {package_name} is not installed")
     print(f"\nPlease install {package_name} using your system package manager:")
 
@@ -100,7 +104,7 @@ def require_package(package_name, executable_name = None):
     print(f"  conda install -c conda-forge {package_name}")
 
     print(f"\nPlease install the required package and run the script again.")
-    _missing_dependency(f"{package_name} is not installed")
+    sys.exit(1)
 
 
 # Usage
@@ -119,12 +123,14 @@ def require_python_package(
         pip_name = package_name
 
     if importlib.util.find_spec(import_name) is None:
+        _missing_dependency(f"requires the '{package_name}' package (pip install {pip_name})")
+
         print(f"❌ Error: Python package '{package_name}' is not installed")
         print(f"\nPlease install {package_name} using pip:")
         print(f"  pip install {pip_name}")
         print(f"  # or with conda:")
         print(f"  conda install {pip_name}")
         print(f"\nAfter installation, run this script again.")
-        _missing_dependency(f"Python package '{package_name}' is not installed")
+        sys.exit(1)
     else:
         print(f"✓ Python package '{package_name}' is installed")

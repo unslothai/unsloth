@@ -589,8 +589,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     except:
         pass
 
-    # Mixed precision autocast
-    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+    # Mixed precision autocast. from_pretrained stamps the forced float32 answer on
+    # the model it loaded; UNSLOTH_FORCE_FLOAT32 is process wide and every load
+    # rewrites it, so a later load would otherwise decide this model's rollouts.
+    forced_float32 = getattr(self, "_unsloth_forced_float32", None)
+    if forced_float32 is None:
+        forced_float32 = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    if forced_float32:
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
         dtype = torch.float16
     else:
@@ -1045,6 +1050,10 @@ class FastBaseModel:
         # The base + tokenizer prefetch runs AFTER the load-mode validation below, so an invalid
         # load_in_* combination fails without first downloading a snapshot.
 
+        # Whether float32 was ASKED for, as opposed to arrived at by upcasting.
+        # Only an explicit request may suppress the float16 autocast that full
+        # finetuning relies on for V100/T4 (see rl.py, issue #4082).
+        user_float32 = _requested_float32(dtype)
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
@@ -1230,6 +1239,8 @@ class FastBaseModel:
                         "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
                     )
                     os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
+            elif dtype == torch.float32:
+                print("Unsloth: Using float32 full finetuning.")
             else:
                 print(
                     "Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32."
@@ -1821,7 +1832,9 @@ class FastBaseModel:
         # Saving restores sentencepiece assets from the repo name alone, which carries no
         # branch. Stamped here, not per processor branch, so a fallback cannot lose it.
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
-        return model, tokenizer
+        model = _mark_forced_float32(model, do_forced_float32)
+        model = _mark_full_finetuning(model, full_finetuning)
+        return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
     def get_peft_model(

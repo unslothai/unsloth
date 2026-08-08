@@ -17,6 +17,10 @@ __version__ = "2026.8.8"
 __all__ = [
     "SUPPORTS_BFLOAT16",
     "is_bfloat16_supported",
+    "_requested_float32",
+    "_mark_requested_float32",
+    "_mark_forced_float32",
+    "_mark_full_finetuning",
     "is_vLLM_available",
     "prepare_model_for_kbit_training",
     "xformers",
@@ -1966,7 +1970,7 @@ for model_name in model_architectures:
         break
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
-    config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
+    config_filename = f"{model_name.title().replace('_', '')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
     try:
         exec(f"from {config_filepath} import {config_filename}", globals())
     except:
@@ -2119,7 +2123,7 @@ if DEVICE_TYPE == "cuda":
                 import transformers.utils.import_utils
 
                 transformers.utils.import_utils.is_flash_attn_2_available = (
-                    lambda *args, **kwargs: False
+                    lambda *args, **kwargs: (False)
                 )
                 import transformers.utils
 
@@ -2163,8 +2167,8 @@ elif DEVICE_TYPE == "hip":
             # Stop Flash Attention from importing!
             import transformers.utils.import_utils
 
-            transformers.utils.import_utils.is_flash_attn_2_available = (
-                lambda *args, **kwargs: False
+            transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: (
+                False
             )
             import transformers.utils
 
@@ -2792,6 +2796,59 @@ def offload_output_embeddings(model, temporary_location: str = "_unsloth_tempora
 # Fixes a weird Torch 2.3 bug which says T4s have bfloat16
 def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
+
+
+def _requested_float32(dtype):
+    """Did the caller ask for float32, as opposed to us arriving at it?
+
+    Read the argument as given: `dtype` is also derived from a 4bit config's
+    `bnb_4bit_compute_dtype`, which describes one quantized matmul and not the
+    model, and full finetuning turns that config off again.
+    """
+    if isinstance(dtype, str):
+        dtype = getattr(torch, dtype, None)
+    return dtype is torch.float32
+
+
+def _mark_requested_float32(model, requested):
+    """Record the answer on the model itself.
+
+    Not in the environment: a program that loads two models before building a
+    trainer would then describe whichever loaded last. Outermost caller wins,
+    since only it saw the argument before normalization.
+    """
+    try:
+        model._unsloth_user_float32 = bool(requested)
+    except Exception:
+        pass
+    return model
+
+
+def _mark_forced_float32(model, forced):
+    """Record whether this model's family forced float32, next to the request.
+
+    UNSLOTH_FORCE_FLOAT32 says the same thing, but every load rewrites it, so a
+    second load before this model trains would answer for the wrong model.
+    """
+    try:
+        model._unsloth_forced_float32 = bool(forced)
+    except Exception:
+        pass
+    return model
+
+
+def _mark_full_finetuning(model, full_finetuning):
+    """Record how this model was loaded, next to the two float32 answers.
+
+    UNSLOTH_ENABLE_FULL_FINETUNING is process wide and every load rewrites it, so
+    a LoRA model loaded before this one trains would say "no" for it and drop the
+    bfloat16 that full finetuning is allowed to keep.
+    """
+    try:
+        model._unsloth_full_finetuning = bool(full_finetuning)
+    except Exception:
+        pass
+    return model
 
 
 def is_vLLM_available():
@@ -3880,8 +3937,8 @@ def _prepare_model_for_qat(
                 weight_dtype = torch.int8,
                 granularity = PerGroup(group_size),
             )
-            filter_fn = (
-                lambda m, _: isinstance(m, torch.nn.Linear)
+            filter_fn = lambda m, _: (
+                isinstance(m, torch.nn.Linear)
                 and m.in_features >= group_size
                 and m.in_features % group_size == 0
             )
