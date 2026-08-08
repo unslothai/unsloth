@@ -262,6 +262,9 @@ export async function validateModel(
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
+      // batch sizes scale the same estimate; omitted when blank so they never read as set
+      ...(payload.n_batch != null ? { n_batch: payload.n_batch } : {}),
+      ...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {}),
       // The estimate charges a drafter whose size differs by kind (a DSpark
       // sidecar is ~11 GB), so omitting the mode makes this preflight disagree
       // with /load in both directions.

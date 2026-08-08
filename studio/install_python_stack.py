@@ -3508,18 +3508,34 @@ def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
 def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
     """Build a standard pip install command.
 
-    Strips uv-only flags like --upgrade-package that pip doesn't understand.
+    pip has no --upgrade-package, so uv's flag is translated rather than
+    dropped. Dropping it made this fallback a no-op on the update path:
+    `studio update` passes --upgrade-package unsloth with a base.txt that lists
+    a bare unsloth, so pip found the requirement already satisfied, installed
+    nothing, and the update still reported success. Any uv failure reached that,
+    not just the Windows in-use launcher.
+
+    --upgrade-strategy is pinned to only-if-needed rather than left to pip's
+    default, because that default is the load-bearing part: it upgrades the
+    named packages without dragging the existing torch build along.
     """
     cmd = [sys.executable, "-m", "pip", "install"]
+    upgrade: list[str] = []
     skip_next = False
     for arg in args:
         if skip_next:
             skip_next = False
+            upgrade.append(arg)
             continue
         if arg == "--upgrade-package":
-            skip_next = True  # skip the flag and its value
+            skip_next = True  # the flag; its value is the package to upgrade
             continue
         cmd.append(arg)
+    if upgrade:
+        cmd += ["--upgrade", "--upgrade-strategy", "only-if-needed"]
+        # Every current caller also names these as positionals or via -r, but a
+        # future one might not, and pip would then upgrade nothing.
+        cmd += [name for name in upgrade if name not in cmd]
     return cmd
 
 

@@ -166,13 +166,11 @@ import {
 import {
   beginExternalResearchFollow,
   ingestResearchUpdate,
+  terminalResearchStatuses,
   useResearchRunStore,
+  watchResearchRun,
 } from "../stores/research-run-store";
-import {
-  cancelResearchRun,
-  createResearchRun,
-  followResearchRun,
-} from "./research-api";
+import { cancelResearchRun, createResearchRun } from "./research-api";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
@@ -1746,6 +1744,10 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedKvCacheDtype",
   "nParallel",
   "loadedNParallel",
+  "nBatch",
+  "loadedNBatch",
+  "nUbatch",
+  "loadedNUbatch",
   "tensorParallel",
   "loadedTensorParallel",
   "gpuMemoryMode",
@@ -2596,6 +2598,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // split (0 especially) must not be refused as a full-GGUF occupant.
               gpu_layers: effectiveGpuLayers,
               n_parallel: config.nParallel ?? null,
+              // omitted when blank: a null counts as set and strips inherited -b / -ub
+              ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
+              ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
             }
           : {}),
       }))
@@ -2639,6 +2644,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             gpu_ids: effectiveGpuIds ?? undefined,
             // Per-model too, or the auto-load reverts a remembered override.
             n_parallel: config.nParallel ?? null,
+            ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
+            ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
           }
         : {}),
     }).catch((error: unknown) => {
@@ -2712,6 +2719,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         const committedSlots = (loadResp.is_diffusion ?? false)
           ? null
           : (config.nParallel ?? null);
+        // same rule for the batch sizes
+        const committedNBatch = (loadResp.is_diffusion ?? false)
+          ? null
+          : (config.nBatch ?? null);
+        const committedNUbatch = (loadResp.is_diffusion ?? false)
+          ? null
+          : (config.nUbatch ?? null);
         useChatRuntimeStore.setState({
           ggufContextLength: loadResp.context_length ?? 131072,
           ggufMaxContextLength:
@@ -2731,6 +2745,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // Click-time value, not the resolved backend echo (see performLoad).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
+          nBatch: committedNBatch,
+          loadedNBatch: committedNBatch,
+          nUbatch: committedNUbatch,
+          loadedNUbatch: committedNUbatch,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           ...loadedGpuMemoryFields(loadResp),
@@ -2763,6 +2781,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // a model that cannot use it.
           nParallel: null,
           loadedNParallel: null,
+          nBatch: null,
+          loadedNBatch: null,
+          nUbatch: null,
+          loadedNUbatch: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
@@ -3071,6 +3093,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         // preset would read as applied and be re-sent by the next Apply.
         nParallel: null,
         loadedNParallel: null,
+        nBatch: null,
+        loadedNBatch: null,
+        nUbatch: null,
+        loadedNUbatch: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
@@ -3542,27 +3568,20 @@ export function createOpenAIStreamAdapter(
             }
             return;
           }
-          for await (const update of followResearchRun(createdRun.id, {
-            initialRun: createdRun,
+          // read the store, not the stream: a stalled reader here must not freeze ingestion.
+          let yieldedStatus: string | null = null;
+          for await (const run of watchResearchRun(createdRun.id, {
             signal: researchFollowController.signal,
-            replayFrom: 0,
           })) {
-            const run = update.run;
-            ingestResearchUpdate(run, update.event);
-            // The activity store coalesces these high-frequency events. Yielding them
-            // through assistant-ui would replace the whole hidden message content per
-            // token, making long planning turns progressively more expensive.
-            if (
-              update.event?.event === "reasoning.updated" ||
-              update.event?.event === "report.updated"
-            ) {
+            if (typeof run.report === "string") {
+              report = run.report;
+            }
+            const settled = terminalResearchStatuses.has(run.status);
+            // per-delta yields would rewrite the message and drive an autosave the server rejects.
+            if (run.status === yieldedStatus && !settled) {
               continue;
             }
-            if (run.status === "completed" && typeof run.report === "string") {
-              report = run.report;
-            } else if (typeof run.report === "string") {
-              report = run.report;
-            }
+            yieldedStatus = run.status;
             yield {
               content: [{ type: "text" as const, text: report }],
               metadata: {

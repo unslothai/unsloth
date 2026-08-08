@@ -72,6 +72,10 @@ export interface LoadModelRequest {
    * the launch default. The VRAM fitter may launch fewer to stay on GPU.
    */
   n_parallel?: number | null;
+  /** prompt batch size (--batch-size), 1..65536; omit/null = llama.cpp default 2048, gguf only */
+  n_batch?: number | null;
+  /** prompt micro-batch size (--ubatch-size), 1..65536; omit/null = llama.cpp default 512, capped at the batch size */
+  n_ubatch?: number | null;
   /**
    * Split the model across GPUs by tensor (--split-mode tensor) instead
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
@@ -236,6 +240,10 @@ export interface LoadModelResponse {
   /** Slots llama-server actually runs, after any fit-time reduction. Null for
    * non-GGUF loads. */
   parallel_slots?: number | null;
+  /** batch size (--batch-size) the load was invoked with; null = default */
+  requested_n_batch?: number | null;
+  /** micro-batch size (--ubatch-size) the load was invoked with; null = default */
+  requested_n_ubatch?: number | null;
 }
 
 export interface UnloadModelRequest {
@@ -315,6 +323,10 @@ export interface InferenceStatusResponse {
   /** Slots llama-server actually runs, after any fit-time reduction. Null when
    * no GGUF model is loaded. */
   parallel_slots?: number | null;
+  /** batch size (--batch-size) the active load was invoked with; null = default */
+  requested_n_batch?: number | null;
+  /** micro-batch size (--ubatch-size) the active load was invoked with; null = default */
+  requested_n_ubatch?: number | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
@@ -366,6 +378,17 @@ export interface ApiMonitorEntry {
   reason?: "manual" | "idle" | "api" | null;
   // 0-100 while a download row is running.
   progress?: number | null;
+  // Server-side time to first token (measured, else engine prefill).
+  ttft_ms?: number | null;
+  tok_per_sec?: number | null;
+  stop_reason?: string | null;
+}
+
+export interface ApiMonitorQueue {
+  capacity: number;
+  active: number;
+  queued: number;
+  free: number;
 }
 
 export interface ApiMonitorResponse {
@@ -376,6 +399,8 @@ export interface ApiMonitorResponse {
   active_model?: string | null;
   context_length?: number | null;
   active_requests: number;
+  /** Live slot/queue occupancy; null when no llama model is loaded. */
+  queue?: ApiMonitorQueue | null;
   /** Absent on older backends -- treat only an explicit `false` as disabled. */
   logging_enabled?: boolean;
   entries: ApiMonitorEntry[];
