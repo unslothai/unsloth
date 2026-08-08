@@ -11997,7 +11997,10 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
 
-                if intent.cpu_fallback:
+                # A runtime that is no longer the Vulkan build the recovery came
+                # from has nothing to replay, so run the request as sent rather
+                # than failing a load the current backend can serve.
+                if intent.cpu_fallback and self._is_vulkan_backend(binary):
                     prepared = self._prepare_cpu_fallback_launch(binary, cmd, env, server_caps)
                     if prepared is None:
                         _raise_terminal_load_failure(
@@ -12320,14 +12323,20 @@ class LlamaCppBackend:
                                     )
                                 )
                     else:
-                        if _try_auto_vulkan_cpu_fallback(
-                            _spec_cpu_replay_cmd or _last_spawn_cmd, _crash_rc
-                        ):
+                        # Try the drafter launch first; a build with no draft-ngl
+                        # flag cannot pin one to CPU, so fall back to the
+                        # drafterless argv rather than losing the recovery.
+                        _replayed = _spec_cpu_replay_cmd is not None and (
+                            _try_auto_vulkan_cpu_fallback(_spec_cpu_replay_cmd, _crash_rc)
+                        )
+                        if _replayed:
+                            # The drafter came back with the replay, so the
+                            # speculative-disable diagnosis no longer applies.
+                            self._spec_fallback_reason = None
+                        elif _try_auto_vulkan_cpu_fallback(_last_spawn_cmd, _crash_rc):
+                            _replayed = True
+                        if _replayed:
                             healthy = True
-                            if _spec_cpu_replay_cmd is not None:
-                                # The drafter came back with the replay, so the
-                                # speculative-disable diagnosis no longer applies.
-                                self._spec_fallback_reason = None
                         else:
                             _raise_terminal_load_failure(
                                 self._classify_llama_start_failure(

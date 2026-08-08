@@ -91,6 +91,8 @@ def _run_cpu_fallback_load(
     mmproj_env = None,
     cpu_fallback_available = True,
     extra_args = None,
+    vulkan = True,
+    cpu_fallback = False,
 ):
     def _gguf_string(value: str) -> bytes:
         encoded = value.encode()
@@ -118,7 +120,7 @@ def _run_cpu_fallback_load(
     monkeypatch.setattr(
         LlamaCppBackend,
         "_is_vulkan_backend",
-        staticmethod(lambda _binary = None: True),
+        staticmethod(lambda _binary = None: vulkan),
     )
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -172,7 +174,13 @@ def _run_cpu_fallback_load(
 
     def _prepare_cpu_fallback(_binary, failed_cmd, _env, _server_caps):
         fallback_sources.append(list(failed_cmd))
-        if not cpu_fallback_available:
+        # A callable decides per command, for builds that can only replay some.
+        available = (
+            cpu_fallback_available(failed_cmd)
+            if callable(cpu_fallback_available)
+            else cpu_fallback_available
+        )
+        if not available:
             return None
         return ["/staged/llama-server", "--device", "none"], None
 
@@ -187,6 +195,7 @@ def _run_cpu_fallback_load(
             model_identifier = "owner/model",
             is_vision = mmproj_from_argv,
             extra_args = list(extra_args) if extra_args else None,
+            cpu_fallback = cpu_fallback,
         )
     )
     return backend, loaded, launches, fallback_sources
@@ -228,6 +237,115 @@ class TestGpuInitCrashMessage:
         for backend in ("vulkan", "hip", "cuda", None):
             message = self._message(monkeypatch, backend)
             assert "GPU driver/runtime initialization crash" in message
+
+
+class TestPlatformMatrix:
+    """Every OS and runtime flavour Studio ships, so the recovery cannot leak
+    into a path that already worked."""
+
+    # (platform, library prefix, library suffix, binary name)
+    OSES = {
+        "linux": ("linux", "lib", "so", "llama-server"),
+        "windows": ("win32", "", "dll", "llama-server.exe"),
+        "macos": ("darwin", "lib", "dylib", "llama-server"),
+    }
+    RUNTIMES = {
+        "vulkan": ("base", "cpu", "vulkan"),
+        "cuda": ("base", "cpu", "cuda"),
+        "hip": ("base", "cpu", "hip"),
+        "cpu": ("base", "cpu"),
+        # A custom multi-backend build defers to CUDA/HIP, never to Vulkan.
+        "vulkan+cuda": ("base", "cpu", "vulkan", "cuda"),
+    }
+
+    def _install(self, monkeypatch, tmp_path, os_key, runtime):
+        platform, prefix, suffix, exe = self.OSES[os_key]
+        bindir = tmp_path / "install" / "build" / "bin"
+        bindir.mkdir(parents = True)
+        binary = bindir / exe
+        binary.write_bytes(b"llama-server")
+        binary.chmod(0o755)
+        for backend in self.RUNTIMES[runtime]:
+            stem = "cpu-haswell" if backend == "cpu" else backend
+            (bindir / f"{prefix}ggml-{stem}.{suffix}").write_bytes(backend.encode())
+            if backend == "cpu":
+                (bindir / f"{prefix}ggml-cpu.{suffix}").write_bytes(b"cpu")
+        (bindir / f"{prefix}llama.{suffix}").write_bytes(b"llama")
+        monkeypatch.setattr(llama_cpp.sys, "platform", platform)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_unsloth_managed_binary", staticmethod(lambda _binary: True)
+        )
+        monkeypatch.setattr(
+            llama_cpp, "_swa_cache_path", lambda: tmp_path / "studio" / "swa_cache.json"
+        )
+        return binary
+
+    @pytest.mark.parametrize("os_key", list(OSES))
+    @pytest.mark.parametrize("runtime", list(RUNTIMES))
+    def test_only_a_vulkan_only_build_is_ever_staged(self, monkeypatch, tmp_path, os_key, runtime):
+        binary = self._install(monkeypatch, tmp_path, os_key, runtime)
+        backend = LlamaCppBackend()
+        backend._llama_server_env_for_binary = lambda _binary: {
+            "PATH": "/staged", "LD_LIBRARY_PATH": "/staged"
+        }
+
+        prepared = backend._prepare_cpu_fallback_launch(
+            str(binary), [str(binary), "-m", "m.gguf"], {}, {"found": True}
+        )
+
+        # Backend detection reads .so / .dll only, so a macOS bundle is never
+        # Vulkan and the whole path stays unreachable there.
+        expected = os_key != "macos" and runtime == "vulkan"
+        assert (prepared is not None) is expected
+        if not expected:
+            assert backend._cpu_fallback_runtime is None
+            return
+        staged = {p.name.lower() for p in Path(prepared[0][0]).parent.iterdir()}
+        assert not any("ggml-vulkan" in n or "ggml-cuda" in n or "ggml-hip" in n for n in staged)
+        assert any("ggml-cpu" in n for n in staged)
+        assert any(n.startswith(("libllama", "llama.")) for n in staged)
+        backend._cleanup_cpu_fallback_runtime()
+
+    @pytest.mark.parametrize(
+        "marker,eligible",
+        [
+            ({"llama_backend": None}, True),          # auto Intel, post-#7188
+            ({"llama_backend": "auto"}, True),        # auto AMD, post-#8050
+            ({}, True),                               # pre-#7188, key absent
+            ({"llama_backend": ""}, True),
+            ({"llama_backend": "vulkan"}, False),     # explicit choice
+            ({"llama_backend": "cuda"}, False),       # unknown/future value
+            ({"llama_backend": None, "force_cpu": True}, False),
+        ],
+    )
+    def test_marker_states_old_and_new(self, monkeypatch, tmp_path, marker, eligible):
+        binary = self._install(monkeypatch, tmp_path, "linux", "vulkan")
+        payload = {"asset": "llama-b1-bin-ubuntu-vulkan-x64.tar.gz", "force_cpu": False}
+        payload.update(marker)
+        (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(payload))
+        import utils.llama_cpp_update as update
+
+        monkeypatch.setattr(update, "_llama_install_root", lambda _binary: tmp_path)
+        for name in ("UNSLOTH_FORCE_VULKAN", "UNSLOTH_LLAMA_CPP_BACKEND"):
+            monkeypatch.delenv(name, raising = False)
+
+        assert LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
+            str(binary), GgufLoadIntent(model_identifier = "owner/model"), None, {}
+        ) is eligible
+
+    @pytest.mark.parametrize("marker_text", ["not json", "", "[]", '{"llama_backend": 7}'])
+    def test_a_corrupt_marker_is_ineligible_and_never_raises(
+        self, monkeypatch, tmp_path, marker_text
+    ):
+        binary = self._install(monkeypatch, tmp_path, "linux", "vulkan")
+        (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(marker_text)
+        import utils.llama_cpp_update as update
+
+        monkeypatch.setattr(update, "_llama_install_root", lambda _binary: tmp_path)
+
+        assert LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
+            str(binary), GgufLoadIntent(model_identifier = "owner/model"), None, {}
+        ) is False
 
 
 class TestAutoVulkanCpuFallbackGate:
@@ -526,6 +644,20 @@ class TestCpuIsolatedReplay:
         backend._cleanup_cpu_fallback_runtime()
         assert not staged_dir.exists()
 
+    def test_a_replay_request_on_a_non_vulkan_runtime_loads_normally(self, monkeypatch, tmp_path):
+        """Switching the managed build must not turn a rollback into a failure."""
+        backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [None],
+            vulkan = False,
+            cpu_fallback = True,
+        )
+
+        assert loaded is True
+        assert fallback_sources == []
+        assert backend._cpu_fallback_reason is None
+
     def test_non_vulkan_managed_runtime_is_never_staged(self, monkeypatch, tmp_path):
         binary = _managed_runtime(monkeypatch, tmp_path)
         monkeypatch.setattr(
@@ -712,6 +844,23 @@ def test_drafter_survives_the_cpu_replay(monkeypatch, tmp_path):
     assert len(fallback_sources) == 1
     assert "--spec-default" not in fallback_sources[0]
     assert backend._spec_fallback_reason is None
+
+
+def test_drafter_replay_falls_back_to_the_stripped_command(monkeypatch, tmp_path):
+    """A build that cannot CPU-pin a drafter still recovers, drafterless."""
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [-11, -11, -11, None],
+        extra_args = ["--spec-type", "mtp"],
+        cpu_fallback_available = lambda cmd: "--spec-default" in cmd,
+    )
+
+    assert loaded is True
+    assert len(fallback_sources) == 2
+    assert "--spec-default" not in fallback_sources[0]
+    assert "--spec-default" in fallback_sources[1]
+    assert backend._cpu_fallback_reason == "vulkan_startup_crash"
 
 
 @pytest.mark.parametrize(
