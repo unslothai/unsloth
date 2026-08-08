@@ -1035,7 +1035,10 @@ async function exportProjectConversation(
   if (format === "csv") return exports.exportConversationCsv(threadId);
   if (format === CONVERSATION_MARKDOWN_FORMAT)
     return exports.exportConversationMarkdown(threadId);
-  return exports.exportConversationShareGPT(threadId);
+  if (format === "sharegpt-jsonl") return exports.exportConversationShareGPT(threadId);
+  // Was a fallthrough return, so an unhandled format silently exported ShareGPT.
+  const unhandled: never = format;
+  throw new Error(`Unhandled export format: ${String(unhandled)}`);
 }
 
 async function exportProjectChatItem(
