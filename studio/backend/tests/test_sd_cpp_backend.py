@@ -249,7 +249,11 @@ def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
         DiffusionBackend,
         "_hub_file_is_cached",
         staticmethod(
-            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: filename.endswith(".gguf")
+            lambda repo_id,
+            filename,
+            revision = None,
+            expected_size = None,
+            **kwargs: filename.endswith(".gguf")
         ),
     )
 

@@ -5308,7 +5308,9 @@ def test_download_plan_probes_the_cache_at_the_revision_it_sized(monkeypatch):
         DiffusionBackend,
         "_hub_file_is_cached",
         staticmethod(
-            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: bool(seen.append(revision))
+            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: bool(
+                seen.append(revision)
+            )
         ),
     )
 
@@ -5580,7 +5582,14 @@ def test_download_plan_restages_a_base_split_across_both_cache_roots(monkeypatch
     _fake_hf_api(monkeypatch, {"unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS})
     old_root_only = {"model_index.json"}
 
-    def probe(repo_id, filename, revision = None, expected_size = None, roots = None, **kwargs):
+    def probe(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+        roots = None,
+        **kwargs,
+    ):
         # roots=(live,) asks the active root; roots=(None,) asks huggingface_hub's import-time one.
         asks_live = roots is not None and roots != (None,)
         return (filename not in old_root_only) if asks_live else (filename in old_root_only)
@@ -5590,9 +5599,9 @@ def test_download_plan_restages_a_base_split_across_both_cache_roots(monkeypatch
     plan = DiffusionBackend().download_plan("unsloth/Z-Image-Turbo", model_kind = "pipeline")
 
     staged = {f for entry in plan["entries"] for f in entry["files"]}
-    assert staged == old_root_only, (
-        "a split base must restage exactly the files the active root cannot see"
-    )
+    assert (
+        staged == old_root_only
+    ), "a split base must restage exactly the files the active root cannot see"
 
 
 def test_download_plan_stages_nothing_for_a_base_wholly_in_the_other_root(monkeypatch):
@@ -5600,7 +5609,14 @@ def test_download_plan_stages_nothing_for_a_base_wholly_in_the_other_root(monkey
     # hands back that snapshot and the load reads it off disk. Nothing to restage.
     _fake_hf_api(monkeypatch, {"unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS})
 
-    def probe(repo_id, filename, revision = None, expected_size = None, roots = None, **kwargs):
+    def probe(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+        roots = None,
+        **kwargs,
+    ):
         return roots is None or roots == (None,)
 
     monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(probe))

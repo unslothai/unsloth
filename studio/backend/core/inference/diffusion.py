@@ -1406,15 +1406,21 @@ class DiffusionBackend:
             target = self._resolve_device_target(fam)
             # An auto quant DECLINES an uncached hosted checkpoint and runs the GGUF as-is, so
             # those bytes never land. Only a cached one, or an explicit request, counts.
-            if auto and _uncached_prequant_repo(
-                fam,
-                target,
-                mode,
-                base_repo = kwargs.get("base_repo"),
-                prequant_path = kwargs.get("transformer_prequant_path"),
-            ) is not None:
+            if (
+                auto
+                and _uncached_prequant_repo(
+                    fam,
+                    target,
+                    mode,
+                    base_repo = kwargs.get("base_repo"),
+                    prequant_path = kwargs.get("transformer_prequant_path"),
+                )
+                is not None
+            ):
                 return 0
-            scheme = select_transformer_quant_scheme(target, mode, family = getattr(fam, "name", None))
+            scheme = select_transformer_quant_scheme(
+                target, mode, family = getattr(fam, "name", None)
+            )
             if scheme is None:
                 return 0
             source = usable_prequant_source(

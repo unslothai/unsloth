@@ -1236,31 +1236,32 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
     plan at all (local, exported) must still invalidate one already in flight."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
-        body = re.search(
-            r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S
-        )
+        body = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
         assert body, f"{rel}: loadOrStage not found"
         text = body.group(1)
         assert "const pick = ++pickSeq.current;" in text, f"{rel}: no pick sequence is taken"
         # Before any real await, or two picks can share a number.
         seq = text.index("const pick = ++pickSeq.current;")
         first_await = min(
-            (text.index(tok) for tok in ("await requestDownloadPlan", "await getVideoDownloadPlan")
-             if tok in text),
+            (
+                text.index(tok)
+                for tok in ("await requestDownloadPlan", "await getVideoDownloadPlan")
+                if tok in text
+            ),
             default = len(text),
         )
         assert seq < first_await, f"{rel}: the sequence is taken after the plan await"
         # Before the non-hub return, so a local pick invalidates an in-flight hub plan.
-        assert seq < text.index('if (source !== "hub")'), (
-            f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
-        )
+        assert seq < text.index(
+            'if (source !== "hub")'
+        ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
         guards = re.findall(r"if \(pick !== pickSeq\.current\) return (\w+);", text)
         assert guards, f"{rel}: a superseded plan is not dropped"
-        assert set(guards) == {"true"}, (
-            f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
-        )
+        assert (
+            set(guards) == {"true"}
+        ), f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
         # The fallback load after a rejected plan is guarded too.
-        tail = text[text.rindex("} catch {"):]
+        tail = text[text.rindex("} catch {") :]
         assert re.search(
             r"if \(pick !== pickSeq\.current\) return true;\n\s*return handleLoadRef", tail
         ), f"{rel}: a plan that rejected after a newer pick still reaches the fallback load"
