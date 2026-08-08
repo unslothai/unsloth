@@ -25,7 +25,7 @@ def _load_get_model_name():
 
     namespace = dict(mapper_ns)
     namespace["SUPPORTS_FOURBIT"] = True
-    namespace["_env_says_offline"] = lambda: True
+    namespace["_env_says_offline"] = lambda: False
     namespace["_get_new_mapper"] = lambda: ({}, {}, {}, {}, {})
 
     wanted = {
@@ -50,3 +50,14 @@ def test_bad_mappings_redirect_every_listed_name():
     assert bad_mappings, "BAD_MAPPINGS should not be empty"
     for name, expected in bad_mappings.items():
         assert get_model_name(name, load_in_4bit = True) == expected, name
+
+
+
+def test_bad_mapping_redirects_keep_canonical_repo_case():
+    get_model_name, _ = _load_get_model_name()
+    expected = {
+        "Qwen/Qwen3-32B": "unsloth/Qwen3-32B-bnb-4bit",
+        "Qwen/Qwen3-30B-A3B": "unsloth/Qwen3-30B-A3B",
+    }
+    for name, canonical in expected.items():
+        assert get_model_name(name, load_in_4bit = True) == canonical

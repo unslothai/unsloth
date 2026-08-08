@@ -44,11 +44,11 @@ LOCAL_RANK_KEYS = ("LOCAL_RANK", "RANK")
 WORLD_SIZE_KEYS = ("WORLD_SIZE",)
 
 BAD_MAPPINGS = {
-    "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit".lower(),  # 32B dynamic quant is way too big
-    "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B".lower(),  # HF loads MoEs too slowly
-    "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B".lower(),  # We rather do it on the fly
-    "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # HF loads MoEs too slowly
-    "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # We rather do it on the fly
+    "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit",  # 32B dynamic quant is way too big
+    "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # HF loads MoEs too slowly
+    "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # We rather do it on the fly
+    "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # HF loads MoEs too slowly
+    "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # We rather do it on the fly
 }
 
 
@@ -245,6 +245,7 @@ def _prefer_legacy_lowercase_cache(
     repo_id,
     cache_dir = None,
     local_files_only = False,
+    revision = None,
 ):
     """Use a pre-fix lowercase cache only when offline and no canonical cache exists."""
     if (
@@ -276,8 +277,20 @@ def _prefer_legacy_lowercase_cache(
     except Exception:
         return repo_id
 
+    def _snapshot_has_tokenizer(snapshot):
+        return (
+            os.path.isfile(os.path.join(snapshot, "tokenizer.json"))
+            or os.path.isfile(os.path.join(snapshot, "tokenizer.model"))
+            or (
+                os.path.isfile(os.path.join(snapshot, "vocab.json"))
+                and os.path.isfile(os.path.join(snapshot, "merges.txt"))
+            )
+        )
+
     def _snapshot_has_complete_model(snapshot):
         if not os.path.isfile(os.path.join(snapshot, "config.json")):
+            return False
+        if not _snapshot_has_tokenizer(snapshot):
             return False
         if any(
             os.path.isfile(os.path.join(snapshot, filename))
@@ -288,6 +301,7 @@ def _prefer_legacy_lowercase_cache(
             index_path = os.path.join(snapshot, index_name)
             try:
                 import json
+
                 with open(index_path, encoding = "utf-8") as index_file:
                     shard_names = set(json.load(index_file).get("weight_map", {}).values())
             except (OSError, ValueError, TypeError):
@@ -298,16 +312,36 @@ def _prefer_legacy_lowercase_cache(
                 return True
         return False
 
-    def _has_complete_model(repo_cache):
-        snapshots = os.path.join(repo_cache, "snapshots")
+    def _snapshot_for_revision(repo_cache):
+        requested_revision = "main" if revision is None else str(revision)
+        snapshots = os.path.abspath(os.path.join(repo_cache, "snapshots"))
+        if "/" not in requested_revision and "\\" not in requested_revision:
+            direct_snapshot = os.path.join(snapshots, requested_revision)
+            if os.path.isdir(direct_snapshot):
+                return direct_snapshot
+
+        refs = os.path.abspath(os.path.join(repo_cache, "refs"))
+        ref_path = os.path.abspath(os.path.join(refs, requested_revision))
         try:
-            return any(
-                _snapshot_has_complete_model(os.path.join(snapshots, name))
-                for name in os.listdir(snapshots)
-                if os.path.isdir(os.path.join(snapshots, name))
-            )
+            if os.path.commonpath((refs, ref_path)) != refs:
+                return None
+        except ValueError:
+            return None
+        try:
+            with open(ref_path, encoding = "utf-8") as ref_file:
+                commit = ref_file.read().strip()
         except OSError:
-            return False
+            return None
+        snapshot = os.path.abspath(os.path.join(snapshots, commit))
+        try:
+            is_cached_snapshot = os.path.commonpath((snapshots, snapshot)) == snapshots
+        except ValueError:
+            is_cached_snapshot = False
+        return snapshot if commit and is_cached_snapshot and os.path.isdir(snapshot) else None
+
+    def _has_complete_model(repo_cache):
+        snapshot = _snapshot_for_revision(repo_cache)
+        return snapshot is not None and _snapshot_has_complete_model(snapshot)
 
     if not _has_complete_model(canonical_cache) and _has_complete_model(legacy_cache):
         return legacy_repo_id
@@ -322,6 +356,7 @@ def get_model_name(
     trust_remote_code = False,
     cache_dir = None,
     local_files_only = False,
+    revision = None,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -333,8 +368,6 @@ def get_model_name(
         map_to_unsloth_16bit = MAP_TO_UNSLOTH_16bit,
     )
 
-    if new_model_name is not None:
-        new_model_name = _prefer_legacy_lowercase_cache(new_model_name, cache_dir, local_files_only)
     # Remap "bad" names (e.g. oversized dynamic quants or MoEs)
     if (
         new_model_name is not None
@@ -347,6 +380,14 @@ def get_model_name(
         # of the mappers, not values, so the resolver returns None for them and
         # the remap above is skipped; remap the input name directly instead.
         new_model_name = BAD_MAPPINGS[model_name.lower()]
+
+    if new_model_name is not None:
+        new_model_name = _prefer_legacy_lowercase_cache(
+            new_model_name,
+            cache_dir,
+            local_files_only,
+            revision,
+        )
 
     if (
         new_model_name is None

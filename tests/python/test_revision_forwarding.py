@@ -253,6 +253,17 @@ def test_both_loader_paths_pass_the_mapper_flag():
             names = [getattr(a, "id", None) for a in call.args]
             assert "mapper_moved_name" in names, "the gate needs the flag to tailor its remedy"
 
+def test_primary_mapper_resolution_receives_the_requested_revision():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        mapper_call = _calls(function, "get_model_name")[0]
+        revision_kwarg = _revision_kwarg(mapper_call)
+        assert revision_kwarg is not None, f"{class_name} must pass revision to cache selection"
+        assert getattr(revision_kwarg.value, "id", None) == "revision"
+
+
+
 
 def test_both_loader_paths_gate_before_and_after_resolution():
     """The gate has to run before the AutoConfig / PeftConfig probes, or a pinned 4bit

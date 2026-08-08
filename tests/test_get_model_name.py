@@ -17,12 +17,20 @@ def _write_cached_model(
     repo_cache,
     commit,
     *,
+    revision = "main",
     sharded = False,
     complete = True,
+    tokenizer = True,
 ):
     snapshot = os.path.join(repo_cache, "snapshots", commit)
     os.makedirs(snapshot)
+    ref = os.path.join(repo_cache, "refs", revision)
+    os.makedirs(os.path.dirname(ref), exist_ok = True)
+    with open(ref, "w", encoding = "utf-8") as ref_file:
+        ref_file.write(commit)
     open(os.path.join(snapshot, "config.json"), "w").close()
+    if tokenizer:
+        open(os.path.join(snapshot, "tokenizer.json"), "w").close()
     if not sharded:
         open(os.path.join(snapshot, "model.safetensors"), "w").close()
         return snapshot
@@ -216,6 +224,18 @@ class TestGetModelName(unittest.TestCase):
                 ),
                 legacy,
             )
+
+            # Cached weights without tokenizer artifacts cannot satisfy the downstream load.
+            _write_cached_model(canonical_cache, "canonical-weights-only", tokenizer = False)
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    load_in_4bit = True,
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                ),
+                legacy,
+            )
             # A config-only sharded snapshot is also incomplete until every indexed shard exists.
             canonical_snapshot = _write_cached_model(
                 canonical_cache, "canonical-commit", sharded = True, complete = False
@@ -238,6 +258,27 @@ class TestGetModelName(unittest.TestCase):
                     local_files_only = True,
                 ),
                 canonical,
+            )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_offline_legacy_cache_matches_requested_revision(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            _write_cached_model(canonical_cache, "canonical-main", revision = "main")
+            _write_cached_model(legacy_cache, "legacy-release", revision = "release/v1")
+
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    load_in_4bit = True,
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    revision = "release/v1",
+                ),
+                legacy,
             )
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
