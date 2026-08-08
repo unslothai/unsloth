@@ -36,6 +36,7 @@ from core.inference.diffusion_families import (
     supported_family_names,
     trainable_family_names,
 )
+from core.inference.video_families import detect_video_family, supported_video_family_names
 
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry over. Both import this module first.
 install_xformers_windows_rocm_stub()
@@ -59,8 +60,30 @@ _LR_SCHEDULERS: frozenset[str] = frozenset(
 
 # DiT families whose fp32 RoPE/embedder overflow fp16, so they train in bf16 only. Keep in sync with the DiT trainer's own specs.
 _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
-    {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev"}
+    {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2"}
 )
+
+# VIDEO families (from the separate ``video_families`` registry) Studio can train a LoRA on.
+# The video registry has no ``trainable`` flag of its own -- it exists for the inference
+# picker -- so the trainable set lives here, next to the trainers, and MUST hold exactly the
+# families ``diffusion_dit_trainer._SPECS`` implements. A video base outside this set is
+# refused by name in ``resolve_trainable_family`` rather than falling through to a trainer
+# that cannot run it.
+TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset({"ltx-2"})
+
+# Families whose ``flow_shift`` default is "auto" (reproduce the family's INFERENCE sigma
+# distribution) rather than the historical identity 1.0. Both schedulers set
+# ``use_dynamic_shifting``, so their static ``shift`` is skipped at init and ``scheduler.sigmas``
+# is the unshifted uniform table; training on it would draw a distribution the model never sees
+# at inference. Qwen-Image pins base_shift = max_shift = log 3 and LTX-2 evaluates its shift at
+# ``max_image_seq_len`` (so mu = max_shift = 2.05 at every resolution): in both cases the
+# inference mu is a constant the "auto" branch can reproduce exactly.
+AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset({"qwen-image", "ltx-2"})
+
+# Video latents are allocated on the family's spatial compression grid, so a training
+# resolution off that grid silently changes the latent geometry (or trips a reshape).
+# LTX-2's VAE compresses 32x spatially, matching its ``resolution_multiple``.
+_VIDEO_RESOLUTION_MULTIPLE = 32
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
@@ -76,10 +99,33 @@ EventCb = Callable[[dict[str, Any]], None]
 StopCb = Callable[[], Any]
 
 
+def _all_trainable_family_names() -> tuple[str, ...]:
+    """Every family with a trainer: the image registry's ``trainable`` families plus the
+    video families listed in ``TRAINABLE_VIDEO_FAMILIES``. The two registries are separate
+    by design (a video checkpoint must never route to an image pipeline), so the trainable
+    view has to union them."""
+    video = tuple(n for n in supported_video_family_names() if n in TRAINABLE_VIDEO_FAMILIES)
+    return tuple(trainable_family_names()) + video
+
+
+def _refuse_untrainable_video_family(name: str) -> None:
+    """Raise for a video family Studio has no trainer for.
+
+    Video bases are invisible to the image registry, so before this gate existed every video
+    checkpoint fell through ``resolve_trainable_family``'s unknown-name fallback and was
+    handed to the SDXL trainer, which then failed somewhere inside from_pretrained. Refuse by
+    name instead, with the list of video families that do train."""
+    trainable = ", ".join(sorted(TRAINABLE_VIDEO_FAMILIES))
+    raise ValueError(
+        f"'{name}' is a video model Studio can't train yet. Video LoRA training currently "
+        f"supports: {trainable}. {_trainable_hint()}"
+    )
+
+
 def _trainable_hint() -> str:
     """A user-facing hint listing the families Studio can train today. Always names SDXL
     explicitly so the message is actionable even as more families become trainable."""
-    names = ", ".join(trainable_family_names()) or "sdxl"
+    names = ", ".join(_all_trainable_family_names()) or "sdxl"
     return (
         f"Trainable families right now: {names} "
         f"(for example the SDXL base stabilityai/stable-diffusion-xl-base-1.0). "
@@ -115,7 +161,14 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
         if fam is None:
-            known = ", ".join(supported_family_names())
+            # Not an image family: it may still name a VIDEO family, which lives in its own
+            # registry. Resolve there before declaring the name unknown.
+            vid = detect_video_family("", override = key)
+            if vid is not None:
+                if vid.name not in TRAINABLE_VIDEO_FAMILIES:
+                    _refuse_untrainable_video_family(vid.name)
+                return vid.name
+            known = ", ".join(supported_family_names() + supported_video_family_names())
             raise ValueError(f"Unknown model_family {model_family!r}. Known families: {known}.")
         if not fam.trainable:
             raise ValueError(f"'{fam.name}' models can't be trained yet. {_trainable_hint()}")
@@ -129,6 +182,14 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
                 f"{_trainable_hint()}"
             )
         return fam.name
+
+    # Only once the image registry has declined the name: a video checkpoint. Checked here
+    # rather than first so an image repo the picker already claims keeps its existing route.
+    vid = detect_video_family(base_model)
+    if vid is not None:
+        if vid.name not in TRAINABLE_VIDEO_FAMILIES:
+            _refuse_untrainable_video_family(vid.name)
+        return vid.name
 
     condensed = re.sub(r"[^a-z0-9]+", "-", name)
     hit = next(
@@ -232,7 +293,7 @@ def get_trainer(family: str) -> Callable[..., str]:
     if key == "sdxl":
         from core.training.diffusion_lora_trainer import run_diffusion_lora_training
         return run_diffusion_lora_training
-    if key in ("flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev"):
+    if key in ("flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2"):
         from core.training.diffusion_dit_trainer import run_dit_lora_training
         return run_dit_lora_training
     raise ValueError(f"No trainer is registered for family {family!r}.")
@@ -265,6 +326,15 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "resolution": 512,
         "lr_warmup_steps": 20,
     },
+    # LTX-2, from Lightricks' own ltx-trainer LoRA configs: rank/alpha 32, lr 1e-4. The
+    # resolution must be a multiple of 32 (its VAE's spatial compression), and 512 keeps a
+    # still at 16x16x1 latents / 256 video tokens, which trains comfortably at batch 1.
+    "ltx-2": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 512,
+        "lr_warmup_steps": 20,
+    },
 }
 
 
@@ -282,6 +352,7 @@ _FAMILY_LABELS = {
     "krea-2": "Krea 2",
     "flux.2-klein": "FLUX.2 Klein",
     "flux.2-dev": "FLUX.2-dev",
+    "ltx-2": "LTX-2",
 }
 # Per-family training facts as fields, so the UI can chip them instead of parsing prose.
 # ``params`` is the transformer size (SDXL is not quoted that way), ``note`` is the rest.
@@ -303,6 +374,16 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
     },
     "flux.2-klein": {"params": "4B", "qlora_vram_gb": 10, "gated": False, "note": ""},
     "flux.2-dev": {"params": "32B", "qlora_vram_gb": 28, "gated": True, "note": ""},
+    # Video. Measured on a B200: 12.6 GB peak in the training loop (nf4, rank 32, 512px
+    # stills, batch 1, gradient checkpointing), but the run PEAKS at ~33 GB while the
+    # Gemma3-12B conditioning stack is resident, before it is freed and the transformer
+    # loads. The quoted figure is the whole run, since that is what a card must hold.
+    "ltx-2": {
+        "params": "19B",
+        "qlora_vram_gb": 36,
+        "gated": False,
+        "note": "Video: trains a style LoRA on still images.",
+    },
 }
 _GATED_NOTE = "Gated: needs its license and your HF token."
 
@@ -320,7 +401,7 @@ def _family_vram_note(name: str) -> str:
 
 # The flow-matching DiT families (run by diffusion_dit_trainer): they expose base_precision / compile and need bf16 on CUDA. SDXL is absent (own mixed_precision path).
 _DIT_TRAIN_FAMILIES = frozenset(
-    {"flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev"}
+    {"flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2"}
 )
 
 
@@ -595,6 +676,17 @@ class DiffusionLoraConfig:
             )
         if self.resolution < 64 or self.resolution % 8 != 0:
             raise ValueError("resolution must be a multiple of 8 and >= 64")
+        # A video family's VAE compresses space by 32, so an off-grid resolution changes the
+        # latent geometry silently. Refuse it here, before the GPU models are evicted.
+        if (
+            resolved_family in TRAINABLE_VIDEO_FAMILIES
+            and self.resolution % _VIDEO_RESOLUTION_MULTIPLE != 0
+        ):
+            raise ValueError(
+                f"'{resolved_family}' trains at a resolution that is a multiple of "
+                f"{_VIDEO_RESOLUTION_MULTIPLE} (its VAE compresses space by that factor); "
+                f"got {self.resolution}."
+            )
         if self.mixed_precision not in ("bf16", "fp16", "no"):
             raise ValueError("mixed_precision must be one of bf16 / fp16 / no")
         # torch.manual_seed unpacks int64/uint64, so anything wider raises inside the trainer, after eviction. Catch it here.
@@ -656,7 +748,7 @@ class DiffusionLoraConfig:
         # flow_shift: None resolves to the family default ("auto" only for qwen-image, whose scheduler skips its static shift under use_dynamic_shifting); an explicit value is validated and kept.
         flow_shift = self.flow_shift
         if flow_shift is None:
-            flow_shift = "auto" if resolved_family == "qwen-image" else 1.0
+            flow_shift = "auto" if resolved_family in AUTO_FLOW_SHIFT_FAMILIES else 1.0
         if isinstance(flow_shift, str):
             flow_shift = flow_shift.strip().lower()
             if flow_shift != "auto":
@@ -1012,6 +1104,9 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
     {
         "black-forest-labs/flux.2-dev",
         "black-forest-labs/flux.2-klein-4b",
+        # LTX-2's official base. It is a video family, so the image-side inference allowlist
+        # (_is_trusted_diffusion_repo) never covered it; safetensors-only, no remote code.
+        "lightricks/ltx-2",
     }
 )
 
