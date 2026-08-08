@@ -141,6 +141,101 @@ def test_audio_response_cancellation_signals_worker_and_drains_terminal_response
     assert orchestrator._executing_cancel_events == []
 
 
+def test_audio_response_cancellation_bounds_an_unresponsive_worker(monkeypatch):
+    orchestrator = _bare_orchestrator()
+    monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(orchestrator_module, "_AUDIO_GENERATION_TIMEOUT", 100.0)
+    monkeypatch.setattr(orchestrator_module, "_AUDIO_CANCEL_DRAIN_TIMEOUT", 0.03)
+    caller_cancel = threading.Event()
+    sent = []
+
+    def read_one(*, timeout):
+        if not caller_cancel.is_set():
+            caller_cancel.set()
+            return {
+                "type": "audio_started",
+                "request_id": sent[0]["request_id"],
+            }
+        time.sleep(timeout)
+        return None
+
+    monkeypatch.setattr(orchestrator, "_send_cmd", lambda cmd: sent.append(cmd))
+    cancel_signals = []
+    monkeypatch.setattr(orchestrator, "_cancel_generation", lambda: cancel_signals.append(True))
+    monkeypatch.setattr(
+        orchestrator,
+        "_direct_reader",
+        lambda _request_id: (
+            read_one,
+            lambda **_kwargs: pytest.fail("the cancellation drain window was already spent"),
+            lambda: None,
+        ),
+    )
+    shutdown_state = []
+
+    def shutdown(*, timeout):
+        shutdown_state.append((orchestrator._exclusive_tts_pending, timeout))
+        return True
+
+    monkeypatch.setattr(orchestrator, "_shutdown_subprocess", shutdown)
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match = "Audio generation cancelled"):
+        orchestrator.generate_audio_response("hello", cancel_event = caller_cancel)
+
+    assert time.monotonic() - started < 0.5
+    assert cancel_signals == [True]
+    assert shutdown_state == [(True, 0.03)]
+    assert orchestrator.active_model_name is None
+    assert orchestrator.models == {}
+    assert orchestrator._exclusive_tts_pending is False
+
+
+def test_audio_response_cancellation_before_worker_start_is_still_bounded(monkeypatch):
+    orchestrator = _bare_orchestrator()
+    monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(orchestrator_module, "_AUDIO_GENERATION_TIMEOUT", 100.0)
+    monkeypatch.setattr(orchestrator_module, "_AUDIO_CANCEL_DRAIN_TIMEOUT", 0.03)
+    caller_cancel = threading.Event()
+
+    def send(_cmd):
+        caller_cancel.set()
+
+    def read_one(*, timeout):
+        time.sleep(timeout)
+        return None
+
+    monkeypatch.setattr(orchestrator, "_send_cmd", send)
+    monkeypatch.setattr(
+        orchestrator,
+        "_cancel_generation",
+        lambda: pytest.fail("must not signal shared cancellation before audio_started"),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_direct_reader",
+        lambda _request_id: (
+            read_one,
+            lambda **_kwargs: pytest.fail("the cancellation drain window was already spent"),
+            lambda: None,
+        ),
+    )
+    shutdown_state = []
+    monkeypatch.setattr(
+        orchestrator,
+        "_shutdown_subprocess",
+        lambda *, timeout: shutdown_state.append(timeout) or True,
+    )
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match = "Audio generation cancelled"):
+        orchestrator.generate_audio_response("hello", cancel_event = caller_cancel)
+
+    assert time.monotonic() - started < 0.5
+    assert shutdown_state == [0.03]
+    assert orchestrator._exclusive_tts_pending is False
+
+
 def test_audio_generation_timeout_scales_with_requested_tokens(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_AUDIO_GENERATION_TIMEOUT", 10.0)
 

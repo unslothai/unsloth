@@ -2123,8 +2123,16 @@ class InferenceOrchestrator:
 
                     deadline = time.monotonic() + generation_timeout
                     cancel_signalled = False
+                    cancel_deadline = None
                     worker_started = False
                     while time.monotonic() < deadline:
+                        if (
+                            cancel_event is not None
+                            and cancel_event.is_set()
+                            and cancel_deadline is None
+                        ):
+                            cancel_deadline = time.monotonic() + _AUDIO_CANCEL_DRAIN_TIMEOUT
+                            deadline = cancel_deadline
                         if (
                             worker_started
                             and cancel_event is not None
@@ -2179,6 +2187,15 @@ class InferenceOrchestrator:
 
                         if rtype == "status":
                             continue
+
+                    # A caller cancellation already spent the drain window polling this
+                    # request's mailbox. Tear down an unresponsive worker now instead of
+                    # waiting out the much longer generation watchdog or draining twice.
+                    if cancel_deadline is not None:
+                        if self._shutdown_subprocess(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT):
+                            self.active_model_name = None
+                            self.models.clear()
+                        raise RuntimeError("Audio generation cancelled")
 
                     # Do not release worker ownership or dispatcher exclusivity over a
                     # command that may still be generating. Cancel, consume its terminal
