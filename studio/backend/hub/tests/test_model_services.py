@@ -3428,6 +3428,43 @@ def test_gguf_progress_unknown_hashes_reports_the_variant_files_on_disk(monkeypa
     assert result["progress"] > 0  # not the "0 B of 130" card
 
 
+def test_gguf_progress_unknown_hashes_keeps_a_total_under_a_full_baseline(monkeypatch, tmp_path):
+    """A variant already on disk at claim time must not net out to "0 B of 0 B".
+
+    Its completed_baseline_bytes covers the whole variant, and the subtraction
+    was previously held off by complete_on_disk -- which is exactly what an
+    unresolvable file set takes away. Without the guard the fallback reading
+    cancels against the baseline and the response carries no total at all, so
+    the bar has nothing to draw and the frontend reads the job as evictable.
+    """
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 130)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry)
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(
+            get_job = lambda _key: SimpleNamespace(state = "running"),
+            get_job_metadata = lambda _key: SimpleNamespace(completed_baseline_bytes = 130),
+        ),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 130,
+        )
+    )
+
+    assert result["expected_bytes"] == 130
+    assert result["downloaded_bytes"] == 130
+
+
 def test_gguf_progress_unknown_hashes_prefers_the_manifest_file_set(monkeypatch, tmp_path):
     """With a manifest but no hashes in it, its declared paths scope the reading.
 

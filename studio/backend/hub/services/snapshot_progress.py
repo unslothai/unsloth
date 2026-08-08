@@ -376,10 +376,19 @@ def compute_snapshot_progress(
     downloaded_bytes = completed_bytes + in_progress_bytes
     # Subtract the companion baseline only while still counted in completed_bytes
     # and the variant is not yet verified complete, else genuine progress reads as
-    # 0-byte.
+    # 0-byte. A baseline that covers the whole expected total is never subtracted
+    # either: a variant that was already on disk when the job was claimed carries
+    # exactly that, and netting it out leaves "0 B of 0 B" -- nothing for the bar
+    # to draw and, to the frontend, a job to evict. complete_on_disk covered that
+    # only while completion could be verified, which is the one thing an
+    # unresolvable file set takes away.
     effective_baseline_bytes = (
         completed_baseline_bytes
-        if not complete_on_disk and completed_baseline_bytes <= completed_bytes
+        if (
+            not complete_on_disk
+            and completed_baseline_bytes <= completed_bytes
+            and completed_baseline_bytes < expected_total
+        )
         else 0
     )
     display_completed_bytes = max(0, completed_bytes - effective_baseline_bytes)
