@@ -824,7 +824,7 @@ def _prune_staging(root: Path) -> None:
     except OSError:
         return
     for entry in entries:
-        match = _STALE_SLOT.match(entry.name[len(_STAGING_PREFIX):])
+        match = _STALE_SLOT.match(entry.name[len(_STAGING_PREFIX) :])
         if match is not None:
             slot = root / f"{CHECKPOINT_PREFIX}{int(match.group(1))}"
             if not slot.exists():
