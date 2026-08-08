@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  clearAppClosing,
+  markAppClosing,
+} from "@/components/tauri/closing-signal";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
@@ -435,7 +439,21 @@ export function WindowTitlebar({
           </WindowControlButton>
           <WindowControlButton
             label="Close window"
-            onClick={() => runWindowAction((appWindow) => appWindow.close())}
+            onClick={() =>
+              runWindowAction(async (appWindow) => {
+                // This titlebar is Windows and Linux only, where close means quit, so
+                // paint the overlay now instead of waiting for Rust's app-closing to
+                // come back over IPC. Rust retracts it if a confirmation declines.
+                markAppClosing();
+                try {
+                  await appWindow.close();
+                } catch (error) {
+                  // The quit never started, so nothing will take the overlay down.
+                  clearAppClosing();
+                  throw error;
+                }
+              })
+            }
             className="hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20"
           >
             <X aria-hidden="true" strokeWidth={1.75} className="size-[18px]" />

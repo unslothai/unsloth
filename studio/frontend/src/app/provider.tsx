@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { LlamaUpdateBanner } from "@/components/llama-update-banner";
-import { StartupScreen } from "@/components/tauri/startup-screen";
+import {
+  ClosingScreen,
+  StartupScreen,
+} from "@/components/tauri/startup-screen";
 import { UpdateBanner } from "@/components/tauri/update-banner";
 import { UpdateScreen } from "@/components/tauri/update-screen";
 import {
@@ -512,6 +515,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     progressDetail,
     startupMessage,
     elevationPackages,
+    closing,
     startInstall,
     retry,
     retryInstall,
@@ -686,7 +690,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const startupStatus = status === "running" ? "starting" : status;
   const startupProgressDetail = progressDetail;
 
-  const content = showApp ? (
+  const shell = showApp ? (
     <TauriUpdateLayer
       isExternalServer={isExternalServer}
       appContent={
@@ -715,6 +719,16 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       onStartServer={retry}
       onCopyDiagnostics={copyDiagnostics}
     />
+  );
+
+  // Over the shell, not instead of it: ClosingScreen covers the app and the update layer
+  // alike, and a declined quit puts the user back where they were rather than remounting
+  // the tree under them.
+  const content = (
+    <>
+      {shell}
+      {closing && <ClosingScreen />}
+    </>
   );
 
   const chromeVars = (
