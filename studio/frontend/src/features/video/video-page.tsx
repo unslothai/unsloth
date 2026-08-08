@@ -71,6 +71,7 @@ import {
   formatResolvedValue,
   isPrecisionRefusal,
   resolvedBadge,
+  resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
 import { toast } from "@/lib/toast";
@@ -839,8 +840,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
 
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself; a declined one snaps to what actually engaged, so the
-  // Precision dropdown can never go on advertising a scheme the loaded DiT is not running.
-  const resolvedKey = status?.loaded ? JSON.stringify(status.resolved ?? null) : null;
+  // Precision dropdown can never go on advertising a scheme the loaded DiT is not running. Keyed on
+  // the LOAD-TIME half of the record: the backend rewrites the transformer_cache entry at GENERATION
+  // time, so serializing the whole record let a step-cache toggle discard a pending Advanced edit.
+  const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
     if (!record) return;

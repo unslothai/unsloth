@@ -79,6 +79,7 @@ import {
   formatResolvedValue,
   isPrecisionRefusal,
   resolvedBadge,
+  resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
 import { toast } from "@/lib/toast";
@@ -1832,9 +1833,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,
   // which is the input-side half of P1-2: the Precision dropdown must never go on advertising a
-  // scheme the loaded model is not running. Keyed on the resolved record, so a user edit made after
-  // the load survives until the next load replaces it.
-  const resolvedKey = status?.loaded ? JSON.stringify(status.resolved ?? null) : null;
+  // scheme the loaded model is not running. Keyed on the LOAD-TIME half of the resolved record, so
+  // a user edit made after the load survives until the next load replaces it -- the backend
+  // rewrites the speed/attention/cache entries at GENERATION time, and serializing the whole record
+  // made the 3rd image of a session throw away a Precision the user had picked but not yet loaded.
+  const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
     if (!record) return;

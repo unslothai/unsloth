@@ -77,11 +77,19 @@ export function formatResolvedValue(key: string, value: string | boolean | null 
  * fallback. The backend, which owns both vocabularies, classifies it once. Older backends send no
  * `status` at all, so they fall back to the mismatch test, which is still right for the precision
  * controls (the ones P1-2 is about) since those echo their own vocabulary.
+ *
+ * Only the two statuses that MEAN a decline are read as one. `status` is deliberately typed wider
+ * than the backend's union so a NEWER backend's fourth value still parses, but treating anything
+ * that is not "applied" as a failure defeats that: an unknown status would paint a red
+ * "FP8 -> FP8" over a request that was honored, and on memory_mode (asked "low_vram", answered
+ * "sequential") a "LOW_VRAM -> SEQUENTIAL" that never happened. An unrecognised status is not a
+ * decline -- staying quiet is the safe direction, since the build that adds a status ships the
+ * frontend that understands it.
  */
 export function isResolvedHonored(resolved: ResolvedControl | undefined | null): boolean {
   if (!resolved) return true;
   if (resolved.source === "auto") return true;
-  if (resolved.status) return resolved.status === "applied";
+  if (resolved.status) return resolved.status !== "fell_back" && resolved.status !== "unsupported";
   // Older backend: no status field. Compare directly, treating every "off" spelling as equal.
   const requested = resolved.requested;
   if (requested === undefined || requested === null) return true;
@@ -142,4 +150,35 @@ export function resolvedSelectValue<T extends string>(
   if (source === null) return toOption("none");
   if (typeof source === "boolean") return toOption(source ? "on" : "none");
   return toOption(String(source));
+}
+
+/**
+ * The key the pages run their Advanced-reseed effect on: the LOAD-TIME half of the resolved record.
+ *
+ * NOT the whole record serialized. The backend rewrites entries of it at GENERATION time -- the
+ * speed_mode and attention_backend entries when the deferred compile profile engages on the 3rd
+ * image, the transformer_cache entry whenever the step-cache threshold flips -- so keying the
+ * effect on the whole blob re-ran the reseed mid-session and overwrote a Precision the user had
+ * picked but not yet loaded. That is the opposite of the intent: an edit made after the load is
+ * meant to survive until the next LOAD replaces it.
+ *
+ * Only the controls the reseed writes are in the key, and for attention only the REQUEST side:
+ * `value` is the field the generation-time rewrite touches, and the reseed's answer for an auto or
+ * an honored request does not read it anyway. A reload still re-fires, including a Reapply with
+ * new options, because that always lands a different request or engaged value on one of these.
+ */
+export function resolvedSeedKey(
+  resolved: Record<string, ResolvedControl> | null | undefined,
+): string | null {
+  if (!resolved) return null;
+  const part = (control: ResolvedControl | undefined, withValue: boolean): string => {
+    if (!control) return "";
+    const engaged = withValue ? String(control.value ?? "") : "";
+    return `${control.source}:${String(control.requested ?? "")}:${engaged}`;
+  };
+  return [
+    part(resolved.transformer_quant, true),
+    part(resolved.memory_mode, true),
+    part(resolved.attention_backend, false),
+  ].join("|");
 }

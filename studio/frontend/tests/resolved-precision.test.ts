@@ -10,6 +10,7 @@ import {
   isPrecisionRefusal,
   isResolvedHonored,
   resolvedBadge,
+  resolvedSeedKey,
   resolvedSelectValue,
 } from "../src/lib/resolved-precision.ts";
 
@@ -106,6 +107,47 @@ test("an older backend still flags a mismatch it can see", () => {
   assert.equal(resolvedBadge("transformer_quant", resolved)?.tone, "warn");
 });
 
+test("a status this build has never heard of is not read as a decline", () => {
+  // Forwards compat the OTHER way: `status` is typed wider than the backend's union precisely so a
+  // newer backend can add a fourth value. Reading everything except "applied" as a failure threw
+  // that away -- an honored FP8 came back as a red "FP8 → FP8" badge, and memory_mode (asked
+  // "low_vram", answered "sequential") as a "LOW_VRAM → SEQUENTIAL" fallback that never happened.
+  for (const status of ["partially_applied", "downgraded", "ok"]) {
+    const quant: ResolvedControl = {
+      value: "fp8",
+      requested: "fp8",
+      source: "explicit",
+      status,
+      reason: "engaged on the dense fast path",
+    };
+    assert.equal(isResolvedHonored(quant), true, status);
+    assert.equal(resolvedBadge("transformer_quant", quant), null, status);
+    // The select still shows the ask, not the engaged value it would have snapped to.
+    assert.equal(resolvedSelectValue(quant, toQuantOption), "fp8", status);
+
+    const memory: ResolvedControl = {
+      value: "sequential",
+      requested: "low_vram",
+      source: "explicit",
+      status,
+      reason: "planned from measured free VRAM",
+    };
+    assert.equal(resolvedBadge("memory_mode", memory), null, status);
+  }
+  // The two known declines keep warning.
+  for (const status of ["fell_back", "unsupported"]) {
+    const resolved: ResolvedControl = {
+      value: "off",
+      requested: "fp8",
+      source: "explicit",
+      status,
+      reason: "the host cannot run it",
+    };
+    assert.equal(isResolvedHonored(resolved), false, status);
+    assert.equal(resolvedBadge("transformer_quant", resolved)?.tone, "warn", status);
+  }
+});
+
 test("every off spelling counts as an honored off request", () => {
   for (const [requested, value] of [
     ["none", "off"],
@@ -182,6 +224,83 @@ test("the Attention select maps the dispatcher's own name back to its option", (
     ),
     "cudnn",
   );
+});
+
+test("the reseed key ignores the entries the backend rewrites mid-session", () => {
+  // The reseed effect used to key on JSON.stringify(resolved). The backend mutates that record at
+  // GENERATION time -- speed_mode and attention_backend when the deferred compile profile engages
+  // on the 3rd image, transformer_cache when the step-cache threshold flips -- so the key changed
+  // with no reload behind it and the effect re-ran, overwriting a Precision the user had picked
+  // but not yet loaded.
+  const atLoad: Record<string, ResolvedControl> = {
+    transformer_quant: { value: "off", requested: null, source: "auto", status: "applied", reason: "" },
+    memory_mode: { value: "none", requested: null, source: "auto", status: "applied", reason: "" },
+    attention_backend: { value: "native", requested: null, source: "auto", status: "applied", reason: "" },
+    speed_mode: { value: "deferred", requested: null, source: "auto", status: "applied", reason: "" },
+    transformer_cache: { value: "off", requested: null, source: "auto", status: "applied", reason: "" },
+  };
+  const key = resolvedSeedKey(atLoad);
+
+  // Generation 3: the compile profile engages and the attention upgrade lands (diffusion.py).
+  const afterThirdImage: Record<string, ResolvedControl> = {
+    ...atLoad,
+    speed_mode: { ...atLoad.speed_mode, value: "default", reason: "auto: compiled on the 3rd image" },
+    attention_backend: { ...atLoad.attention_backend, value: "_native_cudnn", reason: "cuDNN upgrade" },
+  };
+  assert.equal(resolvedSeedKey(afterThirdImage), key, "a mid-session compile must not re-seed");
+  assert.notEqual(
+    JSON.stringify(afterThirdImage),
+    JSON.stringify(atLoad),
+    "the record really did change -- serializing it is what re-fired the effect",
+  );
+
+  // A step-cache toggle (both pages) is the same story.
+  const afterCacheToggle: Record<string, ResolvedControl> = {
+    ...atLoad,
+    transformer_cache: { ...atLoad.transformer_cache, value: "fbcache", reason: "auto: 40 steps" },
+  };
+  assert.equal(resolvedSeedKey(afterCacheToggle), key, "a cache toggle must not re-seed");
+
+  // A real reload still re-seeds: the request and the engaged value both move.
+  const afterReapply: Record<string, ResolvedControl> = {
+    ...atLoad,
+    transformer_quant: {
+      value: "off",
+      requested: "fp8",
+      source: "explicit",
+      status: "fell_back",
+      reason: "the dense bf16 transformer does not fit resident",
+    },
+  };
+  assert.notEqual(resolvedSeedKey(afterReapply), key, "a declined Reapply must re-seed");
+
+  // So does a load that honors a new memory mode, or a new attention request.
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      memory_mode: { value: "sequential", requested: "low_vram", source: "explicit", status: "applied", reason: "" },
+    }),
+    key,
+  );
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      attention_backend: { value: "_native_cudnn", requested: "cudnn", source: "explicit", status: "applied", reason: "" },
+    }),
+    key,
+  );
+});
+
+test("the reseed key tolerates an empty or absent record", () => {
+  assert.equal(resolvedSeedKey(null), null);
+  assert.equal(resolvedSeedKey(undefined), null);
+  // An older backend sends the record without requested/status; the key is still a stable string.
+  assert.equal(typeof resolvedSeedKey({}), "string");
+  const older = resolvedSeedKey({
+    transformer_quant: { value: "int8", source: "explicit", reason: "requested" },
+  });
+  assert.equal(typeof older, "string");
+  assert.ok(!/undefined|NaN/.test(older ?? ""), older ?? "");
 });
 
 test("a precision refusal is recognised so it can be shown as an actionable toast", () => {
