@@ -1160,8 +1160,7 @@ def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _Declared
             dead.add(name)
             continue
         if "version" in item and (
-            not isinstance(item["version"], str)
-            or _VERSION_RE.fullmatch(item["version"]) is None
+            not isinstance(item["version"], str) or _VERSION_RE.fullmatch(item["version"]) is None
         ):
             # datasets parses this into a Version for the cache directory and raises there.
             dead.add(name)

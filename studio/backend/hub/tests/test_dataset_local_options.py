@@ -1842,17 +1842,25 @@ def test_snapshot_options_do_not_walk_a_directory_link_out_of_the_cache(tmp_path
 
 def test_snapshot_options_accept_null_optional_dataset_info_fields(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n  features: null\n  splits: null\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n  features: null\n  splits: null\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
 
 
-@pytest.mark.parametrize("dtype", ["float", "double", "utf8", "bool_", "time32[ms]", "duration[ns]"])
+@pytest.mark.parametrize(
+    "dtype", ["float", "double", "utf8", "bool_", "time32[ms]", "duration[ns]"]
+)
 def test_snapshot_options_accept_every_value_alias_the_loader_takes(tmp_path, dtype):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n")
+    _card(
+        snapshot,
+        f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1862,7 +1870,10 @@ def test_snapshot_options_accept_every_value_alias_the_loader_takes(tmp_path, dt
 @pytest.mark.parametrize("dtype", ["timestamp[bogus]", "time32[us]", "decimal128(x)"])
 def test_snapshot_options_reject_a_parameterised_dtype_the_loader_refuses(tmp_path, dtype):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n")
+    _card(
+        snapshot,
+        f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1909,7 +1920,10 @@ def test_snapshot_options_step_through_an_empty_directory(tmp_path):
 
 def test_snapshot_options_let_a_later_config_replace_an_empty_first_one(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: []\n- config_name: cfg\n  data_files: train.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_files: []\n- config_name: cfg\n  data_files: train.jsonl\n",
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
