@@ -147,3 +147,25 @@ def test_no_orchestrator_leaves_the_gguf_alone(status_route, monkeypatch):
     monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: None)
     status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
     assert status.loaded == ["org/A-GGUF"]
+
+
+def test_the_users_chat_template_override_wins_over_the_runtime_projection(status_route):
+    # The field is on the shared runtime fields, so the projection carries it too.
+    # It must be overridden, not passed alongside, or the call is a TypeError.
+    backend = _StatusBackend("org/A-GGUF")
+    backend.chat_template_override = "user-template"
+    status = status_route(backend)
+    assert status.chat_template_override == "user-template"
+
+
+def test_an_auto_applied_chat_template_is_not_reported_as_the_users(status_route, monkeypatch):
+    # A bundled family template is not a user override; re-sending it would pin
+    # it onto the next, unrelated model.
+    monkeypatch.setattr(
+        inference_route,
+        "resolve_effective_chat_template_override",
+        lambda **k: "bundled-template",
+    )
+    backend = _StatusBackend("org/A-GGUF")
+    backend.chat_template_override = "bundled-template"
+    assert status_route(backend).chat_template_override is None

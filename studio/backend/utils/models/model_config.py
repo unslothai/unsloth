@@ -2132,6 +2132,30 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
                 continue
             gguf_files.append(f)
         gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
+
+        # A torn split's lone shard can sort largest but cannot load; prefer a complete
+        # candidate, keeping the old pick when nothing is whole.
+        def _split_is_whole(f: Path) -> bool:
+            if _GGUF_SPLIT_FILE_RE.match(f.name) is None:
+                return True
+            if _colocated_first_split_shard(f)[1]:
+                return True
+            # Follow a shard symlink to the target's set, like _local_gguf_load_path: the
+            # alias's own empty directory proves nothing.
+            try:
+                if not f.is_symlink():
+                    return False
+                target = f.resolve()
+            except OSError:
+                return True
+            return (
+                _GGUF_SPLIT_FILE_RE.match(target.name) is None
+                or _colocated_first_split_shard(target)[1]
+            )
+
+        whole = [f for f in gguf_files if _split_is_whole(f)]
+        if whole:
+            gguf_files = whole
         if gguf_files:
             return str(_local_gguf_load_path(gguf_files[0]))
 
@@ -2409,13 +2433,11 @@ def list_gguf_variants(
     Returns:
         (variants, has_vision): non-mmproj GGUF variants + vision flag.
     """
-    from huggingface_hub import model_info as hf_model_info
-
-    # Offline: skip the API and serve from cache
     if _env_offline():
         cached = _list_gguf_variants_from_hf_cache(repo_id)
-        if cached is not None:
-            return cached
+        return cached if cached is not None else ([], False)
+
+    from huggingface_hub import model_info as hf_model_info
 
     try:
         info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
@@ -2559,6 +2581,50 @@ def list_local_gguf_variants(
     return variants, has_vision
 
 
+def _variant_matches(variant: str, *labels: str) -> bool:
+    """Whether a requested variant names one of *labels*, case-insensitively.
+
+    Mirrors llama.cpp's comparison (``core.inference.llama_cpp._gguf_files_for_variant``),
+    so a local path resolves the same spelling the hub path does.
+    """
+    wanted = str(variant).casefold()
+    return any(wanted == str(label).casefold() for label in labels)
+
+
+def _direct_gguf_for_variant(
+    path: str,
+    variant: str,
+    model_root: Optional[str] = None,
+) -> Optional[str]:
+    """A loose ``.gguf`` file resolved by the quant it already is, or None.
+
+    A marker-less parent leaves ``detect_gguf_model`` loading the file itself, so a
+    request naming its own quant must resolve too, or load and gate disagree. Only that
+    one label matches (companions still refused); any other quant finds nothing.
+
+    Case-insensitive, mirroring llama.cpp's own resolution (``_gguf_files_for_variant``):
+    a lowercase ``--gguf-variant`` must resolve here too, or the load evicts the resident
+    model on the transformers path before failing.
+    """
+    f = Path(path).expanduser()
+    if f.suffix.lower() != ".gguf" or not f.is_file():
+        return None
+    context = f"{f.parent.name}/{f.name}"
+    quant = _extract_quant_label(context)
+    fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", f.name.rsplit(".", 1)[0])
+    # The hub extractor drops the -bpw modifier, so accept the shorter label it advertises.
+    stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
+    # The listing can also name it by another of its own tokens (the hub extractor prefers the
+    # K-quant in F16-checkpoint-Q4_K_M), and only this file could be meant, so any token resolves.
+    stem_tokens = [
+        f"{m.group(1) or ''}{m.group(2)}"
+        for m in _GGUF_KNOWN_QUANT_RE.finditer(fallback_variant.rsplit("/", 1)[-1])
+    ]
+    if not _variant_matches(variant, quant, fallback_variant, stripped, *stem_tokens):
+        return None
+    return detect_gguf_model(str(f), model_root)
+
+
 def _find_local_gguf_by_variant(
     directory: str,
     variant: str,
@@ -2573,7 +2639,7 @@ def _find_local_gguf_by_variant(
     """
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
-        return None
+        return _direct_gguf_for_variant(directory, variant, model_root)
     root = (
         Path(os.path.abspath(Path(model_root).expanduser()))
         if model_root is not None
@@ -2589,7 +2655,17 @@ def _find_local_gguf_by_variant(
             continue
         quant = _extract_quant_label(rel)
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
-        if variant not in (quant, fallback_variant) or _is_big_endian_gguf_path(rel, quant):
+        # Listings advertise the bpw-stripped spelling, and the hub extractor can prefer another
+        # token of the same BASENAME (F16-checkpoint-Q4_K_M advertises Q4_K_M), so both label this
+        # file -- but never a parent's quant: Q8_0/model-Q4_K_M.gguf IS the Q4_K_M file.
+        stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
+        basename_stem = fallback_variant.rsplit("/", 1)[-1]
+        stem_tokens = [
+            f"{m.group(1) or ''}{m.group(2)}" for m in _GGUF_KNOWN_QUANT_RE.finditer(basename_stem)
+        ]
+        if not _variant_matches(
+            variant, quant, fallback_variant, stripped, *stem_tokens
+        ) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)
     matches.sort()
@@ -2624,13 +2700,11 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
     silent None would make the caller treat a GGUF-only repo as non-GGUF and
     fall through to MLX on Apple Silicon. Offline falls back to the local cache.
     """
+    if _env_offline():
+        return _detect_gguf_from_hf_cache(repo_id)
+
     import time
     from huggingface_hub import model_info as hf_model_info
-
-    if _env_offline():
-        cached = _detect_gguf_from_hf_cache(repo_id)
-        if cached is not None:
-            return cached
 
     last_err: Optional[Exception] = None
     for attempt in range(3):

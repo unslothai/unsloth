@@ -1982,6 +1982,26 @@ def _sidecar_scan(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
     return _sidecar_scan_impl(venv_dir, limit)
 
 
+# Mirrored from unsloth_cli/_studio_deps.py, not imported, for the reason given in
+# _sidecar_scan_impl below: the backend never imports the CLI package. Keep in sync.
+_SHARED_NON_RUNTIME_ROOTS = frozenset(
+    (
+        "test",
+        "tests",
+        "doc",
+        "docs",
+        "example",
+        "examples",
+        "benchmark",
+        "benchmarks",
+        "sample",
+        "samples",
+        "scripts",
+    )
+)
+_INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
+
+
 def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
     """RECORD entries under *venv_dir* that are gone, or shorter than pip recorded.
 
@@ -2075,10 +2095,17 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
                 or (parts and parts[0] in ("bin", "Scripts"))
             ):
                 continue
+            # Top-level dirs several wheels write into, so one uninstall deletes
+            # another's files. Unreliable ownership is a property of the path, so
+            # this covers what we ship too; see _shared_non_runtime in _studio_deps.
+            if len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS:
+                continue
             # The size field is optional and real wheels do leave it blank. Keep the row with an
             # unknown size: existence is still checkable, and dropping it hides a deletion.
             recorded: int | None = None
-            if len(row) >= 3 and row[2]:
+            # An installer rewrites these in place, so the recorded size drifts;
+            # the file disappearing is still damage.
+            if len(row) >= 3 and row[2] and parts[-1] not in _INSTALLER_REWRITTEN_NAMES:
                 try:
                     recorded = int(row[2])
                 except ValueError:

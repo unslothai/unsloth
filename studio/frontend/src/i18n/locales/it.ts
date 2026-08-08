@@ -395,6 +395,15 @@ export const it = {
         showLoadedModelsDescription:
           "Mostra una piccola scheda in basso a destra con tutti i modelli attualmente in memoria (chat, voce, immagini, video), con un pulsante per rimuovere ciascuno.",
       },
+      startup: {
+        sectionTitle: "Avvio",
+        launchAtLogin: "Avvia Unsloth all'accesso",
+        launchAtLoginDescription:
+          "Avvia Unsloth in background quando accedi. Rimane nella barra dei menu o nell'area di notifica finché non lo apri.",
+        loadError: "Impossibile caricare l'impostazione di avvio all'accesso.",
+        saveError:
+          "Impossibile aggiornare l'impostazione di avvio all'accesso.",
+      },
       gettingStarted: "Per iniziare",
       startOnboarding: "Avvia la configurazione guidata",
       startOnboardingDescription:
@@ -695,14 +704,31 @@ export const it = {
         free: "Disponibili: {value}",
         total: "Totale: {value}",
       },
+      modelMemory: {
+        title: "Memoria del modello",
+        keepResident: "Mantieni il modello nella memoria della GPU",
+        keepResidentDescription: "Resta nella VRAM tra un prompt e l'altro.",
+        keepResidentHint: "Non restituisce i pesi alla RAM di sistema finché il modello resta caricato. Disattiva lo scaricamento automatico in inattività e, quando i pesi risiedono davvero nella RAM host (memoria unificata o offload parziale sulla GPU), passa anche --mlock, così il sistema operativo non li pagina per ricaricarli al prompt successivo.",
+        noRamReserve: "Non riservare RAM di sistema per il modello",
+        noRamReserveDescription: "Non tiene una copia completa in RAM.",
+        noRamReserveHint: "Trasferisce i pesi nella VRAM invece di tenerne una copia completa in RAM. Mantiene il caricamento mappato in memoria di llama.cpp e rimuove --no-mmap e --mlock.",
+        mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",
+        memlockCapped: "Questo sistema limita la memoria bloccata a {limit}. Un modello più grande non verrà bloccato del tutto; aumenta il limite con ulimit -l.",
+        reloadRequired: "Ricarica il modello per applicare le nuove opzioni di memoria.",
+        loadError: "Impossibile caricare le impostazioni di memoria del modello",
+        saveError: "Impossibile salvare le impostazioni di memoria del modello",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu memoria ram residente bloccare fissare mantenere caricato scaricare inattivo mmap no-mmap load-mode paginazione swap",
+      },
       storage: {
         title: "Archiviazione",
         systemDisk: "Disco di sistema",
         diskUsage: "In uso: {used} / Totale: {total}",
         diskFree: "Disponibili: {free}",
         modelsFolder: "Cartella dei modelli",
-        modelsFolderDescription:
-          "Dove vengono salvati i modelli scaricati. Cambiala per tenere i modelli fuori dal disco di sistema.",
+        modelsFolderDescription: "Dove vengono salvati i modelli scaricati.",
+        modelsFolderHint: "Dove vengono salvati i modelli scaricati. Cambialo per tenere i modelli fuori dall'unità di sistema. Vale solo per i nuovi download: i modelli che hai già restano dove sono.",
         // Non visualizzato: termini extra su cui la ricerca delle impostazioni trova questa riga.
         modelsFolderKeywords:
           "cartella modelli directory percorso posizione download scaricati cache archiviazione disco unità spostare sposta hugging face models folder path storage",

@@ -12,6 +12,549 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
+// An AppImage can be launched from an activated Python environment. Keep the
+// host library path the thin bundle needs, but do not let PYTHONHOME/PYTHONPATH
+// shadow the managed Studio environment.
+#[cfg(target_os = "linux")]
+pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
+    if std::env::var_os("APPIMAGE").is_some() {
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
+    if std::env::var_os("APPIMAGE").is_some() {
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+    }
+}
+
+#[cfg(windows)]
+const STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX: &str = "Global\\UnslothStudioManagedEnvironment-";
+
+#[cfg(windows)]
+pub(crate) const STUDIO_RUNTIME_GATE_HANDOFF_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF";
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct StudioManagedRuntimeLaunchGuard {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl Drop for StudioManagedRuntimeLaunchGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows_sys::Win32::System::Threading::ReleaseMutex(self.handle);
+            let _ = windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn acquire_named_studio_runtime_launch_guard(
+    name: &str,
+) -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    const WAIT_OBJECT_0: u32 = 0x0000_0000;
+    const WAIT_ABANDONED: u32 = 0x0000_0080;
+    const WAIT_TIMEOUT: u32 = 0x0000_0102;
+
+    let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let handle = unsafe {
+        windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, wide_name.as_ptr())
+    };
+    if handle.is_null() {
+        return Err(format!(
+            "Could not create the Studio runtime lock: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let wait = unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(handle, 0) };
+    match wait {
+        WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(StudioManagedRuntimeLaunchGuard { handle }),
+        WAIT_TIMEOUT => {
+            unsafe {
+                let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
+            }
+            Err(
+                "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
+                    .to_string(),
+            )
+        }
+        _ => {
+            let error = std::io::Error::last_os_error();
+            unsafe {
+                let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
+            }
+            Err(format!(
+                "Could not acquire the Studio runtime lock: {error}"
+            ))
+        }
+    }
+}
+
+#[cfg(windows)]
+fn studio_runtime_mutex_name_for_sid(sid: &str) -> String {
+    format!("{STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX}{sid}")
+}
+
+#[cfg(windows)]
+fn current_windows_user_sid() -> Result<String, String> {
+    use windows_sys::Win32::Security::{
+        GetSidIdentifierAuthority, GetSidSubAuthority, GetSidSubAuthorityCount,
+        GetTokenInformation, IsValidSid, TokenUser, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(format!(
+            "Could not open the Windows user token for the Studio runtime lock: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let result = (|| -> Result<String, String> {
+        let mut required = 0_u32;
+        unsafe {
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required);
+        }
+        if required == 0 {
+            return Err(format!(
+                "Could not size the Windows user SID for the Studio runtime lock: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let word_size = std::mem::size_of::<usize>();
+        let mut buffer = vec![0_usize; (required as usize).div_ceil(word_size)];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "Could not read the Windows user SID for the Studio runtime lock: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+        let sid = token_user.User.Sid;
+        if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
+            return Err("Windows returned an invalid user SID for the Studio runtime lock".into());
+        }
+
+        let authority_ptr = unsafe { GetSidIdentifierAuthority(sid) };
+        let count_ptr = unsafe { GetSidSubAuthorityCount(sid) };
+        if authority_ptr.is_null() || count_ptr.is_null() {
+            return Err(
+                "Could not inspect the Windows user SID for the Studio runtime lock".into(),
+            );
+        }
+        let authority = unsafe { (*authority_ptr).Value }
+            .iter()
+            .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte));
+        let revision = unsafe { *sid.cast::<u8>() };
+        let count = unsafe { *count_ptr };
+        let mut sid_text = format!("S-{revision}-{authority}");
+        for index in 0..u32::from(count) {
+            let sub_authority = unsafe { GetSidSubAuthority(sid, index) };
+            if sub_authority.is_null() {
+                return Err(
+                    "Could not inspect the Windows user SID for the Studio runtime lock".into(),
+                );
+            }
+            sid_text.push_str(&format!("-{}", unsafe { *sub_authority }));
+        }
+        Ok(sid_text)
+    })();
+
+    unsafe {
+        let _ = windows_sys::Win32::Foundation::CloseHandle(token);
+    }
+    result
+}
+
+#[cfg(windows)]
+fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
+    acquire_named_studio_runtime_launch_guard(&name)
+}
+
+/// Serialize creation of managed-environment children with install/repair.
+///
+/// The guard ends when the sync operation returns. The installer takes the same
+/// mutex then scans for managed processes, so holding it through child creation
+/// closes the race without carrying a thread-owned Win32 mutex across an await.
+#[cfg(windows)]
+fn with_named_studio_runtime_launch_guard<T>(
+    name: &str,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _runtime_launch_guard = acquire_named_studio_runtime_launch_guard(name)?;
+    operation()
+}
+
+pub(crate) fn with_studio_runtime_launch_guard<T>(
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    #[cfg(windows)]
+    {
+        let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
+        return with_named_studio_runtime_launch_guard(&name, operation);
+    }
+    #[cfg(not(windows))]
+    operation()
+}
+
+#[cfg(windows)]
+fn normalized_existing_windows_path(path: &std::path::Path) -> Result<String, String> {
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|error| format!("Could not resolve managed Studio path {:?}: {error}", path))?;
+    Ok(resolved
+        .to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .replace('/', "\\"))
+}
+
+#[cfg(windows)]
+fn windows_ordinal_ignore_case_equal(left: &[u16], right: &[u16]) -> Result<bool, String> {
+    use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
+
+    let left_length = i32::try_from(left.len())
+        .map_err(|_| "Normalized Studio path exceeds Win32 comparison limits".to_string())?;
+    let right_length = i32::try_from(right.len())
+        .map_err(|_| "Normalized Studio path exceeds Win32 comparison limits".to_string())?;
+    let comparison = unsafe {
+        CompareStringOrdinal(left.as_ptr(), left_length, right.as_ptr(), right_length, 1)
+    };
+    if comparison == 0 {
+        return Err(format!(
+            "Could not compare normalized Studio paths: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(comparison == CSTR_EQUAL)
+}
+
+#[cfg(windows)]
+fn windows_paths_are_equal(left: &str, right: &str) -> Result<bool, String> {
+    let left_wide: Vec<u16> = left.encode_utf16().collect();
+    let right_wide: Vec<u16> = right.encode_utf16().collect();
+    windows_ordinal_ignore_case_equal(&left_wide, &right_wide)
+}
+
+#[cfg(windows)]
+fn windows_path_is_within(candidate: &str, root: &str) -> Result<bool, String> {
+    let candidate_wide: Vec<u16> = candidate.encode_utf16().collect();
+    let root_wide: Vec<u16> = root.encode_utf16().collect();
+    if candidate_wide.len() < root_wide.len() {
+        return Ok(false);
+    }
+
+    let same_root =
+        windows_ordinal_ignore_case_equal(&candidate_wide[..root_wide.len()], &root_wide)?;
+    Ok(same_root
+        && (candidate_wide.len() == root_wide.len()
+            || candidate_wide[root_wide.len()] == u16::from(b'\\')))
+}
+
+#[cfg(windows)]
+fn process_image_path(process_id: u32) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    if process.is_null() {
+        return None;
+    }
+    let mut buffer = vec![0_u16; 32_768];
+    let mut length = buffer.len() as u32;
+    let ok = unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            buffer.as_mut_ptr(),
+            &mut length,
+        )
+    };
+    unsafe {
+        let _ = windows_sys::Win32::Foundation::CloseHandle(process);
+    }
+    if ok == 0 {
+        return None;
+    }
+    Some(std::path::PathBuf::from(std::ffi::OsString::from_wide(
+        &buffer[..length as usize],
+    )))
+}
+
+/// Reject an update when a process image runs from the target venv or the exact
+/// supported Studio shim.
+///
+/// Callers must hold the runtime launch mutex across the whole mutation: this
+/// scan finds older consumers, and the gate blocks new launches after it.
+pub(crate) fn ensure_managed_environment_is_idle(
+    managed_binary: &std::path::Path,
+) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        let _ = managed_binary;
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, GetLastError, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE,
+        };
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+
+        let venv = managed_binary
+            .parent()
+            .and_then(std::path::Path::parent)
+            .ok_or_else(|| {
+                format!(
+                    "Could not determine the managed Studio environment for {:?}",
+                    managed_binary
+                )
+            })?;
+        let studio_home = venv.parent().ok_or_else(|| {
+            format!(
+                "Could not determine the managed Studio root for {:?}",
+                managed_binary
+            )
+        })?;
+        let canonical_root = normalized_existing_windows_path(venv)?;
+        let shim = studio_home.join("bin").join("unsloth.exe");
+        let canonical_shim = shim
+            .exists()
+            .then(|| normalized_existing_windows_path(&shim))
+            .transpose()?;
+
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(format!(
+                "Could not inspect running processes before Studio update: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let result = (|| {
+            let mut entry = PROCESSENTRY32W {
+                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) };
+            if has_entry == 0 {
+                let error = unsafe { GetLastError() };
+                if error == ERROR_NO_MORE_FILES {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "Could not enumerate running processes before Studio update: {}",
+                    std::io::Error::from_raw_os_error(error as i32)
+                ));
+            }
+
+            loop {
+                if let Some(image) = process_image_path(entry.th32ProcessID) {
+                    if let Ok(image_key) = normalized_existing_windows_path(&image) {
+                        let image_is_shim = canonical_shim
+                            .as_ref()
+                            .map(|shim| windows_paths_are_equal(&image_key, shim))
+                            .transpose()?
+                            .unwrap_or(false);
+                        if windows_path_is_within(&image_key, &canonical_root)? || image_is_shim {
+                            let name_length = entry
+                                .szExeFile
+                                .iter()
+                                .position(|character| *character == 0)
+                                .unwrap_or(entry.szExeFile.len());
+                            let name = String::from_utf16_lossy(&entry.szExeFile[..name_length]);
+                            return Err(format!(
+                                "The managed Studio environment is in use by {} (PID {}). Stop that process, then retry the update.",
+                                name, entry.th32ProcessID
+                            ));
+                        }
+                    }
+                }
+
+                has_entry = unsafe { Process32NextW(snapshot, &mut entry) };
+                if has_entry == 0 {
+                    let error = unsafe { GetLastError() };
+                    if error == ERROR_NO_MORE_FILES {
+                        break;
+                    }
+                    return Err(format!(
+                        "Could not finish enumerating running processes before Studio update: {}",
+                        std::io::Error::from_raw_os_error(error as i32)
+                    ));
+                }
+            }
+            Ok(())
+        })();
+
+        unsafe {
+            let _ = CloseHandle(snapshot);
+        }
+        result
+    }
+}
+#[cfg(all(test, windows))]
+mod studio_runtime_launch_guard_tests {
+    use super::*;
+
+    #[test]
+    fn blocks_a_second_launcher_until_the_first_releases_the_gate() {
+        let name = format!(
+            "Local\\UnslothStudioRuntimeGateTest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let first = acquire_named_studio_runtime_launch_guard(&name).unwrap();
+        let contender_name = name.clone();
+        let error = std::thread::spawn(move || {
+            acquire_named_studio_runtime_launch_guard(&contender_name)
+                .err()
+                .expect("second launcher unexpectedly acquired the gate")
+        })
+        .join()
+        .unwrap();
+        assert!(error.contains("installation is modifying"));
+        drop(first);
+        acquire_named_studio_runtime_launch_guard(&name).unwrap();
+    }
+
+    #[test]
+    fn guarded_operation_is_skipped_while_busy_and_runs_after_release() {
+        let name = format!(
+            "Local\\UnslothStudioRuntimeGateOperationTest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let first = acquire_named_studio_runtime_launch_guard(&name).unwrap();
+        let invoked = Arc::new(AtomicBool::new(false));
+        let contender_invoked = invoked.clone();
+        let contender_name = name.clone();
+        let error = std::thread::spawn(move || {
+            with_named_studio_runtime_launch_guard(&contender_name, || {
+                contender_invoked.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .unwrap_err()
+        })
+        .join()
+        .unwrap();
+        assert!(error.contains("installation is modifying"));
+        assert!(!invoked.load(Ordering::SeqCst));
+
+        drop(first);
+        with_named_studio_runtime_launch_guard(&name, || {
+            invoked.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+        assert!(invoked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn guarded_operation_releases_the_gate_after_an_operation_error() {
+        let name = format!(
+            "Local\\UnslothStudioRuntimeGateErrorTest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let error = with_named_studio_runtime_launch_guard(&name, || {
+            Err::<(), _>("synthetic spawn failure".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(error, "synthetic spawn failure");
+
+        with_named_studio_runtime_launch_guard(&name, || Ok(())).unwrap();
+    }
+
+    #[test]
+    fn managed_environment_scan_finds_a_process_inside_the_target_root() {
+        let current_exe = std::env::current_exe().unwrap();
+        let target_root = current_exe.parent().unwrap();
+        let managed_binary = target_root.join("Scripts").join("unsloth.exe");
+
+        let error = ensure_managed_environment_is_idle(&managed_binary).unwrap_err();
+        assert!(error.contains("managed Studio environment is in use"));
+    }
+
+    #[test]
+    fn windows_path_containment_requires_a_component_boundary() {
+        assert!(windows_path_is_within(
+            r"c:\\users\\pc\\.unsloth\\studio\\unsloth_studio\\scripts\\python.exe",
+            r"c:\\users\\pc\\.unsloth\\studio\\unsloth_studio"
+        )
+        .unwrap());
+        assert!(!windows_path_is_within(
+            r"c:\\users\\pc\\.unsloth\\studio\\unsloth_studio_old\\scripts\\python.exe",
+            r"c:\\users\\pc\\.unsloth\\studio\\unsloth_studio"
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn windows_path_comparison_uses_ordinal_case_insensitive_semantics() {
+        assert!(windows_paths_are_equal(
+            r"C:\\Users\\PC\\.Unsloth\\Studio",
+            r"c:\\users\\pc\\.unsloth\\studio"
+        )
+        .unwrap());
+
+        let dotted_capital_root = r"C:\\Users\\İ\\.unsloth\\studio";
+        let expanded_lowercase_root = "C:\\\\Users\\\\i\u{307}\\\\.unsloth\\\\studio";
+        assert_eq!(
+            dotted_capital_root.to_lowercase(),
+            expanded_lowercase_root.to_lowercase()
+        );
+        assert!(!windows_paths_are_equal(dotted_capital_root, expanded_lowercase_root).unwrap());
+
+        let unrelated_image = format!("{expanded_lowercase_root}\\\\Scripts\\\\python.exe");
+        assert!(!windows_path_is_within(&unrelated_image, dotted_capital_root).unwrap());
+    }
+
+    #[test]
+    fn runtime_mutex_name_is_global_and_user_scoped() {
+        let first = studio_runtime_mutex_name_for_sid("S-1-5-21-111-222-333-1001");
+        let second = studio_runtime_mutex_name_for_sid("S-1-5-21-111-222-333-1002");
+        assert_eq!(
+            first,
+            "Global\\UnslothStudioManagedEnvironment-S-1-5-21-111-222-333-1001"
+        );
+        assert_ne!(first, second);
+        assert!(current_windows_user_sid().unwrap().starts_with("S-1-"));
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) enum OwnedBackendHandle {
     Spawned {
@@ -556,6 +1099,9 @@ pub fn start_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
+    #[cfg(windows)]
+    let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
+
     let bin = match resolve_backend_binary() {
         Ok(bin) => bin,
         Err(msg) => {
@@ -572,11 +1118,27 @@ pub fn start_backend(
 
     let args = backend_args(port);
     let start_line = format!("Starting backend: {:?} {}", bin, args.join(" "));
-    let pending_owner = crate::desktop_backend_owner::new_pending_owner();
+    let pending_owner = match crate::desktop_backend_owner::new_pending_owner() {
+        Ok(pending_owner) => pending_owner,
+        Err(error) => {
+            let msg = format!("Failed to claim ownership of the backend: {}", error);
+            diagnostics::record_backend_start_failure(
+                diagnostics_state,
+                Some(port),
+                None,
+                "claim_backend_ownership",
+                &msg,
+            );
+            return Err(msg);
+        }
+    };
     let mut cmd = Command::new(&bin);
     cmd.args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 
     if let Some(native_state) = app.try_state::<crate::native_intents::NativeIntakeState>() {
         cmd.env(
@@ -585,26 +1147,24 @@ pub fn start_backend(
         );
     }
 
-    if let Some(owner) = pending_owner.as_ref() {
-        cmd.env(
-            crate::desktop_backend_owner::OWNER_TOKEN_ENV,
-            owner.token.as_str(),
-        );
-        cmd.env(
-            crate::desktop_backend_owner::OWNER_KIND_ENV,
-            crate::desktop_backend_owner::OWNER_KIND_TAURI,
-        );
-        cmd.env(
-            crate::desktop_backend_owner::OWNER_PID_ENV,
-            std::process::id().to_string(),
-        );
-    }
+    crate::desktop_backend_owner::apply_owner_env(&mut cmd, &pending_owner);
+
+    #[cfg(target_os = "linux")]
+    scrub_appimage_python_env(&mut cmd);
 
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // scrub so the spawned Python backend can't diverge. UNSLOTH_LLAMA_CPP_PATH
     // is a pre-existing user-controlled llama.cpp dir override; keep it.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+
+    // read_output_stream decodes as UTF-8; without these, Python encodes its
+    // redirected streams with the locale code page and non-ASCII lands as U+FFFD.
+    #[cfg(windows)]
+    {
+        cmd.env("PYTHONUTF8", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
+    }
 
     // Reset state, spawn, and store the child while holding the backend mutex.
     // This keeps the no-child check atomic: a concurrent start/stop cannot slip
@@ -671,13 +1231,40 @@ pub fn start_backend(
         let backend_pid = child.id();
         let stdout = child.stdout().take();
         let stderr = child.stderr().take();
-        let owner = pending_owner.clone().and_then(|pending| {
-            crate::desktop_backend_owner::activate_owner(pending, port, generation, backend_pid)
-        });
+        let owner = match crate::desktop_backend_owner::activate_owner(
+            pending_owner,
+            port,
+            generation,
+            backend_pid,
+        ) {
+            Ok(owner) => owner,
+            Err(error) => {
+                // No handle owns this live child yet, so stop it before returning.
+                // The backend mutex stays held until cleanup finishes.
+                if let Err(stop_error) = stop_spawned_backend(child, None, None, backend_pid) {
+                    warn!(
+                        "Could not stop the unclaimed backend (pid {}): {}",
+                        backend_pid, stop_error
+                    );
+                }
+                let msg = format!(
+                    "Failed to claim ownership of the backend, so it was stopped: {}",
+                    error
+                );
+                diagnostics::record_backend_start_failure(
+                    diagnostics_state,
+                    Some(port),
+                    Some(generation),
+                    "activate_backend_ownership",
+                    &msg,
+                );
+                return Err(msg);
+            }
+        };
 
         proc.owned = Some(OwnedBackendHandle::spawned(
             child,
-            owner,
+            Some(owner),
             backend_pid,
             generation,
         ));

@@ -14,6 +14,7 @@ import { create } from "zustand";
 import {
   GPU_LAYERS_AUTO,
   recoverDroppedDiffusionSplit,
+  shouldHydrateGpuPlacementControls,
 } from "../lib/gpu-placement";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
@@ -682,6 +683,7 @@ export function loadedGpuMemoryFields(resp: {
   is_diffusion?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
+  cpu_fallback_reason?: "vulkan_startup_crash" | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
@@ -706,6 +708,7 @@ export function loadedGpuMemoryFields(resp: {
       loadedGpuIds: null,
       loadedGpuIndexKind: null,
       loadedGpuMemoryMode: null,
+      loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
       nCpuMoe: 0,
@@ -717,6 +720,9 @@ export function loadedGpuMemoryFields(resp: {
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
+  const hydratePlacementControls = shouldHydrateGpuPlacementControls(
+    resp.cpu_fallback_reason,
+  );
   // Keep the user's placement pool editable across status/load hydration.
   // gpu_ids remains the effective fitted subset for diagnostics.
   const reportedGpuIds = requestedGpuIdsFromResponse(resp);
@@ -750,9 +756,13 @@ export function loadedGpuMemoryFields(resp: {
           loadedGpuLayers: resp.gpu_layers ?? null,
           loadedNCpuMoe: resp.n_cpu_moe ?? null,
           loadedSplitRatio: resp.tensor_split ?? null,
-          gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
-          nCpuMoe: resp.n_cpu_moe ?? 0,
-          splitRatio: resp.tensor_split ?? null,
+          ...(hydratePlacementControls
+            ? {
+                gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
+                nCpuMoe: resp.n_cpu_moe ?? 0,
+                splitRatio: resp.tensor_split ?? null,
+              }
+            : {}),
         }
       : {
           loadedGpuLayers: null,
@@ -779,12 +789,15 @@ export function loadedGpuMemoryFields(resp: {
     // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert standing
     // manual preference must survive it. But "manual" means a split was actually applied
     // (#7574): adopt it, or a refresh hydrates back to "auto" while the runner serves one.
-    ...(resp.is_diffusion && mode !== "manual"
-      ? droppedSplit != null
-        ? { gpuMemoryMode: "manual" as const }
-        : {}
-      : { gpuMemoryMode: mode }),
+    ...(hydratePlacementControls
+      ? resp.is_diffusion && mode !== "manual"
+        ? droppedSplit != null
+          ? { gpuMemoryMode: "manual" as const }
+          : {}
+        : { gpuMemoryMode: mode }
+      : {}),
     loadedGpuMemoryMode: mode,
+    loadedCpuFallback: resp.cpu_fallback_reason === "vulkan_startup_crash",
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
@@ -1073,6 +1086,14 @@ type ChatRuntimeStore = {
   /** Slots the last successful load sent (null = default); the rollback
    *  re-sends it so a failed switch can't lose the override. */
   loadedNParallel: number | null;
+  /** user --batch-size override for gguf loads (null = llama.cpp default 2048) */
+  nBatch: number | null;
+  /** batch size the last successful load sent (null = default) */
+  loadedNBatch: number | null;
+  /** user --ubatch-size override for gguf loads (null = llama.cpp default 512) */
+  nUbatch: number | null;
+  /** micro-batch size the last successful load sent (null = default) */
+  loadedNUbatch: number | null;
   /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
@@ -1083,6 +1104,8 @@ type ChatRuntimeStore = {
   gpuMemoryMode: "auto" | "manual";
   /** Backend-reported gpu memory mode; null until first hydrated. */
   loadedGpuMemoryMode: "auto" | "manual" | null;
+  /** The active model must use the staged CPU-only runtime when it is reloaded. */
+  loadedCpuFallback: boolean;
   /** Manual mode: layers to offload to GPU. -1 = Auto (--fit); >= model layer
    *  count = all. */
   gpuLayers: number;
@@ -1626,10 +1649,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   nParallel: null,
   loadedNParallel: null,
+  nBatch: null,
+  loadedNBatch: null,
+  nUbatch: null,
+  loadedNUbatch: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
   loadedGpuMemoryMode: null,
+  loadedCpuFallback: false,
   gpuLayers: GPU_LAYERS_AUTO,
   loadedGpuLayers: null,
   nCpuMoe: 0,
@@ -2086,11 +2114,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedSpecDraftNMax: null,
       nParallel: null,
       loadedNParallel: null,
+      nBatch: null,
+      loadedNBatch: null,
+      nUbatch: null,
+      loadedNUbatch: null,
       tensorParallel: false,
       loadedTensorParallel: null,
       // Standing preference: survives unload, unlike the per-model knobs above.
       gpuMemoryMode: readPersistedGpuMemoryMode(),
       loadedGpuMemoryMode: null,
+      loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
       nCpuMoe: 0,

@@ -36,7 +36,10 @@ import {
   useState,
 } from "react";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
-import { isOllamaLinkPath } from "../model-config/model-identity";
+import {
+  isOllamaLinkPath,
+  modelDisplayName,
+} from "../model-config/model-identity";
 import {
   type PerModelConfig,
   resolveInitialConfig,
@@ -763,13 +766,17 @@ export function ModelSelector({
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
     const found = optionById.get(selected);
+    // No catalog entry (yet, or ever); a cached GGUF's checkpoint is a snapshot path.
+    // The leaf, not the namespaced public id (#7966), matches the catalog row that
+    // later replaces this one.
+    const fallbackName = modelDisplayName(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
       return found
         ? { ...found, description: desc }
-        : { id: selected, name: selected, description: desc };
+        : { id: selected, name: fallbackName, description: desc };
     }
-    return found ?? { id: selected, name: selected };
+    return found ?? { id: selected, name: fallbackName };
   }, [selected, optionById, activeGgufVariant]);
 
   function handleSelect(id: string, meta: ModelSelectorChangeMeta) {
