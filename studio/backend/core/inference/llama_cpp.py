@@ -10228,7 +10228,9 @@ class LlamaCppBackend:
                                 return v if v is not None else 0
 
                     def _mtp_bytes(
-                        ctx: int, slots: Optional[int] = None, ubatch: Optional[int] = None
+                        ctx: int,
+                        slots: Optional[int] = None,
+                        ubatch: Optional[int] = None,
                     ) -> int:
                         # slots/ubatch override the closure's requested pair: the reserve is
                         # slot-scaled for compact SWA and MLA+recurrent, and compact SWA also
