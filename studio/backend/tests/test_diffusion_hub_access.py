@@ -83,7 +83,9 @@ def test_a_metadata_api_url_names_the_model_not_the_endpoint():
 
 def test_a_non_repo_api_url_falls_back_rather_than_inventing_a_repo():
     message = hub_access_message(
-        _gated("403 Client Error. Cannot access gated repo for url https://huggingface.co/api/whoami-v2."),
+        _gated(
+            "403 Client Error. Cannot access gated repo for url https://huggingface.co/api/whoami-v2."
+        ),
         had_token = False,
     )
 
