@@ -551,7 +551,6 @@ def _group_member_pids(pgid: int) -> "Optional[list[int]]":
     if sys.platform == "darwin":
         try:
             import subprocess
-
             out = subprocess.run(
                 ["ps", "-o", "pid=", "-g", str(pgid)],
                 capture_output = True,

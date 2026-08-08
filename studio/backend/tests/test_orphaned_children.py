@@ -1125,10 +1125,16 @@ def test_a_terminated_leader_leaving_a_group_keeps_its_record(tmp_path, monkeypa
     monkeypatch.setattr(pl, "_group_has_members", lambda pgid: pgid == 9801)
 
     record = directory / "9800.json"
-    record.write_text(json.dumps({
-        "owner_pid": 9800, "owner_identity": "gone",
-        "children": [{"pid": 9801, "identity": "same", "pgid": 9801}],
-    }), encoding = "utf-8")
+    record.write_text(
+        json.dumps(
+            {
+                "owner_pid": 9800,
+                "owner_identity": "gone",
+                "children": [{"pid": 9801, "identity": "same", "pgid": 9801}],
+            }
+        ),
+        encoding = "utf-8",
+    )
 
     pl._reap_one_record(record, timeout = 1.0)
     assert record.is_file(), "the group outlived its leader and lost its record"
