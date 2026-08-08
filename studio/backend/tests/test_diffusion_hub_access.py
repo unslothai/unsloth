@@ -29,9 +29,9 @@ _GATED = (
 def _gated(text = _GATED):
     """A real GatedRepoError by type, without hub's constructor.
 
-    HfHubHTTPError.__init__ takes a required response on hub 1.x and not on 0.x,
-    and the pin spans both. The helper screens on isinstance and str(), so a
-    subclass that only carries the message pins the contract on either version.
+    HfHubHTTPError.__init__ requires a response on hub 1.x but not on 0.x, and the pin spans
+    both. The helper screens on type and str() only, so a message-carrying subclass pins the
+    contract on either version.
     """
     from huggingface_hub.errors import GatedRepoError
 
@@ -64,9 +64,9 @@ def test_a_token_that_still_bounces_names_the_account():
 
 
 def test_a_metadata_api_url_names_the_model_not_the_endpoint():
-    """HfApi.model_info is the first Hub call a load makes, and its 403 carries
-    /api/models/<owner>/<repo>, the shape huggingface_hub's own GatedRepoError docstring
-    shows. A two-segment match on that names "api/models" as the gated repo."""
+    """auth_check, and model_info on a gated private repo, raise with /api/models/<owner>/<repo>
+    (the shape hub's own GatedRepoError docstring shows). A plain two-segment match on that
+    names "api/models" as the gated repo."""
     message = hub_access_message(
         _gated(
             "403 Client Error. (Request ID: ViT1Bf7O) Cannot access gated repo for url "
@@ -117,8 +117,8 @@ def test_other_failures_keep_their_own_text(exc):
 
 
 def test_a_wrapped_gated_error_is_still_rewritten():
-    """Transformers config/tokenizer loads re-raise the 403 inside an OSError, so matching only
-    the outermost exception misses the shape this rewrite exists for."""
+    """Transformers loads re-raise the 403 inside an OSError, so matching only the outermost
+    exception misses the shape this rewrite exists for."""
     try:
         try:
             raise _gated()
@@ -153,8 +153,7 @@ def test_an_ambient_token_counts_as_a_token(monkeypatch):
 
 def test_a_disabled_implicit_token_is_not_a_token(monkeypatch):
     """HF_HUB_DISABLE_IMPLICIT_TOKEN leaves get_token() answering with the cached login while
-    build_hf_headers sends no authorization header, so the refusal was anonymous. Asking the
-    same helper the Hub asks is what keeps the two in step."""
+    build_hf_headers sends no authorization header, so the refusal was anonymous."""
     from huggingface_hub import constants
     from huggingface_hub.utils import _headers
 

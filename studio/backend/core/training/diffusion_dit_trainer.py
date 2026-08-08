@@ -484,9 +484,8 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 "torchao is missing or the non-functional Windows-ROCm stub. Use "
                 "base_precision='nf4', 'bf16', or 'auto'."
             )
-        # fp8 / mxfp8 reach torchao.float8 and torchao.prototype.mx_formats, which the stub also answers with a no-op that reports success, so the run
-        # would report fp8 while training bf16. Rejected on the stub alone, not on has_functional_torchao(): that probes int8's symbols specifically,
-        # and a real-but-partial torchao must keep reaching the arch checks below rather than being refused here.
+        # fp8 / mxfp8 reach torchao.float8 and torchao.prototype.mx_formats, which the stub answers with a no-op that reports success, so the run would report fp8 while training bf16.
+        # Keyed on the stub, not has_functional_torchao(): that probes int8's symbols, and a real-but-partial torchao must keep reaching the arch checks below.
         if mode in ("fp8", "mxfp8") and is_stubbed("torchao"):
             raise ValueError(
                 f"base_precision={mode!r} is not available on this host: torchao is the "

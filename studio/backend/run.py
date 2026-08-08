@@ -135,10 +135,9 @@ except ValueError as exc:
     configured = os.environ.get("UNSLOTH_CPU_THREADS")
     raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}") from None
 
-# Windows ROCm ships no distributed backend, so torchao and the CUDA-only xformers
-# both die on import and take anything that touches diffusers/transformers with them.
-# Both stubs only seed sys.modules for a name nothing has imported yet, so they have to
-# run before the first import below reaches either package. No-op on other runtimes.
+# Windows ROCm ships no distributed backend, so torchao and the CUDA-only xformers both die on
+# import, taking anything that touches diffusers/transformers with them. A stub only seeds a name
+# nothing has imported yet, so both must precede the first import below. No-op on other runtimes.
 from core._torchao_stub import (
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,

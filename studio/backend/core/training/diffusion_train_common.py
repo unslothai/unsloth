@@ -37,9 +37,8 @@ from core.inference.diffusion_families import (
     trainable_family_names,
 )
 
-# The trainers run in a spawned child that imports diffusers itself, so the
-# inference-side install does not carry over. Both trainers import this module
-# before that happens.
+# The trainers run in a spawned child that imports diffusers itself, so the inference-side
+# install does not carry over. Both trainers import this module before that happens.
 install_xformers_windows_rocm_stub()
 install_torchao_windows_rocm_stub()
 
@@ -441,9 +440,8 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
                 "base_precision='int8' needs a functional torchao install; this host's torchao is "
                 "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
             )
-        # fp8 / mxfp8 reach torchao.float8 and torchao.prototype.mx_formats, which the stub answers
-        # with a no-op that reports success. Mirrors the child's guard so a doomed run is refused
-        # here rather than after eviction. Not has_functional_torchao(): that probes int8's symbols.
+        # Mirrors the child's fp8/mxfp8 stub guard so a doomed run is refused before eviction, not
+        # after. Not has_functional_torchao(): that probes int8's symbols specifically.
         if mode in ("fp8", "mxfp8") and is_stubbed("torchao"):
             return (
                 f"base_precision={mode!r} is not available on this host: torchao is the "

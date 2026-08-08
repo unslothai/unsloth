@@ -224,8 +224,7 @@ def dense_transformer_supported(target: Any) -> bool:
         return False
     # Windows ROCm stubs torchao (core/_torchao_stub.py). The stub's quantize_ is a no-op, so
     # the smoke probe passes on a still-dense Linear and the transformer would be MARKED
-    # quantised without being quantised -- wrong VRAM budget and compile policy. Same guard as
-    # the trainer's has_functional_torchao(); the GGUF/native fallback is the real path there.
+    # quantised without being quantised -- wrong VRAM budget and compile policy.
     if is_stubbed("torchao"):
         return False
     try:

@@ -3,19 +3,15 @@
 
 """Invariant: the diffusion paths must stub xformers and torchao before importing diffusers.
 
-The Windows xformers pin is CUDA-only. Against a ROCm torch, which has no distributed
-backend, ``import xformers.ops`` dies inside torch.distributed, and diffusers imports
-xformers on sight -- so a Windows ROCm host cannot load any image or video model, and
-the error names neither xformers nor the real cause. diffusers reaches torchao the same
-way through its quantizers. Both stubs are no-ops on every other runtime.
+The Windows xformers pin is CUDA-only, so against a ROCm torch (no distributed backend)
+``import xformers.ops`` dies inside torch.distributed -- and diffusers imports xformers on
+sight, so such a host cannot load any image or video model, with an error naming neither
+xformers nor the cause. diffusers reaches torchao the same way, through its quantizers.
 
-Every ``import diffusers`` in the diffusion modules is lazy, so a module-scope install is
-what puts the stubs in place first; asserting module scope is what stops a later edit from
-tucking one inside a function that a load path can skip.
-
-The diffusion modules are not enough on their own: a stub only seeds names nothing has
-imported yet, and by the time the server imports a diffusion module it has already pulled
-torchao in through the route tree. So run.py installs both before its own first import too.
+Every ``import diffusers`` there is lazy, so a module-scope install is what puts the stubs in
+first; asserting module scope stops a later edit tucking one inside a skippable function. Those
+modules are not enough alone: a stub only seeds names nothing has imported yet, and the server
+has already pulled torchao in via the route tree, so run.py installs both before its first import.
 
 CPU-only: source is parsed with ``ast``, and the behaviour tests fake the platform probe.
 """
@@ -52,8 +48,8 @@ _DIFFUSION_MODULES = [
 _ENTRY_POINT = _BACKEND / "run.py"
 _STUB_MODULE = "core._torchao_stub"
 _ML_ROOTS = frozenset({"diffusers", "peft", "torch", "torchao", "transformers", "xformers"})
-# Must run BEFORE the installers, not after: these set the env vars torch reads when it sizes
-# its OpenMP/BLAS pools, so nothing heavy may precede them. Imports stdlib only.
+# Must run BEFORE the installers: these set the env vars torch reads when it sizes its
+# OpenMP/BLAS pools, so nothing heavy may precede them. Imports stdlib only.
 _PRE_STUB = frozenset({"utils.cpu_threads"})
 
 
@@ -204,8 +200,8 @@ def test_no_stub_survives_this_module():
 
 
 def _target(dtype = None):
-    """A device target. Both guards reject a stub BEFORE they look at the dtype, so the
-    decline tests need no torch and still run on the torch-less CI runners this file targets."""
+    """A device target. Both guards reject a stub BEFORE looking at the dtype, so the decline
+    tests need no torch and still run on the torch-less CI runners."""
     return type("T", (), {"device": "cuda", "dtype": dtype})()
 
 
@@ -215,8 +211,8 @@ def _bf16_target():
 
 
 def test_dense_quant_declines_a_stubbed_torchao(on_windows_rocm):
-    """The stub's quantize_ is a no-op, so the smoke probe passes on a still-dense Linear and
-    the transformer gets MARKED quantised without being quantised. Decline before that."""
+    """The stub's quantize_ is a no-op, so the smoke probe passes on a still-dense Linear and the
+    transformer gets MARKED quantised without being quantised."""
     from core.inference.diffusion_transformer_quant import dense_transformer_supported
 
     install_torchao_windows_rocm_stub()

@@ -74,9 +74,8 @@ def te_quant_supported(target: Any, mode: str) -> bool:
     if getattr(target, "device", None) != "cuda":
         return False
     # Windows ROCm stubs torchao, and the stub's quantize_ is a no-op that leaves the encoder
-    # bf16 while quantize_text_encoders still reports the mode as applied. Same guard as
-    # dense_transformer_supported(); ROCm reports device "cuda" and a capability pair, so
-    # nothing below would catch it.
+    # bf16 while quantize_text_encoders reports the mode applied. ROCm answers device "cuda"
+    # and a capability pair, so nothing below would catch it.
     if mode in _TE_TORCHAO_MODES and is_stubbed("torchao"):
         return False
     try:

@@ -154,17 +154,14 @@ def _hip_field_is_set() -> Optional[bool]:
 def _installed_torch_is_rocm() -> Optional[bool]:
     """ROCm or not, read off disk without importing torch. None when it cannot be told.
 
-    Deciding this without an import is the point: the earliest caller is run.py at import time,
-    where importing torch costs seconds, sizes the OpenMP/BLAS pools before
-    configure_cpu_threads() can set them, and on Windows ROCm can fail outright until main.py
-    has registered the HIP DLL directories.
+    Avoiding the import is the point: the earliest caller is run.py at import time, where torch
+    costs seconds, sizes the OpenMP/BLAS pools before configure_cpu_threads() can set them, and
+    on Windows ROCm can fail outright until main.py has registered the HIP DLL directories.
 
-    Two signals, because neither alone is enough. download.pytorch.org tags its wheels
-    (2.9.1+rocm7.2.1, 2.9.0+rocmsdk20251116) but AMD's own Windows build does not:
-    repo.radeon.com/rocm/windows/rocm-rel-6.4.4 ships torch-2.8.0a0+gitfc14c65, whose metadata
-    carries no rocm at all and where only ``hip`` answers. Conversely a wheel installed without
-    dist-info has no version to read and needs the tag. So a NEGATIVE is only returned when
-    BOTH were legible and both said no; otherwise the caller falls back to importing.
+    Neither signal alone is enough. download.pytorch.org tags its wheels (2.9.1+rocm7.2.1) but
+    AMD's Windows build does not -- torch-2.8.0a0+gitfc14c65 from repo.radeon.com/rocm/windows
+    carries no rocm and only ``hip`` answers -- while a wheel installed without dist-info has no
+    version to read. So a NEGATIVE needs BOTH signals legible and both saying no.
     """
     tagged = _version_is_rocm_tagged()
     if tagged:
@@ -202,10 +199,10 @@ def _ensure_finder() -> None:
 
 
 def is_stubbed(package: str) -> bool:
-    """True iff ``package`` currently resolves to one of these stubs, not the real thing.
+    """True iff ``package`` resolves to one of these stubs, not the real thing.
 
     ``find_spec`` and even ``from torchao.quantization import quantize_`` succeed against a
-    stub, so any caller whose behaviour depends on the package WORKING must ask this first.
+    stub, so any caller that needs the package to WORK must ask this first.
     """
     return getattr(sys.modules.get(package), "_unsloth_stub", None) is _STUB_SENTINEL
 
@@ -234,11 +231,9 @@ def install_torchao_windows_rocm_stub() -> None:
 def install_xformers_windows_rocm_stub() -> None:
     """Pre-stub xformers on Windows ROCm so diffusers can import at all.
 
-    The Windows xformers pin is CUDA-only. Against a ROCm torch, which ships no
-    distributed backend, ``import xformers.ops`` dies reaching
-    torch.distributed internals, and diffusers imports xformers on sight, so
-    every diffusers model import goes down with it. No-op elsewhere. Must run
-    before importing diffusers.
+    The Windows xformers pin is CUDA-only, so against a ROCm torch (no distributed backend)
+    ``import xformers.ops`` dies in torch.distributed -- and diffusers imports xformers on
+    sight, taking every model import with it. No-op elsewhere. Must precede diffusers.
     """
     if _is_windows_rocm():
         _ensure_finder()

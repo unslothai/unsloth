@@ -1068,8 +1068,7 @@ def run_inference_process(
         return
 
     # ── Windows: check Triton availability ──
-    # Placed ahead of the torchao stub below, matching the training and export workers'
-    # gate-then-stub ordering.
+    # Ahead of the torchao stub below, matching the training and export workers' gate-then-stub order.
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
