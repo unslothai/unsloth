@@ -569,8 +569,8 @@ export async function ensureStoredChatThread(
 }
 
 // authFetch sets no timeout, so a wedged request would block a delete or a clear
-// for as long as the browser takes to give up. Bounded instead: the tombstone the
-// delete writes masks a row that lands late, and the next delete removes it.
+// for as long as the browser takes to give up. Bounded instead, and whatever outran
+// the bound is deleted again once it settles by deleteLateThreadRecords.
 const THREAD_RECORD_DRAIN_TIMEOUT_MS = 5000;
 
 /** Resolve when `promise` settles, or after `ms`, whichever comes first. */
@@ -593,6 +593,22 @@ function awaitStoredChatThreadRecordBounded(threadId: string): Promise<void> {
   );
 }
 
+/** Delete again once a write that outran the bounded wait commits, so the row cannot come back. */
+function deleteLateThreadRecords(ids: string[]): void {
+  for (const id of ids) {
+    const pending = pendingThreadRecordByThreadId.get(id);
+    if (!pending) {
+      continue;
+    }
+    // A local tombstone only hides the row here; the backend keeps serving it to every
+    // other client until this lands.
+    pending.then(
+      () => deleteChatThreads([id]).catch(() => undefined),
+      () => undefined,
+    );
+  }
+}
+
 /** Wait for every tracked row write, so a clear cannot race one that is still in flight. */
 async function drainPendingStoredChatThreadRecords(): Promise<void> {
   const deadline = Date.now() + THREAD_RECORD_DRAIN_TIMEOUT_MS;
@@ -612,15 +628,16 @@ async function retryFailedThreadRecord(
   threadId: string,
 ): Promise<ThreadRecord | undefined> {
   const createRecord = failedThreadRecordByThreadId.get(threadId);
-  if (!createRecord) return undefined;
-  failedThreadRecordByThreadId.delete(threadId);
-  trackStoredChatThreadRecord(threadId, createRecord);
-  try {
-    await awaitStoredChatThreadRecord(threadId);
-  } catch {
+  if (createRecord) {
+    failedThreadRecordByThreadId.delete(threadId);
+    trackStoredChatThreadRecord(threadId, createRecord);
+  } else if (!pendingThreadRecordByThreadId.has(threadId)) {
     return undefined;
   }
-  return (await getChatThread(threadId).catch(() => null)) ?? undefined;
+  // Rethrows on purpose. A caller handed undefined reads it as "no row to update" and drops its
+  // patch silently, which is how the prompt queue loses its model correction.
+  await awaitStoredChatThreadRecord(threadId);
+  return (await getChatThread(threadId)) ?? undefined;
 }
 
 export async function listStoredChatMessages(
@@ -880,6 +897,7 @@ export async function deleteStoredChatThreads(
   // thread. Bounded: a wedged request must not leave the user unable to delete.
   await Promise.all(ids.map((id) => awaitStoredChatThreadRecordBounded(id)));
   await deleteChatThreads(ids);
+  deleteLateThreadRecords(ids);
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();
@@ -903,6 +921,7 @@ export interface ClearStoredChatsResult {
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
   // Drain first: a row write still in flight would land after the clear, and the inventory below
   // would never have seen it to tombstone it.
+  const lateThreadIds = [...pendingThreadRecordByThreadId.keys()];
   await drainPendingStoredChatThreadRecords();
   // Clear both sides independently and report each outcome so the toast
   // can distinguish full vs partial success.
@@ -931,6 +950,7 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     // Defer the history refresh until Dexie clear and tombstones finalize,
     // so listeners never observe the composite clear mid-flight.
     await clearBackendChats({ notify: false });
+    deleteLateThreadRecords(lateThreadIds);
     result.backend = "cleared";
   } catch (error) {
     result.backend = "failed";
