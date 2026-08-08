@@ -192,6 +192,57 @@ def _assume_bare_metal(monkeypatch):
     )
 
 
+_LOOPBACK_HOSTS = frozenset({"::1", "localhost", "localhost.localdomain", "0.0.0.0", "::", ""})
+
+# Server URLs the suite is explicitly configured to talk to. Both documented external-server
+# modes may name a remote host, and neither suite carries the allow_network marker, so
+# blocking them would make a deliberately configured integration run unusable.
+_EXTERNAL_SERVER_ENV_VARS = ("UNSLOTH_E2E_BASE_URL", "STUDIO_TEST_URL")
+
+
+def _configured_server_hosts() -> frozenset:
+    """Hostnames from the external-server env vars, so a configured endpoint stays dialable."""
+    from urllib.parse import urlsplit
+
+    hosts = set()
+    for name in _EXTERNAL_SERVER_ENV_VARS:
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            continue
+        try:
+            host = urlsplit(raw).hostname
+        except ValueError:
+            continue
+        if host:
+            hosts.add(host.lower())
+    return frozenset(hosts)
+
+
+def _host_is_allowed(host) -> bool:
+    """True for loopback and for any host the suite was explicitly pointed at."""
+    if not isinstance(host, str):
+        return True
+    lowered = host.lower()
+    return (
+        lowered.startswith("127.")
+        or lowered in _LOOPBACK_HOSTS
+        or lowered in _configured_server_hosts()
+    )
+
+
+def _is_ip_literal(host) -> bool:
+    """True when *host* is already an address, so resolving it consults no resolver."""
+    import ipaddress
+
+    if not isinstance(host, str):
+        return False
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    return True
+
+
 def _is_local_endpoint(sock, address) -> bool:
     """True for anything the suite may dial: local IPC and loopback addresses.
 
@@ -207,9 +258,7 @@ def _is_local_endpoint(sock, address) -> bool:
         host = address[0]
     except Exception:
         return True
-    if not isinstance(host, str):
-        return True
-    return host.startswith("127.") or host in ("::1", "localhost", "0.0.0.0", "::", "")
+    return _host_is_allowed(host)
 
 
 @pytest.fixture(autouse = True)
@@ -252,6 +301,26 @@ def _no_outbound_network(request, monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", _guard(real_connect))
     monkeypatch.setattr(socket.socket, "connect_ex", _guard(real_connect_ex))
 
+    # Resolution runs before either of those: socket.create_connection, which is what the
+    # Hub's HTTP stack ends up in, calls getaddrinfo first. Left live, an uncached request
+    # still hits the host resolver and can stall there, so the dependency is not actually
+    # gone. Refuse the lookup too, which is also where a real resolver would fail.
+    real_getaddrinfo = socket.getaddrinfo
+
+    def guarded_getaddrinfo(host, port, *args, **kwargs):
+        # An address literal consults no resolver, so it cannot stall and is left alone;
+        # the SSRF guards resolve private literals on purpose to prove they reject them,
+        # and connect() still refuses anything non-loopback afterwards.
+        if _host_is_allowed(host) or _is_ip_literal(host):
+            return real_getaddrinfo(host, port, *args, **kwargs)
+        raise socket.gaierror(
+            socket.EAI_NONAME,
+            f"name resolution blocked in tests ({host!r}); "
+            f"stub the call, or mark the test with @pytest.mark.allow_network",
+        )
+
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+
     # A refused connection still looks retryable to huggingface_hub, which backs off
     # 1+2+4+8+8s over five attempts before giving up -- so blocking the socket without
     # this turns a fast failure back into a ~23s one per call. Swap the clock only
@@ -290,12 +359,25 @@ def _hub_reachable_without_probing(monkeypatch):
     the source module leaves already-imported bindings pointing at the real probes.
     Every caller reaches the memo through a function that reads the module global at
     call time, so seeding it covers them all regardless of import style.
+
+    The verdict is also pinned fresh for the whole test. The memo expires after
+    ``_HF_REACHABILITY_TTL_S`` (five seconds), so a seed stamped now would lapse in any
+    test that reaches a Hub-guarded operation later than that, and the real probe would
+    run into the blocked socket and select the offline branch this fixture exists to
+    avoid. The stamp is dated far ahead instead, which keeps it fresh under the real
+    freshness rule rather than disabling that rule for every test.
     """
     import time
 
     from utils import utils as utils_utils
 
-    monkeypatch.setattr(utils_utils, "_hf_reachability", (time.monotonic(), False), raising = False)
+    # Dated far ahead rather than by overriding _reachability_fresh: the freshness rule is
+    # itself under test (test_verdict_expires_so_a_disconnect_is_noticed shortens the TTL and
+    # asserts the verdict lapses), so it has to keep working. A future stamp keeps this seed
+    # fresh under the real rule, and a test that writes its own verdict replaces it.
+    monkeypatch.setattr(
+        utils_utils, "_hf_reachability", (time.monotonic() + 10**6, False), raising = False
+    )
 
 
 @pytest.fixture(scope = "session")

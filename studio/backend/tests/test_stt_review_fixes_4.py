@@ -182,11 +182,17 @@ def test_status_reads_do_not_block_during_a_llama_cpp_update():
         ), "a status read blocked for the length of the llama.cpp install"
 
 
-def test_ggml_download_drops_its_adopted_pid(monkeypatch):
+def test_ggml_download_drops_its_adopted_pid(monkeypatch, tmp_path):
     """spawn_download() adopts a PID; left adopted it can be reused, and
     terminate_all would then signal whatever inherited it.
     """
     forgotten = []
+
+    # Once metadata resolves, _run() prepares the repo's cache for HTTP before it
+    # reaches the stubbed worker, and that writes: it creates the repo directory and
+    # a .transport marker. The session conftest deliberately pins HF_HUB_CACHE to the
+    # developer's real cache, so without a cache of its own this test edits it.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
 
     class _Finished:
         pid = 7777
