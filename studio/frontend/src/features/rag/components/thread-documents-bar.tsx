@@ -7,6 +7,7 @@ import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { awaitStoredChatThreadRecord } from "@/features/chat/utils/chat-history-storage";
 import {
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
@@ -108,7 +109,9 @@ export function ThreadDocumentsBar({
     const pending = aui
       .threadListItem()
       .initialize()
-      .then(({ remoteId }) => {
+      .then(async ({ remoteId }) => {
+        // initialize() resolves before the row is written, and these documents index against it.
+        await awaitStoredChatThreadRecord(remoteId);
         setMaterializedId(remoteId);
         return remoteId;
       })
