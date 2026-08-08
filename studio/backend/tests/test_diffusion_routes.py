@@ -1326,19 +1326,16 @@ def test_precision_refusal_precedes_eviction_and_engine_selection(client, monkey
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
-def test_precision_gate_is_not_applied_to_the_native_engine(client, monkeypatch):
-    # sd.cpp accepts transformer_quant / text_encoder_quant for interface parity and ignores them,
-    # so gating that path on a torchao capability would refuse loads that work today.
+def test_the_native_engine_refuses_an_explicit_precision_it_cannot_honour(client, monkeypatch):
+    """sd.cpp accepts transformer_quant / text_encoder_quant for interface parity and IGNORES
+    them, so an explicit fp8 used to load happily, quantise nothing and report null -- the exact
+    silent mismatch this change exists to remove, on the one engine that was exempt from it. The
+    diffusers path already refuses on the same CPU-only host, so exempting this one also left the
+    two engines disagreeing about the same request."""
     import core.inference.diffusion_engine_router as engine_router
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
 
-    backend = diffusion_module.get_diffusion_backend()
     monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: ENGINE_SD_CPP)
-    monkeypatch.setattr(
-        backend,
-        "assert_precision_available",
-        lambda fam, **kw: pytest.fail("the native engine must not be precision-gated"),
-    )
     resp = client.post(
         "/api/inference/images/load",
         json = {
@@ -1347,7 +1344,45 @@ def test_precision_gate_is_not_applied_to_the_native_engine(client, monkeypatch)
             "transformer_quant": "fp8",
         },
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 409, resp.text
+    assert "native engine" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("quant", [None, "auto", "none"])
+def test_the_native_engine_still_loads_when_nothing_was_promised(client, monkeypatch, quant):
+    """The refusal is about an explicit request only. Omitted, auto and none all delegate the
+    choice, so a CPU-only host's ordinary GGUF load must keep working exactly as it does today."""
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: ENGINE_SD_CPP)
+    payload = {
+        "model_path": "unsloth/Z-Image-Turbo-GGUF",
+        "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+    }
+    if quant is not None:
+        payload["transformer_quant"] = quant
+    resp = client.post("/api/inference/images/load", json = payload)
+    assert resp.status_code == 200, resp.text
+
+
+def test_the_native_refusal_is_waived_by_the_fallback_escape_hatch(client, monkeypatch):
+    """Same escape hatch as every other precision refusal, or this one becomes the only
+    unbypassable member of the family."""
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: ENGINE_SD_CPP)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+            "transformer_quant": "fp8",
+        },
+    )
+    assert resp.status_code == 200, resp.text
 
 
 def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):

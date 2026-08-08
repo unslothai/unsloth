@@ -1098,10 +1098,16 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
         value={
           status.transformer_quant
             ? formatResolvedValue("transformer_quant", status.transformer_quant)
-            // No dense quant: a GGUF pick runs the checkpoint's own quant, anything else runs bf16.
+            // No dense quant ran. A GGUF pick keeps the checkpoint's own quantisation, and a
+            // single-file safetensors keeps whatever precision it was saved in -- FP8 checkpoints
+            // are explicitly supported, so claiming BF16 here would put a wrong number in the one
+            // panel whose job is to say what actually loaded. Only a full diffusers repo is
+            // genuinely bf16.
             : status.model_kind === "gguf"
               ? "GGUF (as-is)"
-              : "BF16"
+              : status.model_kind === "single_file"
+                ? "As in checkpoint"
+                : "BF16"
         }
         badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
       />

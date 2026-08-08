@@ -1226,6 +1226,13 @@ class VideoBackend:
         # Size tables below are bf16 (2-byte), so scale dense estimates when the promotion lands fp32 on an accelerator.
         dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
 
+        # What the CALLER asked for, before the rewrite below. The record has to report this, not
+        # the internal value: an omitted precision under speed_mode="off" becomes "off" here, and
+        # reporting that as the request makes the resolved record say the user pinned bf16. The
+        # frontend then hides the Auto badge and reseeds the Precision select to none, so after
+        # the user changes Speed and reloads, quantisation stays pinned off for no reason they
+        # can see.
+        transformer_quant_requested = transformer_quant
         # Precision tri-state: unset/"auto" -> hardware ladder; "none"/"off" pins dense bf16; an explicit scheme pins it. Pipeline-kind only.
         if transformer_quant is None or str(transformer_quant).strip().lower() in (
             "",
@@ -1664,7 +1671,7 @@ class VideoBackend:
                         cache_reason,
                     ),
                     "transformer_quant": (
-                        transformer_quant,
+                        transformer_quant_requested,
                         transformer_quant_engaged or "off",
                         # Honest framing: the shipped torchao schemes cut load time and resident memory ~2x, but per-step GEMMs are at best bf16 parity.
                         "DiT(s) quantised (halves resident weights; hosted checkpoints cut "

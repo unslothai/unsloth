@@ -20094,6 +20094,41 @@ async def diffusion_download_plan(
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
 
 
+def _assert_native_precision_unset(
+    *,
+    transformer_quant: Optional[str] = None,
+    text_encoder_quant: Optional[str] = None,
+) -> None:
+    """Refuse an EXPLICIT precision on the native sd.cpp engine, which cannot honour one.
+
+    It accepts both knobs for interface parity with the diffusers backend and ignores them, so
+    without this an explicit FP8 loads happily, quantises nothing, and reports null -- the silent
+    mismatch the resolved-precision work exists to remove. `auto` and `none` pass through: they
+    delegate the choice, and nothing is being promised.
+
+    Raises RuntimeError, which the route maps to 409 alongside the diffusers refusals."""
+    from core.inference.diffusion_auto_policy import precision_fallback_allowed
+    from core.inference.diffusion_precision import normalize_te_quant
+    from core.inference.diffusion_transformer_quant import TQ_AUTO, normalize_transformer_quant
+
+    if precision_fallback_allowed():
+        return
+    pinned = normalize_transformer_quant(transformer_quant)
+    te_mode = normalize_te_quant(text_encoder_quant)
+    asked = []
+    if pinned is not None and pinned != TQ_AUTO:
+        asked.append(f"transformer_quant={pinned!r}")
+    if te_mode is not None and te_mode != TQ_AUTO:
+        asked.append(f"text_encoder_quant={te_mode!r}")
+    if not asked:
+        return
+    raise RuntimeError(
+        f"{' and '.join(asked)} cannot be used: this pick runs on the native engine, which "
+        "loads a GGUF checkpoint as it is and has no torchao quantisation path. Leave the "
+        "precision on 'auto', or pick a model that loads through diffusers."
+    )
+
+
 @studio_router.post("/images/load", response_model = DiffusionStatusResponse)
 async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -20113,7 +20148,7 @@ async def load_diffusion_model(
         select_and_activate_engine,
     )
     from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
-    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -20167,15 +20202,24 @@ async def load_diffusion_model(
         # makes the identical network-free check, but it runs inside acquire_for -- which evicts
         # chat under the arbiter lock BEFORE the register callback -- and after selection, which
         # unloads the resident model on an engine switch. So a refusal raised there arrives having
-        # already destroyed the two things the 409 exists to preserve. Diffusers only: the native
-        # engine accepts these knobs for interface parity and ignores them, so refusing on that
-        # path would break loads that work today. `auto` is never refused, so a caller that left
-        # the precision to the backend cannot reach this.
+        # already destroyed the two things the 409 exists to preserve. `auto` is never refused, so
+        # a caller that left the precision to the backend cannot reach this.
         if fam is not None and pending_name == ENGINE_DIFFUSERS:
             await asyncio.to_thread(
                 backend.assert_precision_available,
                 fam,
                 model_kind = kind,
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+            )
+        elif fam is not None and pending_name == ENGINE_SD_CPP:
+            # The native engine accepts both knobs for interface parity and ignores them. It was
+            # excluded from the gate above so as not to refuse loads that work today, but the
+            # loads it "works" for are precisely the silent mismatch this whole change exists to
+            # remove: an explicit FP8 succeeds, quantises nothing, and reports null. Refusing is
+            # also what the diffusers path already does on the same CPU-only host, so leaving the
+            # two engines disagreeing was the worse of the options.
+            _assert_native_precision_unset(
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
             )
