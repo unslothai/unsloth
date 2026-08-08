@@ -249,7 +249,13 @@ def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_
         on_stall(verdict)
         return None
 
-    def flaky_spawn(args, _token, *, use_xet, protected_blob_hashes = None):
+    def flaky_spawn(
+        args,
+        _token,
+        *,
+        use_xet,
+        protected_blob_hashes = None,
+    ):
         if use_xet:
             raise OSError("cannot fork")
         return _Proc(0)  # the HTTP worker starts and completes
