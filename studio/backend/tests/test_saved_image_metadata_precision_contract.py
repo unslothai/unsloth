@@ -200,6 +200,34 @@ def stub_runtime(monkeypatch):
     monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", lambda: None)
     _FakeTransformer.last = {}
     yield torch
+    # A load that COMMITS deliberately keeps its process-wide eager/arch patches installed --
+    # only unload() reverts them (diffusion.py's finally covers the pre-commit failure path
+    # alone), and the GGUF default speed profile is "default", not "off", so the install runs.
+    # Today nothing survives here because diffusers 0.39's bodies do not match the drift guards,
+    # but that is a version accident, so revert unconditionally rather than rely on it. Both
+    # calls are idempotent, and this runs before monkeypatch restores the stub modules.
+    try:
+        from core.inference.diffusion_arch_patches import uninstall_arch_patches
+        from core.inference.diffusion_eager_patches import uninstall_patches
+
+        uninstall_patches()
+        uninstall_arch_patches()
+    except Exception:  # noqa: BLE001 - teardown must not mask the test's own failure
+        pass
+
+
+@pytest.fixture
+def backend(stub_runtime):
+    """A backend that is unloaded afterwards, so a committed load's process-wide state does not
+    outlive the test that created it."""
+    instance = DiffusionBackend()
+    try:
+        yield instance
+    finally:
+        try:
+            instance.unload()
+        except Exception:  # noqa: BLE001 - a stub teardown failure is not this test's verdict
+            pass
 
 
 def _load(backend, tmp_path, monkeypatch, torch, **kwargs):
@@ -218,11 +246,12 @@ def _generate(backend):
 # ── backend: generate() reports the committed load state ──────────────────────
 
 
-def test_a_declined_quant_request_is_not_reported_as_engaged(stub_runtime, tmp_path, monkeypatch):
+def test_a_declined_quant_request_is_not_reported_as_engaged(
+    backend, stub_runtime, tmp_path, monkeypatch
+):
     """The user asked for fp8; the host has no dense source, so the GGUF loaded as-is.
     The recipe must say "GGUF, no quant", not "fp8"."""
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: False)
-    backend = DiffusionBackend()
     status = _load(backend, tmp_path, monkeypatch, stub_runtime, transformer_quant = "fp8")
 
     assert status["transformer_quant"] is None
@@ -243,7 +272,7 @@ def test_a_declined_quant_request_is_not_reported_as_engaged(stub_runtime, tmp_p
 
 
 def test_generate_reports_the_engaged_scheme_when_it_differs_from_the_request(
-    stub_runtime, tmp_path, monkeypatch
+    backend, stub_runtime, tmp_path, monkeypatch
 ):
     """The request said fp8; the resolver picked int8 for this GPU. int8 is what ran, so
     int8 is what the recipe has to record."""
@@ -265,7 +294,6 @@ def test_generate_reports_the_engaged_scheme_when_it_differs_from_the_request(
         diffusion_module, "quantize_transformer", lambda pipe, target, *, mode, **kw: engaged
     )
 
-    backend = DiffusionBackend()
     status = _load(backend, tmp_path, monkeypatch, stub_runtime, transformer_quant = requested)
 
     assert status["transformer_quant"] == engaged
@@ -429,6 +457,20 @@ def test_the_persisted_recipe_records_the_engaged_build_not_the_load_request(eng
     assert meta["model_kind"] == "gguf"
     assert meta["gguf_filename"] == "z-image-Q4_K_M.gguf"
 
+    # ...and again through the response model, because that is what the Recipe popover reads.
+    # The dict above is pre-serialization: a GalleryImage that stops declaring these fields has
+    # FastAPI silently strip them from the wire while every assertion above still passes.
+    body = gen.json()["images"][0]
+    for field, expected in (
+        ("transformer_quant", _EngagedBackend.engaged),
+        ("model_kind", "gguf"),
+        ("gguf_filename", "z-image-Q4_K_M.gguf"),
+    ):
+        assert body.get(field) == expected, (
+            f"the generate response dropped {field!r}: the route recorded {meta[field]!r} and "
+            f"the serialized body says {body.get(field)!r}"
+        )
+
 
 # ── gallery: the build keys stay additive ─────────────────────────────────────
 
@@ -495,6 +537,18 @@ def test_a_png_with_the_build_keys_round_trips_them(tmp_gallery):
     record = gallery.save(Image.new("RGB", (16, 16), (10, 20, 30)), meta)
     listed = gallery.list_images()
     assert listed[0]["transformer_quant"] == "int8"
+
+    # Through the listing's response model too. Pydantic drops anything the model does not
+    # declare, so a GalleryImage that stops carrying a build key leaves the raw assertion above
+    # green and the wire silently short -- which is the popover going blank.
+    from models.inference import GalleryListResponse
+
+    wire = GalleryListResponse(images = listed).model_dump()["images"][0]
+    for key in ("model_kind", "gguf_filename", "transformer_quant"):
+        assert wire.get(key) == meta[key], (
+            f"GalleryImage no longer serializes {key!r}: the record has {meta[key]!r}, the wire "
+            f"has {wire.get(key)!r}"
+        )
 
     # The PNG itself carries the recipe, so a downloaded file keeps the build identity.
     raw = (gallery.gallery_dir() / f"{record['id']}.png").read_bytes()

@@ -32,7 +32,7 @@ import pytest
 import core.training.diffusion_train_common as common
 from core.inference.diffusion_lora import _DIFFUSERS_LORA_BLOCKED_QUANT
 from core.inference.diffusion_precision import TE_QUANT_MODES, TE_QUANT_NVFP4
-from core.training.diffusion_train_common import train_precision_modes
+from core.training.diffusion_train_common import DiffusionLoraConfig, train_precision_modes
 from models.inference import DiffusionLoadRequest
 from models.training import DiffusionTrainingStartRequest
 
@@ -172,6 +172,50 @@ def test_the_start_request_rejects_an_inference_only_precision(scheme):
     assert "base_precision" in str(excinfo.value)
 
 
+def test_the_trainer_accepts_exactly_what_the_schema_advertises():
+    """The one link the rest of this file cannot supply. Every set above is derived from the
+    request schema and the probe, so a mode added to BOTH of those disappears from
+    ``_INFERENCE_ONLY`` and every assertion here passes -- while
+    ``DiffusionLoraConfig.normalized()`` keeps its own hardcoded tuple and rejects the run after
+    it has already evicted the resident model. Asked of the trainer directly rather than parsed
+    out of it, so a refactor of that tuple cannot fool the check.
+    """
+    accepted, refused = set(), {}
+    for mode in sorted(_TRAIN_PRECISIONS):
+        config = DiffusionLoraConfig(
+            base_model = "black-forest-labs/FLUX.1-dev",
+            data_dir = "d",
+            output_dir = "o",
+            base_precision = mode,
+        )
+        try:
+            config.normalized()
+        except ValueError as exc:
+            # Only a base_precision verdict counts; an unrelated validation error is not one.
+            if "base_precision must be one of" in str(exc):
+                refused[mode] = str(exc)
+                continue
+        accepted.add(mode)
+
+    assert not refused, (
+        f"the request schema advertises {sorted(refused)}, which DiffusionLoraConfig.normalized() "
+        "rejects; a start would evict the resident model and then fail"
+    )
+    assert accepted == set(_TRAIN_PRECISIONS)
+
+    # ...and the tuple is not simply permissive: an inference-only scheme still has to bounce,
+    # or the assertion above would hold for a trainer that accepts everything.
+    for scheme in sorted(_INFERENCE_ONLY):
+        bogus = DiffusionLoraConfig(
+            base_model = "black-forest-labs/FLUX.1-dev",
+            data_dir = "d",
+            output_dir = "o",
+            base_precision = scheme,
+        )
+        with pytest.raises(ValueError, match = "base_precision must be one of"):
+            bogus.normalized()
+
+
 def test_every_training_precision_is_accepted_by_the_start_request():
     for mode in sorted(_TRAIN_PRECISIONS):
         req = DiffusionTrainingStartRequest(
@@ -254,7 +298,14 @@ def test_the_reported_mode_filter_is_a_subset_of_what_the_backend_can_report(mon
     whitelist = set(_M_EQUALS.findall(predicate))
     assert whitelist, f"parsed no whitelist arms out of {predicate!r}"
     advertisable = _every_advertisable_mode(monkeypatch)
-    assert whitelist <= advertisable, sorted(whitelist - advertisable)
+    # Equality, not containment. A subset check passes just as happily when an arm is DELETED,
+    # and the effect of deleting one is that the backend keeps reporting the mode while the panel
+    # silently drops it from the select -- a mode the user can never pick and no error anywhere.
+    assert whitelist == advertisable - _SENTINELS, (
+        f"the panel filters to {sorted(whitelist)} but the backend can report "
+        f"{sorted(advertisable - _SENTINELS)}; \"auto\" is prepended separately, so the filter "
+        "has to name every other advertisable mode exactly"
+    )
     assert not _INFERENCE_ONLY.intersection(whitelist)
 
 

@@ -87,20 +87,38 @@ def test_every_preset_survives_the_family_snap_unchanged(name):
 
 @pytest.mark.parametrize("name", _FAMILY_NAMES)
 def test_presets_are_unique_and_land_in_the_status_payload(name):
+    """Through the real ``VideoBackend.status()``, not a hand-built VideoGenerationDefaults.
+
+    Constructing the model here would assert only that Pydantic round-trips a list, and would
+    stay green if status() ever hardcoded a preset list or stopped emitting the key at all --
+    which is the loaded UI offering shapes the checkpoint was never trained at.
+    """
+    import core.inference.video as video_module
+
     fam = _family(name)
     presets = [tuple(p) for p in fam.resolution_presets]
     assert len(set(presets)) == len(presets), f"{name} repeats a preset: {presets}"
-    # status() ships them as list[list[int]]; the response model must accept them as-is.
-    defaults = VideoGenerationDefaults(
-        steps = fam.default_steps,
-        guidance = fam.default_guidance,
-        num_frames = fam.default_num_frames,
-        fps = fam.default_fps,
-        frame_step = fam.frame_step,
-        resolution_multiple = fam.resolution_multiple,
-        resolution_presets = [list(p) for p in fam.resolution_presets],
+
+    backend = video_module.VideoBackend()
+    backend._state = video_module._VideoLoadState(
+        pipe = object(),
+        family = fam,
+        repo_id = f"unsloth/{name}",
+        base_repo = fam.base_repo,
+        device = "cpu",
+        dtype = "bfloat16",
+        kind = "pipeline",
     )
-    assert [tuple(p) for p in defaults.resolution_presets] == presets
+    defaults_payload = backend.status()["defaults"]
+    assert defaults_payload is not None, "status() stopped emitting defaults"
+
+    # ...and through the response model the route declares, which is what reaches the browser.
+    defaults = VideoGenerationDefaults(**defaults_payload)
+    assert [tuple(p) for p in defaults.resolution_presets] == presets, (
+        f"{name}: status() serves {defaults.resolution_presets} but the family declares {presets}"
+    )
+    assert defaults.frame_step == fam.frame_step
+    assert defaults.resolution_multiple == fam.resolution_multiple
 
 
 # ── the frontend fallback ─────────────────────────────────────────────────────
