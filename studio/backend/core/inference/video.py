@@ -706,6 +706,7 @@ class VideoBackend:
             H3_COMPONENT_REPO,
             H3_GGUF_REPO,
             H3_VIDEO_VAE,
+            h3_download_error,
             h3_text_encoder_filename,
         )
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -746,11 +747,14 @@ class VideoBackend:
                 from .diffusion_families import resolve_local_gguf_child
                 local = resolve_local_gguf_child(root, wanted)
             else:
-                local = Path(
-                    hf_hub_download_with_xet_fallback(
-                        repo, wanted, hf_token, cancel_event = cancel_event
+                try:
+                    local = Path(
+                        hf_hub_download_with_xet_fallback(
+                            repo, wanted, hf_token, cancel_event = cancel_event
+                        )
                     )
-                )
+                except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name
+                    raise h3_download_error(repo, wanted, exc) from exc
             resolved.append(local)
 
         target = resolve_diffusion_device_target()

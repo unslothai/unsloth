@@ -62,6 +62,41 @@ def validate_h3_transformer_filename(filename: str) -> None:
         )
 
 
+def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
+    """Turn a Hub download failure on an H3 component into something a user can act on.
+
+    The Hub says "Repository Not Found ... make sure you are authenticated" for a repo that is
+    private or gated as well as for one that genuinely does not exist. For H3 that message is
+    actively misleading in both directions: the mirror is real, and the user's own token is
+    usually fine. Name the repo, say which of the four components it was, and say what to do.
+
+    Returns the exception to raise (never raises), so the caller keeps ``raise ... from exc`` and
+    the original traceback survives. Anything that is not a recognised access error is passed back
+    unchanged rather than reworded, so a timeout or a disk-full still reads as itself.
+    """
+    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+
+    if not isinstance(exc, (RepositoryNotFoundError, GatedRepoError)):
+        return exc
+
+    role = {
+        H3_VIDEO_VAE: "video VAE",
+        H3_AUDIO_VAE: "audio VAE",
+        H3_QWEN_Q2: "text encoder",
+        H3_QWEN_Q4: "text encoder",
+    }.get(filename, "denoiser")
+    gated = isinstance(exc, GatedRepoError)
+    detail = (
+        "accept its licence on the Hub, then set a token in Settings"
+        if gated
+        else "it may be private or not published yet, or your token may not cover it"
+    )
+    return RuntimeError(
+        f"MiniMax-H3 could not download its {role} ({filename}) from {repo_id}: {detail}. "
+        f"The other H3 components are unaffected."
+    )
+
+
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:
     validate_h3_transformer_filename(transformer_filename)
     return (

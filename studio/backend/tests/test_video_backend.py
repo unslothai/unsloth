@@ -2601,6 +2601,59 @@ def test_the_h3_native_repo_matches_the_family_gguf_repo():
     )
 
 
+def test_h3_names_the_component_when_a_download_is_refused():
+    """A 401 on one H3 component must not surface as the Hub's raw "Repository Not Found".
+
+    H3 pulls four files from two repos, and the Hub returns the same message for "does not exist",
+    "is private" and "your token does not cover it". A user reading it has no way to tell which of
+    the four failed, and "Repository Not Found" actively points away from the real cause when the
+    repo exists but is private. This matters most while the GGUF mirror is unpublished: without
+    this, picking H3 fails with a message that suggests the wrong fix.
+    """
+    from unittest.mock import Mock
+
+    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+
+    from core.inference.video_minimax_h3 import (
+        H3_AUDIO_VAE,
+        H3_QWEN_Q2,
+        h3_download_error,
+    )
+
+    def _hub_error(cls):
+        response = Mock()
+        response.status_code = 401
+        response.headers = {}
+        return cls("Repository Not Found for url: ...", response = response)
+
+    # Private / unpublished: name the repo and the component, and do not blame the token alone.
+    denoiser = h3_download_error(
+        "unsloth/MiniMax-H3-GGUF",
+        "minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf",
+        _hub_error(RepositoryNotFoundError),
+    )
+    assert isinstance(denoiser, RuntimeError)
+    text = str(denoiser)
+    assert "unsloth/MiniMax-H3-GGUF" in text
+    assert "denoiser" in text
+    assert "not published yet" in text
+
+    # The same repo serves the encoder, so the component name has to come from the FILE.
+    encoder = str(h3_download_error("unsloth/MiniMax-H3-GGUF", H3_QWEN_Q2, _hub_error(RepositoryNotFoundError)))
+    assert "text encoder" in encoder and "denoiser" not in encoder
+
+    # A gated repo has a different remedy, so it must not reuse the private wording.
+    gated = str(h3_download_error("Comfy-Org/MiniMax-H3", H3_AUDIO_VAE, _hub_error(GatedRepoError)))
+    assert "audio VAE" in gated
+    assert "accept its licence" in gated
+    assert "not published yet" not in gated
+
+    # Anything that is not an access error is passed straight back, so a timeout still reads as a
+    # timeout rather than being reworded into a permissions problem.
+    timeout = TimeoutError("read timed out")
+    assert h3_download_error("unsloth/MiniMax-H3-GGUF", H3_QWEN_Q2, timeout) is timeout
+
+
 def test_the_h3_native_path_pins_cfg_scale_to_one():
     """H3 aborts at any cfg above 1.0, so the guidance slider must never reach sd-cli.
 
