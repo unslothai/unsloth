@@ -96,6 +96,29 @@ const BLOCKQUOTE_PATTERN = /^(?: {0,3}>)+/;
 // is a link and not an element. Reading it as one would emit a closer the
 // message never opened, or spend the closer of one it did.
 const LINK_DESTINATION_PATTERN = /\]\(\s*<[^<>]*>/g;
+// An image description becomes the alt attribute, escaped, so a tag in there
+// is text. A link label is not: CommonMark parses raw html inside one.
+const IMAGE_DESCRIPTION_PATTERN = /!\[[^\]]*\]/g;
+// A backtick run left over once the closed spans on a line are masked. It opens
+// a span that carries on to the next line.
+const OPEN_RUN_PATTERN = /(^|[^`])(`+)(?!`)/;
+// Block structure is read before inlines, so a line starting with a tag begins
+// an html block and ends any span that was still open above it.
+const HTML_BLOCK_START_PATTERN = /^ {0,3}<[A-Za-z!/?]/;
+
+// A run only opens a span if its match actually arrives, so look ahead before
+// masking anything: an unmatched run is ordinary live text. The search stops
+// where a span would, at a blank line or an html block.
+function runClosesLater(lines: readonly string[], from: number, run: string): boolean {
+  const closer = new RegExp("(^|[^`])(" + run + ")(?!`)");
+  for (let index = from; index < lines.length; index += 2) {
+    const line = lines[index] as string;
+    const content = line.slice((BLOCKQUOTE_PATTERN.exec(line)?.[0] ?? "").length);
+    if (line.trim() === "" || HTML_BLOCK_START_PATTERN.test(content)) return false;
+    if (closer.test(line)) return true;
+  }
+  return false;
+}
 // A comment, a processing instruction and a cdata section are read to their
 // own terminator, not
 // to a blank line or a tag, so one left open swallows the rest of the file.
@@ -114,7 +137,20 @@ const UNCLOSABLE_ELEMENTS: ReadonlySet<string> = new Set(["plaintext"]);
 // Container elements need a blank line before their closer or it is read as a
 // lazy continuation of the paragraph above. Raw text elements must not have
 // one: there the blank line is content the element would render.
-const CONTAINER_ELEMENTS: ReadonlySet<string> = new Set(["details"]);
+const CONTAINER_ELEMENTS: ReadonlySet<string> = new Set(["details", "select"]);
+// The tokenizer reads these as text, not markup, until it meets their own end
+// tag, so a </details> inside one is script data and must not close a details
+// that is genuinely open outside it. pre is not here: it holds real markup.
+const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
+  "iframe",
+  "noembed",
+  "noframes",
+  "script",
+  "style",
+  "textarea",
+  "title",
+  "xmp",
+]);
 // CommonMark start condition 1: inside one of these the markdown block runs to
 // the end tag, so a fence or an indented code line in there is literal text.
 const CONDITION_1_ELEMENTS: ReadonlySet<string> = new Set([
@@ -141,6 +177,7 @@ const PERSISTENT_ELEMENTS: ReadonlySet<string> = new Set([
   "noframes",
   "pre",
   "script",
+  "select",
   "style",
   "template",
   "textarea",
@@ -158,6 +195,9 @@ function closeOpenBlocks(text: string): string {
   // An indented code block runs through blank lines to the first line that is
   // not indented, so the state has to outlive the line that opened it.
   let indented = false;
+  // A code span may cross a soft line break, so an unclosed run keeps masking
+  // until its match arrives.
+  let span = "";
   // Tag starts whose > has not arrived yet, and the quote a value is inside.
   // Once a tag is unfinished every < after it is inside that tag, but each one
   // becomes a tag start again as soon as the one before it is neutralised.
@@ -217,6 +257,16 @@ function closeOpenBlocks(text: string): string {
         : afterBlank && INDENTED_CODE_PATTERN.test(content);
       if (indented) continue;
     }
+    // A span in progress swallows this line up to its closing run. A blank line
+    // ends it, and so does an html block, which the parser sees first.
+    if (span && (blankLine || HTML_BLOCK_START_PATTERN.test(content))) span = "";
+    if (span) {
+      const closer = new RegExp("(^|[^`])(" + span + ")(?!`)").exec(line);
+      if (closer === null) continue;
+      const consumed = (closer.index ?? 0) + closer[0].length;
+      line = " ".repeat(consumed) + line.slice(consumed);
+      span = "";
+    }
     // Every substitution below is length preserving, so a column found here is
     // still the right column in the original line.
     let prose = line
@@ -224,6 +274,7 @@ function closeOpenBlocks(text: string): string {
       .replace(CODE_SPAN_PATTERN, (span: string, lead: string) =>
         lead + " ".repeat(span.length - lead.length),
       )
+      .replace(IMAGE_DESCRIPTION_PATTERN, (alt) => " ".repeat(alt.length))
       .replace(LINK_DESTINATION_PATTERN, (link) => " ".repeat(link.length))
       .replace(CLOSED_LITERAL_PATTERN, (span) => " ".repeat(span.length));
     // The backslash is the markdown parser's, so it only holds where that
@@ -232,6 +283,14 @@ function closeOpenBlocks(text: string): string {
       prose = prose.replace(ESCAPED_LT_PATTERN, (backslashes) =>
         backslashes.length % 2 === 0 ? `${backslashes.slice(0, -1)} ` : backslashes,
       );
+    }
+    // Whatever run is left once the closed spans are masked opens a span that
+    // runs on, so the rest of this line is code as well.
+    const leftover = OPEN_RUN_PATTERN.exec(prose);
+    if (leftover !== null && runClosesLater(parts, part + 2, leftover[2] as string)) {
+      span = leftover[2] as string;
+      const from = (leftover.index ?? 0) + (leftover[1] as string).length;
+      prose = prose.slice(0, from) + " ".repeat(prose.length - from);
     }
     // These first: whichever opens last swallows every tag after it.
     let blockAt = -1;
@@ -281,6 +340,8 @@ function closeOpenBlocks(text: string): string {
       unfinished = [];
       at = end + 1;
       const tag = name.toLowerCase();
+      const rawText = [...open].reverse().find((name_) => RAW_TEXT_ELEMENTS.has(name_));
+      if (rawText !== undefined && !(slash && tag === rawText)) continue;
       if (!slash && UNCLOSABLE_ELEMENTS.has(tag)) {
         escapes.push(start);
         continue;
@@ -349,8 +410,12 @@ function inlineCode(raw: string): string {
   );
   const ticks = "`".repeat(longestRun + 1);
   // Padding keeps a leading or trailing backtick from closing the span, and
-  // keeps an empty value from collapsing into one delimiter run.
-  const pad = !value || value.startsWith("`") || value.endsWith("`") ? " " : "";
+  // keeps an empty value from collapsing into one delimiter run. CommonMark
+  // 6.1 also strips one space from each end of a span that has one at both,
+  // unless it is all spaces, so a padded argument needs a spare pair or it
+  // renders with its own whitespace missing.
+  const stripped = value.startsWith(" ") && value.endsWith(" ") && value.trim() !== "";
+  const pad = !value || value.startsWith("`") || value.endsWith("`") || stripped ? " " : "";
   return `${ticks}${pad}${value}${pad}${ticks}`;
 }
 

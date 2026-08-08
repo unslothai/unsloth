@@ -1091,3 +1091,61 @@ test("reads an angle bracket link destination as a url", () => {
     "<details>\nreal\n\n[x](</details>)\n\n</details>",
   );
 });
+
+test("reads a closing tag inside a raw text element as text", () => {
+  // The tokenizer takes </details> there as script data, so it must not spend
+  // the closer of a details that is genuinely open around it.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<details>\n<script>\n</details>" }]),
+    "<details>\n<script>\n</details>\n</script>\n\n</details>",
+  );
+});
+
+test("keeps the edge spaces of a code span value", () => {
+  // CommonMark 6.1 strips one space from each end of a span that has one at
+  // both, so a padded tool argument would render with its whitespace missing.
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "tool-call", name: "t", args: { k: " padded " } },
+    ]),
+    "**tool call:** `t`\n\n**k:** `  padded  `",
+  );
+  // All spaces is exempt from the rule, and needs no extra pair.
+  assert.equal(
+    renderConversationBlocks([{ kind: "tool-call", name: "t", args: { k: "  " } }]),
+    "**tool call:** `t`\n\n**k:** `  `",
+  );
+});
+
+test("follows a code span across a soft line break", () => {
+  // The span is one inline, so the tag inside it is literal on both lines.
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "<details>\nreal\n\nuse `foo\nbar </details>` here" },
+    ]),
+    "<details>\nreal\n\nuse `foo\nbar </details>` here\n\n</details>",
+  );
+  // A run with no match is live text, not an unterminated span.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "`foo\nbar <details> here" }]),
+    "`foo\nbar <details> here\n\n</details>",
+  );
+});
+
+test("reads an image description as alt text", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "<details>\nreal\n\n![caption </details>](image.png)" },
+    ]),
+    "<details>\nreal\n\n![caption </details>](image.png)\n\n</details>",
+  );
+});
+
+test("closes a select the message left open", () => {
+  // The browser stays in select insertion mode and folds the next role heading
+  // into the control instead of rendering it.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<select>\n<option>one" }]),
+    "<select>\n<option>one\n\n</select>",
+  );
+});
