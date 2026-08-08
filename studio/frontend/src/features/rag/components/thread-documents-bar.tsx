@@ -7,6 +7,7 @@ import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { chatHistoryClearBoundary } from "@/features/chat/utils/chat-history-clear-boundary";
 import {
   ensureStoredChatThread,
   isThreadIncognito,
@@ -109,6 +110,7 @@ export function ThreadDocumentsBar({
   const ensureThreadId = useCallback((): Promise<string | null> => {
     if (effectiveThreadId) return Promise.resolve(effectiveThreadId);
     if (initPromiseRef.current) return initPromiseRef.current;
+    const clearGeneration = chatHistoryClearBoundary.capture();
     const pending = aui
       .threadListItem()
       .initialize()
@@ -118,6 +120,11 @@ export function ThreadDocumentsBar({
         const needsStoredRow = !isThreadIncognito(remoteId);
         if (needsStoredRow && !(await ensureStoredChatThread(remoteId))) {
           throw new Error(`Thread ${remoteId} was not persisted`);
+        }
+        // A clear that landed while the row write was in flight is deleting this thread, so
+        // indexing documents against it now would outlive the clear.
+        if (chatHistoryClearBoundary.capture() !== clearGeneration) {
+          throw new Error("Chat history was cleared");
         }
         setMaterializedId(remoteId);
         return remoteId;

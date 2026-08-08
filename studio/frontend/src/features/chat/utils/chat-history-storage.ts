@@ -317,7 +317,21 @@ function mergeMessages(
   return { messages: Array.from(byId.values()), shouldSync };
 }
 
-async function importLegacyThread(
+// Point imports commit their row before the bump below lands, so a listing waits for the ones
+// already in flight instead of trusting the generation alone.
+const pendingLegacyThreadImports = new Set<Promise<unknown>>();
+
+function importLegacyThread(
+  thread: ThreadRecord,
+): Promise<ThreadRecord | undefined> {
+  const work = importLegacyThreadRow(thread);
+  pendingLegacyThreadImports.add(work);
+  const forget = () => pendingLegacyThreadImports.delete(work);
+  work.then(forget, forget);
+  return work;
+}
+
+async function importLegacyThreadRow(
   thread: ThreadRecord,
 ): Promise<ThreadRecord | undefined> {
   const saved = await saveChatThread(thread);
@@ -742,6 +756,10 @@ export async function listStoredChatThreads(
   });
   if (backendThreads) {
     await importLegacyChatsIfNeeded().catch(() => undefined);
+    // A point import can have committed its row while its bump is still pending.
+    if (pendingLegacyThreadImports.size > 0) {
+      await Promise.allSettled([...pendingLegacyThreadImports]);
+    }
     // Re-read only when the import created threads the read above could not see.
     if (legacyChatImportGeneration !== importGenerationBeforeRead) {
       backendThreads = await listChatThreads(args).catch(() => backendThreads);
