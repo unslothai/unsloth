@@ -107,6 +107,10 @@ class _LoadRecorder:
         return None
 
 
+# The reload-capability checks in routes/inference ask whether idle unload is
+# CONFIGURED, not what the effective TTL is: Model Memory residency zeroes the
+# latter, and a model the idle loop already freed still has to come back. So a
+# stubbed TTL is paired with the configured reader wherever one is set.
 def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_kw: resolves_to)
@@ -487,6 +491,7 @@ def test_idle_loop_does_not_unload_freshly_loaded_model(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 1)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 1 > 0)
     kw._inflight = 0
     kw._last_active = time.monotonic() - 3600
 
@@ -516,6 +521,7 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     kw._inflight = 0
     kw._pending = 0
     kw._last_active = time.monotonic() - 3600
@@ -551,6 +557,7 @@ def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
     kw._inflight = 0
     kw._pending = 0
@@ -619,6 +626,51 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
     assert kw._kv_resume is None and not saved.exists()
 
 
+def test_residency_does_not_purge_saved_kv(monkeypatch, tmp_path):
+    # Residency zeroes the effective TTL, but the user never turned idle unload
+    # off, so saving anything else must leave their saved KV alone.
+    import routes.settings as settings_route
+    from core.inference import llama_keepwarm as kw
+
+    saved = tmp_path / "resume-abc-slot0.bin"
+    saved.write_bytes(b"kv")
+    manifest = {
+        "identity": ("m", None, "m"),
+        "dir": str(tmp_path),
+        "slots": [{"id": 0, "filename": saved.name}],
+    }
+    kw._kv_resume = manifest
+    monkeypatch.setattr(
+        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False)
+    )
+    monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
+    monkeypatch.setattr(settings_route, "idle_unload_is_configured", lambda: True)
+
+    payload = settings_route.OpenAIAutoSwitchPayload(enabled = True)
+    resp = settings_route.update_openai_auto_switch(payload, "tester")
+    try:
+        assert resp.idle_unload_active is False
+        assert kw._kv_resume is manifest and saved.exists()
+    finally:
+        kw._kv_resume = None
+
+
+def test_idle_unload_is_configured_ignores_the_residency_veto(monkeypatch):
+    # The reader the purge uses must report the user's setting, not the veto.
+    import utils.model_memory_settings as mm
+    import utils.openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(settings, "_stored_idle_seconds", lambda: 300)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+
+    assert settings.get_auto_unload_idle_seconds() == 0
+    assert settings.idle_unload_is_configured() is True
+
+    monkeypatch.setattr(settings, "_stored_idle_seconds", lambda: 0)
+    assert settings.idle_unload_is_configured() is False
+
+
 def test_audio_generate_is_tracked_as_inference_path():
     # Direct GGUF TTS uses the llama backend and can outlive the idle TTL, so
     # the keep-warm middleware must count it as in-flight inference.
@@ -636,6 +688,7 @@ def test_idle_loop_does_not_unload_while_request_inflight(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.01)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.01 > 0)
     monkeypatch.setattr(kw, "_inflight", 1)
     monkeypatch.setattr(kw, "_last_active", time.monotonic() - 3600)
 
@@ -1378,6 +1431,7 @@ def test_idle_loop_resets_timer_for_same_repo_different_variant(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.05)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.05 > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_pending", 0)
 
@@ -1988,6 +2042,7 @@ def test_env_idle_standalone_reloads_freed_model_with_auto_switch_off(monkeypatc
         recorder = rec,
     )
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)  # standalone env TTL
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 600 > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     # A is restored, but the request named B, so it is told so rather than served A.
@@ -2010,6 +2065,7 @@ def test_no_stash_reload_when_idle_off_and_auto_switch_off(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0 > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     _run_hook("org/B-GGUF")
@@ -2332,6 +2388,7 @@ def _stash(monkeypatch, *, idle = 600):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: idle)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: idle > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
 
@@ -2594,6 +2651,7 @@ def test_omitted_model_still_reloads_idle_freed_model(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 600 > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     asyncio.run(
@@ -3058,6 +3116,7 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 600 > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     monkeypatch.setattr(
@@ -4737,6 +4796,7 @@ def test_idle_unload_saves_slots_before_unload_and_stashes_manifest(monkeypatch,
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
     kw._inflight = 0
     kw._pending = 0
@@ -4779,6 +4839,7 @@ def test_idle_save_failure_still_unloads_plain(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
     kw._inflight = 0
     kw._pending = 0
@@ -4811,6 +4872,7 @@ def test_keep_kv_setting_off_skips_save(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
     kw._inflight = 0
     kw._pending = 0
@@ -4841,6 +4903,7 @@ def test_keep_kv_disabled_mid_save_discards_manifest(monkeypatch, tmp_path):
 
     keep = {"on": True}
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: keep["on"])
     kw._inflight = 0
     kw._pending = 0
@@ -4882,6 +4945,7 @@ def test_idle_ttl_disabled_mid_save_skips_unload(monkeypatch, tmp_path):
 
     ttl = {"v": 0.005}
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: ttl["v"])
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: ttl["v"] > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
     kw._inflight = 0
     kw._pending = 0
@@ -5091,6 +5155,7 @@ def test_stale_stash_cleanup_waits_for_lifecycle_gate(monkeypatch, tmp_path):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 3600)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 3600 > 0)
     kw._inflight = 0
     kw._pending = 0
     kw._last_active = time.monotonic()
@@ -6842,3 +6907,21 @@ def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkey
     stored = settings.get_model_overrides()
     assert list(stored) in ([repo], [snapshot]), stored
     assert stored[list(stored)[0]]["max_seq_length"] in (4096, 8192)
+
+
+def test_mlx_kv_bits_survives_the_whole_override_projection():
+    # Dropped here, an API auto-switch would load a remembered MLX model at full
+    # precision while the picker honored the width.
+    for bits in (8, 6, 5, 4, 3, 2):
+        assert settings.normalize_model_override({"mlx_kv_bits": bits}) == {"mlx_kv_bits": bits}
+
+    # A discrete set, so an in-range width can still be one mx.quantize rejects.
+    # bool is an int subclass, and a string width would reach LoadRequest untyped.
+    for rejected in (7, 1, 0, 9, True, False, "4", 4.5, None):
+        assert settings.normalize_model_override({"mlx_kv_bits": rejected}) == {}
+
+    # Ungated on is_gguf, matching the picker's own load payload.
+    for is_gguf in (True, False):
+        kwargs = settings.model_override_load_kwargs({"mlx_kv_bits": 4}, is_gguf = is_gguf)
+        assert kwargs["mlx_kv_bits"] == 4
+        assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_bits == 4

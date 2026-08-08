@@ -211,6 +211,14 @@
       "evidence_hash": "c066cc27bce31ee7b6ce07411ee7a7d9ecfbf3aafc8848f6641fabfe522a7703"
     },
     {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/utils/_http.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L461:     while True: sha256:0c9641548adea74be4a8b0e86e8b75cc937a2b0f833b57dfa3d30d3e24d2537a",
+      "evidence_hash": "70d25136ca2a91d192bd816706db7113a2ad0f96bc1b2381d0d4747a5ff1925d"
+    },
+    {
       "package": "ipython",
       "file": "IPython/core/interactiveshell.py",
       "check": "Enumerates filesystem AND makes network calls",
@@ -1721,6 +1729,63 @@
       "severity": "HIGH",
       "evidence": "Obfusc: L4096:             _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L155:     mx.eval(model.parameters()) | L187:     mx.eval(model.parameters()) | L975:                 mx.eval(model.parameters()) | L976:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L1042:             mx.eval(model.parameters()) | L1045:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L3744:         model.eval() | L4483:         mx.eval(model.parameters()) | L4598:         mx.eval(module.weight) | L7241:                     lambda: mx.eval(model.parameters()), | L7301:                     lambda: mx.eval(model.parameters()), | L7463:                 mx.eval(model.parameters())",
       "evidence_hash": "99be0b8b885c428ef382cdf98fe5cc7691a3fe65fdf2ff2d1ebfb3a152711dc0"
+    },
+    {
+      "package": "torchao",
+      "file": "torchao/prototype/gptq/gptq_example.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L257:         help=\"Prefix for the output directory (e.g. /home/user/tmp/20260420)\", sha256:cc135b7062e314555a72098d50c6bbf221fe2993cc195b91de2256cb4ba59f9d",
+      "evidence_hash": "1c6a8785e5b4d45928f0d8e0c8c4830827cfc772454dfb8074793e8faa441552"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_hf_xet_fallback.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L2083:     monkeypatch.setattr(xf, \"_run_download_attempt\", lambda *a, **k: (\"ok\", \"/tmp/warm\")) sha256:26b4d56964a6943851ad6d051f2833aa9bfee07e9d16e653cd1ee671412c326b",
+      "evidence_hash": "ab5ed5653a9f71d30233ab891edefb1a5e39b3d083a9019a23f3b82a32e02bad"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/hf_xet_health.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L317:         token = os.environ.get(\"HF_TOKEN\")\nNetwork: L313:         import urllib.request | L316:         request = urllib.request.Request(url, headers = {\"User-Agent\": \"unsloth-xet-probe\"}) | L329:         with urllib.request.urlopen(request, timeout = PROBE_TIMEOUT_SECONDS) as response: | L342:         head = urllib.request.Request(cas, method = \"HEAD\", headers = {\"User-Agent\": \"unsloth-xet-probe\"}) | L344:             urllib.request.urlopen(head, timeout = remaining)",
+      "evidence_hash": "674a558cd1bdfa1470dc2a9a2cd44be98ecc27c0beb37497757c656674e71654",
+      "file_sha256": "e0b53dbc7749ab7528211ccc87e56a56093b488c5e6efc1445c84c06ff5243db"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_vlm_label_masks.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L3267:             self._lock = __import__(\"threading\").Lock()\nExec: L1479:     mx.eval(batch[\"input_ids\"], batch[\"labels\"])",
+      "evidence_hash": "02e040f3f25ec6bfebb609f2ba68ea037cb0386b6ab74d6fcaba1a78ad5bb3b1"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/compiler.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L1206:             _mod = __import__(model_location, fromlist=items) | L4946:         f\"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\\\n\"\\\\\nL4947:         f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n\"\\\\\nL4948:         f\"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size: sha256:b7ea9cdbe360ad323911014caf12a9d4ec87cb36195a511080e4e484c2fb80d2\nL4949:         f' \"-____-\"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,} of {get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_p sha256:9e832c1e7b2815aa44dc42638d821cb9df22550db88d85bd4bfb29c13f984b53 | L4947:         f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n\"\\\\\nL4948:         f\"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size: sha256:b7ea9cdbe360ad323911014caf12a9d4ec87cb36195a511080e4e484c2fb80d2\nL4949:         f' \"-____-\"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,} of {get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_p sha256:9e832c1e7b2815aa44dc42638d821cb9df22550db88d85bd4bfb29c13f984b53 | L4946:         f\"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\\\n\"\\\\\nL4947:         f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n\"\\\\\nL4948:         f\"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size: sha256:b7ea9cdbe360ad323911014caf12a9d4ec87cb36195a511080e4e484c2fb80d2\nExec: L802:                 if eval(_dtype) is not None: | L803:                     dtype = eval(_dtype) | L1145:         _modeling_file = eval(model_location) | L1585:     f = eval(f\"{model_location}.{module}\") | L1914:         exec(f\"def raise_{j}(*args, **kwargs): print('{function}')\", globals(), locals()) | L1915:         try: exec(f\"EMPTY_LOGITS.{function} = raise_{j}\", globals(), locals()) | L3050:         exec(f\"import {parent}\", locals(), globals()) | L3181:                 dir(eval(parent)), | L3185:             exec(f\"{parent}.{child}.forward = forward\", globals(), locals()) | L3259:         module = eval(f\"modeling_file.{module}\") | L3286:             inner_class = eval(f\"modeling_file.{inner_class}\") | L3416:                 exec(f\"from timm.layers.norm_act import {norm}\") | L3424:             forward = eval(norm).forward | L3430:             exec(f\"timm.layers.norm_act.{norm}.forward = forward\") | L3447:                 exec(f\"from timm.models._efficientnet_blocks import {block}\") | L3455:             forward = eval(block).forward | L3461:             exec(f\"timm.models._efficientnet_blocks.{block}.forward = forward\") | L3695:     exec(\nL3696:         f\"{model_location}.torch.nn.{module}.forward = forward\",\nL3697:         globals(),\nL3698:         locals(),\nL3699:     ) | L3701:         exec(f\"{model_location}.nn.{module}.forward = forward\", globals(), locals()) | L3705:         exec(\nL3706:             f\"combined_module.torch.nn.{module}.forward = forward\",\nL3707:             globals(),\nL3708:             locals(),\nL3709:         ) | L3711:             exec(f\"combined_module.nn.{module}.forward = forward\", globals(), locals()) | L3788:                 source = eval(f\"{model_location}.torch\") | L3795:             function = eval(f\"source.nn.{module}\") | L3950:         exec(f\"import {model_location}\", globals()) | L3953:     modeling_file = eval(model_location) | L3966:     exec(\nL3967:         \"model_logger.addFilter(HideLoggingMessage('`use_cache`'))\", globals(), locals()\nL3968:     ) | L3970:     exec(\nL3971:         \"model_logger.addFilter(HideLoggingMessage('compile_config'))\",\nL3972:         globals(),\nL3973:         locals(),\nL3974:     ) | L4206:         source = eval(f\"modeling_file.{module}\") | L4220:         source = eval(f\"modeling_file.{module}\") | L4321:         source = eval(f\"modeling_file.{module}\") | L4359:             source = eval(f\"{model_location}.{module}\") | L4439:                 source = eval(f\"{model_location}.{module}\") | L4487:             source = eval(f\"{model_location}.{module}\") | L4709:         source = eval(f\"{model_location}.{module}\") | L4720:         exec(\nL4721:             f\"{model_location}.{module}._update_causal_mask = no_update_causal_mask\",\nL4722:             globals(),\nL4723:         ) | L4786:                 source = eval(f\"{model_location}.{module}\") | L4827:                 module_cls = eval(f\"{model_location}.{module}\") | L4864:                 module_cls = eval(f\"{model_location}.{module}\") | L4931:     exec(\nL4932:         \"from transformers.trainer import (\" + \", \".join(x for x in good_items) + \")\",\nL4933:         globals(),\nL4934:     ) | L4996:     exec(inner_training_loop, globals()) | L5004:             function = eval(f\"{model_location}.{module}\") | L5082:             function = eval(f\"{model_location}.{module}\") | L5220:             exec(\nL5221:                 f\"{model_location}.{module} = combined_module.{module}\",\nL5222:                 globals(),\nL5223:                 locals(),\nL5224:             ) | L5234:     check_dicts = dir(eval(f\"{model_location}\")) | L5236:         item = eval(f\"{model_location}.{check}\") | L5246:                         exec(\nL5247:                             f\"{model_location}.{check}['{key}'] = combined_module.{replaced_class}\",\nL5248:                             globals(),\nL5249:                             locals(),\nL5250:                         )",
+      "evidence_hash": "d8dabff7099fd84e1276c932c7bb70ba273333e5708eb149fec6a6130856085d"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/mlx/loader.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L4290:             _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L155:     mx.eval(model.parameters()) | L187:     mx.eval(model.parameters()) | L975:                 mx.eval(model.parameters()) | L976:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L1042:             mx.eval(model.parameters()) | L1045:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L2382:         mx.eval(altup.correct(predictions, activated)) | L3938:         model.eval() | L4677:         mx.eval(model.parameters()) | L4792:         mx.eval(module.weight) | L7437:                     lambda: mx.eval(model.parameters()), | L7497:                     lambda: mx.eval(model.parameters()), | L7650:                 mx.eval(model.parameters())",
+      "evidence_hash": "511d74ad8e4d5a219b0485b23f295fb1b27ba49b734cbb664225f20a996f426d"
+    },
+    {
+      "package": "caio",
+      "file": "tests/test_raw_low_level.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L747:         os.dup2(good_fd, closed_fd)",
+      "evidence_hash": "7eb34f0b046a377f38f3d1a66daadce492c43cda85b7967f66c7ad62f0ca4169"
     }
   ]
 }

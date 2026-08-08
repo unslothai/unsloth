@@ -531,8 +531,7 @@ def _preserve_sentencepiece_tokenizer_assets(
                     json.dump(tokenizer_config, file, indent = 2, ensure_ascii = False)
                     file.write("\n")
                 logger.warning_once(
-                    f"Unsloth: Restored added_tokens_decoder metadata in "
-                    f"{tokenizer_config_path}."
+                    f"Unsloth: Restored added_tokens_decoder metadata in {tokenizer_config_path}."
                 )
 
     tokenizer_model = os.path.join(save_directory, "tokenizer.model")
@@ -581,7 +580,7 @@ def _preserve_sentencepiece_tokenizer_assets(
     if not os.path.isfile(tokenizer_model) and downloaded_path is not None:
         shutil.copy2(downloaded_path, tokenizer_model)
         logger.warning_once(
-            f"Unsloth: Preserved sentencepiece asset `tokenizer.model` in " f"{save_directory}."
+            f"Unsloth: Preserved sentencepiece asset `tokenizer.model` in {save_directory}."
         )
 
 
@@ -1158,8 +1157,8 @@ def unsloth_save_model(
     max_ram = int(max(0, max_ram) * maximum_memory_usage)
     print(
         f"Unsloth: Will use up to "
-        f"{round(max_ram/1024/1024/1024, 2)} out of "
-        f"{round(psutil.virtual_memory().total/1024/1024/1024, 2)} RAM for saving."
+        f"{round(max_ram / 1024 / 1024 / 1024, 2)} out of "
+        f"{round(psutil.virtual_memory().total / 1024 / 1024 / 1024, 2)} RAM for saving."
     )
 
     # Move temporary_location to /tmp in Kaggle
@@ -1727,7 +1726,7 @@ def install_llama_cpp_old(version = -10):
         import time
 
         for i in range(30):
-            print(f"**[WARNING]** Deleting llama.cpp directory... {30-i} seconds left.")
+            print(f"**[WARNING]** Deleting llama.cpp directory... {30 - i} seconds left.")
             time.sleep(1)
 
         shutil.rmtree("llama.cpp", ignore_errors = True)
@@ -1747,7 +1746,7 @@ def install_llama_cpp_old(version = -10):
         # Try using MAKE
         commands = [
             "make clean -C llama.cpp",
-            f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
+            f"make all -j{(psutil.cpu_count() or 1) * 2} -C llama.cpp",
         ]
         use_cmake = try_execute(commands) == "CMAKE"
 
@@ -1755,7 +1754,7 @@ def install_llama_cpp_old(version = -10):
         # Use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
-            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1) * 2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
@@ -1799,7 +1798,7 @@ def install_llama_cpp_blocking(use_cuda = False):
             # https://github.com/ggerganov/llama.cpp/issues/7062
             # Weirdly GPU conversion for GGUF breaks??
             # f"{use_cuda} make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
-            f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
+            f"make all -j{(psutil.cpu_count() or 1) * 2} -C llama.cpp",
         ]
         use_cmake = try_execute(commands) == "CMAKE"
 
@@ -1807,7 +1806,7 @@ def install_llama_cpp_blocking(use_cuda = False):
         # Use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
-            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1) * 2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
@@ -2026,7 +2025,13 @@ def save_to_gguf(
     # Check conversion success
     for file in initial_files:
         if not os.path.exists(file):
-            if IS_KAGGLE_ENVIRONMENT:
+            # Gated like the outer handler: the disk advice is only right when
+            # the disk is actually the problem, and a converter that has no
+            # llama.cpp support fails here with plenty of space free.
+            if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
+                RuntimeError(f"Conversion produced no output at {file}"),
+                os.path.dirname(file) or None,
+            ):
                 raise RuntimeError(
                     f"Unsloth: Conversion failed for {file}\n"
                     "You are in a Kaggle environment with limited disk space (20GB).\n"
@@ -2035,8 +2040,7 @@ def save_to_gguf(
                 )
             else:
                 raise RuntimeError(
-                    f"Unsloth: Conversion failed for {file}\n"
-                    "Please check disk space and try again."
+                    f"Unsloth: Conversion failed for {file}\nPlease check disk space and try again."
                 )
 
     # Move initial GGUF files into a dedicated _gguf directory
@@ -2100,7 +2104,10 @@ def save_to_gguf(
                         quant_kwargs["n_threads"] = n_threads
                     return quantize_gguf(**quant_kwargs)
             except Exception as e:
-                if IS_KAGGLE_ENVIRONMENT:
+                # Same gate as above: a broken quantizer with 19GB free is not
+                # a disk problem, and the outer handler cannot undo an
+                # explanation already baked into this message.
+                if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(e, gguf_directory):
                     raise RuntimeError(
                         f"Unsloth: Quantization failed for {output_location}\n"
                         "You are in a Kaggle environment, which might be the reason this is failing.\n"
@@ -2111,7 +2118,7 @@ def save_to_gguf(
                         "You can try saving it to the `/tmp` directory for larger disk space.\n"
                         "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"
                         f"Error: {e}"
-                    )
+                    ) from e
                 else:
                     if IS_WINDOWS:
                         build_instructions = (
@@ -2132,7 +2139,7 @@ def save_to_gguf(
                         f"{build_instructions}\n"
                         "Once that's done, redo the quantization.\n"
                         f"Error: {e}"
-                    )
+                    ) from e  # keep the cause: the OOM check walks it for the returncode
 
         # Outputs already on disk pre-date this run; never delete them on a failure.
         preexisting_outputs = {
@@ -2863,6 +2870,38 @@ def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag
     print("Successfully pushed to ollama")
 
 
+def _offloaded_parameter_hint(model):
+    """Sentence to append when a save failed on offloaded (meta) parameters.
+
+    Accelerate leaves offloaded parameters on the meta device, so saving dies
+    inside accelerate with "'NoneType' object is not subscriptable" or "Cannot
+    copy out of meta tensor", neither of which names the offload. Returns ""
+    when no meta parameter is present, so unrelated failures are not
+    mislabelled.
+    """
+    try:
+        meta = []
+        for name, tensor in model.named_parameters():
+            if getattr(tensor, "device", None) is not None and tensor.device.type == "meta":
+                meta.append(name)
+                # A 30B MoE has thousands; listing them would bury the error.
+                if len(meta) >= 3:
+                    break
+        if not meta:
+            return ""
+        return (
+            f" Unsloth: this model has parameters on the meta device "
+            f"(offloaded because it did not fit the GPU), for example "
+            f"{', '.join(meta)}. Saving needs the real weights, which the "
+            f"offload hooks do not expose here. Re-run on a GPU large enough "
+            f"to hold the model without offloading, or reload it with "
+            f"`device_map` pinned to a single device before saving."
+        )
+    except Exception:
+        # A diagnostic must never replace the real error with its own.
+        return ""
+
+
 def _model_basename(name_or_path, default = "model") -> str:
     """Leaf name of a model id or path, for use as a GGUF filename stem.
 
@@ -3055,13 +3094,13 @@ def unsloth_save_pretrained_gguf(
     is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
 
     if is_peft_model:
-        print(f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...')
+        print(f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format...")
         try:
             # Call unsloth_generic_save directly (it's in the same file)
             unsloth_generic_save(**arguments)
 
         except Exception as e:
-            raise RuntimeError(f"Failed to save/merge model: {e}")
+            raise RuntimeError(f"Failed to save/merge model: {e}{_offloaded_parameter_hint(self)}")
     else:
         # Non-PEFT model: checkpoint files already exist; point save_to_gguf
         # at the original path instead of re-saving to a temp subdir.
@@ -3084,7 +3123,7 @@ def unsloth_save_pretrained_gguf(
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
             except Exception as e:
-                raise RuntimeError(f"Failed to save model: {e}")
+                raise RuntimeError(f"Failed to save model: {e}{_offloaded_parameter_hint(self)}")
 
     if is_processor:
         tokenizer = tokenizer.tokenizer
@@ -3170,15 +3209,25 @@ def unsloth_save_pretrained_gguf(
             imatrix = imatrix_path,
         )
     except Exception as e:
-        if IS_KAGGLE_ENVIRONMENT:
+        if _gguf_child_was_oom_killed(e):
+            raise RuntimeError(
+                f"Unsloth: GGUF conversion was killed by the operating system "
+                f"(SIGKILL), which almost always means the machine ran out of "
+                f"host RAM. The converter holds tensors in RAM, so this is "
+                f"about system memory rather than GPU memory or disk.\n"
+                f"Try a smaller quantization, a machine with more RAM, or "
+                f"convert from a saved 16bit checkpoint on a larger host.\n"
+                f"Error: {e}"
+            ) from e
+        if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(e, save_directory):
             raise RuntimeError(
                 f"Unsloth: GGUF conversion failed in Kaggle environment.\n"
                 f"This is likely due to the 20GB disk space limit.\n"
                 f"Try saving to /tmp directory or use a smaller model.\n"
                 f"Error: {e}"
-            )
+            ) from e
         else:
-            raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}")
+            raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}") from e
 
     # Step 9: Create Ollama modelfile
     gguf_directory = f"{save_directory}_gguf"
@@ -3243,6 +3292,104 @@ def unsloth_save_pretrained_gguf(
         "is_vlm": is_vlm_update,
         "fix_bos_token": fix_bos_token,
     }
+
+
+# Errno 28 / ENOSPC and the wordings the various layers use for it.
+_DISK_FULL_PATTERNS = (
+    "no space left on device",
+    "not enough free space",
+    "disk quota exceeded",
+    "errno 28",
+    "insufficient disk",
+    "write failed: no space",
+)
+
+# Kaggle allows 20GB. Below this headroom a failed conversion is plausibly
+# about space; above it, blaming disk sends the user nowhere useful.
+_DISK_HEADROOM_BYTES = 2 * 1024**3
+
+# A SIGKILLed child is 128 + 9 to a shell, so llama-quantize (run through
+# `shell = True`) surfaces as "returned non-zero exit status 137" with no
+# signal named anywhere in the text.
+_OOM_KILL_PATTERNS = (
+    "sigkill",
+    "exit status 137",
+    "exit code 137",
+    "exited with code 137",
+    "exited with code -9",
+)
+
+
+def _iter_exception_chain(exc, max_links = 10):
+    """The exception plus its explicit causes and implicit contexts.
+
+    Every layer here re-raises as a plain RuntimeError, so `returncode` and the
+    original wording only survive on the chained cause.
+    """
+    seen = set()
+    queue = [exc]
+    while queue and len(seen) < max_links:
+        current = queue.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        queue.append(getattr(current, "__cause__", None))
+        queue.append(getattr(current, "__context__", None))
+
+
+def _gguf_child_was_oom_killed(exc):
+    """Was the converter killed by the kernel rather than failing on its own?
+
+    llama.cpp's converter loads tensors in host RAM, and a large model exceeds
+    what a free Colab or Kaggle VM has. The kernel OOM-killer takes the process
+    and subprocess reports only
+
+        Command '[...]' died with <Signals.SIGKILL: 9>
+
+    which says nothing about memory. Gemma3N_(4B)-Audio hits this on both the
+    plain and the high-RAM T4, having trained, inferred and merged cleanly.
+
+    SIGKILL alone is the signal: a converter that fails on its own raises and
+    exits non-zero, so a kill is either the OOM-killer or someone stopping the
+    run by hand, and both are worth naming.
+
+    llama-quantize runs under a shell, which reports the kill as exit status
+    137 instead of a signal, and every layer re-raises as a plain RuntimeError,
+    so the whole chain is checked rather than just the outermost exception.
+    """
+    for error in _iter_exception_chain(exc):
+        if getattr(error, "returncode", None) in (-9, 137):
+            return True
+        text = f"{error}".lower()
+        if any(pattern in text for pattern in _OOM_KILL_PATTERNS):
+            return True
+    return False
+
+
+def _gguf_failure_looks_like_disk(exc, save_directory = None):
+    """Is this GGUF failure plausibly about running out of disk?
+
+    Two independent signals, either alone sufficient: each can be absent for a
+    good reason. The message may name ENOSPC after the directory was cleaned
+    up, and the disk may be genuinely full while a subprocess surfaced
+    something vaguer. Never raises; an unreadable path just means "not disk".
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    if any(p in text for p in _DISK_FULL_PATTERNS):
+        return True
+    if getattr(exc, "errno", None) == 28:
+        return True
+    for path in (save_directory, os.getcwd()):
+        if not path:
+            continue
+        try:
+            if shutil.disk_usage(path).free < _DISK_HEADROOM_BYTES:
+                return True
+        except OSError:
+            # Never let the diagnostic be the thing that raises.
+            continue
+    return False
 
 
 def unsloth_push_to_hub_gguf(

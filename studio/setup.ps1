@@ -61,6 +61,38 @@ if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {
     }
 }
 
+# UTF-8 output invariant. 5.1 encodes redirected output with the OEM code page,
+# but the desktop app decodes the pipe as UTF-8 (from_utf8_lossy, install.rs):
+# U+1F9A5 prints as '??', U+2500 becomes a bare 0xC4 and arrives as U+FFFD.
+# Must precede the first write, since this rebuilds [Console]::Out. ASCII-only,
+# because 5.1 parses these BOM-less files as ANSI.
+$_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false
+try {
+    [Console]::OutputEncoding = $_UnslothUtf8NoBom
+} catch {
+    # No console (CREATE_NO_WINDOW). The setter P/Invokes SetConsoleOutputCP and
+    # drops the cached writer BEFORE throwing, assigning OutputEncoding only
+    # after, so [Console]::Out would rebuild on the OLD code page. Bind UTF-8
+    # writers instead: redirected step/substep use Out as their only sink, and
+    # Tauri decodes stderr the same way to build its failure text.
+    try {
+        $_UnslothStdout = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardOutput()), $_UnslothUtf8NoBom
+        $_UnslothStdout.AutoFlush = $true
+        [Console]::SetOut($_UnslothStdout)
+        $_UnslothStderr = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardError()), $_UnslothUtf8NoBom
+        $_UnslothStderr.AutoFlush = $true
+        [Console]::SetError($_UnslothStderr)
+    } catch { }
+}
+$OutputEncoding = $_UnslothUtf8NoBom
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+
+# Resolved once: it picks the output sink in step/substep and must not change
+# mid-run. See Write-StudioStdoutMirror.
+$script:StudioStdoutRedirected = $false
+try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
+
 # --------------------------------------------------------------------------
 #  Maintainer-editable defaults
 #  Change these in the GitHub-hosted script so users get updated defaults.
@@ -118,7 +150,8 @@ function Exit-SetupFailure {
         [int]$Code = 1
     )
     if ($Code -eq 0) { $Code = 1 }
-    if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
+        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
         $singleLine = ($Message -replace '[\r\n]+', ' ').Trim()
         [Console]::Out.WriteLine("[TAURI:ERROR] $singleLine")
         [Console]::Out.Flush()
@@ -148,6 +181,10 @@ function Refresh-Environment {
             # (which loads Microsoft.PowerShell.Security), so the module path
             # would be broken again exactly where it has to be right.
             if ($key -eq 'Path' -or $key -eq 'PSModulePath') { continue }
+            # Same exception, for the UTF-8 invariant at the top. This runs
+            # repeatedly, so a registry PYTHONUTF8=0 would otherwise reload over
+            # ours and every later Python child would go back to mojibake.
+            if ($key -eq 'PYTHONUTF8' -or $key -eq 'PYTHONIOENCODING') { continue }
             Set-Item -Path "Env:$key" -Value $vars[$key] -ErrorAction SilentlyContinue
         }
     }
@@ -289,16 +326,14 @@ function Remove-AgentInstructionFiles {
     }
 }
 
-# ERROR_ACCESS_DENIED in any of its disguises. PowerShell wraps .NET exceptions
-# in MethodInvocationException, so walk the chain instead of catching by type.
+# Recognize ERROR_ACCESS_DENIED through PowerShell's wrapper exceptions.
 function Test-AccessDeniedError {
     param($ErrorRecord)
 
     $ex = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
     while ($ex) {
         if ($ex -is [System.UnauthorizedAccessException]) { return $true }
-        # IOException carries ERROR_ACCESS_DENIED as an HRESULT; Win32Exception
-        # keeps E_FAIL there and puts the code in NativeErrorCode instead.
+        # IOException uses HRESULT; Win32Exception uses NativeErrorCode.
         if ($ex.HResult -eq -2147024891) { return $true }
         if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -eq 5) { return $true }
         $ex = $ex.InnerException
@@ -309,10 +344,7 @@ function Test-AccessDeniedError {
     return $false
 }
 
-# Test-Path throws UnauthorizedAccessException (it does not return $false) when
-# an ACL denies the probe, and this script runs under "Stop", so a denied path
-# aborted setup with a raw error. "Denied" is kept distinct from "Absent"
-# because a denial needs reporting, not a silent retry.
+# Keep denied ACLs distinct from absent paths instead of letting Test-Path throw.
 function Get-PathState {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
@@ -341,16 +373,34 @@ function Test-PathQuiet {
     return ((Get-PathState -Path $Path -PathType $PathType) -eq "Present")
 }
 
-# Names the link target of a denied dir, since that is where the user must look.
-# Empty/null tolerated: this runs while reporting a failure and must not add one.
+# install.ps1 carries a verbatim copy because it cannot dot-source this file;
+# test_denied_llama_cpp_preflight.py enforces parity.
+# Dir, marker and listing: no single probe separates readable/absent/denied.
+function Get-LlamaCppInstallReadState {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+
+    $dirState = Get-PathState -Path $Path -PathType Container
+    if ($dirState -eq "Denied") { return "Denied" }
+    if ($dirState -ne "Present") { return "Absent" }
+    switch (Get-PathState -Path (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) {
+        "Denied"  { return "Denied" }
+    }
+    try { $null = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1) }
+    catch {
+        if (Test-AccessDeniedError $_) { return "Denied" }
+        # Nonfatal here: nothing has been installed yet.
+    }
+    return "Readable"
+}
+
+# Describe a denied link target without risking another reporting failure.
 function Get-PathDenialDetail {
     param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     if (-not $item) { return "" }
-    # Non-filesystem providers expose an unrelated .Attributes with no -band
-    # overload, and throwing here would replace the failure we are reporting.
+    # Non-filesystem providers do not expose FileSystemInfo attributes.
     if ($item -isnot [System.IO.FileSystemInfo]) { return "" }
     if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
     $target = $null
@@ -360,19 +410,14 @@ function Get-PathDenialDetail {
     return " (it is a link)"
 }
 
-# One stop for every unreadable install tree. Nothing downstream (validate,
-# replace, junction, source build, swap) can work without this access, and the
-# folder outlives an app reinstall, so retrying cannot help.
-function Exit-PathAccessDenied {
+# Print guidance; returns the failure reason as its only pipeline output.
+function Write-PathAccessDenied {
     param(
         [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Label,
-        # "delete it, we reinstall it" is true of the managed cache and wrong for
-        # a tree the user pointed us at. Never tell them to delete their build.
+        # Never tell users to delete a build they supplied.
         [switch]$UserSupplied,
-        # Same rule, one step weaker: the ownership guard stops because it could
-        # not read the marker, so it cannot claim the tree is ours either. It
-        # already says "move it aside" when it CAN prove the tree is not ours.
+        # Unreadable custom homes cannot be identified as managed caches.
         [switch]$OwnershipUnverified
     )
 
@@ -392,12 +437,87 @@ function Exit-PathAccessDenied {
     substep "icacls `"$Path`" /reset /T" "Yellow"
     substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
     if ($UserSupplied) {
-        Exit-SetupFailure "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
+        return "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
     }
     if ($OwnershipUnverified) {
-        Exit-SetupFailure "Access denied reading $Label at $Path. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access with takeown/icacls, or move it aside, then re-run setup."
+        return "Access denied reading $Label at $Path. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access with takeown/icacls, or move it aside, then re-run setup."
     }
-    Exit-SetupFailure "Access denied reading the existing $Label at $Path. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
+    return "Access denied reading the existing $Label at $Path. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
+}
+
+# Canonicalize a directory for comparison; unresolvable ones are only normalized.
+function Get-CanonicalDir {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+
+    $trimmedPath = $Path.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmedPath)) { return $trimmedPath }
+    $resolvedPath = $null
+    if ((Get-PathState -Path $trimmedPath -PathType Container) -eq "Present") {
+        try { $resolvedPath = (Resolve-Path -LiteralPath $trimmedPath).Path } catch {}
+    }
+    if (-not $resolvedPath) {
+        try {
+            $resolvedPath =
+                $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($trimmedPath)
+        } catch {
+            $resolvedPath = [System.Environment]::ExpandEnvironmentVariables($trimmedPath)
+        }
+        try { $resolvedPath = [System.IO.Path]::GetFullPath($resolvedPath) } catch {}
+    }
+    # Resolve-Path keeps a trailing separator, so trim after both branches (never a root).
+    try {
+        $root = [System.IO.Path]::GetPathRoot($resolvedPath)
+        if ($root -and $resolvedPath.Length -gt $root.Length) { return $resolvedPath.TrimEnd('\', '/') }
+    } catch {}
+    return $resolvedPath
+}
+
+# Compare canonical homes so path spelling does not change ownership policy.
+function Test-StudioHomeIsCustom {
+    return ((Get-CanonicalDir -Path $StudioHome) -ne
+        (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
+}
+
+# Shared default cache, or the custom Studio home's llama.cpp tree.
+function Get-ManagedLlamaCppDir {
+    if (-not (Test-StudioHomeIsCustom)) {
+        return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
+    }
+    return (Join-Path (Get-CanonicalDir -Path $StudioHome) "llama.cpp")
+}
+
+# Failure reason when the managed tree is denied; never touches its ACLs.
+function Invoke-ManagedLlamaCppPreflight {
+    # Let the existing profile validation handle a missing USERPROFILE later.
+    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
+    $dir = Get-ManagedLlamaCppDir
+    if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
+    Write-Host ""
+    # A denied custom home cannot be claimed as an Unsloth-managed cache.
+    $homeIsCustom = Test-StudioHomeIsCustom
+    # Preserve user-supplied wording when either override names this tree.
+    $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
+    $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
+        ((Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir))
+    $reason = Write-PathAccessDenied -Path $dir -Label "llama.cpp install" `
+        -UserSupplied:$userSupplied -OwnershipUnverified:$homeIsCustom
+    substep "Stopping here, before phase 1: nothing has been downloaded or installed" "Yellow"
+    substep "Fix access, then run the same install, setup, or update command again" "Yellow"
+    Write-Host ""
+    return "$reason Nothing was installed."
+}
+
+# Stop every install path consistently when its destination is unreadable.
+function Exit-PathAccessDenied {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Label,
+        [switch]$UserSupplied,
+        [switch]$OwnershipUnverified
+    )
+
+    Exit-SetupFailure (Write-PathAccessDenied -Path $Path -Label $Label `
+        -UserSupplied:$UserSupplied -OwnershipUnverified:$OwnershipUnverified)
 }
 
 function Get-InstalledLlamaPrebuiltRelease {
@@ -561,6 +681,62 @@ function Get-NvccMaxArch {
         }
     } catch { }
     return $null
+}
+
+# Reserved for the OS, and budgeted per compile job, both in MB. The budget sits
+# above the measured per-translation-unit peak on purpose; see the derivation on
+# _LLAMA_BUILD_* in setup.sh, which these must match and which the shell test
+# pins. MSVC and Windows, where the freeze was reported, need that headroom more.
+$LlamaBuildReserveMb = 2048
+$LlamaBuildMbPerJob = 2048
+
+# The cmake -j count. A negative $TotalMb means RAM was unreadable and keeps the
+# old core-count behaviour. Zero is a reading, not a failure: a box with no
+# memory left is the last one that should get its full core count, so it falls
+# through and floors at 1, as _llama_jobs_for does for a numeric 0.
+# UNSLOTH_LLAMA_BUILD_JOBS wins. Pure, so the tests can drive it.
+function Get-LlamaJobsFor {
+    param([int]$Cores, [long]$TotalMb)
+
+    $override = 0
+    if ($env:UNSLOTH_LLAMA_BUILD_JOBS -and
+        [int]::TryParse($env:UNSLOTH_LLAMA_BUILD_JOBS.Trim(), [ref]$override) -and $override -ge 1) {
+        return $override
+    }
+    if ($Cores -lt 1) { $Cores = 4 }
+    if ($TotalMb -lt 0) { return $Cores }
+    $jobs = [int][Math]::Floor(($TotalMb - $LlamaBuildReserveMb) / $LlamaBuildMbPerJob)
+    if ($jobs -lt 1) { $jobs = 1 }
+    if ($jobs -gt $Cores) { $jobs = $Cores }
+    return $jobs
+}
+
+# Usable RAM in MB; -1 when it cannot be read at all. Available, not installed:
+# a box with 8 GB already resident cannot host a 14 GB compile just because
+# 16 GB is fitted. AvailableMBytes counts the standby list, which the Free
+# counters do not, and the raw perf class is not localized the way Get-Counter
+# paths are; installed RAM stays the fallback. A reading of 0 is returned as 0
+# rather than treated as unreadable, since falling back to installed RAM under
+# real pressure would hand the machine its full core count at the worst moment.
+function Get-UsableMemoryMb {
+    try {
+        $avail = (Get-CimInstance Win32_PerfRawData_PerfOS_Memory -ErrorAction Stop).AvailableMBytes
+        if ($null -ne $avail) { return [long]$avail }
+    } catch { }
+    try {
+        $bytes = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
+        if ($bytes -gt 0) { return [long]($bytes / 1MB) }
+    } catch { }
+    try {
+        # TotalVisibleMemorySize is in KB and excludes hardware-reserved RAM.
+        $kb = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).TotalVisibleMemorySize
+        if ($kb -gt 0) { return [long]($kb / 1KB) }
+    } catch { }
+    return -1
+}
+
+function Get-LlamaBuildJobs {
+    return (Get-LlamaJobsFor -Cores ([Environment]::ProcessorCount) -TotalMb (Get-UsableMemoryMb))
 }
 
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
@@ -1457,20 +1633,18 @@ function Write-LlamaFailureLog {
         Write-Host "   | $line" -ForegroundColor DarkGray
     }
 }
-# Mirror the plain (no ANSI) form of step/substep messages to the
-# OS-level stdout handle when a parent is consuming our stdout via
-# a pipe (CI `tee`, Python subprocess.PIPE, CREATE_NO_WINDOW grandchild).
-# Write-Host on PS 5.1 routes through $Host.UI / the Information
-# stream, neither of which propagates reliably across the
-# install.ps1 -> unsloth.exe -> python -> powershell.exe ->
-# setup.ps1 process chain. [Console]::Out always lands on the OS
-# stdout file handle. Gated on IsOutputRedirected so the
-# interactive-console path keeps the colorized Write-Host output
-# only (no double-print).
+# Plain (no ANSI) form of a step/substep message on the OS stdout handle.
+# Write-Host on 5.1 goes through the Information stream, which does not survive
+# every install.ps1 -> unsloth.exe -> python -> powershell.exe chain.
+#
+# One half of an either/or: when redirected this is the ONLY sink. It used to
+# run in ADDITION to Write-Host, assuming that never reached the pipe. It does,
+# because the CLI spawns us as `-Command "& 'setup.ps1' *>&1"`, so every step
+# printed twice.
 function Write-StudioStdoutMirror {
     param([Parameter(Mandatory = $true)][string]$Line)
     try {
-        if ([Console]::IsOutputRedirected) {
+        if ($script:StudioStdoutRedirected) {
             [Console]::Out.WriteLine($Line)
             [Console]::Out.Flush()
         }
@@ -1484,6 +1658,12 @@ function step {
         [string]$Color = "Green"
     )
     $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
+    # Exactly one sink: the console handle when redirected, Write-Host (the only
+    # one that colorizes) when interactive.
+    if ($script:StudioStdoutRedirected) {
+        Write-StudioStdoutMirror ("  {0}{1}" -f $padded, $Value)
+        return
+    }
     if ($script:StudioVtOk -and -not $env:NO_COLOR) {
         $dim = Get-StudioAnsi Dim
         $rst = Get-StudioAnsi Reset
@@ -1496,7 +1676,6 @@ function step {
         }
         Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
     } else {
-        Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
         $fc = switch ($Color) {
             'Green' { 'DarkGreen' }
             'Yellow' { 'Yellow' }
@@ -1504,9 +1683,11 @@ function step {
             'DarkGray' { 'DarkGray' }
             default { 'DarkGreen' }
         }
-        Write-Host $Value -ForegroundColor $fc
+        # One composed record, not `-NoNewline` label + value: two Write-Host
+        # calls are two Information records, and a redirected consumer turns each
+        # boundary into a line break. Costs the dimmed label on no-VT consoles.
+        Write-Host ("  {0}{1}" -f $padded, $Value) -ForegroundColor $fc
     }
-    Write-StudioStdoutMirror ("  {0}{1}" -f $padded, $Value)
 }
 
 function substep {
@@ -1514,6 +1695,11 @@ function substep {
         [Parameter(Mandatory = $true)][string]$Message,
         [string]$Color = "DarkGray"
     )
+    # Exactly one sink, as in `step` above.
+    if ($script:StudioStdoutRedirected) {
+        Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)
+        return
+    }
     if ($script:StudioVtOk -and -not $env:NO_COLOR) {
         $msgCol = switch ($Color) {
             'Yellow' { (Get-StudioAnsi Warn) }
@@ -1528,7 +1714,6 @@ function substep {
         }
         Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
     }
-    Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)
 }
 
 function Show-NpmRegistryHint {
@@ -1576,6 +1761,91 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
 } else {
     Write-Host ("  " + [char]::ConvertFromUtf32(0x1F9A5) + " Unsloth Studio Setup") -ForegroundColor Green
     Write-Host "  $Rule" -ForegroundColor DarkGray
+}
+
+# WebView2 caches keyed by the bundle id can keep serving the previous frontend
+# after an update. Cache-only: storage, cookies, settings, models and the studio
+# database are untouched. Called only once the UNSLOTH_STUDIO_HOME / STUDIO_HOME
+# override is validated, so a mistyped override cannot wipe the cache and then abort.
+function Clear-WebViewCaches {
+    if (-not $env:LOCALAPPDATA) { return }
+    $wvDefault = Join-Path $env:LOCALAPPDATA "ai.unsloth.studio\EBWebView\Default"
+    # Drop the version stamp first. The old WebView still holds these files, which is
+    # why the removals below can fail; the app's own clear is the retry, and it is
+    # skipped while the stamp matches the running version. Unconditional, since a
+    # repair or a local rebuild leaves the version unchanged and a redundant clear on
+    # the next launch is the cheap side of the trade.
+    Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA "ai.unsloth.studio\.webview-cache-cleared") `
+        -Force -ErrorAction SilentlyContinue
+    $wvCleared = $false
+    foreach ($wvSub in @("Cache", "Code Cache", "GPUCache", "Service Worker")) {
+        $wvPath = Join-Path $wvDefault $wvSub
+        # Get-Item -Force, not Test-Path: the probe throws on an ACL denial under
+        # "Stop", and a reparse point must be unlinked, not recursed into.
+        $wvItem = Get-Item -LiteralPath $wvPath -Force -ErrorAction SilentlyContinue
+        if (-not $wvItem) { continue }
+        try {
+            if ($wvItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { $wvItem.Delete() }
+            else { Remove-Item -LiteralPath $wvPath -Recurse -Force -ErrorAction Stop }
+            $wvCleared = $true
+        } catch { }
+    }
+    if ($wvCleared) { substep "cleared stale WebView caches (ai.unsloth.studio); settings and data kept" }
+}
+
+# Resolve and preflight the install root before phase 1, with the same override
+# precedence as the other resolvers. Everything below joins onto USERPROFILE, so a
+# blank one must fail here instead of throwing a raw binding error under "Stop".
+# Null or empty only: Join-Path accepts whitespace, and those runs used to complete.
+if ([string]::IsNullOrEmpty($env:USERPROFILE)) {
+    Write-Host "ERROR: USERPROFILE is not set." -ForegroundColor Red
+    Exit-SetupFailure "USERPROFILE is not set"
+}
+$_studioOverrideVar = $null
+$_studioOverride = $null
+if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+    $_studioOverrideVar = "UNSLOTH_STUDIO_HOME"
+    $_studioOverride = $env:UNSLOTH_STUDIO_HOME.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+    $_studioOverrideVar = "STUDIO_HOME"
+    $_studioOverride = $env:STUDIO_HOME.Trim()
+}
+if ($_studioOverride) {
+    if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
+        $_studioOverride = (Join-Path $env:USERPROFILE $_studioOverride.Substring(1).TrimStart('/','\'))
+    }
+    if (Test-Path -LiteralPath $_studioOverride -PathType Container) {
+        $StudioHome = (Resolve-Path -LiteralPath $_studioOverride).Path
+        # Mirror setup.sh and install.ps1: fail before install work if it is read-only.
+        $_setupWriteProbe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
+        try {
+            [System.IO.File]::WriteAllText($_setupWriteProbe, "")
+            Remove-Item -LiteralPath $_setupWriteProbe -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "ERROR: $_studioOverrideVar=$StudioHome is not writable." -ForegroundColor Red
+            Exit-SetupFailure "$_studioOverrideVar=$StudioHome is not writable"
+        }
+    } else {
+        Write-Host "ERROR: $_studioOverrideVar=$_studioOverride does not exist." -ForegroundColor Red
+        Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
+        Exit-SetupFailure "$_studioOverrideVar=$_studioOverride does not exist"
+    }
+} else {
+    $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+}
+$VenvDir = Join-Path $StudioHome "unsloth_studio"
+$StudioOwnedMarker = ".unsloth-studio-owned"
+# Mirrors install_manifest.NO_TORCH_MARKER; keep the two in step.
+$NoTorchMarker = ".unsloth-no-torch"
+$LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+$StudioHomeIsCustom = Test-StudioHomeIsCustom
+$LlamaCppDir = Get-ManagedLlamaCppDir
+$UnslothHome = Split-Path -Parent $LlamaCppDir
+
+$WithLlamaCppDir = $null
+$llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight
+if ($llamaPreflightFailure) {
+    Exit-SetupFailure $llamaPreflightFailure
 }
 
 # Back up User PATH under HKCU\Software\Unsloth before any modifications.
@@ -1742,7 +2012,115 @@ function Invoke-AmdSmiNoElevate {
 $HasROCm = $false
 $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
 $ROCmGpuLabel = $null
+$script:ROCmGpuLabels = @()   # every AMD adapter name WMI reported (shadowing-aware inference)
 $script:ROCmGfxArch = $null
+# APU gfx arches whose board commonly also carries a discrete Radeon. HIP often
+# enumerates the APU first, so an index-0 pick reads the iGPU's arch and the dGPU never
+# gets its wheels (#7776: gfx1036 Raphael shadowing a gfx1200 RX 9060 XT). In sync with
+# _SHADOWING_INTEGRATED_GFX in studio/install_python_stack.py. The Strix arches
+# (gfx1150/1151/1152) are deliberately absent: first-class training targets, untouched.
+$script:ShadowingIntegratedGfx = @(
+    "gfx90c",   # Renoir / Cezanne
+    "gfx1013",  # Cyan Skillfish
+    "gfx1033",  # Van Gogh
+    "gfx1035",  # Rembrandt
+    "gfx1036",  # Raphael / Mendocino
+    "gfx1103",  # Phoenix / Hawk Point
+    "gfx1153"   # Krackan Point 2
+)
+
+# gfx arch -> AMD per-arch wheel index family. Defined here, not beside $ROCmIndexUrl,
+# because Resolve-ShadowingGfxPick runs during detection, long before the install block,
+# and must know which arches AMD ships Windows wheels for. In sync with
+# _GFX_TO_AMD_INDEX_ARCH (test_rocm_arch_table_parity.py).
+$archFamilyMap = @{
+    "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
+    "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"      # RDNA 3.5 (Strix Halo/Point)
+    "gfx1152" = "gfx1152"                                 # RDNA 3.5 (Krackan Point)
+    "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"  # RDNA 3
+    "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+    "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"  # RDNA 2 (RX 6000)
+    "gfx1034" = "gfx103X-all"; "gfx1033" = "gfx103X-all"
+    "gfx1032" = "gfx103X-all"; "gfx1031" = "gfx103X-all"
+    "gfx1030" = "gfx103X-all"
+    "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
+}
+
+
+# True when any of the three masks is set. Mirrors _visible_devices_pinned(): ANY value
+# is a deliberate selection, "" and "-1" included -- those select NO GPU rather than
+# meaning "unset".
+function Test-VisibleDevicesPinned {
+    foreach ($visEnv in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
+        if ($null -ne $visEnv) { return $true }
+    }
+    return $false
+}
+
+# The one mask -> index resolver for every pick site below; the sites used to inline
+# their own expressions and disagreed (hipinfo rejected " 1 ", amd-smi rejected "1,0"),
+# and a mask Resolve-ShadowingGfxPick honours but the index ignores lands on GPU 0, the
+# very iGPU this preference exists to skip. Mirrors _pick_visible_index(): first-set-wins
+# (the runtime lets an empty HIP mask shadow CUDA_VISIBLE_DEVICES rather than defer to
+# it), and an unparseable or out-of-range value falls back to GPU 0.
+function Resolve-VisibleGpuIndex {
+    param([int]$Count)
+    foreach ($visEnv in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
+        if ($null -eq $visEnv) { continue }
+        $val = $visEnv.Trim()
+        if ($val -eq "" -or $val -eq "-1") { return 0 }
+        $first = ($val -split ',')[0].Trim()
+        # TryParse, not [int]: '2147483648' overflows and .NET's \d also matches full-width
+        # digits, and either cast throws a TERMINATING error under this script's
+        # $ErrorActionPreference = "Stop", aborting the install where nothing catches it.
+        [int]$parsed = 0
+        if ([int]::TryParse($first, [ref]$parsed)) {
+            if ($parsed -ge 0 -and $parsed -lt $Count) { return $parsed }
+            substep "[WARN] HIP/ROCR/CUDA_VISIBLE_DEVICES index $first is out of range ($Count GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
+        }
+        return 0
+    }
+    return 0
+}
+
+# Mirrors _dedup_pick(). setup.ps1 resolves the arch and builds $ROCmIndexUrl from it
+# before ever invoking the Python stack installer, so the shadowing-iGPU skip has to
+# happen here too or a fresh install still pulls the iGPU's wheel family. Returns $Picked
+# unchanged when pinned, when only one distinct arch exists, or when no discrete arch is.
+function Resolve-ShadowingGfxPick {
+    param([AllowNull()][string]$Picked, [AllowNull()][string[]]$AllArches)
+    if (-not $Picked) { return $Picked }
+    # Only arches in $archFamilyMap have an AMD Windows wheel index.
+    function Test-GfxHasWheels { param([AllowNull()][string]$Arch) return [bool]($Arch -and $archFamilyMap.ContainsKey($Arch)) }
+    # A selected device is honoured verbatim; never repick over the user.
+    if (Test-VisibleDevicesPinned) { return $Picked }
+    if ($script:ShadowingIntegratedGfx -notcontains $Picked) { return $Picked }
+    $distinctArches = @($AllArches | Select-Object -Unique)
+    if ($distinctArches.Count -lt 2) { return $Picked }
+    # Deposing a supported APU for a discrete card with no Windows wheels (gfx1036 + an
+    # older gfx1010) resolves to no index and drops the host to CPU, worse than the
+    # shadowing itself. So prefer a wheel-backed discrete card, and fall back to an
+    # unsupported one only when the pick has no wheels either: taking the first
+    # non-integrated arch instead sent gfx90c,gfx1010,gfx1200 to CPU torch despite the
+    # supported gfx1200. Mirrors _dedup_pick()'s `_withWheels or (...)`.
+    $pickedHasWheels = Test-GfxHasWheels $Picked
+    $others = @($AllArches | Where-Object { $script:ShadowingIntegratedGfx -notcontains $_ })
+    $withWheels = @($others | Where-Object { Test-GfxHasWheels $_ })
+    $candidates = if ($withWheels.Count -gt 0) { $withWheels }
+                  elseif (-not $pickedHasWheels) { $others }
+                  else { @() }
+    $discreteArch = $candidates | Select-Object -First 1
+    if (-not $discreteArch) { return $Picked }
+    # Not always device 1: on gfx1036,gfx1010,gfx1200 the pick is device 2, and
+    # naming 1 would expose the gfx1010 the wheels do not target.
+    $discreteIdx = [array]::IndexOf(@($AllArches), $discreteArch)
+    if ($discreteIdx -lt 0) { $discreteIdx = 1 }
+    substep "multiple AMD GPUs detected ($($distinctArches -join ', ')); installing for the discrete $discreteArch instead of the integrated $Picked" "Cyan"
+    # HIP still enumerates the iGPU as device 0 at runtime, so the wheels alone do not
+    # steer training to the dGPU; setx makes the mask persist across sessions.
+    substep "Run 'setx HIP_VISIBLE_DEVICES $discreteIdx' and reopen your terminal so Unsloth uses $discreteArch at runtime too, not just at install time" "Cyan"
+    return $discreteArch
+}
 if (-not $HasNvidiaSmi) {
     # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
     # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
@@ -1830,9 +2208,13 @@ if (-not $HasNvidiaSmi) {
                 # Once the arch is printed, keep the ROCm wheel path.
                 $HasROCm = $true
                 $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
-                $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                 if ($_hipAllArches.Count -gt 0) {
-                    $script:ROCmGfxArch = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
+                    # hipinfo is itself a HIP application, so under a mask it already
+                    # enumerated only the visible devices, renumbered from 0; indexing it
+                    # again applies the mask twice and lands on the wrong card. amd-smi and
+                    # the WMI path below list every GPU, so they still index.
+                    $script:ROCmGfxArch = $_hipAllArches[0]
+                    $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $_hipAllArches
                     $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                 } else {
                     $ROCmGpuLabel = "AMD ROCm"
@@ -1885,27 +2267,25 @@ if (-not $HasNvidiaSmi) {
                     $allGfxArches = @([regex]::Matches($smiOut, '(?i)\b(gfx\d+[a-z]?)\b') |
                         ForEach-Object { $_.Groups[1].Value.ToLower() })
                     if ($allGfxArches.Count -gt 0) {
-                        # Resolve which GPU index is runtime-visible.  When a single
-                        # integer index is set, use it; fall back to index 0 otherwise
-                        # (comma-separated lists or unset → first GPU, same as before).
-                        $visGpu = if ($env:HIP_VISIBLE_DEVICES) { $env:HIP_VISIBLE_DEVICES }
-                                  elseif ($env:ROCR_VISIBLE_DEVICES) { $env:ROCR_VISIBLE_DEVICES }
-                                  else { $null }
-                        $gpuIdx = 0
-                        if ($visGpu -match '^\s*(\d+)\s*$') { $gpuIdx = [int]$Matches[1] }
-                        if ($gpuIdx -ge $allGfxArches.Count) {
-                            substep "[WARN] HIP/ROCR_VISIBLE_DEVICES index $gpuIdx is out of range ($($allGfxArches.Count) GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
-                            $gpuIdx = 0
-                        }
-                        $script:ROCmGfxArch = $allGfxArches[$gpuIdx]
+                        # amd-smi lists every GPU regardless of the masks, so resolve the
+                        # index here, via the shared helper so a comma list or a padded
+                        # value cannot select a different GPU than elsewhere.
+                        $script:ROCmGfxArch = $allGfxArches[(Resolve-VisibleGpuIndex $allGfxArches.Count)]
+                        $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $allGfxArches
                         $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                     } else {
                         # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
                         # including the GFX target needed for wheel index selection.
                         $smiAsicOut = ""
                         try { $smiAsicOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('static','--asic') } catch {}
-                        if ($smiAsicOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
-                            $script:ROCmGfxArch = $Matches[1].ToLower()
+                        # Every token, not just the first: this branch is reached precisely
+                        # when 'list' saw multiple GPUs but printed no arches, so a leading
+                        # iGPU here reintroduces #7776.
+                        $asicGfxArches = @([regex]::Matches($smiAsicOut, '(?i)\b(gfx\d+[a-z]?)\b') |
+                            ForEach-Object { $_.Groups[1].Value.ToLower() })
+                        if ($asicGfxArches.Count -gt 0) {
+                            $script:ROCmGfxArch = $asicGfxArches[(Resolve-VisibleGpuIndex $asicGfxArches.Count)]
+                            $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $asicGfxArches
                             $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                         } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
                             $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
@@ -1924,10 +2304,24 @@ if (-not $HasNvidiaSmi) {
     # so the name-based inference below can still attempt an arch lookup.
     if (-not $HasROCm) {
         try {
-            $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match "AMD|Radeon" } |
-                Select-Object -First 1
-            if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+            # Keep every AMD adapter, not just the first: WMI orders controllers as the
+            # driver stack enumerated them, so a shadowing iGPU can lead here exactly as
+            # under HIP (#7776), and the inference below runs the same preference over the
+            # whole list. ConfigManagerErrorCode 0 is "working properly": a disabled or
+            # driver-errored Radeon must not depose a working iGPU.
+            $amdGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "AMD|Radeon" })
+            $healthyGpus = @($amdGpus | Where-Object {
+                ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+            # If that leaves none, the filter alone made the host look GPU-less and the
+            # inference forwards nothing: code 45 ("not connected") is routine on a muxless
+            # laptop with a parked dGPU, and with no healthy peer there is nothing to
+            # depose. Mirrors the same fallback in install_python_stack.py's WMI path.
+            $wmiGpus = if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }
+            if ($wmiGpus.Count -gt 0) {
+                $script:ROCmGpuLabels = @($wmiGpus | ForEach-Object { $_.Name })
+                $ROCmGpuLabel = $script:ROCmGpuLabels[0]
+            }
         } catch {}
     }
     # ── Arch resolution: env-var override → name inference ──────────────────
@@ -1962,14 +2356,39 @@ if (-not $HasNvidiaSmi) {
                 @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
                 @{ P = "RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500";          A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
             )
-            foreach ($row in $nameArchTable) {
-                if ($ROCmGpuLabel -match $row.P) {
-                    $script:ROCmGfxArch = $row.A
-                    $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
-                    substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
-                    substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
-                    break
-                }
+            function Get-GfxArchFromGpuName {
+                param([AllowNull()][string]$Name, [object[]]$Table)
+                if (-not $Name) { return $null }
+                foreach ($row in $Table) { if ($Name -match $row.P) { return $row.A } }
+                return $null
+            }
+            # Only the WMI path carries more than one name; other callers left a single
+            # synthesized label, so default to it.
+            $gpuNames = if ($script:ROCmGpuLabels) { @($script:ROCmGpuLabels) } else { @($ROCmGpuLabel) }
+            # Index over the ADAPTER list, not the inferred arches: an unrecognised name
+            # drops out below, and indexing the shortened list would name the wrong card.
+            $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count
+            $nameArches = @()
+            foreach ($gpuName in $gpuNames) {
+                $inferred = Get-GfxArchFromGpuName -Name $gpuName -Table $nameArchTable
+                if ($inferred) { $nameArches += $inferred }
+            }
+            $pickedName = Get-GfxArchFromGpuName -Name $gpuNames[$nameIdx] -Table $nameArchTable
+            # Borrow another adapter's arch only when unpinned: an unmappable leading
+            # adapter is exactly the #7776 iGPU and the named discrete card should decide,
+            # but under a mask substituting installs wheels for a GPU they masked away.
+            if (-not $pickedName -and -not (Test-VisibleDevicesPinned) -and $nameArches.Count -gt 0) {
+                $pickedName = $nameArches[0]
+            }
+            if ($pickedName) {
+                # Repick only when every adapter mapped: an unknown name may BE the
+                # discrete card, so skipping the iGPU could pick the wrong one.
+                $script:ROCmGfxArch = if ($nameArches.Count -eq $gpuNames.Count) {
+                    Resolve-ShadowingGfxPick -Picked $pickedName -AllArches $nameArches
+                } else { $pickedName }
+                $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
+                substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
             }
         }
     }
@@ -3176,62 +3595,18 @@ if (-not $PythonCmd) {
 
 substep "Python found: $PythonCmd"
 
-# The venv must already exist (created by install.ps1); this script only
-# updates packages. UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the
-# root. UNSLOTH_STUDIO_HOME wins when both are set. Whitespace-only values
-# are treated as unset to match Python .strip() semantics.
-$_studioOverrideVar = $null
-$_studioOverride = $null
-if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
-    $_studioOverrideVar = "UNSLOTH_STUDIO_HOME"
-    $_studioOverride = $env:UNSLOTH_STUDIO_HOME.Trim()
-} elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
-    $_studioOverrideVar = "STUDIO_HOME"
-    $_studioOverride = $env:STUDIO_HOME.Trim()
+# $StudioHome / $VenvDir are resolved and preflighted before phase 1, so only the
+# cache clear stays here. Venv-gated: a writable-but-empty override still fails the
+# venv check below, and clearing first would cost the cache for a run that then does
+# nothing. Still before any install work.
+if (Test-Path -LiteralPath (Join-Path $VenvDir "Scripts\python.exe") -PathType Leaf) {
+    Clear-WebViewCaches
 }
-if ($_studioOverride) {
-    if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
-        $_studioOverride = (Join-Path $env:USERPROFILE $_studioOverride.Substring(1).TrimStart('/','\'))
-    }
-    if (Test-Path -LiteralPath $_studioOverride -PathType Container) {
-        $StudioHome = (Resolve-Path -LiteralPath $_studioOverride).Path
-        # why: mirror setup.sh:417 and install.ps1:130 -- fail fast when the
-        # custom root is read-only instead of erroring later while creating
-        # sidecar venvs / installing packages.
-        $_setupWriteProbe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
-        try {
-            [System.IO.File]::WriteAllText($_setupWriteProbe, "")
-            Remove-Item -LiteralPath $_setupWriteProbe -Force -ErrorAction SilentlyContinue
-        } catch {
-            Write-Host "ERROR: $_studioOverrideVar=$StudioHome is not writable." -ForegroundColor Red
-            Exit-SetupFailure "$_studioOverrideVar=$StudioHome is not writable"
-        }
-    } else {
-        Write-Host "ERROR: $_studioOverrideVar=$_studioOverride does not exist." -ForegroundColor Red
-        Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
-        Exit-SetupFailure "$_studioOverrideVar=$_studioOverride does not exist"
-    }
-} else {
-    $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-}
-$VenvDir = Join-Path $StudioHome "unsloth_studio"
 
 # why: in env-override mode $StudioHome is user-chosen; require the
 # ownership marker before Remove-Item so unrelated dirs survive. Gated on
 # the canonical comparison so an override pointing at the legacy default
 # still behaves like a default install.
-$StudioOwnedMarker = ".unsloth-studio-owned"
-# Mirrors install_manifest.NO_TORCH_MARKER; keep the two in step.
-$NoTorchMarker = ".unsloth-no-torch"
-$LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-$_studioHomeCanon = $StudioHome
-if (Test-Path -LiteralPath $_studioHomeCanon -PathType Container) {
-    $_studioHomeCanon = (Resolve-Path -LiteralPath $_studioHomeCanon).Path
-}
-if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
-    $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
-}
-$StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
 # Directory-local evidence that Unsloth created $Path, used to adopt a custom-home
 # llama.cpp or whisper.cpp predating the .unsloth-studio-owned marker (see
 # setup.sh). Only Unsloth prebuilt markers count; source builds are
@@ -3917,18 +4292,6 @@ $ROCmIndexUrl = $null
 # ROCm install still falls back to CPU below, so this is safe.
 if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
-    $archFamilyMap = @{
-        "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
-        "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"      # RDNA 3.5 (Strix Halo/Point)
-        "gfx1152" = "gfx1152"                                 # RDNA 3.5 (Krackan Point)
-        "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"  # RDNA 3
-        "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
-        "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"  # RDNA 2 (RX 6000)
-        "gfx1034" = "gfx103X-all"; "gfx1033" = "gfx103X-all"
-        "gfx1032" = "gfx103X-all"; "gfx1031" = "gfx103X-all"
-        "gfx1030" = "gfx103X-all"
-        "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
-    }
     # gfx120X and Strix have a null _grouped_mm kernel on torch <2.11.0.
     # Mirrors the $torchFloorMap in install.ps1 so both installers enforce
     # the same floor and ceiling when pulling from AMD's per-arch index.
@@ -4559,16 +4922,8 @@ step "transformers" "5.10.2 pre-installed"
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
 # ==========================================================================
-# Nest llama.cpp under $StudioHome only for real env-overrides, never the
-# legacy default. Reuses $StudioHomeIsCustom from the canonical comparison
-# computed above so the llama.cpp nest matches ownership-guard semantics.
-if ($StudioHomeIsCustom) {
-    $UnslothHome = $StudioHome
-} else {
-    $UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
-}
+# Reuse the managed path resolved and preflighted before phase 1.
 if (-not (Test-Path -LiteralPath $UnslothHome)) { [System.IO.Directory]::CreateDirectory($UnslothHome) | Out-Null }
-$LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
@@ -4800,25 +5155,19 @@ if ($LocalLlamaCppLinked) {
     substep "Skipping prebuilt install -- falling back to source build" "Yellow"
 } else {
     Write-Host ""
-    # Denied on the dir itself means an unreadable parent; Denied on the file
-    # below means an unreadable install. Either way nothing here can proceed,
-    # and the bare probes used to die under "Stop" with a raw
-    # "Test-Path : Access is denied" and exit 1.
-    $llamaDirState = Get-PathState -Path $LlamaCppDir
+    # Keep this late guard as defense in depth before the prebuilt installer.
+    $llamaDirState = Get-LlamaCppInstallReadState -Path $LlamaCppDir
     if ($llamaDirState -eq "Denied") {
-        Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install"
+        Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$StudioHomeIsCustom
     }
-    if ($llamaDirState -eq "Present") {
+    if ($llamaDirState -eq "Readable") {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
         # If the existing install is the wrong kind (e.g. windows-cpu on a ROCm
         # machine that should have windows-rocm), remove it so the installer is
         # forced to download the correct variant rather than skipping on tag match.
         $existingMetaPath = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
-        $existingMetaState = Get-PathState -Path $existingMetaPath -PathType Leaf
-        if ($existingMetaState -eq "Denied") {
-            Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install"
-        }
-        if ($existingMetaState -eq "Present") {
+        # Readable state leaves only marker presence to decide here.
+        if (Test-PathQuiet -Path $existingMetaPath -PathType Leaf) {
             try {
                 $existingMeta = Get-Content -LiteralPath $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
@@ -5681,13 +6030,12 @@ if ($LocalLlamaCppLinked) {
     }
 
     # -- Step C: Build llama-server --
-    $NumCpu = [Environment]::ProcessorCount
-    if ($NumCpu -lt 1) { $NumCpu = 4 }
+    $NumCpu = Get-LlamaBuildJobs
 
     if ($BuildOk) {
         Write-Host ""
         Write-Host "--- cmake build (llama-server) ---" -ForegroundColor Cyan
-        Write-Host "   Parallel jobs: $NumCpu" -ForegroundColor Gray
+        Write-Host "   Parallel jobs: $NumCpu of $([Environment]::ProcessorCount) cores (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)" -ForegroundColor Gray
         Write-Host ""
 
         $output = cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-String
