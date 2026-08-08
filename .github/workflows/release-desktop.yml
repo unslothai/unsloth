@@ -186,8 +186,11 @@ jobs:
           DESKTOP_RELEASE_TAG: ${{ steps.prepare.outputs.desktop_release_tag }}
         run: |
           set -euo pipefail
-          # Deleting without --cleanup-tag leaves a tag this guard rejects.
-          retry_hint="To retry a failed publish of this version, remove the release and its tag together: gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag"
+          print_retry_hint() {
+            echo "To retry a failed publish of this version:" >&2
+            echo "  If a release exists, delete it and its tag: gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag" >&2
+            echo "  If release creation failed after reserving only the tag, delete the orphan tag: gh api --method DELETE repos/${GH_REPO}/git/refs/tags/${DESKTOP_RELEASE_TAG}" >&2
+          }
           resource_exists() {
             local response
             if response="$(gh api --include "$1" 2>&1)"; then
@@ -202,13 +205,13 @@ jobs:
           }
           if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}"; then
             echo "Tag ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
-            echo "$retry_hint" >&2
+            print_retry_hint
             exit 1
           fi
           # A read token cannot see drafts, so publish-release repeats this check.
           if resource_exists "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" "release ${DESKTOP_RELEASE_TAG}"; then
             echo "Release ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
-            echo "$retry_hint" >&2
+            print_retry_hint
             exit 1
           fi
 
@@ -1401,7 +1404,8 @@ jobs:
           RELEASE_DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
-          # Repeat with write access so drafts are visible before creation.
+          # Repeat with write access. The release-by-tag REST endpoint returns
+          # 404 for drafts even to a repository owner, so enumerate releases instead.
           resource_exists() {
             local response
             if response="$(gh api --include "$1" 2>&1)"; then
@@ -1414,11 +1418,39 @@ jobs:
             printf '%s\n' "$response" >&2
             exit 1
           }
+
+          releases_file="$RUNNER_TEMP/desktop-releases.json"
+          # `gh release list` uses the same draft-aware GraphQL path as
+          # `gh release view`; the REST list and tag lookup both omit drafts.
+          if ! gh release list --limit 10000 --json tagName > "$releases_file"; then
+            echo "Could not list releases, including drafts; refusing to publish." >&2
+            exit 1
+          fi
+          release_state="$(python3 - "$releases_file" "$DESKTOP_RELEASE_TAG" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if not isinstance(releases, list):
+              sys.exit('Unexpected response while listing desktop releases')
+          matches = [
+              release
+              for release in releases
+              if isinstance(release, dict) and release.get('tagName') == sys.argv[2]
+          ]
+          if len(matches) > 1:
+              sys.exit(f'Found duplicate releases for {sys.argv[2]}')
+          print('exists' if matches else 'absent')
+          PY
+          )"
+
           if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}" \
-            || resource_exists "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" "release ${DESKTOP_RELEASE_TAG}"; then
+            || [ "$release_state" = "exists" ]; then
             echo "Refusing to republish ${DESKTOP_RELEASE_TAG}: a release or tag for this version already exists." >&2
-            echo "Release a new studio_version, or, to retry this one, remove the release and its tag together:" >&2
-            echo "  gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag" >&2
+            echo "Release a new studio_version, or recover the failed publish before retrying:" >&2
+            echo "  If a release exists, delete it and its tag: gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag" >&2
+            echo "  If release creation failed after reserving only the tag, delete the orphan tag: gh api --method DELETE repos/${GH_REPO}/git/refs/tags/${DESKTOP_RELEASE_TAG}" >&2
             echo "A plain 'gh release delete' leaves the tag behind, which this guard also rejects." >&2
             exit 1
           fi

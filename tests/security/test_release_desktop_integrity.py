@@ -43,8 +43,10 @@ def _write_fake_gh(path: Path):
 set -eu
 printf 'gh %s\\n' "$*" >> "$COMMAND_LOG"
 if [ "$1" = "api" ]; then
-  endpoint="$2"
-  if [ "$endpoint" = "--include" ]; then endpoint="$3"; fi
+  endpoint=""
+  for argument in "$@"; do
+    case "$argument" in repos/*) endpoint="$argument" ;; esac
+  done
   case "$endpoint" in
     */git/ref/tags/*) status="$TAG_HTTP_STATUS" ;;
     */releases/tags/*) status="$RELEASE_HTTP_STATUS" ;;
@@ -54,6 +56,19 @@ if [ "$1" = "api" ]; then
   if [ "$status" = "200" ]; then exit 0; fi
   exit 1
 fi
+if [ "$1" = "release" ] && [ "$2" = "list" ]; then
+  if [ "$RELEASE_HTTP_STATUS" = "500" ]; then
+    printf 'GraphQL test failure\n' >&2
+    exit 1
+  fi
+  if [ "$RELEASE_HTTP_STATUS" = "200" ]; then
+    printf '[{"tagName":"%s"}]\n' "$DESKTOP_RELEASE_TAG"
+  else
+    printf '[]\n'
+  fi
+  exit 0
+fi
+
 exit 0
 """,
         encoding = "utf-8",
@@ -109,7 +124,7 @@ def _stage_assets(tmp_path: Path) -> dict[str, str]:
     digests = {}
     for name, payload in (
         ("Unsloth-Desktop-0_1_50_beta-MacOS.dmg", b"disk image"),
-        ("Unsloth-Desktop-0_1_50_beta-Linux.deb", b"package"),
+        ("Unsloth-Desktop-0_1_50_beta-Ubuntu.deb", b"package"),
         ("Unsloth-Desktop-0_1_50_beta-ARM64.app.tar.gz", b"mac updater"),
         ("Unsloth-Desktop-0_1_50_beta-ARM64.app.tar.gz.sig", b"mac signature"),
         ("Unsloth-Desktop-0_1_50_beta-Linux.AppImage", b"linux updater"),
@@ -179,6 +194,7 @@ def test_a_used_version_fails_the_guard_before_any_build_work(tmp_path):
             assert RELEASE_TAG in result.stderr
             # Avoid leaving a tag that fails the next attempt.
             assert f"gh release delete {RELEASE_TAG} --cleanup-tag" in result.stderr
+            assert f"gh api --method DELETE repos/unslothai/unsloth/git/refs/tags/{RELEASE_TAG}" in result.stderr
 
 
 def test_a_failed_guard_probe_fails_closed_before_any_build_work(tmp_path):
@@ -204,6 +220,7 @@ def test_publish_refuses_to_reuse_an_existing_release(tmp_path):
         assert result.returncode == 1, case
         assert "Refusing to republish" in result.stderr
         assert f"gh release delete {RELEASE_TAG} --cleanup-tag" in result.stderr
+        assert f"gh api --method DELETE repos/unslothai/unsloth/git/refs/tags/{RELEASE_TAG}" in result.stderr
         assert not [line for line in commands if line.startswith("gh release create")]
 
 
@@ -212,6 +229,14 @@ def test_publish_fails_closed_when_a_guard_probe_errors(tmp_path):
     result, commands = _run_create_release(workflow, tmp_path, tag_http_status = 500)
     assert result.returncode == 1
     assert "Could not verify that tag" in result.stderr
+    assert not [line for line in commands if line.startswith("gh release create")]
+
+
+def test_publish_fails_closed_when_draft_listing_errors(tmp_path):
+    workflow = _workflow()
+    result, commands = _run_create_release(workflow, tmp_path, release_http_status = 500)
+    assert result.returncode == 1
+    assert "Could not list releases, including drafts" in result.stderr
     assert not [line for line in commands if line.startswith("gh release create")]
 
 
