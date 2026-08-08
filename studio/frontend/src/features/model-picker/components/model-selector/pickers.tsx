@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useNavigate } from "@tanstack/react-router";
+import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -57,6 +58,7 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
+import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -2094,6 +2096,7 @@ export function HubModelPicker({
   const pickerInventory = useChatPickerInventory({ enabled: true });
   const { cachedGguf, cachedModels, cachedReady, refreshInventory } =
     pickerInventory;
+  const cachedReadyAtMount = useRef(cachedReady);
   const lmStudioModels = useMemo(
     () =>
       sortLmStudio(
@@ -2281,6 +2284,9 @@ export function HubModelPicker({
   }, [refreshScanFolders]);
 
   useEffect(() => {
+    if (!shouldRefreshPickerInventoryOnMount(cachedReadyAtMount.current)) {
+      return;
+    }
     void refreshInventory();
   }, [refreshInventory]);
 
@@ -2646,8 +2652,9 @@ export function HubModelPicker({
         if (page) {
           void navigateToPage({
             to: `/${page}`,
-            // The target page uses this verbatim as the gguf filename, so it must be ggufFilename (an exact repo filename), never ggufVariant (a label like "Q4_K_M", which routed a file that does not exist). No filename means a curated non-GGUF pick.
-            search: { model: id, quant: meta.ggufFilename ?? undefined },
+            // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant instead; dropping it
+            // made every non-curated GGUF repo arrive as a bare repo id.
+            search: diffusionRouteSearch(id, meta),
           });
           return;
         }
@@ -3457,6 +3464,9 @@ export function HubModelPicker({
                 isLora: false,
                 ggufVariant: entry.quant,
                 isDownloaded: true,
+                // The row loads one quant, so it is a GGUF pick like the expander's; without this the pages asked for a
+                // pipeline, which a GGUF repo rejects. No filename: the pin stores a label, resolved against the listing.
+                isGguf: true,
               })
             }
             vramStatus={null}
@@ -3878,7 +3888,8 @@ export function HubModelPicker({
         >
           <div
             className={cn(
-              "pr-0",
+              // Keep row actions clear of overlay scrollbars, overflowing or not.
+              "overlay-scrollbar-gutter",
               // On Device pulls the heading block tight to the controls; Recommended
               // keeps a little more top room above its first row.
               showDownloaded ? "pt-0" : "pt-[4px]",

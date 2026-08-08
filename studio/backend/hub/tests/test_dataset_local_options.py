@@ -56,11 +56,19 @@ def test_processed_cache_options_are_local_deduplicated_and_non_train_capable(
     )
 
     assert response.cache_available is True
-    # "config with spaces" is dropped: TrainingStartRequest._check_subset rejects the space,
-    # so offering it would turn the click into a 422. "v1..v2" stays, because that same
-    # validator accepts it -- only split names refuse "..".
     assert [item.model_dump() for item in response.splits] == [
         {"dataset": "org/data", "config": "default", "split": "train"},
+        {"dataset": "org/data", "config": "config with spaces", "split": "test"},
+        {
+            "dataset": "org/data",
+            "config": "config with spaces",
+            "split": "train.clean",
+        },
+        {
+            "dataset": "org/data",
+            "config": "config with spaces",
+            "split": "validation",
+        },
         {"dataset": "org/data", "config": "v1..v2", "split": "test"},
     ]
 

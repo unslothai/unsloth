@@ -76,6 +76,7 @@ export interface TrainingConfigState {
   datasetSplit: string | null;
   datasetEvalSplit: string | null;
   datasetStreaming: boolean;
+  manualDatasetOptionsValid: boolean;
   datasetManualMapping: DatasetManualMapping;
   datasetSystemPrompt: string;
   datasetLabelMapping: Record<string, Record<string, string>>;
@@ -210,6 +211,8 @@ export interface TrainingConfigActions {
   setDatasetSplit: (split: string | null) => void;
   setDatasetEvalSplit: (split: string | null) => void;
   setDatasetStreaming: (value: boolean) => void;
+  setManualDatasetOptionsValid: (value: boolean) => void;
+  markManualDatasetOptionsEdited: (optionsValid: boolean) => void;
   setDatasetManualMapping: (mapping: DatasetManualMapping) => void;
   setDatasetAdvisorFields: (fields: {
     systemPrompt?: string;
