@@ -1859,11 +1859,17 @@ class DiffusionBackend:
         and staged nothing. Presence in the live root is asked separately from validity, because
         presence alone is what that switch tests."""
         live = hub_cache_dir()
-        if DiffusionBackend._hub_file_is_cached(repo_id, filename, revision, expected_size, roots = (live,)):
+        if DiffusionBackend._hub_file_is_cached(
+            repo_id, filename, revision, expected_size, roots = (live,)
+        ):
             return True
-        if not DiffusionBackend._hub_file_is_cached(repo_id, filename, revision, expected_size, roots = (None,)):
+        if not DiffusionBackend._hub_file_is_cached(
+            repo_id, filename, revision, expected_size, roots = (None,)
+        ):
             return False
-        return not DiffusionBackend._hub_file_is_cached(repo_id, filename, revision, None, roots = (live,))
+        return not DiffusionBackend._hub_file_is_cached(
+            repo_id, filename, revision, None, roots = (live,)
+        )
 
     @staticmethod
     def _hub_file_is_cached(

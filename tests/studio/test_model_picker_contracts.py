@@ -1366,18 +1366,16 @@ def test_a_rejected_pick_hands_the_resident_state_back():
         assert "revertPick(quantRevert.current)" in body, f"{rel}: the label is not handed back"
         assert "quantRevert.current = null" in body, f"{rel}: the entry is never consumed"
 
-        select = re.search(
-            r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S
-        )
+        select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S)
         assert select, f"{rel}: handleModelSelect not found"
         pick = select.group(1)
         # Each toast.error that ends the pick must restore before returning.
         rejects = re.findall(r"toast\.error\([^;]*\);\n(\s*)([^\n]*)\n", pick)
         assert rejects, f"{rel}: no rejecting early return found; this guard has gone stale"
         for _indent, following in rejects:
-            assert "abandonPick();" in following, (
-                f"{rel}: a rejected pick returns without restoring the state it superseded"
-            )
+            assert (
+                "abandonPick();" in following
+            ), f"{rel}: a rejected pick returns without restoring the state it superseded"
 
 
 def test_a_new_pick_drops_the_previous_staged_intent():

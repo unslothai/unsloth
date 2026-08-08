@@ -278,7 +278,14 @@ def test_download_plan_restages_a_native_asset_a_stale_live_copy_shadows(monkeyp
 
     shadowed = "split_files/vae/ae.safetensors"
 
-    def probe(repo_id, filename, revision = None, expected_size = None, roots = None, **kwargs):
+    def probe(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+        roots = None,
+        **kwargs,
+    ):
         asks_live = roots is not None and roots != (None,)
         if filename == shadowed:
             # Live root: present (no size asked) but wrong bytes. Other root: correct.
