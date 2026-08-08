@@ -446,6 +446,7 @@ def _add_dataset_info_options(options: set[tuple[str, str]], payload: Any) -> No
 def _valid_dataset_info(payload: Any) -> bool:
     """datasets walks this while it builds DatasetInfosDict, so a field of the wrong shape
     raises there rather than when a split is chosen."""
+
     def children(value: Any) -> list[Any]:
         return list(value.values()) if isinstance(value, dict) else value
 
@@ -1230,8 +1231,7 @@ def _resolved_data_dir(snapshot: Path, raw: str) -> Optional[str]:
         matched = sorted(
             relative
             for path in snapshot.rglob("*")
-            if path.is_dir()
-            and matcher.match(relative := path.relative_to(snapshot).as_posix())
+            if path.is_dir() and matcher.match(relative := path.relative_to(snapshot).as_posix())
         )
         return matched[0] if len(matched) == 1 else None
     if not (snapshot / raw).is_dir():

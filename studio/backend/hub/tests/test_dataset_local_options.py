@@ -1763,7 +1763,9 @@ def test_snapshot_options_let_a_later_dataset_info_entry_win(tmp_path):
 
 def test_snapshot_options_reject_declared_files_under_an_unsafe_data_dir(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: /missing\n  data_files: train.jsonl\n")
+    _card(
+        snapshot, "configs:\n- config_name: cfg\n  data_dir: /missing\n  data_files: train.jsonl\n"
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     # The loader looks for /missing/train.jsonl, not the one at the root.
@@ -1791,7 +1793,10 @@ def test_snapshot_options_reject_a_double_star_inside_a_component(tmp_path):
 @pytest.mark.parametrize("params", ["123", "\n    - RGB"])
 def test_snapshot_options_reject_feature_class_parameters_that_are_not_a_mapping(tmp_path, params):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype:\n      image: {params}\n")
+    _card(
+        snapshot,
+        f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype:\n      image: {params}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
