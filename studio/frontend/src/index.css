@@ -33,10 +33,25 @@
 	   scrolled, the TOP edge also fades so rows dissolve as they pass under the
 	   pinned New Chat / Search header. */
 	/* Top edge: when scrolled, rows dissolve as they pass under the pinned
-	   New Chat / Search header (mask — fades content to transparent). */
+	   New Chat / Search header (mask — fades content to transparent).
+	   A mask covers the border box, and the scrollbar sits inside it, so the
+	   ramp dissolved the top of the thumb along with the rows. The second
+	   layer holds the rail's own column opaque; layers union by default
+	   (mask-composite: add). Nothing but the scrollbar is in that column, so it
+	   costs the fade nothing, and at rail 0 the layer is empty. */
 	.sidebar-scroll-fade.is-scrolled {
-		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
-		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px),
+			linear-gradient(to left, #000 var(--sidebar-rail, 0px), transparent 0);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 14px),
+			linear-gradient(to left, #000 var(--sidebar-rail, 0px), transparent 0);
+	}
+	/* The rail sits on the inline end, the left under rtl, and a gradient
+	   cannot say that. */
+	[dir="rtl"] .sidebar-scroll-fade.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px),
+			linear-gradient(to right, #000 var(--sidebar-rail, 0px), transparent 0);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 14px),
+			linear-gradient(to right, #000 var(--sidebar-rail, 0px), transparent 0);
 	}
 	/* Bottom edge: Gemini-style sticky gradient OVERLAY painted in the sidebar
 	   background colour, so the last rows wash into the profile footer. Uses a

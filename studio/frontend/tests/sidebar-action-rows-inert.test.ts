@@ -154,6 +154,15 @@ test("the sidebar list measures its scroll rail", async () => {
   );
   // Thumb stays hidden until the list is hovered, as the other lists do.
   assert.match(css, /\.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,/);
+  // A mask covers the scrollbar, so the top fade keeps the rail column opaque.
+  assert.match(
+    css,
+    /mask-image: linear-gradient\(to bottom, transparent 0, #000 14px\),\s*linear-gradient\(to left, #000 var\(--sidebar-rail, 0px\), transparent 0\);/,
+  );
+  assert.match(
+    css,
+    /\[dir="rtl"\] \.sidebar-scroll-fade\.is-scrolled \{[\s\S]*linear-gradient\(to right, #000 var\(--sidebar-rail, 0px\), transparent 0\);/,
+  );
 });
 
 test("Tauri chat Recents label keeps its 2px shift", async () => {
