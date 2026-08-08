@@ -370,8 +370,7 @@ class _MtmdDownloadState:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    # A cancelled run keeps _cancelled set, so joining it would
-                    # silently download nothing. Ask for a retry instead.
+                    # Joining a cancelling run would silently download nothing.
                     if not self._cancelled:
                         return
                     raise SttModelIdError(
@@ -432,9 +431,8 @@ class _MtmdDownloadState:
                         blob_key = meta.etag,
                     )
                 )
-            # A cancel during metadata has no child to stop, so check it here:
-            # claiming and preparing the cache would mutate it after the user
-            # was told the download stopped.
+            # A cancel during metadata has no child to stop. Without these the
+            # run still reserves the repo and rewrites the cache after the stop.
             with self._lock:
                 if self._cancelled:
                     return
