@@ -68,9 +68,7 @@ def _tomllib():
 
 def _extras() -> dict[str, list[str]]:
     tomllib = _tomllib()
-    return tomllib.loads(PYPROJECT.read_text(encoding = "utf-8"))["project"][
-        "optional-dependencies"
-    ]
+    return tomllib.loads(PYPROJECT.read_text(encoding = "utf-8"))["project"]["optional-dependencies"]
 
 
 def _windows_xformers_urls(deps: list[str]) -> list[str]:
@@ -109,9 +107,7 @@ def test_windows_resolves_a_cuda_matched_wheel(family: str, torch_tag: str):
         f"{family}onlytorch{torch_tag} must resolve exactly one xformers wheel on "
         f"Windows, got {urls}"
     )
-    assert urls[0] == (
-        f"{WHEEL_INDEX_BASE}/{family}/xformers-{version}-cp39-abi3-win_amd64.whl"
-    )
+    assert urls[0] == (f"{WHEEL_INDEX_BASE}/{family}/xformers-{version}-cp39-abi3-win_amd64.whl")
 
 
 @pytest.mark.parametrize(("family", "torch_tag"), sorted(XFORMERS_WHEEL_MATRIX))
@@ -168,9 +164,9 @@ def test_windows_extra_documents_the_cuda_matched_route():
 def test_xformers_matrix_agrees_with_wheel_utils():
     """One matrix, three consumers (pyproject, wheel_utils, install.ps1). Drift here is
     exactly the bug: a runtime resolver that disagrees with the packaged pin."""
-    source = (
-        REPO_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py"
-    ).read_text(encoding = "utf-8")
+    source = (REPO_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py").read_text(
+        encoding = "utf-8"
+    )
     body = re.search(
         r"_XFORMERS_WHEEL_VERSIONS[^=]*=\s*\{(.*?)^\}", source, re.DOTALL | re.MULTILINE
     )
@@ -193,7 +189,9 @@ def test_install_ps1_matrix_agrees_with_pyproject():
     assert body, "could not find $script:XformersWheelVersions in install.ps1"
     for (family, torch_tag), version in XFORMERS_WHEEL_MATRIX.items():
         release = f"{torch_tag[0]}.{torch_tag[1:-1]}.{torch_tag[-1]}"
-        row = re.search(rf'^\s*"{re.escape(release)}"\s*=\s*@\{{(.*?)\}}', body.group(1), re.MULTILINE)
+        row = re.search(
+            rf'^\s*"{re.escape(release)}"\s*=\s*@\{{(.*?)\}}', body.group(1), re.MULTILINE
+        )
         assert row, f"install.ps1 has no row for torch {release}"
         assert f'"{family}" = "{version}"' in row.group(1), (
             f"install.ps1 torch {release} row must map {family} -> {version}, got "

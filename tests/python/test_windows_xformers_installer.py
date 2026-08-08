@@ -94,7 +94,7 @@ def test_selector_picks_the_matching_wheel(torch_version: str, expected: str):
         f"$v = '{torch_version}'\n"
         "$tag = ConvertTo-TorchFlavorTag $v\n"
         "$sel = Get-XformersWheelVersion -TorchVersion $v -CudaTag $tag\n"
-        "Write-Output \"[$sel]\"\n"
+        'Write-Output "[$sel]"\n'
     )
     assert out == f"[{expected}]", f"{torch_version} selected {out}, expected [{expected}]"
 
@@ -111,9 +111,7 @@ def test_selector_refuses_a_missing_or_blank_input():
 
 def test_installer_installs_xformers_from_the_torch_index():
     source = _source()
-    block = _extract(
-        r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", source
-    )
+    block = _extract(r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", source)
     assert "--no-deps" in block, (
         "the xFormers wheel declares torch==<exact release>; without --no-deps uv can pull "
         "a PyPI (CUDA 12.8) torch over the CUDA build just installed"
@@ -123,7 +121,7 @@ def test_installer_installs_xformers_from_the_torch_index():
         "is invisible to a version check and must be force-replaced"
     )
     assert "--default-index $_xfIndexUrl" in block
-    assert 'xformers==$_xfVersion' in block
+    assert "xformers==$_xfVersion" in block
     assert "UNSLOTH_SKIP_XFORMERS" in block
 
 

@@ -325,12 +325,14 @@ def test_sage_install_carries_the_dispatcher_version_floor(monkeypatch):
     assert att._pip_requirement("xformers", "xformers") == "xformers"
 
 
-_XFORMERS_WHEEL = (
-    "https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
-)
+_XFORMERS_WHEEL = "https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
 
 
-def _stub_xformers_wheel(monkeypatch, url = _XFORMERS_WHEEL, reason = None):
+def _stub_xformers_wheel(
+    monkeypatch,
+    url = _XFORMERS_WHEEL,
+    reason = None,
+):
     """Pin the resolved xFormers wheel so no test probes the real torch."""
     monkeypatch.setattr(att, "_xformers_wheel_target", lambda: (url, reason))
 
@@ -438,9 +440,7 @@ def test_xformers_resolution_skipped_when_already_installed(monkeypatch):
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     resolved = []
-    monkeypatch.setattr(
-        att, "_xformers_wheel_target", lambda: resolved.append(1) or (None, "x")
-    )
+    monkeypatch.setattr(att, "_xformers_wheel_target", lambda: resolved.append(1) or (None, "x"))
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
 
@@ -655,12 +655,16 @@ def test_transient_resolution_failure_is_not_memoised(monkeypatch):
 
     def _probe(**kwargs):
         calls.append(kwargs)
-        return None if len(calls) == 1 else {
-            "platform_tag": "win_amd64",
-            "python_tag": "cp313",
-            "torch_version": "2.10.0+cu130",
-            "cuda_version": "13.0",
-        }
+        return (
+            None
+            if len(calls) == 1
+            else {
+                "platform_tag": "win_amd64",
+                "python_tag": "cp313",
+                "torch_version": "2.10.0+cu130",
+                "cuda_version": "13.0",
+            }
+        )
 
     monkeypatch.setattr(wu, "probe_torch_wheel_env", _probe)
 
@@ -705,7 +709,8 @@ def test_resolution_does_no_network_io(monkeypatch):
     import utils.wheel_utils as wu
 
     monkeypatch.setattr(
-        wu, "probe_torch_wheel_env",
+        wu,
+        "probe_torch_wheel_env",
         lambda **kw: {
             "platform_tag": "win_amd64",
             "python_tag": "cp313",

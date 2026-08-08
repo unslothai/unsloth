@@ -159,7 +159,7 @@ class TestXformersWheelUrl:
         "overrides",
         [
             {"cuda_version": "", "cuda_major": ""},  # CPU / ROCm torch
-            {"platform_tag": "linux_aarch64"},       # no aarch64 xFormers wheels
+            {"platform_tag": "linux_aarch64"},  # no aarch64 xFormers wheels
             {"platform_tag": ""},
             {"torch_version": ""},
         ],
@@ -228,9 +228,7 @@ def test_every_url_the_matrix_can_produce_is_live(platform_tag):
     dead = []
     for url in sorted(urls):
         try:
-            with urllib.request.urlopen(
-                urllib.request.Request(url, method = "HEAD"), timeout = 30
-            ):
+            with urllib.request.urlopen(urllib.request.Request(url, method = "HEAD"), timeout = 30):
                 pass
         except urllib.error.HTTPError as exc:
             dead.append(f"{exc.code} {url}")
