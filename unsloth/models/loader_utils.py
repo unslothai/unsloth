@@ -310,9 +310,13 @@ def _prefer_legacy_lowercase_cache(
             for architecture in architectures
             if isinstance(architecture, str)
         )
-        if is_vlm and require_processor and not any(
-            os.path.isfile(os.path.join(snapshot, filename))
-            for filename in ("processor_config.json", "preprocessor_config.json")
+        if (
+            is_vlm
+            and require_processor
+            and not any(
+                os.path.isfile(os.path.join(snapshot, filename))
+                for filename in ("processor_config.json", "preprocessor_config.json")
+            )
         ):
             return False
         if any(

@@ -350,7 +350,10 @@ class TestGetModelName(unittest.TestCase):
         canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
         legacy = canonical.lower()
         for tokenizer_format in ("vocab.txt", "spiece.model"):
-            with self.subTest(tokenizer_format = tokenizer_format), tempfile.TemporaryDirectory() as cache_dir:
+            with (
+                self.subTest(tokenizer_format = tokenizer_format),
+                tempfile.TemporaryDirectory() as cache_dir,
+            ):
                 legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
                 _write_cached_model(
                     legacy_cache,
