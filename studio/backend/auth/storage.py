@@ -1162,6 +1162,10 @@ def validate_api_key_with_credential(raw_key: str) -> Optional[Tuple[str, str]]:
             with _api_key_hash_cache_lock:
                 if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:
                     _api_key_hash_cache.clear()
+                    # is_internal_api_key sizes itself against the hash cache, so clearing one
+                    # without the other lets the origin cache grow past the bound. Deep Research
+                    # mints a fresh internal key per model call, so that adds up.
+                    _api_key_internal_cache.clear()
                 _api_key_hash_cache[cache_id] = key_hash
         if not row["is_active"]:
             return None
