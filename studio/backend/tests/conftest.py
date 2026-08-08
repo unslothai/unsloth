@@ -218,6 +218,14 @@ def _configured_server_hosts() -> frozenset:
     return frozenset(hosts)
 
 
+# What those hostnames resolved to during this test. socket.create_connection looks the
+# name up and then dials the numeric result, so allowing the name alone still refuses the
+# connect that follows: by then the destination is an address that matches no name rule.
+# Filled in at resolution time, and only for names the rules already allowed, so the
+# address-literal exemption below cannot widen anything through it.
+_RESOLVED_SERVER_ADDRESSES: set = set()
+
+
 def _host_is_allowed(host) -> bool:
     """True for loopback and for any host the suite was explicitly pointed at."""
     if not isinstance(host, str):
@@ -227,6 +235,7 @@ def _host_is_allowed(host) -> bool:
         lowered.startswith("127.")
         or lowered in _LOOPBACK_HOSTS
         or lowered in _configured_server_hosts()
+        or lowered in _RESOLVED_SERVER_ADDRESSES
     )
 
 
@@ -278,6 +287,10 @@ def _no_outbound_network(request, monkeypatch):
     needs to dial out; the e2e ``studio_server`` tests reach their server on loopback
     and are unaffected.
     """
+    # Per test, so a name a test pointed the env vars at itself does not stay dialable
+    # for the rest of the run.
+    _RESOLVED_SERVER_ADDRESSES.clear()
+
     if request.node.get_closest_marker("allow_network") is not None:
         return
 
@@ -311,13 +324,24 @@ def _no_outbound_network(request, monkeypatch):
         # An address literal consults no resolver, so it cannot stall and is left alone;
         # the SSRF guards resolve private literals on purpose to prove they reject them,
         # and connect() still refuses anything non-loopback afterwards.
-        if _host_is_allowed(host) or _is_ip_literal(host):
-            return real_getaddrinfo(host, port, *args, **kwargs)
-        raise socket.gaierror(
-            socket.EAI_NONAME,
-            f"name resolution blocked in tests ({host!r}); "
-            f"stub the call, or mark the test with @pytest.mark.allow_network",
-        )
+        allowed_by_name = _host_is_allowed(host)
+        if not (allowed_by_name or _is_ip_literal(host)):
+            raise socket.gaierror(
+                socket.EAI_NONAME,
+                f"name resolution blocked in tests ({host!r}); "
+                f"stub the call, or mark the test with @pytest.mark.allow_network",
+            )
+        infos = real_getaddrinfo(host, port, *args, **kwargs)
+        if allowed_by_name:
+            # Carry the permission across the lookup, so the numeric address this hands
+            # back is still dialable. Deliberately not done on the literal branch: that
+            # one exists so a private literal can be resolved and then refused.
+            for info in infos:
+                try:
+                    _RESOLVED_SERVER_ADDRESSES.add(str(info[4][0]).lower())
+                except Exception:
+                    continue
+        return infos
 
     monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
 
