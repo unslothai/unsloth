@@ -272,9 +272,7 @@ def test_a_live_worker_holds_the_verdict_past_every_window(apple_silicon, clock,
     assert _superseded(monkeypatch, warming = False) is True
 
 
-def test_a_worker_that_starts_late_takes_over_an_expired_window(
-    apple_silicon, clock, monkeypatch
-):
+def test_a_worker_that_starts_late_takes_over_an_expired_window(apple_silicon, clock, monkeypatch):
     """The windows bound the promise, not the repair. A scheduler that arrives after the
     grace still gets the verdict held for as long as it is installing."""
     import main as main_mod
@@ -368,9 +366,7 @@ def _health(monkeypatch, *, chat_only: bool, reason: str | None) -> dict:
     app.add_api_route("/api/liveness", main_mod.liveness_check, methods = ["GET"])
     try:
         with TestClient(app) as client:
-            body = client.get(
-                "/api/health", headers = {"Authorization": "Bearer probe"}
-            ).json()
+            body = client.get("/api/health", headers = {"Authorization": "Bearer probe"}).json()
             body["_liveness"] = client.get("/api/liveness").json()
             return body
     finally:

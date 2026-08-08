@@ -284,7 +284,6 @@ def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
         return False
     try:
         from utils.mlx_repair import mlx_repair_in_flight
-
         return mlx_repair_in_flight()
     except Exception as exc:
         # A self-heal we cannot even ask about is one that cannot be relied on, so let the
