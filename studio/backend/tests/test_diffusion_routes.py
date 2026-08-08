@@ -69,6 +69,12 @@ class _FakeBackend:
         # The real backends probe the Hub for a gated companion here; the fake clears every pick.
         return None
 
+    def assert_precision_available(self, fam, **kwargs):
+        # The route's pre-eviction precision refusal, asked of the backend. The fake clears every
+        # request; the tests that care re-patch this to raise.
+        self.last_precision_kwargs = dict(kwargs)
+        return None
+
     def begin_load(self, model_path, **kwargs):
         # The real backend loads on a thread; the fake completes instantly.
         self.loaded = True
@@ -1268,6 +1274,80 @@ def test_load_refuses_an_unusable_explicit_precision_with_409(client, monkeypatc
     assert "Auto" in detail and "Off" in detail
     # Nothing was loaded, so the UI is not left half-initialised.
     assert client.get("/api/inference/images/status").json()["loaded"] is False
+
+
+def test_precision_refusal_precedes_eviction_and_engine_selection(client, monkeypatch):
+    # The refusal has to land BEFORE the GPU handoff. acquire_for evicts chat under the arbiter
+    # lock before it runs the register callback, and select_and_activate_engine unloads the
+    # resident model on an engine switch, so a refusal made inside begin_load arrives having
+    # already destroyed both things the 409 exists to preserve.
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference.diffusion_auto_policy import precision_refusal_message
+
+    backend = diffusion_module.get_diffusion_backend()
+    evicted = []
+    selected = []
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append("chat"))
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setattr(
+        engine_router,
+        "select_and_activate_engine",
+        lambda fam, **kw: (selected.append(fam), backend)[1],
+    )
+    refusal = precision_refusal_message(
+        "transformer_quant",
+        "fp8",
+        "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)",
+        off_label = "Off to run the checkpoint as-is",
+    )
+
+    def _refuse(fam, **kwargs):
+        raise RuntimeError(refusal)
+
+    monkeypatch.setattr(backend, "assert_precision_available", _refuse)
+    # begin_load must never be reached: the download and the eviction both hang off it.
+    monkeypatch.setattr(
+        backend,
+        "begin_load",
+        lambda *a, **k: pytest.fail("begin_load ran after an impossible precision"),
+    )
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+            "transformer_quant": "fp8",
+        },
+    )
+    assert resp.status_code == 409
+    assert "transformer_quant='fp8' could not be used" in resp.json()["detail"]
+    assert evicted == []  # chat still holds the GPU
+    assert selected == []  # and the engine was never switched
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+
+
+def test_precision_gate_is_not_applied_to_the_native_engine(client, monkeypatch):
+    # sd.cpp accepts transformer_quant / text_encoder_quant for interface parity and ignores them,
+    # so gating that path on a torchao capability would refuse loads that work today.
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: ENGINE_SD_CPP)
+    monkeypatch.setattr(
+        backend,
+        "assert_precision_available",
+        lambda fam, **kw: pytest.fail("the native engine must not be precision-gated"),
+    )
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+            "transformer_quant": "fp8",
+        },
+    )
+    assert resp.status_code == 200
 
 
 def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):

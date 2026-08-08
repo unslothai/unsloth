@@ -20113,6 +20113,7 @@ async def load_diffusion_model(
         select_and_activate_engine,
     )
     from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -20162,6 +20163,22 @@ async def load_diffusion_model(
             pending_name = predict_engine(fam, model_kind = kind) if fam is not None else None
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
+        # Same bar, same reason, for an EXPLICIT precision this host can never honor. begin_load
+        # makes the identical network-free check, but it runs inside acquire_for -- which evicts
+        # chat under the arbiter lock BEFORE the register callback -- and after selection, which
+        # unloads the resident model on an engine switch. So a refusal raised there arrives having
+        # already destroyed the two things the 409 exists to preserve. Diffusers only: the native
+        # engine accepts these knobs for interface parity and ignores them, so refusing on that
+        # path would break loads that work today. `auto` is never refused, so a caller that left
+        # the precision to the backend cannot reach this.
+        if fam is not None and pending_name == ENGINE_DIFFUSERS:
+            await asyncio.to_thread(
+                backend.assert_precision_available,
+                fam,
+                model_kind = kind,
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+            )
         preflighted = None
         if pending_name is not None and (needs_gpu or pending_name != active_engine_name()):
             preflighted = engine_for(pending_name)

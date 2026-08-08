@@ -128,7 +128,11 @@ async def load_video_model(
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.gpu_arbiter import VIDEO, acquire_for, release
-    from core.inference.video import get_video_backend, resolve_video_model_kind
+    from core.inference.video import (
+        assert_video_precision_available,
+        get_video_backend,
+        resolve_video_model_kind,
+    )
     from utils.native_path_leases import redact_native_paths
 
     backend = get_video_backend()
@@ -142,12 +146,24 @@ async def load_video_model(
                 request.gguf_filename = sole
                 kind = resolve_video_model_kind(sole, None)
         # Validate cheaply BEFORE touching the GPU so an unloadable pick can't evict chat then 400.
-        await asyncio.to_thread(
+        fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
+            model_kind = kind,
+            transformer_quant = request.transformer_quant,
+            text_encoder_quant = request.text_encoder_quant,
+        )
+        # Same bar for an EXPLICIT precision this host can never honor. begin_load makes the
+        # identical network-free check, but it runs inside acquire_for, which evicts chat under the
+        # arbiter lock BEFORE the register callback -- so a refusal raised there arrives having
+        # already taken the GPU away from the model it was meant to preserve. `auto` is never
+        # refused, so a caller that left the precision to the backend cannot reach this.
+        await asyncio.to_thread(
+            assert_video_precision_available,
+            fam,
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,

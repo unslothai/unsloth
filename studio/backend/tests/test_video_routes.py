@@ -311,8 +311,11 @@ def test_load_threads_options_through_to_backend(client):
     assert kwargs.get("transformer_cache_threshold") == 0.1
 
 
-def test_load_threads_transformer_quant_and_guidance_2(client):
+def test_load_threads_transformer_quant_and_guidance_2(client, monkeypatch):
     # The load-time transformer_quant field reaches the backend, and the per-generation guidance_2 reaches generate() (dual-DiT MoE).
+    # The dense DiT quant is pipeline-only, so a GGUF pick with an explicit scheme is refused by the
+    # route's precision gate before it gets here; stub the gate out, since this is about threading.
+    monkeypatch.setattr(video_module, "assert_video_precision_available", lambda fam, **kw: None)
     resp = client.post(
         "/api/inference/video/load",
         json = {
@@ -776,6 +779,42 @@ def test_load_refuses_an_unusable_explicit_precision_with_409(client, monkeypatc
     assert resp.status_code == 409
     assert "transformer_quant='nvfp4' could not be used" in resp.json()["detail"]
     assert client.get("/api/inference/video/status").json()["loaded"] is False
+
+
+def test_precision_refusal_precedes_eviction(client, monkeypatch):
+    # The refusal belongs to validate_load_request, which the route calls BEFORE the GPU handoff:
+    # acquire_for evicts chat under the arbiter lock before it runs begin_load, so a refusal made
+    # there arrives after the eviction the 409 exists to prevent.
+    from core.inference.diffusion_auto_policy import precision_refusal_message
+
+    backend = video_module.get_video_backend()
+    evicted = []
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append("chat"))
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    refusal = precision_refusal_message(
+        "transformer_quant",
+        "nvfp4",
+        "'nvfp4' is not usable for family 'ltx-2' on this GPU",
+        off_label = "Off to run the DiT at bf16",
+    )
+
+    def _refuse(fam, **kwargs):
+        raise RuntimeError(refusal)
+
+    monkeypatch.setattr(video_module, "assert_video_precision_available", _refuse)
+    monkeypatch.setattr(
+        backend,
+        "begin_load",
+        lambda *a, **k: pytest.fail("begin_load ran after an impossible precision"),
+    )
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "Lightricks/LTX-2.3", "transformer_quant": "nvfp4"},
+    )
+    assert resp.status_code == 409
+    assert "transformer_quant='nvfp4' could not be used" in resp.json()["detail"]
+    assert evicted == []
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
 def test_unload_releases_arbiter(client, monkeypatch):

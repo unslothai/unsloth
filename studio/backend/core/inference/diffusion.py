@@ -877,7 +877,7 @@ class DiffusionBackend:
         target = resolve_diffusion_device_target()
         return target.device, target.dtype
 
-    def _assert_precision_available(
+    def assert_precision_available(
         self,
         fam: Optional[DiffusionFamily],
         *,
@@ -890,7 +890,12 @@ class DiffusionBackend:
         Only the host-level impossibilities, which are knowable network-free: the wrong load kind,
         a device with no dense-quant path, and a scheme this GPU or family rules out. Anything
         needing the measured footprint is decided inside ``load_pipeline``. ``auto`` is never
-        refused -- delegating the choice is exactly what it means."""
+        refused -- delegating the choice is exactly what it means.
+
+        Public because the ROUTE has to make this call itself, before it takes the GPU: the copy
+        in ``begin_load`` runs inside ``acquire_for``, which evicts chat under the arbiter lock
+        before the register callback, and after ``select_and_activate_engine``, which unloads the
+        resident model on an engine switch."""
         if precision_fallback_allowed():
             return
         pinned = normalize_transformer_quant(transformer_quant)
@@ -1309,7 +1314,7 @@ class DiffusionBackend:
         # route answers 409 with the reason instead of evicting the resident model, downloading
         # several GB and only then failing. The declines that need the real footprint (a VRAM
         # misfit, a failed build) can only be found mid-load and surface through load-progress.
-        self._assert_precision_available(
+        self.assert_precision_available(
             fam,
             model_kind = resolve_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,

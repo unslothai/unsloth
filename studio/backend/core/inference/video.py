@@ -144,7 +144,7 @@ def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[
     return "gguf" if gguf_filename.strip().lower().endswith(".gguf") else "single_file"
 
 
-def _assert_video_precision_available(
+def assert_video_precision_available(
     fam: Any,
     *,
     model_kind: str,
@@ -153,10 +153,14 @@ def _assert_video_precision_available(
 ) -> None:
     """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
-    The image twin, ``DiffusionBackend._assert_precision_available``: only the network-free
+    The image twin, ``DiffusionBackend.assert_precision_available``: only the network-free
     host-level impossibilities (wrong load kind, no dense-quant path, a scheme this GPU or family
     rules out). Footprint-dependent declines belong to ``load_pipeline``; ``auto`` is never
-    refused."""
+    refused.
+
+    Public because the ROUTE has to make this call itself, before it takes the GPU: the copy in
+    ``begin_load`` runs inside ``acquire_for``, which evicts chat under the arbiter lock before the
+    register callback."""
     if precision_fallback_allowed():
         return
     pinned = normalize_transformer_quant(transformer_quant)
@@ -571,8 +575,10 @@ class VideoBackend:
         )
         # Refuse an EXPLICIT precision this host can never honor BEFORE the load starts, so the
         # route answers 409 with the reason instead of evicting the resident model and pulling
-        # tens of GB first. Footprint-dependent declines still surface via load-progress.
-        _assert_video_precision_available(
+        # tens of GB first. Footprint-dependent declines still surface via load-progress. The
+        # ROUTE makes the same call earlier still (see assert_video_precision_available): this one
+        # runs inside acquire_for, which has already evicted chat by the time it fires.
+        assert_video_precision_available(
             fam,
             model_kind = resolve_video_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
