@@ -5065,25 +5065,6 @@ def vibe(
     # delegate to (unlike Claude/Codex/OpenCode/Pi), so reject --as-subagent early
     # instead of letting the flag reach the vibe binary.
     _reject_as_subagent("vibe", ctx.args)
-    # Vibe's config precedence puts ProjectConfigLayer (trusted `./.vibe/config.toml`
-    # in the CWD) ABOVE UserConfigLayer ($VIBE_HOME/config.toml) and above the
-    # `VIBE_*` env-var layer. If the user runs `unsloth start vibe` from a repo
-    # whose ./.vibe/config.toml has been trusted (via Vibe's trust store), that
-    # config's active_model + [[providers]] would silently override our session
-    # config -- pointing vibe at the project's model instead of Unsloth /v1.
-    # There is no CLI flag or env var to bypass ProjectConfigLayer upstream, so
-    # the safest we can do is warn: the user can untrust the directory in Vibe's
-    # trust store, or run `unsloth start vibe` from a different working directory.
-    project_config = Path.cwd() / ".vibe" / "config.toml"
-    if project_config.exists():
-        typer.echo(
-            f"Warning: {project_config} exists and, if it is a trusted Vibe project "
-            "config, will override the session config Unsloth generates (Vibe's "
-            "ProjectConfigLayer wins over VIBE_HOME). If the vibe session uses the "
-            "wrong model/provider, remove that file or launch from a different "
-            "directory.",
-            err = True,
-        )
     # Vibe ships an official installer per platform: `curl | bash` for POSIX,
     # `uv tool install mistral-vibe` for Windows (piping curl into PowerShell
     # would fail because PowerShell has no native curl+bash). _vibe_install_hint
@@ -5119,9 +5100,21 @@ def vibe(
         # the session.
         vibe_home = home / ".vibe"
         write_vibe_config(base, key, entry, vibe_home / "config.toml", yolo = yolo)
+        # Vibe's config precedence (per vibe/core/config/default_orchestrator.py)
+        # from lowest to highest: schema defaults → GrowthBook → user TOML →
+        # project TOML (`./.vibe/config.toml`) → `VIBE_*` env vars → runtime
+        # overrides → admin. Setting only VIBE_HOME would leave the session
+        # pinned in the user-TOML layer, so a trusted project `./.vibe/config.toml`
+        # in the CWD would silently override our active_model + provider and
+        # route prompts to the project's model instead of the local Unsloth /v1
+        # server. Pinning VIBE_ACTIVE_MODEL to our alias forces the environment
+        # layer to win over the project layer for the one field that decides
+        # which [[models]] entry vibe uses; the [[providers]] and [[models]]
+        # tables themselves still come from VIBE_HOME/config.toml.
         env = {
             _VIBE_ENV_KEY: key,
             "VIBE_HOME": str(vibe_home),
+            "VIBE_ACTIVE_MODEL": _VIBE_MODEL_ALIAS,
             "HOME": str(home),
         }
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)

@@ -4947,21 +4947,22 @@ def test_write_vibe_config_derives_threshold_from_max_context_length_fallback(tm
     assert parsed["models"][0]["auto_compact_threshold"] == int(32768 * 0.9)
 
 
-def test_connect_vibe_warns_when_project_vibe_config_exists(fake_studio, tmp_path, monkeypatch):
-    # Vibe's ProjectConfigLayer (trusted `./.vibe/config.toml` in CWD) wins over
-    # UserConfigLayer ($VIBE_HOME/config.toml) and over the VIBE_* env-var layer,
-    # and there is no upstream flag/env var to bypass it. Warn the user so they
-    # can remove the file or launch from a different directory if the vibe
-    # session ends up pointed at the wrong model/provider.
+def test_connect_vibe_pins_active_model_via_env_layer(fake_studio, tmp_path, monkeypatch):
+    # Vibe's config precedence (from vibe/core/config/default_orchestrator.py,
+    # lowest to highest): schema defaults → GrowthBook → user TOML → project
+    # TOML (`./.vibe/config.toml`) → VIBE_* env vars → runtime overrides →
+    # admin. Setting only VIBE_HOME pins our session in the user-TOML layer,
+    # which loses to a trusted project ./.vibe/config.toml in CWD. Pinning
+    # VIBE_ACTIVE_MODEL to our alias forces the environment layer to override
+    # whatever active_model the project config declares, so the session still
+    # routes to the Unsloth-provided [[models]] entry in VIBE_HOME/config.toml.
     project_dir = tmp_path / "project"
     (project_dir / ".vibe").mkdir(parents = True)
     (project_dir / ".vibe" / "config.toml").write_text('active_model = "user-project-model"\n')
     monkeypatch.chdir(project_dir)
     result = CliRunner().invoke(start.start_app, ["vibe", "--no-launch"])
     assert result.exit_code == 0, result.output
-    # The warning must name the file so the user can act on it (delete/untrust/move).
-    assert str(project_dir / ".vibe" / "config.toml") in result.output
-    assert "ProjectConfigLayer" in result.output or "override" in result.output
+    _assert_env_set(result.output, "VIBE_ACTIVE_MODEL", start._VIBE_MODEL_ALIAS)
 
 
 def test_connect_vibe_no_launch(fake_studio, tmp_path):
@@ -4975,6 +4976,11 @@ def test_connect_vibe_no_launch(fake_studio, tmp_path):
     _assert_env_set(result.output, "HOME", str(home))
     _assert_env_set(result.output, "VIBE_HOME", str(vibe_home))
     _assert_env_set(result.output, start._VIBE_ENV_KEY, "sk-unsloth-feedfacefeedface")
+    # VIBE_ACTIVE_MODEL lives at the environment layer, which sits above the
+    # project-TOML layer in vibe's precedence stack. Pinning it here guarantees
+    # a trusted project ./.vibe/config.toml in CWD can't silently swap the
+    # session onto its own model (see default_orchestrator.py in mistral-vibe).
+    _assert_env_set(result.output, "VIBE_ACTIVE_MODEL", start._VIBE_MODEL_ALIAS)
     # No inline --model on the command: the config's active_model alias pins it,
     # so a passthrough subcommand (`vibe -p '...'`) parses without confusion.
     assert "vibe\n" in result.output or result.output.rstrip().endswith(" vibe")
