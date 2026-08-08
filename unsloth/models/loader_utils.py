@@ -346,7 +346,6 @@ def _prefer_legacy_lowercase_cache(
             index_path = os.path.join(weights_root, _variant_name(index_name))
             try:
                 import json
-
                 with open(index_path, encoding = "utf-8") as index_file:
                     shard_names = set(json.load(index_file).get("weight_map", {}).values())
             except (OSError, ValueError, TypeError):
