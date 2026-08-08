@@ -220,7 +220,8 @@ def _scan_paths() -> Dict[str, list]:
 # Top-level dirs several wheels write into, so one uninstall deletes another's
 # files and the survivor's RECORD describes a file nothing recreates. einx and
 # torchao both ship test/conftest.py, and install_python_stack.py
-# force-reinstalls torchao every update.
+# force-reinstalls torchao every update; unsloth_zoo <= 2026.8.5 shipped
+# tests/ and scripts/ into the same squatted namespace.
 _SHARED_NON_RUNTIME_ROOTS = frozenset(
     (
         "test",
@@ -243,26 +244,21 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
 
-def _shared_non_runtime(rel: str, name: str) -> bool:
-    """A third-party row under a top-level dir several wheels write into.
+def _shared_non_runtime(rel: str) -> bool:
+    """A row under a top-level dir several wheels write into.
 
     Ownership of these is unreliable: whichever wheel installed last wins, and
-    any of them uninstalling takes the others' files with it. Never applied to
-    what we ship, because a missing __init__.py does NOT make a directory
-    unimportable (PEP 420) and this repo imports scripts.* itself, so our own
-    top-level trees stay checked. Applied while reading RECORD, not when
-    reporting, so the row also stays out of the ownership tally and the `limit`
-    budget.
+    any of them uninstalling takes the others' files with it. That is a property
+    of the path, not of the distribution claiming it, so it holds for what we
+    ship too: unsloth_zoo <= 2026.8.5 packaged a top-level tests/ and scripts/,
+    nothing imports either at runtime, and a clobbered copy wedged every update
+    with `unsloth_zoo: tests/conftest.py is 8107 bytes, expected 11429`. Our
+    runtime trees are unaffected, since none of them is named for a shared root.
+    Applied while reading RECORD, not when reporting, so the row also stays out
+    of the ownership tally and the `limit` budget.
     """
-    if _canonical(name) in _OUR_DISTRIBUTIONS:
-        return False
     parts = tuple(p for p in rel.replace("\\", "/").split("/") if p and p != ".")
     return len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS
-
-
-# What Unsloth ships. Its top-level trees are ours to guarantee, so they are
-# never exempted however they are named.
-_OUR_DISTRIBUTIONS = frozenset(("unsloth", "unsloth-zoo", "unsloth-studio"))
 
 
 def _installer_rewritten(rel: str) -> bool:
@@ -335,7 +331,7 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
             # size recorded inside itself; .pyc is regenerated from source.
             if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
                 continue
-            if _shared_non_runtime(rel, name):
+            if _shared_non_runtime(rel):
                 continue
             # The size field is optional and real wheels do leave it blank. Keep
             # the row anyway with an unknown size: existence is still checkable,
