@@ -48,6 +48,9 @@ time = { version = "0.3", features = ["formatting"] }
 libc = "0.2"
 signal-hook = "0.4"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 gdk = "0.18"
 gdk-pixbuf = "0.18"

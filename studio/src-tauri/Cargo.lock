@@ -5733,6 +5733,7 @@ dependencies = [
  "hmac",
  "libc",
  "log",
+ "objc2",
  "open",
  "process-wrap",
  "rand 0.10.2",
