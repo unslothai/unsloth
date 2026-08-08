@@ -5679,7 +5679,9 @@ def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, t
         "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
     )
 
-    assert plan == {"entries": [], "total_bytes": 0}
+    # incompatible_reason rides in the same envelope: the plan is where a FLUX.2 GGUF/base
+    # mismatch is reported, and None is "nothing known to be wrong".
+    assert plan == {"entries": [], "total_bytes": 0, "incompatible_reason": None}
 
 
 def test_files_already_cached_survives_an_unreadable_root(monkeypatch, tmp_path):
