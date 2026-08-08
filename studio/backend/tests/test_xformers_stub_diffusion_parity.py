@@ -265,6 +265,27 @@ def test_dit_training_refuses_dense_precision_under_the_stub(on_windows_rocm, mo
         _resolve_base_precision(cfg, None, "cuda")
 
 
+@pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
+def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode):
+    """The child's guard fires after _free_gpu_for_diffusion_training() has already unloaded
+    resident models, so the start route's preflight has to reject the same thing first."""
+    pytest.importorskip("torch")
+    from core.training.diffusion_dit_trainer import _resolve_base_precision
+    from core.training.diffusion_train_common import training_precision_preflight_error
+
+    install_torchao_windows_rocm_stub()
+    cfg = type("C", (), {"base_precision": mode, "mixed_precision": "bf16"})()
+    with pytest.raises(ValueError, match = "Windows-ROCm stub"):
+        _resolve_base_precision(cfg, None, "cuda")
+
+    # A real DiT family name, or the gate block is skipped and the test proves nothing.
+    reason = training_precision_preflight_error("flux.1", mode)
+    assert reason and "Windows-ROCm stub" in reason, (
+        f"the child refuses {mode} under the stub but the preflight does not, so a start would "
+        "evict resident GPU models and only then fail"
+    )
+
+
 @pytest.mark.parametrize(
     "dist_version, hip_line, expected",
     [
