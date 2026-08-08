@@ -1669,9 +1669,7 @@ class VideoBackend:
             # family degrades to the old snapping rather than raising.
             fam = getattr(self._state, "family", None)
             if fam is not None:
-                validate_video_request_shape(
-                    fam, width = width, height = height, num_frames = num_frames
-                )
+                validate_video_request_shape(fam, width = width, height = height, num_frames = num_frames)
             self._generate_job_active = True
             # Register BEFORE the worker starts so a cancel/unload in the spawn window still stops the run.
             self._active_generate_cancel = cancel
