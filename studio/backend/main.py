@@ -1739,6 +1739,7 @@ def get_hardware_info(
     from utils.hardware import (
         get_gpu_summary,
         get_package_versions,
+        get_accelerator_report,
         export_capability,
         video_capability,
     )
@@ -1763,6 +1764,11 @@ def get_hardware_info(
             for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
         ]
         body["llama_cpp"] = get_installed_llama_version()
+        # Whether the optimized kernels (xformers / flash-attn / torchao / bitsandbytes)
+        # are installed, import, and actually load. Detail-only because it costs a real
+        # import; cached per process, so only the first About open pays. Additive: no
+        # existing key changes shape, and older clients ignore it.
+        body["accelerators"] = get_accelerator_report()
     return body
 
 

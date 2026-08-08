@@ -841,15 +841,40 @@ def get_package_versions() -> Dict[str, Optional[str]]:
     Uses importlib.metadata (stdlib), no subprocess. CUDA version from
     torch.version.cuda. Returns dict keyed unsloth/torch/transformers/cuda;
     missing packages yield None.
+
+    The accelerator packages (xformers, flash-attn, torchao, bitsandbytes) are here as
+    plain version strings only. Whether they actually *load* costs a real import, so it
+    lives in get_accelerator_report() behind the About/diagnostics detail path.
     """
-    packages = ("unsloth", "torch", "transformers")
+    packages = (
+        "unsloth",
+        "torch",
+        "transformers",
+        # Optimized kernels. A version string alone does not mean they work -- an
+        # xformers built for another torch reports its version happily and has no
+        # memory-efficient attention -- but "installed at all" is the first question.
+        "xformers",
+        "flash-attn",
+        "torchao",
+        "bitsandbytes",
+    )
     versions: Dict[str, Optional[str]] = {}
 
     for name in packages:
+        # JSON key stays a valid identifier so clients can use dotted access:
+        # "flash-attn" is the distribution name, "flash_attn" is the import name.
+        key = name.replace("-", "_")
         try:
-            versions[name] = pkg_version(name)
+            versions[key] = pkg_version(name)
         except PackageNotFoundError:
-            versions[name] = None
+            versions[key] = None
+        except Exception as e:
+            logger.debug(f"Failed to read {name} version: {e}")
+            versions[key] = None
+
+    # Which Python the app is running, so an About-tab screenshot answers the "built for
+    # 3.10, running 3.13" half of a mismatch report without a follow-up question.
+    versions["python"] = platform.python_version()
 
     # GPU runtime versions bundled with torch (CUDA, ROCm/HIP, Intel XPU)
     try:
@@ -874,6 +899,290 @@ def get_package_versions() -> Dict[str, Optional[str]]:
         versions["xpu"] = None
 
     return versions
+
+
+# ========== Accelerator stack health ==========
+#
+# NVIDIA QA P0-1: the managed Windows xformers was built for torch 2.10.0+cu128 and
+# Python 3.10.11 while the app ran cu130 and Python 3.13.2, so its CUDA extensions never
+# loaded and memory-efficient attention silently went missing. Nothing in the app said so:
+# the package imported, reported a version, and quietly did nothing. get_package_versions
+# above would have shown "xformers 0.0.34" and looked healthy.
+#
+# So report three separate things per package -- is it installed, does it import, do its
+# kernels load -- plus what the wheel was compiled against, which is the part that
+# actually names the fix.
+#
+# We do NOT block startup on this. Degraded attention is far better than a dead app: the
+# whole failure mode is that training still works, just slower and hungrier. This is a
+# report, and the UI is loud about it.
+
+# (import name, distribution name). The distribution name is what pip installed; the
+# import name is what has to load.
+_ACCELERATOR_PACKAGES = (
+    ("xformers", "xformers"),
+    ("flash_attn", "flash-attn"),
+    ("torchao", "torchao"),
+    ("bitsandbytes", "bitsandbytes"),
+)
+
+# Importing native extension packages is the only honest way to know they load, but it is
+# slow and, on a badly broken install, not risk-free. Computed at most once per process
+# and skippable outright.
+_ACCELERATOR_PROBE_ENV = "UNSLOTH_SKIP_ACCELERATOR_PROBE"
+_accelerator_report_cache: Optional[Dict[str, Any]] = None
+_accelerator_report_lock = threading.Lock()
+
+
+def _xformers_build_metadata() -> Optional[Dict[str, Any]]:
+    """The installed xformers wheel's cpp_lib.json, without importing xformers.
+
+    ``find_spec`` locates the package without executing ``xformers/__init__.py``, so this
+    costs no import, drags in no torch, and does not fire xformers' own warning.
+
+    Deliberately a copy of ``unsloth.xformers_compat.xformers_build_metadata`` rather than
+    a call to it: the studio backend runs with ``studio/backend`` on sys.path, and
+    importing ``unsloth.xformers_compat`` would execute ``unsloth/__init__.py`` and pull in
+    torch -- which this module must work without (see the no-torch sandbox tests). Only
+    this file read is duplicated, never the version tables.
+    """
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("xformers")
+    except Exception:
+        return None
+    if spec is None:
+        return None
+    locations = list(getattr(spec, "submodule_search_locations", None) or ())
+    origin = getattr(spec, "origin", None)
+    if origin:
+        locations.append(os.path.dirname(origin))
+    for location in locations:
+        path = os.path.join(location, "cpp_lib.json")
+        try:
+            import json
+
+            with open(path, "r", encoding = "utf-8") as handle:
+                metadata = json.load(handle)
+        except Exception:
+            continue
+        if isinstance(metadata, dict) and isinstance(metadata.get("version"), dict):
+            return metadata
+    return None
+
+
+def _xformers_built_for() -> Optional[Dict[str, Optional[str]]]:
+    """cpp_lib.json -> {"torch", "cuda", "hip", "python"} strings, or None."""
+    version_block = (_xformers_build_metadata() or {}).get("version")
+    if not isinstance(version_block, dict):
+        return None
+    cuda = version_block.get("cuda")
+    # xformers' setup.py stores major * 100 + minor: 1208 is CUDA 12.8, 1300 is 13.0.
+    # Its own error message prints the raw integer, which is why users misread it.
+    cuda_text = (
+        f"{cuda // 100}.{cuda % 100}"
+        if isinstance(cuda, int) and not isinstance(cuda, bool)
+        else None
+    )
+    return {
+        "torch": str(version_block["torch"]) if version_block.get("torch") else None,
+        "cuda": cuda_text,
+        "hip": str(version_block["hip"]) if version_block.get("hip") else None,
+        "python": str(version_block["python"]) if version_block.get("python") else None,
+    }
+
+
+def _running_torch() -> Dict[str, Optional[str]]:
+    """{"torch", "cuda", "python"} for the interpreter answering the request."""
+    try:
+        import torch
+
+        return {
+            "torch": getattr(torch, "__version__", None),
+            "cuda": getattr(torch.version, "cuda", None),
+            "python": platform.python_version(),
+        }
+    except Exception:
+        return {"torch": None, "cuda": None, "python": platform.python_version()}
+
+
+def _probe_xformers() -> Dict[str, Any]:
+    """Does xformers import, and do its C++/CUDA extensions load?
+
+    ``_register_extensions`` is the exact call xformers makes at import and the exact one
+    that fails on an ABI mismatch -- it raises OSError out of ``torch.ops.load_library``,
+    which xformers catches and downgrades to a logger warning. Calling it directly turns
+    that swallowed warning back into an answer.
+    """
+    entry: Dict[str, Any] = {"imports": False, "runs": None, "reason": None}
+    entry["built_for"] = _xformers_built_for()
+    try:
+        import xformers  # noqa: F401
+    except Exception as e:
+        entry["reason"] = f"{type(e).__name__}: {e}"
+        return entry
+    entry["imports"] = True
+    try:
+        from xformers._cpp_lib import _register_extensions
+
+        _register_extensions()
+        entry["runs"] = True
+    except Exception as e:
+        entry["runs"] = False
+        entry["reason"] = _describe_xformers_break(entry["built_for"], e)
+    return entry
+
+
+def _describe_xformers_break(built_for: Optional[Dict[str, Optional[str]]], error) -> str:
+    """A one-line reason a user can act on, preferring the build metadata.
+
+    xformers' own message is three lines and prints the CUDA version as a raw integer
+    ("with CUDA 1208"), so it reads as noise. The wheel's recorded build torch/CUDA/Python
+    against the running ones is the whole diagnosis.
+    """
+    running = _running_torch()
+    if built_for and (built_for.get("torch") or built_for.get("cuda")):
+        built = built_for.get("torch") or f"CUDA {built_for.get('cuda')}"
+        built_python = built_for.get("python")
+        built_text = f"torch {built}" if built_for.get("torch") else built
+        if built_python:
+            built_text += f" / Python {built_python}"
+        running_text = f"torch {running.get('torch') or 'unknown'}"
+        if running.get("python"):
+            running_text += f" / Python {running['python']}"
+        return (
+            f"xformers was built for {built_text} but this app runs {running_text}; "
+            f"its C++/CUDA extensions cannot load, so memory-efficient attention is off"
+        )
+    return f"{type(error).__name__}: {error}"
+
+
+def _probe_import(import_name: str) -> Dict[str, Any]:
+    """Import a package and report whether it worked. Never raises."""
+    entry: Dict[str, Any] = {"imports": False, "runs": None, "reason": None}
+    try:
+        import importlib
+
+        importlib.import_module(import_name)
+        entry["imports"] = True
+    except Exception as e:
+        # An ABI mismatch in a native wheel shows up here as an ImportError on an
+        # undefined symbol, which is the flash-attn/bitsandbytes equivalent of the
+        # xformers failure above.
+        entry["reason"] = f"{type(e).__name__}: {e}"
+    return entry
+
+
+def _probe_flash_attn() -> Dict[str, Any]:
+    """flash-attn, forced past the lazy bit: the CUDA extension lives in the interface."""
+    entry = _probe_import("flash_attn")
+    if not entry["imports"]:
+        return entry
+    try:
+        import flash_attn.flash_attn_interface  # noqa: F401
+
+        entry["runs"] = True
+    except Exception as e:
+        entry["runs"] = False
+        entry["reason"] = f"{type(e).__name__}: {e}"
+    return entry
+
+
+def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
+    """Whether each optimized-kernel package is installed, imports, and actually loads.
+
+    Additive: nothing here changes the shape of get_package_versions() or of any existing
+    /api/system response field. Shape::
+
+        {
+          "python_version": "3.13.2",
+          "torch_version": "2.10.0+cu130",
+          "torch_cuda": "13.0",
+          "probed": true,
+          "packages": {
+            "xformers": {"version": "0.0.34", "installed": true, "imports": true,
+                         "runs": false, "reason": "...", "built_for": {...}},
+            ...
+          },
+          "degraded": ["xformers"]
+        }
+
+    ``runs`` is None where the question does not apply (package absent, or no separate
+    kernel-load step). Cached for the process: the imports are slow and re-running them
+    per request would make the About tab expensive. Set UNSLOTH_SKIP_ACCELERATOR_PROBE=1
+    to report versions only, for the rare install where importing a broken native wheel
+    is worse than not knowing.
+    """
+    global _accelerator_report_cache
+
+    if not refresh and _accelerator_report_cache is not None:
+        return copy.deepcopy(_accelerator_report_cache)
+
+    with _accelerator_report_lock:
+        if not refresh and _accelerator_report_cache is not None:
+            return copy.deepcopy(_accelerator_report_cache)
+
+        probe = os.environ.get(_ACCELERATOR_PROBE_ENV, "").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        running = _running_torch()
+        packages: Dict[str, Any] = {}
+        degraded = []
+
+        for import_name, dist_name in _ACCELERATOR_PACKAGES:
+            try:
+                version = pkg_version(dist_name)
+            except PackageNotFoundError:
+                version = None
+            except Exception as e:
+                logger.debug(f"Failed to read {dist_name} version: {e}")
+                version = None
+
+            entry: Dict[str, Any] = {
+                "version": version,
+                "installed": version is not None,
+                "imports": False,
+                "runs": None,
+                "reason": None,
+            }
+            if import_name == "xformers":
+                entry["built_for"] = _xformers_built_for()
+
+            if version is not None and probe:
+                try:
+                    if import_name == "xformers":
+                        entry.update(_probe_xformers())
+                    elif import_name == "flash_attn":
+                        entry.update(_probe_flash_attn())
+                    else:
+                        entry.update(_probe_import(import_name))
+                except Exception as e:
+                    # A report must never be the thing that 500s the endpoint.
+                    logger.debug(f"Accelerator probe for {import_name} failed: {e}")
+                    entry["reason"] = f"{type(e).__name__}: {e}"
+            elif version is not None:
+                entry["reason"] = "not probed"
+
+            # Installed but dead is the case worth shouting about. Installed-and-absent
+            # is normal, and unprobed is unknown, not broken.
+            if version is not None and probe and (not entry["imports"] or entry["runs"] is False):
+                degraded.append(import_name)
+            packages[import_name] = entry
+
+        report = {
+            "python_version": platform.python_version(),
+            "torch_version": running.get("torch"),
+            "torch_cuda": running.get("cuda"),
+            "probed": probe,
+            "packages": packages,
+            "degraded": degraded,
+        }
+        _accelerator_report_cache = report
+    return copy.deepcopy(report)
 
 
 # ========== Torch-based GPU fallbacks (AMD ROCm, Intel XPU, nvidia-smi missing) ==========
