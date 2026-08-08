@@ -266,7 +266,7 @@ def test_a_windows_device_name_never_becomes_a_directory(tmp_path, monkeypatch):
     for reserved in ("con", "NUL", "aux", "COM1", "lpt9", "nul.txt"):
         workdir = Path(tools.get_sandbox_workdir(reserved))
         assert workdir.name == "_invalid", reserved
-        assert tools.remove_session_sandbox(reserved, delete_files=True) is False
+        assert tools.remove_session_sandbox(reserved, delete_files = True) is False
 
 
 def test_reading_a_sandbox_never_creates_it(tmp_path, monkeypatch):
@@ -289,7 +289,7 @@ def test_reading_a_sandbox_never_creates_it(tmp_path, monkeypatch):
 def test_clearing_the_compiled_cache_covers_the_configured_location(tmp_path, monkeypatch):
     """The cleanup must follow UNSLOTH_COMPILE_LOCATION, not just the defaults."""
     pinned = tmp_path / "home" / "compiled_cache"
-    pinned.mkdir(parents=True)
+    pinned.mkdir(parents = True)
     (pinned / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
     (pinned / "UnslothSFTTrainer.py").write_text("x = 1\n")
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(pinned))
@@ -297,7 +297,7 @@ def test_clearing_the_compiled_cache_covers_the_configured_location(tmp_path, mo
     from utils import cache_cleanup
 
     assert pinned in cache_cleanup.get_existing_cache_dirs()
-    cache_cleanup.clear_unsloth_compiled_cache(preserve_patterns=["Unsloth*Trainer.py"])
+    cache_cleanup.clear_unsloth_compiled_cache(preserve_patterns = ["Unsloth*Trainer.py"])
     assert not (pinned / "unsloth_compiled_module_gemma3.py").exists()
     assert (pinned / "UnslothSFTTrainer.py").is_file()
 

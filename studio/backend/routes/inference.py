@@ -13501,6 +13501,7 @@ def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
     request cannot leave a directory behind for every id it is asked about.
     """
     from core.inference.tools import get_sandbox_workdir, resolve_sandbox_workdir
+
     resolver = get_sandbox_workdir if create else resolve_sandbox_workdir
     return os.path.realpath(resolver(session_id))
 
