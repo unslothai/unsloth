@@ -58,6 +58,7 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
+import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -2651,8 +2652,11 @@ export function HubModelPicker({
         if (page) {
           void navigateToPage({
             to: `/${page}`,
-            // The target page uses this verbatim as the gguf filename, so it must be ggufFilename (an exact repo filename), never ggufVariant (a label like "Q4_K_M", which routed a file that does not exist). No filename means a curated non-GGUF pick.
-            search: { model: id, quant: meta.ggufFilename ?? undefined },
+            // `quant` is used verbatim as the gguf filename, so only ggufFilename (an exact repo filename) may go there, never
+            // ggufVariant (a label like "Q4_K_M", which routed a file that does not exist). A pinned row has only the label, so
+            // it rides ggufQuant and the page resolves it against the listing; without that it arrived as a bare repo id and
+            // every non-curated GGUF repo read as a pipeline.
+            search: diffusionRouteSearch(id, meta),
           });
           return;
         }

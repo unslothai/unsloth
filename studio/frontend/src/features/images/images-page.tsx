@@ -74,6 +74,7 @@ import { NegativePromptField } from "@/components/negative-prompt-field";
 import { cn } from "@/lib/utils";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
+import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
 
@@ -1191,6 +1192,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
   // A trained adapter awaiting deployment: applied once the base is loaded and LoRA-capable for its family.
   const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
+  // Which pick owns the page. Resolving a repo-level GGUF pick is a listing request and staging is a plan request, neither of
+  // which sets `busy`, so the user can pick again or switch pages mid-flight; the superseded pick must then do nothing.
+  // Lazy state, not a ref: the guard is created once per page and read from handlers, and a ref cannot be written during render.
+  const [pickGuard] = useState(createPickGuard);
 
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
@@ -1865,11 +1870,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [active]);
 
   // Stage a not-yet-downloaded hub pick, else load it directly. Returns true when the pick was accepted either way.
+  // `isCurrent` lets an awaiting caller drop out here too: the plan request below is a second window in which a newer pick can
+  // take the page, and loading anyway would evict the model that pick just asked for.
   const loadOrStage = useCallback(
     async (
       repoId: string,
       opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
       isDownloaded?: boolean,
+      isCurrent?: () => boolean,
     ): Promise<boolean> => {
       if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
@@ -1890,6 +1898,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           // planned a quantized file set and staged too little. Same list handleLoad bakes.
           loras: advanced.loras,
         });
+        // Superseded while the plan was in flight: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
+        if (isCurrent && !isCurrent()) return false;
         if (plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts, advanced };
           stage(
@@ -1905,6 +1915,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       } catch {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
+      if (isCurrent && !isCurrent()) return false;
       return handleLoadRef.current(repoId, opts);
     },
     [stage, currentLoadAdvanced],
@@ -1918,41 +1929,53 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       repoId: string,
       quantHint: string | null,
       isDownloaded?: boolean,
+      localPath?: string | null,
     ): Promise<boolean> => {
-      const filename = await resolveDiffusionGgufFilename(repoId, {
-        quant: quantHint,
-        hfToken: hfApiToken(getHfToken()),
-      });
-      // Still ambiguous (several quants on disk, or the listing failed): only the expander can say which.
-      if (!filename) {
-        toast.error("Pick a quantization for this model to load it");
-        return false;
-      }
-      // Optimistic label, reverted if the load never starts, like the curated GGUF branch below.
+      // Claimed here, not by the caller, so every entry point is covered; the next pick's claim makes this one inert.
+      const token = pickGuard.claim();
+      const isCurrent = () => isMounted.current && pickGuard.holds(token);
       const prevQuant = quant;
-      quantRevert.current = { prev: prevQuant };
-      setQuant(quantHint ?? filename);
-      const d = defaultsFor(repoId);
-      setSteps(d.steps);
-      setGuidance(d.guidance);
-      const started = await loadOrStage(
-        repoId,
-        { kind: "gguf", filename },
-        isDownloaded,
-      );
-      if (!started) {
-        setQuant(prevQuant);
-        quantRevert.current = null;
-      }
-      return started;
+      return runGgufRepoPick({
+        isCurrent,
+        resolve: () =>
+          resolveDiffusionGgufFilename(repoId, {
+            quant: quantHint,
+            localPath,
+            hfToken: hfApiToken(getHfToken()),
+          }),
+        // Still ambiguous (several quants on disk, or the listing failed): only the expander can say which.
+        onAmbiguous: () =>
+          toast.error("Pick a quantization for this model to load it"),
+        // Optimistic label, reverted if the load never starts, like the curated GGUF branch below.
+        onResolved: (filename) => {
+          quantRevert.current = { prev: prevQuant };
+          setQuant(quantHint ?? filename);
+          const d = defaultsFor(repoId);
+          setSteps(d.steps);
+          setGuidance(d.guidance);
+        },
+        onNotStarted: () => {
+          setQuant(prevQuant);
+          quantRevert.current = null;
+        },
+        load: (filename) =>
+          loadOrStage(repoId, { kind: "gguf", filename }, isDownloaded, isCurrent),
+      });
     },
-    [loadOrStage, quant],
+    [loadOrStage, pickGuard, quant],
   );
+
+  // A hidden page owns nothing: both diffusion pages stay mounted, so a resolution started here must not fire a load after the
+  // user moved to the other one.
+  useEffect(() => {
+    if (!active) pickGuard.release();
+  }, [active, pickGuard]);
 
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params.
   const routeSearch = useSearch({ strict: false }) as {
     model?: string;
     quant?: string;
+    ggufQuant?: string;
   };
   const navigateSelf = useNavigate();
   const handledRouteModel = useRef<string | null>(null);
@@ -1967,10 +1990,20 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       handledRouteModel.current = null;
       return;
     }
-    const key = `${wanted}|${routeSearch.quant ?? ""}`;
+    const routedGgufQuant = routeSearch.ggufQuant?.trim() || null;
+    const key = `${wanted}|${routeSearch.quant ?? ""}|${routedGgufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     void navigateSelf({ to: "/images", search: {}, replace: true });
+    // A label, so a GGUF repo whatever the catalog says: the picker only sends one for a pick it knows holds quants, and a
+    // label is not loadable, so it goes to the resolver rather than through the route classifier's filename slot.
+    if (routedGgufQuant) {
+      // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
+      void Promise.resolve().then(() =>
+        loadGgufRepoPick(wanted, routedGgufQuant, false),
+      );
+      return;
+    }
     // Same catalog lookup a direct pick makes: the chat picker can only forward a GGUF filename.
     const pick = diffusionRoutePick(
       wanted,
@@ -1979,10 +2012,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     );
     // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.
     if (pick.opts.kind === "gguf" && !pick.opts.filename) {
-      // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
-      void Promise.resolve().then(() =>
-        loadGgufRepoPick(pick.repoId, routeSearch.quant ?? null, false),
-      );
+      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, false));
       return;
     }
     void loadOrStage(pick.repoId, pick.opts, false);
@@ -1990,6 +2020,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     active,
     routeSearch.model,
     routeSearch.quant,
+    routeSearch.ggufQuant,
     loadOrStage,
     loadGgufRepoPick,
     navigateSelf,
@@ -2006,6 +2037,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     (id: string, meta: ModelSelectorChangeMeta) => {
       // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load with a 409.
       if (busy !== null) return;
+      // This pick now owns the page, so an earlier one still waiting on a listing or a download plan drops out. Claimed before
+      // any branch, because staging does not set `busy` and any pick can therefore land on top of an awaiting one.
+      const token = pickGuard.claim();
+      const isCurrent = () => isMounted.current && pickGuard.holds(token);
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -2013,7 +2048,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const d = defaultsFor(id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.isDownloaded);
+        void loadOrStage(
+          id,
+          { kind: spec.kind, filename: spec.filename },
+          meta.isDownloaded,
+          isCurrent,
+        );
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but revert if the load fails to START
@@ -2029,8 +2069,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           id,
           { kind: "gguf", filename: meta.ggufFilename },
           meta.isDownloaded,
+          isCurrent,
         ).then((started) => {
-          if (!started) {
+          // Only the pick that set the label may take it back: `quantRevert` is one slot, so a stale revert would restore this
+          // pick's old label over the newer one.
+          if (!started && isCurrent()) {
             setQuant(prevQuant);
             quantRevert.current = null;
           }
@@ -2044,8 +2087,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
         if (!filename.toLowerCase().endsWith(".gguf")) {
-          // A repo id or local directory, not a file. The listing names its .gguf; the label picks between siblings.
-          void loadGgufRepoPick(id, meta.ggufVariant ?? null, meta.isDownloaded);
+          // A repo id or local directory, not a file. The listing names its .gguf; the label picks between siblings. A local
+          // pick passes its directory too: the listing enumerates that path instead of resolving the id as a hub repo.
+          void loadGgufRepoPick(
+            id,
+            meta.ggufVariant ?? null,
+            meta.isDownloaded,
+            meta.source === "local" ? id : null,
+          );
           return;
         }
         // A direct pick carries no curated variant label; surface the filename so the selector stops advertising the old quant.
@@ -2093,6 +2142,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           id,
           spec?.filename ?? meta.ggufVariant ?? null,
           meta.isDownloaded,
+          meta.source === "local" ? id : null,
         );
         return;
       }
@@ -2108,14 +2158,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded).then((started) => {
-        if (!started) {
-          setQuant(prevQuant);
-          quantRevert.current = null;
-        }
-      });
+      void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded, isCurrent).then(
+        (started) => {
+          if (!started && isCurrent()) {
+            setQuant(prevQuant);
+            quantRevert.current = null;
+          }
+        },
+      );
     },
-    [busy, handleLoad, loadGgufRepoPick, loadOrStage, quant],
+    [busy, handleLoad, loadGgufRepoPick, loadOrStage, pickGuard, quant],
   );
 
   // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base, and queue the adapter for the LoRA discovery effect.
@@ -2132,6 +2184,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.error("Could not resolve the trained adapter's name.");
         return;
       }
+      // The deploy owns the page now: a pick still resolving its filename would load over the base this is about to load.
+      pickGuard.release();
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
@@ -2143,11 +2197,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (!started) pendingDeploy.current = null;
       });
     },
-    [busy, handleLoad, setPageMode],
+    [busy, handleLoad, pickGuard, setPageMode],
   );
 
   const handleUnload = useCallback(async () => {
     // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too, or the toast leaks forever.
+    // A pick still resolving its filename counts: it would load the model the user just ejected.
+    pickGuard.release();
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
     dismissLoadToast();
@@ -2165,7 +2221,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     } finally {
       setBusy(null);
     }
-  }, [refreshStatus, dismissLoadToast]);
+  }, [refreshStatus, dismissLoadToast, pickGuard]);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
