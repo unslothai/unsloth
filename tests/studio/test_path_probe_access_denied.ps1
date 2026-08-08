@@ -256,6 +256,7 @@ if ($exitDeniedSrc -and $writeDeniedSrc) {
 `$ErrorActionPreference = "Stop"
 function step { param([string]`$Label, [string]`$Value, [string]`$Color = "Green") Write-Host "  `$Label  `$Value" }
 function substep { param([string]`$Message, [string]`$Color = "DarkGray") Write-Host "    `$Message" }
+function Write-StudioLine { param([string]`$Message, [string]`$ForegroundColor) Write-Host `$Message }
 function Get-PathDenialDetail { param([string]`$Path) return "" }
 $exitSetupSrc
 $writeDeniedSrc
@@ -459,6 +460,7 @@ if ($preflightSrc.Count -eq $preflightFns.Count) {
 `$ErrorActionPreference = "Stop"
 function step { param([string]`$Label, [string]`$Value, [string]`$Color = "Green") Write-Host "  `$Label  `$Value" }
 function substep { param([string]`$Message, [string]`$Color = "DarkGray") Write-Host "    `$Message" }
+function Write-StudioLine { param([string]`$Message, [string]`$ForegroundColor) Write-Host `$Message }
 $($preflightSrc -join "`n")
 `$env:USERPROFILE = `$args[0]
 `$onWindows = (`$args[1] -eq "win")

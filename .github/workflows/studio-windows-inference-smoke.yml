@@ -2015,13 +2015,15 @@ jobs:
           . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
           $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
           # Dot-source the guard + the logging closure it reaches
-          # (step/substep -> Write-StudioStdoutMirror / Get-StudioAnsi).
+          # (step/substep -> Write-StudioStdoutMirror / Get-StudioAnsi, and
+          # Ensure-VCRedist -> Write-StudioLine).
           $script:StudioVtOk = $false
           $script:UnslothVerbose = $false
           # Get-HostMachineArch is reached only on the absent path, where
           # Test-VCRedistInstalled consults it before trusting the System32 DLL, so
           # part A passes without it and only the clean-box part fails.
-          foreach ($fn in @('Get-StudioAnsi', 'Write-StudioStdoutMirror', 'step', 'substep',
+          foreach ($fn in @('Get-StudioAnsi', 'Write-StudioLine', 'Write-StudioStdoutMirror',
+                            'step', 'substep',
                             'Invoke-SetupCommand', 'Refresh-Environment', 'Get-HostMachineArch',
                             'Test-VCRedistInstalled', 'Ensure-VCRedist')) {
               $src = Get-FunctionSource -Path $setup -Name $fn

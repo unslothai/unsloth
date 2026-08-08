@@ -347,6 +347,8 @@ def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: 
     script = f"""
 $ErrorActionPreference = "Stop"
 function substep {{ param([string]$Text, [string]$Color) }}
+# Restore-StudioVenvRollback warns through install.ps1's UTF-8 stdout sink.
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) }}
 {blocks}
 $script:StudioVenvRollbackActive  = $true
 $script:StudioVenvRollbackDir     = $env:TEST_BACKUP_DIR
@@ -402,6 +404,6 @@ def test_readiness_gate_precedes_installs_and_names_both_interpreters():
     gpu_detection = source.index("function Invoke-AmdSmiNoElevate")
 
     assert marker < gate < gpu_detection < first_uv_pip
-    assert 'Write-Host "        Managed Python: $VenvPython"' in source
-    assert 'Write-Host "        Recorded base Python home: $recordedBaseHome"' in source
+    assert 'Write-StudioLine "        Managed Python: $VenvPython"' in source
+    assert 'Write-StudioLine "        Recorded base Python home: $recordedBaseHome"' in source
     assert 'return (Exit-InstallFailure "Managed Python is unavailable' in source
