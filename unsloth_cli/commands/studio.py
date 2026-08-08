@@ -2819,6 +2819,20 @@ def _wait_for_windows_setup_process(process) -> int:
         raise
 
 
+# -NoProfile below drops $PSDefaultParameterValues wholesale, and on a corporate host
+# whose only egress is a profile entry such as 'Invoke-WebRequest:Proxy' that is the sole
+# route to the VC++ runtime and the uv installer that setup.ps1 downloads. install.ps1
+# already keeps exactly the proxy keys out of the profile table it discards, so it hands
+# them over in this variable and the child puts them back. Nothing else from the profile
+# comes with them, which is the whole point of -NoProfile.
+_PS_PROXY_DEFAULTS_PRELUDE = (
+    "$__unslothProxyDefaults = $env:_UNSLOTH_PS_PROXY_DEFAULTS; "
+    "if ($__unslothProxyDefaults) { try { "
+    "(ConvertFrom-Json $__unslothProxyDefaults).PSObject.Properties | ForEach-Object { "
+    "$PSDefaultParameterValues[$_.Name] = $_.Value } } catch { } }; "
+)
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     """Find and run the studio setup/update script."""
     script = _find_setup_script(repo_root)
@@ -2855,7 +2869,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                f"& '{script_pwsh_literal}' *>&1",
+                f"{_PS_PROXY_DEFAULTS_PRELUDE}& '{script_pwsh_literal}' *>&1",
             ]
         )
         # Explicitly hand std handles to the child so CI tee sees setup.ps1's

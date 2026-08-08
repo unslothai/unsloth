@@ -660,3 +660,110 @@ def test_install_ps1_parses():
         timeout = 120,
     )
     assert res.returncode == 0, res.stdout + res.stderr
+
+
+# ── the proxy has to survive the process boundary, not just the filter ──
+
+
+def _proxy_prelude() -> str:
+    """The PowerShell the setup launch prepends to its -Command, read from the shipped source."""
+    src = STUDIO_COMMAND.read_text(encoding = "utf-8")
+    start = _locate(src, "_PS_PROXY_DEFAULTS_PRELUDE = (", "the proxy handoff prelude")
+    namespace: dict = {}
+    exec(src[start : src.index(")\n", start) + 1], namespace)  # noqa: S102 - our own source
+    return namespace["_PS_PROXY_DEFAULTS_PRELUDE"]
+
+
+def test_the_setup_launch_reapplies_the_proxy_it_told_the_child_to_forget():
+    """-NoProfile on the setup handoff drops the whole $PSDefaultParameterValues table, proxy
+    entries included -- and setup.ps1 does its own downloading (the VC++ runtime, the uv
+    installer). On a host where a profile proxy entry is the only egress, keeping the proxy in
+    install.ps1 and losing it one process later is the same broken install one step further on.
+    A PowerShell variable cannot cross a process boundary, so it has to travel as environment."""
+    assert "_UNSLOTH_PS_PROXY_DEFAULTS" in _install_ps1(), "install.ps1 must publish the handoff"
+    prelude = _proxy_prelude()
+    assert "_UNSLOTH_PS_PROXY_DEFAULTS" in prelude, "the child must read it back"
+
+    src = STUDIO_COMMAND.read_text(encoding = "utf-8")
+    start = _locate(src, 'powershell_args = ["powershell.exe"]', "the setup.ps1 launch")
+    # The f-string itself, not the comment above it that also quotes *>&1.
+    command = _locate(src[start:], "f\"", "the -Command f-string")
+    assert (
+        "_PS_PROXY_DEFAULTS_PRELUDE" in src[start + command : start + command + 200]
+    ), "the prelude has to run before setup.ps1, not merely exist"
+
+
+@requires_pwsh
+def test_only_serializable_proxy_keys_reach_the_child(tmp_path):
+    """A credential is deliberately left behind: PSCredential does not survive ConvertTo-Json,
+    and an environment variable is the wrong place for one. Everything non-proxy stays dropped."""
+    block = tmp_path / "block.ps1"
+    block.write_text(_extract_prologue(), encoding = "utf-8", newline = "")
+    driver = tmp_path / "drive.ps1"
+    driver.write_text(
+        "$PSDefaultParameterValues = @{\n"
+        "  'Invoke-WebRequest:Proxy' = 'http://proxy.corp:8080'\n"
+        "  'Invoke-WebRequest:ProxyUseDefaultCredentials' = $true\n"
+        "  'Invoke-WebRequest:ProxyCredential' = (New-Object "
+        "System.Management.Automation.PSCredential('u',"
+        "(ConvertTo-SecureString 'p' -AsPlainText -Force)))\n"
+        "  'Start-Process:WindowStyle' = 'Hidden'\n"
+        "}\n"
+        f". '{block}'\n"
+        "Write-Output $env:_UNSLOTH_PS_PROXY_DEFAULTS\n",
+        encoding = "utf-8",
+        newline = "",
+    )
+    handoff = subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(driver)],
+        capture_output = True,
+        text = True,
+        check = False,
+    ).stdout
+
+    assert "http://proxy.corp:8080" in handoff
+    assert "ProxyUseDefaultCredentials" in handoff
+    assert "ProxyCredential" not in handoff, "a credential must not be written to the environment"
+    assert "WindowStyle" not in handoff, "only proxy keys are carried"
+
+
+@requires_pwsh
+def test_the_child_restores_the_proxy_and_nothing_else(tmp_path):
+    """End to end through real pwsh: with the handoff set the child's table has the proxy back;
+    without it, or with a corrupt value, the child is left exactly as -NoProfile made it and the
+    launch still succeeds. A prelude that could throw would take setup.ps1 down with it."""
+    probe = (
+        _proxy_prelude()
+        + "Write-Output ('IWR=' + $PSDefaultParameterValues['Invoke-WebRequest:Proxy']); "
+        "Write-Output ('OTHER=' + $PSDefaultParameterValues['Start-Process:WindowStyle'])"
+    )
+    pwsh = shutil.which("pwsh") or "pwsh"
+
+    def _run(value):
+        env = {k: v for k, v in os.environ.items() if k != "_UNSLOTH_PS_PROXY_DEFAULTS"}
+        if value is not None:
+            env["_UNSLOTH_PS_PROXY_DEFAULTS"] = value
+        return subprocess.run(
+            [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
+            capture_output = True,
+            text = True,
+            check = False,
+            env = env,
+        )
+
+    restored = _run(
+        '{"Invoke-WebRequest:Proxy":"http://proxy.corp:8080",'
+        '"Start-Process:WindowStyle":"Hidden"}'
+    )
+    assert restored.returncode == 0
+    assert "IWR=http://proxy.corp:8080" in restored.stdout
+    # install.ps1 never publishes a non-proxy key, but the child trusting the table wholesale is
+    # what would make a future leak silent, so pin that the round trip carries what it was given
+    # and the FILTER is the single place that decides.
+    assert "OTHER=Hidden" in restored.stdout
+
+    for absent in (None, "{not json", ""):
+        result = _run(absent)
+        assert result.returncode == 0, f"the prelude must not fail the launch on {absent!r}"
+        assert "IWR=\n" in result.stdout or result.stdout.startswith("IWR=\n")
+        assert not result.stderr.strip(), f"the prelude leaked an error on {absent!r}"

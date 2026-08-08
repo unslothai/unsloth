@@ -47,12 +47,14 @@ function Install-UnslothStudio {
     # the people this fix is for are exactly the ones who never ran -NoProfile and so
     # never found out they needed it.
     #
-    # This does not carry across to studio/setup.ps1, which unsloth_cli launches with
-    # -NoProfile and which downloads on its own. A host whose ONLY proxy configuration
-    # is a $PSDefaultParameterValues entry -- no HTTP(S)_PROXY, no system proxy --
-    # therefore keeps its proxy here and loses it there. Accepted: aliases and strict
-    # mode break setup.ps1 far more often than that configuration exists, and the env
-    # vars it is normally set alongside are inherited by the child regardless.
+    # These are also handed to studio/setup.ps1, which unsloth_cli launches with
+    # -NoProfile and which downloads on its own (the VC++ runtime, the uv installer).
+    # A PowerShell variable does not cross a process boundary, so they travel as JSON
+    # in _UNSLOTH_PS_PROXY_DEFAULTS and the child re-applies them; otherwise a host
+    # whose ONLY egress configuration is a $PSDefaultParameterValues entry would keep
+    # its proxy here and lose it one process later. Credentials are deliberately not
+    # carried: a PSCredential does not serialize, and an environment variable is the
+    # wrong place for one.
     # IsMatch, not -match, so the filter does not leave $Matches behind in this scope
     # for the rest of the install to trip over.
     $_UnslothKeptDefaults = @{}
@@ -63,6 +65,19 @@ function Install-UnslothStudio {
         }
     }
     $PSDefaultParameterValues = $_UnslothKeptDefaults
+
+    $_UnslothProxyHandoff = @{}
+    foreach ($_UnslothDefaultKey in @($_UnslothKeptDefaults.Keys)) {
+        $_UnslothDefaultValue = $_UnslothKeptDefaults[$_UnslothDefaultKey]
+        if ($_UnslothDefaultValue -is [string] -or $_UnslothDefaultValue -is [bool]) {
+            $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultValue
+        }
+    }
+    if ($_UnslothProxyHandoff.Count -gt 0) {
+        $env:_UNSLOTH_PS_PROXY_DEFAULTS = ($_UnslothProxyHandoff | ConvertTo-Json -Compress)
+    } else {
+        Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
+    }
 
     # PowerShell 7 only, and $false is its default: a profile that flips it on turns
     # every non-zero native exit into a terminating error, which combined with the
