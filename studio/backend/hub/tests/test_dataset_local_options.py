@@ -1194,7 +1194,10 @@ def test_snapshot_options_reject_a_legacy_dataset_infos_that_is_not_a_mapping(tm
 
 def test_snapshot_options_reject_a_first_config_whose_file_is_missing(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: a\n  data_files: missing.jsonl\n- config_name: b\n  data_dir: b\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: a\n  data_files: missing.jsonl\n- config_name: b\n  data_dir: b\n",
+    )
     (snapshot / "b").mkdir()
     (snapshot / "b" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
