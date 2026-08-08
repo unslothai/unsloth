@@ -595,6 +595,7 @@ function ModelSelectorContent({
 
             {effectiveTab === "hub" ? (
               <HubModelPicker
+                open={open}
                 models={models}
                 loraModels={fineTunedModels}
                 externalModels={externalModels}

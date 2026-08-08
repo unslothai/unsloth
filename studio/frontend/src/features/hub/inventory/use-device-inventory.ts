@@ -180,6 +180,35 @@ function updateSourceState<K extends DeviceInventorySource>(
   }));
 }
 
+function getOrQueuePostColdForce<K extends DeviceInventorySource>(
+  source: K,
+  key: string,
+  pending: Promise<DeviceInventoryRows[K]>,
+  options: FetchInventorySourceOptions,
+): Promise<DeviceInventoryRows[K]> {
+  const existing = postColdForce.get(key) as
+    | Promise<DeviceInventoryRows[K]>
+    | undefined;
+  if (existing) {
+    return existing;
+  }
+  const forced = pending
+    .catch(() => undefined)
+    .then(() =>
+      fetchInventorySource(source, {
+        ...options,
+        force: true,
+      }),
+    )
+    .finally(() => {
+      if (postColdForce.get(key) === forced) {
+        postColdForce.delete(key);
+      }
+    });
+  postColdForce.set(key, forced);
+  return forced;
+}
+
 export function fetchInventorySource<K extends DeviceInventorySource>(
   source: K,
   options: FetchInventorySourceOptions,
@@ -194,6 +223,14 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
   const current = useDeviceInventoryStore.getState()[
     source
   ] as DeviceInventorySourceState<DeviceInventoryRows[K]>;
+  if (options.force) {
+    const postCold = postColdForce.get(key) as
+      | Promise<DeviceInventoryRows[K]>
+      | undefined;
+    if (postCold) {
+      return postCold;
+    }
+  }
   const pending = inFlight.get(key) as
     | Promise<DeviceInventoryRows[K]>
     | undefined;
@@ -376,30 +413,15 @@ export function useDeviceInventorySources<
         if (existingPostCold) {
           return existingPostCold;
         }
-        const pending = inFlight.get(key);
+        const pending = inFlight.get(key) as
+          | Promise<DeviceInventoryRows[typeof source]>
+          | undefined;
         if (pending && !current.ready) {
-          let forced = postColdForce.get(key) as
-            | Promise<DeviceInventoryRows[typeof source]>
-            | undefined;
-          if (!forced) {
-            forced = pending
-              .catch(() => undefined)
-              .then(() =>
-                fetchInventorySource(source, {
-                  hfToken,
-                  tokenFingerprint,
-                  inventoryVersion,
-                  force: true,
-                }),
-              )
-              .finally(() => {
-                if (postColdForce.get(key) === forced) {
-                  postColdForce.delete(key);
-                }
-              });
-            postColdForce.set(key, forced);
-          }
-          return forced;
+          return getOrQueuePostColdForce(source, key, pending, {
+            hfToken,
+            tokenFingerprint,
+            inventoryVersion,
+          });
         }
         return fetchInventorySource(source, {
           hfToken,

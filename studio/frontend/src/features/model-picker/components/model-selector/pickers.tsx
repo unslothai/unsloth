@@ -1861,6 +1861,7 @@ export function HubModelPicker({
   onEject,
   task,
   catalog,
+  open = true,
 }: {
   models: ModelOption[];
   /** Fine-tuned models, shown as a section in the On Device view. */
@@ -1884,6 +1885,8 @@ export function HubModelPicker({
   task?: HfTaskFilter;
   /** Curated catalog for a task-scoped picker: one canonical row per model, with its published formats as the second level. */
   catalog?: CatalogGroup[];
+  /** When false, the parent popover is closed; warm inventory rescans run on the open edge only. */
+  open?: boolean;
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
@@ -2122,11 +2125,17 @@ export function HubModelPicker({
     localDirModels,
     customFolderModels,
   ]);
-  const warmAtMountRef = useRef(cachedReady);
+  const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (!warmAtMountRef.current) return;
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+    const isOpening = !wasOpenRef.current;
+    wasOpenRef.current = true;
+    if (!isOpening || !cachedReady) return;
     void refreshInventory();
-  }, [refreshInventory]);
+  }, [open, cachedReady, refreshInventory]);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
   );
