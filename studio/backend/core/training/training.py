@@ -1924,10 +1924,10 @@ class TrainingBackend:
                 # An unscoped reset cannot prove it means THIS run, so it never force-
                 # terminates: _cancel_requested is cleared after current_job_id is set, so a
                 # bodyless reset landing in that window would kill the run that just started.
-                # Report "active" (409), which is what a live run without a cancel already
-                # returns below and what every pre-rework client already handles.
+                # A stop already asked for means the pre-rework cancel-then-dismiss flow, so
+                # let it clear its UI; otherwise this is a stale reset of a live run (409).
                 if expected_job_id is None and is_active:
-                    return "active"
+                    return "superseded" if self._cancel_requested else "active"
                 cancel_requested = self._cancel_requested
                 proc = self._proc
 

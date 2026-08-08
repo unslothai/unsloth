@@ -370,9 +370,11 @@ function ManualDatasetOptions({
         error: null,
       },
     };
-    // setDatasetSubset already clears both splits, so clearing them again here only costs a
-    // spurious runDatasetCheck against an assumed "train" split.
     setDatasetSubset(value);
+    // It nulls datasetEvalSplit but not evalSteps, so this is what stops evaluation staying
+    // armed with no split (a 422 once streaming is on). setDatasetSplit(null) is not needed:
+    // it only adds a runDatasetCheck against an assumed "train" split.
+    setDatasetEvalSplit(null);
     setStoredDrafts(nextDrafts);
     setManualDatasetOptionsValid(
       manualDatasetDraftsAreValid(

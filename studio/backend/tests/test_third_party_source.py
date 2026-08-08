@@ -761,3 +761,18 @@ def test_bytecode_purge_fails_closed_when_a_pyc_survives(monkeypatch, tmp_path):
     monkeypatch.setattr(source.Path, "unlink", refuse)
     with pytest.raises(PermissionError):
         source._purge_package_bytecode(package_root)
+
+
+def test_bytecode_purge_fails_closed_when_a_pycache_dir_survives(monkeypatch, tmp_path):
+    """Same, for the __pycache__ branch, which is the route a planted .pyc actually takes."""
+    package_root = tmp_path / "sparktts"
+    cache_dir = package_root / "__pycache__"
+    cache_dir.mkdir(parents = True)
+    (cache_dir / "payload.cpython-313.pyc").write_bytes(b"")
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("read-only cache")
+
+    monkeypatch.setattr(source.shutil, "rmtree", refuse)
+    with pytest.raises(PermissionError):
+        source._purge_package_bytecode(package_root)

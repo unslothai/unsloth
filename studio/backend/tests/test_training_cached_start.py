@@ -1454,10 +1454,15 @@ def test_unscoped_reset_cannot_touch_a_live_run(monkeypatch):
         backend, "force_terminate", lambda **_kw: pytest.fail("unscoped reset terminated a run")
     )
 
-    # 409, the same answer a live run already gives, so pre-rework clients keep the error
-    # they handle instead of a 200 that tells them a running job was cleared.
-    assert backend.reset_training_state() == "active"
+    # A stop was already requested, so this is the pre-rework cancel-then-dismiss flow and
+    # the client may clear its UI. Still no force_terminate: the stub above would fail.
+    assert backend.reset_training_state() == "superseded"
     assert backend.reset_training_state(expected_job_id = "job_old") == "superseded"
+
+    # No stop requested, so a bodyless reset of a live run is stale: 409, not a 200 that
+    # would tell an older client a running job had been cleared.
+    backend._cancel_requested = False
+    assert backend.reset_training_state() == "active"
 
 
 def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):
