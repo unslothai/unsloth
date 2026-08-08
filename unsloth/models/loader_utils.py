@@ -276,16 +276,41 @@ def _prefer_legacy_lowercase_cache(
     except Exception:
         return repo_id
 
-    def _has_snapshot(repo_cache):
+    def _snapshot_has_complete_model(snapshot):
+        if not os.path.isfile(os.path.join(snapshot, "config.json")):
+            return False
+        if any(
+            os.path.isfile(os.path.join(snapshot, filename))
+            for filename in ("model.safetensors", "pytorch_model.bin")
+        ):
+            return True
+        for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+            index_path = os.path.join(snapshot, index_name)
+            try:
+                import json
+
+                with open(index_path, encoding = "utf-8") as index_file:
+                    shard_names = set(json.load(index_file).get("weight_map", {}).values())
+            except (OSError, ValueError, TypeError):
+                continue
+            if shard_names and all(
+                os.path.isfile(os.path.join(snapshot, shard_name)) for shard_name in shard_names
+            ):
+                return True
+        return False
+
+    def _has_complete_model(repo_cache):
         snapshots = os.path.join(repo_cache, "snapshots")
         try:
             return any(
-                os.path.isdir(os.path.join(snapshots, name)) for name in os.listdir(snapshots)
+                _snapshot_has_complete_model(os.path.join(snapshots, name))
+                for name in os.listdir(snapshots)
+                if os.path.isdir(os.path.join(snapshots, name))
             )
         except OSError:
             return False
 
-    if not _has_snapshot(canonical_cache) and _has_snapshot(legacy_cache):
+    if not _has_complete_model(canonical_cache) and _has_complete_model(legacy_cache):
         return legacy_repo_id
     return repo_id
 

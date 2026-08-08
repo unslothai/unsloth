@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -10,6 +11,22 @@ from unsloth.models.mapper import FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 def _no_remote_mapper():
     # int_to_float, float_to_int, map_to_16bit, fp8_block, fp8_row
     return {}, {}, {}, {}, {}
+
+
+
+def _write_cached_model(repo_cache, commit, *, sharded = False, complete = True):
+    snapshot = os.path.join(repo_cache, "snapshots", commit)
+    os.makedirs(snapshot)
+    open(os.path.join(snapshot, "config.json"), "w").close()
+    if not sharded:
+        open(os.path.join(snapshot, "model.safetensors"), "w").close()
+        return snapshot
+    shard_name = "model-00001-of-00001.safetensors"
+    with open(os.path.join(snapshot, "model.safetensors.index.json"), "w") as index_file:
+        json.dump({"weight_map": {"model.embed_tokens.weight": shard_name}}, index_file)
+    if complete:
+        open(os.path.join(snapshot, shard_name), "w").close()
+    return snapshot
 
 
 class TestGetModelName(unittest.TestCase):
@@ -173,7 +190,7 @@ class TestGetModelName(unittest.TestCase):
         with tempfile.TemporaryDirectory() as cache_dir:
             legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
             canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
-            os.makedirs(os.path.join(legacy_cache, "snapshots", "legacy-commit"))
+            _write_cached_model(legacy_cache, "legacy-commit")
             self.assertEqual(
                 get_model_name(
                     "unsloth/Meta-Llama-3.1-8B-Instruct",
@@ -194,7 +211,22 @@ class TestGetModelName(unittest.TestCase):
                 ),
                 legacy,
             )
-            os.makedirs(os.path.join(canonical_cache, "snapshots", "canonical-commit"))
+            # A config-only sharded snapshot is also incomplete until every indexed shard exists.
+            canonical_snapshot = _write_cached_model(
+                canonical_cache, "canonical-commit", sharded = True, complete = False
+            )
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    load_in_4bit = True,
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                ),
+                legacy,
+            )
+            open(
+                os.path.join(canonical_snapshot, "model-00001-of-00001.safetensors"), "w"
+            ).close()
             self.assertEqual(
                 get_model_name(
                     "unsloth/Meta-Llama-3.1-8B-Instruct",
@@ -211,8 +243,8 @@ class TestGetModelName(unittest.TestCase):
         legacy = canonical.lower()
         with tempfile.TemporaryDirectory() as cache_dir:
             legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
-            os.makedirs(os.path.join(legacy_cache, "snapshots", "legacy-commit"))
-            with patch("transformers.utils.hub.TRANSFORMERS_CACHE", cache_dir):
+            _write_cached_model(legacy_cache, "legacy-commit")
+            with patch("transformers.utils.hub.TRANSFORMERS_CACHE", cache_dir, create = True):
                 self.assertEqual(
                     get_model_name(
                         "unsloth/Meta-Llama-3.1-8B-Instruct",
