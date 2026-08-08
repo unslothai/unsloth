@@ -43,10 +43,13 @@ function fakeDocument({
 }) {
   const vars = new Map<string, string>();
   const bodyChildren: Node[] = [];
+  // Mutable so a test can make a later sweep unreadable.
+  const knobs = { contentReachable };
   const documentElement = {
     style: {
       setProperty: (name: string, value: string) => vars.set(name, value),
       removeProperty: (name: string) => vars.delete(name),
+      getPropertyValue: (name: string) => vars.get(name) ?? "",
     },
   };
 
@@ -96,13 +99,13 @@ function fakeDocument({
       if (x >= PROBE_WIDTH - railPx) {
         return probe;
       }
-      return contentReachable ? probe.children[0] : probe;
+      return knobs.contentReachable ? probe.children[0] : probe;
     },
     addEventListener: () => undefined,
     removeEventListener: () => undefined,
   };
 
-  return { doc: doc as unknown as Document, vars, bodyChildren };
+  return { doc: doc as unknown as Document, vars, bodyChildren, knobs };
 }
 
 test("an overlay scrollbar's hit strip is measured, not assumed", () => {
@@ -146,6 +149,55 @@ test("an open modal's pointer-events:none does not erase the gutter", () => {
   assert.equal(measureOverlayScrollbarGutter(doc), 21);
   assert.equal(applyOverlayScrollbarGutter(doc), 21);
   assert.equal(vars.get(OVERLAY_SCROLLBAR_GUTTER_VAR), "21px");
+});
+
+test("one unreadable sweep does not drop a gutter already in use", () => {
+  const { doc, vars, knobs } = fakeDocument({ railPx: 21, layoutPx: 0 });
+
+  assert.equal(applyOverlayScrollbarGutter(doc), 21);
+
+  // Same scrollbar, but this sweep read nothing. Re-measuring must not shift
+  // every row that already reserved the strip.
+  knobs.contentReachable = false;
+  assert.equal(applyOverlayScrollbarGutter(doc), 21);
+  assert.equal(vars.get(OVERLAY_SCROLLBAR_GUTTER_VAR), "21px");
+
+  // A readable sweep still retires the gutter when the scrollbar really goes.
+  const { doc: gone, vars: goneVars } = fakeDocument({
+    railPx: 0,
+    layoutPx: 0,
+  });
+  goneVars.set(OVERLAY_SCROLLBAR_GUTTER_VAR, "21px");
+  assert.equal(applyOverlayScrollbarGutter(gone), 0);
+  assert.equal(goneVars.has(OVERLAY_SCROLLBAR_GUTTER_VAR), false);
+});
+
+test("a hidden page is not measured, since hit testing reads nothing", () => {
+  const { doc, vars } = fakeDocument({ railPx: 21, layoutPx: 0 });
+  const docHandlers = new Map<string, () => void>();
+  const live = doc as unknown as {
+    visibilityState: string;
+    addEventListener: (t: string, fn: () => void) => void;
+    removeEventListener: (t: string) => void;
+  };
+  live.visibilityState = "visible";
+  live.addEventListener = (t, fn) => docHandlers.set(t, fn);
+  live.removeEventListener = (t) => docHandlers.delete(t);
+
+  const win = {
+    document: doc,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  } as unknown as Window;
+
+  const stop = watchOverlayScrollbarGutter(win);
+  assert.equal(vars.get(OVERLAY_SCROLLBAR_GUTTER_VAR), "21px");
+
+  live.visibilityState = "hidden";
+  docHandlers.get("visibilitychange")?.();
+  assert.equal(vars.get(OVERLAY_SCROLLBAR_GUTTER_VAR), "21px");
+
+  stop();
 });
 
 test("the measured width is published in px for the CSS utility", () => {
@@ -227,10 +279,7 @@ test("right-edge action lists reserve the gutter they publish", async () => {
   );
 
   const apiKeysTab = await readFile(
-    new URL(
-      "../src/features/settings/tabs/api-keys-tab.tsx",
-      import.meta.url,
-    ),
+    new URL("../src/features/settings/tabs/api-keys-tab.tsx", import.meta.url),
     "utf8",
   );
   // Preserve classic padding and move every API-key row into the gutter.

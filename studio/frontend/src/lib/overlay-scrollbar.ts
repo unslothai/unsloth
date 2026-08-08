@@ -15,11 +15,13 @@ const MAX_GUTTER_PX = 48;
 /** Re-measuring is a forced layout, so resize bursts are coalesced. */
 const RESIZE_SETTLE_MS = 200;
 
-/** Measures the scrollbar's pointer-active width, or 0 when none is reliable. */
-export function measureOverlayScrollbarGutter(doc: Document): number {
+/** A measured width, plus whether the sweep could read the DOM at all. */
+type Measurement = { gutter: number; reliable: boolean };
+
+function measure(doc: Document): Measurement {
   const body = doc.body;
   if (!body) {
-    return 0;
+    return { gutter: 0, reliable: false };
   }
 
   const probe = doc.createElement("div");
@@ -34,7 +36,7 @@ export function measureOverlayScrollbarGutter(doc: Document): number {
 
   try {
     if (probe.offsetWidth - probe.clientWidth > 0) {
-      return 0;
+      return { gutter: 0, reliable: true };
     }
 
     // Reveal scrollbars configured to appear only while scrolling.
@@ -47,20 +49,36 @@ export function measureOverlayScrollbarGutter(doc: Document): number {
     let gutter = 0;
     for (let offset = 1; offset <= MAX_GUTTER_PX; offset++) {
       if (doc.elementFromPoint(right - offset, y) === content) {
-        return gutter;
+        return { gutter, reliable: true };
       }
       gutter = offset;
     }
-    return 0;
+    // The sweep never reached the probe's own content, so hit testing is
+    // unusable here. A width is not distinguishable from no scrollbar.
+    return { gutter: 0, reliable: false };
   } finally {
     body.removeChild(probe);
   }
 }
 
+/** Measures the scrollbar's pointer-active width, or 0 when none is reliable. */
+export function measureOverlayScrollbarGutter(doc: Document): number {
+  return measure(doc).gutter;
+}
+
 /** Publishes a positive gutter on the root element. */
 export function applyOverlayScrollbarGutter(doc: Document): number {
-  const gutter = measureOverlayScrollbarGutter(doc);
+  const { gutter, reliable } = measure(doc);
   const root = doc.documentElement;
+  if (!reliable) {
+    // Keep the last good gutter: dropping it would shift every row that
+    // reserved it, on nothing more than one unreadable sweep.
+    return (
+      Number.parseFloat(
+        root.style.getPropertyValue(OVERLAY_SCROLLBAR_GUTTER_VAR),
+      ) || 0
+    );
+  }
   if (gutter > 0) {
     root.style.setProperty(OVERLAY_SCROLLBAR_GUTTER_VAR, `${gutter}px`);
   } else {
@@ -74,7 +92,9 @@ export function watchOverlayScrollbarGutter(win: Window): () => void {
   const doc = win.document;
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
 
-  const remeasure = () => applyOverlayScrollbarGutter(doc);
+  // Hit testing a hidden page reads nothing, so skip the forced layout.
+  const remeasure = () =>
+    doc.visibilityState === "hidden" ? 0 : applyOverlayScrollbarGutter(doc);
   const onResize = () => {
     if (resizeTimer !== undefined) {
       clearTimeout(resizeTimer);
