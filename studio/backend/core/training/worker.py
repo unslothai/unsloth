@@ -1566,8 +1566,11 @@ def _rocm_memory_fraction(
 ) -> float:
     """Pick the ``set_per_process_memory_fraction`` cap for a ROCm device.
 
-    ``total_bytes`` must be ``get_device_properties().total_memory`` — the same
-    number torch multiplies the fraction against.
+    ``total_bytes`` must be ``get_device_properties().total_memory``: the caching
+    allocator caps at ``fraction * device_prop.totalGlobalMem`` (c10's
+    ``CUDACachingAllocator::setMemoryFraction``), and that is the same value. Not
+    ``mem_get_info``, whose total is a runtime budget on some hosts -- an absolute
+    byte reserve only lands where intended when both sides divide by the same number.
 
     - ``env_value`` (``UNSLOTH_ROCM_MEM_FRACTION``) wins when it parses to a
       float in ``(0.0, 1.0]``; anything else is ignored, never fatal.
@@ -3703,16 +3706,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 # fractions (gfx1151: 0.5 caps, 1.0 overcommits via WDDM), so 1.0 behaves like torch's
                 # uncapped default. On Linux the total spans nearly all RAM, so keep a bounded headroom
                 # (see _rocm_memory_fraction).
-                # mem_get_info's total first: that is the number the caching allocator
-                # multiplies the fraction against, so an absolute byte reserve is only
-                # exact against it. props.total_memory is the fallback for wheels whose
-                # mem_get_info raises.
-                try:
-                    _total_bytes = int(_torch_mem.cuda.mem_get_info(0)[1])
-                except Exception:
-                    _total_bytes = 0
-                if _total_bytes <= 0:
-                    _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
+                # props.total_memory, not mem_get_info: the caching allocator sets its
+                # ceiling to fraction * device_prop.totalGlobalMem (CUDACachingAllocator's
+                # setMemoryFraction), which is exactly this value. An absolute byte reserve
+                # only lands where intended if the denominator matches the allocator's.
+                _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
                 _env_raw = os.environ.get(_MEM_FRACTION_ENV)
                 _env_fraction = _parse_mem_fraction_env(_env_raw)
                 if _env_raw and _env_fraction is None:

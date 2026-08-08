@@ -286,7 +286,9 @@ class TestMemFractionSelection:
         log off the parsed override rather than the raw string."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
         assert "_mem_fraction = _rocm_memory_fraction(" in source
-        assert "_torch_mem.cuda.mem_get_info(0)[1]" in source
+        # totalGlobalMem is what the allocator multiplies the fraction by, so the reserve
+        # is only the intended size when the guard divides by the same number.
+        assert 'getattr(_props, "total_memory", 0)' in source
         assert "if _env_fraction is not None" in source
 
 
