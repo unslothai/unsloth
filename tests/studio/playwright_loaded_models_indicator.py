@@ -69,7 +69,11 @@ def info(s: str) -> None:
     print(f"[indicator] {s}", flush = True)
 
 
-def check(name: str, ok: bool, detail: str = "") -> None:
+def check(
+    name: str,
+    ok: bool,
+    detail: str = "",
+) -> None:
     checks[0] += 1
     if ok:
         info(f"PASS {name}")
@@ -78,7 +82,11 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     info(f"FAIL {name} {detail}")
 
 
-def api(path: str, payload: dict | None = None, token: str | None = None) -> dict:
+def api(
+    path: str,
+    payload: dict | None = None,
+    token: str | None = None,
+) -> dict:
     data = None if payload is None else json.dumps(payload).encode()
     request = urllib.request.Request(
         f"{BASE}{path}",
@@ -94,17 +102,32 @@ def api(path: str, payload: dict | None = None, token: str | None = None) -> dic
 # ── Stub payloads, straight from the backend's own response models ───────
 
 NOTHING_CHAT = {
-    "active_model": None, "loaded": [], "is_gguf": False, "is_mlx": False,
-    "is_vision": False, "is_audio": False, "audio_type": None,
+    "active_model": None,
+    "loaded": [],
+    "is_gguf": False,
+    "is_mlx": False,
+    "is_vision": False,
+    "is_audio": False,
+    "audio_type": None,
     "gguf_variant": None,
 }
-NOTHING_DIFFUSION = {"loaded": False, "repo_id": None, "family": None,
-                     "device": None, "dtype": None, "model_kind": None}
+NOTHING_DIFFUSION = {
+    "loaded": False,
+    "repo_id": None,
+    "family": None,
+    "device": None,
+    "dtype": None,
+    "model_kind": None,
+}
 NOTHING_VIDEO = dict(NOTHING_DIFFUSION, transformer_quant = None)
-NOTHING_STT = {"available": True, "loaded_model": None, "device": None,
-               "transformers": {"loaded_model": None, "device": None},
-               "mtmd": {"loaded_model": None, "device": None},
-               "gguf": {"loaded_model": None, "device": None}}
+NOTHING_STT = {
+    "available": True,
+    "loaded_model": None,
+    "device": None,
+    "transformers": {"loaded_model": None, "device": None},
+    "mtmd": {"loaded_model": None, "device": None},
+    "gguf": {"loaded_model": None, "device": None},
+}
 
 
 def chat(**overrides) -> dict:
@@ -149,40 +172,36 @@ def install_routes(context, state: Runtime) -> None:
         return handler
 
     context.route("**/api/inference/status", stub("chat", lambda: state.chat))
-    context.route(
-        "**/api/inference/images/status", stub("image", lambda: state.diffusion)
-    )
-    context.route(
-        "**/api/inference/video/status", stub("video", lambda: state.video)
-    )
-    context.route(
-        "**/api/inference/audio/stt/status", stub("stt", lambda: state.stt)
-    )
+    context.route("**/api/inference/images/status", stub("image", lambda: state.diffusion))
+    context.route("**/api/inference/video/status", stub("video", lambda: state.video))
+    context.route("**/api/inference/audio/stt/status", stub("stt", lambda: state.stt))
 
     def unload_chat(route):
         state.unloads.append("chat")
         state.chat = dict(NOTHING_CHAT)
-        route.fulfill(status = 200, content_type = "application/json",
-                      body = json.dumps({"status": "unloaded"}))
+        route.fulfill(
+            status = 200, content_type = "application/json", body = json.dumps({"status": "unloaded"})
+        )
 
     def unload_images(route):
         state.unloads.append("image")
         state.diffusion = dict(NOTHING_DIFFUSION)
-        route.fulfill(status = 200, content_type = "application/json",
-                      body = json.dumps(state.diffusion))
+        route.fulfill(status = 200, content_type = "application/json", body = json.dumps(state.diffusion))
 
     def unload_video(route):
         state.unloads.append("video")
         state.video = dict(NOTHING_VIDEO)
-        route.fulfill(status = 200, content_type = "application/json",
-                      body = json.dumps(state.video))
+        route.fulfill(status = 200, content_type = "application/json", body = json.dumps(state.video))
 
     def unload_stt(route):
         state.unloads.append("stt")
         state.stt["transformers"] = {"loaded_model": None, "device": None}
         state.stt["loaded_model"] = None
-        route.fulfill(status = 200, content_type = "application/json",
-                      body = json.dumps({"loaded_model": None, "device": None}))
+        route.fulfill(
+            status = 200,
+            content_type = "application/json",
+            body = json.dumps({"loaded_model": None, "device": None}),
+        )
 
     context.route("**/api/inference/unload", unload_chat)
     context.route("**/api/inference/images/unload", unload_images)
@@ -192,8 +211,7 @@ def install_routes(context, state: Runtime) -> None:
 
 def rows(page) -> list[str]:
     labels = page.locator(EJECT)
-    return [labels.nth(i).get_attribute("aria-label") or ""
-            for i in range(labels.count())]
+    return [labels.nth(i).get_attribute("aria-label") or "" for i in range(labels.count())]
 
 
 def card_text(page) -> str:
@@ -202,7 +220,12 @@ def card_text(page) -> str:
     return page.locator(CARD).locator("xpath=ancestor::div[3]").first.inner_text()
 
 
-def boot(page, state: Runtime, *, seed: dict | None = None) -> None:
+def boot(
+    page,
+    state: Runtime,
+    *,
+    seed: dict | None = None,
+) -> None:
     """Reload with a known localStorage, then wait for the card to settle."""
     page.goto(BASE, wait_until = "domcontentloaded")
     page.evaluate(
@@ -225,11 +248,9 @@ def boot(page, state: Runtime, *, seed: dict | None = None) -> None:
 def main() -> int:
     wait_for_health(BASE, timeout = 60.0, info = info)
     # Bootstrap exactly as the other suites do: the first login forces a change.
-    token = api("/api/auth/login",
-                {"username": "unsloth", "password": OLD})["access_token"]
+    token = api("/api/auth/login", {"username": "unsloth", "password": OLD})["access_token"]
     try:
-        api("/api/auth/change-password",
-            {"current_password": OLD, "new_password": NEW}, token)
+        api("/api/auth/change-password", {"current_password": OLD, "new_password": NEW}, token)
     except urllib.error.HTTPError as exc:
         # Already rotated by a previous run on the same install.
         if exc.code not in (400, 401, 403):
@@ -308,9 +329,12 @@ def run(page, state: Runtime) -> None:
     check("no card when nothing is loaded", page.locator(CARD).count() == 0)
 
     # ── The common two-runtime host ─────────────────────────────────────
-    state.chat = chat(active_model = "unsloth/Qwen3-4B-GGUF",
-                      loaded = ["unsloth/Qwen3-4B-GGUF"],
-                      is_gguf = True, gguf_variant = "Q4_K_M")
+    state.chat = chat(
+        active_model = "unsloth/Qwen3-4B-GGUF",
+        loaded = ["unsloth/Qwen3-4B-GGUF"],
+        is_gguf = True,
+        gguf_variant = "Q4_K_M",
+    )
     state.stt["transformers"] = {"loaded_model": "large-v3", "device": "cuda"}
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
@@ -327,26 +351,54 @@ def run(page, state: Runtime) -> None:
 
     # ── Hardware shapes a CUDA runner never produces ────────────────────
     matrix = [
-        ("AMD ROCm reports cuda",
-         dict(loaded = True, repo_id = "black-forest-labs/FLUX.1-dev",
-              family = "flux", device = "cuda", dtype = "bfloat16",
-              model_kind = "pipeline"),
-         "flux · BF16 · cuda"),
-        ("Apple Silicon reports mps",
-         dict(loaded = True, repo_id = "black-forest-labs/FLUX.1-dev",
-              family = "flux", device = "mps", dtype = "bfloat16",
-              model_kind = "pipeline"),
-         "flux · BF16 · mps"),
-        ("Intel XPU",
-         dict(loaded = True, repo_id = "black-forest-labs/FLUX.1-dev",
-              family = "flux", device = "xpu", dtype = "float16",
-              model_kind = "pipeline"),
-         "flux · FP16 · xpu"),
+        (
+            "AMD ROCm reports cuda",
+            dict(
+                loaded = True,
+                repo_id = "black-forest-labs/FLUX.1-dev",
+                family = "flux",
+                device = "cuda",
+                dtype = "bfloat16",
+                model_kind = "pipeline",
+            ),
+            "flux · BF16 · cuda",
+        ),
+        (
+            "Apple Silicon reports mps",
+            dict(
+                loaded = True,
+                repo_id = "black-forest-labs/FLUX.1-dev",
+                family = "flux",
+                device = "mps",
+                dtype = "bfloat16",
+                model_kind = "pipeline",
+            ),
+            "flux · BF16 · mps",
+        ),
+        (
+            "Intel XPU",
+            dict(
+                loaded = True,
+                repo_id = "black-forest-labs/FLUX.1-dev",
+                family = "flux",
+                device = "xpu",
+                dtype = "float16",
+                model_kind = "pipeline",
+            ),
+            "flux · FP16 · xpu",
+        ),
         # sd.cpp has no model_kind key at all and puts "gguf" in dtype.
-        ("the sd.cpp engine on a CPU-only host",
-         dict(loaded = True, repo_id = "unsloth/FLUX.1-dev-GGUF",
-              family = "flux", device = "cpu", dtype = "gguf"),
-         "flux · GGUF · cpu"),
+        (
+            "the sd.cpp engine on a CPU-only host",
+            dict(
+                loaded = True,
+                repo_id = "unsloth/FLUX.1-dev-GGUF",
+                family = "flux",
+                device = "cpu",
+                dtype = "gguf",
+            ),
+            "flux · GGUF · cpu",
+        ),
     ]
     for name, payload, expected in matrix:
         state.chat = dict(NOTHING_CHAT)
@@ -358,54 +410,57 @@ def run(page, state: Runtime) -> None:
 
     # An audio-input VLM listens; it must not be filed under Speech.
     state.diffusion = dict(NOTHING_DIFFUSION)
-    state.chat = chat(active_model = "unsloth/gemma-3n-E4B-it",
-                      is_audio = True, audio_type = "audio_vlm")
+    state.chat = chat(active_model = "unsloth/gemma-3n-E4B-it", is_audio = True, audio_type = "audio_vlm")
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
-    check("an audio-input VLM is Dictation, not Speech",
-          "Dictation" in card_text(page), card_text(page).replace("\n", " | "))
+    check(
+        "an audio-input VLM is Dictation, not Speech",
+        "Dictation" in card_text(page),
+        card_text(page).replace("\n", " | "),
+    )
 
     # ── A backend too old to have the video route ───────────────────────
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
     page.context.route(
         "**/api/inference/video/status",
-        lambda route: route.fulfill(status = 404, content_type = "application/json",
-                                    body = json.dumps({"detail": "Not Found"})),
+        lambda route: route.fulfill(
+            status = 404, content_type = "application/json", body = json.dumps({"detail": "Not Found"})
+        ),
     )
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
-    check("a 404 video route does not blank the other rows", len(rows(page)) == 1,
-          str(rows(page)))
+    check("a 404 video route does not blank the other rows", len(rows(page)) == 1, str(rows(page)))
     install_routes(page.context, state)  # restore the stub
 
     # ── A runtime that accepts the connection and never answers ─────────
     state.hang = {"video"}
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
-    check("a hung runtime still lets the other rows render",
-          len(rows(page)) == 1, str(rows(page)))
+    check("a hung runtime still lets the other rows render", len(rows(page)) == 1, str(rows(page)))
     state.hang = set()
 
     # ── The position restore: the bug this suite exists for ─────────────
-    state.chat = chat(active_model = "unsloth/Qwen3-4B-GGUF", is_gguf = True,
-                      gguf_variant = "Q4_K_M")
+    state.chat = chat(active_model = "unsloth/Qwen3-4B-GGUF", is_gguf = True, gguf_variant = "Q4_K_M")
     # As if dragged to the corner of a 2560x1440 monitor, then reopened here.
-    boot(page, state,
-         seed = {POSITION_KEY: json.dumps({"left": 2300, "top": 1300})})
+    boot(page, state, seed = {POSITION_KEY: json.dumps({"left": 2300, "top": 1300})})
     page.wait_for_selector(CARD, timeout = 30_000)
     box = page.locator(HANDLE).first.bounding_box()
-    check("a position saved on a bigger screen is pulled back into view",
-          box is not None and 0 <= box["x"] < 1440 and 0 <= box["y"] < 900,
-          f"handle={box}")
+    check(
+        "a position saved on a bigger screen is pulled back into view",
+        box is not None and 0 <= box["x"] < 1440 and 0 <= box["y"] < 900,
+        f"handle={box}",
+    )
     page.screenshot(path = str(ART / f"restore-{PLAYWRIGHT_BROWSER}.png"))
 
     # And it keeps up with a window that shrinks under it.
     page.set_viewport_size({"width": 720, "height": 560})
     page.wait_for_timeout(3000)
     box = page.locator(HANDLE).first.bounding_box()
-    check("a shrinking window drags the card back with it",
-          box is not None and 0 <= box["x"] < 720 and 0 <= box["y"] < 560,
-          f"handle={box}")
+    check(
+        "a shrinking window drags the card back with it",
+        box is not None and 0 <= box["x"] < 720 and 0 <= box["y"] < 560,
+        f"handle={box}",
+    )
     page.set_viewport_size({"width": 1440, "height": 900})
     page.wait_for_timeout(1500)
 
@@ -423,17 +478,21 @@ def run(page, state: Runtime) -> None:
     page.reload(wait_until = "domcontentloaded")
     page.wait_for_selector(CARD, timeout = 30_000)
     page.wait_for_timeout(2000)
-    check("the dragged position survives a reload",
-          page.evaluate(f"localStorage.getItem({json.dumps(POSITION_KEY)})") == stored)
+    check(
+        "the dragged position survives a reload",
+        page.evaluate(f"localStorage.getItem({json.dumps(POSITION_KEY)})") == stored,
+    )
 
     # A move with no button held must not keep dragging the card.
     before = page.locator(HANDLE).first.bounding_box()
     page.mouse.move(before["x"] + 200, before["y"] + 200, steps = 10)
     page.wait_for_timeout(500)
     after = page.locator(HANDLE).first.bounding_box()
-    check("the card does not follow a released pointer",
-          abs(after["x"] - before["x"]) < 2 and abs(after["y"] - before["y"]) < 2,
-          f"{before} -> {after}")
+    check(
+        "the card does not follow a released pointer",
+        abs(after["x"] - before["x"]) < 2 and abs(after["y"] - before["y"]) < 2,
+        f"{before} -> {after}",
+    )
 
     # ── Collapse ────────────────────────────────────────────────────────
     boot(page, state)
@@ -447,11 +506,15 @@ def run(page, state: Runtime) -> None:
     check("the collapsed state survives a reload", page.locator(pill).count() > 0)
 
     # ── Eject ───────────────────────────────────────────────────────────
-    state.chat = chat(active_model = "unsloth/Qwen3-4B-GGUF", is_gguf = True,
-                      gguf_variant = "Q4_K_M")
-    state.diffusion = dict(NOTHING_DIFFUSION, loaded = True,
-                           repo_id = "black-forest-labs/FLUX.1-dev",
-                           family = "flux", device = "cuda", dtype = "bfloat16")
+    state.chat = chat(active_model = "unsloth/Qwen3-4B-GGUF", is_gguf = True, gguf_variant = "Q4_K_M")
+    state.diffusion = dict(
+        NOTHING_DIFFUSION,
+        loaded = True,
+        repo_id = "black-forest-labs/FLUX.1-dev",
+        family = "flux",
+        device = "cuda",
+        dtype = "bfloat16",
+    )
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
     labels = rows(page)
@@ -472,22 +535,33 @@ def run(page, state: Runtime) -> None:
             page.wait_for_timeout(200)
         check("the ejected row disappears", gone)
         check("the ejected row does not come back", not reappeared)
-        check("the other runtime is untouched", "chat" in state.unloads
-              and "image" not in state.unloads, str(state.unloads))
+        check(
+            "the other runtime is untouched",
+            "chat" in state.unloads and "image" not in state.unloads,
+            str(state.unloads),
+        )
 
     # A row the runtime has already replaced must not unload the replacement.
     state.reset()
-    state.diffusion = dict(NOTHING_DIFFUSION, loaded = True,
-                           repo_id = "black-forest-labs/FLUX.1-dev",
-                           family = "flux", device = "cuda", dtype = "bfloat16")
+    state.diffusion = dict(
+        NOTHING_DIFFUSION,
+        loaded = True,
+        repo_id = "black-forest-labs/FLUX.1-dev",
+        family = "flux",
+        device = "cuda",
+        dtype = "bfloat16",
+    )
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
     # Swap the model behind the card's back, as a load from another tab would.
     state.diffusion = dict(state.diffusion, repo_id = "Qwen/Qwen-Image")
     page.locator(EJECT).first.click()
     page.wait_for_timeout(4000)
-    check("a replaced image row is not ejected on the replacement's behalf",
-          "image" not in state.unloads, str(state.unloads))
+    check(
+        "a replaced image row is not ejected on the replacement's behalf",
+        "image" not in state.unloads,
+        str(state.unloads),
+    )
 
     # ── The preference ──────────────────────────────────────────────────
     state.reset()
@@ -496,8 +570,11 @@ def run(page, state: Runtime) -> None:
     check("the preference hides the card", page.locator(CARD).count() == 0)
     state.status_reads = 0
     page.wait_for_timeout(SETTLE_MS)
-    check("the preference stops the poll", state.status_reads <= 1,
-          f"{state.status_reads} status reads while off")
+    check(
+        "the preference stops the poll",
+        state.status_reads <= 1,
+        f"{state.status_reads} status reads while off",
+    )
 
 
 if __name__ == "__main__":
