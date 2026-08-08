@@ -18,7 +18,7 @@ const { subscribeModelLifecycle, withBackgroundLoadNotice } = await import(
 );
 
 /** The real cadences are 2s / 10s; these drive the same loop without waiting. */
-const TIMING = { pollMs: 1, readTimeoutMs: 25, deadlineMs: 5000 };
+const TIMING = { pollMs: 1, readTimeoutMs: 25, stallMs: 5000 };
 
 type Seen = { runtime: string; loading: boolean; model: string | null };
 
@@ -241,7 +241,7 @@ test("a hung read is abandoned, so the deadline still bounds the loop", async ()
           reject(new Error("aborted"));
         });
       }),
-    { pollMs: 1, readTimeoutMs: 10, deadlineMs: 60 },
+    { pollMs: 1, readTimeoutMs: 10, stallMs: 60 },
   );
 
   await settled;
@@ -279,5 +279,57 @@ test("the read signal is not aborted when the read answers in time", async () =>
   // abort behind for a later turn of the loop to trip over.
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(aborted, false);
+  stop();
+});
+
+test("a long but healthy download is never abandoned", async () => {
+  const { seen, settled, stop } = record();
+  let read = 0;
+
+  await withBackgroundLoadNotice(
+    "video",
+    "unsloth/wan",
+    async () => null,
+    async () => {
+      read += 1;
+      // Far more polls than the stall window would allow if it were timed from
+      // the start of the load: a 100 GB checkpoint on a slow link is hours.
+      return read < 12 ? "downloading" : "ready";
+    },
+    // A stall window shorter than the run of healthy polls it must survive.
+    { pollMs: 1, readTimeoutMs: 25, stallMs: 4 },
+  );
+
+  await settled;
+  assert.equal(read, 12);
+  assert.deepEqual(seen, [
+    { runtime: "video", loading: true, model: "unsloth/wan" },
+    { runtime: "video", loading: false, model: "unsloth/wan" },
+  ]);
+  stop();
+});
+
+test("a healthy read resets the stall window", async () => {
+  const { settled, stop } = record();
+  let read = 0;
+
+  await withBackgroundLoadNotice(
+    "image",
+    "unsloth/flux",
+    async () => null,
+    async () => {
+      read += 1;
+      // Unreadable, then healthy, then unreadable again. Without the reset the
+      // second run of failures would inherit the first one's elapsed time.
+      if (read === 1 || read === 2) throw new Error("backend restarting");
+      if (read === 3) return "downloading";
+      throw new Error("backend restarting");
+    },
+    { pollMs: 1, readTimeoutMs: 25, stallMs: 30 },
+  );
+
+  await settled;
+  // It survived past the point an unreset window would have expired.
+  assert.ok(read > 4, `expected the window to restart, got ${read} reads`);
   stop();
 });

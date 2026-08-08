@@ -84,12 +84,26 @@ export type UseDragPosition = {
   /** Callback ref, not a RefObject: the reclamp effect has to re-run when the
    *  node appears, and a RefObject mutation does not re-render. */
   panelRef: (node: HTMLDivElement | null) => void;
-  startDrag: (event: React.PointerEvent<HTMLElement>) => void;
+  startDrag: (
+    event: React.PointerEvent<HTMLElement>,
+    options?: StartDragOptions,
+  ) => void;
   dragging: boolean;
   /** True once, for the click that ends a drag, so a handle can also be a
    *  button. Reading it clears the flag, so a later keyboard activation on the
    *  same button is not swallowed too. */
   justDragged: () => boolean;
+};
+
+export type StartDragOptions = {
+  /**
+   * Whether a click on this handle will follow the drag and consume the
+   * sentinel. False for a handle that is not a button: nothing would read the
+   * flag, and it would then be left set for whichever button asks next. The
+   * expanded card's grip and the collapsed pill share one sentinel, so a drag
+   * by the grip used to cost the pill its next click.
+   */
+  clickFollows?: boolean;
 };
 
 export function useDragPosition(storageKey: string): UseDragPosition {
@@ -106,6 +120,10 @@ export function useDragPosition(storageKey: string): UseDragPosition {
   const [pressing, setPressing] = useState(false);
   const [dragging, setDragging] = useState(false);
   const movedRef = useRef(false);
+  // Whether the handle that started this drag has a click that will read the
+  // sentinel. A grip that is not a button does not, so the flag is dropped when
+  // its drag ends rather than left for the next button to trip over.
+  const clickFollowsRef = useRef(true);
   const panelRef = useRef<HTMLDivElement | null>(null);
   // Mirrored into state because the reclamp effect must re-subscribe when the
   // node mounts: the card renders nothing until the first poll returns a row,
@@ -173,31 +191,35 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     };
   }, [panelEl, reclamp]);
 
-  const startDrag = useCallback((event: React.PointerEvent<HTMLElement>) => {
-    const panel = panelRef.current;
-    if (event.button !== 0 || !panel) return;
-    // Without capture a pointerup over another window is never delivered, so
-    // the card would keep tracking the cursor. Same as the Live monitor's drag.
-    try {
-      event.currentTarget.setPointerCapture(event.pointerId);
-    } catch {
-      // Capture is best effort; the window listeners below still drive the drag.
-    }
-    const box = panel.getBoundingClientRect();
-    sessionRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      left: box.left,
-      top: box.top,
-      width: box.width,
-      height: box.height,
-      lastLeft: box.left,
-      lastTop: box.top,
-    };
-    movedRef.current = false;
-    setPressing(true);
-  }, []);
+  const startDrag = useCallback(
+    (event: React.PointerEvent<HTMLElement>, options?: StartDragOptions) => {
+      const panel = panelRef.current;
+      if (event.button !== 0 || !panel) return;
+      // Without capture a pointerup over another window is never delivered, so
+      // the card would keep tracking the cursor. Same as the Live monitor's drag.
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Capture is best effort; the window listeners below still drive the drag.
+      }
+      const box = panel.getBoundingClientRect();
+      sessionRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+        lastLeft: box.left,
+        lastTop: box.top,
+      };
+      movedRef.current = false;
+      clickFollowsRef.current = options?.clickFollows !== false;
+      setPressing(true);
+    },
+    [],
+  );
 
   // One paint per frame, off the offset pointermove last recorded. A trackpad
   // reports faster than the display refreshes, so a move-per-event was work the
@@ -254,6 +276,10 @@ export function useDragPosition(storageKey: string): UseDragPosition {
       setPosition({ left: session.lastLeft, top: session.lastTop });
     }
     sessionRef.current = null;
+    // No click is coming to consume the sentinel when the handle that started
+    // this drag is not a button, so drop it here rather than leave it set for
+    // whichever button asks next.
+    if (!clickFollowsRef.current) movedRef.current = false;
     setPressing(false);
     setDragging(false);
   }, [applyPending]);

@@ -254,7 +254,12 @@ export function LoadedModelsIndicator({
               <TooltipTrigger asChild={true}>
                 <div
                   aria-label="Drag to move"
-                  onPointerDown={startDrag}
+                  // Not a button, so no click follows to consume the drag
+                  // sentinel: say so, or the collapsed pill's next click reads
+                  // this drag as its own and refuses to expand.
+                  onPointerDown={(event) =>
+                    startDrag(event, { clickFollows: false })
+                  }
                   className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-foreground/[0.07] hover:text-foreground active:cursor-grabbing"
                 >
                   <HugeiconsIcon

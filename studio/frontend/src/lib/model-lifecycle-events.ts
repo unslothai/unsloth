@@ -101,14 +101,19 @@ export type LoadPhase = "downloading" | "finalizing" | "ready" | "error" | null;
 export const BACKGROUND_LOAD_POLL_MS = 2000;
 /** Well past a healthy load-progress read, so only a real hang trips it. */
 export const BACKGROUND_READ_TIMEOUT_MS = 10_000;
-/** A backend that stops answering must not leave the row loading forever. */
-export const BACKGROUND_LOAD_DEADLINE_MS = 60 * 60 * 1000;
+/**
+ * How long a run of unreadable polls may last before the row is retired. Timed
+ * from the last healthy read rather than from the start of the load: a 100 GB
+ * video checkpoint on a slow link legitimately takes hours, and an absolute
+ * deadline would have hidden a download that was still visibly progressing.
+ */
+export const BACKGROUND_STALL_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** Cadences, all optional: the defaults are what production uses. */
 export type BackgroundLoadTiming = {
   pollMs?: number;
   readTimeoutMs?: number;
-  deadlineMs?: number;
+  stallMs?: number;
 };
 
 /**
@@ -151,19 +156,24 @@ async function settleWhenLoadEnds(
 ): Promise<void> {
   const pollMs = timing.pollMs ?? BACKGROUND_LOAD_POLL_MS;
   const readTimeoutMs = timing.readTimeoutMs ?? BACKGROUND_READ_TIMEOUT_MS;
-  const deadline =
-    Date.now() + (timing.deadlineMs ?? BACKGROUND_LOAD_DEADLINE_MS);
+  const stallMs = timing.stallMs ?? BACKGROUND_STALL_TIMEOUT_MS;
+  let lastHealthy = Date.now();
   try {
-    while (Date.now() < deadline) {
+    for (;;) {
       await new Promise((resolve) => setTimeout(resolve, pollMs));
       // An unreadable read is not proof the load ended: a restarting backend or
       // one dropped request would end the row early and hide a live load. That
       // is `undefined`, kept distinct from the `null` phase precisely so the two
       // are not conflated here.
       const phase = await boundedRead(readPhase, readTimeoutMs);
-      if (phase !== undefined && phase !== "downloading" && phase !== "finalizing") {
-        return;
+      if (phase === undefined) {
+        // Only a sustained run of unreadable polls gives up. A load that is
+        // still reporting progress is never abandoned, however long it takes.
+        if (Date.now() - lastHealthy >= stallMs) return;
+        continue;
       }
+      if (phase !== "downloading" && phase !== "finalizing") return;
+      lastHealthy = Date.now();
     }
   } finally {
     notifyModelLifecycle({ runtime, loading: false, model });

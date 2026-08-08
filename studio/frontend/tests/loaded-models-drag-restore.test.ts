@@ -160,3 +160,69 @@ test("the drag captures the pointer", () => {
     "and a move with no button held must end the drag",
   );
 });
+
+// The expanded card's grip and the collapsed pill share one drag sentinel, but
+// only the pill has a click to consume it. A drag by the grip therefore left
+// the flag set, and the pill's next click read someone else's drag and refused
+// to expand, costing the user a second click. Asserted by reading the source,
+// since the node suite has no DOM to drag in.
+const INDICATOR = readFileSync(
+  fileURLToPath(
+    new URL(
+      "../src/features/loaded-models/loaded-models-indicator.tsx",
+      import.meta.url,
+    ),
+  ),
+  "utf8",
+);
+
+test("the expanded grip declares that no click follows its drag", () => {
+  const grip = INDICATOR.slice(
+    INDICATOR.indexOf('aria-label="Drag to move"'),
+    INDICATOR.indexOf('aria-label="Drag to move"') + 400,
+  );
+  assert.match(
+    grip,
+    /clickFollows: false/,
+    "a handle with no onClick must not leave the sentinel set",
+  );
+});
+
+test("the collapsed pill still consumes the sentinel itself", () => {
+  // It is a button, so its own click reads the flag; marking it clickFollows
+  // false would clear the drag before the click could suppress the expand.
+  const pill = INDICATOR.slice(
+    INDICATOR.indexOf("Show details, or drag to move"),
+    INDICATOR.indexOf("Show details, or drag to move") + 400,
+  );
+  assert.match(pill, /onPointerDown=\{startDrag\}/);
+  assert.match(pill, /if \(!justDragged\(\)\) setCollapsed\(false\)/);
+});
+
+test("every pointer end path drops a sentinel no click will read", () => {
+  const HOOK = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/loaded-models/use-drag-position.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  // `settle` is the single exit: pointerup, pointercancel, and the buttons === 0
+  // bail for a release the window never saw all route through it, so clearing
+  // there covers each of them and cannot miss one added later.
+  const settleAt = HOOK.indexOf("const settle = useCallback(");
+  assert.notEqual(settleAt, -1, "expected a settle helper");
+  const settle = HOOK.slice(
+    settleAt,
+    HOOK.indexOf("}, [applyPending]);", settleAt),
+  );
+  assert.match(settle, /if \(!clickFollowsRef\.current\) movedRef\.current = false;/);
+  const onEnd = HOOK.slice(
+    HOOK.indexOf("const onEnd = useCallback("),
+    HOOK.indexOf("const onEnd = useCallback(") + 260,
+  );
+  assert.match(onEnd, /settle\(\);/);
+  assert.match(HOOK, /if \(event\.buttons === 0\) \{\s*settle\(\);/);
+});
