@@ -101,6 +101,7 @@ def _run_cpu_fallback_load(
 ):
     if platform is not None:
         monkeypatch.setattr(llama_cpp.sys, "platform", platform)
+
     def _gguf_string(value: str) -> bytes:
         encoded = value.encode()
         return struct.pack("<Q", len(encoded)) + encoded
@@ -1048,8 +1049,8 @@ def test_an_unload_during_staging_takes_the_runtime_back(monkeypatch, tmp_path):
         )
 
     assert len(sink["fallback_sources"]) == 1  # staged
-    assert len(sink["launches"]) == 2          # never spawned
-    assert sink["cleanups"]                    # and handed back
+    assert len(sink["launches"]) == 2  # never spawned
+    assert sink["cleanups"]  # and handed back
 
 
 def test_a_windows_ggml_assert_reaches_the_cpu_replay(monkeypatch, tmp_path):

@@ -12046,11 +12046,7 @@ class LlamaCppBackend:
                     _crashed = self._is_signal_crash(failed_rc) or (
                         sys.platform == "win32" and self._is_abort_exit(failed_rc)
                     )
-                    if (
-                        not _crashed
-                        or not _cpu_fallback_eligible
-                        or self._cancel_event.is_set()
-                    ):
+                    if not _crashed or not _cpu_fallback_eligible or self._cancel_event.is_set():
                         return False
                     fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
                     prepared = self._prepare_cpu_fallback_launch(
