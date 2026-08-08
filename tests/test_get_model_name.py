@@ -205,6 +205,24 @@ class TestGetModelName(unittest.TestCase):
                 canonical,
             )
 
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_offline_legacy_cache_uses_transformers_default(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            os.makedirs(os.path.join(legacy_cache, "snapshots", "legacy-commit"))
+            with patch("transformers.utils.hub.TRANSFORMERS_CACHE", cache_dir):
+                self.assertEqual(
+                    get_model_name(
+                        "unsloth/Meta-Llama-3.1-8B-Instruct",
+                        load_in_4bit = True,
+                        local_files_only = True,
+                    ),
+                    legacy,
+                )
+
+
     def test_static_mapper_contract(self):
         # A lowercased key is how __get_model_name always looks up; the value it
         # gets back is used verbatim as a repo id, so it must carry the casing

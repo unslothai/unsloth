@@ -259,8 +259,13 @@ def _prefer_legacy_lowercase_cache(
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
         from huggingface_hub.file_download import repo_folder_name
+        try:
+            from transformers.utils.hub import TRANSFORMERS_CACHE
+        except ImportError:
+            TRANSFORMERS_CACHE = HF_HUB_CACHE
 
-        cache_root = HF_HUB_CACHE if cache_dir is None else os.path.expanduser(str(cache_dir))
+        default_cache = TRANSFORMERS_CACHE or HF_HUB_CACHE
+        cache_root = default_cache if cache_dir is None else os.path.expanduser(str(cache_dir))
         canonical_cache = os.path.join(
             cache_root, repo_folder_name(repo_id = repo_id, repo_type = "model")
         )

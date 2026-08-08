@@ -162,7 +162,13 @@ def _revision_for_resolved_repo(
     ModelScope snapshot, a -bnb-4bit strip), where that ref does not exist. Only the mapper
     substitution answers to use_exact_model_name, so only suggest it when it would help.
     """
-    if revision is None or model_name == old_model_name:
+    case_only_mapper_remap = (
+        mapper_moved_name
+        and type(model_name) is str
+        and type(old_model_name) is str
+        and model_name.lower() == old_model_name.lower()
+    )
+    if revision is None or model_name == old_model_name or case_only_mapper_remap:
         return revision
     remedy = (
         " Pass `use_exact_model_name = True` to load your repo as-is." if mapper_moved_name else ""

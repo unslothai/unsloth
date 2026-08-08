@@ -174,6 +174,20 @@ def test_revision_survives_when_the_repo_is_unchanged():
     assert gate("my-branch", "myorg/my-ft", "myorg/my-ft") == "my-branch"
 
 
+
+def test_revision_survives_case_only_mapper_canonicalization():
+    gate = _load_gate()
+    assert (
+        gate(
+            "pinned-ref",
+            "unsloth/gemma-4-26B-A4B-it",
+            "unsloth/gemma-4-26b-a4b-it",
+            True,
+        )
+        == "pinned-ref"
+    )
+
+
 @pytest.mark.parametrize(
     "model_name, old_model_name",
     [
