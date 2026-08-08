@@ -123,6 +123,8 @@ def test_collect_local_models_scans_previous_cache(monkeypatch, tmp_path):
 
 
 def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_path):
+    from hub.utils import download_manifest
+
     active = tmp_path / "active"
     previous = tmp_path / "previous"
     active_partial = active / "models--Org--Model" / "blobs" / "abc.incomplete"
@@ -131,23 +133,94 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
     snapshot = previous / "models--Org--Model" / "snapshots" / "revision"
     snapshot.mkdir(parents = True)
     (snapshot / "model.safetensors").write_bytes(b"complete")
+    build_calls = []
+    real_build = download_manifest.build_variant_state_index
 
+    def record_build(repositories, **kwargs):
+        repositories = tuple(repositories)
+        build_calls.append(repositories)
+        return real_build(repositories, **kwargs)
+
+    monkeypatch.setattr("hub.utils.download_manifest.build_variant_state_index", record_build)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
     monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.known_hf_hub_caches",
-        lambda: [active, previous],
-    )
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, previous])
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
 
     rows = models_route.collect_local_models(tmp_path / "models")
-
     [row] = [row for row in rows if row.model_id == "Org/Model"]
     assert row.id == str(snapshot.resolve())
     assert row.partial is False
     assert row.active_cache is False
+    assert len(build_calls) == 1
+    assert set(build_calls[0]) == {
+        ("model", "Org/Model", active),
+        ("model", "Org/Model", previous),
+    }
+
+
+def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
+    # Total and stable on hostile input is the whole contract here; the exact
+    # string is platform-dependent. POSIX realpath() rejects an embedded NUL with
+    # ValueError so the raw string is normcased through, while Windows non-strict
+    # realpath falls back to abspath and joins the cwd.
+    for hostile in ("\0", "\ud800"):
+        identity = models_route._compat_inventory_path_identity(hostile)
+        assert identity == models_route._compat_inventory_path_identity(hostile)
+        assert identity.endswith(hostile)
+    sources = models_route._CompatLocalInventorySources(
+        tmp_path / "active",
+        tmp_path / "legacy",
+        tmp_path / "default",
+        (tmp_path / "lm",),
+        (tmp_path / "known",),
+    )
+    folders = [[{"id": 1, "path": "/custom", "created_at": "now"}]]
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: folders[0])
+    started, release, workers = [asyncio.Event(), asyncio.Event()], asyncio.Event(), []
+
+    async def fake_to_thread(function, *args, **kwargs):
+        if function is models_route.collect_local_models:
+            workers.append((args, kwargs))
+            started[len(workers) - 1].set()
+            await release.wait()
+            return []
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(models_route.asyncio, "to_thread", fake_to_thread)
+
+    async def run_requests():
+        request = lambda root = tmp_path: models_route._shared_compat_local_inventory_scan(
+            root, sources
+        )
+        first = asyncio.create_task(request(tmp_path))
+        await asyncio.wait_for(started[0].wait(), 1)
+        second = asyncio.create_task(request(tmp_path / "alias" / ".."))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(workers) == 1
+        key = next(iter(models_route._compat_local_inventory_flights))[1]
+        assert sources in key and isinstance(key[-1], int)
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions = True)
+        second = asyncio.create_task(request())
+        await asyncio.sleep(0)
+        folders[0] = [{"id": 2, "path": "/changed", "created_at": "later"}]
+        changed = asyncio.create_task(request())
+        await asyncio.wait_for(started[1].wait(), 1)
+        assert [worker[1]["custom_folders"] for worker in workers] == [
+            [{"id": 1, "path": "/custom", "created_at": "now"}],
+            folders[0],
+        ]
+        release.set()
+        return await asyncio.gather(second, changed)
+
+    assert (
+        asyncio.run(run_requests()) == [[], []] and not models_route._compat_local_inventory_flights
+    )
 
 
 def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypatch):
@@ -185,14 +258,19 @@ def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypat
         "utils.models.model_config._iter_gguf_files",
         fail_recursive_variant_scan,
     )
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(root)}])
+    monkeypatch.setattr(
+        "storage.studio_db.list_scan_folders",
+        lambda: pytest.fail("captured custom folders were reloaded"),
+    )
     monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
     monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
 
-    rows = models_route.collect_local_models(tmp_path / "models")
+    rows = models_route.collect_local_models(
+        tmp_path / "models", custom_folders = [{"path": str(root)}]
+    )
     paths = {row.path for row in rows}
 
     assert {str(main), str(model_dir), str(snapshot.resolve())} <= paths
@@ -614,7 +692,7 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -674,7 +752,7 @@ def test_the_pins_excuse_covers_only_the_quants_it_holds(monkeypatch, tmp_path):
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -731,7 +809,7 @@ def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkey
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     variant = GgufVariantInfo(
         filename = "Model-Q4_K_M.gguf",
@@ -2965,7 +3043,7 @@ def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_p
     monkeypatch.setattr(
         models_route,
         "_cached_repo_task",
-        lambda repo_info: ("text-to-image" if "Qwen-Image" in repo_info.repo_id else None),
+        lambda repo_info: "text-to-image" if "Qwen-Image" in repo_info.repo_id else None,
     )
     monkeypatch.setattr(
         models_route,
@@ -3436,7 +3514,7 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     # Disk-only means disk-only: a remote listing here would be the bug this route avoids.
@@ -3479,7 +3557,7 @@ def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_p
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     def _unreachable(*args, **kwargs):
@@ -3518,7 +3596,7 @@ def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     from hub.services.models import cache_inventory
@@ -3835,6 +3913,21 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
     assert any("wedgedvol" in root for root in scanned), scanned
     assert answered, "the new request waited on the scan stuck against the old cache"
     assert any("healthyvol" in root for root in scanned), scanned
+
+
+def test_gguf_variants_route_carries_local_resolution(monkeypatch, tmp_path):
+    # The CLI gate reads resolved_locally, so the legacy constructor must carry it.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models" / "qwen").mkdir(parents = True)
+    (tmp_path / "models" / "qwen" / "q-Q4_K_M.gguf").write_bytes(b"GGUF")
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "models/qwen", hf_token = None, current_subject = "test-user"
+        )
+    )
+    assert result.resolved_locally is True
+    assert [v.quant for v in result.variants] == ["Q4_K_M"]
 
 
 def _write_cached_gguf(
