@@ -20751,6 +20751,13 @@ async def openai_image_generations(
         # The batch shares one base seed, so restoring a batch_index>0 sibling needs the original batch_size.
         "batch_size": body.n,
         "model": result.get("repo_id"),
+        # The BUILD, exactly as /images/generate records it. This route is a supported way to
+        # produce an image, and without these the gallery entry cannot say which GGUF quant or
+        # which dense precision made the pixels -- the whole point of recording them.
+        "model_kind": result.get("model_kind"),
+        "gguf_filename": result.get("gguf_filename"),
+        "transformer_quant": result.get("transformer_quant"),
+        "baked_loras": list(result.get("baked_loras") or []),
         "created_at": float(created),
     }
     # The diffusers batch shares one seed; the native batch uses a distinct seed per image, so record each image's own seed.
