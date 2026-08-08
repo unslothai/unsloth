@@ -187,9 +187,13 @@ def test_the_adapter_save_keeps_everything_peft_would_keep(tmp_path, lora_kwargs
     """
     from unsloth.models._utils import save_lora_adapter
 
-    reference = _saved_keys(_peft_case(**lora_kwargs), lambda m, d: m.save_pretrained(d), tmp_path, "peft")
+    reference = _saved_keys(
+        _peft_case(**lora_kwargs), lambda m, d: m.save_pretrained(d), tmp_path, "peft"
+    )
     ours = _saved_keys(_peft_case(**lora_kwargs), save_lora_adapter, tmp_path, "ours")
-    assert ours == reference, f"missing {sorted(reference - ours)}, extra {sorted(ours - reference)}"
+    assert (
+        ours == reference
+    ), f"missing {sorted(reference - ours)}, extra {sorted(ours - reference)}"
 
 
 def test_the_saved_adapter_still_loads_back(tmp_path):
