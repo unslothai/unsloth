@@ -37,6 +37,7 @@ class _FakeBackend:
     effective_parallel_slots = 1
     _slot_save_binary = None
     _gguf_path = None
+    _loaded_by_user_action = False
 
     def __init__(
         self,
@@ -616,7 +617,7 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
         "slots": [{"id": 0, "filename": saved.name}],
     }
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False)
+        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False, False)
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
 
@@ -641,7 +642,7 @@ def test_residency_does_not_purge_saved_kv(monkeypatch, tmp_path):
     }
     kw._kv_resume = manifest
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False)
+        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False, False)
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
     monkeypatch.setattr(settings_route, "idle_unload_is_configured", lambda: True)
@@ -5206,11 +5207,11 @@ def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
 
     assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
-    enabled, idle, keep_kv, auto_dl = settings.set_openai_auto_switch(False, None, False)
+    enabled, idle, keep_kv, auto_dl, api_only = settings.set_openai_auto_switch(False, None, False)
     assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
     assert settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY not in store  # nor auto-download
     assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
-    assert (enabled, idle, keep_kv, auto_dl) == (False, 600, False, False)
+    assert (enabled, idle, keep_kv, auto_dl, api_only) == (False, 600, False, False, False)
 
 
 def test_load_impl_notes_loaded_with_backend_off_loop():
@@ -6925,3 +6926,161 @@ def test_mlx_kv_bits_survives_the_whole_override_projection():
         kwargs = settings.model_override_load_kwargs({"mlx_kv_bits": 4}, is_gguf = is_gguf)
         assert kwargs["mlx_kv_bits"] == 4
         assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_bits == 4
+
+
+def _idle_backend(kw, monkeypatch, *, user_loaded):
+    """A loaded, long-idle GGUF backend wired into the idle loop."""
+    import time
+
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    backend._loaded_by_user_action = user_loaded
+
+    def _unload():
+        backend.is_loaded = False
+
+    backend.unload_model = _unload
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    return backend
+
+
+def test_api_only_setting_roundtrip_and_default(monkeypatch):
+    import storage.studio_db as db
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+
+    # Off on an install that never stored it, so existing setups are unchanged.
+    assert settings.get_auto_unload_api_only() is False
+    assert settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY not in store
+    assert settings.set_openai_auto_switch(True, 60, None, None, True)[4] is True
+    assert settings.get_auto_unload_api_only() is True
+    # None leaves the stored value untouched (older clients can't reset it).
+    assert settings.set_openai_auto_switch(True, 60, None, None, None)[4] is True
+    with pytest.raises(ValueError, match = "true or false"):
+        settings.set_openai_auto_switch(True, 60, None, None, "garbage")
+
+
+def test_idle_unload_still_frees_a_user_loaded_model_by_default(monkeypatch):
+    # Backwards compatibility: with the toggle off, provenance changes nothing.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: False)
+
+    _drive_idle_loop(kw)
+    assert backend.is_loaded is False
+
+
+def test_api_only_spares_a_user_loaded_model_but_not_an_api_one(monkeypatch):
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+
+    pinned = _idle_backend(kw, monkeypatch, user_loaded = True)
+    _drive_idle_loop(kw)
+    assert pinned.is_loaded is True
+    assert kw.get_last_unloaded_model() is None  # nothing stashed either
+
+    api_loaded = _idle_backend(kw, monkeypatch, user_loaded = False)
+    _drive_idle_loop(kw)
+    assert api_loaded.is_loaded is False
+
+
+def test_an_idle_restored_model_is_api_provenance(monkeypatch):
+    # The restore runs through the auto-switch path, so the model it brings back
+    # is unloadable again on the next idle rather than pinned forever.
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    backend.is_loaded = False
+    backend.model_identifier = None
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls and backend._loaded_by_user_action is False
+
+    backend.unload_model = lambda: setattr(backend, "is_loaded", False)
+    _drive_idle_loop(kw)
+    assert backend.is_loaded is False
+
+
+def test_unload_clears_the_user_load_flag():
+    # Otherwise the next API load inherits the pin and never frees its VRAM.
+    import inspect
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    assert backend._loaded_by_user_action is False  # off until a UI load says otherwise
+    backend._loaded_by_user_action = True
+    backend.unload_model()
+    assert backend._loaded_by_user_action is False
+    # Not cleared on a bare process kill: a respawn or MTP-free reload replays
+    # the same load and must keep the provenance it had.
+    assert "_loaded_by_user_action" not in inspect.getsource(LlamaCppBackend._kill_process)
+
+
+def test_the_load_route_pins_and_other_load_surfaces_do_not(monkeypatch):
+    import inspect
+
+    backend = _FakeBackend("unsloth/A-GGUF")
+    backend._loaded_by_user_action = False
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _already_loaded(*_a, **_kw):
+        return None  # the dedupe path returns without touching the backend
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _already_loaded)
+    request = LoadRequest(model_path = "unsloth/A-GGUF")
+
+    # An explicit UI load pins, including when it deduped onto the resident model.
+    asyncio.run(inference_route.load_model_gated(request, object(), "tester", user_initiated = True))
+    assert backend._loaded_by_user_action is True
+
+    # Preview shares this helper and must not pin, so it keeps the default.
+    asyncio.run(inference_route.load_model_gated(request, object(), "tester"))
+    assert backend._loaded_by_user_action is False
+    import routes.preview as preview_route
+
+    assert "user_initiated" not in inspect.getsource(preview_route._serve_chat)
+
+
+def test_api_only_turned_on_mid_save_still_spares_the_model(monkeypatch, tmp_path):
+    # A KV save can take seconds; the loop re-reads the TTL and keep-KV after it
+    # for exactly that reason, so provenance has to be re-read there too.
+    from core.inference import llama_keepwarm as kw
+
+    on = {"now": False}
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: on["now"])
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+
+    manifest = {"dir": str(tmp_path), "slots": [{"id": 0, "filename": "f.bin", "n_saved": 1}]}
+    deleted = []
+    monkeypatch.setattr(kw, "_delete_resume_files", lambda m: deleted.append(m))
+
+    def _save(should_abort = None):
+        on["now"] = True  # the user flips the toggle while the save runs
+        return manifest
+
+    backend.save_slots_for_resume = _save
+
+    _drive_idle_loop(kw)
+    assert backend.is_loaded is True
+    assert deleted == [manifest]  # nothing was unloaded, so nothing may be stashed
+    assert kw._kv_resume is None

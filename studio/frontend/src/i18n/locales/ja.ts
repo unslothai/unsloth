@@ -369,6 +369,9 @@ export const ja = {
         keepKv: "アイドル時の自動アンロードをまたいでチャットのコンテキストを保持",
         keepKvDescription:
           "アイドル時の自動アンロードの前に KV キャッシュを保存し、再開したチャットが履歴を読み直さずに済むようにします。ディスク使用量は最大 10 GB です。",
+        apiOnly: "API が読み込んだモデルのみアンロード",
+        apiOnlyDescription:
+          "アイドル時の自動アンロードでは、Studio から自分で読み込んだモデルはメモリに残し、API リクエストが読み込んだモデルだけを解放します。",
       },
       previewSharing: {
         sectionTitle: "プレビュー共有",

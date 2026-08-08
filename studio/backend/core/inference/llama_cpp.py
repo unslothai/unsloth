@@ -3245,6 +3245,11 @@ class LlamaCppBackend:
         # spawned, so a save landing in that window still has a launch to
         # compare against.
         self._memory_launch_pending: bool = False
+        # True when the resident model came from an explicit UI load rather than
+        # the OpenAI API, so the idle unload can be scoped to API-loaded models.
+        # Not on GgufLoadIntent: that is compared for equality to detect
+        # duplicate loads, and a provenance field there would force a reload.
+        self._loaded_by_user_action: bool = False
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled: bool = True
         self._effective_cache_types: tuple[str, str] = ("f16", "f16")
@@ -12605,6 +12610,7 @@ class LlamaCppBackend:
             self._memory_policy_active = False
             self._memory_mlock_applicable = True
             self._memory_launch_pending = False
+            self._loaded_by_user_action = False
             self._n_ubatch = self._DEFAULT_N_UBATCH
             self._flash_attn_enabled = True
             self._effective_cache_types = ("f16", "f16")
