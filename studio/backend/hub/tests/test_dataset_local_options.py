@@ -1450,7 +1450,10 @@ def test_snapshot_options_reject_a_data_dir_whose_first_step_is_missing(tmp_path
 def test_snapshot_options_skip_an_unshowable_config_without_its_siblings(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
     long_name = "n" * (local_options._MAX_OPTION_LENGTH + 1)
-    _card(snapshot, f"configs:\n- config_name: {long_name}\n  data_dir: a\n- config_name: short\n  data_dir: b\n")
+    _card(
+        snapshot,
+        f"configs:\n- config_name: {long_name}\n  data_dir: a\n- config_name: short\n  data_dir: b\n",
+    )
     for name in ("a", "b"):
         (snapshot / name).mkdir(parents = True)
         (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
@@ -1460,7 +1463,10 @@ def test_snapshot_options_skip_an_unshowable_config_without_its_siblings(tmp_pat
 
 def test_snapshot_options_drop_a_config_recorded_with_no_splits(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n- config_name: other\n  data_dir: e\ndataset_info:\n- config_name: cfg\n  splits: []\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n- config_name: other\n  data_dir: e\ndataset_info:\n- config_name: cfg\n  splits: []\n",
+    )
     for name in ("d", "e"):
         (snapshot / name).mkdir(parents = True)
         (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")

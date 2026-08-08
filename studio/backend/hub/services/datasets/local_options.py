@@ -382,7 +382,8 @@ def _emptied_configs(payload: Any) -> set[str]:
     return {
         name
         for item in entries
-        if isinstance(item, dict) and isinstance(item.get("splits"), (list, dict))
+        if isinstance(item, dict)
+        and isinstance(item.get("splits"), (list, dict))
         and not item["splits"]
         and (name := _config_name(item.get("config_name"))) is not None
     }
