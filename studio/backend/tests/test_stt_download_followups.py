@@ -204,6 +204,54 @@ def test_status_never_stats_the_cache_under_the_download_lock(state_factory, mod
     assert observed == [True], "progress was computed while holding the download lock"
 
 
+@pytest.mark.parametrize(
+    "state_factory, model_id, restart",
+    [
+        (
+            snapshot_mod._SnapshotDownloadState,
+            "unsloth/whisper-tiny",
+            lambda s: setattr(s, "_repo", "org/next") or setattr(s, "_selected_files", ()),
+        ),
+        (ggml_mod._GgmlDownloadState, "tiny", lambda s: setattr(s, "_etag", None)),
+        (mtmd_mod._MtmdDownloadState, "qwen3-asr-0.6b", lambda s: setattr(s, "_selected_files", ())),
+    ],
+)
+def test_progress_cannot_mix_a_new_runs_bytes_with_the_old_runs_total(
+    state_factory, model_id, restart, tmp_path
+):
+    """status() reports bytes_total from under the lock and probes the cache after.
+
+    A run that starts in that gap replaces the fields the probe reads, so reading
+    them there paired one run's total with another's bytes, or blanked it.
+    """
+    state = state_factory()
+    state._model_id = model_id
+    state._repo = "org/repo"
+    state._hub_cache = tmp_path
+    state._total_bytes = 1000
+    state._etag = "etag"
+    state._selected_files = (snapshot_mod._SelectedHubFile(path = "f", size = 1000, blob_key = None),)
+    release = threading.Event()
+    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread.start()
+
+    real = state._downloaded_bytes
+
+    def probe_after_a_restart(*args, **kwargs):
+        restart(state)  # the next run lands between the lock release and the probe
+        return real(*args, **kwargs)
+
+    state._downloaded_bytes = probe_after_a_restart
+    try:
+        status = state.status()
+    finally:
+        release.set()
+        state._thread.join(timeout = 5)
+
+    assert status["bytes_total"] == 1000
+    assert status["bytes_done"] == 0, "the probe read the restarted run's fields"
+
+
 def test_mtmd_rejects_a_revision_that_is_not_an_immutable_commit(monkeypatch, tmp_path):
     """The other two backends validate the SHA; a bad one here would be pinned
     into --revision and then silently dropped by the revision record."""

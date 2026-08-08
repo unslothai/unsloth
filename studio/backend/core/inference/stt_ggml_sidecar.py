@@ -416,8 +416,10 @@ class _GgmlDownloadState:
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if downloading else None,
             }
+            captured = (self._model_id, self._etag, self._total_bytes,
+                        self._hub_cache, self._revision)
         # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
-        snapshot["bytes_done"] = self._downloaded_bytes() if downloading else None
+        snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
         return snapshot
 
     def cancel(self) -> bool:
@@ -435,13 +437,26 @@ class _GgmlDownloadState:
             terminate_download(process)
         return True
 
-    def _downloaded_bytes(self) -> Optional[int]:
-        """Count this file across partial, finalized, and snapshot locations."""
+    def _downloaded_bytes(
+        self,
+        model_id: Optional[str] = None,
+        etag: Optional[str] = None,
+        total: Optional[int] = None,
+        hub_cache: Optional[Path] = None,
+        revision: Optional[str] = None,
+    ) -> Optional[int]:
+        """Count this file across partial, finalized, and snapshot locations.
+
+        status() captures these under the lock and passes them in: reading them
+        here would let a run that starts mid-probe pair its bytes with the total
+        of the run that just ended.
+        """
         try:
-            model_id = self._model_id
-            etag = self._etag
-            total = self._total_bytes
-            hub_cache = self._hub_cache
+            model_id = model_id if model_id is not None else self._model_id
+            etag = etag if etag is not None else self._etag
+            total = total if total is not None else self._total_bytes
+            hub_cache = hub_cache if hub_cache is not None else self._hub_cache
+            revision = revision if revision is not None else self._revision
             if not model_id or not etag or total is None or hub_cache is None:
                 return None
             return _downloaded_file_bytes(
@@ -450,7 +465,7 @@ class _GgmlDownloadState:
                 filename = GGML_STT_MODELS[model_id],
                 size = total,
                 blob_key = etag,
-                revision = self._revision,
+                revision = revision,
             )
         except Exception:
             return None

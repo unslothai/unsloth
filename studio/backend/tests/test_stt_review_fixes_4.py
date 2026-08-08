@@ -337,7 +337,7 @@ def test_download_status_reports_progress_without_holding_the_lock():
     state = mtmd_mod._MtmdDownloadState()
     observed = []
 
-    def slow_downloaded_bytes(model_id = None):
+    def slow_downloaded_bytes(*_args, **_kwargs):
         # The lock must be free while this runs.
         observed.append(state._lock.acquire(blocking = False))
         if observed[-1]:

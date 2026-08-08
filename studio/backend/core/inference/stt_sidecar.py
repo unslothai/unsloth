@@ -653,8 +653,10 @@ class _SnapshotDownloadState:
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if show_progress else None,
             }
+            captured = (self._repo, self._revision, self._hub_cache,
+                        self._selected_files, self._total_bytes)
         # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
-        snapshot["bytes_done"] = self._downloaded_bytes() if show_progress else None
+        snapshot["bytes_done"] = self._downloaded_bytes(*captured) if show_progress else None
         return snapshot
 
     def cancel(self) -> bool:
@@ -672,14 +674,26 @@ class _SnapshotDownloadState:
             terminate_download(process)
         return True
 
-    def _downloaded_bytes(self) -> Optional[int]:
-        """Count selected files across partial, blob, and snapshot locations."""
+    def _downloaded_bytes(
+        self,
+        repo: Optional[str] = None,
+        revision: Optional[str] = None,
+        hub_cache: Optional[Path] = None,
+        selected_files: Optional[tuple[_SelectedHubFile, ...]] = None,
+        total: Optional[int] = None,
+    ) -> Optional[int]:
+        """Count selected files across partial, blob, and snapshot locations.
+
+        status() captures these under the lock and passes them in: reading them
+        here would let a run that starts mid-probe pair its bytes with the total
+        of the run that just ended.
+        """
         try:
-            # Caller may hold the non-reentrant self._lock; a bare read is safe.
-            repo = self._repo
-            revision = self._revision
-            hub_cache = self._hub_cache or _active_hf_hub_cache()
-            selected_files = self._selected_files
+            repo = repo if repo is not None else self._repo
+            revision = revision if revision is not None else self._revision
+            hub_cache = hub_cache or self._hub_cache or _active_hf_hub_cache()
+            selected_files = selected_files if selected_files is not None else self._selected_files
+            total = total if total is not None else self._total_bytes
             if not repo or hub_cache is None or not selected_files:
                 return None
             done = sum(
@@ -693,7 +707,6 @@ class _SnapshotDownloadState:
                 )
                 for selected in selected_files
             )
-            total = self._total_bytes
             return min(done, total) if total is not None else done
         except Exception:
             return None
