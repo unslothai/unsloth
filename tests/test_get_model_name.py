@@ -153,6 +153,17 @@ class TestGetModelName(unittest.TestCase):
                 with self.subTest(model_name = model_name, load_in_4bit = load_in_4bit):
                     self._assert_mapping(model_name, load_in_4bit, expected, should_change)
 
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_artifactory_report_preserves_repo_id_case(self):
+        resolved = get_model_name(
+            "unsloth/Meta-Llama-3.1-8B-Instruct",
+            load_in_4bit = True,
+        )
+        self.assertEqual(
+            resolved,
+            "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
+        )
+
     def test_static_mapper_contract(self):
         # A lowercased key is how __get_model_name always looks up; the value it
         # gets back is used verbatim as a repo id, so it must carry the casing
