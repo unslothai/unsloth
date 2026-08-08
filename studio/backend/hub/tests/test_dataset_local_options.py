@@ -1476,7 +1476,10 @@ def test_snapshot_options_drop_a_config_recorded_with_no_splits(tmp_path):
 
 def test_snapshot_options_reject_a_data_files_list_mixing_shapes(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_files:\n  - train.jsonl\n  - split: test\n    path: test.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_files:\n  - train.jsonl\n  - split: test\n    path: test.jsonl\n",
+    )
     for name in ("train.jsonl", "test.jsonl"):
         (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1524,7 +1527,10 @@ def test_snapshot_options_reject_features_the_loader_cannot_build(tmp_path, feat
 @pytest.mark.parametrize("dtype", ["string", "image", "timestamp[s]", "decimal128(10,2)"])
 def test_snapshot_options_accept_features_the_loader_builds(tmp_path, dtype):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n")
+    _card(
+        snapshot,
+        f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1541,7 +1547,10 @@ def test_snapshot_options_reject_an_absolute_declared_path(tmp_path):
 
 def test_snapshot_options_reject_a_mapping_data_files(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_files:\n    train: train.jsonl\n    test: test.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_files:\n    train: train.jsonl\n    test: test.jsonl\n",
+    )
     for name in ("train.jsonl", "test.jsonl"):
         (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
 
