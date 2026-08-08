@@ -1,6 +1,7 @@
 use crate::native_backend_lease::{
     encode_secret_env, now_ms, random_token, sign_path_lease, NativePathKind,
-    NativePathLeaseResponse, NativePathOperation, NativePathSourceKind, NativePathType,
+    NativePathLeaseRequest, NativePathLeaseResponse, NativePathOperation, NativePathSourceKind,
+    NativePathType,
 };
 use crate::native_path_policy::{
     classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
@@ -18,6 +19,7 @@ const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 // How long after the OS reports a drop the renderer may still register those paths.
 const DROP_GRACE: Duration = Duration::from_secs(2 * 60);
 
+#[cfg(any(windows, test))]
 fn normalize_windows_verbatim_path(path: String) -> String {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
         return format!(r"\\{rest}");
@@ -271,15 +273,17 @@ impl NativeIntakeState {
         validate_entry_path(&entry, operation)?;
         sign_path_lease(
             &self.lease_secret,
-            operation,
-            entry.canonical_path.to_string_lossy().to_string(),
-            entry.path_kind,
-            entry.path_type,
-            entry.source_kind,
-            &entry.token,
-            entry.display_label,
-            entry.size_bytes,
-            entry.modified_ms,
+            NativePathLeaseRequest {
+                operation,
+                canonical_path: entry.canonical_path.to_string_lossy().to_string(),
+                path_kind: entry.path_kind,
+                path_type: entry.path_type,
+                source_kind: entry.source_kind,
+                token: entry.token,
+                display_label: entry.display_label,
+                size_bytes: entry.size_bytes,
+                modified_ms: entry.modified_ms,
+            },
         )
     }
 
@@ -615,7 +619,7 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("dropped on the window"));
 
-        state.note_dropped_paths(&[path.clone()]);
+        state.note_dropped_paths(std::slice::from_ref(&path));
         let intent = state
             .register_attachment_path(&path, NativePathSourceKind::Drop)
             .unwrap();
@@ -637,7 +641,7 @@ mod tests {
         fs::write(&dropped, b"dropped").unwrap();
         fs::write(&sibling, b"sibling").unwrap();
 
-        state.note_dropped_paths(&[dropped.clone()]);
+        state.note_dropped_paths(std::slice::from_ref(&dropped));
         assert!(state
             .register_attachment_path(&sibling, NativePathSourceKind::Drop)
             .is_err());

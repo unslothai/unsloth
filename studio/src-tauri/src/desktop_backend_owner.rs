@@ -335,7 +335,7 @@ fn write_private_file(path: &Path, body: &[u8]) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         file.write_all(body).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]
