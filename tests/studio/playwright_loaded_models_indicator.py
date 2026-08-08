@@ -223,11 +223,7 @@ def card_text(page) -> str:
     # Bounded and absence-tolerant rather than count()-then-read, which has the
     # same race as rows() when the card is mid-change.
     try:
-        return (
-            page.locator(CARD)
-            .locator("xpath=ancestor::div[3]")
-            .first.inner_text(timeout = 5000)
-        )
+        return page.locator(CARD).locator("xpath=ancestor::div[3]").first.inner_text(timeout = 5000)
     except Exception:
         return ""
 
