@@ -590,7 +590,15 @@ def test_apply_streaming_uses_block_and_leaf_hooks_with_bounded_cpu_memory(monke
         low_cpu_mem_usage = False,
     ):
         calls.append(
-            (module, offload_type, num_blocks_per_group, use_stream, non_blocking, record_stream, low_cpu_mem_usage)
+            (
+                module,
+                offload_type,
+                num_blocks_per_group,
+                use_stream,
+                non_blocking,
+                record_stream,
+                low_cpu_mem_usage,
+            )
         )
 
     import sys
