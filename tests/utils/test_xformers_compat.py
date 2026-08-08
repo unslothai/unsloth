@@ -92,6 +92,14 @@ def test_normalize_release(raw, expected):
     assert xc.normalize_release(raw) == expected
 
 
+@pytest.mark.parametrize("version", ["0.0.35.dev1130", "0.0.36rc1", "0.0.36a0"])
+def test_a_pre_release_build_is_unknown_rather_than_folded_onto_its_release(version):
+    # The fourteen 0.0.35.devNNNN wheels on PyPI are built against torch nightlies, so
+    # answering "0.0.35, therefore torch 2.10.0" for one of them is confidently wrong.
+    assert xc.normalize_release_with_post(version) is None
+    assert xc.expected_torch_for_xformers(version) is None
+
+
 def test_normalize_release_with_post_keeps_the_post():
     # 0.0.33 -> torch 2.9.0 but 0.0.33.post2 -> torch 2.9.1, so dropping the post here
     # would silently answer for the wrong wheel.

@@ -164,6 +164,10 @@ def test_probe_clears_a_stale_reason_on_success(monkeypatch):
 
 
 def test_probe_never_raises_even_when_xformers_is_none(monkeypatch):
+    # Patch the globals the probe writes through, or its `global` assignment leaks the
+    # failure into every later test in the session.
+    monkeypatch.setattr(ad, "XFORMERS_PROBE_REASON", None)
+    monkeypatch.setattr(ad, "XFORMERS_PROBE_INCONCLUSIVE", False)
     # The probe runs at import time on every CUDA capability now, so anything it touches
     # being missing or broken must degrade to False, never to an ImportError at `import
     # unsloth`.
@@ -171,3 +175,49 @@ def test_probe_never_raises_even_when_xformers_is_none(monkeypatch):
     monkeypatch.setattr(ad, "xformers_attention", None)
     assert ad._xformers_runs_on_device() is False
     assert ad.XFORMERS_PROBE_REASON
+
+
+@pytest.mark.parametrize(
+    "message, inconclusive",
+    [
+        ("CUDA out of memory. Tried to allocate 2.00 GiB", True),
+        ("CUDA error: all CUDA-capable devices are busy or unavailable", True),
+        ("CUDA error: no kernel image is available for execution on the device", False),
+        ("undefined symbol: _ZN3c105ErrorC1E", False),
+    ],
+)
+def test_a_busy_or_full_gpu_does_not_count_as_a_broken_build(
+    monkeypatch, message, inconclusive
+):
+    # Device 0 being full, or claimed by another rank under EXCLUSIVE_PROCESS, says
+    # nothing about the wheel. Turning memory-efficient attention off for the whole
+    # process on that basis is a silent 2x memory regression caused by the probe itself.
+    monkeypatch.setattr(ad, "XFORMERS_PROBE_REASON", None)
+    monkeypatch.setattr(ad, "XFORMERS_PROBE_INCONCLUSIVE", False)
+    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(ad.torch, "zeros", boom)
+    assert ad._xformers_runs_on_device() is False
+    assert ad.XFORMERS_PROBE_INCONCLUSIVE is inconclusive
+
+
+def test_the_probe_targets_this_rank_s_device(monkeypatch):
+    # Under torchrun each rank owns a different GPU, and on a mixed box device 0 is often
+    # the small display card. Probing 0 for everyone lets a wheel with no kernel for the
+    # weakest GPU disable xformers on the good ones.
+    captured = {}
+
+    def fake_zeros(*args, device = None, **kwargs):
+        captured["device"] = device
+        raise RuntimeError("stop after capturing the device")
+
+    monkeypatch.setattr(ad, "XFORMERS_PROBE_REASON", None)
+    monkeypatch.setattr(ad, "XFORMERS_PROBE_INCONCLUSIVE", False)
+    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
+    monkeypatch.setattr(ad, "_PROBE_DEVICE_INDEX", 3)
+    monkeypatch.setattr(ad.torch, "zeros", fake_zeros)
+    ad._xformers_runs_on_device()
+    assert captured["device"] == "cuda:3"

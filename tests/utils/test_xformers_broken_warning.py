@@ -51,11 +51,13 @@ def _write_stub_xformers(root: Path, built_torch: str, built_cuda: int) -> None:
     )
 
 
-def _import_unsloth_with(stub_root: Path, repo_root: Path, enable_logging: str) -> str:
+def _import_unsloth_with(stub_root, repo_root: Path, enable_logging: str) -> str:
+    """Import unsloth in a child, optionally with a stub xformers shadowing the real one."""
+    inject = f"sys.path.insert(0, {str(stub_root)!r})" if stub_root is not None else "pass"
     code = textwrap.dedent(
         f"""\
         import sys
-        sys.path.insert(0, {str(stub_root)!r})
+        {inject}
         import unsloth  # noqa: F401
         from unsloth.models._utils import XFORMERS_BROKEN_REASON, xformers
         print("REASON:", XFORMERS_BROKEN_REASON)
@@ -99,6 +101,11 @@ def _mismatched_build():
     return built_torch, built_cuda
 
 
+@pytest.mark.skipif(
+    torch.version.cuda is None,
+    reason = "the mismatch is synthesized as a CUDA-major difference, which needs a CUDA "
+    "torch to compare against; on ROCm/XPU/CPU there is no running CUDA major",
+)
 def test_broken_xformers_warns_without_enable_logging(tmp_path, repo_root):
     built_torch, built_cuda = _mismatched_build()
     _write_stub_xformers(tmp_path, built_torch, built_cuda)
@@ -116,9 +123,54 @@ def test_broken_xformers_warns_without_enable_logging(tmp_path, repo_root):
     assert "REASON: None" not in output
 
 
-def test_warning_is_printed_once(tmp_path, repo_root):
-    built_torch, built_cuda = _mismatched_build()
-    _write_stub_xformers(tmp_path, built_torch, built_cuda)
+def test_warning_is_printed_once(capsys):
+    # In-process, because a fresh subprocess reaches the announcement once no matter what:
+    # the subprocess version of this test passed with the once-guard deleted.
+    from unsloth.models import _utils
 
-    output = _import_unsloth_with(tmp_path, repo_root, enable_logging = "0")
-    assert output.count("Xformers is installed but its optimized kernels cannot load") == 1
+    _utils._XFORMERS_BREAKAGE_ANNOUNCED = False
+    try:
+        _utils._announce_xformers_breakage("first", build_mismatch = True)
+        _utils._announce_xformers_breakage("second", build_mismatch = True)
+        printed = capsys.readouterr().out
+    finally:
+        _utils._XFORMERS_BREAKAGE_ANNOUNCED = False
+    assert printed.count("Xformers is installed but its optimized kernels cannot load") == 1
+    assert "second" not in printed
+
+
+def test_a_non_mismatch_failure_is_not_relabelled_as_a_build_mismatch(capsys):
+    # This arm also catches the sm_100/110/120 FA3 guard and the old-torch guards, whose
+    # messages are multi-line, fenced and already actionable. Reflowing one of those into
+    # "its optimized kernels cannot load ... install the matching build" states the wrong
+    # cause and mangles the text.
+    from unsloth.models import _utils
+
+    original = (
+        "Unsloth: Xformers 0.0.32.post2 has a broken FA3 dispatch on SM 12.0 GPUs.\n"
+        "```\npip install ninja\n```\n"
+    )
+    _utils._XFORMERS_BREAKAGE_ANNOUNCED = False
+    try:
+        _utils._announce_xformers_breakage(original, build_mismatch = False)
+        printed = capsys.readouterr().out
+    finally:
+        _utils._XFORMERS_BREAKAGE_ANNOUNCED = False
+    assert "its optimized kernels cannot load" not in printed
+    assert "--force-reinstall" not in printed
+    # Verbatim: the fences and the newlines are part of a copy-pasteable instruction.
+    assert original in printed
+
+
+@pytest.mark.skipif(
+    torch.version.cuda is None, reason = "needs a CUDA torch to have a matching xformers"
+)
+def test_a_healthy_install_says_nothing(repo_root):
+    # The other half of "never cry wolf": on a machine where xformers works, importing
+    # unsloth must print none of this. Uses the real installed xformers, and skips when
+    # that one is itself broken -- then the warning is correct, not a false positive.
+    output = _import_unsloth_with(None, repo_root, enable_logging = "0")
+    if "XFORMERS_IS_NONE: True" in output:
+        pytest.skip("this host's xformers is genuinely broken, so a warning is correct")
+    assert "Xformers is installed but" not in output
+    assert "REASON: None" in output

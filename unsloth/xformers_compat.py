@@ -154,15 +154,20 @@ def normalize_release(version: Any) -> Optional[str]:
 
 
 def normalize_release_with_post(version: Any) -> Optional[str]:
-    """Like normalize_release but KEEPS ``.postN``.
+    """Like normalize_release but KEEPS ``.postN``. None for a pre-release.
 
-    xformers keys on it: 0.0.33 and 0.0.33.post2 are built for different torch releases
-    (2.9.0 and 2.9.1), so dropping the post would answer the wrong question.
+    xformers keys on the post: 0.0.33 and 0.0.33.post2 are built for different torch
+    releases (2.9.0 and 2.9.1), so dropping it would answer the wrong question.
+
+    A ``.dev`` / ``a`` / ``b`` / ``rc`` build is reported as unknown rather than folded
+    onto its release: the fourteen ``0.0.35.devNNNN`` wheels on PyPI are built against
+    torch nightlies, so answering "0.0.35, therefore torch 2.10.0" for one of them is
+    confidently wrong, and unknown is the honest answer.
     """
     if not version:
         return None
     release = str(version).strip().split("+", 1)[0]
-    match = re.match(r"^(\d+(?:\.\d+)*(?:\.post\d+)?)", release)
+    match = re.match(r"^(\d+(?:\.\d+)*(?:\.post\d+)?)$", release)
     if match is None:
         return None
     return match.group(1)
@@ -227,9 +232,12 @@ def declared_torch_pin(xformers_version: Any = None) -> Optional[str]:
 
     Prefers the resident metadata over the static table, so a release we have never seen
     still answers correctly -- but only when it describes the same version the caller
-    asked about, otherwise a stale table lookup is the honest answer. Returns None when
-    xformers is absent, when its metadata is unreadable, or when the pin is a range
-    rather than ``==`` (0.0.35 and later).
+    asked about, otherwise a stale table lookup is the honest answer.
+
+    When the resident pin is a range rather than ``==`` (0.0.35 and later) there is no
+    declared pin to report, so this falls back to what the wheel was actually built
+    against. Callers must phrase that as "is built for", never "declares": the range
+    release deliberately does not declare a single torch.
     """
     wanted = normalize_release_with_post(xformers_version)
     try:

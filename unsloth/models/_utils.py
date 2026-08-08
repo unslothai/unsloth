@@ -2224,23 +2224,37 @@ if _xformers_predicted_break is None:
 _XFORMERS_BREAKAGE_ANNOUNCED = False
 
 
-def _announce_xformers_breakage(reason, error = None):
+def _announce_xformers_breakage(reason, error = None, build_mismatch = False):
     """Print the xformers breakage once per process, on the default path.
 
     Deliberately not behind UNSLOTH_ENABLE_LOGGING: silently dropping to SDPA is how a
-    wheel built for the wrong torch shipped to users unnoticed. The full exception stays
-    behind the logging flag -- it is long and the one-line reason already names the fix.
+    wheel built for the wrong torch shipped to users unnoticed.
+
+    Two shapes, because this arm also catches failures that are not ABI mismatches at all
+    -- the sm_100/110/120 FA3 guard and the old-torch guards above both raise here with
+    their own multi-line, fenced, already-actionable messages. Reflowing one of those into
+    "its optimized kernels cannot load ... install the matching build" states the wrong
+    cause and mangles the text. Only ``build_mismatch`` gets the version-pin treatment;
+    everything else is passed through verbatim.
     """
     global _XFORMERS_BREAKAGE_ANNOUNCED
     if _XFORMERS_BREAKAGE_ANNOUNCED:
         return
     _XFORMERS_BREAKAGE_ANNOUNCED = True
-    print(
-        "Unsloth: Xformers is installed but its optimized kernels cannot load.\n"
-        f"{str(reason).strip().rstrip('.')}.\n"
-        "Falling back to PyTorch SDPA attention - training still works, but it uses more memory.\n"
-        f"{_xformers_fix_hint()}"
-    )
+    if build_mismatch:
+        print(
+            "Unsloth: Xformers is installed but its optimized kernels cannot load.\n"
+            f"{str(reason).strip().rstrip('.')}.\n"
+            "Falling back to PyTorch SDPA attention - training still works, but it uses "
+            "more memory.\n"
+            f"{_xformers_fix_hint()}"
+        )
+    else:
+        print(
+            "Unsloth: Xformers is installed but could not be used. Falling back to PyTorch "
+            "SDPA attention - training still works, but it uses more memory.\n"
+            f"{reason}"
+        )
     if UNSLOTH_ENABLE_LOGGING and error is not None:
         print(str(error))
 
@@ -2357,7 +2371,11 @@ except Exception as e:
     # CUDA the wheel was built for) over the raised message, which for the ABI case is
     # xformers' own text with the CUDA version printed as a raw integer like 1208.
     XFORMERS_BROKEN_REASON = _xformers_predicted_break or str(e)
-    _announce_xformers_breakage(XFORMERS_BROKEN_REASON, e)
+    _announce_xformers_breakage(
+        XFORMERS_BROKEN_REASON,
+        e,
+        build_mismatch = _xformers_predicted_break is not None,
+    )
     xformers = None
     xformers_attention = None
     xformers_version = None

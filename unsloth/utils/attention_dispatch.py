@@ -26,6 +26,7 @@ from torch import Tensor
 from torch.nn.functional import scaled_dot_product_attention
 
 from ..models._utils import *
+from ..models._utils import _announce_xformers_breakage  # not in __all__, needed by the probe gate
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
@@ -42,6 +43,32 @@ HAS_XFORMERS = xformers is not None
 # alongside the boolean so callers can report WHY xformers went away, not just that it did.
 XFORMERS_PROBE_REASON: Optional[str] = None
 
+# True when the probe failed for a reason that says nothing about the build: the GPU was
+# busy, out of memory, or otherwise unavailable to us right now.
+XFORMERS_PROBE_INCONCLUSIVE = False
+
+# Failures that mean "ask again later", not "this xformers is broken". Disabling
+# memory-efficient attention for the whole process because device 0 happened to be full,
+# or was claimed by another rank in EXCLUSIVE_PROCESS mode, is a silent 2x memory
+# regression caused by the diagnostic itself.
+_INCONCLUSIVE_PROBE_ERRORS = (
+    "out of memory",
+    "busy or unavailable",
+    "all cuda-capable devices are busy",
+    "no cuda-capable device",
+    "cuda_error_not_permitted",
+    "insufficient driver",
+    "initialization error",
+)
+
+# Which device to probe. Under torchrun each rank owns a different GPU, and on a mixed box
+# device 0 is often the small display card, so probing 0 for everyone lets a wheel with no
+# kernel for the weakest GPU disable xformers on the good ones.
+try:
+    _PROBE_DEVICE_INDEX = int(os.environ.get("LOCAL_RANK", "") or 0)
+except ValueError:
+    _PROBE_DEVICE_INDEX = 0
+
 
 def _xformers_runs_on_device() -> bool:
     """One tiny attention forward; True iff the xformers kernel actually runs here.
@@ -49,20 +76,26 @@ def _xformers_runs_on_device() -> bool:
     Never raises. Every failure becomes False plus a one-line XFORMERS_PROBE_REASON,
     because this runs at import and a diagnostic must not be what breaks the import.
     """
-    global XFORMERS_PROBE_REASON
+    global XFORMERS_PROBE_REASON, XFORMERS_PROBE_INCONCLUSIVE
     try:
         # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel
         # but run xformers fine in float16, so pick the dtype the device supports.
         dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
-        q = torch.zeros((1, 8, 1, 64), device = "cuda", dtype = dtype)
+        device = f"cuda:{_PROBE_DEVICE_INDEX}"
+        q = torch.zeros((1, 8, 1, 64), device = device, dtype = dtype)
         attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
         xformers_attention(q, q, q, attn_bias = attn_bias)
         # Launches are async; synchronize so a deferred kernel failure fails the probe here.
-        torch.cuda.synchronize()
+        torch.cuda.synchronize(device)
         XFORMERS_PROBE_REASON = None
+        XFORMERS_PROBE_INCONCLUSIVE = False
         return True
     except Exception as error:
         XFORMERS_PROBE_REASON = f"{type(error).__name__}: {error}".strip()
+        text = str(error).lower()
+        XFORMERS_PROBE_INCONCLUSIVE = any(
+            marker in text for marker in _INCONCLUSIVE_PROBE_ERRORS
+        )
         return False
 
 
@@ -89,9 +122,21 @@ def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_devi
 # already initialised (_XFORMERS_FP32_UNSUPPORTED below forces the same lazy init).
 XFORMERS_DISABLED_REASON = XFORMERS_BROKEN_REASON
 if HAS_XFORMERS and torch.cuda.is_available():
-    if _xformers_disabled_for_capability(torch.cuda.get_device_capability()):
-        HAS_XFORMERS = False
-        XFORMERS_DISABLED_REASON = XFORMERS_PROBE_REASON
+    if _xformers_disabled_for_capability(
+        torch.cuda.get_device_capability(_PROBE_DEVICE_INDEX)
+    ):
+        if XFORMERS_PROBE_INCONCLUSIVE:
+            # The GPU was busy or full, which says nothing about the build. Keep xformers
+            # and let the real forward pass decide; turning it off here would be a silent
+            # memory regression caused by the diagnostic.
+            if UNSLOTH_ENABLE_LOGGING:
+                print(f"Unsloth: Could not probe xformers ({XFORMERS_PROBE_REASON}); keeping it on.")
+        else:
+            HAS_XFORMERS = False
+            XFORMERS_DISABLED_REASON = XFORMERS_PROBE_REASON
+            # Say so. A probe that turns off memory-efficient attention and prints nothing
+            # is the same silent downgrade this whole change exists to remove.
+            _announce_xformers_breakage(XFORMERS_PROBE_REASON)
 
 # On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass op is capability-rejected and
 # only its fp16/bf16 flash-2 op runs, so fp32 Q/K/V (DoRA, #1013) must be downcast there;
