@@ -61,6 +61,9 @@ def apple_silicon(monkeypatch):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(mlx_repair, "_attempted", False, raising = False)
     monkeypatch.setattr(mlx_repair, "_repair_thread", None, raising = False)
+    # Same reason as the hold below: a stamp left by an earlier test would decide whether
+    # this one's worker still counts as in flight.
+    monkeypatch.setattr(mlx_repair, "_repair_started_at", None, raising = False)
     # start_mlx_autorepair_if_needed() gates on this, and the real one imports mlx_vlm,
     # which is not installed here anyway.
     monkeypatch.setattr(mlx_repair, "mlx_stack_available", lambda: False)
@@ -216,6 +219,18 @@ def _superseded(monkeypatch, *, warming: bool) -> bool:
     return main_mod._superseded_by_mlx_repair((True, "mlx_unavailable"))
 
 
+def _spend_the_handoff_grace(monkeypatch, clock) -> None:
+    """Run the grace out the way a caller must: observe the warm stopped, then wait.
+
+    The grace opens on the first stopped reading, not on the clock, so advancing time
+    without asking spends nothing. Tests that want an expired window have to ask twice.
+    """
+    import main as main_mod
+
+    assert _superseded(monkeypatch, warming = False) is True
+    clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S + 1)
+
+
 def test_a_repair_that_has_not_started_holds_the_verdict_while_the_warm_runs(
     apple_silicon, clock, monkeypatch
 ):
@@ -243,11 +258,44 @@ def test_a_repair_that_never_starts_stops_holding_the_verdict(apple_silicon, clo
     the latch (its import raised and _post_warm_background_work swallowed it), so "not
     started yet" would otherwise be a permanent answer and the rows would spin for the whole
     session. Instead the Mac gets the greyed rows and the tooltip its stack has earned."""
+    assert _superseded(monkeypatch, warming = True) is True
+    _spend_the_handoff_grace(monkeypatch, clock)
+    assert _superseded(monkeypatch, warming = False) is False
+
+
+def test_a_gap_in_polling_does_not_spend_the_grace_before_the_handoff(
+    apple_silicon, clock, monkeypatch
+):
+    """The grace has to start when the warm stops, not when a poll last saw it running.
+
+    The warm's final stages are C-extension imports that hold the GIL for seconds at a
+    time, so health requests queue behind them and the next one served can be the first in
+    minutes. Measured from the last observed poll the grace would already be spent by the
+    time anyone could ask, and the gate would publish the mlx_unavailable verdict during
+    the very handoff it exists to cover -- the frontend then stores that as final and greys
+    Train and Video until the repair flips them back, which is the reported bug.
+    """
     import main as main_mod
 
     assert _superseded(monkeypatch, warming = True) is True
+    # Nobody asks for far longer than the grace, because the warm is holding the GIL.
+    clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S * 6)
+    assert _superseded(monkeypatch, warming = False) is True
+    # And it still expires normally once the handoff has actually had its window.
     clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S + 1)
     assert _superseded(monkeypatch, warming = False) is False
+
+
+def test_a_warm_that_resumes_reopens_the_handoff_grace(apple_silicon, clock, monkeypatch):
+    """A stopped reading between two running ones was a lull, not the handoff, so it must
+    not leave a countdown running that expires while the warm is still working."""
+    import main as main_mod
+
+    assert _superseded(monkeypatch, warming = True) is True
+    assert _superseded(monkeypatch, warming = False) is True
+    assert _superseded(monkeypatch, warming = True) is True
+    clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S + 1)
+    assert _superseded(monkeypatch, warming = False) is True
 
 
 def test_a_warm_that_never_ends_hits_the_ceiling(apple_silicon, clock, monkeypatch):
@@ -272,13 +320,47 @@ def test_a_live_worker_holds_the_verdict_past_every_window(apple_silicon, clock,
     assert _superseded(monkeypatch, warming = False) is True
 
 
+def test_a_worker_parked_past_its_budget_stops_holding_the_verdict(
+    apple_silicon, clock, monkeypatch
+):
+    """attempt_mlx_repair times the uv subprocess, but not the mlx_stack_available()
+    imports that verify the install nor the detect_hardware() pass after it. Those import
+    mlx.core, mlx_lm and mlx_vlm, which this module already assumes can park forever on a
+    broken stack, so an alive thread was an unbounded answer: the rows would spin for the
+    whole session rather than settle into the chat-only verdict the stack has earned."""
+    worker_clock = _Clock()
+    monkeypatch.setattr(mlx_repair, "_repair_clock", worker_clock, raising = False)
+    monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
+    monkeypatch.setattr(mlx_repair, "_repair_thread", _Worker(alive = True), raising = False)
+    monkeypatch.setattr(mlx_repair, "_repair_started_at", worker_clock.now, raising = False)
+
+    assert mlx_repair.mlx_repair_in_flight() is True
+    worker_clock.advance(mlx_repair._WORKER_BUDGET_S - 1)
+    assert mlx_repair.mlx_repair_in_flight() is True
+    worker_clock.advance(2)
+    assert mlx_repair.mlx_repair_in_flight() is False
+    # And the gate follows it, so the reply settles instead of staying provisional.
+    assert _superseded(monkeypatch, warming = False) is False
+
+
+def test_a_worker_inside_its_budget_is_never_cut_short(apple_silicon, monkeypatch):
+    """The budget is a backstop for a parked worker, not a cap on a working reinstall: a
+    slow but healthy uv install must keep the verdict held for its whole run."""
+    worker_clock = _Clock()
+    monkeypatch.setattr(mlx_repair, "_repair_clock", worker_clock, raising = False)
+    monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
+    monkeypatch.setattr(mlx_repair, "_repair_thread", _Worker(alive = True), raising = False)
+    monkeypatch.setattr(mlx_repair, "_repair_started_at", worker_clock.now, raising = False)
+
+    worker_clock.advance(mlx_repair._REPAIR_TIMEOUT_S)
+    assert mlx_repair.mlx_repair_in_flight() is True
+
+
 def test_a_worker_that_starts_late_takes_over_an_expired_window(apple_silicon, clock, monkeypatch):
     """The windows bound the promise, not the repair. A scheduler that arrives after the
     grace still gets the verdict held for as long as it is installing."""
-    import main as main_mod
-
     assert _superseded(monkeypatch, warming = True) is True
-    clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S + 1)
+    _spend_the_handoff_grace(monkeypatch, clock)
     assert _superseded(monkeypatch, warming = False) is False
 
     monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
@@ -289,10 +371,8 @@ def test_a_worker_that_starts_late_takes_over_an_expired_window(apple_silicon, c
 def test_a_re_detected_verdict_gets_its_own_window(apple_silicon, clock, monkeypatch):
     """Detection is not once-per-process. A later pass that republishes mlx_unavailable is
     a new verdict, so it must not inherit the spent window of the one before it."""
-    import main as main_mod
-
     assert _superseded(monkeypatch, warming = True) is True
-    clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S + 1)
+    _spend_the_handoff_grace(monkeypatch, clock)
     assert _superseded(monkeypatch, warming = False) is False
 
     monkeypatch.setattr(hw, "DETECTION_GENERATION", hw.DETECTION_GENERATION + 1, raising = False)

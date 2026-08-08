@@ -1309,11 +1309,19 @@ _MLX_PRESTART_GRACE_AFTER_WARM_S = 30.0
 _MLX_PRESTART_CEILING_S = 900.0
 
 _MLX_PRESTART_LOCK = threading.Lock()
-# (detection generation, first hold, last tick the warm was seen running). Keyed by
-# generation because detection is not once-per-process: a re-detect that republishes
-# mlx_unavailable is a new verdict and gets its own window rather than inheriting a spent
-# one. Guarded rather than atomic only because the three move together.
-_mlx_prestart_hold: Optional[tuple[int, float, float]] = None
+# (detection generation, first hold, first tick the warm was seen STOPPED, None while it
+# runs). Keyed by generation because detection is not once-per-process: a re-detect that
+# republishes mlx_unavailable is a new verdict and gets its own window rather than
+# inheriting a spent one. Guarded rather than atomic only because the three move together.
+#
+# The third field is when the warm was first seen stopped, not when it was last seen
+# running, because nothing guarantees a health request lands near the end of the warm. The
+# final stages are C-extension imports that hold the GIL for seconds at a time, so requests
+# queue behind them and the next one served can be the first in a minute. Measuring the
+# grace from the last observed poll would then start it in the past and expire it before
+# the handoff it exists to cover, publishing the mlx_unavailable verdict the frontend
+# stores as final -- the exact bug this hold prevents.
+_mlx_prestart_hold: Optional[tuple[int, float, Optional[float]]] = None
 
 # Indirected so tests can drive the windows without sleeping through them.
 _mlx_prestart_clock = time.monotonic
@@ -1327,15 +1335,22 @@ def _mlx_prestart_hold_ok(generation: int) -> bool:
     with _MLX_PRESTART_LOCK:
         held = _mlx_prestart_hold
         if held is None or held[0] != generation:
-            _mlx_prestart_hold = (generation, now, now)
+            _mlx_prestart_hold = (generation, now, None if warming else now)
             return True
-        _, first, warm_seen = held
+        _, first, stopped_seen = held
         if now - first >= _MLX_PRESTART_CEILING_S:
             return False
         if warming:
-            _mlx_prestart_hold = (generation, first, now)
+            # Still (or again) running, so the handoff has not happened yet and any earlier
+            # stopped reading was a lull, not the end.
+            _mlx_prestart_hold = (generation, first, None)
             return True
-        return now - warm_seen < _MLX_PRESTART_GRACE_AFTER_WARM_S
+        if stopped_seen is None:
+            # First time this pass has seen it stopped: the grace starts here, whenever the
+            # warm actually ended, so a gap in polling cannot spend it before it opens.
+            stopped_seen = now
+            _mlx_prestart_hold = (generation, first, stopped_seen)
+        return now - stopped_seen < _MLX_PRESTART_GRACE_AFTER_WARM_S
 
 
 def _superseded_by_mlx_repair(snapshot: Optional[tuple[bool, Optional[str]]]) -> bool:
@@ -1347,11 +1362,13 @@ def _superseded_by_mlx_repair(snapshot: Optional[tuple[bool, Optional[str]]]) ->
     chat_only, and only the UI has a row to grey out on it.
 
     Bounded, never open-ended. A live worker holds the verdict for as long as its install
-    takes, capped by the repair's own timeout. A repair that has not started yet is only a
-    promise, and this is where that promise expires: the scheduler runs after the warm, so
-    the hold lasts while the warm does and a short handoff beyond it, under an absolute
-    ceiling for the warm that never ends. Past that the verdict settles exactly as it did
-    before any of this existed.
+    takes, capped by mlx_repair._WORKER_BUDGET_S: the repair's own subprocess timeout plus
+    an allowance for the post-install imports that verify it, which are not themselves
+    timed, so a worker parked in one cannot hold the verdict for the rest of the process.
+    A repair that has not started yet is only a promise, and this is where that promise
+    expires: the scheduler runs after the warm, so the hold lasts while the warm does and
+    a short handoff beyond it, under an absolute ceiling for the warm that never ends.
+    Past that the verdict settles exactly as it did before any of this existed.
     """
     if snapshot is None:
         return False

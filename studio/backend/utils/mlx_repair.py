@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -116,6 +117,18 @@ _attempted_lock = threading.Lock()
 # installing" from "done, whichever way it went". Written under _attempted_lock together
 # with the latch above, since mlx_repair_in_flight() reads the pair as one state.
 _repair_thread: Optional[threading.Thread] = None
+# When that worker started, and the total it is allowed. attempt_mlx_repair times the uv
+# subprocess, but not the mlx_stack_available() imports that verify the install nor the
+# detect_hardware() pass after it -- and those import mlx.core, mlx_lm and mlx_vlm, the
+# imports this module already assumes can park indefinitely on a broken stack. An alive
+# thread was therefore an unbounded answer: a worker parked in them would hold the verdict
+# provisional for the whole session, spinning Train and Video instead of settling into the
+# chat-only state a broken stack has earned. The subprocess keeps its full timeout; this
+# adds the post-install work on top.
+_repair_started_at: Optional[float] = None
+_WORKER_BUDGET_S = _REPAIR_TIMEOUT_S + 300
+# Indirected so the tests can drive the budget without sleeping through it.
+_repair_clock = time.monotonic
 
 
 def is_apple_silicon() -> bool:
@@ -182,7 +195,8 @@ def mlx_repair_in_flight() -> bool:
     window count, since both publish an answer the repair is about to replace: the stretch
     before the worker starts, and the worker itself. False the moment it has finished,
     whichever way it went, so a host that genuinely cannot train still gets a final
-    verdict -- as it does when the self-heal is opted out of, or cannot apply at all.
+    verdict -- as it does when the self-heal is opted out of, or cannot apply at all, or
+    when a worker outlives _WORKER_BUDGET_S without finishing.
 
     The not-yet-started half is unbounded here on purpose: this module cannot tell a
     repair that is moments away from starting from one whose scheduler never arrives.
@@ -193,10 +207,17 @@ def mlx_repair_in_flight() -> bool:
     if not is_apple_silicon():
         return False
     with _attempted_lock:
-        attempted, thread = _attempted, _repair_thread
+        attempted, thread, started_at = _attempted, _repair_thread, _repair_started_at
     if not attempted:
         return True
-    return thread is not None and thread.is_alive()
+    if thread is None or not thread.is_alive():
+        return False
+    # Alive is not the same as making progress. See _WORKER_BUDGET_S: the uv call is timed,
+    # the imports that follow it are not, so a worker parked in them would otherwise answer
+    # True for the rest of the process.
+    if started_at is not None and _repair_clock() - started_at >= _WORKER_BUDGET_S:
+        return False
+    return True
 
 
 def mlx_repair_started() -> bool:
@@ -435,7 +456,7 @@ def start_mlx_autorepair_if_needed() -> bool:
     on success. Returns True iff a repair thread was started. No-op (returns False)
     off Apple Silicon, when the stack is already adequate, when already attempted
     this process, or when disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1."""
-    global _attempted, _repair_thread
+    global _attempted, _repair_thread, _repair_started_at
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
     if not is_apple_silicon():
@@ -460,6 +481,9 @@ def start_mlx_autorepair_if_needed() -> bool:
             daemon = True,
             name = "mlx-autorepair",
         )
+        # Stamped before start() so the budget covers the worker's whole life, and under the
+        # same lock as the pair above so a reader never sees a live thread with no deadline.
+        _repair_started_at = _repair_clock()
         _repair_thread.start()
     # Logged outside the lock: a blocked stdout must not hold up mlx_repair_in_flight(),
     # which /api/health calls on the event loop.
