@@ -196,6 +196,28 @@ def test_ggml_download_drops_its_adopted_pid(monkeypatch):
             return 0
 
     monkeypatch.setattr(ggml_mod, "_cached_model_path", lambda model_id: None)
+    # _run() opens with a HEAD to the Hub for the size and etag. It is best-effort and
+    # swallows its own errors, but leaving it live makes this test depend on a network
+    # round trip it does not care about, so answer it locally.
+    import huggingface_hub
+
+    class _Metadata:
+        """Stands in for HfFileMetadata; unset fields read as None, as they may on the Hub.
+
+        ``commit_hash`` has to be a real-looking sha: _run() pins the download to an
+        immutable revision and refuses anything that is not one.
+        """
+
+        size = 1
+        etag = "stub"
+        commit_hash = "0" * 40
+
+        def __getattr__(self, _name):
+            return None
+
+    monkeypatch.setattr(
+        huggingface_hub, "get_hf_file_metadata", lambda *a, **k: _Metadata(), raising = False
+    )
     import core.inference.stt_download_worker as worker_mod
 
     monkeypatch.setattr(worker_mod, "spawn_download", lambda *a, **k: _Finished())
