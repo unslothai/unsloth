@@ -174,12 +174,16 @@ export function LoadedModelsIndicator({
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const showIndicator = useShowLoadedModels();
   const dismissed = useLoadedModelsDismissed();
-  const enabled = showIndicator && !dismissed && canShowIndicator(pathname);
-  // Recording is gated on the preference alone: a card that is closed, or on a
-  // route that hides it, must still hear the load that brings it back.
+  const reachable = canShowIndicator(pathname);
+  const enabled = showIndicator && !dismissed && reachable;
+  // Dismissal is not part of this: a card the user closed must still hear the
+  // load that brings it back. Reachability is, because it carries the auth gate
+  // -- tracking on /login polls four protected endpoints every 5s, and each 401
+  // runs authFetch's refresh-then-redirect ladder against a session that does
+  // not exist yet.
   const { entries, polledEntries, ejecting, eject } = useLoadedModels(
     enabled,
-    showIndicator,
+    showIndicator && reachable,
   );
   const [collapsed, setCollapsed] = usePersistedToggle(COLLAPSED_KEY);
   const navigate = useNavigate();

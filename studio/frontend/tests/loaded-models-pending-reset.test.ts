@@ -203,11 +203,12 @@ test("recording is gated on the preference, not on whether the card shows", () =
     ),
     "utf8",
   );
-  // showIndicator is the Settings toggle alone: dismissal and route gating must
-  // not stop the recording, or the card cannot reopen for the load.
+  // Dismissal must not stop the recording, or the card cannot reopen for the
+  // load. Reachability must, since it carries the auth gate: tracking on the
+  // preference alone polled four protected endpoints every 5s on /login.
   assert.match(
     INDICATOR,
-    /useLoadedModels\(\s*enabled,\s*showIndicator,\s*\)/,
-    "recording follows the preference, not what is on screen",
+    /useLoadedModels\(\s*enabled,\s*showIndicator && reachable,\s*\)/,
+    "recording survives a dismissal but not a route with no session",
   );
 });

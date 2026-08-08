@@ -97,10 +97,10 @@ test("the card carries a close button, and a load brings it back", () => {
     indicator,
     /subscribeModelLifecycle\(\(\{ loading \}\) => \{\s*if \(loading\) \{\s*setLoadedModelsDismissed\(false\);/,
   );
-  // And the gate reads it.
+  // And the gate reads it. Reachability is hoisted so tracking can share it.
   assert.match(
     indicator,
-    /const enabled = showIndicator && !dismissed && canShowIndicator\(pathname\)/,
+    /const enabled = showIndicator && !dismissed && reachable;/,
   );
 });
 
@@ -140,4 +140,39 @@ test("a row ejects with the eject glyph, the header closes with an X", () => {
     indicator.indexOf('aria-label="Close loaded models"'),
   );
   assert.match(header, /icon=\{Cancel01Icon\}/);
+});
+
+// Recording had to widen past `enabled` so a card the user closed still hears
+// the load that reopens it. It widened one step too far: `canShowIndicator`
+// carries the auth gate as well as the hidden routes, so tracking on the
+// preference alone polled four protected endpoints every 5s on /login, and each
+// 401 ran authFetch's refresh-then-redirect ladder against no session at all.
+// Asserted by reading the source, since the node suite has no DOM to mount in.
+test("recording follows the route and auth gate, but not the dismissal", () => {
+  const INDICATOR = readFileSync(
+    new URL(
+      "../src/features/loaded-models/loaded-models-indicator.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // The auth gate lives in canShowIndicator, so `reachable` is what carries it.
+  assert.match(INDICATOR, /const reachable = canShowIndicator\(pathname\);/);
+  assert.match(
+    INDICATOR,
+    /hasAuthToken\(\) && !mustChangePassword\(\)/,
+    "canShowIndicator must still be the thing that gates on auth",
+  );
+  const call = INDICATOR.slice(
+    INDICATOR.indexOf("useLoadedModels("),
+    INDICATOR.indexOf("useLoadedModels(") + 200,
+  );
+  assert.match(call, /showIndicator && reachable/, "track must be gated too");
+  assert.doesNotMatch(
+    call,
+    /\n\s*showIndicator,\n/,
+    "the preference alone is what polled /login",
+  );
+  // And dismissal stays out of it, or a closed card could never reopen itself.
+  assert.doesNotMatch(call, /dismissed/);
 });

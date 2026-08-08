@@ -3378,6 +3378,18 @@ def _monitor_anthropic_response(
     return response
 
 
+def _standard_models_still_held() -> list[str]:
+    """Unsloth models the registry still holds, whoever is active.
+
+    A GGUF load unloads only the ACTIVE Unsloth model, so a Transformers model
+    cached behind it keeps its weights while llama.cpp answers. Reported so the
+    memory is visible, and releasable, rather than stranded.
+    """
+    backend = _peek_inference_backend()
+    models = getattr(backend, "models", None) if backend is not None else None
+    return [name for name in models if isinstance(name, str)] if isinstance(models, dict) else []
+
+
 def _peek_inference_backend() -> Any:
     """The orchestrator if one already exists, else None. Never constructs one.
 
@@ -8044,7 +8056,15 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 ),
                 gguf_variant = llama_backend.hf_variant,
                 loading = [],
-                loaded = [_display_model_id] if _display_model_id else [],
+                # Plus anything the Unsloth registry still holds: the GGUF load
+                # only unloaded the ACTIVE one, so a model cached behind it is
+                # still in VRAM and was invisible to every client reading this.
+                loaded = ([_display_model_id] if _display_model_id else [])
+                + [
+                    name
+                    for name in _standard_models_still_held()
+                    if name != _display_model_id
+                ],
                 inference = _inference_cfg,
                 **_runtime_fields,
                 requested_context_length = llama_backend.requested_n_ctx,
