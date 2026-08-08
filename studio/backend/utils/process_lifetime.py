@@ -118,9 +118,7 @@ def initialize_parent_lifetime() -> None:
             if _pdeathsig_available():
                 _record_job_status(True, "PR_SET_PDEATHSIG per child")
             else:
-                _record_job_status(
-                    False, "prctl is unavailable here (seccomp or container policy)"
-                )
+                _record_job_status(False, "prctl is unavailable here (seccomp or container policy)")
         else:
             # macOS: no pdeathsig, no job object; reap_recorded_children covers it.
             _record_job_status(False, "no kernel-level parent-death signal on this platform")
