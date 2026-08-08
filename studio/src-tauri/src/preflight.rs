@@ -197,8 +197,8 @@ pub async fn desktop_preflight_result_with_state(
 
     if let Some(snapshot) = crate::process::owned_backend_snapshot(state)? {
         let Some(owner) = snapshot.owner.clone() else {
-            // TAURI_PORT is emitted only after uvicorn lifespan completes; keep
-            // this ownerless path on full health so auth/bootstrap are ready.
+            // Defensive fallback for legacy ownerless handles. Wait for full
+            // health so auth and bootstrap are ready.
 
             let probe = match snapshot.port {
                 Some(port) => backend::probe_ownerless_spawned_backend(port).await,

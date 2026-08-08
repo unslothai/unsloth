@@ -44,6 +44,8 @@ function DatasetSubsetConfiguration({
       datasetSplit: state.datasetSplit,
       datasetSubset: state.datasetSubset,
       setDatasetEvalSplit: state.setDatasetEvalSplit,
+      setManualDatasetOptionsValid: state.setManualDatasetOptionsValid,
+      markManualDatasetOptionsEdited: state.markManualDatasetOptionsEdited,
       setDatasetSplit: state.setDatasetSplit,
       setDatasetSubset: state.setDatasetSubset,
     })),
@@ -65,6 +67,9 @@ function DatasetSubsetConfiguration({
       setDatasetSplit={settings.setDatasetSplit}
       datasetEvalSplit={settings.datasetEvalSplit}
       setDatasetEvalSplit={settings.setDatasetEvalSplit}
+      datasetStreaming={settings.datasetStreaming}
+      setManualDatasetOptionsValid={settings.setManualDatasetOptionsValid}
+      markManualDatasetOptionsEdited={settings.markManualDatasetOptionsEdited}
     />
   );
 }
