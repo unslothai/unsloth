@@ -26,7 +26,7 @@ import install_python_stack as ips
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _PINNED = (
-    'diffusers @ https://github.com/huggingface/diffusers/archive/'
+    "diffusers @ https://github.com/huggingface/diffusers/archive/"
     'f53d552036a0d1bd5570782a39cd40cfabf112bc.zip ; python_version >= "3.10"'
 )
 
@@ -39,7 +39,7 @@ class TestRequirementProjectName:
         [
             ("unsloth\n", "unsloth"),
             ("unsloth-zoo\n", "unsloth-zoo"),
-            ("unsloth_zoo\n", "unsloth-zoo"),          # PEP 503 normalisation
+            ("unsloth_zoo\n", "unsloth-zoo"),  # PEP 503 normalisation
             ("  unsloth  \n", "unsloth"),
             ("unsloth>=2026.8.9\n", "unsloth"),
             ("unsloth[all]==1.0\n", "unsloth"),
@@ -47,7 +47,7 @@ class TestRequirementProjectName:
             # PEP 508 allows the marker and the URL with no surrounding space
             ('diffusers;python_version<"3.10"\n', "diffusers"),
             ("diffusers@https://example.invalid/d.zip\n", "diffusers"),
-            (_PINNED + "\n", "diffusers"),             # direct URL + marker
+            (_PINNED + "\n", "diffusers"),  # direct URL + marker
             ("# a comment\n", ""),
             ("\n", ""),
             ("--no-deps\n", ""),
@@ -70,27 +70,31 @@ class TestRequirementsBeyond:
         Handing pip a requirements file with no requirements in it is a pointless
         subprocess on every single install.
         """
-        req = self._write(tmp_path, """
+        req = self._write(
+            tmp_path,
+            """
             # Core unsloth packages
             unsloth-zoo
             unsloth
-        """)
+        """,
+        )
         assert ips._requirements_beyond(req, ips._CORE_BASE_PACKAGES) is None
 
     def test_pinned_entry_survives_and_core_packages_do_not(self, tmp_path):
-        req = self._write(tmp_path, f"""
+        req = self._write(
+            tmp_path,
+            f"""
             unsloth-zoo
             unsloth
             {_PINNED}
-        """)
+        """,
+        )
         out = ips._requirements_beyond(req, ips._CORE_BASE_PACKAGES)
         assert out is not None
         try:
             text = out.read_text(encoding = "utf-8")
             assert _PINNED in text
-            names = [
-                ips._requirement_project_name(line) for line in text.splitlines()
-            ]
+            names = [ips._requirement_project_name(line) for line in text.splitlines()]
             assert "unsloth" not in names and "unsloth-zoo" not in names
         finally:
             out.unlink(missing_ok = True)
@@ -100,11 +104,14 @@ class TestRequirementsBeyond:
 
         _filter_requirements matches on startswith(), which would drop this line.
         """
-        req = self._write(tmp_path, """
+        req = self._write(
+            tmp_path,
+            """
             unsloth
             unsloth-zoo
             unsloth-studio-extras==1.2.3
-        """)
+        """,
+        )
         out = ips._requirements_beyond(req, ips._CORE_BASE_PACKAGES)
         assert out is not None
         try:
@@ -136,13 +143,20 @@ def _run_skip_base_branch(req_root: Path, *, no_torch: bool) -> list[dict]:
     """Execute that branch verbatim, recording what it hands to pip."""
     calls: list[dict] = []
 
-    def _record_pip_install(label, *args, req = None, constrain = True):
-        calls.append({
-            "label": label,
-            "args": args,
-            "req_text": Path(req).read_text(encoding = "utf-8") if req else None,
-            "constrain": constrain,
-        })
+    def _record_pip_install(
+        label,
+        *args,
+        req = None,
+        constrain = True,
+    ):
+        calls.append(
+            {
+                "label": label,
+                "args": args,
+                "req_text": Path(req).read_text(encoding = "utf-8") if req else None,
+                "constrain": constrain,
+            }
+        )
 
     module = ast.Module(body = _skip_base_branch_body(), type_ignores = [])
     namespace = {
@@ -167,51 +181,61 @@ class TestSkipStudioBaseStillAppliesBaseTxt:
 
     def test_a_pinned_entry_is_installed_under_skip_studio_base(self, tmp_path):
         """The MiniMax-H3 case: a pinned revision must survive a fresh install."""
-        root = self._req_root(tmp_path, f"""
+        root = self._req_root(
+            tmp_path,
+            f"""
             unsloth-zoo
             unsloth
             {_PINNED}
-        """)
+        """,
+        )
         calls = _run_skip_base_branch(root, no_torch = False)
         assert len(calls) == 1, "the pinned base requirements were never installed"
         assert _PINNED in calls[0]["req_text"]
 
     def test_the_core_packages_are_still_not_reinstalled(self, tmp_path):
         """SKIP_STUDIO_BASE=1 exists to avoid that; keep it working."""
-        root = self._req_root(tmp_path, f"""
+        root = self._req_root(
+            tmp_path,
+            f"""
             unsloth-zoo
             unsloth
             {_PINNED}
-        """)
+        """,
+        )
         calls = _run_skip_base_branch(root, no_torch = False)
-        names = [
-            ips._requirement_project_name(line)
-            for line in calls[0]["req_text"].splitlines()
-        ]
+        names = [ips._requirement_project_name(line) for line in calls[0]["req_text"].splitlines()]
         assert "unsloth" not in names and "unsloth-zoo" not in names
 
     def test_todays_core_only_base_txt_installs_nothing(self, tmp_path):
         """No new subprocess on installs that have nothing extra to apply."""
-        root = self._req_root(tmp_path, """
+        root = self._req_root(
+            tmp_path,
+            """
             # Core unsloth packages
             unsloth-zoo
             unsloth
-        """)
+        """,
+        )
         assert _run_skip_base_branch(root, no_torch = False) == []
 
     def test_no_torch_mode_is_left_to_its_own_requirements_file(self, tmp_path):
         """no-torch installs apply no-torch-runtime.txt inline; base.txt is torch-bound."""
-        root = self._req_root(tmp_path, f"""
+        root = self._req_root(
+            tmp_path,
+            f"""
             unsloth-zoo
             unsloth
             {_PINNED}
-        """)
+        """,
+        )
         assert _run_skip_base_branch(root, no_torch = True) == []
 
     def test_the_real_base_txt_round_trips(self):
         """Whatever base.txt currently holds, the branch must not raise on it."""
         _run_skip_base_branch(
-            _REPO_ROOT / "studio" / "backend" / "requirements", no_torch = False,
+            _REPO_ROOT / "studio" / "backend" / "requirements",
+            no_torch = False,
         )
 
 
@@ -236,5 +260,4 @@ class TestInstallersStillHandOverTheFlag:
     def test_editing_base_txt_forces_a_dependency_pass(self):
         """Covers `unsloth studio update`'s fast path, which skips the stack entirely."""
         import install_manifest
-
         assert "base.txt" in install_manifest.TRACKED_REQUIREMENT_FILES

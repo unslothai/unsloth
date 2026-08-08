@@ -3934,8 +3934,7 @@ def install_python_stack() -> int:
         # for. No-torch mode keeps its own list (no-torch-runtime.txt, which the
         # installers do apply inline), so leave that mode alone.
         extra_base = (
-            None if NO_TORCH
-            else _requirements_beyond(REQ_ROOT / "base.txt", _CORE_BASE_PACKAGES)
+            None if NO_TORCH else _requirements_beyond(REQ_ROOT / "base.txt", _CORE_BASE_PACKAGES)
         )
         if extra_base is not None:
             try:
