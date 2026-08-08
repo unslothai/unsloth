@@ -9951,7 +9951,10 @@ def _capture_process_group(proc):
     there left a payload that outlived its wrapper unsignalled.
     """
     if os.name == "nt":
-        return ("windows-tree", proc.pid)
+        # Carry the creation-time identity: a posix group id cannot be recycled
+        # while a member lives, but this bare pid can be, and the timeout path
+        # may fire long after the wrapper exited.
+        return ("windows-tree", proc.pid, _windows_pid_identity(proc.pid))
     if os.name != "posix" or not hasattr(os, "getpgid"):
         return None
     try:
@@ -9960,14 +9963,31 @@ def _capture_process_group(proc):
         return None
 
 
-def _windows_taskkill_tree(pid: int) -> bool:
+def _windows_pid_identity(pid: int) -> "str | None":
+    """Process creation time, so a recycled pid is never mistaken for this one."""
+    if os.name != "nt":
+        return None
+    try:
+        from utils.process_lifetime import _pid_identity
+
+        return _pid_identity(pid)
+    except Exception:
+        return None
+
+
+def _windows_taskkill_tree(pid: int, identity: "str | None" = None) -> bool:
     """``taskkill /T /F`` a pid and its descendants. True when it succeeded.
 
     Every tool call runs under a shell wrapper, and Windows has no process
     groups, so a bare ``proc.kill()`` reaps the wrapper and orphans the payload
     (usually the venv python), which then blocks `unsloth studio update`.
+
+    ``identity`` is the creation time captured at spawn; a mismatch means the pid
+    now belongs to something else, so nothing is signalled.
     """
     if os.name != "nt":
+        return False
+    if identity is not None and _windows_pid_identity(pid) != identity:
         return False
     try:
         completed = subprocess.run(
@@ -10023,8 +10043,8 @@ def _killpg_captured(pgid) -> None:
     if pgid is None:
         return
     if isinstance(pgid, tuple):
-        _tag, pid = pgid
-        _windows_taskkill_tree(pid)
+        _tag, pid, identity = pgid
+        _windows_taskkill_tree(pid, identity)
         return
     if not hasattr(os, "killpg"):
         return

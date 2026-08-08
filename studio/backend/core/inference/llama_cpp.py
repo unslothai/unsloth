@@ -13411,10 +13411,13 @@ class LlamaCppBackend:
             if getattr(self, "_stats_logger", None) is not None:
                 self._stats_logger.stop()
                 self._stats_logger = None
-            # Drop it from the lifetime record before the reference goes, or a
-            # recycled pid could be signalled later.
+            # Drop it from the lifetime record only once it is confirmed gone.
+            # A server that survived a failed kill has to stay recorded, or the
+            # next startup sweep cannot reap it. The record stores a start-time
+            # identity, so a recycled pid is never signalled either way.
             _killed_pid = getattr(self._process, "pid", None)
-            if _killed_pid is not None:
+            _exited = getattr(self._process, "poll", lambda: None)() is not None
+            if _killed_pid is not None and _exited:
                 try:
                     from utils.process_lifetime import forget_pid
                     forget_pid(_killed_pid)

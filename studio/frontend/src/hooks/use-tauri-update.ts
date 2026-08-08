@@ -381,14 +381,18 @@ export function useTauriUpdate(isExternalServer = false) {
               break;
           }
         });
-      } finally {
-        // Success, failure and cancel alike: the installer is no longer running.
-        publishShellUpdateActive(false);
-        // Reaching here means the installer did not replace us, so the
-        // cleanup the pre-exit hook stood down has to come back.
+      } catch (installError) {
+        // Failed or cancelled: we keep running, so the cleanup the pre-exit hook
+        // stood down has to come back.
         await invoke("resume_desktop_update_cleanup").catch(() => {});
+        throw installError;
+      } finally {
+        publishShellUpdateActive(false);
       }
 
+      // Deliberately NOT re-arming kill-on-close before the restart: relaunch()
+      // starts the replacement as a child, so it inherits this job, and re-arming
+      // would make this process kill it on the way out.
       // relaunch() re-execs with the original argv, so flag the inherited --hidden as not a login
       // start. It only fails when there is a --hidden to suppress, so let it stop the restart.
       await invoke("mark_in_app_relaunch");
@@ -398,6 +402,8 @@ export function useTauriUpdate(isExternalServer = false) {
       } catch (relaunchError) {
         // No replacement process, so the marker would outlive it and unhide a later login start.
         await invoke("clear_in_app_relaunch").catch(() => {});
+        // Still this process, so the cleanup has to come back after all.
+        await invoke("resume_desktop_update_cleanup").catch(() => {});
         throw relaunchError;
       }
     } catch (e) {

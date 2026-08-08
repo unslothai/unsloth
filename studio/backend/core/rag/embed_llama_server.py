@@ -30,7 +30,7 @@ import numpy as np
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
-from utils.process_lifetime import child_popen_kwargs
+from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
 from . import config
 
@@ -340,6 +340,9 @@ class LlamaServerBackend:
             **child_popen_kwargs(),
         )
         self._process = proc
+        # Long-lived, and child_popen_kwargs() is empty on macOS, so the crash
+        # record is the only thing that can reap it after a force quit.
+        adopt_pid(proc.pid)
         self._port = port
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout,
@@ -425,6 +428,10 @@ class LlamaServerBackend:
         except Exception as e:  # noqa: BLE001
             logger.warning("error killing llama-server embedder: %s", e)
         finally:
+            # Only once it is confirmed gone: a survivor must stay recorded so
+            # the next startup sweep can reap it.
+            if proc.poll() is not None:
+                forget_pid(proc.pid)
             self._process = None
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)

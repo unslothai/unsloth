@@ -1140,6 +1140,15 @@ def _remove_pid_file():
 _CONSOLE_SHUTDOWN_BUDGET = 4.5
 
 
+# CTRL_CLOSE / CTRL_LOGOFF / CTRL_SHUTDOWN. Ctrl+C and Ctrl+Break (0 and 1) are
+# left out on purpose: Python already delivers those as signals.
+_CONSOLE_SHUTDOWN_EVENTS = (2, 5, 6)
+
+
+def _console_event_is_shutdown(event: int) -> bool:
+    return event in _CONSOLE_SHUTDOWN_EVENTS
+
+
 def _run_console_shutdown(shutdown) -> None:
     try:
         shutdown()
@@ -1163,14 +1172,12 @@ def _install_windows_console_handler(shutdown) -> bool:
         import ctypes
         from ctypes import wintypes
 
-        CTRL_C_EVENT, CTRL_BREAK_EVENT = 0, 1
-        CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT = 2, 5, 6
         HANDLER = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
 
         import threading
 
         def _on_console_event(event: int) -> bool:
-            if event in (CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT):
+            if _console_event_is_shutdown(event):
                 worker = threading.Thread(
                     target = _run_console_shutdown, args = (shutdown,), daemon = True
                 )
@@ -1179,7 +1186,6 @@ def _install_windows_console_handler(shutdown) -> bool:
                 return True
             # Ctrl+C / Ctrl+Break already arrive as Python signals; pass them
             # on rather than shutting down twice.
-            del CTRL_C_EVENT, CTRL_BREAK_EVENT
             return False
 
         callback = HANDLER(_on_console_event)

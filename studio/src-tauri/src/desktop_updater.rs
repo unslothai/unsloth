@@ -20,6 +20,9 @@ pub(crate) struct DesktopUpdateMetadata {
 /// with no reaper for its children.
 #[tauri::command]
 pub(crate) async fn resume_desktop_update_cleanup() -> Result<(), String> {
+    // Both halves of what the pre-exit hook consumed: the exit guard it spent, so a
+    // retry actually reaps the backend again, and kill-on-close itself.
+    crate::reset_termination_cleanup();
     #[cfg(windows)]
     {
         crate::windows_job::resume_after_update_installer().map_err(|error| error.to_string())?;

@@ -294,5 +294,61 @@ def test_identity_separates_two_processes_started_together(tmp_path):
             _kill(second.pid)
 
 
+def test_ctrl_c_is_passed_on_by_the_console_handler():
+    """Ctrl+C and Ctrl+Break must report "not handled" so Python's own signal
+    handler still runs. Returning True (or raising inside the ctypes callback,
+    where the BOOL result is then undefined) would leave Studio unstoppable."""
+    import run
+
+    assert run._console_event_is_shutdown(0) is False  # CTRL_C_EVENT
+    assert run._console_event_is_shutdown(1) is False  # CTRL_BREAK_EVENT
+    for close_event in (2, 5, 6):  # CLOSE, LOGOFF, SHUTDOWN
+        assert run._console_event_is_shutdown(close_event) is True
+
+
+def test_a_surviving_child_stays_in_the_record(tmp_path, monkeypatch):
+    """forget_pid is for confirmed exits; a survivor must remain reapable."""
+    from utils import process_lifetime as pl
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    pl._tracked_pids.clear()
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        pl.adopt_pid(child.pid)
+        assert child.pid in pl._tracked_pids
+        # A failed kill leaves poll() as None, so llama_cpp must not forget it.
+        assert child.poll() is None
+    finally:
+        _kill(child.pid)
+
+
+def test_concurrent_adopts_all_survive(tmp_path, monkeypatch):
+    """Two threads adopting at once must not lose either pid."""
+    import json
+    import threading
+
+    from utils import process_lifetime as pl
+
+    directory = tmp_path / "children"
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(directory))
+    pl._tracked_pids.clear()
+    pids = list(range(900000, 900040))
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"id-{pid}")
+
+    def adopt(chunk):
+        for pid in chunk:
+            pl.adopt_pid(pid)
+
+    threads = [threading.Thread(target = adopt, args = (pids[i::4],)) for i in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    record = json.loads((directory / f"{os.getpid()}.json").read_text())
+    assert sorted(entry["pid"] for entry in record["children"]) == pids
+    pl._tracked_pids.clear()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

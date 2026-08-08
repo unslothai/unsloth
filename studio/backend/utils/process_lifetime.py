@@ -41,6 +41,9 @@ _spawner: "Optional[_Spawner]" = None
 _initialized = False
 _win_job_handle: Optional[int] = None  # retained for the interpreter's lifetime
 _tracked_pids: "dict[int, Optional[str]]" = {}  # pid -> identity, reaped by terminate_all
+# Serialises edit-then-write: two threads adopting at once could otherwise each
+# write from its own snapshot, and the older write would drop the newer pid.
+_record_lock = threading.Lock()
 
 
 # Whether cleanup-on-abnormal-exit is in force, and why not. A silent failure
@@ -449,8 +452,9 @@ def forget_pid(pid: Optional[int]) -> None:
     """Stop tracking a child the owner has reaped, so terminate_all never
     signals a recycled pid."""
     if pid:
-        _tracked_pids.pop(pid, None)
-        _write_breadcrumb()
+        with _record_lock:
+            _tracked_pids.pop(pid, None)
+            _write_breadcrumb()
 
 
 # ── Crash-survivable child record ──
@@ -563,8 +567,10 @@ def adopt_pid(pid: Optional[int]) -> None:
     Tolerates a None or already-exited pid."""
     if not pid:
         return
-    _tracked_pids[pid] = _pid_identity(pid)
-    _write_breadcrumb()
+    identity = _pid_identity(pid)
+    with _record_lock:
+        _tracked_pids[pid] = identity
+        _write_breadcrumb()
     if _is_windows() and _win_job_handle:
         try:
             import ctypes
