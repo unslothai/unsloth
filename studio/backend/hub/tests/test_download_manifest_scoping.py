@@ -156,87 +156,101 @@ def test_manifest_under_the_pre_resolve_digest_is_still_found(monkeypatch, tmp_p
     assert manifest.expected_files[0].path == "model.gguf"
 
 
-def test_manifest_in_an_unnameable_scope_is_recovered_by_recorded_ownership(
-    monkeypatch, tmp_path
-):
-    """The reader can no longer rebuild the digest, but the payload still names its cache.
+def _legacy_scoped_variant_manifest(tmp_path, spelled, variant = "Q4_K_M"):
+    """Plant a variant manifest under the pre-resolve digest, as an old build would."""
+    path = state_dir.manifest_path(
+        "model",
+        "Org/Model",
+        variant,
+        hub_cache = spelled,
+        cache_scope = state_dir.legacy_cache_scope_name(spelled),
+    )
+    assert path.parent.name != state_dir.cache_scope_name(spelled)
+    _write_manifest(path, _manifest_payload("Org/Model", variant, str(spelled)))
+    return path
 
-    Covers the case the legacy-digest probe cannot: the write-time spelling is
-    gone entirely (the junction was repointed, the drive letter changed), so no
-    spelling the reader holds hashes to that directory. The entry key does not
-    depend on the cache path, so the sibling scopes are swept and the recorded
-    hub_cache decides.
+
+def test_every_enumerator_agrees_about_the_pre_resolve_digest(monkeypatch, tmp_path):
+    """One reader finding state that another cannot is worse than neither finding it.
+
+    Four code paths answer "what state does this repo have": the per-triple
+    read, the per-repo variant enumeration, the one-pass index the inventory
+    scan is built on, and the delete. They all derive their scope directories
+    from cache_scope_names, so a manifest under the pre-resolve digest is either
+    visible to all of them or to none. A reader that saw it while the delete did
+    not would resurrect a purged variant on the next scan, and an index that
+    missed it while the per-variant endpoint saw it would have the list view and
+    the detail view disagree about the same quant.
     """
-    hub_cache = tmp_path / "hub"
-    hub_cache.mkdir()
+    spelled, _resolved = _redirected_hub_cache(tmp_path)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = str(tmp_path / "other")),
     )
-
-    orphan = state_dir.manifest_path(
-        "model",
-        "Org/Model",
-        "Q4_K_M",
-        hub_cache = hub_cache,
-        cache_scope = "cache-" + "0" * 32,
-    )
-    _write_manifest(orphan, _manifest_payload("Org/Model", "Q4_K_M", str(hub_cache)))
+    orphan = _legacy_scoped_variant_manifest(tmp_path, spelled)
 
     assert (
-        download_manifest.read_manifest(
-            "model",
-            "Org/Model",
-            "Q4_K_M",
-            hub_cache = hub_cache,
-        )
+        download_manifest.read_manifest("model", "Org/Model", "Q4_K_M", hub_cache = spelled)
         is not None
     )
-    # Recoverable means removable: a delete that left it behind would let the
-    # next read revive state for a repo that is gone.
-    assert download_manifest.purge_state("model", "Org/Model", "Q4_K_M", hub_cache = hub_cache)
+    assert [
+        variant
+        for variant, _path in download_manifest.iter_variant_manifests(
+            "model", "Org/Model", hub_cache = spelled
+        )
+    ] == ["Q4_K_M"]
+    index = download_manifest.build_variant_state_index(
+        [("model", "Org/Model", spelled)],
+        active_hub_cache = spelled,
+    )
+    state = index.for_repo("model", "Org/Model", hub_cache = spelled)
+    assert state.manifest_for("Q4_K_M") is not None
+    assert download_manifest.purge_all_state_for_repo("model", "Org/Model", hub_cache = spelled)
     assert not orphan.is_file()
 
 
-def test_unnameable_scope_state_is_not_borrowed_by_another_cache(monkeypatch, tmp_path):
-    """The sweep is payload-verified, so it cannot leak across caches."""
-    mine = tmp_path / "mine"
-    theirs = tmp_path / "theirs"
-    for path in (mine, theirs):
-        path.mkdir()
+def test_pre_resolve_digest_cancel_marker_is_cleared_by_a_new_attempt(monkeypatch, tmp_path):
+    """A marker the read side can find has to be one the clear side can remove.
+
+    has_cancel_marker suppresses a completed download, so a marker discoverable
+    under the pre-resolve digest but not clearable there would pin a finished
+    variant to partial for good.
+    """
+    spelled, _resolved = _redirected_hub_cache(tmp_path)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = str(tmp_path / "other")),
     )
-
-    foreign = state_dir.manifest_path(
+    marker = state_dir.marker_path(
         "model",
         "Org/Model",
         "Q4_K_M",
-        hub_cache = theirs,
-        cache_scope = "cache-" + "1" * 32,
+        hub_cache = spelled,
+        cache_scope = state_dir.legacy_cache_scope_name(spelled),
     )
-    _write_manifest(foreign, _manifest_payload("Org/Model", "Q4_K_M", str(theirs)))
-    unowned = state_dir.manifest_path(
-        "model",
-        "Org/Other",
-        "Q4_K_M",
-        hub_cache = theirs,
-        cache_scope = "cache-" + "2" * 32,
+    _write_manifest(
+        marker,
+        {
+            "version": 2,
+            "repo_type": "model",
+            "repo_id": "Org/Model",
+            "variant": "Q4_K_M",
+            "transport": "http",
+            "cancelled_at": "2026-01-01T00:00:00+00:00",
+            "hub_cache": str(spelled),
+        },
     )
-    _write_manifest(unowned, {"version": 1, "repo_type": "model", "repo_id": "Org/Other"})
 
-    assert (
-        download_manifest.read_manifest("model", "Org/Model", "Q4_K_M", hub_cache = mine) is None
+    assert download_manifest.has_cancel_marker(
+        "model", "Org/Model", "Q4_K_M", hub_cache = spelled
     )
-    assert (
-        download_manifest.read_manifest("model", "Org/Other", "Q4_K_M", hub_cache = mine) is None
+    download_manifest.clear_cancel_marker("model", "Org/Model", "Q4_K_M", hub_cache = spelled)
+    assert not marker.is_file()
+    assert not download_manifest.has_cancel_marker(
+        "model", "Org/Model", "Q4_K_M", hub_cache = spelled
     )
-    assert not download_manifest.purge_state("model", "Org/Model", "Q4_K_M", hub_cache = mine)
-    assert foreign.is_file()
-    assert unowned.is_file()
 
 
 def test_repo_delete_clears_variant_state_under_a_redirected_cache(monkeypatch, tmp_path):

@@ -69,8 +69,6 @@ _DATASET_COMPLETION_VARIANT_PREFIX = "_studio-dataset-complete-"
 _MANIFEST_MIGRATION_MAX_FILES = 10_000
 _MANIFEST_MIGRATION_MAX_BYTES = 32 * 1024 * 1024
 _MANIFEST_MIGRATION_PREFIX_BYTES = 256
-_CACHE_SCOPE_PREFIX = "cache-"
-_MAX_RESCOPE_PROBE_SCOPES = 64
 _V2_MANIFEST_PREFIX = re.compile(rb'^\s*\{\s*"version"\s*:\s*2\s*,')
 
 # Verbatim phrase the worker emits on a degraded completion; shared so emit and match stay coupled.
@@ -341,79 +339,7 @@ def _state_read_path(
             continue
         if _legacy_state_applies(path, requested, fail_closed = fail_closed) and applies(path):
             return path
-    for path in _rescoped_state_paths(path_factory, repo_type, repo_id, variant, requested):
-        if path in scoped:
-            continue
-        try:
-            if not path.is_file():
-                continue
-        except OSError:
-            continue
-        if _recorded_state_owner_matches(path, requested) and applies(path):
-            return path
     return None
-
-
-def _recorded_state_owner_matches(path: Path, requested: Optional[str]) -> bool:
-    """Whether the ownership recorded *inside* the file names the requested cache.
-
-    The only safe basis for reading or removing state found under a scope
-    directory the caller cannot name: unlike the unscoped legacy files, nothing
-    about its location attributes it, so an absent or unparseable owner has to
-    disqualify it rather than fall back to the active cache.
-    """
-    if requested is None:
-        return False
-    payload = _read_state_payload(path)
-    if payload is None:
-        return False
-    recorded = _payload_cache_path(payload.get("hub_cache"))
-    return bool(recorded) and _canonical_hub_cache(recorded) == requested
-
-
-def _rescoped_state_paths(
-    path_factory,
-    repo_type: RepoType,
-    repo_id: str,
-    variant: Optional[str],
-    requested: Optional[str],
-) -> Iterator[Path]:
-    """This entry key under every other ``cache-<digest>`` dir, last-resort only.
-
-    A scope digest can only be reached by rebuilding it from a spelling of the
-    cache path that hashes the same way, so state whose path stopped resolving
-    the way it did at write time -- a junction that went away, a OneDrive
-    placeholder ``resolve`` declined that minute, a build that hashed the
-    unresolved spelling -- sits in a directory the reader can no longer name.
-    The entry key is spelling-independent, so sweep the siblings and let the
-    recorded ownership decide. Reached only after every direct probe missed,
-    and bounded so a state root full of stale scopes cannot turn one miss into
-    an unbounded walk.
-    """
-    if requested is None:
-        return
-    probe = path_factory(repo_type, repo_id, variant, hub_cache = None, create = False)
-    if probe is None:
-        return
-    names = dict.fromkeys(
-        path.name for path in _state_paths(path_factory, repo_type, repo_id, variant, None)
-    )
-    try:
-        scopes = sorted(
-            entry
-            for entry in probe.parent.iterdir()
-            if entry.name.startswith(_CACHE_SCOPE_PREFIX) and not entry.is_symlink()
-        )
-    except OSError:
-        return
-    for scope in scopes[:_MAX_RESCOPE_PROBE_SCOPES]:
-        for name in names:
-            candidate = scope / name
-            try:
-                if candidate.is_file():
-                    yield candidate
-            except OSError:
-                continue
 
 
 def _state_paths(
@@ -1044,13 +970,6 @@ def _owned_state_paths(
             legacy, requested, fail_closed = fail_closed
         ):
             paths.append(legacy)
-    # Anything _state_read_path can recover out of an unnameable scope has to be
-    # removable too, or a delete leaves state behind that the next read revives.
-    seen = set(paths)
-    for rescoped in _rescoped_state_paths(path_factory, repo_type, repo_id, variant, requested):
-        if rescoped not in seen and _recorded_state_owner_matches(rescoped, requested):
-            seen.add(rescoped)
-            paths.append(rescoped)
     return paths
 
 
