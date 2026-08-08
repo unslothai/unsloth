@@ -51,8 +51,8 @@ def _finite_or_none(value: Any) -> Optional[float]:
 
 
 def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    # Fresh spawned interpreters do not inherit main.py's OS-trust-store injection.
-    # Runs inside the secret scrub, and still before the trainer imports diffusers.
+    # Fresh spawned interpreter: re-apply the OS-trust-store injection, inside the
+    # secret scrub and still before the trainer imports diffusers.
     from utils.native_tls import activate_native_tls
 
     activate_native_tls()
@@ -382,8 +382,8 @@ class DiffusionTrainingService:
                 },
                 daemon = True,
             )
-            # Keep the lease secret out of the child's inherited env, like the
-            # inference / export / training / data-recipe orchestrators do.
+            # Keep the lease secret out of the child's env, as the other
+            # orchestrators do.
             from utils.native_path_leases import native_path_secret_removed_for_child_start
 
             with native_path_secret_removed_for_child_start():

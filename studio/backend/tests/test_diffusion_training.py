@@ -126,11 +126,7 @@ def _crashing_target(*, event_queue, stop_queue, config):
 
 
 def test_default_target_activates_native_tls_before_diffusion_trainer(monkeypatch):
-    """The diffusion service has its own spawn target, outside training/worker.py.
-
-    TLS activation imports third-party code (truststore, urllib3, requests), so it
-    has to run inside the scrub wrapper, and still before diffusers is imported.
-    """
+    """TLS activation runs inside the scrub wrapper, and before diffusers imports."""
     import os
     import sys
     import types

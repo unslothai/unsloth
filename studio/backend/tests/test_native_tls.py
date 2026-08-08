@@ -3,10 +3,9 @@
 
 """Tests for the OS-trust-store TLS activation (utils/native_tls.py).
 
-truststore itself is stubbed: these assert only Unsloth's seam — the platform
-defaults, the UNSLOTH_STUDIO_NATIVE_TLS tri-state, idempotency, and the
-fail-open-to-certifi behaviour when truststore is unavailable. CPU-only, no
-network.
+truststore is stubbed: these assert only Unsloth's seam -- the platform defaults,
+the UNSLOTH_STUDIO_NATIVE_TLS tri-state, idempotency, and the fail-open-to-certifi
+behaviour when truststore is unavailable. CPU-only, no network.
 """
 
 from __future__ import annotations
@@ -32,8 +31,8 @@ def _reset_activation(monkeypatch):
     for key in ("UNSLOTH_STUDIO_NATIVE_TLS", "UV_SYSTEM_CERTS", "UV_NATIVE_TLS"):
         monkeypatch.delenv(key, raising = False)
     yield
-    # activate_native_tls() setdefaults the UV vars, and monkeypatch records no
-    # undo for a var that was absent, so drop them or they leak into later tests.
+    # monkeypatch records no undo for vars that were absent, so drop the ones
+    # activate_native_tls() setdefaults or they leak into later tests.
     for key in ("UV_SYSTEM_CERTS", "UV_NATIVE_TLS"):
         os.environ.pop(key, None)
 

@@ -3,10 +3,9 @@
 
 """Every spawned interpreter that talks HTTPS activates the OS trust store.
 
-truststore.inject_into_ssl() is process-local and does not survive a spawn, so a
-missing call is invisible until someone behind a TLS-inspecting proxy hits that
-one code path. These are static checks (no import, no network): deleting an
-activation, or letting a probe's fetch drift ahead of its gating, fails here.
+Injection is process-local and does not survive a spawn, so a missing call is
+invisible until someone behind a TLS-inspecting proxy hits that one code path.
+Static checks only: no import, no network.
 """
 
 from __future__ import annotations
@@ -29,8 +28,8 @@ _ENTRYPOINTS = [
     "core/data_recipe/jobs/worker.py",
 ]
 
-# `python -c` children cannot import backend modules, so they carry an inline
-# copy of the gating. Named by the function or assignment that builds the script.
+# `python -c` children cannot import backend modules, so they carry an inline copy
+# of the gating. Keyed by the assignment or function that builds the script.
 _INLINE_SCRIPTS = [
     ("utils/transformers_version.py", "_PROBE_CONFIG_SCRIPT"),
     ("utils/models/model_config.py", "_build_vision_check_script"),
@@ -83,8 +82,7 @@ def test_entrypoint_activates_native_tls_at_module_level(relative):
 @pytest.mark.parametrize(("relative", "name"), _INLINE_SCRIPTS)
 def test_probe_script_injects_before_it_downloads(relative, name):
     script = _script_text(ast.parse((_BACKEND / relative).read_text(encoding = "utf-8")), name)
-    # Either the shared helper (when the child can reach the backend dir) or an
-    # inline copy of it, which then has to honour the opt-out on its own.
+    # The shared helper, or an inline copy that must honour the opt-out itself.
     activate = max(script.find("activate_native_tls"), script.find("inject_into_ssl"))
     assert activate != -1, f"{name} lost its native TLS activation"
     if "inject_into_ssl" in script:
@@ -97,9 +95,8 @@ def test_probe_script_injects_before_it_downloads(relative, name):
 def test_backend_serves_no_tls_in_process():
     """truststore's injection is client-side: a context built after it cannot serve TLS.
 
-    Studio serves plain HTTP on loopback, so this never bites, but an in-process
-    HTTPS listener added later would fail at handshake on macOS and Windows,
-    where activation is default-on. Catch it here instead.
+    Studio serves plain HTTP on loopback, but an in-process HTTPS listener added
+    later would fail at handshake wherever activation is default-on.
     """
     server_side = ("PROTOCOL_TLS_SERVER", "ssl_certfile", "ssl_keyfile")
     offenders = []

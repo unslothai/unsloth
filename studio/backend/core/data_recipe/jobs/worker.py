@@ -20,8 +20,8 @@ from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from ..service import build_config_builder, create_data_designer
 from utils.paths import ensure_dir, recipe_datasets_root
 
-# Mirrors main.py: fresh spawned interpreter, so re-apply the OS-trust-store
-# injection before DataDesigner jobs call provider/GitHub/MCP endpoints.
+# Fresh spawned interpreter: re-apply main.py's OS-trust-store injection before
+# DataDesigner jobs call provider/GitHub/MCP endpoints (see utils/native_tls.py).
 from utils.native_tls import activate_native_tls
 
 activate_native_tls()
