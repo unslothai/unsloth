@@ -565,6 +565,15 @@ export async function ensureStoredChatThread(
   return importLegacyThread(legacyThread).catch(() => legacyThread);
 }
 
+/** Wait for every tracked row write, so a clear cannot race one that is still in flight. */
+async function drainPendingStoredChatThreadRecords(): Promise<void> {
+  while (pendingThreadRecordByThreadId.size > 0) {
+    await Promise.allSettled([...pendingThreadRecordByThreadId.values()]);
+  }
+  // Retrying one of these later would recreate a thread the clear just removed.
+  failedThreadRecordByThreadId.clear();
+}
+
 /** Re-run a row write that failed, for a thread the reads above could not find. */
 async function retryFailedThreadRecord(
   threadId: string,
@@ -862,6 +871,9 @@ export interface ClearStoredChatsResult {
 }
 
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
+  // Drain first: a row write still in flight would land after the clear, and the inventory below
+  // would never have seen it to tombstone it.
+  await drainPendingStoredChatThreadRecords();
   // Clear both sides independently and report each outcome so the toast
   // can distinguish full vs partial success.
   const [backendThreadsResult, legacyThreads] = await Promise.all([
