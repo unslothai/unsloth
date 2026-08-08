@@ -139,6 +139,65 @@ def _family_denied(family, scheme: str) -> bool:
     return scheme in _FAMILY_SCHEME_DENY.get(str(family or "").strip().lower(), ())
 
 
+def family_denies_scheme(family: Optional[str], scheme: str) -> bool:
+    """Whether the measured deny list rules ``scheme`` out for ``family``, regardless of hardware.
+
+    Public so the refusal message can tell the two "no" answers apart. ``select_transformer_quant_scheme``
+    folds a family deny and a missing kernel into the same ``None``, and an EXPLICIT scheme now fails
+    closed, so that single answer is the whole explanation the user gets."""
+    return _family_denied(family, scheme)
+
+
+def explain_unusable_scheme(family: Optional[str], scheme: str) -> str:
+    """Why ``select_transformer_quant_scheme`` answered None for an EXPLICIT ``scheme``.
+
+    One ``None`` covers three different faults, and the caller turns it into a 409, so the message
+    has to separate them: a family the scheme is measured to break, a torchao that cannot run at
+    all in this install, and a GPU without the kernels. Only the last is a hardware limit, and only
+    the last is what the message used to say."""
+    if family_denies_scheme(family, scheme):
+        return (
+            f"'{scheme}' is ruled out for family '{family}' by the measured accuracy gate (it "
+            "renders black frames or fails the quality bar on this DiT), whatever the GPU"
+        )
+    unavailable = torchao_unavailable_reason()
+    if unavailable is not None:
+        return (
+            f"the torchao in this install cannot run any dense quant scheme ({unavailable}); this "
+            "is a package/version problem, not a limit of the GPU"
+        )
+    return f"'{scheme}' is not usable for family '{family}' on this GPU"
+
+
+# The reason torchao cannot be used AT ALL, resolved once. None means it imports.
+_TORCHAO_UNAVAILABLE: Optional[tuple[Optional[str]]] = None
+
+
+def torchao_unavailable_reason() -> Optional[str]:
+    """Why no dense quant scheme can run in this install, or ``None`` when torchao is usable.
+
+    ``_smoke_probe`` swallows every failure, so a torchao that does not IMPORT is indistinguishable
+    from a GPU that lacks the kernels. That did not matter while a declined explicit scheme fell
+    back silently; now it is refused, and the message is all the user has. A torch/torchao version
+    skew is the common cause and it is not a hardware fault: telling a Blackwell owner "'fp8' is not
+    usable on this GPU" when the real error is ``cannot import name 'ScalingType' from
+    torch.nn.functional`` points them at the wrong fix entirely."""
+    global _TORCHAO_UNAVAILABLE
+    if _TORCHAO_UNAVAILABLE is not None:
+        return _TORCHAO_UNAVAILABLE[0]
+    reason: Optional[str] = None
+    if is_stubbed("torchao"):
+        # The Windows-ROCm stub imports fine and quantises nothing, so the import test below passes.
+        reason = "this platform ships a torchao stub whose quantize_ is a no-op"
+    else:
+        try:
+            from torchao.quantization import quantize_  # noqa: F401
+        except Exception as exc:  # noqa: BLE001 — any import failure means the same thing here
+            reason = f"{type(exc).__name__}: {exc}"
+    _TORCHAO_UNAVAILABLE = (reason,)
+    return reason
+
+
 # Cache of (scheme, device) -> bool so the quantise+matmul smoke test runs once.
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
@@ -333,10 +392,41 @@ def _smoke_probe(scheme: str, device: str) -> bool:
             out = lin(x)
         torch.cuda.synchronize()
         ok = bool(torch.isfinite(out).all().item())
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        if _is_out_of_memory(exc):
+            # NOT cached. An out-of-memory says nothing about the scheme, and the probe now runs on
+            # the ROUTE thread -- BEFORE the arbiter evicts the resident chat model, which is the
+            # whole point of raising the refusal early -- so it meets a full GPU by design. Caching
+            # it would refuse every later EXPLICIT request for this scheme for the life of the
+            # process, on a host that runs it fine once the eviction has happened.
+            return False
         ok = False
     _SMOKE_CACHE[key] = ok
     return ok
+
+
+def _is_out_of_memory(exc: BaseException) -> bool:
+    """Whether ``exc`` is an allocator failure rather than a verdict on the scheme.
+
+    ``torch.OutOfMemoryError`` subclasses ``RuntimeError``, not ``MemoryError``, and moved between
+    ``torch.cuda`` and ``torch`` across releases, so both names are tried and the message is the
+    backstop (a CUDA OOM surfaced through another wrapper still says "out of memory")."""
+    try:
+        import torch
+
+        named = tuple(
+            t
+            for t in (
+                getattr(torch, "OutOfMemoryError", None),
+                getattr(torch.cuda, "OutOfMemoryError", None),
+            )
+            if isinstance(t, type)
+        )
+        if named and isinstance(exc, named):
+            return True
+    except Exception:  # noqa: BLE001 — no torch: the message test below still applies
+        pass
+    return isinstance(exc, MemoryError) or "out of memory" in str(exc).lower()
 
 
 def _resolve_fast_accum(fast_accum: Optional[bool]) -> bool:

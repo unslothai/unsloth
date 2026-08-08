@@ -1609,6 +1609,29 @@ def test_explicit_dense_quant_refuses_under_offload(fake_runtime, monkeypatch):
     assert backend.status()["loaded"] is False
 
 
+def test_the_video_refusal_also_names_a_broken_torchao_rather_than_the_gpu(
+    fake_runtime, monkeypatch
+):
+    # The image twin's finding, shared through explain_unusable_scheme: a torchao that cannot
+    # import looks exactly like a GPU without the kernels to the selector, and a refusal that
+    # blames the GPU sends the user after hardware for what a reinstall fixes.
+    import core.inference.diffusion_transformer_quant as tq
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_mod, "select_transformer_quant_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", ("ImportError: no torchao kernels",))
+    with pytest.raises(RuntimeError) as excinfo:
+        video_mod.assert_video_precision_available(
+            types.SimpleNamespace(name = "ltx-2"),
+            model_kind = "pipeline",
+            transformer_quant = "nvfp4",
+        )
+    message = str(excinfo.value)
+    assert "transformer_quant='nvfp4' could not be used" in message
+    assert "no torchao kernels" in message and "not a limit of the GPU" in message
+
+
 def test_begin_load_refuses_dense_quant_on_a_non_pipeline_video_kind(fake_runtime, monkeypatch):
     # The DiT quant only exists on the full-pipeline path, so an explicit scheme on a GGUF pick was
     # accepted and then ignored outright. Refused before the load starts (the route's 409).

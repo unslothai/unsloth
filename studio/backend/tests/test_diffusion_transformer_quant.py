@@ -281,6 +281,119 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
     assert tq._smoke_probe(TQ_INT8, "cuda") is False
 
 
+def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
+    # A full GPU is not a verdict on the scheme, and this probe now runs on the ROUTE thread --
+    # before the arbiter evicts the resident chat model, which is the point of raising the refusal
+    # early -- so it meets a full GPU by design. Caching that answer would refuse every later
+    # EXPLICIT request for the scheme for the life of the process, on a host that runs it fine.
+    class _OOM(RuntimeError):
+        pass
+
+    class _Lin:
+        def __init__(self, *a, **k):
+            pass
+
+        def to(self, **k):
+            return self
+
+        def __call__(self, x):
+            return x
+
+    torch = types.ModuleType("torch")
+    torch.bfloat16 = "bfloat16"
+    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    torch.randn = lambda *a, **k: _FakeTensor()
+    torch.isfinite = lambda t: _FakeBool(True)
+    torch.no_grad = lambda: __import__("contextlib").nullcontext()
+    torch.cuda = types.SimpleNamespace(
+        is_available = lambda: True, synchronize = lambda: None, OutOfMemoryError = _OOM
+    )
+    torch.OutOfMemoryError = _OOM
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    tqz = types.ModuleType("torchao.quantization")
+    calls = {"n": 0}
+
+    def _quantize(module, config, filter_fn = None):
+        calls["n"] += 1
+
+    tqz.quantize_ = _quantize
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    # The config builder is where the allocation lands in practice; raising there keeps this test
+    # off the real torchao, which _make_quant_config would otherwise import for its config classes.
+    fault: list = [_OOM("CUDA out of memory. Tried to allocate 2.00 GiB")]
+
+    def _config(scheme, fast_accum = None):
+        if fault[0] is not None:
+            raise fault[0]
+        return "cfg"
+
+    monkeypatch.setattr(tq, "_make_quant_config", _config)
+
+    tq._SMOKE_CACHE.clear()
+    assert tq._smoke_probe(TQ_INT8, "cuda") is False
+    assert tq._SMOKE_CACHE == {}, "an OOM must not be remembered as 'this scheme cannot run'"
+    # The eviction happens, memory frees, and the very next ask gets the real answer.
+    fault[0] = None
+    assert tq._smoke_probe(TQ_INT8, "cuda") is True
+    assert calls["n"] == 1
+
+    # A NON-memory failure is still cached: that one really is a property of the build.
+    tq._SMOKE_CACHE.clear()
+    fault[0] = RuntimeError("kernel unavailable")
+    assert tq._smoke_probe(TQ_INT8, "cuda") is False
+    assert tq._SMOKE_CACHE == {(TQ_INT8, "cuda"): False}
+
+
+def test_an_oom_is_recognised_however_it_is_spelled():
+    # torch.OutOfMemoryError subclasses RuntimeError (not MemoryError) and has moved between
+    # torch.cuda and torch across releases, so neither name alone is enough.
+    assert tq._is_out_of_memory(MemoryError("no room")) is True
+    assert tq._is_out_of_memory(RuntimeError("CUDA out of memory. Tried to allocate 2 GiB")) is True
+    assert tq._is_out_of_memory(RuntimeError("kernel unavailable")) is False
+    assert tq._is_out_of_memory(ImportError("cannot import name 'ScalingType'")) is False
+
+
+def test_an_unusable_scheme_names_the_fault_the_user_can_actually_fix(monkeypatch):
+    # select_transformer_quant_scheme folds three different faults into one None, and an EXPLICIT
+    # scheme now fails CLOSED, so that None becomes the whole explanation on a 409. Measured on a
+    # B200 whose torchao could not import (a torch/torchao skew): every explicit scheme was refused
+    # with "not usable ... on this GPU", which is false and sends the owner hunting for hardware.
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (None,))
+    assert tq.explain_unusable_scheme("z-image-turbo", "fp8") == (
+        "'fp8' is not usable for family 'z-image-turbo' on this GPU"
+    )
+    # The measured deny list wins over both: it holds on every GPU, so naming hardware would be wrong.
+    denied = tq.explain_unusable_scheme("qwen-image", "fp8")
+    assert "measured accuracy gate" in denied and "whatever the GPU" in denied
+    assert "on this GPU" not in denied.replace("whatever the GPU", "")
+
+    # A torchao that cannot import is a package problem, and the message has to say so.
+    monkeypatch.setattr(
+        tq, "_TORCHAO_UNAVAILABLE", ("ImportError: cannot import name 'ScalingType'",)
+    )
+    broken = tq.explain_unusable_scheme("z-image-turbo", "fp8")
+    assert "cannot import name 'ScalingType'" in broken
+    assert "not a limit of the GPU" in broken
+    # ...but a denied family is still reported as denied, whatever torchao is doing.
+    assert "measured accuracy gate" in tq.explain_unusable_scheme("qwen-image", "fp8")
+
+
+def test_torchao_unavailable_reason_is_resolved_once_and_covers_the_stub(monkeypatch):
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", None)
+    monkeypatch.setattr(tq, "is_stubbed", lambda pkg: True)
+    reason = tq.torchao_unavailable_reason()
+    assert reason is not None and "stub" in reason
+    # Cached: flipping the stub answer does not re-resolve within a process.
+    monkeypatch.setattr(tq, "is_stubbed", lambda pkg: False)
+    assert tq.torchao_unavailable_reason() == reason
+
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", None)
+    monkeypatch.setitem(sys.modules, "torchao.quantization", types.ModuleType("torchao.quantization"))
+    sys.modules["torchao.quantization"].quantize_ = lambda *a, **k: None
+    assert tq.torchao_unavailable_reason() is None
+
+
 def test_the_smoke_probe_feeds_zero_rows_not_only_noise(monkeypatch):
     # The finiteness check above is only meaningful if the input actually contains a zero row:
     # torch.randn alone never produces one, which is exactly how the silent degradation survived.

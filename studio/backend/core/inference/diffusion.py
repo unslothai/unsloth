@@ -134,6 +134,7 @@ from .diffusion_transformer_quant import (
     TQ_AUTO,
     DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
+    explain_unusable_scheme,
     normalize_transformer_quant,
     quantize_transformer,
     select_transformer_quant_scheme,
@@ -919,12 +920,10 @@ class DiffusionBackend:
                 select_transformer_quant_scheme(target, pinned, family = getattr(fam, "name", None))
                 is None
             ):
-                # An explicit scheme is never swapped for another, so a None means this GPU (or the
-                # family's measured deny list) rules it out.
-                reason = (
-                    f"'{pinned}' is not usable for family '{getattr(fam, 'name', None)}' on "
-                    "this GPU"
-                )
+                # An explicit scheme is never swapped for another, so a None means the family's
+                # measured deny list, a torchao that cannot run here, or a GPU without the kernels.
+                # They read the same to the selector and need different fixes from the user.
+                reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
             if reason is not None:
                 raise RuntimeError(
                     precision_refusal_message(

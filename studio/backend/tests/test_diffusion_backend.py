@@ -3164,6 +3164,43 @@ def test_begin_load_refuses_an_explicit_precision_this_host_cannot_run(
     assert backend.load_progress()["phase"] is None
 
 
+def test_a_refusal_caused_by_a_broken_torchao_says_so_instead_of_blaming_the_gpu(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Measured on a B200 whose torchao could not import (`cannot import name 'ScalingType' from
+    # torch.nn.functional`, a torch/torchao skew): every explicit scheme was refused as "'fp8' is
+    # not usable for family '...' on this GPU". That is false, and it is now the whole message the
+    # user gets, since an explicit scheme fails closed instead of quietly running the GGUF. A skew
+    # is fixed by a pip install; a GPU limit is not, so the two must not read the same.
+    from core.inference import diffusion as dmod
+    import core.inference.diffusion_transformer_quant as tq
+
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    # The device clears the dense-path bar; the SCHEME still comes back None, which is the exact
+    # shape of a host whose torchao cannot load its kernels.
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(
+        tq, "_TORCHAO_UNAVAILABLE", ("ImportError: cannot import name 'ScalingType'",)
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.begin_load(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            model_kind = "gguf",
+            transformer_quant = "fp8",
+        )
+    message = str(excinfo.value)
+    assert "transformer_quant='fp8' could not be used" in message
+    assert "cannot import name 'ScalingType'" in message
+    assert "not a limit of the GPU" in message
+    assert "is not usable for family" not in message
+
+
 def test_begin_load_refuses_an_explicit_text_encoder_quant_this_host_cannot_run(
     fake_runtime, tmp_path, monkeypatch
 ):
