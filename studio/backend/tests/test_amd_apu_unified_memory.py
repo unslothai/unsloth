@@ -157,6 +157,11 @@ def _probe(
     # Force the torch branch: no Vulkan build, and nvidia-smi must not answer.
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "x"))
+    # Pin host availability: the shared path caps by it, so a runner with less RAM
+    # than the spoofed profile would otherwise change every expectation below.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 1 << 30)
+    )
     monkeypatch.setattr(
         "core.inference.llama_cpp.subprocess.run",
         lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no nvidia-smi")),
@@ -242,7 +247,7 @@ class TestAmdSdkWheelsCountAsRocm:
     )
     def test_the_arch_map_matches_the_id_resolver(self, monkeypatch, hip, version, expected):
         monkeypatch.setitem(sys.modules, "torch", self._torch(hip, version))
-        assert bool(LlamaCppBackend._rocm_arch_by_physical_id()) is expected
+        assert bool(LlamaCppBackend._rocm_unified_memory_gpu_ids()) is expected
         assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is expected
 
 
@@ -282,3 +287,55 @@ class TestTheApuBudgetIsCappedByHostRam:
 
     def test_a_discrete_card_is_never_capped(self, monkeypatch):
         assert self._probe(monkeypatch, "gfx1100", 100_000, 12_000) == [(0, 100_000, 100_000)]
+
+
+class TestRadeonWheelsWithoutAnArchName:
+    """AMD SDK / Radeon wheels may populate none of the arch attributes. The
+    training worker's classifier already handles that (is_integrated, then the
+    arch spellings, then the Radeon name table); this path shares it so the two
+    cannot disagree about a device."""
+
+    @staticmethod
+    def _torch(**props):
+        t = _fake_torch("6.2.0", ["unused"])
+        t.cuda.get_device_properties = lambda i: types.SimpleNamespace(**props)
+        return t
+
+    @pytest.mark.parametrize(
+        ("props", "expected"),
+        [
+            ({"gcnArchName": "gfx1151"}, True),
+            ({"gcn_arch_name": "gfx1150"}, True),          # variant spelling
+            ({"name": "AMD Radeon 8060S Graphics"}, True),  # Strix Halo by name
+            ({"name": "AMD Radeon 860M"}, True),            # Krackan by name
+            ({"is_integrated": True, "name": "AMD Radeon Graphics"}, True),
+            ({"gcnArchName": "gfx1100"}, False),
+            ({"name": "AMD Radeon RX 7900 XTX"}, False),
+        ],
+    )
+    def test_the_probe_uses_every_fallback(self, monkeypatch, props, expected):
+        monkeypatch.setitem(sys.modules, "torch", self._torch(**props))
+        assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is expected
+        assert bool(LlamaCppBackend._rocm_unified_memory_gpu_ids()) is expected
+
+
+class TestTheProbeTestsDoNotDependOnHostRam:
+    """The shared path caps by available system RAM, so the spoofed profile must
+    pin it or every expectation moves with the runner's memory."""
+
+    def test_the_helper_pins_availability(self, monkeypatch):
+        """_probe must survive a runner smaller than the spoofed free figure."""
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14_000)
+        )
+        assert _probe(monkeypatch, "6.2.0", ["gfx1151"]) == [(0, _B200_FREE_MIB - 1024, 0)]
+
+    def test_without_the_pin_the_cap_really_would_bite(self, monkeypatch):
+        """Proves the pin is load-bearing rather than decorative."""
+        rows = _probe(monkeypatch, "6.2.0", ["gfx1151"])
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14_000)
+        )
+        capped = LlamaCppBackend._get_gpu_memory()
+        assert rows == [(0, _B200_FREE_MIB - 1024, 0)]
+        assert capped == [(0, 14_000 - 1024, 0)]

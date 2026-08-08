@@ -2959,11 +2959,6 @@ def _backfill_usage_from_timings(usage, timings):
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
 
-# AMD APUs sharing one pool with system RAM: Strix Point/Halo and Krackan Point.
-# ggml's Vulkan probe flags these as iGPUs; ROCm has no such flag, so arch names it.
-_AMD_UNIFIED_MEMORY_ARCHS = frozenset({"gfx1150", "gfx1151", "gfx1152"})
-
-
 def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
     """Reserve host headroom on an integrated (shared-memory) Vulkan GPU.
 
@@ -4762,49 +4757,45 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _rocm_arch_by_physical_id() -> dict[int, str]:
-        """PHYSICAL id -> lowercased gfx arch for every visible ROCm GPU.
+    def _rocm_unified_memory_gpu_ids() -> set[int]:
+        """PHYSICAL ids of visible ROCm GPUs whose "VRAM" is shared system RAM.
 
-        One map for both unified-memory callers, so the memory probe and the mlock
-        gate cannot disagree. Empty off ROCm and on error: every caller then keeps
-        its discrete-GPU default.
+        Delegates to the training worker's classifier so both paths agree on what
+        an APU is: it reads the driver's own ``is_integrated`` first, then the
+        arch-name spellings, then the Radeon name table, because AMD SDK wheels
+        may populate none of the arch attributes. Empty off ROCm and on error, so
+        every caller keeps its discrete-GPU default.
         """
         try:
             import torch
 
             if not LlamaCppBackend._torch_is_rocm(torch):
-                return {}
+                return set()
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
-                return {}
+                return set()
+            from core.training.worker import _rocm_classify_unified_memory
+
             # Map visible ordinal -> physical id via the active ROCm mask (HIP,
             # then ROCR, then CUDA), mirroring _get_gpu_memory's ROCm branch.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
-            arch_by_id: dict[int, str] = {}
+            unified: set[int] = set()
             for ordinal in range(torch.cuda.device_count()):
                 try:
-                    _arch = (
-                        getattr(torch.cuda.get_device_properties(ordinal), "gcnArchName", "") or ""
+                    _arch, is_unified = _rocm_classify_unified_memory(
+                        torch.cuda.get_device_properties(ordinal)
                     )
                 except Exception:
                     continue
-                pid = (
+                if not is_unified:
+                    continue
+                unified.add(
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                arch_by_id[pid] = _arch.split(":")[0].strip().lower()
-            return arch_by_id
+            return unified
         except Exception:
-            return {}
-
-    @staticmethod
-    def _rocm_unified_memory_gpu_ids() -> set[int]:
-        """PHYSICAL ids of visible ROCm GPUs whose "VRAM" is shared system RAM."""
-        return {
-            pid
-            for pid, arch in LlamaCppBackend._rocm_arch_by_physical_id().items()
-            if arch in _AMD_UNIFIED_MEMORY_ARCHS
-        }
+            return set()
 
     @staticmethod
     def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
@@ -4815,9 +4806,10 @@ class LlamaCppBackend:
         # Guarded like the rest of this family: a bad gpu_indices (not iterable,
         # unhashable members) answers False rather than failing the load.
         try:
-            arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
-            selected = list(gpu_indices) if gpu_indices is not None else list(arch_by_id)
-            return any(arch_by_id.get(_i) in _AMD_UNIFIED_MEMORY_ARCHS for _i in selected)
+            unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+            if gpu_indices is None:
+                return bool(unified)
+            return any(_i in unified for _i in gpu_indices)
         except Exception:
             return False
 

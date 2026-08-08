@@ -1489,7 +1489,8 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
 
     if gcn_arch:
         # gfx1152 is Krackan Point: same shared GPU/system-RAM pool as gfx1150/gfx1151.
-        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151", "gfx1152"}
+        # Case-folded: the attribute is lowercase in practice but is not guaranteed.
+        return gcn_arch, gcn_arch.lower() in {"gfx1150", "gfx1151", "gfx1152"}
 
     # Arch attrs absent -- fall back to device-name matching. Only reached under _hw.IS_ROCM,
     # so the NVIDIA GeForce 840M cannot collide with the Krackan markers.
