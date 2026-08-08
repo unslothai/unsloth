@@ -11,12 +11,14 @@ import {
   ModelSelector,
   type ModelSelectorChangeMeta,
   type PerModelConfig,
+  isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
   SidebarModelConfig,
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
   DropdownMenu,
@@ -1921,6 +1923,11 @@ export function ChatPage({
     (state) => state.nativeContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
+  const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
+  const platformDeviceType = usePlatformStore((state) => state.deviceType);
+  const platformChatOnlyReason = usePlatformStore(
+    (state) => state.chatOnlyReason,
+  );
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
@@ -3395,6 +3402,11 @@ export function ChatPage({
                 cacheWrites={contextUsage.cacheWriteTokens}
                 promptTokens={contextUsage.promptTokens}
                 completionTokens={contextUsage.completionTokens}
+                isMlx={isServedByMlx(
+                  Boolean(loadedIsGguf),
+                  platformDeviceType,
+                  platformChatOnlyReason,
+                )}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
