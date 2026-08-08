@@ -981,11 +981,22 @@ create_studio_shortcuts() {
         # id, so a plain mv could replace one a running backend already reported.
         # ln fails with EEXIST instead and the read below adopts the winner. We
         # cannot share the app's lock portably (flock(1) is absent on macOS).
-        _css_id_tmp="$_css_id_file.$$.tmp"
+        # Unique per attempt (pid alone is not: $$ is the parent's pid inside a
+        # subshell in some shells), so concurrent publishers never share a temp.
+        _css_id_tmp="$_css_id_file.$$.$(printf '%.8s' "$_css_new_id").tmp"
         if printf '%s' "$_css_new_id" > "$_css_id_tmp"; then
+            # An interrupted write leaves a zero-length id, which the -s test
+            # above already treats as missing. Clear it so ln can claim.
+            if [ -e "$_css_id_file" ] && [ ! -s "$_css_id_file" ]; then
+                rm -f "$_css_id_file"
+            fi
             if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then
-                # No hard links (exFAT/FAT32): still refuse to clobber.
-                [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"
+                # No hard links (exFAT/FAT32). mkdir is the portable atomic
+                # claim, so the check and the move cannot race a second writer.
+                if mkdir "$_css_id_file.lock" 2>/dev/null; then
+                    [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"
+                    rmdir "$_css_id_file.lock"
+                fi
             fi
         fi
         rm -f "$_css_id_tmp"
