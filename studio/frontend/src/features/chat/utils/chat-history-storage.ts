@@ -110,8 +110,12 @@ export function trackStoredChatThreadRecord(
       })
     : create;
   pendingThreadRecordByThreadId.set(threadId, tracked);
-  // A chat abandoned before its first send leaves nobody to await this.
-  tracked.catch(() => undefined);
+  // One creator succeeding retires the others' retry callbacks: the row exists, so a later retry
+  // would recreate a thread that something else has since deleted.
+  tracked.then(
+    () => failedThreadRecordByThreadId.delete(threadId),
+    () => undefined,
+  );
   const forget = () => {
     if (pendingThreadRecordByThreadId.get(threadId) === tracked) {
       pendingThreadRecordByThreadId.delete(threadId);
@@ -317,6 +321,8 @@ async function importLegacyThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord | undefined> {
   const saved = await saveChatThread(thread);
+  // A point lookup can import a row too, and a listing mid-flight has to re-read to see it.
+  legacyChatImportGeneration += 1;
   const legacyMessages = await db.messages
     .where("threadId")
     .equals(thread.id)
