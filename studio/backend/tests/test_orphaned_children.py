@@ -1199,10 +1199,16 @@ def test_a_zombie_child_is_not_signalled_or_waited_on(tmp_path, monkeypatch):
     monkeypatch.setattr(pl, "_posix_terminate", lambda pid, timeout = 5.0: terminated.append(pid))
 
     record = directory / "9900.json"
-    record.write_text(json.dumps({
-        "owner_pid": 9900, "owner_identity": "gone",
-        "children": [{"pid": 9901, "identity": "same", "pgid": 9901}],
-    }), encoding = "utf-8")
+    record.write_text(
+        json.dumps(
+            {
+                "owner_pid": 9900,
+                "owner_identity": "gone",
+                "children": [{"pid": 9901, "identity": "same", "pgid": 9901}],
+            }
+        ),
+        encoding = "utf-8",
+    )
 
     started = time.monotonic()
     pl._reap_one_record(record, timeout = 5.0)
