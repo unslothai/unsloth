@@ -1266,9 +1266,9 @@ def test_clearing_this_runs_checkpoints_spares_the_one_it_resumed_from(run_dir):
     dc.clear_own_checkpoints(run_dir, preexisting)
 
     survivors = {p.name for p in dc.list_checkpoints(run_dir)}
-    assert survivors == {"checkpoint-11"}, (
-        f"the discard removed the source bundle as well as its own: {survivors}"
-    )
+    assert survivors == {
+        "checkpoint-11"
+    }, f"the discard removed the source bundle as well as its own: {survivors}"
 
 
 # ── EMA turned on by the resume ───────────────────────────────────────────────
