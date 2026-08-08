@@ -594,11 +594,13 @@ def test_the_windows_breadcrumb_fallback_takes_the_whole_tree(tmp_path, monkeypa
 
     record = tmp_path / "999.json"
     record.write_text(
-        json.dumps({
-            "owner_pid": 999,
-            "owner_identity": None,
-            "children": [{"pid": 4242, "identity": "same"}],
-        }),
+        json.dumps(
+            {
+                "owner_pid": 999,
+                "owner_identity": None,
+                "children": [{"pid": 4242, "identity": "same"}],
+            }
+        ),
         encoding = "utf-8",
     )
     killed = pl._reap_one_record(record, timeout = 1.0)
