@@ -9969,7 +9969,6 @@ def _windows_pid_identity(pid: int) -> "str | None":
         return None
     try:
         from utils.process_lifetime import _pid_identity
-
         return _pid_identity(pid)
     except Exception:
         return None
