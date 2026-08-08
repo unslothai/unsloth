@@ -51,6 +51,9 @@ _DIFFUSION_MODULES = [
 _ENTRY_POINT = _BACKEND / "run.py"
 _STUB_MODULE = "core._torchao_stub"
 _ML_ROOTS = frozenset({"diffusers", "peft", "torch", "torchao", "transformers", "xformers"})
+# Must run BEFORE the installers, not after: the probe imports torch on Windows, and these
+# set the env vars torch reads when it sizes its OpenMP/BLAS pools. Both import stdlib only.
+_PRE_STUB = frozenset({"utils.cpu_threads"})
 
 
 def _import_roots(node) -> set[str]:
@@ -58,6 +61,8 @@ def _import_roots(node) -> set[str]:
     if isinstance(node, ast.Import):
         return {alias.name.split(".")[0] for alias in node.names}
     if isinstance(node, ast.ImportFrom) and node.module and node.module != _STUB_MODULE:
+        if node.module in _PRE_STUB:
+            return set()
         return {node.module.split(".")[0]}
     return set()
 
@@ -90,6 +95,25 @@ def test_diffusion_modules_install_both_stubs_at_module_scope(path):
     )
 
 
+@pytest.mark.parametrize("path", _DIFFUSION_MODULES, ids = lambda p: p.name)
+def test_diffusion_modules_install_before_any_torch_reaching_import(path):
+    """Module scope alone is not the invariant: a sibling imported above the installs can pull
+    torchao in first, and a stub only seeds names nothing has imported yet."""
+    installed: set[str] = set()
+    for node in ast.parse(path.read_text(encoding = "utf-8")).body:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            func = node.value.func
+            if isinstance(func, ast.Name) and func.id in _INSTALLS:
+                installed.add(func.id)
+            continue
+        for root in _import_roots(node):
+            if root in _ML_ROOTS:
+                assert installed == _INSTALLS, (
+                    f"{path.relative_to(_BACKEND)}:{node.lineno} imports {root} before installing "
+                    f"{sorted(_INSTALLS - installed)}."
+                )
+
+
 def test_the_entry_point_installs_both_stubs_before_its_first_heavy_import():
     installed: set[str] = set()
     for node in ast.parse(_ENTRY_POINT.read_text(encoding = "utf-8")).body:
@@ -109,16 +133,22 @@ def test_the_entry_point_installs_both_stubs_before_its_first_heavy_import():
     assert installed == _INSTALLS, "run.py must call both stub installers at module scope"
 
 
+def _is_stub_key(name: str) -> bool:
+    # Both packages, not just xformers: a torchao stub left behind turns a later
+    # importorskip("torchao.quantization") into a silent no-op instead of a skip.
+    return any(name == p or name.startswith(p + ".") for p in ("xformers", "torchao"))
+
+
 @pytest.fixture
 def on_windows_rocm(monkeypatch):
     """Force the Windows-ROCm probe on, and leave sys.modules / sys.meta_path as found."""
     monkeypatch.setattr(_torchao_stub, "_is_windows_rocm", lambda: True)
     monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
-    saved = {k: v for k, v in sys.modules.items() if k == "xformers" or k.startswith("xformers.")}
+    saved = {k: v for k, v in sys.modules.items() if _is_stub_key(k)}
     for name in saved:
         del sys.modules[name]
     yield
-    for name in [k for k in sys.modules if k == "xformers" or k.startswith("xformers.")]:
+    for name in [k for k in sys.modules if _is_stub_key(k)]:
         del sys.modules[name]
     sys.modules.update(saved)
 
@@ -163,3 +193,24 @@ def test_the_finder_is_registered_once(on_windows_rocm):
 
     finders = [f for f in sys.meta_path if isinstance(f, _torchao_stub._StubSubpackageFinder)]
     assert len(finders) == 1
+
+
+def test_no_stub_survives_this_module():
+    """The fixture must hand sys.modules back clean: a leaked torchao stub is silently
+    accepted by a later pytest.importorskip("torchao.quantization")."""
+    for name in ("xformers", "torchao", "torchao.quantization"):
+        assert not _torchao_stub.is_stubbed(name), name
+
+
+def test_dense_quant_declines_a_stubbed_torchao(on_windows_rocm):
+    """The stub's quantize_ is a no-op, so the smoke probe passes on a still-dense Linear and
+    the transformer gets MARKED quantised without being quantised. Decline before that."""
+    from core.inference.diffusion_transformer_quant import dense_transformer_supported
+
+    import torch
+    # The fixture cleared torchao out of sys.modules, so nothing is stubbed yet.
+    target = type("T", (), {"device": "cuda", "dtype": torch.bfloat16})()
+    assert dense_transformer_supported(target) is True
+
+    install_torchao_windows_rocm_stub()
+    assert dense_transformer_supported(target) is False

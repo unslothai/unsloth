@@ -126,6 +126,15 @@ def _ensure_finder() -> None:
         sys.meta_path.append(_StubSubpackageFinder())
 
 
+def is_stubbed(package: str) -> bool:
+    """True iff ``package`` currently resolves to one of these stubs, not the real thing.
+
+    ``find_spec`` and even ``from torchao.quantization import quantize_`` succeed against a
+    stub, so any caller whose behaviour depends on the package WORKING must ask this first.
+    """
+    return getattr(sys.modules.get(package), "_unsloth_stub", None) is _STUB_SENTINEL
+
+
 def install_torchao_windows_rocm_stub() -> None:
     """Pre-stub torchao on Windows ROCm so transformers/peft imports don't crash.
 

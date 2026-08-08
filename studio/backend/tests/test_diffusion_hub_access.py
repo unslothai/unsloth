@@ -16,7 +16,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
-from core.inference.diffusion import hub_access_message
+from core.inference.diffusion import _hf_token_in_play, hub_access_message
 
 _GATED = (
     "403 Client Error. (Request ID: Root=1-6a73b83b) Cannot access gated repo for url "
@@ -83,3 +83,48 @@ def test_an_unparseable_repo_still_gives_the_instruction():
 def test_other_failures_keep_their_own_text(exc):
     # None is the signal to fall back to str(exc); rewriting these would bury the cause.
     assert hub_access_message(exc, had_token = False) is None
+
+
+def test_a_wrapped_gated_error_is_still_rewritten():
+    """Transformers config/tokenizer loads re-raise the 403 inside an OSError, so matching only
+    the outermost exception misses the shape this rewrite exists for."""
+    try:
+        try:
+            raise _gated()
+        except Exception as inner:
+            raise OSError("We couldn't connect to huggingface.co to load this model.") from inner
+    except OSError as outer:
+        message = hub_access_message(outer, had_token = False)
+
+    assert message is not None
+    assert "black-forest-labs/FLUX.2-klein-9B is gated" in message
+
+
+def test_a_self_referential_chain_terminates():
+    exc = ValueError("boom")
+    exc.__context__ = exc
+
+    assert hub_access_message(exc, had_token = False) is None
+
+
+def test_an_ambient_token_counts_as_a_token(monkeypatch):
+    """With token=None the Hub still uses HF_TOKEN or the cached login, so keying off Studio's
+    own token alone tells an already-authenticated user to add a token they have."""
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: "hf_ambient", raising = False)
+    assert _hf_token_in_play(None) is True
+
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: None, raising = False)
+    assert _hf_token_in_play(None) is False
+    assert _hf_token_in_play("hf_explicit") is True
+
+
+def test_an_unreadable_ambient_token_is_not_a_token(monkeypatch):
+    import huggingface_hub
+
+    def _raise():
+        raise OSError("token file unreadable")
+
+    monkeypatch.setattr(huggingface_hub, "get_token", _raise, raising = False)
+    assert _hf_token_in_play(None) is False

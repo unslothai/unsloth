@@ -161,6 +161,40 @@ def hub_cache_dir() -> str:
 _HUB_REPO_RE = re.compile(r"huggingface\.co/([\w.\-]+/[\w.\-]+)")
 
 
+def _gated_in_chain(exc: BaseException) -> Optional[BaseException]:
+    """The GatedRepoError in ``exc``'s cause/context chain, or None.
+
+    Transformers config/tokenizer loads re-raise the 403 wrapped in an OSError, so matching only
+    the outermost error misses the very case this rewrite exists for. Screen on the class name
+    across the MRO, as hub/utils/hf_errors.py does, so no hub import is needed at all.
+    """
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if any(cls.__name__ == "GatedRepoError" for cls in type(exc).__mro__):
+            return exc
+        # `raise ... from None` means the raiser already wrote a better message (the base-repo
+        # preflight does exactly that), so stop rather than overwrite it with the generic one.
+        exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
+    return None
+
+
+def _hf_token_in_play(hf_token: Optional[str]) -> bool:
+    """Whether the failing Hub call carried ANY credential.
+
+    Not just Studio's own token: with token=None huggingface_hub still falls back to HF_TOKEN
+    or the cached CLI login, so keying the message off the request token alone tells an
+    ambient-auth user to add a token they already have, and they loop.
+    """
+    if hf_token:
+        return True
+    try:
+        from huggingface_hub import get_token
+        return bool(get_token())
+    except Exception:  # noqa: BLE001 -- no readable ambient token is the same as none
+        return False
+
+
 def hub_access_message(exc: BaseException, *, had_token: bool) -> Optional[str]:
     """Rewrite a gated-repo failure into the step that actually unblocks the user.
 
@@ -168,11 +202,10 @@ def hub_access_message(exc: BaseException, *, had_token: bool) -> Optional[str]:
     The raw exception still reaches the log; this is only what the toast shows,
     where the request id and resolve URL are noise.
     """
-    from huggingface_hub.errors import GatedRepoError
-
-    if not isinstance(exc, GatedRepoError):
+    gated = _gated_in_chain(exc)
+    if gated is None:
         return None
-    found = _HUB_REPO_RE.search(str(exc))
+    found = _HUB_REPO_RE.search(str(gated))
     repo = found.group(1) if found else None
     where = f"https://huggingface.co/{repo}" if repo else "its Hugging Face page"
     subject = repo or "This model"
@@ -1333,10 +1366,18 @@ class DiffusionBackend:
                 clear_gpu_cache()
             except Exception:  # noqa: BLE001
                 pass
-            # Redact native paths: this error is surfaced verbatim and Studio can be shared.
+            # Rewrite a gated-repo 403 into the step that unblocks the user, then redact native
+            # paths: this text is surfaced verbatim and Studio can be shared. Guarded like
+            # clear_gpu_cache above -- this runs on a daemon thread, so anything escaping here
+            # leaves _loading.error unset and load_progress() stuck on "downloading" forever.
             from utils.native_path_leases import redact_native_paths
 
-            text = hub_access_message(exc, had_token = bool(kwargs.get("hf_token"))) or str(exc)
+            try:
+                text = hub_access_message(
+                    exc, had_token = _hf_token_in_play(kwargs.get("hf_token"))
+                ) or str(exc)
+            except Exception:  # noqa: BLE001
+                text = str(exc)
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = redact_native_paths(text)
