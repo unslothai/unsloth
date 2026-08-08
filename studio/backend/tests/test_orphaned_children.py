@@ -443,5 +443,57 @@ def test_an_unverifiable_captured_pid_is_not_taskkilled(monkeypatch):
     assert ran == [4321]
 
 
+def test_the_status_is_not_claimed_when_prctl_is_blocked(monkeypatch):
+    """Under a seccomp or container policy that rejects prctl, children can
+    survive a hard parent exit; the diagnostic must not say otherwise."""
+    from utils import process_lifetime as pl
+
+    monkeypatch.setattr(pl, "_is_windows", lambda: False)
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(pl, "_pdeathsig_available", lambda: False)
+    monkeypatch.setattr(pl, "_initialized", False)
+    pl.initialize_parent_lifetime()
+    in_force, detail = pl.windows_job_status()
+    assert in_force is False
+    assert "prctl" in detail
+
+    monkeypatch.setattr(pl, "_pdeathsig_available", lambda: True)
+    monkeypatch.setattr(pl, "_initialized", False)
+    pl.initialize_parent_lifetime()
+    assert pl.windows_job_status()[0] is True
+
+
+def test_the_probe_does_not_arm_anything(monkeypatch):
+    """PR_GET_PDEATHSIG is read-only, so probing must leave our own setting be."""
+    import ctypes
+
+    from utils import process_lifetime as pl
+
+    if not pl._is_linux():
+        pytest.skip("Linux only")
+    libc = ctypes.CDLL("libc.so.6", use_errno = True)
+    before = ctypes.c_int(0)
+    libc.prctl(2, ctypes.byref(before), 0, 0, 0)
+    assert pl._pdeathsig_available() is True
+    after = ctypes.c_int(0)
+    libc.prctl(2, ctypes.byref(after), 0, 0, 0)
+    assert after.value == before.value
+
+
+def test_the_sweep_snapshot_is_taken_under_the_lock():
+    """Writes hold _record_lock, so the read has to as well."""
+    import ast
+    import inspect
+
+    from utils import process_lifetime as pl
+
+    tree = ast.parse(inspect.getsource(pl.terminate_all))
+    body = ast.dump(tree)
+    assert "_record_lock" in body
+    # The snapshot must not be a bare list() over the live dict.
+    source = inspect.getsource(pl.terminate_all)
+    assert "for pid, identity in list(_tracked_pids.items())" not in source
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

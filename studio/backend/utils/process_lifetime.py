@@ -115,10 +115,30 @@ def initialize_parent_lifetime() -> None:
         if _is_windows():
             _install_windows_job()
         elif _is_linux():
-            _record_job_status(True, "PR_SET_PDEATHSIG per child")
+            if _pdeathsig_available():
+                _record_job_status(True, "PR_SET_PDEATHSIG per child")
+            else:
+                _record_job_status(
+                    False, "prctl is unavailable here (seccomp or container policy)"
+                )
         else:
             # macOS: no pdeathsig, no job object; reap_recorded_children covers it.
             _record_job_status(False, "no kernel-level parent-death signal on this platform")
+
+
+def _pdeathsig_available() -> bool:
+    """Whether prctl is reachable at all, so the status is not a claim we cannot
+    keep. PR_GET_PDEATHSIG is read-only, so probing changes nothing; a seccomp or
+    container policy that blocks prctl fails it."""
+    _PR_GET_PDEATHSIG = 2
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6", use_errno = True)
+        current = ctypes.c_int(0)
+        return libc.prctl(_PR_GET_PDEATHSIG, ctypes.byref(current), 0, 0, 0) == 0
+    except Exception:
+        return False
 
 
 def _win_signatures(kernel32) -> None:
@@ -640,7 +660,11 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
     Returns the pids still alive afterwards, so the caller can keep them in the
     crash record rather than dropping the only handle on them."""
     survivors: "list[int]" = []
-    for pid, identity in list(_tracked_pids.items()):
+    # Snapshot under the same lock the writes take: a request thread can still
+    # reach adopt_pid while this runs.
+    with _record_lock:
+        tracked = list(_tracked_pids.items())
+    for pid, identity in tracked:
         with _record_lock:
             _tracked_pids.pop(pid, None)
         current = _pid_identity(pid)
