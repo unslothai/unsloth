@@ -276,14 +276,24 @@ def test_download_plan_restages_a_native_asset_that_changed_size(monkeypatch):
     monkeypatch.setattr(
         SdCppDiffusionBackend,
         "_plan_file_sizes",
-        staticmethod(lambda by_repo, token: {
-            ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"): 4_000,
-            ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"): 300,
-            ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/text_encoders/qwen_3_4b.safetensors"): 8_000,
-        }),
+        staticmethod(
+            lambda by_repo, token: {
+                ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"): 4_000,
+                ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"): 300,
+                (
+                    "unsloth/Z-Image-Turbo-ComfyUI",
+                    "split_files/text_encoders/qwen_3_4b.safetensors",
+                ): 8_000,
+            }
+        ),
     )
 
-    def probe(repo_id, filename, revision = None, expected_size = None):
+    def probe(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+    ):
         seen[filename] = expected_size
         return True
 
