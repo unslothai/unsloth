@@ -176,7 +176,9 @@ export function AboutTab() {
         </SettingsSection>
       </div>
 
-      {hw.gpus.length > 0 || runtimes.length > 0 ? (
+      {/* hw.python keeps the section alive on a CPU-only host, where there is no GPU
+          and no accelerator runtime but the Python version still belongs in a report. */}
+      {hw.gpus.length > 0 || runtimes.length > 0 || hw.python ? (
         <SettingsSection title={t("settings.about.hardware")}>
           {hw.gpus.map((gpu, i) => (
             <SettingsRow
