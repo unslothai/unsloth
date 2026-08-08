@@ -4223,4 +4223,3 @@ def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
     # The scope named the quant's own file, so keeping it would list that file twice.
     filenames = [v.filename for v in response.variants]
     assert len(filenames) == len(set(filenames))
-
