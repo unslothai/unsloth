@@ -262,6 +262,9 @@ export async function validateModel(
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
+      // batch sizes scale the same estimate; omitted when blank so they never read as set
+      ...(payload.n_batch != null ? { n_batch: payload.n_batch } : {}),
+      ...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {}),
       // The estimate charges a drafter whose size differs by kind (a DSpark
       // sidecar is ~11 GB), so omitting the mode makes this preflight disagree
       // with /load in both directions.
@@ -504,6 +507,9 @@ export interface CachedModelRepo {
   repo_id: string;
   load_id?: string | null;
   size_bytes: number;
+  /** Weights format; "adapter" is a LoRA with no base weights of its own.
+   * Optional for older-backend compatibility. */
+  model_format?: string | null;
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
@@ -725,16 +731,31 @@ export async function saveChatThread(
   return savedThread;
 }
 
+export interface UpdateChatThreadOptions {
+  /** Apply only while the row still holds this title, else 409. */
+  expectedTitle?: string;
+  /** And only while this is still the thread's opening user message. */
+  expectedOpeningMessageId?: string;
+}
+
 export async function updateChatThread(
   threadId: string,
   patch: Partial<ThreadRecord>,
+  options: UpdateChatThreadOptions = {},
 ): Promise<ThreadRecord> {
+  const body: Record<string, unknown> = { ...patch };
+  if (options.expectedTitle !== undefined) {
+    body.expectedTitle = options.expectedTitle;
+  }
+  if (options.expectedOpeningMessageId !== undefined) {
+    body.expectedOpeningMessageId = options.expectedOpeningMessageId;
+  }
   const response = await authFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
+      body: JSON.stringify(body),
     },
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);

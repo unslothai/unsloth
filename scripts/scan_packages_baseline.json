@@ -211,6 +211,14 @@
       "evidence_hash": "c066cc27bce31ee7b6ce07411ee7a7d9ecfbf3aafc8848f6641fabfe522a7703"
     },
     {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/utils/_http.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L461:     while True: sha256:0c9641548adea74be4a8b0e86e8b75cc937a2b0f833b57dfa3d30d3e24d2537a",
+      "evidence_hash": "70d25136ca2a91d192bd816706db7113a2ad0f96bc1b2381d0d4747a5ff1925d"
+    },
+    {
       "package": "ipython",
       "file": "IPython/core/interactiveshell.py",
       "check": "Enumerates filesystem AND makes network calls",
@@ -1579,46 +1587,6 @@
       "evidence_hash": "d416b79dd17b24214f3f7653ac01354507d7bf0fc464dee30a4a4b8998f063ba"
     },
     {
-      "package": "openai",
-      "file": "openai/_base_client.py",
-      "check": "C2 polling/beaconing loop detected",
-      "severity": "CRITICAL",
-      "evidence": "L274:         while True: sha256:90a38e5c1e26893c7c273354143612640e9a9c0f079d3e2b60612d79f24e80a6",
-      "evidence_hash": "1022e8e8649436ec64a98a9d9141d085452c49549fd2157b0278fc369a83ac66"
-    },
-    {
-      "package": "openai",
-      "file": "openai/auth/_workload.py",
-      "check": "Accesses cloud metadata/IMDS AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "IMDS: L97:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L150:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L78:     http_client: httpx.Client | None = None, | L109:                 with httpx.Client() as client: | L134:     http_client: httpx.Client | None = None, | L156:                 with httpx.Client() as client: | L251:         exchange_client = DefaultHttpx2Client(follow_redirects=False) if self._use_httpx2 else httpx.Client()",
-      "evidence_hash": "9717e51cb961dc14c458955d91a1e48e3753997346ecea0106bded3a8d64bfe0"
-    },
-    {
-      "package": "openai",
-      "file": "openai/resources/beta/responses/responses.py",
-      "check": "C2 polling/beaconing loop detected",
-      "severity": "CRITICAL",
-      "evidence": "L4000:         while True: sha256:f8ab538118daba9ec06e27399dbdc90a4521c3390e6a47a6348a1f180a83effd",
-      "evidence_hash": "31481ea83c687acc27144d72d3832d4fb98dd1c79fb5e0ddd85080de95997b9f"
-    },
-    {
-      "package": "openai",
-      "file": "openai/resources/realtime/realtime.py",
-      "check": "C2 polling/beaconing loop detected",
-      "severity": "CRITICAL",
-      "evidence": "L311:         while True: sha256:5b63313072aae9ca28677e03426513ccf12221e4f4e0ea6c31efbe09790633b5",
-      "evidence_hash": "05e1af469d651b51673763a7c4cdf759af9472fb627b7b470adc28cc237bd650"
-    },
-    {
-      "package": "openai",
-      "file": "openai/resources/responses/responses.py",
-      "check": "C2 polling/beaconing loop detected",
-      "severity": "CRITICAL",
-      "evidence": "L3951:         while True: sha256:d68ef896bf0743ca430cfacb9a3353da1f3b9c51c3a21b6450a07a32b55aa2ac",
-      "evidence_hash": "160eecdd79b521bffbe8476f782b69a0724c35d1b19376a7600807165fd54f9f"
-    },
-    {
       "package": "unsloth-zoo",
       "file": "tests/test_gemma4_forced_float32_ple_dtype.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
@@ -1744,7 +1712,8 @@
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "Env: L317:         token = os.environ.get(\"HF_TOKEN\")\nNetwork: L313:         import urllib.request | L316:         request = urllib.request.Request(url, headers = {\"User-Agent\": \"unsloth-xet-probe\"}) | L329:         with urllib.request.urlopen(request, timeout = PROBE_TIMEOUT_SECONDS) as response: | L342:         head = urllib.request.Request(cas, method = \"HEAD\", headers = {\"User-Agent\": \"unsloth-xet-probe\"}) | L344:             urllib.request.urlopen(head, timeout = remaining)",
-      "evidence_hash": "674a558cd1bdfa1470dc2a9a2cd44be98ecc27c0beb37497757c656674e71654"
+      "evidence_hash": "674a558cd1bdfa1470dc2a9a2cd44be98ecc27c0beb37497757c656674e71654",
+      "file_sha256": "e0b53dbc7749ab7528211ccc87e56a56093b488c5e6efc1445c84c06ff5243db"
     },
     {
       "package": "unsloth-zoo",

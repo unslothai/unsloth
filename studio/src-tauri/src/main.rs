@@ -8,6 +8,8 @@ mod desktop_update_policy;
 mod desktop_updater;
 mod diagnostics;
 mod install;
+#[cfg(target_os = "linux")]
+mod linux_webkit;
 mod loopback_http;
 mod native_backend_lease;
 mod native_clipboard;
@@ -871,11 +873,99 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// Root shared by the WebView profile and the version stamp below. dirs::data_local_dir
+// is the call Tauri's PathResolver makes for LocalData/<bid>, and it falls back to the
+// passwd database and the Windows known folder where a raw env read cannot.
+fn webview_profile_root(bundle_id: &str) -> Option<std::path::PathBuf> {
+    dirs::data_local_dir().map(|d| d.join(bundle_id))
+}
+
+// Clear WebView caches after an update: the in-app update runs setup.sh/setup.ps1 while
+// the old WebView still holds these files, so its clear fails and a relaunch serves the
+// previous frontend. Version-stamped so an ordinary launch does not discard the Windows
+// compiled-JS cache. Cache-only (storage and cookies kept), mirroring setup.sh
+// _clear_webview_caches / setup.ps1. The caller runs after single-instance, so a duplicate
+// launch has exited; the returned lock covers the no-session-bus case, where it has not.
+#[must_use]
+fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
+    let root = webview_profile_root(bundle_id)?;
+    // Claim the profile BEFORE reading the stamp, and keep the lock even when it
+    // matches: a stamped launch holding nothing would let a newer executable started
+    // alongside it delete this instance's live profile. The OS drops the lock if we
+    // crash, so a dead process never blocks a clear.
+    let _ = fs::create_dir_all(&root);
+    let lock = fs::File::create(root.join(".webview-cache-lock")).ok()?;
+    lock.try_lock().ok()?;
+    let stamp = root.join(".webview-cache-cleared");
+    if fs::read_to_string(&stamp).is_ok_and(|v| v.trim() == version) {
+        return Some(lock);
+    }
+
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        let profile = root.join("EBWebView").join("Default");
+        for sub in ["Cache", "Code Cache", "GPUCache", "Service Worker"] {
+            paths.push(profile.join(sub));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(caches) = dirs::cache_dir() {
+        // WKWebView keeps every cache-typed store under Library/Caches/<bid>;
+        // Library/WebKit/<bid> is user storage and is left alone.
+        paths.push(caches.join(bundle_id));
+    }
+    #[cfg(target_os = "linux")]
+    for sub in ["WebKitCache", "CacheStorage", "serviceworkers"] {
+        paths.push(root.join(sub));
+    }
+
+    let mut cleared = true;
+    for p in &paths {
+        // Absent is normal; anything else is the silent failure that shows up
+        // as a stale frontend, so log it.
+        if let Err(e) = fs::remove_dir_all(p) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                warn!("could not clear WebView cache {}: {e}", p.display());
+                cleared = false;
+            }
+        }
+    }
+    // Stamping a partial clear (an update can still hold a cache file open)
+    // would make every later launch skip the retry and keep the stale cache.
+    if cleared {
+        let _ = fs::write(&stamp, version);
+    }
+    Some(lock)
+}
+
+// Never dropped: the lock has to outlive the clear (see the function).
+static WEBVIEW_PROFILE_LOCK: std::sync::OnceLock<Option<fs::File>> = std::sync::OnceLock::new();
+
+// Register directly after tauri_plugin_single_instance: setup hooks run in registration
+// order inside Builder::build(), while the config window (and its WebView, which locks
+// these files) is only created later, from App::run().
+fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("unsloth-webview-cache")
+        .setup(|app, _api| {
+            let version = app.package_info().version.to_string();
+            let _ = WEBVIEW_PROFILE_LOCK
+                .set(clear_webview_caches(&app.config().identifier, &version));
+            Ok(())
+        })
+        .build()
+}
+
 fn main() {
     // Must precede any Xlib call: GTK3 never calls XInitThreads and this
     // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
 
+    // WebKitGTK's hardware dmabuf path can violate Wayland explicit-sync
+    // protocol on current NVIDIA/Mesa stacks. Select a compatible fallback
+    // before any GTK/WebKit object can be initialized.
+    #[cfg(target_os = "linux")]
+    let webkit_rendering_workaround = linux_webkit::configure_wayland_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -883,12 +973,20 @@ fn main() {
 
     setup_logging();
     info!("Unsloth desktop app starting");
+
+    #[cfg(target_os = "linux")]
+    if let Some(variable) = webkit_rendering_workaround {
+        info!("Wayland detected; set {variable}=1 for WebKitGTK compatibility");
+    }
     windows_job::initialize();
+
+    let context = tauri::generate_context!();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+        .plugin(webview_cache_plugin())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -948,6 +1046,7 @@ fn main() {
             native_intents::register_native_model_path,
             native_intents::register_native_attachment_path,
             native_intents::register_native_dataset_path,
+            native_intents::read_native_attachment_file,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
             native_intents::consume_native_path_token,
@@ -972,6 +1071,10 @@ fn main() {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
             reconcile_autostart_entry(app.handle());
+            // Recover legacy desktop installs before the first preflight.
+            if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
+                warn!("Desktop backend ownership id unavailable: {error}");
+            }
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
@@ -1007,7 +1110,7 @@ fn main() {
                 }
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| match event {
             #[cfg(target_os = "macos")]
@@ -1099,6 +1202,116 @@ mod tests {
         assert!(take_in_app_relaunch_marker(dir.path()));
         assert!(!take_in_app_relaunch_marker(dir.path()));
         assert!(!in_app_relaunch_marker_path(dir.path()).exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    const BID: &str = "ai.unsloth.studio";
+
+    // Only XDG_DATA_HOME is swapped, and nothing else in the crate reads it, so the
+    // tests running beside these stay clear. HOME is left alone for the same reason:
+    // `dirs::home_dir` is all over this crate.
+    #[cfg(target_os = "linux")]
+    fn with_xdg_data_home<T>(value: &str, f: impl FnOnce() -> T) -> T {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var_os("XDG_DATA_HOME");
+        std::env::set_var("XDG_DATA_HOME", value);
+        let out = f();
+        match saved {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+        out
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_relative_xdg_data_home_resolves_like_tauri_does() {
+        // dirs, which resolves the LocalData dir Tauri hands the WebView, drops a
+        // relative XDG_DATA_HOME; following one would leave the real cache in
+        // place and rm -rf under the working directory.
+        let (got, expected) = with_xdg_data_home("reldata", || {
+            (
+                webview_profile_root(BID),
+                dirs::data_local_dir().map(|d| d.join(BID)),
+            )
+        });
+        assert_eq!(got, expected, "diverged from the resolver Tauri uses");
+        assert!(
+            got.is_none_or(|p| p.is_absolute()),
+            "resolved a deletion target relative to the working directory"
+        );
+
+        // An absolute override is still honoured.
+        let dir = tempfile::tempdir().unwrap();
+        let got = with_xdg_data_home(dir.path().to_str().unwrap(), || webview_profile_root(BID));
+        assert_eq!(got, Some(dir.path().join(BID)));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_partial_clear_is_not_stamped_and_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let xdg = dir.path().to_str().unwrap();
+        let root = dir.path().join(BID);
+        fs::create_dir_all(root.join("CacheStorage")).unwrap();
+        // A plain file where a cache dir belongs fails remove_dir_all with something
+        // other than NotFound, exactly as a locked directory does.
+        fs::write(root.join("WebKitCache"), b"still open").unwrap();
+
+        let lock = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
+        assert!(!root.join("CacheStorage").exists(), "the deletable cache stayed");
+        assert!(
+            !root.join(".webview-cache-cleared").exists(),
+            "stamping a partial clear makes every later launch skip the retry"
+        );
+        drop(lock);
+
+        // The next launch, with the obstruction gone, clears and stamps.
+        fs::remove_file(root.join("WebKitCache")).unwrap();
+        fs::create_dir_all(root.join("WebKitCache")).unwrap();
+        let lock = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
+        assert!(!root.join("WebKitCache").exists(), "the retry did not run");
+        assert!(root.join(".webview-cache-cleared").exists(), "the retry did not stamp");
+        drop(lock);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_live_instance_lock_excludes_a_duplicate_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let xdg = dir.path().to_str().unwrap();
+        let root = dir.path().join(BID);
+        fs::create_dir_all(root.join("WebKitCache")).unwrap();
+
+        // The first launch clears and holds the lock, as main() does.
+        let live = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
+        assert!(live.is_some(), "the clearing instance must get the lock");
+        assert!(!root.join("WebKitCache").exists(), "the first launch did not clear");
+
+        // A second launch past single-instance (no session bus) must leave it alone.
+        fs::create_dir_all(root.join("WebKitCache")).unwrap();
+        let second = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.1"));
+        assert!(second.is_none(), "a duplicate launch took the lock");
+        assert!(root.join("WebKitCache").exists(), "deleted a live instance's cache");
+
+        // Exit or crash drops the lock, so the next launch clears.
+        drop(live);
+
+        // A launch whose stamp already matches must still TAKE the lock, or a
+        // newer executable started alongside it could delete the live profile.
+        fs::create_dir_all(root.join("WebKitCache")).unwrap();
+        let stamped = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
+        assert!(stamped.is_some(), "a stamped launch dropped the profile lock");
+        assert!(root.join("WebKitCache").exists(), "a stamped launch cleared anyway");
+        let racer = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.1"));
+        assert!(racer.is_none(), "a newer launch took the lock from a stamped instance");
+        assert!(root.join("WebKitCache").exists(), "deleted a stamped instance's cache");
+        drop(stamped);
+
+        let next = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.1"));
+        assert!(!root.join("WebKitCache").exists(), "a released lock still blocked the clear");
+        drop(next);
     }
 
     // One test, not three: `QUIT_IN_PROGRESS` is process-global and cargo tests run in parallel.

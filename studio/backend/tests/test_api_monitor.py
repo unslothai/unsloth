@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import itertools
+import json
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -704,3 +708,819 @@ def test_monitor_route_disabled_still_hides_recorded_rows(monkeypatch):
 
     assert payload["logging_enabled"] is False
     assert payload["entries"] == []
+
+
+def test_set_perf_records_stats_and_snapshot_reports_them():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    # set_reply never stamps TTFT; this is the case the prompt_ms fallback exists for.
+    monitor.set_reply(entry_id, "hi")
+    monitor.set_perf(entry_id, tok_per_sec = 42.5, prompt_ms = 123.4, stop_reason = "length")
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["tok_per_sec"] == 42.5
+    assert entry["ttft_ms"] == 123
+    assert entry["stop_reason"] == "length"
+
+
+def test_measured_ttft_wins_over_engine_prefill():
+    # Queue wait precedes llama-server, so prefill-only prompt_ms under-reports TTFT.
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    entry = next(e for e in monitor._entries if e.id == entry_id)
+    entry.started_monotonic -= 2.0
+    monitor.append_reply(entry_id, "hi")
+    monitor.set_perf(entry_id, tok_per_sec = 42.5, prompt_ms = 120.0)
+    monitor.finish(entry_id)
+
+    [snapshot] = monitor.snapshot()
+    assert snapshot["ttft_ms"] >= 2000
+
+
+def test_set_perf_rejects_non_finite_values():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.set_perf(entry_id, tok_per_sec = float("nan"), prompt_ms = float("inf"))
+    monitor.set_perf(entry_id, tok_per_sec = "bogus", prompt_ms = None)
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["tok_per_sec"] is None
+    assert entry["ttft_ms"] is None
+
+
+def test_full_response_reply_does_not_stamp_ttft():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.set_reply(entry_id, "full response")
+    monitor.append_reply(entry_id, " tail", stamp_first_token = False)
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["ttft_ms"] is None
+    assert entry["tok_per_sec"] is None
+
+
+def test_set_usage_rejects_malformed_token_counts():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.append_reply(entry_id, "hi")
+    monitor.set_usage(
+        entry_id,
+        prompt_tokens = -3,
+        completion_tokens = "bogus",
+        total_tokens = 12,
+    )
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["prompt_tokens"] is None
+    assert entry["completion_tokens"] is None
+    assert entry["total_tokens"] == 12
+    assert entry["tok_per_sec"] is None
+
+
+def test_mark_first_token_stamps_ttft_for_reasoning_only_streams():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.mark_first_token(entry_id)
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["ttft_ms"] is not None
+
+    entry_id2 = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.mark_first_token(entry_id2)
+    first = monitor._find_locked(entry_id2).first_token_monotonic
+    monitor.append_reply(entry_id2, "visible")
+    assert monitor._find_locked(entry_id2).first_token_monotonic == first
+
+
+def test_queue_state_counts_direct_overflow_as_queued(monkeypatch):
+    # Direct calls hold no lease, so overflow past capacity must show as queued,
+    # not get clamped out of the readout.
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_diffusion = False,
+            base_url = "http://llama.test",
+            effective_parallel_slots = 1,
+        ),
+    )
+    monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: None)
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 2)
+
+    state = inf._monitor_queue_state()
+    assert state == {"capacity": 1, "active": 1, "queued": 1, "free": 0}
+
+
+def test_non_streaming_responses_reports_its_finish_reason(monkeypatch):
+    # Stop reason must be read off the choice, or the row shows a blank.
+    import routes.inference as inf
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+    entry_id = monitor.start(
+        endpoint = "/v1/responses",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    body = {
+        "choices": [{"message": {"content": "hi"}, "finish_reason": "length"}],
+        "timings": {"predicted_per_second": 12.5, "prompt_ms": 80.0},
+    }
+    choices = body.get("choices", [])
+    # Mirrors the call the route makes at the end of _responses_non_streaming.
+    inf._monitor_usage(
+        entry_id,
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        None,
+        timings = body.get("timings"),
+        stop_reason = (choices[0].get("finish_reason") if choices else None),
+    )
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["stop_reason"] == "length"
+    assert entry["tok_per_sec"] == 12.5
+    assert entry["ttft_ms"] == 80
+
+
+def test_parked_tool_resume_counts_as_queued():
+    # Without resume tickets counted, the readout shows a full server with nothing queued.
+    from core.inference.llama_admission import LlamaAdmissionQueue
+
+    queue = LlamaAdmissionQueue("http://llama.test")
+    queue._unpark_tickets.append(1)
+    assert queue.snapshot().queued == 1
+
+
+def test_free_never_reports_a_slot_admission_would_refuse():
+    """`free` is what a new arrival could take, so it must track _can_admit_locked:
+    a resume ticket holds a slot back, so counting it in `queued` without dropping it
+    from `free` prints free slots next to a queued request.
+    """
+    from core.inference.llama_admission import LlamaAdmissionQueue
+    for capacity, held, tickets in itertools.product(range(1, 5), range(0, 5), range(0, 3)):
+        if held > capacity:
+            continue
+        queue = LlamaAdmissionQueue("http://llama.test")
+        queue._resize_pool_locked(capacity)
+        if any(queue._take_slot_locked(0) is None for _ in range(held)):
+            continue
+        for _ in range(tickets):
+            queue._unpark_seq += 1
+            queue._unpark_tickets.append(queue._unpark_seq)
+
+        snapshot = queue.snapshot()
+        admittable = queue._can_admit_locked(len(queue._unpark_tickets))
+        assert (snapshot.free > 0) == admittable, (
+            f"capacity={capacity} held={held} tickets={tickets}: "
+            f"free={snapshot.free} but _can_admit_locked={admittable}"
+        )
+
+
+def test_queue_panel_never_shows_a_free_slot_next_to_a_resume(monkeypatch):
+    """The panel derives free from the snapshot, so it inherits that invariant."""
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    from core.inference.llama_admission import LlamaAdmissionQueue
+
+    queue = LlamaAdmissionQueue("http://llama.test")
+    queue._unpark_tickets.append(1)
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_diffusion = False,
+            base_url = "http://llama.test",
+            effective_parallel_slots = 1,
+        ),
+    )
+    monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: queue.snapshot())
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
+
+    assert inf._monitor_queue_state() == {"capacity": 1, "active": 0, "queued": 1, "free": 0}
+
+
+def test_set_perf_survives_an_out_of_range_engine_number():
+    """float() on a huge upstream int raises OverflowError, which is not ValueError,
+    and these helpers run inside streaming generators where a raise truncates the
+    user's response.
+    """
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    huge = int("9" * 400)
+    monitor.set_perf(entry_id, tok_per_sec = huge, prompt_ms = huge, stop_reason = "stop")
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["tok_per_sec"] is None
+    assert entry["ttft_ms"] is None
+    assert entry["stop_reason"] == "stop"
+
+
+@pytest.mark.parametrize(
+    "chunk",
+    [
+        {"choices": [{"delta": {"content": "x"}}], "timings": {"predicted_per_second": 10**400}},
+        {"choices": [{"delta": {"content": "x"}}], "timings": {"prompt_ms": 10**400}},
+        {"choices": [{"delta": {"content": "x"}}], "usage": {"total_tokens": 10**400}},
+        {"choices": [{"delta": {"content": "x"}}], "usage": "not-a-dict"},
+        {"choices": [{"delta": {"content": "x"}}], "timings": "not-a-dict"},
+        {"choices": "not-a-list"},
+        {"choices": [{"delta": "not-a-dict"}]},
+        {},
+    ],
+)
+def test_monitor_chunk_never_raises_on_a_malformed_upstream_chunk(monkeypatch, chunk):
+    """A raise here escapes into the SSE generator and truncates the response."""
+    import routes.inference as inf
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    inf._monitor_openai_chunk(entry_id, chunk, 4096, streaming = True)
+    # snapshot() divides by the recorded counts, so it has to survive them too.
+    assert monitor.snapshot()
+
+
+def test_direct_llama_counter_is_started_last_before_its_guarding_try():
+    """Anything between started() and the try leaks a permanent +1 if it raises, and
+    this counter has no reset hook, so one leak pins the slot panel at busy until the
+    process restarts.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    for func_name in ("openai_completions", "openai_embeddings", "_direct_llama_request"):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(inference_route, func_name))))
+        started = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "_direct_llama_request_started"
+        ]
+        assert started, f"{func_name}: no _direct_llama_request_started() call found"
+
+        for node in ast.walk(tree):
+            block = getattr(node, "body", None)
+            if not isinstance(block, list):
+                continue
+            for index, stmt in enumerate(block):
+                if not any(stmt is call for call in started):
+                    continue
+                assert index + 1 < len(block) and isinstance(block[index + 1], ast.Try), (
+                    f"{func_name}: _direct_llama_request_started() is not immediately "
+                    f"followed by the try whose finally decrements it:\n"
+                    + "\n".join(ast.unparse(s) for s in block[index : index + 3])
+                )
+
+
+def _llama_slot_readout(
+    monkeypatch,
+    *,
+    is_audio = False,
+    slots = 4,
+):
+    """Point the slot readout at a loaded llama-server with ``slots`` free slots."""
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+
+    backend = SimpleNamespace(
+        is_loaded = True,
+        is_diffusion = False,
+        is_vision = True,
+        base_url = "http://llama.test",
+        effective_parallel_slots = slots,
+        context_length = 4096,
+        model_identifier = "some/tts-GGUF",
+        _is_audio = is_audio,
+        _audio_type = "codec",
+        _auth_headers = None,
+    )
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: None)
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
+    return backend
+
+
+def test_queue_state_counts_rag_vision_captioning(monkeypatch):
+    """RAG captioning/OCR reaches llama-server with no lease (see the
+    LlamaAdmissionQueue docstring), so without the direct count the panel reported an
+    idle server for the whole ingestion.
+    """
+    import routes.inference as inf
+    from core.rag import captioner
+
+    _llama_slot_readout(monkeypatch)
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": "a caption"}}]}
+
+    def _fake_post(*_a, **_k):
+        seen["state"] = inf._monitor_queue_state()
+        return _Resp()
+
+    monkeypatch.setattr("httpx.post", _fake_post)
+
+    assert captioner._caption_one("http://llama.test", "local", b"png", 5.0) == "a caption"
+    assert seen["state"] == {"capacity": 4, "active": 1, "queued": 0, "free": 3}
+    assert inf._monitor_queue_state() == {"capacity": 4, "active": 0, "queued": 0, "free": 4}
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_rag_vision_call_balances_the_direct_counter(monkeypatch, fails):
+    """Both outcomes must return the count to zero: a failed vision call is swallowed
+    as non-fatal, so a leak here would pin the panel at busy for the whole session.
+    """
+    import routes.inference as inf
+    from core.rag import captioner
+
+    _llama_slot_readout(monkeypatch)
+
+    class _Resp:
+        status_code = 500
+
+        def raise_for_status(self):
+            raise RuntimeError("llama-server said no")
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    def _fake_post(*_a, **_k):
+        if fails:
+            raise RuntimeError("connection refused")
+        return _Resp()
+
+    monkeypatch.setattr("httpx.post", _fake_post)
+
+    assert captioner._ocr_one("http://llama.test", "local", b"png", 5.0) is None
+    assert inf._direct_llama_inflight == 0
+
+
+def _run_gguf_tts(monkeypatch, backend, generate):
+    """Drive POST /audio/generate onto the GGUF (llama-server) branch."""
+    import asyncio
+
+    import routes.inference as inf
+    from models.inference import ChatCompletionRequest
+
+    backend.generate_audio_response = generate
+    monkeypatch.setattr(inf, "_llama_public_model_id", lambda *_a, **_k: "some/tts-GGUF")
+    monkeypatch.setattr(inf, "_fill_recommended_sampling_openai", lambda *_a, **_k: None)
+
+    async def _noop_switch(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(inf, "_maybe_auto_switch_model", _noop_switch)
+    payload = ChatCompletionRequest(
+        model = "some/tts-GGUF", messages = [{"role": "user", "content": "hi"}]
+    )
+    return asyncio.run(inf.generate_audio(payload, request = None, current_subject = "t"))
+
+
+def test_queue_state_counts_gguf_tts(monkeypatch):
+    """GGUF TTS holds a llama-server slot for the whole request without a lease."""
+    import routes.inference as inf
+
+    backend = _llama_slot_readout(monkeypatch, is_audio = True)
+    seen = {}
+
+    def _generate(**_kwargs):
+        seen["state"] = inf._monitor_queue_state()
+        return (b"RIFFfake", 24000)
+
+    _run_gguf_tts(monkeypatch, backend, _generate)
+    assert seen["state"] == {"capacity": 4, "active": 1, "queued": 0, "free": 3}
+    assert inf._monitor_queue_state() == {"capacity": 4, "active": 0, "queued": 0, "free": 4}
+
+
+@pytest.mark.parametrize("outcome", ["completed", "raised", "disconnected"])
+def test_gguf_tts_balances_the_direct_counter(monkeypatch, outcome):
+    """Every exit from the TTS branch gives the slot back; the counter has no reset hook."""
+    from fastapi import HTTPException
+
+    import routes.inference as inf
+
+    backend = _llama_slot_readout(monkeypatch, is_audio = True)
+
+    def _generate(**kwargs):
+        if outcome == "raised":
+            raise RuntimeError("llama-server died")
+        if outcome == "disconnected":
+            kwargs["cancel_event"].set()
+            raise RuntimeError("stream closed")
+        return (b"RIFFfake", 24000)
+
+    if outcome == "completed":
+        _run_gguf_tts(monkeypatch, backend, _generate)
+    else:
+        with pytest.raises(HTTPException) as excinfo:
+            _run_gguf_tts(monkeypatch, backend, _generate)
+        assert excinfo.value.status_code == (499 if outcome == "disconnected" else 500)
+
+    assert inf._direct_llama_inflight == 0
+
+
+def test_top_level_provider_tool_event_stamps_first_token(monkeypatch):
+    # _toolEvent rides the chunk itself, beside choices, with an empty delta.
+    import routes.inference as inf
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "provider/model",
+        prompt = "hi",
+    )
+    inf._monitor_openai_chunk(
+        entry_id,
+        {
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+            "_toolEvent": {"type": "web_search"},
+        },
+        streaming = True,
+    )
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["ttft_ms"] is not None
+
+
+def test_disagreeing_choice_finish_reasons_report_no_stop_reason(monkeypatch):
+    # The row aggregates every choice, so one choice's reason is only the request's
+    # when they all agree.
+    import routes.inference as inf
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+
+    def row_for(reasons):
+        entry_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        inf._monitor_openai_chunk(
+            entry_id,
+            {
+                "choices": [
+                    {"index": i, "message": {"content": "x"}, "finish_reason": r}
+                    for i, r in enumerate(reasons)
+                ]
+            },
+        )
+        monitor.finish(entry_id)
+        return next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"]
+
+    assert row_for(["stop"]) == "stop"
+    assert row_for(["stop", "stop"]) == "stop"
+    assert row_for(["stop", "length"]) is None
+
+
+def test_streamed_choice_finish_reasons_are_compared_across_chunks(monkeypatch):
+    # llama-server streams an n > 1 request as one single-choice chunk per sample, so
+    # agreement can only be judged across the whole stream, not inside one chunk.
+    import routes.inference as inf
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+
+    def row_for(reasons):
+        entry_id = monitor.start(
+            endpoint = "/v1/completions",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        for i, reason in enumerate(reasons):
+            inf._monitor_openai_sse_line(
+                entry_id,
+                "data: "
+                + json.dumps({"choices": [{"index": i, "text": "x", "finish_reason": reason}]}),
+            )
+        monitor.finish(entry_id)
+        return next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"]
+
+    assert row_for(["stop"]) == "stop"
+    assert row_for(["stop", "stop"]) == "stop"
+    # Used to report "length": each chunk agreed with itself and the last one won.
+    assert row_for(["stop", "length"]) is None
+
+
+def test_streamed_stop_reason_is_withheld_until_the_request_finishes(monkeypatch):
+    # An n > 1 stream finishes its choices in separate chunks, so publishing the first one
+    # would state a request-level verdict while the rest are still running, then retract it.
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+
+    def row():
+        return next(r for r in monitor.snapshot() if r["id"] == entry_id)
+
+    monitor.note_stop_reason(entry_id, "stop")
+    assert row()["finished_at"] is None
+    assert row()["stop_reason"] is None
+    monitor.note_stop_reason(entry_id, "stop")
+    assert row()["stop_reason"] is None
+    monitor.finish(entry_id)
+    assert row()["stop_reason"] == "stop"
+
+
+@pytest.mark.parametrize("writer", ["note_stop_reason", "set_perf"])
+@pytest.mark.parametrize(
+    "status, expected",
+    [("completed", "stop"), ("cancelled", None), ("failed", None), ("error", None)],
+)
+def test_stop_reason_is_kept_only_by_completed_requests(writer, status, expected):
+    # A cancelled n > 1 stream stopped its remaining choices rather than hearing from
+    # them, and several local streams record "stop" through set_perf on the way out of a
+    # cancelled loop, before the cancellation is stamped. Neither describes how it ended.
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+    if writer == "set_perf":
+        monitor.set_perf(entry_id, stop_reason = "stop")
+    else:
+        monitor.note_stop_reason(entry_id, "stop")
+    if status == "error":
+        monitor.fail(entry_id, "boom")
+    else:
+        monitor.finish(entry_id, status)
+    row = next(r for r in monitor.snapshot() if r["id"] == entry_id)
+    assert row["status"] == status
+    assert row["stop_reason"] == expected
+
+
+def test_non_streaming_stop_reason_survives_the_finish(monkeypatch):
+    # Nothing accumulates on that path, so resolving at finish must not clear what
+    # set_perf already recorded.
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+    monitor.set_perf(entry_id, stop_reason = "stop")
+    monitor.finish(entry_id)
+    assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] == "stop"
+
+
+@pytest.mark.parametrize(
+    "queue, expected",
+    [
+        ({"capacity": 4, "active": 1, "queued": 0, "free": 3}, "generating"),
+        ({"capacity": 4, "active": 0, "queued": 2, "free": 0}, "generating"),
+        ({"capacity": 4, "active": 0, "queued": 0, "free": 4}, "ready"),
+        (None, "ready"),
+    ],
+)
+def test_monitor_status_counts_slots_no_row_can_see(monkeypatch, queue, expected):
+    # A direct llama call (RAG caption/OCR) opens no row, logging may be off, and another
+    # subject's work is not counted here, so rows alone would report Ready beside a busy
+    # slot readout the same response carries.
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf, "_monitor_active_model", lambda: "org/M-GGUF")
+    monkeypatch.setattr(inf, "_monitor_context_length", lambda: 4096)
+    monkeypatch.setattr(inf, "_monitor_queue_state", lambda: queue)
+
+    app = FastAPI()
+    app.include_router(inf.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "alice"}
+    body = TestClient(app).get("/monitor").json()
+
+    assert body["active_requests"] == 0
+    assert body["status"] == expected
+
+
+def test_monitor_status_is_idle_without_a_model(monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf, "_monitor_active_model", lambda: None)
+    monkeypatch.setattr(inf, "_monitor_context_length", lambda: None)
+    monkeypatch.setattr(inf, "_monitor_queue_state", lambda: None)
+
+    app = FastAPI()
+    app.include_router(inf.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "alice"}
+    assert TestClient(app).get("/monitor").json()["status"] == "idle"
+
+
+def test_tool_card_starts_ttft_but_not_the_token_rate_clock(monkeypatch):
+    # A tool card is client output, so it starts TTFT. It is not decoded output, so the
+    # tool run (or a human confirming one) after it must not count as decoding time --
+    # dividing by that wait reports a rate near zero.
+    import core.inference.api_monitor as m
+
+    clock = [100.0]
+    monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+
+    monitor.mark_first_token(entry_id, decoded = False)
+    clock[0] = 160.0  # a minute of tool run / human confirmation
+    monitor.append_reply(entry_id, "first real token")
+    clock[0] = 162.0  # two seconds of decoding
+    monitor.set_usage(entry_id, completion_tokens = 21)
+    monitor.finish(entry_id)
+
+    row = next(r for r in monitor.snapshot() if r["id"] == entry_id)
+    # TTFT still measures from the card the user actually saw.
+    assert row["ttft_ms"] == 0
+    # 20 gaps over 2s, not over 62s.
+    assert row["tok_per_sec"] == 10.0
+
+
+def test_a_decoded_first_token_starts_both_clocks(monkeypatch):
+    import core.inference.api_monitor as m
+
+    clock = [100.0]
+    monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+
+    # Reasoning tokens are decoded output, so they start the rate clock as before.
+    monitor.mark_first_token(entry_id)
+    clock[0] = 102.0
+    monitor.set_usage(entry_id, completion_tokens = 21)
+    monitor.finish(entry_id)
+
+    assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["tok_per_sec"] == 10.0
+
+
+def test_a_stop_reason_written_after_finish_escapes_the_clearing():
+    # Why every route records the reason before finish(): the settle runs once, at the
+    # terminal transition, so a later write would put a natural stop reason back onto a
+    # cancelled row.
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+    monitor.set_perf(entry_id, stop_reason = "stop")
+    monitor.finish(entry_id, "cancelled")
+    assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] is None
+
+    monitor.set_perf(entry_id, stop_reason = "stop")
+    assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] == "stop"
+
+
+@pytest.mark.parametrize(
+    "line, dropped",
+    [
+        ('data: {"choices":[],"usage":{"completion_tokens":9}}', True),
+        # A content chunk carrying inline usage still has to reach the client.
+        ('data: {"choices":[{"delta":{"content":"x"}}],"usage":{"completion_tokens":9}}', False),
+        ('data: {"choices":[{"delta":{"content":"x"}}]}', False),
+        # Content that quotes the key gets past the cheap prefilter, so only the parse
+        # can tell it apart from a real usage chunk.
+        ('data: {"choices":[{"delta":{"content":"\\"usage\\":1"}}]}', False),
+        ("data: [DONE]", False),
+        ("data: not json", False),
+        (": keepalive comment", False),
+    ],
+)
+def test_usage_only_sse_is_recognized_for_relay_filtering(line, dropped):
+    # Providers are asked for stream usage regardless of what the caller wanted, so the
+    # proxy has to drop the standalone chunk on the way out: a client that did not opt in
+    # would index choices[0] on it. Same rule _cmpl_stream_event_out applies locally.
+    import routes.inference as inf
+    assert inf._is_openai_usage_only_sse(line) is dropped
+
+
+@pytest.mark.parametrize("include_usage, expected", [(True, True), (False, False)])
+def test_wants_stream_usage_reads_the_callers_opt_in(include_usage, expected):
+    import routes.inference as inf
+    from types import SimpleNamespace
+
+    payload = SimpleNamespace(stream_options = {"include_usage": include_usage})
+    assert inf._wants_stream_usage(payload) is expected
+    assert inf._wants_stream_usage(SimpleNamespace(stream_options = None)) is False
+
+
+def test_direct_llama_work_is_busy_without_the_admission_snapshot(monkeypatch):
+    # With UNSLOTH_LLAMA_ADMISSION_CONTROL=off the queue readout is None, so a caption or
+    # OCR call (which opens no row) would leave the row saying Ready while the server works.
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf, "_monitor_active_model", lambda: "org/M-GGUF")
+    monkeypatch.setattr(inf, "_monitor_context_length", lambda: 4096)
+    monkeypatch.setattr(inf, "_monitor_queue_state", lambda: None)
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 1)
+
+    app = FastAPI()
+    app.include_router(inf.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "alice"}
+    body = TestClient(app).get("/monitor").json()
+
+    assert body["active_requests"] == 0
+    assert body["queue"] is None
+    assert body["status"] == "generating"
+
+    # Back to ready once it finishes.
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
+    assert TestClient(app).get("/monitor").json()["status"] == "ready"
+
+
+def test_direct_busy_reads_the_live_counter(monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
+    assert inf._direct_llama_is_busy() is False
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 2)
+    assert inf._direct_llama_is_busy() is True
