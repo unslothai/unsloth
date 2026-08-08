@@ -724,6 +724,11 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
             if _pid_alive(pid) and not _pid_is_zombie(pid):
                 with _record_lock:
                     _tracked_pids[pid] = identity
+                    # The group goes back with it: keeping the pid but dropping
+                    # its group leaves nothing able to reach a descendant once
+                    # the leader exits.
+                    if pgid is not None:
+                        _tracked_pgids[pid] = pgid
             continue
         try:
             if _is_windows():
@@ -744,6 +749,8 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
             survivors.append(pid)
             with _record_lock:
                 _tracked_pids[pid] = identity
+                if pgid is not None:
+                    _tracked_pgids[pid] = pgid
     return survivors
 
 

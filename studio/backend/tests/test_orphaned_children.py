@@ -879,5 +879,33 @@ def test_the_windows_identity_probe_prototypes_every_handle_call():
         assert call in prototyped, f"{call} is called without a signature"
 
 
+def test_a_retained_child_keeps_its_group(tmp_path, monkeypatch):
+    """terminate_all pops the group before deciding; a pid put back without it
+    leaves nothing able to reach a descendant once the leader exits."""
+    from utils import process_lifetime as pl
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    pl._tracked_pids.clear()
+    pl._tracked_pgids.clear()
+
+    # Unverifiable identity, the transient `ps` failure case.
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: None)
+    pl._tracked_pids[4242] = "recorded"
+    pl._tracked_pgids[4242] = 4242
+    pl.terminate_all(timeout = 1.0)
+    assert pl._tracked_pids.get(4242) == "recorded"
+    assert pl._tracked_pgids.get(4242) == 4242, "the group was dropped with the retained pid"
+
+    # And a confirmed survivor keeps it too.
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "recorded")
+    monkeypatch.setattr(pl, "_identity_or_none", lambda pid: "recorded")
+    monkeypatch.setattr(pl, "_posix_terminate", lambda pid, timeout = 5.0: None)
+    monkeypatch.setattr(pl, "_windows_terminate_tree", lambda pid: None)
+    assert pl.terminate_all(timeout = 1.0) == [4242]
+    assert pl._tracked_pgids.get(4242) == 4242
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
