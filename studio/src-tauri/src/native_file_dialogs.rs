@@ -79,7 +79,7 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<String>) {
         Some("svg") => ("SVG image", filter_extensions(["svg"])),
         Some("wav") => ("WAV audio", filter_extensions(["wav"])),
         Some("mp3") => ("MP3 audio", filter_extensions(["mp3"])),
-        // Named for both tracks: the video gallery saves .mp4 through this dialog too.
+        // Named for both tracks: the gallery saves .mp4 through this dialog too.
         Some("m4a") | Some("mp4") => ("MPEG-4 video or audio", filter_extensions(["m4a", "mp4"])),
         Some("ogg") | Some("oga") => ("Ogg audio", filter_extensions(["ogg", "oga"])),
         Some("flac") => ("FLAC audio", filter_extensions(["flac"])),
@@ -300,10 +300,9 @@ pub async fn save_native_file(
 
 /// Save a backend URL by streaming it to the chosen path.
 ///
-/// `save_native_file` takes the bytes through IPC, so the caller must buffer the whole
-/// body first and the chooser only appears once that finishes. A gallery clip is capped
-/// at 2048x2048 x 1024 frames, so that is the wrong shape for video: this opens the
-/// chooser first and writes the response chunk by chunk, leaving nothing resident.
+/// `save_native_file` carries the bytes through IPC, so the caller buffers the whole body
+/// and the chooser waits on it. A clip is capped at 2048x2048 by 1024 frames, so this opens
+/// the chooser first and writes the response chunk by chunk, leaving nothing resident.
 #[tauri::command]
 pub async fn save_native_file_from_url(
     window: WebviewWindow,
@@ -615,16 +614,14 @@ mod tests {
     }
 
     #[test]
-    fn gallery_video_exports_offer_their_own_container() {
-        // The three Download menu formats, which reach this dialog via downloadUrl
-        // (MP4) and downloadFile (WebM / GIF).
+    fn a_gallery_clip_offers_its_own_container() {
+        // The gallery's MP4 is the only export that reaches this dialog; WebM and GIF
+        // save from a blob. Both mp4 arms are named for video since #8173.
         assert_save_filter(
             "Unsloth_video_20260808-120000_1670009728.mp4",
             "MPEG-4 video or audio",
             &["m4a", "mp4"],
         );
-        assert_save_filter("clip.webm", "WebM video or audio", &["webm"]);
-        assert_save_filter("clip.gif", "GIF image", &["gif"]);
     }
 
     #[test]

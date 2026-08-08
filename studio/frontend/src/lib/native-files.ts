@@ -106,11 +106,9 @@ export async function urlToBlob(url: string): Promise<Blob> {
 }
 
 /**
- * Save a local backend URL without ever holding it in memory.
- *
- * `downloadUrl` buffers the whole body to cross the IPC boundary, which is the wrong
- * shape for a gallery clip. Here the desktop chooser opens first and Rust streams the
- * response to the chosen path; the browser keeps its ordinary anchor.
+ * Save a local backend URL without holding it in memory. `downloadUrl` buffers the body
+ * to cross the IPC boundary, which is the wrong shape for a gallery clip: here the
+ * chooser opens first and Rust streams to the chosen path. The browser keeps its anchor.
  */
 export async function downloadUrlStreaming(
   url: string,

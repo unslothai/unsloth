@@ -177,8 +177,8 @@ function saveLink(href: string, filename: string) {
   link.click();
 }
 
-// MP4 streams straight from its signed link to the chosen path: the link is cross-origin under
-// Tauri, where an anchor no longer saves, and a clip is too big to hold in memory on the way past.
+// MP4 streams from its signed link to the chosen path: that link is cross-origin under Tauri,
+// where an anchor no longer saves, and a clip is too big to hold in memory on the way past.
 // WebM / GIF are transcoded by the backend on demand (501 when the codec is absent).
 async function downloadVideo(
   src: string,
