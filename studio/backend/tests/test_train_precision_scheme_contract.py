@@ -303,7 +303,7 @@ def test_the_reported_mode_filter_is_a_subset_of_what_the_backend_can_report(mon
     # silently drops it from the select -- a mode the user can never pick and no error anywhere.
     assert whitelist == advertisable - _SENTINELS, (
         f"the panel filters to {sorted(whitelist)} but the backend can report "
-        f"{sorted(advertisable - _SENTINELS)}; \"auto\" is prepended separately, so the filter "
+        f'{sorted(advertisable - _SENTINELS)}; "auto" is prepended separately, so the filter '
         "has to name every other advertisable mode exactly"
     )
     assert not _INFERENCE_ONLY.intersection(whitelist)

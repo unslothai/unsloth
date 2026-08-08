@@ -114,9 +114,9 @@ def test_presets_are_unique_and_land_in_the_status_payload(name):
 
     # ...and through the response model the route declares, which is what reaches the browser.
     defaults = VideoGenerationDefaults(**defaults_payload)
-    assert [tuple(p) for p in defaults.resolution_presets] == presets, (
-        f"{name}: status() serves {defaults.resolution_presets} but the family declares {presets}"
-    )
+    assert (
+        [tuple(p) for p in defaults.resolution_presets] == presets
+    ), f"{name}: status() serves {defaults.resolution_presets} but the family declares {presets}"
     assert defaults.frame_step == fam.frame_step
     assert defaults.resolution_multiple == fam.resolution_multiple
 
