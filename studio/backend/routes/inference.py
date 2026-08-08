@@ -6114,9 +6114,8 @@ def _guard_chat_load_against_training(
         requested_gpu_ids, vulkan_gpu_memory, tensor_parallel = guard_tensor_parallel
     )
 
-    # Size with the count that will actually launch, or a load that fits gets a
-    # 409: diffusion never receives --parallel, and load_model clamps to 1 on an
-    # llama-server without --kv-unified. An unclassified GGUF keeps the ask.
+    # Size with the count that will actually launch, or a load that fits gets a 409.
+    # An unclassified GGUF keeps the ask.
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
             n_parallel = 1  # allow-slot-clamp: diffusion never receives --parallel

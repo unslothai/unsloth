@@ -46,8 +46,7 @@ def _is_slot_target(node: ast.AST) -> bool:
 
 
 def _restores_a_saved_count(value: ast.AST) -> bool:
-    """`n_parallel = _mtp_clamped_slots`: a name holding a pre-clamp count. Only a
-    clamp saves one, so the restore is proof the clamp is back."""
+    """`n_parallel = _mtp_clamped_slots`: only a clamp saves a pre-clamp count."""
     return isinstance(value, ast.Name) and value.id.endswith("_clamped_slots")
 
 

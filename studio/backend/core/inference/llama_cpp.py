@@ -9396,9 +9396,8 @@ class LlamaCppBackend:
                 )
                 n_parallel = 1  # allow-slot-clamp: the build cannot serve more
 
-            # MTP does not clamp the slots. #7717 did, for a draft-acceptance
-            # collapse above one slot, but on b10310 four slots with MTP measured
-            # 1.97x the batch throughput of one, and still beat four without it.
+            # MTP does not clamp the slots. #7717 did, for a draft-acceptance collapse, but on
+            # b10310 four MTP slots hit 1.97x the batch throughput of one, beating four without.
 
             # ── Vulkan-ordinal preflight (BEFORE the Phase 1 kill) ────────
             # An explicit Vulkan pin the ggml probe never enumerated cannot be honored.

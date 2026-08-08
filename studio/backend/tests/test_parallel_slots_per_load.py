@@ -519,9 +519,8 @@ def test_training_guard_sizes_every_slot_when_kv_unified_exists(monkeypatch, tmp
 
 
 def test_training_guard_keeps_the_asked_slots_for_an_explicit_mtp_load(monkeypatch, tmp_path):
-    # MTP launches at the slots it asked for, and this estimate already under-counts it
-    # (no draft KV, no duplicated target context under MLA, no draft compute reserve).
-    # A guard that under-sizes evicts the training run it protects, so it keeps the ask.
+    # MTP launches at the slots asked for, and this estimate under-counts it (no draft KV, no MLA
+    # duplication, no compute reserve), so under-sizing here evicts the training run it protects.
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     mtp = ["--spec-type", "draft-mtp"]
     new = {"found": True, "supports_kv_unified": True}

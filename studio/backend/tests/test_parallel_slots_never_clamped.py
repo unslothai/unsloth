@@ -3,9 +3,8 @@
 
 """The launched --parallel must equal the requested slot count.
 
-#7717 clamped it to 1 whenever MTP resolved, which cost batched API callers up
-to 4x throughput behind a single log line. These drive the real load path and
-read the slot count back off the launched argv.
+#7717 clamped it to 1 whenever MTP resolved, costing batched API callers up to 4x
+throughput. These drive the real load path and read the slots off the launched argv.
 """
 
 from __future__ import annotations

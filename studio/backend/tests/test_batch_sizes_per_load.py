@@ -585,11 +585,10 @@ def test_the_local_guard_charges_diffusion_nothing_for_the_batch_flags():
 
 def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     """self._n_ubatch is recorded next to _commit_effective_parallel_slots and the two are
-    read together later (the slot save re-estimates the KV from both). The fit-time
-    reduction moves the count after the sizing pass ran, so recording the sizing pass's
-    value would pair the launched slots with a micro-batch derived at the old count and
-    under-state that cache. Pinned on the source, since reaching the record needs a real
-    spawn."""
+    read together later (the slot save re-estimates the KV from both). The fit-time reduction
+    moves the count after the sizing pass, so recording that pass's value would pair the launched
+    slots with a micro-batch derived at the old count and under-state that cache. Pinned on the
+    source, since reaching the record needs a real spawn."""
     import ast
     import inspect
     import textwrap

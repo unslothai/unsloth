@@ -1018,8 +1018,7 @@ def test_a_load_with_no_separate_drafter_is_unaffected():
 
 def test_mtp_detection_reads_every_accumulated_type():
     """llama.cpp inserts each --spec-type rather than replacing, and applies the env
-    first, so MTP is on if ANY source names it. Reading only the last mis-read a launch
-    that really does run MTP, and the VRAM budget rides on the answer."""
+    first, so MTP is on if ANY source names it. The VRAM budget rides on reading them all."""
     f = llama_cpp._extra_args_requests_mtp
     env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
     assert f(["--spec-type", "ngram-mod"], env) is True
@@ -1173,9 +1172,8 @@ def test_the_split_mode_override_outlives_the_pass_through_extras():
 
 def test_the_mtp_read_judges_the_env_the_child_will_actually_get():
     """An inherited draft-mtp does launch MTP, but the launch scrubs it whenever Unsloth
-    owns the spec block, so reading os.environ would describe a server that will not run
-    MTP. The env counts only when the extras own --spec-type, the one case it reaches the
-    child."""
+    owns the spec block, so reading os.environ would describe a server that will not run MTP.
+    The env counts only when the extras own --spec-type, the one case it reaches the child."""
     env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
     # Managed block: scrubbed, so the env says nothing about this launch.
     assert llama_cpp._child_spec_env([]) == {}
@@ -1191,8 +1189,8 @@ def test_the_mtp_read_judges_the_env_the_child_will_actually_get():
 
 
 def test_the_training_guard_does_not_shrink_itself_for_mtp():
-    """MTP launches at the slots it asked for, so the guard must size for them too. A
-    guard that under-sizes evicts the training run it protects."""
+    """MTP launches at the slots it asked for, and a guard that under-sizes evicts the
+    training run it protects."""
     route_src = inspect.getsource(_routes())
     assert "_extra_args_requests_mtp(llama_extra_args" not in route_src
     # The diffusion and kv-unified clamps stay: neither drops a modelled term.

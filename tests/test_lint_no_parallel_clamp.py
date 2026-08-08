@@ -3,9 +3,8 @@
 
 """Regression suite for scripts/lint_no_parallel_clamp.py.
 
-The lint is what stops #7717 coming back, so its own false positives and
-negatives need pinning: a rule that flags `max(1, n)` gets disabled, and a rule
-that misses `n_parallel = 1` protects nothing.
+The lint is what stops #7717 coming back: a rule that flags `max(1, n)` gets
+disabled, and one that misses `n_parallel = 1` protects nothing.
 """
 
 from __future__ import annotations
