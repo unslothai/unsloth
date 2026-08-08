@@ -321,8 +321,7 @@ def _overflow_error(n_prompt: int, n_ctx: int) -> str:
 
     The counts have to parse: on a body _parse_overflow_counts cannot read,
     _apply_overflow_truncation falls back to a flat keep_ratio and never
-    exercises the n_ctx sizing at all.
-    """
+    exercises the n_ctx sizing."""
     return (
         '{"detail":"llama-server error: {\\"error\\":{\\"code\\":400,'
         '\\"message\\":\\"the request exceeds the available context size\\",'
@@ -342,9 +341,9 @@ def test_big_trace_no_longer_evicts_the_whole_middle():
 
     assert routes_mod._apply_overflow_truncation(with_trace, err) is True
     assert routes_mod._apply_overflow_truncation(without_trace, err) is True
-    # The trace-free control is a different, genuinely overflowing conversation, so it
-    # is a floor and not a convergence target: the trace must never cost MORE history.
-    # It was 6 groups worse before the clip moved ahead of the sizing.
+    # The trace-free control still overflows on its own, so it is a floor, not a
+    # convergence target: the trace must never cost MORE history. It was 6 groups
+    # worse before the clip moved ahead of the sizing.
     assert len(with_trace["messages"]) >= len(without_trace["messages"])
     # The trace was clipped rather than paid for by dropping conversation.
     traces = [m for m in with_trace["messages"] if m.get("reasoning_content")]
@@ -352,9 +351,9 @@ def test_big_trace_no_longer_evicts_the_whole_middle():
 
 
 def test_reasoning_clip_alone_prevents_middle_eviction():
-    # Overflow driven almost entirely by the trace: once it is clipped the body fits,
-    # so keep_ratio must be recomputed against the clipped body. Dividing by the
-    # pre-clip n_prompt charged the shrink twice and evicted history anyway.
+    # Overflow driven almost entirely by the trace: once clipped the body fits, so
+    # keep_ratio must be sized against the clipped body. Dividing by the pre-clip
+    # n_prompt charged the shrink twice and evicted history anyway.
     err = _overflow_error(12000, 8192)
     body = {"messages": _conversation_with_big_trace()}
     before = len(body["messages"])

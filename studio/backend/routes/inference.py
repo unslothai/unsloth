@@ -599,9 +599,8 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     if len(groups) <= 1 + protected_tail:
         return messages, 0
 
-    # Memoize: the drop loop re-sizes each victim, and json.dumps of a message
-    # carrying a reasoning trace is not cheap. Sum over the list, not the memo,
-    # so a message object appearing twice still counts twice.
+    # Memoized because the drop loop re-sizes each victim. Sum over the list, not
+    # the memo, so a message object appearing twice still counts twice.
     est_of = {id(msg): _estimate_message_tokens(msg) for msg in messages}
     total_est = sum(est_of[id(m)] for m in messages)
     target_est = int(total_est * keep_ratio)
@@ -698,13 +697,13 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     if counts:
         n_prompt, n_ctx = counts
         prompt_target = _OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx
-        # n_prompt counts the body as sent, i.e. before the clip above. Rescale it by
-        # the estimator's own pre/post-clip ratio (char-vs-token units cancel) so
-        # keep_ratio measures what is still on the wire, not what already went away.
+        # n_prompt sized the body as sent, i.e. before the clip. Rescale by the
+        # estimator's own pre/post-clip ratio (char-vs-token units cancel) so
+        # keep_ratio measures what is left, not what already went away.
         if clipped:
             n_prompt = n_prompt * total_est / max(1, pre_clip_est)
         if clipped and n_prompt <= prompt_target:
-            keep_ratio = 1.0  # the clip alone fits; evicting history too would be gratuitous
+            keep_ratio = 1.0  # the clip alone fits; dropping history too is gratuitous
         else:
             keep_ratio = min(0.95, prompt_target / max(1.0, n_prompt))
     else:
@@ -18567,9 +18566,8 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
         if not m_clean.get("content") and not m_clean.get("tool_calls"):
             if not m_clean.get("reasoning_content"):
                 continue  # assistant turn now empty, drop
-            # Reasoning-only once the synthetic calls are gone. Pad it the way
-            # _drop_empty_assistant_sentinels would have, which it could not:
-            # that pass ran before the tool_calls were stripped.
+            # Reasoning-only once the synthetic calls are gone. Pad it here:
+            # _drop_empty_assistant_sentinels ran before they were stripped.
             m_clean["content"] = ""
         sanitized_assistant.append(m_clean)
 
@@ -18700,10 +18698,10 @@ def _drop_reasoning_for_local_template(messages: list[dict]) -> list[dict]:
     """Drop ``reasoning_content`` before local (safetensors / MLX) templating.
 
     llama-server renders a prior trace only where the template gates on
-    ``preserve_thinking``, but a local template is rendered here directly and
-    some read ``message.reasoning_content`` unconditionally, so forwarding it
-    would replay thinking with no opt-in. Reasoning passthrough stays
-    llama-server-only until this path grows the same gate."""
+    ``preserve_thinking``. A local template is rendered here directly and some
+    read ``reasoning_content`` unconditionally, so forwarding it would replay
+    thinking with no opt-in. Passthrough stays llama-server-only until this
+    path grows the same gate."""
     return [
         {k: v for k, v in msg.items() if k != "reasoning_content"}
         if "reasoning_content" in msg

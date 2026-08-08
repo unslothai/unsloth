@@ -1951,9 +1951,9 @@ class TestDropEmptyAssistantSentinels:
         assert "extra_content" not in kept
 
     def test_strip_synthetic_tool_calls_keeps_reasoning_only_turn(self):
-        """A turn whose only tool_calls were provider-synthetic is reasoning-only
-        once they are stripped. _drop_empty_assistant_sentinels ran before the
-        strip, so the padding has to happen here or the trace is lost."""
+        """A turn whose only tool_calls were provider-synthetic is reasoning-only once
+        they are stripped, and _drop_empty_assistant_sentinels ran before the strip,
+        so the padding has to happen here or the trace is lost."""
         from routes.inference import _strip_provider_synthetic_tool_history
 
         msgs = [
