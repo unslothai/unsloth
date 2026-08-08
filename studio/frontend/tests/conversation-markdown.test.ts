@@ -560,8 +560,7 @@ test("leaves a comment inside a fence literal", () => {
 });
 
 test("closes a list-nested fence inside the list, not at column zero", () => {
-  // A closer at column zero ends the list first, so it opens a new top-level
-  // fence that swallows every turn after this one.
+  // A closer at column zero ends the list first, opening a top-level fence instead.
   assert.equal(
     renderConversationBlocks([
       { kind: "text", text: "Steps:\n\n- run the install\n\n  ```sh\n  npm ci" },
@@ -575,8 +574,7 @@ test("closes a list-nested fence inside the list, not at column zero", () => {
 });
 
 test("closes a raw html block a blank line cannot end", () => {
-  // CommonMark start condition 1: only its own end tag ends the block, so the
-  // next role heading is raw html without this.
+  // CommonMark start condition 1: only its own end tag ends the block.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "<pre>\nhello" }]),
     "<pre>\nhello\n</pre>",
@@ -607,8 +605,7 @@ test("leaves a raw html block that closes itself alone", () => {
     renderConversationBlocks([{ kind: "text", text: "<pre>hello</pre>" }]),
     "<pre>hello</pre>",
   );
-  // A blank line ends start conditions 6 and 7, and every turn is followed by
-  // one, so repairing them would only add noise.
+  // A blank line ends start conditions 6 and 7, and every turn is followed by one.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "<div>\nhello" }]),
     "<div>\nhello",
@@ -703,8 +700,7 @@ test("closes an unmatched details element a later turn would fall inside", () =>
     ]),
     "<details>\n<summary>Steps</summary>\n\nfirst\n\n</details>",
   );
-  // Mid-line, and in the case shape the html tokenizer accepts but a
-  // <details ...> pattern does not.
+  // Mid-line, in the case shape the tokenizer accepts but a <details ...> does not.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "hello <DETAILS/>" }]),
     "hello <DETAILS/>\n\n</details>",
@@ -752,8 +748,8 @@ test("keeps a details tag inside a fence, a code span or a comment literal", () 
 });
 
 test("keeps a citation destination from decoding into another host", () => {
-  // &commat; is an entity reference inside a markdown destination, so a viewer
-  // resolves this to docs.unsloth.ai@evil.test: credentials on evil.test.
+  // &commat; is an entity reference in a destination: a viewer resolves this to
+  // docs.unsloth.ai@evil.test, which is credentials on evil.test.
   assert.equal(
     renderConversationBlocks([
       {
@@ -799,21 +795,18 @@ test("leaves an ordinary query separator in a citation readable", () => {
 });
 
 test("neutralises an opener the message never finished writing", () => {
-  // A synthesized </script> written after a bare <script> is read as that
-  // tag's attributes, so the element stays open and eats the next turn;
-  // escaping the < opens nothing at all.
+  // A synthesized </script> after a bare <script> is read as that tag's attributes,
+  // so the element stays open; escaping the < opens nothing at all.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "<script" }]),
     "&lt;script",
   );
-  // Any tag, not only a raw text one: an unterminated attribute value runs to
-  // the first > anywhere in the document.
+  // Any tag: an unterminated attribute value runs to the first > in the document.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: '<div class="x' }]),
     '&lt;div class="x',
   );
-  // Handing back what the unfinished tag had swallowed can reveal an opener
-  // that was hiding inside it, so the repair repeats until nothing is left.
+  // Handing back what an unfinished tag swallowed can reveal an opener, so repeat.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "<details\n<script" }]),
     "&lt;details\n&lt;script",
@@ -826,17 +819,15 @@ test("neutralises an opener the message never finished writing", () => {
 });
 
 test("closes the element that was opened, not the one markdown ended on", () => {
-  // CommonMark 4.6 condition 1 ends the block at any of the four end tags,
-  // "it need not match the start tag", but the html tokenizer needs this
-  // element's own end tag (WHATWG 13.2.5, appropriate end tag token).
+  // CommonMark 4.6 condition 1 ends the block at any of the four end tags, "it need
+  // not match the start tag"; the tokenizer needs this element's own (WHATWG 13.2.5).
   assert.equal(
     renderConversationBlocks([
       { kind: "text", text: "<script>\nvar x = 1;\n</pre>" },
     ]),
     "<script>\nvar x = 1;\n</pre>\n</script>",
   );
-  // A </script> inside a code span is rendered as an escaped <code>, so the
-  // browser never sees a closer there.
+  // A </script> in a code span renders as escaped <code>: never a closer.
   assert.equal(
     renderConversationBlocks([
       { kind: "text", text: "hello <script> world `</script>`" },
@@ -846,14 +837,12 @@ test("closes the element that was opened, not the one markdown ended on", () => 
 });
 
 test("closes a persistent element opened part way through a line", () => {
-  // CommonMark emits this as inline html and starts no block at all, but the
-  // browser is in script data from here to the end of the document.
+  // CommonMark starts no block here, but the browser is in script data to EOF.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "hello <script>" }]),
     "hello <script>\n</script>",
   );
-  // The tokenizer's raw text set is wider than condition 1: an unmatched
-  // <iframe> or <xmp> renders nothing of what follows it either.
+  // The tokenizer's raw text set is wider than condition 1: iframe and xmp too.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "<iframe>" }]),
     "<iframe>\n</iframe>",
@@ -865,8 +854,7 @@ test("closes a persistent element opened part way through a line", () => {
 });
 
 test("leaves an indented code block exactly as the message wrote it", () => {
-  // Four spaces of indentation is code, so the delimiter in it opens nothing
-  // and a repair glued to the line would change the sample being exported.
+  // Four spaces is code, so the delimiter opens nothing and a repair would alter it.
   assert.equal(
     renderConversationBlocks([
       { kind: "text", text: "Template:\n\n    <!-- TODO fill this in" },
@@ -887,8 +875,7 @@ test("leaves an indented code block exactly as the message wrote it", () => {
 });
 
 test("reads a fence opener whose info string carries a line separator", () => {
-  // U+2028 is an ordinary character to a markdown parser but a line terminator
-  // to a JavaScript dot, and the fence it opens absorbs every later turn.
+  // U+2028 is ordinary to markdown but a line terminator to a JavaScript dot.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "```js x\nvar a = 1;" }]),
     "```js x\nvar a = 1;\n```",
@@ -900,9 +887,8 @@ test("reads a fence opener whose info string carries a line separator", () => {
 });
 
 test("does not read a block quote marker as the end of a tag", () => {
-  // The renderer strips the marker, so its > is not one the tokenizer sees:
-  // the start tag runs on and swallows the message's own </script> as its
-  // attributes, which leaves the element open and needing a closer.
+  // The renderer strips the marker, so its > is not one the tokenizer sees: the start
+  // tag runs on and swallows the message's own </script> as attributes.
   assert.equal(
     renderConversationBlocks([
       { kind: "text", text: "> <script\n> </script>" },
@@ -916,9 +902,8 @@ test("does not read a block quote marker as the end of a tag", () => {
 });
 
 test("waits for the terminator the raw block is actually waiting for", () => {
-  // The tokenizer ends a bogus comment at the first >, but CommonMark start
-  // conditions 3 and 5 end their blocks at ?> and ]]>. Stopping at the > in
-  // the php comparison leaves every later turn inside the block as raw text.
+  // The tokenizer ends a bogus comment at the first >, but CommonMark conditions 3
+  // and 5 end at ?> and ]]>: stopping at the > in the php comparison loses the rest.
   assert.equal(
     renderConversationBlocks([
       { kind: "text", text: "<?php\nif ($a > $b) { echo 1; }" },
@@ -929,8 +914,7 @@ test("waits for the terminator the raw block is actually waiting for", () => {
     renderConversationBlocks([{ kind: "text", text: "<![CDATA[\na > b" }]),
     "<![CDATA[\na > b\n]]>",
   );
-  // Condition 4 really does end at a >, and a block that closed itself needs
-  // nothing.
+  // Condition 4 really does end at a >, and a self-closed block needs nothing.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "<!DOCTYPE html>\nhi" }]),
     "<!DOCTYPE html>\nhi",
@@ -942,8 +926,7 @@ test("waits for the terminator the raw block is actually waiting for", () => {
 });
 
 test("leaves a backslash-escaped tag out of the repair scan", () => {
-  // CommonMark 2.4: \< is a literal <, so it opens nothing and the closer the
-  // scan would append is text the message never wrote.
+  // CommonMark 2.4: \< is a literal <, so it opens nothing and needs no closer.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "\\<script>" }]),
     "\\<script>",
@@ -952,9 +935,8 @@ test("leaves a backslash-escaped tag out of the repair scan", () => {
     renderConversationBlocks([{ kind: "text", text: "\\<!-- note" }]),
     "\\<!-- note",
   );
-  // And the element it was hiding is found again: reading the escape as live
-  // markup swallowed the details opener as raw text, which left the next turn
-  // inside it.
+  // And the element it hid is found again: reading the escape as live markup
+  // swallowed the details opener as raw text.
   assert.equal(
     renderConversationBlocks([
       { kind: "text", text: "\\<script>\n\n<details>\n\nhi" },
@@ -966,8 +948,7 @@ test("leaves a backslash-escaped tag out of the repair scan", () => {
     renderConversationBlocks([{ kind: "text", text: "\\\\<script>" }]),
     "\\\\<script>\n</script>",
   );
-  // The escape is markdown's, so it does not apply where markdown is not
-  // reading inlines.
+  // The escape is markdown's, so it does not apply where inlines are not read.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "```\n\\<script>" }]),
     "```\n\\<script>\n```",
@@ -975,8 +956,7 @@ test("leaves a backslash-escaped tag out of the repair scan", () => {
 });
 
 test("closes a template element before emitting the next turn", () => {
-  // Its children are parsed and then put in a DocumentFragment that is never
-  // rendered, so an unmatched opener takes every later turn with it.
+  // Children land in a DocumentFragment that is never rendered, so later turns go too.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "<template>" }]),
     "<template>\n</template>",
@@ -996,8 +976,7 @@ test("closes a template element before emitting the next turn", () => {
 });
 
 test("keeps scanning the line a literal block ended part way through", () => {
-  // The terminator only ends the block, not the line: a details opened after
-  // it is live, and skipping the rest of the line loses its closer.
+  // The terminator ends the block, not the line: a details opened after it is live.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "<!--\n--> <details>" }]),
     "<!--\n--> <details>\n\n</details>",
@@ -1009,8 +988,7 @@ test("keeps scanning the line a literal block ended part way through", () => {
 });
 
 test("reduces an imported role to one line of plain text", () => {
-  // An imported transcript keeps its own role strings, and this one lands in a
-  // heading that closeOpenBlocks never sees.
+  // Imported role strings land in a heading closeOpenBlocks never sees.
   assert.equal(
     buildConversationMarkdown([{ role: "user\n\n<details>", content: "hi" }]),
     "## User details\n\nhi\n",
@@ -1027,8 +1005,7 @@ test("reduces an imported role to one line of plain text", () => {
 });
 
 test("keeps every line of an indented code block literal", () => {
-  // Only the first line follows a blank one, so without the state the rest of
-  // the sample is scanned as live html and rewritten.
+  // Only the first line follows a blank one, so without state the rest is scanned live.
   assert.equal(
     renderConversationBlocks([
       { kind: "text", text: "look:\n\n    first\n    <script>" },
@@ -1051,8 +1028,7 @@ test("keeps every line of an indented code block literal", () => {
 });
 
 test("reads a fence against its block quote rather than the raw line", () => {
-  // The marker keeps FENCE_LINE_PATTERN from matching, so quoted code was
-  // scanned as live html.
+  // The marker keeps FENCE_LINE_PATTERN from matching, so quoted code was scanned live.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "> ```\n> <script>\n> ```" }]),
     "> ```\n> <script>\n> ```",
@@ -1065,8 +1041,7 @@ test("reads a fence against its block quote rather than the raw line", () => {
 });
 
 test("treats a backtick run as one delimiter at both ends", () => {
-  // ```x`` has no matching run, so it is live text: masking it as a span would
-  // hide the opener it carries.
+  // ```x`` has no matching run, so it is live text carrying an opener.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "```<script>``" }]),
     "```<script>``\n</script>",
@@ -1093,8 +1068,7 @@ test("reads an angle bracket link destination as a url", () => {
 });
 
 test("reads a closing tag inside a raw text element as text", () => {
-  // The tokenizer takes </details> there as script data, so it must not spend
-  // the closer of a details that is genuinely open around it.
+  // </details> there is script data, so it must not spend a real details closer.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "<details>\n<script>\n</details>" }]),
     "<details>\n<script>\n</details>\n</script>\n\n</details>",
@@ -1102,8 +1076,7 @@ test("reads a closing tag inside a raw text element as text", () => {
 });
 
 test("keeps the edge spaces of a code span value", () => {
-  // CommonMark 6.1 strips one space from each end of a span that has one at
-  // both, so a padded tool argument would render with its whitespace missing.
+  // CommonMark 6.1 strips one space from each end of a span padded at both.
   assert.equal(
     renderConversationBlocks([
       { kind: "tool-call", name: "t", args: { k: " padded " } },
@@ -1142,8 +1115,7 @@ test("reads an image description as alt text", () => {
 });
 
 test("closes a select the message left open", () => {
-  // The browser stays in select insertion mode and folds the next role heading
-  // into the control instead of rendering it.
+  // The browser stays in select insertion mode and folds the next heading in.
   assert.equal(
     renderConversationBlocks([{ kind: "text", text: "<select>\n<option>one" }]),
     "<select>\n<option>one\n\n</select>",

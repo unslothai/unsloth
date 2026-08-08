@@ -272,8 +272,7 @@ async function exportConversationByFormat(
     case CONVERSATION_MARKDOWN_FORMAT:
       return exports.exportConversationMarkdown(threadId);
     default: {
-      // A format added to the union but not here is a build error, not a menu
-      // item that quietly does nothing.
+      // Exhaustive: a new format is a build error, not a menu item that does nothing.
       const unhandled: never = format;
       throw new Error(`Unhandled export format: ${String(unhandled)}`);
     }

@@ -22,21 +22,18 @@ function roleLabel(role: string): string {
   if (knownLabel) {
     return knownLabel;
   }
-  // An imported transcript carries its own role strings (oaiMessagesToRecords
-  // keeps them verbatim), and this one is interpolated into a ## heading that
-  // sits outside closeOpenBlocks. A line break would end the heading and a tag
-  // would open an element nothing later closes, so the label is reduced to one
-  // line of text before it is trusted with the document's own structure.
+  // Imported transcripts keep their own role strings verbatim, and this one is
+  // interpolated into a ## heading closeOpenBlocks never sees: a line break would
+  // end the heading, a tag would open an element nothing later closes.
   const label = role.replace(/[\s]+/g, " ").replace(/[<>&\\[\]`*_#]/g, "").trim();
   return label.length > 0
     ? `${label[0]?.toUpperCase()}${label.slice(1)}`
     : "Message";
 }
 
-// A message split into renderable pieces. The training exports flatten
-// everything to plain text, which is fine for JSONL/CSV but leaves tool calls
-// as a one-line JSON blob and thinking as literal [thinking] markers. Markdown
-// is a document format, so it renders each piece on its own terms.
+// A message split into renderable pieces. The JSONL/CSV exports flatten to plain
+// text, leaving tool calls as one-line JSON and thinking as [thinking] markers;
+// markdown is a document format, so each piece renders on its own terms.
 export type ConversationMarkdownBlock =
   | { readonly kind: "text"; readonly text: string }
   | { readonly kind: "thinking"; readonly text: string }
@@ -54,61 +51,51 @@ const GENERATED_IMAGE_BYTES_KEY = "image_b64";
 const GENERATED_AUDIO_PLACEHOLDER = "[generated audio omitted]";
 const INLINE_DATA_PLACEHOLDER = "[inline data omitted]";
 const LINE_BREAK_PATTERN = /[\r\n]/;
-// Chat stores generated audio as a custom tag holding a base64 data URI; the
-// bytes are for the player, not for a transcript.
+// Generated audio is a custom tag holding a base64 data URI: player bytes, not transcript.
 const AUDIO_DATA_URI_PATTERN = /<audio-player\s+src="data:[^"]*"\s*\/>/g;
-// Both ends, not just the closer: reasoning that quotes a whole details
-// element would otherwise keep its opener, hand its closer to the entity, and
-// leave this block's own closer to the inner element, hiding every later turn.
+// Both ends, not just the closer: reasoning quoting a whole details element would
+// keep its opener and spend this block's closer, hiding every later turn.
 const DETAILS_TAG_PATTERN = /<(\/?)(details)((?:\s[^>]*)?)>/gi;
-// A turn is separated from the next by a blank line and a ## heading. That is
-// enough for the markdown parser but not for the browser: an element left open
-// keeps reading, so a message that forgets a closing fence, comment or tag
-// takes every later turn inside it and the transcript silently loses them.
-// Each message therefore closes what it opened.
+// A blank line and a ## heading separate turns, which is enough for the markdown
+// parser but not for the browser: an element left open keeps reading, so a message
+// that forgets a closing fence, comment or tag silently takes every later turn
+// inside it. Each message therefore closes what it opened.
 //
-// This is a line scanner over a fixed tag set, not a parser, and it is meant to
-// stay one. It covers what a person actually leaves open: an unclosed code
-// fence, an unterminated comment, a quoted details element, a pasted script.
-// A tag left unfinished is neutralised rather than closed, since nothing can
-// close it. Shapes that need a real html tokenizer to see (a processing
-// instruction, self-closing tags in svg or mathml) are repaired best effort or
-// not at all: closing that gap costs an html parser, and the export is a
-// document, not a security boundary.
+// This is a line scanner over a fixed tag set, not a parser, and is meant to stay
+// one: it covers what people actually leave open (an unclosed fence, an
+// unterminated comment, a quoted details, a pasted script). A tag left unfinished
+// is neutralised rather than closed, since nothing can close it. Shapes needing a
+// real html tokenizer (processing instructions, self-closing svg or mathml) are
+// repaired best effort or not at all: the export is a document, not a security
+// boundary.
 const FENCE_LINE_PATTERN = /^( {0,3})(`{3,}|~{3,})([\s\S]*)$/;
 const INDENTED_CODE_PATTERN = /^(?: {4}|\t)/;
-// Equal-length delimiters, so a wide span may hold a narrower run: `` `x` ``
-// is one span, not two. The lookahead keeps a closer from matching a prefix of
-// a longer run.
-// CommonMark 6.1 reads the whole contiguous run as one delimiter, so neither
-// end may sit inside a longer one: ```x`` is not a two-backtick span, it is
-// live text, and masking it would hide the tags it holds. The leading capture
-// pins the opener to the start of its run the way a lookbehind would, without
-// needing one -- Safari only gained those in 16.4, and an unparseable pattern
-// takes the whole bundle down rather than this one line.
+// Equal-length delimiters, so a wide span may hold a narrower run: `` `x` `` is
+// one span, not two. CommonMark 6.1 reads a whole contiguous run as one delimiter,
+// so neither end may sit inside a longer one: ```x`` is live text, and masking it
+// would hide the tags it holds. The leading capture pins the opener to the start
+// of its run in place of a lookbehind, which Safari only gained in 16.4 and would
+// take the whole bundle down if unparseable.
 const CODE_SPAN_PATTERN = /(^|[^`])(`+)(?!`)[\s\S]*?\2(?!`)/g;
 // The html tokenizer ends a tag name at whitespace, a solidus or >.
 const TAG_OPEN_PATTERN = /^<(\/?)([A-Za-z][^\s/>]*)/;
 // Block quote markers are structure, not content: a > that opens a quoted line
 // is not the > that finishes a tag left open on the line above.
 const BLOCKQUOTE_PATTERN = /^(?: {0,3}>)+/;
-// CommonMark 6.3: a destination in angle brackets is a url, so [x](<details>)
-// is a link and not an element. Reading it as one would emit a closer the
-// message never opened, or spend the closer of one it did.
+// CommonMark 6.3: an angle-bracket destination is a url, so [x](<details>) is a
+// link, not an element; reading it as one emits or spends a closer wrongly.
 const LINK_DESTINATION_PATTERN = /\]\(\s*<[^<>]*>/g;
 // An image description becomes the alt attribute, escaped, so a tag in there
 // is text. A link label is not: CommonMark parses raw html inside one.
 const IMAGE_DESCRIPTION_PATTERN = /!\[[^\]]*\]/g;
-// A backtick run left over once the closed spans on a line are masked. It opens
-// a span that carries on to the next line.
+// A run left over once a line's closed spans are masked opens a span into the next.
 const OPEN_RUN_PATTERN = /(^|[^`])(`+)(?!`)/;
 // Block structure is read before inlines, so a line starting with a tag begins
 // an html block and ends any span that was still open above it.
 const HTML_BLOCK_START_PATTERN = /^ {0,3}<[A-Za-z!/?]/;
 
-// A run only opens a span if its match actually arrives, so look ahead before
-// masking anything: an unmatched run is ordinary live text. The search stops
-// where a span would, at a blank line or an html block.
+// A run only opens a span if its match arrives: an unmatched run is live text.
+// The search stops where a span would, at a blank line or an html block.
 function runClosesLater(lines: readonly string[], from: number, run: string): boolean {
   const closer = new RegExp("(^|[^`])(" + run + ")(?!`)");
   for (let index = from; index < lines.length; index += 2) {
@@ -119,11 +106,9 @@ function runClosesLater(lines: readonly string[], from: number, run: string): bo
   }
   return false;
 }
-// A comment, a processing instruction and a cdata section are read to their
-// own terminator, not
-// to a blank line or a tag, so one left open swallows the rest of the file.
-// ownLine because a ?> appended to the last line would land inside the
-// instruction's own text rather than end it.
+// Comments, processing instructions and cdata sections run to their own
+// terminator, not to a blank line or a tag, so one left open swallows the file.
+// ownLine: a ?> appended to the last line would land inside the instruction.
 const LITERAL_BLOCKS = [
   { opener: "<!--", terminator: "-->", ownLine: false },
   { opener: "<?", terminator: "?>", ownLine: true },
@@ -134,13 +119,11 @@ const CLOSED_LITERAL_PATTERN = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[[\s\S]
 // Nothing at all closes plaintext: the browser reads every byte after it as
 // that element's text. The opener itself is the only thing that can be undone.
 const UNCLOSABLE_ELEMENTS: ReadonlySet<string> = new Set(["plaintext"]);
-// Container elements need a blank line before their closer or it is read as a
-// lazy continuation of the paragraph above. Raw text elements must not have
-// one: there the blank line is content the element would render.
+// Containers need a blank line before their closer or it reads as a lazy
+// continuation; in a raw text element that blank line is content instead.
 const CONTAINER_ELEMENTS: ReadonlySet<string> = new Set(["details", "select"]);
-// The tokenizer reads these as text, not markup, until it meets their own end
-// tag, so a </details> inside one is script data and must not close a details
-// that is genuinely open outside it. pre is not here: it holds real markup.
+// Read as text, not markup, until their own end tag, so a </details> inside one
+// must not close a details open outside it. pre is absent: it holds real markup.
 const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
   "iframe",
   "noembed",
@@ -160,16 +143,12 @@ const CONDITION_1_ELEMENTS: ReadonlySet<string> = new Set([
   "textarea",
 ]);
 // CommonMark 2.4: a backslash before ascii punctuation makes it literal, so
-// \<script> opens nothing. Only an odd run of backslashes escapes, which is an
-// even match length once the < is counted.
+// \<script> opens nothing. Only an odd run escapes: an even match length with the <.
 const ESCAPED_LT_PATTERN = /\\+</g;
 
-// Elements a blank line does not close. The browser either reads their content
-// as text (script, style, textarea, title, xmp, iframe, noembed, noframes) or
-// keeps them open as a container (details, template, pre), so whatever follows
-// is swallowed rather than rendered. GFM's tagfilter extension lists nearly the
-// same set for the same reason. plaintext is in it because it is worth naming:
-// nothing closes it, so a message that opens one loses the rest regardless.
+// Elements a blank line does not close: the browser either reads their content as
+// text or holds them open as a container, so whatever follows is swallowed rather
+// than rendered. GFM's tagfilter lists nearly the same set for the same reason.
 const PERSISTENT_ELEMENTS: ReadonlySet<string> = new Set([
   "details",
   "iframe",
@@ -192,15 +171,12 @@ function closeOpenBlocks(text: string): string {
     null;
   let block: (typeof LITERAL_BLOCKS)[number] | null = null;
   let blankBefore = true;
-  // An indented code block runs through blank lines to the first line that is
-  // not indented, so the state has to outlive the line that opened it.
+  // An indented code block runs through blank lines, so its state outlives its opener.
   let indented = false;
-  // A code span may cross a soft line break, so an unclosed run keeps masking
-  // until its match arrives.
+  // A code span may cross a soft line break, so an unclosed run keeps masking.
   let span = "";
-  // Tag starts whose > has not arrived yet, and the quote a value is inside.
-  // Once a tag is unfinished every < after it is inside that tag, but each one
-  // becomes a tag start again as soon as the one before it is neutralised.
+  // Tag starts whose > has not arrived, and the quote a value is inside. Every <
+  // after an unfinished tag is inside it, until that one is neutralised.
   let unfinished: { readonly part: number; readonly column: number }[] = [];
   let quote = "";
   const open: string[] = [];
@@ -215,26 +191,22 @@ function closeOpenBlocks(text: string): string {
     if (block !== null) {
       const end = line.indexOf(block.terminator);
       if (end === -1) continue;
-      // The rest of the line is live again, so blank what the block held and
-      // keep scanning rather than skipping to the next line.
+      // The rest of the line is live again, so blank what the block held and rescan.
       const consumed = end + block.terminator.length;
       line = " ".repeat(consumed) + line.slice(consumed);
       block = null;
     }
-    // A fence, an indent and a tag all mean different things inside a block
-    // quote than at the top level, so read them against the quoted content.
-    // Blanking rather than slicing keeps every column where it was.
+    // Fences, indents and tags mean different things inside a block quote, so read
+    // them against the quoted content. Blanking, not slicing, keeps columns intact.
     const marker = BLOCKQUOTE_PATTERN.exec(line)?.[0] ?? "";
     const content = line.slice(marker.length);
-    // The quote ending ends the fence with it, so an unclosed fence inside one
-    // never reaches the next turn.
+    // The quote ending ends the fence, so an unclosed one never reaches the next turn.
     if (fence !== null && fence.quoted && marker === "") fence = null;
     const literal = open.some((name) => CONDITION_1_ELEMENTS.has(name));
     const [, indent = "", run, info = ""] =
       unfinished.length || literal ? [] : FENCE_LINE_PATTERN.exec(content) ?? [];
     if (fence !== null) {
-      // A closer repeats the opener's character, is at least as long, and
-      // carries no info string.
+      // A closer repeats the opener's character, is at least as long, and has no info.
       if (run && run[0] === fence.run[0] && run.length >= fence.run.length && !info.trim()) {
         fence = null;
       }
@@ -244,13 +216,10 @@ function closeOpenBlocks(text: string): string {
       fence = { run, indent, quoted: marker !== "" };
       continue;
     }
-    // A backtick opener carrying a backtick in its info string is not a fence,
-    // so the line is an ordinary paragraph and falls through: its tags are
-    // live, and skipping it would leave whatever it opens unclosed.
-    // Indented code, code spans and closed comments are literal text, so a <
-    // or a <!-- inside one opens nothing. Indented code only starts after a
-    // blank line; otherwise the line is a lazy continuation of the paragraph
-    // above and its content is live.
+    // A backtick opener with a backtick in its info string is not a fence: the line
+    // is prose and falls through, since its tags are live. Indented code, code spans
+    // and closed comments are literal, so a < in one opens nothing; but indented code
+    // only starts after a blank line, else the line is a lazy continuation and live.
     if (!unfinished.length && !literal) {
       indented = indented
         ? blankLine || INDENTED_CODE_PATTERN.test(content)
@@ -267,8 +236,7 @@ function closeOpenBlocks(text: string): string {
       line = " ".repeat(consumed) + line.slice(consumed);
       span = "";
     }
-    // Every substitution below is length preserving, so a column found here is
-    // still the right column in the original line.
+    // Every substitution below preserves length, so columns still map to the original.
     let prose = line
       .replace(BLOCKQUOTE_PATTERN, (marker) => " ".repeat(marker.length))
       .replace(CODE_SPAN_PATTERN, (span: string, lead: string) =>
@@ -277,15 +245,13 @@ function closeOpenBlocks(text: string): string {
       .replace(IMAGE_DESCRIPTION_PATTERN, (alt) => " ".repeat(alt.length))
       .replace(LINK_DESTINATION_PATTERN, (link) => " ".repeat(link.length))
       .replace(CLOSED_LITERAL_PATTERN, (span) => " ".repeat(span.length));
-    // The backslash is the markdown parser's, so it only holds where that
-    // parser is reading inlines, not inside a raw text element.
+    // The backslash is markdown's, so it holds only where that parser reads inlines.
     if (!literal) {
       prose = prose.replace(ESCAPED_LT_PATTERN, (backslashes) =>
         backslashes.length % 2 === 0 ? `${backslashes.slice(0, -1)} ` : backslashes,
       );
     }
-    // Whatever run is left once the closed spans are masked opens a span that
-    // runs on, so the rest of this line is code as well.
+    // A run left after masking closed spans runs on, so the rest of the line is code.
     const leftover = OPEN_RUN_PATTERN.exec(prose);
     if (leftover !== null && runClosesLater(parts, part + 2, leftover[2] as string)) {
       span = leftover[2] as string;
@@ -318,8 +284,7 @@ function closeOpenBlocks(text: string): string {
         quote = "";
         at = start + 1;
       }
-      // The > only ends the tag outside an attribute value, so an unbalanced
-      // quote keeps reading and no closing tag can ever land.
+      // The > only ends a tag outside an attribute value, so an unbalanced quote reads on.
       let end = at;
       for (; end < tags.length; end += 1) {
         const character = tags[end] as string;
@@ -351,18 +316,16 @@ function closeOpenBlocks(text: string): string {
         open.push(tag);
         continue;
       }
-      // Innermost matching opener, so </div></details> still closes the
-      // details. A closer with no opener is inert in every parser, so it must
-      // not license an opener later in the message.
+      // Innermost matching opener, so </div></details> still closes the details. A
+      // closer with no opener is inert, so it must not license a later opener.
       const index = open.lastIndexOf(tag);
       if (index !== -1) open.splice(index, 1);
     }
   }
 
-  // An unfinished tag cannot be closed: the tokenizer is still reading its name
-  // or an attribute value, so a later </script> is swallowed as more of the
-  // same tag. Neutralising the < is the only repair.
-  // Last first, so an earlier replacement does not move a later column.
+  // An unfinished tag cannot be closed: the tokenizer is still reading its name or
+  // an attribute value, so a later </script> is swallowed as more of the same tag.
+  // Neutralising the < is the only repair. Last first, so columns do not shift.
   escapes.push(...unfinished);
   escapes.sort((a, b) => b.part - a.part || b.column - a.column);
   for (const { part, column } of escapes) {
@@ -375,12 +338,10 @@ function closeOpenBlocks(text: string): string {
   const eol = !text.includes("\n") && text.includes("\r") ? "\r" : "\n";
   let out = parts.join("");
   if (block !== null) out += block.ownLine ? `${eol}${block.terminator}` : block.terminator;
-  // Indented back to the opener's column: a closer at column zero would end the
-  // list the opener sits in, then open a block of its own.
+  // Indented to the opener's column: at column zero the closer would end its list.
   if (fence !== null && !fence.quoted) out += `${eol}${fence.indent}${fence.run}`;
-  // Innermost first, so the closers nest the way the openers did, and each on
-  // its own line after a blank one so it is a block rather than a lazy
-  // continuation of the paragraph above.
+  // Innermost first, so closers nest as the openers did; each on its own line after
+  // a blank one so it is a block, not a lazy continuation of the paragraph above.
   for (let index = open.length - 1; index >= 0; index -= 1) {
     const name = open[index] as string;
     out += CONTAINER_ELEMENTS.has(name)
@@ -401,48 +362,39 @@ function fence(body: string, language = ""): string {
 }
 
 function inlineCode(raw: string): string {
-  // A code span cannot hold a line break: a blank line ends it outright and
-  // leaves the rest of the value loose as markdown.
+  // A code span cannot hold a line break: it would leave the rest loose as markdown.
   const value = raw.replace(/[\r\n]+/g, " ");
   const longestRun = [...value.matchAll(/`+/g)].reduce(
     (max, [run]) => Math.max(max, run.length),
     0,
   );
   const ticks = "`".repeat(longestRun + 1);
-  // Padding keeps a leading or trailing backtick from closing the span, and
-  // keeps an empty value from collapsing into one delimiter run. CommonMark
-  // 6.1 also strips one space from each end of a span that has one at both,
-  // unless it is all spaces, so a padded argument needs a spare pair or it
-  // renders with its own whitespace missing.
+  // Padding keeps an edge backtick from closing the span and an empty value from
+  // collapsing into one delimiter run. CommonMark 6.1 also strips one space from each
+  // end of a span padded at both, unless all spaces, so such a value needs a spare pair.
   const stripped = value.startsWith(" ") && value.endsWith(" ") && value.trim() !== "";
   const pad = !value || value.startsWith("`") || value.endsWith("`") || stripped ? " " : "";
   return `${ticks}${pad}${value}${pad}${ticks}`;
 }
 
-// Labels sit inside ** ** and [ ]: a line break ends either one, letting the
-// rest of the label out as markdown, a backtick opens a code span, and < starts
-// inline html that a permissive local viewer will render.
+// Labels sit inside ** ** and [ ]: a line break ends either and lets the rest out
+// as markdown, a backtick opens a code span, and < starts inline html.
 function escapeMarkdownLabel(value: string): string {
-  // Not _: it cannot emphasise inside a word, and escaping it would turn every
-  // snake_case tool key into snake\_case.
+  // Not _: it cannot emphasise inside a word, so snake_case keys stay readable.
   return value.replace(/[\r\n]+/g, " ").replace(/([\\[\]*`<])/g, "\\$1");
 }
 
-// A destination is parsed, not copied: CommonMark 6.2 resolves entity
-// references inside it and 2.4 consumes a backslash before ASCII punctuation.
-// Search results are attacker-controllable, and both rules move where the link
-// goes: `https://docs.unsloth.ai&commat;evil.test/` is a url whose host is
-// docs.unsloth.ai until a viewer decodes it into `docs.unsloth.ai@evil.test`,
-// which is credentials on evil.test. Only the ampersand that opens an entity
-// reference is escaped, so an ordinary query separator stays readable, and the
-// escape is &amp; rather than %26 because percent-encoding one would fold the
-// separator into the preceding value.
+// A destination is parsed, not copied: CommonMark 6.2 resolves entity references
+// inside it and 2.4 consumes a backslash before ASCII punctuation. Search results
+// are attacker-controllable and both rules move where the link goes:
+// `https://docs.unsloth.ai&commat;evil.test/` decodes to credentials on evil.test.
+// Only an entity-opening ampersand is escaped, so ordinary query separators stay
+// readable, and &amp; not %26 because encoding one folds it into the value before.
 const ENTITY_REFERENCE_PATTERN =
   /&(?=(?:[A-Za-z][A-Za-z0-9]{1,31}|#\d{1,7}|#[Xx][0-9A-Fa-f]{1,6});)/g;
 
 function escapeMarkdownDestination(url: string): string {
-  // Percent-encoded rather than doubled: %5C is what a renderer writes for a
-  // surviving backslash anyway, so the destination stays a plain url.
+  // Percent-encoded, not doubled: %5C is what a renderer writes for it anyway.
   return url
     .replaceAll("<", "%3C")
     .replaceAll(">", "%3E")
@@ -473,20 +425,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// A multi-line string is almost always source: html, a patch, a script. Fence
-// it as-is so it reads as code instead of a JSON string full of \n. No language
-// tag, since guessing one wrong is worse than none.
+// A multi-line string is almost always source, so fence it as-is rather than let it
+// read as a JSON string full of \n. No language tag: guessing wrong is worse than none.
 function renderValue(label: string, value: unknown): string[] {
   if (value === undefined) return [];
   const escapedLabel = escapeMarkdownLabel(label);
-  // Scalars render as text too. A json fence spends three lines on `10`, and a
-  // tool call with four of them reads as a wall of fences instead of a call.
+  // Scalars as text too: a json fence spends three lines on `10`.
   if (value === null || typeof value !== "object") {
     const text = typeof value === "string" ? value : String(value);
     if (LINE_BREAK_PATTERN.test(text))
       return [`**${escapedLabel}:**`, fence(text)];
-    // A code span rather than escaping: tool values are data, and any list of
-    // markdown metacharacters to escape is one another syntax slips past.
+    // A code span, not escaping: any list of metacharacters to escape misses one.
     return [`**${escapedLabel}:** ${inlineCode(text)}`];
   }
   return [
@@ -496,31 +445,26 @@ function renderValue(label: string, value: unknown): string[] {
 }
 
 function renderBlock(block: ConversationMarkdownBlock): string {
-  // Emitted verbatim: leading indentation can be an indented code block, so
-  // trimming is only ever an emptiness test, never applied to the output.
+  // Verbatim: leading indentation can be code, so trim is only an emptiness test.
   if (block.kind === "text") {
     return block.text.trim() ? closeOpenBlocks(block.text) : "";
   }
   if (block.kind === "thinking") {
     if (!block.text.trim()) return "";
-    // Reasoning that quotes a closing details tag would end the block early;
-    // the entity renders as that same literal text.
+    // A quoted </details> would end the block early; the entity renders the same.
     const text = closeOpenBlocks(
       block.text.replace(DETAILS_TAG_PATTERN, "&lt;$1$2$3>"),
     );
-    // Collapsed so a transcript reads as the conversation first, with the
-    // reasoning still there for anyone who wants it.
+    // Collapsed so the transcript reads as the conversation first.
     return `<details>\n<summary>thinking</summary>\n\n${text}\n\n</details>`;
   }
   if (block.kind === "attachment") {
-    // Escaped: a link reference definition elsewhere in the transcript would
-    // otherwise resolve the bare [label] into a link.
+    // Escaped: a link reference definition elsewhere would turn [label] into a link.
     return escapeMarkdownLabel(block.label);
   }
   if (block.kind === "source") {
     const url = safeSourceUrl(block.url);
-    // A rejected destination falls back to a code span, not plain text: a
-    // title that is itself a bare url would just get autolinked instead.
+    // Code span, not plain text: a title that is itself a bare url would autolink.
     return url
       ? `**source:** [${escapeMarkdownLabel(block.title)}](<${url}>)`
       : `**source:** ${inlineCode(block.title)}`;
@@ -567,8 +511,7 @@ function withoutInlineDataBytes(
 }
 
 // Gemini keeps a code-execution turn replayable by stashing the raw part in
-// args.google.native_part, base64 inlineData included. Same reasoning as
-// generated images: keep the metadata, drop the bytes.
+// args.google.native_part, base64 inlineData included. Keep metadata, drop bytes.
 function withoutNativePartBytes(args: unknown): unknown {
   if (!isPlainObject(args) || !isPlainObject(args.google)) return args;
   const google = args.google;
@@ -596,8 +539,7 @@ export function contentBlocksToMarkdownBlocks(
   if (typeof content === "string") {
     return [{ kind: "text", text: withoutGeneratedAudioBytes(content) }];
   }
-  // A record written without content at all would otherwise stringify to the
-  // undefined value, not a string, and take the whole export down with it.
+  // Otherwise a content-less record stringifies to undefined and breaks the export.
   if (content == null) {
     return [];
   }

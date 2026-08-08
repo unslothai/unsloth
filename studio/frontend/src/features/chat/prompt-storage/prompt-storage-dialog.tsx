@@ -258,9 +258,8 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   return parts.join("\n\n");
 }
 
-// Markdown counterpart to messageToText: same content and same attachment
-// handling, but each part keeps its shape so the renderer can fence tool calls
-// and collapse thinking instead of inlining both as prose.
+// Markdown counterpart to messageToText: same content and attachments, but each
+// part keeps its shape so the renderer can fence tool calls and collapse thinking.
 function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): string {
   const normalizeToolResult = (result: unknown): unknown =>
     isMcpImageToolResult(result) ? result.text : result;
