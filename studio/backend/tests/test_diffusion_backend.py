@@ -11,6 +11,7 @@ GPU, weights, or network access is needed (sub-second, CI-friendly).
 from __future__ import annotations
 
 import contextlib
+import re
 import sys
 import threading
 import types
@@ -40,6 +41,7 @@ from core.inference.diffusion_families import (
     prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
+    sd_cpp_companion_only_repo_ids,
     supported_family_names,
 )
 
@@ -175,23 +177,88 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_GATED_MIRROR_PAIRS) == 12
+    assert len(_GATED_MIRROR_PAIRS) == 24
     for upstream, mirror in _GATED_MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
         # Case-insensitive in, since a card tag may carry any casing.
         assert mirror_repo(upstream.upper()) == mirror
-    # An ungated base is left alone.
-    assert mirror_repo("Qwen/Qwen-Image") is None
-    assert canonical_base("Qwen/Qwen-Image") == "Qwen/Qwen-Image"
+    # A base with no mirror is left alone. HunyuanImage 2.1 is the deliberate one: its licence
+    # allows distribution only in a Territory excluding the EU, UK and South Korea, which a public
+    # Hub repo cannot honour.
+    hunyuan = "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
+    assert mirror_repo(hunyuan) is None
+    assert canonical_base(hunyuan) == hunyuan
+
+
+def test_no_mirror_is_a_companion_only_repo():
+    """A mirror substitutes for the WHOLE base, so it must never be a components-only repo.
+
+    ``prefer_ungated_mirror`` also fires on a plain bf16 pick, where the transformer is read from
+    the base, so a mirror pointing at a repo with no denoiser turns a working load into a
+    missing-weights error. The companion-only set is exactly that list of repos.
+    """
+    companions = sd_cpp_companion_only_repo_ids()
+    for _upstream, mirror in _GATED_MIRROR_PAIRS:
+        assert mirror.lower() not in companions, mirror
+
+
+def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
+    """Lookup is by exact id, so a variant the catalog offers is silently missed until listed.
+
+    Adding a family's flagship is not enough: HiDream ships Full, Dev and Fast, and FLUX.2 klein
+    ships 4B and base-4B. Each is its own repo id, so each needs its own row or the pick keeps
+    fetching tens of GB from the vendor while the change claims to have stopped that. Read the
+    catalog rather than restating the table, so a newly offered variant fails here instead of
+    quietly bypassing the mirrors.
+    """
+    catalog = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/features/model-picker/components/model-selector/model-catalog.ts"
+    ).read_text(encoding = "utf-8")
+    # Image side only: the video bases are ungated AND out of this table's scope, and mirroring
+    # them is a separate call. Slice at VIDEO_CATALOG so a new video entry does not fail this.
+    images = catalog.split("export const IMAGE_CATALOG", 1)[1].split(
+        "export const VIDEO_CATALOG", 1
+    )[0]
+    offered = set(re.findall(r'bf16Pipeline\(\s*"([^"]+)"', images))
+    mirrored = {u.lower() for u, _m in _GATED_MIRROR_PAIRS}
+    # Anything under unsloth/ is already ours, and the deliberate Hunyuan exception is recorded
+    # beside the table with the territorial reason it cannot be mirrored.
+    missing = sorted(
+        repo
+        for repo in offered
+        if not repo.lower().startswith("unsloth/")
+        and "hunyuan" not in repo.lower()
+        and repo.lower() not in mirrored
+    )
+    assert not missing, f"catalog offers these vendor bases with no unsloth mirror: {missing}"
+
+
+def test_the_qwen_2512_mirror_covers_the_card_tag_route(monkeypatch):
+    """#8001: the 2512 companions come from a repo the family table never names.
+
+    ``unsloth/Qwen-Image-2512-GGUF`` carries ``base_model: Qwen/Qwen-Image-2512`` and
+    ``_resolve_base_repo`` trusts that tag, so the fetch lands on the vendor repo whatever the
+    family default says. The mirror is the only thing that redirects it.
+    """
+    _no_cache(monkeypatch)
+    assert mirror_repo("Qwen/Qwen-Image-2512") == "unsloth/Qwen-Image-2512"
+    assert prefer_ungated_mirror("Qwen/Qwen-Image-2512") == "unsloth/Qwen-Image-2512"
+    # The family default is a DIFFERENT repo with its own mirror, so the redirect here is the card
+    # tag's own and cannot be mistaken for the fallback doing the work.
+    assert mirror_repo("Qwen/Qwen-Image") == "unsloth/Qwen-Image"
+    # status(), saved configs and a trained adapter's base_model must still read the vendor id.
+    assert canonical_base("unsloth/Qwen-Image-2512") == "Qwen/Qwen-Image-2512"
 
 
 def test_prefer_ungated_mirror_swaps_gated_bases(monkeypatch):
     _no_cache(monkeypatch)
     for upstream, mirror in _GATED_MIRROR_PAIRS:
         assert prefer_ungated_mirror(upstream) == mirror
-    # Ungated bases are untouched.
-    assert prefer_ungated_mirror("Qwen/Qwen-Image") == "Qwen/Qwen-Image"
+    # A base outside the table is untouched.
+    hunyuan = "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
+    assert prefer_ungated_mirror(hunyuan) == hunyuan
 
 
 def test_prefer_ungated_mirror_declines(monkeypatch):
@@ -1509,7 +1576,9 @@ def test_load_sdxl_pipeline_from_pretrained(fake_runtime):
     status = backend.load_pipeline("stabilityai/stable-diffusion-xl-base-1.0")
     assert status["loaded"] is True
     assert status["family"] == "sdxl"
-    assert _FakePipeline.last["base"] == "stabilityai/stable-diffusion-xl-base-1.0"
+    # from_pretrained reads the MIRROR: the swap is fetch-only, so status keeps the vendor id.
+    assert _FakePipeline.last["base"] == "unsloth/stable-diffusion-xl-base-1.0"
+    assert status["base_repo"] == "stabilityai/stable-diffusion-xl-base-1.0"
     assert "transformer" not in _FakePipeline.last
     # Neither single-file path (transformer-only nor whole-pipeline) was taken.
     assert _FakeTransformer.last == {}
@@ -1529,7 +1598,9 @@ def test_load_sdxl_single_file_uses_pipeline_from_single_file(fake_runtime, tmp_
     assert status["family"] == "sdxl"
     # The whole-pipeline single-file path was taken with the base repo as config.
     assert _FakePipeline.last_single_file["path"] == str((tmp_path / "sdxl.safetensors").resolve())
-    assert _FakePipeline.last_single_file["config"] == "stabilityai/stable-diffusion-xl-base-1.0"
+    # The config comes from the MIRROR; status still reports the vendor id it copies.
+    assert _FakePipeline.last_single_file["config"] == "unsloth/stable-diffusion-xl-base-1.0"
+    assert status["base_repo"] == "stabilityai/stable-diffusion-xl-base-1.0"
     # The transformer-only single-file build was NOT taken.
     assert _FakeTransformer.last == {}
 
@@ -4580,6 +4651,9 @@ def test_dense_fit_check_runs_for_a_base_the_live_cache_root_does_not_hold(
     # live root reads 0 for either.
     from core.inference import diffusion as dmod
 
+    # Subject is cross-root shard discovery, not mirroring. Pin the base id so the load reads the
+    # fixture's cache dir, else the ambient cache decides whether the swap fires.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
     root = tmp_path / "stale-root" if staged else other
     shards = root / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("a" * 40)
@@ -4641,6 +4715,7 @@ def test_the_dense_builder_reads_transformer_from_the_hub_id_not_the_staged_snap
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: None)
+    _no_cache(monkeypatch)
     snapshot = tmp_path / "other-hub" / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / "abc"
     # transformer/ present but shardless: the shape an is_dir() guard would wave through.
     (snapshot / "transformer").mkdir(parents = True)
@@ -4668,7 +4743,9 @@ def test_the_dense_builder_reads_transformer_from_the_hub_id_not_the_staged_snap
             fam = detect_family("unsloth/Z-Image-GGUF"),
             base_local_dir = str(snapshot),
         )
-    assert seen == ["Tongyi-MAI/Z-Image-Turbo"]
+    # A hub id, not the snapshot path: which hub id is incidental here, and with Z-Image mirrored
+    # the load reads the mirror. Pinned so the ambient cache cannot decide it.
+    assert seen == ["unsloth/Z-Image-Turbo"]
 
 
 def test_reset_step_cache_helper_is_best_effort():
@@ -5285,9 +5362,11 @@ def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkey
         "unsloth/Z-Image-GGUF", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf"
     )
 
+    # The base entry names the MIRROR: it is staged before the loader runs, so it must be the repo
+    # the manager will actually pull from.
     assert [e["repo_id"] for e in plan["entries"]] == [
         "unsloth/Z-Image-GGUF",
-        "Tongyi-MAI/Z-Image-Turbo",
+        "unsloth/Z-Image-Turbo",
     ]
     checkpoint, base = plan["entries"]
     assert checkpoint["files"] == ["Z-Image-Turbo-Q4_K_M.gguf"]
