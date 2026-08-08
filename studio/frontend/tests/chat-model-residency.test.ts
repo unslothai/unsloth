@@ -7,6 +7,7 @@
 // prompt came back a bare 400. These pin the rule the header now uses.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { chatModelLoaded } from "../src/features/chat/lib/chat-model-loaded.ts";
@@ -74,6 +75,26 @@ test("nothing picked is never loaded", () => {
     }),
     false,
   );
+});
+
+// The header tick is the selector's own isLoaded, which was `selected !== ""`.
+// Reading the rule out of the source keeps the prop wired to the fix: the first
+// attempt at this changed a different modelLoaded and the tick never moved.
+test("the selector's tick asks the caller, and defaults to the old rule", () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-selector.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(source, /const isLoaded = selected !== "" && \(loaded \?\? true\)/);
+  const page = readFileSync(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(page, /loaded=\{chatModelLoaded\(\{/, "the chat header must pass it");
+  assert.match(page, /residentCheckpoint,/);
 });
 
 test("a model still loading is not loaded yet", () => {

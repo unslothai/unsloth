@@ -8,7 +8,8 @@
 export type ChatModelLoadedInput = {
   /** The picker selection, "" when nothing is picked. */
   checkpoint: string;
-  modelLoading: boolean;
+  /** Callers that show their own loading state can leave this out. */
+  modelLoading?: boolean;
   /** An API model: served remotely, so nothing is resident here. */
   isExternalModel: boolean;
   /** What /api/inference/status holds; undefined before the first read. */
@@ -26,7 +27,7 @@ export type ChatModelLoadedInput = {
  */
 export function chatModelLoaded({
   checkpoint,
-  modelLoading,
+  modelLoading = false,
   isExternalModel,
   residentCheckpoint,
 }: ChatModelLoadedInput): boolean {
