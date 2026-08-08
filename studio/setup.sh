@@ -978,16 +978,14 @@ _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
-# Search (+x), not read (+r), is what the marker probes need: inside a directory
-# we cannot search every probe reports absent, so our own install reads as someone else's.
+# Marker probes need search (+x), not read (+r): in an unsearchable dir every probe reports absent, so our install looks foreign.
 _studio_dir_unsearchable() {
     [ -d "$1" ] || return 1
     ( cd -- "$1" ) 2>/dev/null && return 1
     return 0
 }
 
-# Also needs +r, for callers that list or replace the tree: mode 111 is searchable
-# but still fails install_llama_prebuilt.py.
+# Also needs +r for callers that list or replace the tree: mode 111 is searchable but still fails install_llama_prebuilt.py.
 _studio_dir_unreadable() {
     [ -d "$1" ] || return 1
     _studio_dir_unsearchable "$1" && return 0
@@ -1018,8 +1016,7 @@ _path_access_denied() {
     setup_fail 1 "Permission denied reading the existing $_pad_label at $_pad_dir. Delete or rename that folder (Unsloth reinstalls it) or restore access, then re-run setup. Reinstalling the app does not reset it."
 }
 
-# POSIX makes a trailing slash follow a final symlink, so "link/" is never -L.
-# Strip it, but never past the root.
+# POSIX follows a final symlink when the path ends in /, so "link/" is never -L. Strip it, but never past the root.
 _studio_rstrip_slash() {
     _srs_path="$1"
     while [ "$_srs_path" != "/" ] && [ "${_srs_path%/}" != "$_srs_path" ]; do
@@ -1028,16 +1025,14 @@ _studio_rstrip_slash() {
     printf '%s' "$_srs_path"
 }
 
-# An unsearchable ancestor makes everything under it unstattable, so a real path
-# reads as missing. Walk up to the deepest ancestor we can stat and report if it
-# is the blocker. Returns without reporting when the path is simply absent.
+# An unsearchable ancestor makes a real path read as missing. Walk up to the deepest
+# ancestor we can stat and report it as the blocker; stay quiet if the path is just absent.
 _report_denied_ancestor() {
     _rda_probe="$(_studio_rstrip_slash "$1")"
     _rda_hops=0
     while [ ! -e "$_rda_probe" ] && [ "$_rda_probe" != "/" ] && [ "$_rda_probe" != "." ]; do
-        # A symlink we cannot follow is the deepest component we can name, so keep
-        # walking through its target: that is where the denied ancestor lives.
-        # The hop cap keeps a symlink cycle from looping forever.
+        # An unfollowable symlink is the deepest name we have, so walk its target:
+        # the denied ancestor lives there. The hop cap breaks symlink cycles.
         if [ -L "$_rda_probe" ] && [ "$_rda_hops" -lt 40 ]; then
             _rda_hops=$((_rda_hops + 1))
             _rda_target="$(readlink -- "$_rda_probe")" || break
@@ -1048,7 +1043,7 @@ _report_denied_ancestor() {
             _rda_probe="$(_studio_rstrip_slash "$_rda_probe")"
             continue
         fi
-        # -- so a path starting with "-" is an operand, not a dirname option.
+        # -- keeps a leading-dash path an operand, not a dirname option.
         _rda_probe="$(dirname -- "$_rda_probe")"
     done
     if _studio_dir_unsearchable "$_rda_probe"; then
@@ -1986,13 +1981,13 @@ _has_local_llama_server() {
 _LOCAL_LLAMA_CPP_LINKED=false
 if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
-        # A build under an unsearchable ancestor cannot be stat'd either, so report
-        # permissions first rather than sending the user to fix a correct path.
+        # A build under an unsearchable ancestor cannot be stat'd, so report permissions
+        # rather than sending the user to fix a path that is already correct.
         _report_denied_ancestor "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" "UNSLOTH_LOCAL_LLAMA_CPP_DIR"
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
         setup_fail 1 "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR"
     fi
-    # In an if condition, so a denied dir reports instead of tripping errexit here.
+    # In an if condition so a denied dir reports instead of tripping errexit.
     if ! _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" 2>/dev/null && pwd -P)"; then
         # owner-unverified: this is the user's own tree, never advise deleting it.
         _path_access_denied "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" "UNSLOTH_LOCAL_LLAMA_CPP_DIR" owner-unverified
@@ -2006,8 +2001,8 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     _CANON_LLAMA_CPP_DIR="$LLAMA_CPP_DIR"
     _LLAMA_CPP_PARENT="$(dirname "$LLAMA_CPP_DIR")"
     if [ -d "$_LLAMA_CPP_PARENT" ]; then
-        # Report rather than carry on: nothing can be written under a parent we
-        # cannot search, so the link below would abort raw a few lines later.
+        # Nothing can be written under a parent we cannot search, so report here
+        # rather than let the link below abort raw a few lines later.
         if _canon_parent="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" 2>/dev/null && pwd -P)"; then
             _CANON_LLAMA_CPP_DIR="$_canon_parent/$(basename "$LLAMA_CPP_DIR")"
         else

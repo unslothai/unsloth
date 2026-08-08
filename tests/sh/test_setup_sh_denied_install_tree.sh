@@ -26,8 +26,7 @@ echo "=== setup.sh: the guards exist and probe the right permission ==="
 
 assert_contains "defines the unsearchable-directory probe" \
     "$SETUP_SH" "_studio_dir_unsearchable() {"
-# cd needs +x, exactly what the marker probes need; ls needs +r, which is neither
-# sufficient nor necessary. Pin the cd form.
+# cd needs +x, what the marker probes need; ls needs +r, neither sufficient nor necessary. Pin the cd form.
 assert_contains "the probe tests search (cd), not read (ls)" \
     "$SETUP_SH" '( cd -- "$1" ) 2>/dev/null && return 1'
 assert_contains "defines the denial reporter" \
@@ -111,9 +110,8 @@ else
     ok "no unguarded rm -rf of the install dir remains"
 fi
 
-# A bare $(cd ...) assignment aborts under errexit before setup_fail can report,
-# so the desktop app gets an exit code with no [TAURI:ERROR]. Both must sit in an
-# if condition, which errexit exempts.
+# A bare $(cd ...) assignment aborts under errexit before setup_fail can report, leaving
+# an exit code with no [TAURI:ERROR]. Both must sit in an if condition, which errexit exempts.
 if grep -qE '^\s*_RESOLVED_LOCAL="\$\(CDPATH= cd' "$SETUP_SH"; then
     bad "a denied UNSLOTH_LOCAL_LLAMA_CPP_DIR reports instead of tripping errexit"
 else
@@ -127,8 +125,7 @@ fi
 # Carrying on past a denied parent only moves the abort to the ln a few lines down.
 assert_contains "a denied install parent stops rather than continuing" \
     "$SETUP_SH" '_path_access_denied "$_LLAMA_CPP_PARENT" "Unsloth install directory" owner-unverified'
-# An unsearchable ancestor makes a real path unstattable, so [ ! -d ] reads it as
-# missing and would send the user to fix a path that is already correct.
+# An unsearchable ancestor makes a real path unstattable, so [ ! -d ] would call it missing.
 assert_contains "a denied ancestor is reported before the missing-path guard" \
     "$SETUP_SH" '_report_denied_ancestor "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" "UNSLOTH_LOCAL_LLAMA_CPP_DIR"'
 
@@ -293,8 +290,7 @@ rda() {
         echo "NOT_REPORTED"' _ "$WORK/helpers.sh" "$2" 2>&1 )
 }
 
-# A symlink pointing under a denied ancestor is unstattable the whole way down,
-# so a lexical walk alone would call the real build missing.
+# A symlink under a denied ancestor is unstattable all the way down, so a lexical walk alone would call the build missing.
 SYM="$WORK/sym"; mkdir -p "$SYM/shared/denied/build/llama.cpp" "$SYM/tmp"
 ln -s "$SYM/shared/denied/build" "$SYM/tmp/local"
 chmod 000 "$SYM/shared/denied"
@@ -342,8 +338,7 @@ case "$(rda "$WORK" "$SYM/tmp/a/llama.cpp")" in
     *) bad "a symlink cycle terminates without reporting" ;;
 esac
 
-# A relative path starting with "-" must reach the reporter, not be eaten by
-# dirname as an option and abort the whole run on errexit.
+# A leading-dash path must reach the reporter, not be eaten as a dirname option and abort on errexit.
 DASH="$WORK/dash"; mkdir -p "$DASH"
 ( cd "$DASH" && mkdir -p -- "-denied/llama.cpp" && chmod 000 -- "-denied" )
 if [ -d "$DASH/-denied/llama.cpp" ]; then
