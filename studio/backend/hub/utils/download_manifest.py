@@ -185,6 +185,43 @@ def _canonical_hub_cache(hub_cache: Optional[str | Path] = None) -> Optional[str
     return _hub_cache_spellings(hub_cache)[0]
 
 
+def _scope_spellings(hub_cache: str | Path) -> tuple[str, ...]:
+    """Every scope dir this cache's state can sit in, for a caller whose own
+    spelling may already be resolved.
+
+    ``cache_scope_names`` recovers the pre-``resolve`` digest only from an
+    unresolved path: hand it one that resolves to itself and it returns the
+    canonical digest alone. The read path is fed the raw configured setting and
+    so gets both, but the delete and the inventory index are not -- every
+    production caller of ``purge_all_state_for_repo`` passes
+    ``resolve_delete_target_root``, whose every branch resolves, and
+    ``build_variant_state_index``'s inventory callers pass a directory derived
+    from ``huggingface_hub.scan_cache_dir``, which resolves too. Left alone,
+    reads probe two scopes while deletes clear one: a purged variant stays on
+    disk under the legacy digest for the next read to resurrect, and the two
+    inventory endpoints disagree about state the progress endpoint can see.
+
+    So also probe the configured cache's own spelling -- but only when it names
+    the same directory as the path we were handed. Without that guard, deleting
+    a repo out of a NON-active cache would sweep the active cache's state for
+    the same repo, which is a far worse failure than the one being fixed.
+    """
+    scopes = list(cache_scope_names(hub_cache))
+    canonical = normalize_hub_cache(hub_cache)
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        configured = get_hf_cache_paths().hub_cache
+    except Exception:
+        return tuple(scopes)
+    if configured is None or normalize_hub_cache(configured) != canonical:
+        return tuple(scopes)
+    for scope in cache_scope_names(configured):
+        if scope not in scopes:
+            scopes.append(scope)
+    return tuple(scopes)
+
+
 def _read_state_payload(path: Path) -> Optional[dict]:
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
@@ -1169,7 +1206,11 @@ def purge_all_state_for_repo(
         # Both scope spellings, else a repo delete leaves the pre-resolve copy
         # behind for a later read to resurrect as state for a cache that is gone.
         search = []
-        scopes = cache_scope_names(hub_cache)
+        # _scope_spellings, not cache_scope_names: every production caller of this
+        # function resolves its target root first, so the raw-spelling probe would
+        # be inert here while the read path still has it -- a purged variant that
+        # the next read brings back.
+        scopes = _scope_spellings(hub_cache)
         for path_factory, base, cancel_markers in (
             (manifest_path, manifests_dir(create = False), False),
             (marker_path, cancelled_dir(create = False), True),
@@ -1410,7 +1451,11 @@ def build_variant_state_index(
         # digest is indexed rather than silently read as "no manifest". Derived
         # from the caller's own spelling, not the canonical one, which resolves
         # to itself and would yield the canonical digest twice. Normally one key.
-        for scope in cache_scope_names(hub_cache):
+        # _scope_spellings for the same reason as the delete: the inventory callers
+        # reach here with a directory derived from huggingface_hub.scan_cache_dir,
+        # which has already resolved it, so the raw probe alone finds nothing and
+        # the cached-model views would disagree with the progress endpoint.
+        for scope in _scope_spellings(hub_cache):
             caches_by_scope.setdefault(scope, set()).add(canonical_cache)
 
     active_cache = _canonical_hub_cache(active_hub_cache)

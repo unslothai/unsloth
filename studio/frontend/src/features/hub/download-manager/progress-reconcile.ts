@@ -20,6 +20,17 @@ export function hasObservedExpectedBytes(job: ManagedDownload): boolean {
   );
 }
 
+// A number off the wire (a byte count or a fraction), or 0 when it is not a usable
+// one. The payload is
+// cast from raw JSON with no runtime validation (apiGetProgress -> ProgressLike),
+// and a NaN or an Infinity survives every comparison below to reach the store as
+// a width of "NaN%" on the progress bar. 0 reads as "not measured", which is the
+// conservative answer here: it holds the card's last figure rather than
+// publishing a garbage one, and never manufactures a completion.
+function finiteReading(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 export function resolveProgressUpdate(
   job: ManagedDownload,
   progressResp: ProgressLike,
@@ -32,7 +43,7 @@ export function resolveProgressUpdate(
   fraction: number;
   madeProgress: boolean;
 } {
-  const reported = progressResp.expected_bytes;
+  const reported = finiteReading(progressResp.expected_bytes);
   const isGgufVariantJob =
     job.kind === DOWNLOAD_KIND.MODEL && job.variant !== null;
   const backendOwnsGgufProgress = isGgufVariantJob && reported > 0;
@@ -47,7 +58,7 @@ export function resolveProgressUpdate(
       : job.expectedBytes
     : Math.max(reported > 0 ? reported : job.expectedBytes, job.expectedBytes);
   const previousDownloadedBytes = job.downloadedBytes;
-  const reportedCompleted = progressResp.completed_bytes ?? 0;
+  const reportedCompleted = finiteReading(progressResp.completed_bytes);
   // Hold the last reading through a poll that found nothing, rather than
   // publishing the "I could not measure this" answer as a measurement. The
   // backend recomputes both counters from the shared per-repo blobs/ dir every
@@ -64,27 +75,37 @@ export function resolveProgressUpdate(
   // card near full for the whole retry and starve the rolling-window rate of
   // the movement it needs to publish a speed or an ETA. Only a zero is ignored,
   // so every real change -- up or down -- still lands on the next poll.
+  const reportedDownloaded = finiteReading(progressResp.downloaded_bytes);
   const downloadedBytes = resetMonotonic
-    ? Math.max(0, progressResp.downloaded_bytes)
-    : progressResp.downloaded_bytes > 0
-      ? progressResp.downloaded_bytes
+    ? Math.max(0, reportedDownloaded)
+    : reportedDownloaded > 0
+      ? reportedDownloaded
       : Math.max(previousDownloadedBytes, 0);
-  // Same rule, and it cannot manufacture a completion: hasObservedExpectedBytes
-  // also needs completeOnDisk, which is never held over, and the backend only
-  // ever sets it on a reading whose own completed_bytes already cleared the bar.
+  // Same rule for the finalized counter.
+  const measuredCompleted = resetMonotonic || reportedCompleted > 0;
   const completedBytes = resetMonotonic
     ? Math.max(0, reportedCompleted)
-    : reportedCompleted > 0
+    : measuredCompleted
       ? reportedCompleted
       : Math.max(job.completedBytes, 0);
-  const completeOnDisk = progressResp.complete_on_disk === true;
+  // ...and the completion flag is only honoured on a poll that measured the
+  // counter it is a statement about. Holding the bytes over made a new pairing
+  // reachable that the plain reading never was: LAST poll's completed_bytes
+  // beside THIS poll's complete_on_disk, a completion neither reading showed on
+  // its own. The backend does hold the invariant that would rule that out
+  // (complete_on_disk is only set once completed_bytes clears the total), but a
+  // false "complete" retires the card and drops the download, and that is not an
+  // outcome to leave resting on a cross-tier promise no code here checks. Both
+  // halves of hasObservedExpectedBytes now provably come from the same reading.
+  const completeOnDisk = progressResp.complete_on_disk === true && measuredCompleted;
   const madeProgress =
     resetMonotonic ||
     downloadedBytes > previousDownloadedBytes ||
     expected !== job.expectedBytes;
+  const reportedFraction = finiteReading(progressResp.progress);
   const rawFraction =
-    progressResp.progress > 0
-      ? progressResp.progress
+    reportedFraction > 0
+      ? reportedFraction
       : expected > 0
         ? downloadedBytes / expected
         : 0;

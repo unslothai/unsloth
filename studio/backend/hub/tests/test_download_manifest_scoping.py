@@ -376,3 +376,109 @@ def test_expanduser_failure_does_not_escape_a_plain_read(monkeypatch, tmp_path):
 
     assert state_dir.cache_scope_names("~/hf-hub")
     assert download_manifest.read_manifest("model", "Org/Model", hub_cache = "~/hf-hub") is None
+
+
+def _legacy_scoped_manifest(tmp_path, spelled, resolved, repo_id, variant):
+    """Plant a manifest under the PRE-resolve digest of ``spelled``.
+
+    That is where state lands when ``resolve`` is unavailable at write time (a
+    OneDrive placeholder, a locked junction), and where an 8.3 path's state
+    lands until the directory it names exists. The reader recovers it; the
+    point of these tests is that the delete and the index do too.
+    """
+    legacy = state_dir.manifest_path(
+        "model",
+        repo_id,
+        variant,
+        hub_cache = str(resolved),
+        cache_scope = state_dir.legacy_cache_scope_name(str(spelled)),
+    )
+    _write_manifest(legacy, _manifest_payload(repo_id, variant, str(resolved)))
+    assert state_dir.legacy_cache_scope_name(str(spelled)) != state_dir.cache_scope_name(
+        str(spelled)
+    ), "fixture is not exercising a split digest"
+    return legacy
+
+
+def test_repo_delete_clears_legacy_scope_when_handed_a_RESOLVED_root(monkeypatch, tmp_path):
+    """The delete reaches purge_all_state_for_repo with an ALREADY-resolved root.
+
+    Every production caller does: hub/services/models/deletion.py and
+    hub/services/datasets/cache_inventory.py all pass
+    resolve_delete_target_root(...), whose every branch calls .resolve(). So the
+    raw-spelling probe inside cache_scope_names finds nothing here, while the
+    read path -- fed the raw configured setting -- still has it. Left that way,
+    a purged variant survives under the legacy digest and the next read brings
+    it back, which is exactly the resurrection the scope fan-out exists to stop.
+    """
+    spelled, resolved = _redirected_hub_cache(tmp_path)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = str(spelled)),
+    )
+    legacy = _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
+
+    # The resolved spelling, as resolve_delete_target_root would hand it over.
+    removed = download_manifest.purge_all_state_for_repo(
+        "model", "Org/Model", hub_cache = str(resolved)
+    )
+
+    assert removed > 0
+    assert not legacy.is_file()
+    # ...and the read path agrees it is gone, rather than resurrecting it.
+    assert download_manifest.read_manifest("model", "Org/Model", "Q4_K_M") is None
+
+
+def test_variant_index_sees_legacy_scope_when_handed_a_RESOLVED_root(monkeypatch, tmp_path):
+    """Same asymmetry on the inventory side.
+
+    cache_inventory feeds build_variant_state_index a directory derived from
+    huggingface_hub.scan_cache_dir, which resolves. Without the configured
+    spelling the cached-model views would report no state for a variant the
+    progress endpoint can see.
+    """
+    spelled, resolved = _redirected_hub_cache(tmp_path)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = str(spelled)),
+    )
+    _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
+
+    index = download_manifest.build_variant_state_index(
+        [("model", "Org/Model", str(resolved))],
+        active_hub_cache = str(resolved),
+    )
+    state = index.for_repo("model", "Org/Model", hub_cache = str(resolved))
+
+    assert state.manifest_for("Q4_K_M") is not None
+
+
+def test_the_configured_spelling_is_only_borrowed_for_the_SAME_directory(
+    monkeypatch, tmp_path
+):
+    """The guard on the fan-out, which matters more than the fan-out.
+
+    Borrowing the configured cache's spellings unconditionally would make a
+    delete aimed at an INACTIVE cache sweep the active cache's state for the
+    same repo -- silently losing state for a cache the user never touched,
+    which is a far worse failure than the resurrection above.
+    """
+    spelled, resolved = _redirected_hub_cache(tmp_path)
+    other = tmp_path / "other" / "hub"
+    other.mkdir(parents = True)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = str(spelled)),
+    )
+    active_legacy = _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
+    victim = state_dir.manifest_path("model", "Org/Model", "Q8_0", hub_cache = str(other))
+    _write_manifest(victim, _manifest_payload("Org/Model", "Q8_0", str(other)))
+
+    # Deleting the repo out of the OTHER cache must not touch the active one.
+    download_manifest.purge_all_state_for_repo("model", "Org/Model", hub_cache = str(other))
+
+    assert not victim.is_file()
+    assert active_legacy.is_file()

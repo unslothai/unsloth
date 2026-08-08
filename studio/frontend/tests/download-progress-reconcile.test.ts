@@ -178,3 +178,121 @@ test("a negative byte count reads as no measurement, not as a drop", () => {
   assert.equal(resolved.downloadedBytes, 4 * GB);
   assert.equal(resolved.completedBytes, 4 * GB);
 });
+
+test("a fresh complete_on_disk cannot promote a HELD byte count to a completion", () => {
+  // The dangerous direction. Holding the last reading over an unmeasured poll
+  // made a pairing reachable that publishing the zero never was: LAST poll's
+  // completed_bytes beside THIS poll's complete_on_disk. Neither reading showed
+  // a completion; together they retire the card and drop the download. The
+  // backend does not currently emit this shape, but nothing on this side checks
+  // that, and the cost of being wrong is a download silently declared finished.
+  const resolved = resolveProgressUpdate(
+    job(),
+    emptyReading({ complete_on_disk: true }),
+  );
+
+  assert.equal(resolved.completedBytes, EXPECTED); // still held, for the card
+  assert.equal(resolved.completeOnDisk, false); // but not asserted as finished
+  assert.equal(
+    hasObservedExpectedBytes(
+      job({
+        completedBytes: resolved.completedBytes,
+        expectedBytes: resolved.expected,
+        completeOnDisk: resolved.completeOnDisk,
+      }),
+    ),
+    false,
+  );
+});
+
+test("a measured completion in the same reading still settles", () => {
+  // The guard above must not cost the real case: when the poll measured the
+  // counter it is making a claim about, the completion lands as before.
+  const resolved = resolveProgressUpdate(
+    job({ downloadedBytes: 32 * GB, completedBytes: 32 * GB, fraction: 0.97 }),
+    emptyReading({
+      downloaded_bytes: EXPECTED,
+      completed_bytes: EXPECTED,
+      progress: 1,
+      complete_on_disk: true,
+    }),
+  );
+
+  assert.equal(resolved.completeOnDisk, true);
+  assert.equal(
+    hasObservedExpectedBytes(
+      job({
+        completedBytes: resolved.completedBytes,
+        expectedBytes: resolved.expected,
+        completeOnDisk: resolved.completeOnDisk,
+      }),
+    ),
+    true,
+  );
+});
+
+test("a reading with no total keeps the card's own total, not zero", () => {
+  // The "of 33 GB" half of the reported card. expected_bytes is the caller's
+  // catalog hint echoed back, and a backend that could not size the repo
+  // returns 0; publishing that would blank the denominator on a card that
+  // already knew it. Untested before: replacing the whole expected branch with
+  // `reported` left every other assertion in this file green.
+  for (const resetMonotonic of [false, true]) {
+    const resolved = resolveProgressUpdate(
+      job({ downloadedBytes: GB, completedBytes: GB }),
+      emptyReading({ downloaded_bytes: 2 * GB, expected_bytes: 0 }),
+      { resetMonotonic },
+    );
+    assert.equal(resolved.expected, EXPECTED, `resetMonotonic=${resetMonotonic}`);
+  }
+});
+
+test("a snapshot total is a high-water mark, a variant total is backend-owned", () => {
+  // The two halves of the expected branch differ, and only one of them is a
+  // floor. A variant's total is re-derived every poll and legitimately shrinks
+  // (a re-resolved file set); a snapshot's must not dip on a jittery reading.
+  const lower = 20 * GB;
+  const variant = resolveProgressUpdate(job(), emptyReading({ expected_bytes: lower }));
+  assert.equal(variant.expected, lower);
+
+  const snapshot = resolveProgressUpdate(
+    job({ variant: null, key: "model:org/model" }),
+    emptyReading({ expected_bytes: lower }),
+  );
+  assert.equal(snapshot.expected, EXPECTED);
+});
+
+test("the bar is capped below full until the backend verifies completion", () => {
+  // Untested before: removing the cap left all eight original tests green. The
+  // cap is what stops a card sitting at 100% while files are still landing.
+  const resolved = resolveProgressUpdate(
+    job({ fraction: 0 }),
+    emptyReading({ downloaded_bytes: EXPECTED, progress: 1 }),
+  );
+
+  assert.equal(resolved.fraction, 0.99);
+});
+
+test("a non-finite reading is not a measurement", () => {
+  // ProgressLike is cast straight off raw JSON with no runtime validation, and
+  // a NaN survives every comparison here to reach the progress bar as a width
+  // of "NaN%". Treat it as "not measured" and hold the card's last figures.
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, null, undefined]) {
+    const resolved = resolveProgressUpdate(
+      job({ downloadedBytes: 4 * GB, completedBytes: 4 * GB, fraction: 0.12 }),
+      emptyReading({
+        downloaded_bytes: bad as unknown as number,
+        completed_bytes: bad as unknown as number,
+        expected_bytes: bad as unknown as number,
+        progress: bad as unknown as number,
+      }),
+      { resetMonotonic: true },
+    );
+
+    assert.ok(Number.isFinite(resolved.downloadedBytes), `downloaded ${String(bad)}`);
+    assert.ok(Number.isFinite(resolved.completedBytes), `completed ${String(bad)}`);
+    assert.ok(Number.isFinite(resolved.expected), `expected ${String(bad)}`);
+    assert.ok(Number.isFinite(resolved.fraction), `fraction ${String(bad)}`);
+    assert.equal(resolved.expected, EXPECTED);
+  }
+});
