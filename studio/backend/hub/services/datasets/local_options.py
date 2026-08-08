@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Optional
 
 from hub.schemas.datasets import (
@@ -15,6 +15,7 @@ from hub.schemas.datasets import (
     LocalDatasetOptionsResponse,
 )
 from hub.utils.dataset_cache import (
+    TRAINING_DATA_EXTS,
     dataset_cache_path_from_cache_path,
     dataset_snapshot_from_cache_path,
     latest_cached_dataset_path,
@@ -29,6 +30,17 @@ _MAX_PROCESSED_METADATA_FILES = 256
 _MAX_PROCESSED_WALK_DEPTH = 4
 _MAX_OPTIONS = 2048
 _MAX_OPTION_LENGTH = 128
+_MAX_SNAPSHOT_DATA_FILES = 10_000
+_COMPRESSION_EXTENSIONS = ("", ".gz", ".bz2", ".xz", ".zst", ".zip")
+_SPLIT_KEYWORDS = {
+    "train": frozenset({"train", "training"}),
+    "validation": frozenset({"validation", "valid", "dev", "val"}),
+    "test": frozenset({"test", "testing", "eval", "evaluation"}),
+}
+_SHARDED_DATA_RE = re.compile(
+    r"^data/(?P<split>[^/]+)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]+$",
+    re.IGNORECASE,
+)
 # The picker starts these, so they have to be the grammar TrainingStartRequest accepts:
 # anything looser is offered and then 422s, anything tighter hides a usable option.
 # _check_subset and _check_split_name in models/training.py are the authority.
@@ -235,6 +247,79 @@ def _read_card_metadata(path: Path) -> Optional[dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
+def _has_snapshot_data_extension(filename: str) -> bool:
+    lowered = filename.lower()
+    return any(
+        lowered.endswith(extension + compression)
+        for extension in TRAINING_DATA_EXTS
+        for compression in _COMPRESSION_EXTENSIONS
+    )
+
+
+def _snapshot_data_files(snapshot: Path) -> list[PurePosixPath]:
+    files: list[PurePosixPath] = []
+    try:
+        root = snapshot.resolve(strict = True)
+    except (OSError, RuntimeError):
+        return files
+
+    for directory, dirnames, filenames in os.walk(root, followlinks = False):
+        base = Path(directory)
+        try:
+            relative = base.relative_to(root)
+        except ValueError:
+            dirnames[:] = []
+            continue
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not name.startswith((".", "__")) and not (base / name).is_symlink()
+        ]
+        for filename in filenames:
+            if filename.startswith((".", "__")) or not _has_snapshot_data_extension(filename):
+                continue
+            source_path = (relative / filename).as_posix()
+            if resolved_dataset_snapshot_file(snapshot, source_path) is None:
+                continue
+            files.append(PurePosixPath(source_path))
+            if len(files) >= _MAX_SNAPSHOT_DATA_FILES:
+                return files
+    return files
+
+
+def _keyword_splits(parts: Iterable[str]) -> set[str]:
+    tokens = {token for part in parts for token in re.split(r"[-._ 0-9]+", part.lower()) if token}
+    return {split for split, keywords in _SPLIT_KEYWORDS.items() if tokens.intersection(keywords)}
+
+
+def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
+    """Mirror datasets' default local-file split inference without importing it."""
+    files = _snapshot_data_files(snapshot)
+    if not files:
+        return set()
+
+    sharded_splits: set[str] = set()
+    for path in files:
+        match = _SHARDED_DATA_RE.fullmatch(path.as_posix())
+        if match is None:
+            continue
+        split = _valid_option(match.group("split"), _SPLIT_RE, reject_dotdot = True)
+        if split is not None:
+            sharded_splits.add(split)
+    if sharded_splits:
+        return {("default", split) for split in sharded_splits}
+
+    directory_splits = _keyword_splits(part for path in files for part in path.parent.parts)
+    if directory_splits:
+        return {("default", split) for split in directory_splits}
+
+    filename_splits = _keyword_splits(path.name for path in files)
+    if filename_splits:
+        return {("default", split) for split in filename_splits}
+
+    return {("default", "train")}
+
+
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     options: set[tuple[str, str]] = set()
 
@@ -254,6 +339,8 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             _add_dataset_info_options(options, payload)
         else:
             _add_info_options(options, payload)
+    if not options:
+        options.update(_inferred_snapshot_options(snapshot))
     return options
 
 

@@ -177,6 +177,55 @@ def test_snapshot_options_ignore_malformed_card_yaml(tmp_path):
     assert local_options._snapshot_options(snapshot) == set()
 
 
+def test_snapshot_options_infer_undeclared_splits_from_loadable_files(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nlanguage:\n- en\n---\nDataset card without split metadata.\n",
+        encoding = "utf-8",
+    )
+    (snapshot / "train.jsonl").write_text('{"text":"train"}\n', encoding = "utf-8")
+    (snapshot / "test.csv").write_text("text\ntest\n", encoding = "utf-8")
+    (snapshot / "val.parquet").write_bytes(b"parquet")
+
+    assert [
+        item.model_dump()
+        for item in local_options._sorted_options(local_options._snapshot_options(snapshot))
+    ] == [
+        {"dataset": "", "config": "default", "split": "train"},
+        {"dataset": "", "config": "default", "split": "test"},
+        {"dataset": "", "config": "default", "split": "validation"},
+    ]
+
+
+def test_snapshot_options_infer_default_train_for_unlabelled_data(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "records.jsonl.gz").write_bytes(b"compressed")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_infer_sharded_custom_split(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    data = snapshot / "data"
+    data.mkdir(parents = True)
+    (data / "holdout-00000-of-00001.parquet").write_bytes(b"parquet")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "holdout")}
+
+
+def test_snapshot_options_do_not_infer_from_non_data_or_unsafe_symlink(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text("No metadata or data.\n", encoding = "utf-8")
+    outside = tmp_path / "train.jsonl"
+    outside.write_text('{"text":"outside"}\n', encoding = "utf-8")
+    (snapshot / "train.jsonl").symlink_to(outside)
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
 def test_local_options_rejects_an_arbitrary_supplied_path(tmp_path):
     arbitrary = tmp_path / "org___data"
     _write_processed_info(arbitrary / "default" / "0.0.0" / "hash", "default", ["train"])
