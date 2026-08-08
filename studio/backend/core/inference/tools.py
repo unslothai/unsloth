@@ -9944,10 +9944,14 @@ def _capture_process_group(proc):
     """Return the setsid process-group id, or ``None`` when unavailable.
 
     Captured right after ``Popen`` so a later ``poll()`` / ``wait()`` that reaps
-    the leader cannot make ``os.getpgid(proc.pid)`` fail first. POSIX-only:
-    Windows has no process groups (and no ``os.getpgid``), so return ``None``
-    there and let the single-pid ``proc.kill()`` fallback handle cleanup.
+    the leader cannot make ``os.getpgid(proc.pid)`` fail first.
+
+    Windows has no process groups, so capture the wrapper pid instead, tagged
+    for ``_killpg_captured`` to reach with ``taskkill /T``; returning ``None``
+    there left a payload that outlived its wrapper unsignalled.
     """
+    if os.name == "nt":
+        return ("windows-tree", proc.pid)
     if os.name != "posix" or not hasattr(os, "getpgid"):
         return None
     try:
@@ -9956,9 +9960,38 @@ def _capture_process_group(proc):
         return None
 
 
+def _windows_taskkill_tree(pid: int) -> bool:
+    """``taskkill /T /F`` a pid and its descendants. True when it succeeded.
+
+    Every tool call runs under a shell wrapper, and Windows has no process
+    groups, so a bare ``proc.kill()`` reaps the wrapper and orphans the payload
+    (usually the venv python), which then blocks `unsloth studio update`.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output = True,
+            timeout = 15,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode in (0, 128)  # 128: already gone
+
+
 def _kill_process_tree(proc) -> None:
     """SIGKILL the setsid process group; fall back to single-pid kill."""
     if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        if _windows_taskkill_tree(proc.pid):
+            return
+        try:
+            proc.kill()
+        except (ProcessLookupError, PermissionError):
+            pass
         return
     pgid = None
     if hasattr(os, "getpgid"):
@@ -9984,9 +10017,16 @@ def _killpg_captured(pgid) -> None:
     Once ``proc`` exits, ``os.getpgid(proc.pid)`` fails and ``_kill_process_tree``
     short-circuits, so a stdout-holding grandchild that outlived the parent could
     not otherwise be signaled. The pre-captured setsid group id still targets the
-    whole tree. No-op with no ``os.killpg`` (Windows) or nothing captured.
+    whole tree. On Windows the capture is a tagged pid and the equivalent reach
+    is ``taskkill /T /F``. No-op when nothing was captured.
     """
-    if pgid is None or not hasattr(os, "killpg"):
+    if pgid is None:
+        return
+    if isinstance(pgid, tuple):
+        _tag, pid = pgid
+        _windows_taskkill_tree(pid)
+        return
+    if not hasattr(os, "killpg"):
         return
     try:
         os.killpg(pgid, signal.SIGKILL)

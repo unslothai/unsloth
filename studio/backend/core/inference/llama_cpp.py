@@ -13411,6 +13411,15 @@ class LlamaCppBackend:
             if getattr(self, "_stats_logger", None) is not None:
                 self._stats_logger.stop()
                 self._stats_logger = None
+            # Drop it from the lifetime record before the reference goes, or a
+            # recycled pid could be signalled later.
+            _killed_pid = getattr(self._process, "pid", None)
+            if _killed_pid is not None:
+                try:
+                    from utils.process_lifetime import forget_pid
+                    forget_pid(_killed_pid)
+                except Exception:
+                    pass
             self._process = None
             self._clear_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
@@ -13454,6 +13463,14 @@ class LlamaCppBackend:
         since been recycled to a different process (see ``_pid_start_identity``).
         A bare ``pid`` (no identity) is still accepted on read for compatibility.
         """
+        # Track it generically too: the pidfile holds one server, while the
+        # process-lifetime record covers every child and is what the startup
+        # sweep reads where there is no parent-death signal (macOS).
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(pid)
+        except Exception as e:
+            logger.debug(f"Could not track llama-server for lifetime sweep: {e}")
         path = cls._server_pidfile_path()
         if path is None:
             return
