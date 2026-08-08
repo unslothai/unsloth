@@ -3515,3 +3515,55 @@ def test_a_protected_prompt_roots_when_the_whole_chain_is_pruned(research_home):
     assert studio_db.get_chat_message("thread-1", "ancestor") is None
     assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] is None
     assert _thread_imports_cleanly()
+
+
+def test_omitting_the_whole_research_pair_keeps_the_turn_joined(research_home):
+    # The prune exempts protected messages, so a payload that omits both of them deletes
+    # neither. The reseat has to agree: counting the prompt as pruned would walk the report
+    # past it to the root and silently split the turn while both rows still exist.
+    studio_db.upsert_chat_message(
+        {
+            "id": "root",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "root"}],
+            "createdAt": 1,
+        }
+    )
+    _create()
+    for message_id, parent_id, role, created_at in (
+        ("user-1", "root", "user", 2),
+        ("assistant-1", "user-1", "assistant", 3),
+    ):
+        studio_db.upsert_chat_message(
+            {
+                "id": message_id,
+                "threadId": "thread-1",
+                "parentId": parent_id,
+                "role": role,
+                "content": [{"type": "text", "text": message_id}],
+                "createdAt": created_at,
+            },
+            allow_research_update = True,
+        )
+
+    # Both protected ids omitted, which is exactly what a lossy re-serialize of a research
+    # turn can produce.
+    _route_sync(
+        [
+            {
+                "id": "root",
+                "threadId": "thread-1",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "root"}],
+                "createdAt": 1,
+            }
+        ],
+        prune_missing = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] == "root"
+    assert studio_db.get_chat_message("thread-1", "assistant-1")["parentId"] == "user-1"
+    assert _thread_imports_cleanly()

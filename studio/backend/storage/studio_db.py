@@ -2491,8 +2491,15 @@ def sync_chat_messages(
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
+        # Research messages are server-managed: keep the server record rather than reject the
+        # batch on client drift. No _guard_research_messages call here as a result -- these ids
+        # never reach it. upsert_chat_message still guards, so the single-message route keeps
+        # rejecting edits.
+        research_ids = _research_message_ids(conn, thread_id)
         # The rows this sync will delete, computed before the upsert so a relink forced by
-        # that deletion can be told apart from an edit.
+        # that deletion can be told apart from an edit. Research ids are subtracted because
+        # the delete below exempts them: counting one as pruned would walk the reseat past a
+        # parent that actually survives, detaching a research turn from its own prompt.
         pruned: set = set()
         if prune_missing:
             retained = {str(m["id"]) for m in messages}
@@ -2502,12 +2509,7 @@ def sync_chat_messages(
                     "SELECT id FROM chat_messages WHERE thread_id = ?",
                     (thread_id,),
                 ).fetchall()
-            } - retained
-        # Research messages are server-managed: keep the server record rather than reject the
-        # batch on client drift. No _guard_research_messages call here as a result -- these ids
-        # never reach it. upsert_chat_message still guards, so the single-message route keeps
-        # rejecting edits.
-        research_ids = _research_message_ids(conn, thread_id)
+            } - retained - research_ids
         protected = set() if allow_research_update else research_ids
         # Content is dropped, structure is not: the prune below can delete a protected
         # message's parent, and a dangling parent makes the whole thread unimportable. The
