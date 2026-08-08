@@ -103,12 +103,13 @@ def test_no_cuda_device_is_left_alone():
 def test_an_unreadable_device_fails_open():
     """A probe that raises must not silently switch every user's attention
     backend. Same stance as the `is_torch_flex_attn_available` guard below it."""
+
     def _boom(index = 0):
         raise RuntimeError("no CUDA driver")
-    with mock.patch.multiple(U.torch.cuda,
-                             is_available = lambda: True,
-                             device_count = lambda: 1,
-                             get_device_capability = _boom):
+
+    with mock.patch.multiple(
+        U.torch.cuda, is_available = lambda: True, device_count = lambda: 1, get_device_capability = _boom
+    ):
         assert U._flex_attention_gpu_is_supported() is True
 
 
@@ -118,6 +119,5 @@ def test_the_gate_runs_before_the_torch_version_check():
     stub = types.ModuleType("transformers.utils.import_utils")
     stub.is_torch_flex_attn_available = lambda: True
     cuda, hip = _cuda([(7, 5)])
-    with cuda, hip, mock.patch.dict(sys.modules,
-                                    {"transformers.utils.import_utils": stub}):
+    with cuda, hip, mock.patch.dict(sys.modules, {"transformers.utils.import_utils": stub}):
         assert _supports() is False
