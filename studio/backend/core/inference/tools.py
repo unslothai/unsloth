@@ -10385,6 +10385,8 @@ _INTERNAL_SCRATCH_RE = re.compile(r"\Astudio_exec_[A-Za-z0-9_]+\.py\Z")
 
 def _is_internal_scratch(name: str) -> bool:
     return bool(_INTERNAL_SCRATCH_RE.match(name))
+
+
 _MAX_REPORTED_FILES = 25
 # A build step or an unpacked archive can leave thousands of files; the walk is
 # bounded so a tool call cannot turn into a filesystem crawl. Counted in path
