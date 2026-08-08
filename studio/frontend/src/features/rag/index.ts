@@ -10,6 +10,8 @@ export {
   deleteDocument,
   getDocumentFileUrl,
   listAllDocuments,
+  listKnowledgeBases,
 } from "./api/rag-api";
+export { useRagAvailabilityStore } from "./api/rag-availability";
 export { isLinkedFolderManaged } from "./types/rag";
 export type { KnowledgeBase, RagDocument, UploadedDocument } from "./types/rag";

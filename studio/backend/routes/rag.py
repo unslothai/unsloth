@@ -312,14 +312,13 @@ def _folder_view(row: dict) -> dict:
 def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderRequest) -> dict:
     path = _resolve_linked_folder_path(payload.native_path_lease)
     try:
-        folder = folder_sync.create_folder(
+        folder, job_id = folder_sync.create_folder_with_sync(
             scope_type = scope_type,
             scope_id = scope_id,
             path = path,
             name = payload.name,
             auto_sync = payload.auto_sync,
         )
-        job_id = folder_sync.request_sync(folder["id"])
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     job = folder_sync.get_job(job_id)
@@ -411,9 +410,22 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
     try:
         if store.get_kb(conn, kb_id) is None:
             raise HTTPException(status_code = 404, detail = "Knowledge base not found")
-        for folder in folder_sync.list_folders(store.kb_scope(kb_id)):
-            folder_sync.delete_folder(folder["id"])
+        scope = store.kb_scope(kb_id)
+        folders = folder_sync.retire_scope(scope)
+        stored_paths = [
+            row["stored_path"]
+            for row in conn.execute("SELECT stored_path FROM documents WHERE scope=?", (scope,))
+        ]
+        for folder in folders:
+            try:
+                folder_sync.delete_folder(folder["id"])
+            except Exception:
+                logger.warning(
+                    "failed to delete retired linked folder %s", folder["id"], exc_info = True
+                )
         store.delete_kb(conn, kb_id)
+        for stored_path in stored_paths:
+            _remove_stored_upload(stored_path)
         return {"ok": True}
     finally:
         conn.close()

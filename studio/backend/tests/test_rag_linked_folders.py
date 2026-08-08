@@ -867,6 +867,7 @@ def test_start_auto_sync_queues_replacement_for_retired_live_worker(monkeypatch)
     released = threading.Event()
 
     monkeypatch.setattr(folder_sync.rag_db, "RAG_AVAILABLE", True)
+    monkeypatch.setattr(folder_sync.rag_db, "rag_available", lambda: True)
     monkeypatch.setattr(folder_sync, "_recover_startup_state", lambda: None)
     monkeypatch.setattr(folder_sync, "_enqueue_periodic", lambda: None)
     monkeypatch.setattr(folder_sync, "_next_job", lambda: None)
@@ -900,6 +901,18 @@ def test_start_auto_sync_queues_replacement_for_retired_live_worker(monkeypatch)
         folder_sync._thread = original_thread
         folder_sync._thread_stop = original_thread_stop
     assert released.is_set()
+
+
+def test_start_auto_sync_skips_runtime_unavailable_rag(monkeypatch):
+    monkeypatch.setattr(folder_sync.rag_db, "RAG_AVAILABLE", True)
+    monkeypatch.setattr(folder_sync.rag_db, "rag_available", lambda: False)
+    monkeypatch.setattr(
+        folder_sync.threading,
+        "Thread",
+        lambda *args, **kwargs: pytest.fail("worker must not be created"),
+    )
+
+    assert folder_sync.start_auto_sync() is False
 
 
 @requires_sqlite_vec
@@ -988,6 +1001,59 @@ def test_project_rag_cleanup_retires_every_folder_before_best_effort_deletion(
     replacement.mkdir()
     with pytest.raises(ValueError, match = "scope no longer exists"):
         folder_sync.create_folder(scope_type = "project", scope_id = "project", path = str(replacement))
+
+
+@requires_sqlite_vec
+def test_kb_deletion_retires_scope_before_best_effort_folder_cleanup(
+    rag_home, stub_embeddings, monkeypatch
+):
+    from routes import rag as rag_routes
+
+    conn = rag_db.get_connection()
+    try:
+        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    finally:
+        conn.close()
+    folders = []
+    for name in ("kb-first", "kb-second"):
+        source = rag_home / name
+        source.mkdir()
+        folders.append(
+            folder_sync.create_folder(
+                scope_type = "knowledge_base", scope_id = "knowledge", path = str(source)
+            )
+        )
+    (rag_home / "kb-first" / "notes.txt").write_text("managed snapshot", encoding = "utf-8")
+    assert _run(folders[0]["id"])["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        stored_path = conn.execute(
+            "SELECT stored_path FROM documents WHERE linked_folder_id=?", (folders[0]["id"],)
+        ).fetchone()["stored_path"]
+    finally:
+        conn.close()
+    assert os.path.isfile(stored_path)
+    failed_id = folders[0]["id"]
+    original_delete = folder_sync.delete_folder
+
+    def delete(folder_id, **kwargs):
+        if folder_id == failed_id:
+            raise sqlite3.OperationalError("database is busy")
+        return original_delete(folder_id, **kwargs)
+
+    monkeypatch.setattr(folder_sync, "delete_folder", delete)
+    assert rag_routes.delete_knowledge_base("knowledge", subject = "test") == {"ok": True}
+
+    remaining = folder_sync.list_folders(store.kb_scope("knowledge"))
+    assert [folder["id"] for folder in remaining] == [failed_id]
+    assert remaining[0]["status"] == "retired"
+    assert not os.path.exists(stored_path)
+    replacement = rag_home / "kb-replacement"
+    replacement.mkdir()
+    with pytest.raises(ValueError, match = "scope no longer exists"):
+        folder_sync.create_folder(
+            scope_type = "knowledge_base", scope_id = "knowledge", path = str(replacement)
+        )
 
 
 def test_preview_containment_is_component_aware(rag_home):

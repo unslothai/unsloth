@@ -225,6 +225,32 @@ def create_folder(
             conn.close()
 
 
+def create_folder_with_sync(
+    *,
+    scope_type: str,
+    scope_id: str,
+    path: str,
+    name: str | None = None,
+    auto_sync: bool = True,
+) -> tuple[dict, str]:
+    if scope_type not in {"knowledge_base", "project"}:
+        raise ValueError("Linked folders support only knowledge-base and project scopes")
+    scope = (
+        store.kb_scope(scope_id)
+        if scope_type == "knowledge_base"
+        else store.project_scope(scope_id)
+    )
+    with _scope_lock(scope):
+        folder = create_folder(
+            scope_type = scope_type,
+            scope_id = scope_id,
+            path = path,
+            name = name,
+            auto_sync = auto_sync,
+        )
+        return folder, request_sync(folder["id"])
+
+
 def get_folder(folder_id: str) -> dict | None:
     conn = rag_db.get_connection()
     try:
@@ -1213,7 +1239,7 @@ def _recover_startup_state() -> None:
 
 def start_auto_sync(*, admission_lock = None, admit = None) -> bool:
     global _thread, _thread_stop
-    if not rag_db.RAG_AVAILABLE:
+    if not rag_db.rag_available():
         return False
     with _thread_lock:
         retired = _thread if _thread is not None and _thread.is_alive() else None

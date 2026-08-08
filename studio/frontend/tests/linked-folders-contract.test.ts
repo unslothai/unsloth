@@ -37,6 +37,10 @@ const uploadedFiles = readFileSync(
   ),
   "utf8",
 );
+const dataTab = readFileSync(
+  new URL("../src/features/settings/tabs/data-tab.tsx", import.meta.url),
+  "utf8",
+);
 
 test("linked folders have global/scoped listing and scoped creation routes", () => {
   assert.match(
@@ -200,5 +204,15 @@ test("folder polling detects completed backend work without a visible active job
       ],
     ),
     true,
+  );
+});
+
+test("settings probes RAG availability before mounting linked folders", () => {
+  assert.equal(dataTab.match(/<LinkedFoldersManager/g)?.length, 1);
+  assert.match(dataTab, /availabilityUnknown\(\)/);
+  assert.match(dataTab, /listKnowledgeBases\(\)\.catch/);
+  assert.match(
+    dataTab,
+    /!ragAvailabilityUnknown && !ragUnavailable \? \(/,
   );
 });

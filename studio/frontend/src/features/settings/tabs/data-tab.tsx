@@ -38,7 +38,11 @@ import {
   useChatRuntimeStore,
   useChatSidebarItems,
 } from "@/features/chat";
-import { LinkedFoldersManager } from "@/features/rag";
+import {
+  LinkedFoldersManager,
+  listKnowledgeBases,
+  useRagAvailabilityStore,
+} from "@/features/rag";
 import { useT } from "@/i18n";
 
 import { isTauri } from "@/lib/api-base";
@@ -105,6 +109,10 @@ export function DataTab() {
   // the Train tab would upload it and then strand the user; gate the action
   // the same way the sidebar gates Train.
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  const ragAvailabilityUnknown = useRagAvailabilityStore((s) =>
+    s.availabilityUnknown(),
+  );
   const storedFineTuneAction = useSettingsPanelPrefsStore(
     (s) => s.fineTuneAction,
   );
@@ -133,6 +141,13 @@ export function DataTab() {
       cancelled = true;
     };
   }, [archivedChatsRequested, consumeArchivedChatsRequest]);
+
+  useEffect(() => {
+    if (!ragAvailabilityUnknown) return;
+    void listKnowledgeBases().catch(() => {
+      // Transient failures are not capability verdicts; a later mount can retry.
+    });
+  }, [ragAvailabilityUnknown]);
 
   const confirmDeleteChats = useChatPreferencesStore(
     (state) => state.confirmDeleteChats,
@@ -705,9 +720,11 @@ export function DataTab() {
             {t("settings.data.manageAction")}
           </Button>
         </SettingsRow>
-        <div className="py-3">
-          <LinkedFoldersManager />
-        </div>
+        {!ragAvailabilityUnknown && !ragUnavailable ? (
+          <div className="py-3">
+            <LinkedFoldersManager />
+          </div>
+        ) : null}
       </SettingsSection>
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
