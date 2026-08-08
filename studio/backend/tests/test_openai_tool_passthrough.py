@@ -1986,7 +1986,6 @@ class TestDropEmptyAssistantSentinels:
 
     def test_strip_synthetic_tool_calls_still_drops_turn_without_reasoning(self):
         from routes.inference import _strip_provider_synthetic_tool_history
-
         msgs = [
             {
                 "role": "assistant",

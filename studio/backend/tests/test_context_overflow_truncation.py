@@ -361,7 +361,9 @@ def test_reasoning_clip_alone_prevents_middle_eviction():
     assert routes_mod._apply_overflow_truncation(body, err) is True
     assert len(body["messages"]) == before  # nothing dropped, the clip alone was enough
     assert _CLIP_MARKER in body["messages"][-2]["reasoning_content"]
-    assert body["max_tokens"] == max(1024, int(8192 * (1.0 - routes_mod._OVERFLOW_PROMPT_TARGET_FRACTION)))
+    assert body["max_tokens"] == max(
+        1024, int(8192 * (1.0 - routes_mod._OVERFLOW_PROMPT_TARGET_FRACTION))
+    )
 
 
 def test_overflow_without_reasoning_keeps_legacy_keep_ratio():
@@ -392,6 +394,7 @@ def test_truncate_middle_total_est_counts_aliased_messages():
     aliased = head + [shared, shared] + tail
     copied = head + [dict(shared), dict(shared)] + tail
     # Two equal turns must size the same whether or not they are the same object.
-    assert routes_mod._truncate_middle_messages(aliased, 0.5)[1] == (
-        routes_mod._truncate_middle_messages(copied, 0.5)[1]
+    assert (
+        routes_mod._truncate_middle_messages(aliased, 0.5)[1]
+        == (routes_mod._truncate_middle_messages(copied, 0.5)[1])
     )
