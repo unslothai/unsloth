@@ -21,6 +21,7 @@ from core.inference.diffusion_auto_policy import (
     estimate_dense_quant,
     family_bf16_components_gb,
     precision_fallback_allowed,
+    precision_refusal_message,
     resolve_dense_quant_candidate,
 )
 from core.inference.diffusion_memory import (
@@ -346,3 +347,27 @@ def test_precision_fallback_escape_hatch(monkeypatch):
     assert precision_fallback_allowed() is True
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "0")
     assert precision_fallback_allowed() is False
+
+
+def test_the_refusal_only_offers_auto_where_auto_exists():
+    # transformer_quant has an "auto" mode, so pointing the user at it is the right advice.
+    msg = precision_refusal_message(
+        "transformer_quant",
+        "nvfp4",
+        "this GPU has no fp4 tensor cores",
+        off_label = "Off to run the checkpoint as-is",
+    )
+    assert "Choose Auto" in msg and msg.endswith("or Off to run the checkpoint as-is.")
+
+    # text_encoder_quant does not: both request models restrict it to fp8 / fp8_dynamic / int8 /
+    # nvfp4, so a user who followed "Choose Auto" here got a 422 from request validation. The
+    # remedy has to name the thing that actually works.
+    te = precision_refusal_message(
+        "text_encoder_quant",
+        "int8",
+        "this device does not have the tensor cores that backend needs",
+        off_label = "leave it unset to keep the dense bf16 encoder",
+        auto_available = False,
+    )
+    assert "Auto" not in te
+    assert te.endswith("Leave it unset to keep the dense bf16 encoder.")

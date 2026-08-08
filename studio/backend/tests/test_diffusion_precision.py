@@ -472,3 +472,34 @@ def test_fp8_dynamic_filter_skips_zero_row_linear(monkeypatch):
     live = types.SimpleNamespace(weight = _FakeWeight([[0.5, 0.5], [0.5, 0.5]]))
     assert ff(dead, "text_model.encoder.layers.2.self_attn.out_proj") is False
     assert ff(live, "text_model.encoder.layers.2.mlp.fc1") is True
+
+
+def test_quantize_partial_cast_is_reported_as_a_mixture(monkeypatch):
+    # One encoder takes the cast and its sibling does not. The mode DID engage, so the old code
+    # returned "applied" and both loaders' fail-closed checks (which only look at mode is None)
+    # let the load through, recording the requested mode as the engaged precision -- while the
+    # prompt was conditioned by one quantised and one dense bf16 tower.
+    _stub_torch(monkeypatch)
+    good, bad = object(), object()
+
+    def _caster(enc, tgt):
+        if enc is bad:
+            raise RuntimeError("fp8 unsupported for this layer")
+
+    monkeypatch.setattr(dp, "_cast_fp8", _caster)
+    pipe = types.SimpleNamespace(text_encoder = good, text_encoder_2 = bad)
+    outcome = quantize_text_encoders(pipe, _target(), mode = "fp8")
+    assert outcome.mode == TE_QUANT_FP8
+    assert outcome.partial is True
+    assert outcome.status == "fell_back"
+    assert "text_encoder_2" in outcome.reason
+
+
+def test_quantize_full_cast_is_not_partial(monkeypatch):
+    # The other side of the same fence: every present encoder cast, so nothing is a mixture and
+    # the loaders must not refuse.
+    _stub_torch(monkeypatch)
+    monkeypatch.setattr(dp, "_cast_fp8", lambda enc, tgt: None)
+    pipe = types.SimpleNamespace(text_encoder = object(), text_encoder_2 = object())
+    outcome = quantize_text_encoders(pipe, _target(), mode = "fp8")
+    assert outcome.partial is False and outcome.status == "applied"

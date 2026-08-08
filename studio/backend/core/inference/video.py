@@ -180,7 +180,13 @@ def assert_video_precision_available(
         elif not dense_transformer_supported(target):
             reason = "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
         elif (
-            select_transformer_quant_scheme(target, pinned, family = getattr(fam, "name", None))
+            select_transformer_quant_scheme(
+                target,
+                pinned,
+                family = getattr(fam, "name", None),
+                # Pre-eviction: an OOM in the smoke probe is the resident model, not the scheme.
+                unproven_ok = True,
+            )
             is None
         ):
             # An explicit scheme is never swapped for another, so a None means the family's
@@ -201,6 +207,7 @@ def assert_video_precision_available(
                 "this device does not have the tensor cores that backend needs (a CUDA GPU in "
                 "bf16, plus fp8 / int8 / NVFP4 support depending on the mode)",
                 off_label = "leave it unset to keep the dense bf16 encoder",
+                auto_available = False,
             )
         )
 
@@ -1517,11 +1524,12 @@ class VideoBackend:
         )
         text_encoder_quant_engaged = text_encoder_outcome.mode
         # Same contract for the other half of "the requested precision": an explicit encoder mode
-        # that engaged NOTHING leaves a dense bf16 encoder the caller did not ask for. A mode that
+        # that engaged NOTHING leaves a dense bf16 encoder the caller did not ask for, and a
+        # PARTIAL cast leaves conditioning split across quantised and dense towers. A mode that
         # engaged something ELSE (int8 -> fp8) is reported by the badge instead: the encoder is
         # quantised, just not the way asked, and the reason says so.
         if (
-            text_encoder_quant_engaged is None
+            (text_encoder_quant_engaged is None or text_encoder_outcome.partial)
             and normalize_te_quant(text_encoder_quant) is not None
             and not precision_fallback_allowed()
         ):
@@ -1533,6 +1541,7 @@ class VideoBackend:
                     normalize_te_quant(text_encoder_quant) or "",
                     text_encoder_outcome.reason or "no text encoder could be cast",
                     off_label = "leave it unset to keep the dense bf16 encoder",
+                    auto_available = False,
                 )
             )
 

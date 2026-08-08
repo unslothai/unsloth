@@ -917,7 +917,16 @@ class DiffusionBackend:
                     "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
                 )
             elif (
-                select_transformer_quant_scheme(target, pinned, family = getattr(fam, "name", None))
+                select_transformer_quant_scheme(
+                    target,
+                    pinned,
+                    family = getattr(fam, "name", None),
+                    # This gate runs BEFORE the arbiter evicts the resident model, so a smoke probe
+                    # that runs out of VRAM here has not shown the scheme unusable, only that the
+                    # GPU is still full. Refusing on that would reject a load the eviction was
+                    # about to make room for.
+                    unproven_ok = True,
+                )
                 is None
             ):
                 # An explicit scheme is never swapped for another, so a None means the family's
@@ -941,6 +950,7 @@ class DiffusionBackend:
                     "this device does not have the tensor cores that backend needs (a CUDA GPU "
                     "in bf16, plus fp8 / int8 / NVFP4 support depending on the mode)",
                     off_label = "leave it unset to keep the dense bf16 encoder",
+                    auto_available = False,
                 )
             )
 
@@ -2688,10 +2698,12 @@ class DiffusionBackend:
                     te_quant = te_outcome.mode
                     # Same contract for the other half of "the requested precision": an explicit
                     # encoder mode that engaged NOTHING leaves a dense bf16 encoder the caller did
-                    # not ask for. A mode that engaged something ELSE (int8 -> fp8) is reported by
-                    # the badge instead: the encoder IS quantised, just not the way asked.
+                    # not ask for, and a PARTIAL cast leaves a pipeline conditioning off a mixture
+                    # of quantised and dense encoders. A mode that engaged something ELSE
+                    # (int8 -> fp8) is reported by the badge instead: the encoder IS quantised on
+                    # every tower, just not the way asked.
                     if (
-                        te_quant is None
+                        (te_quant is None or te_outcome.partial)
                         and normalize_te_quant(text_encoder_quant) is not None
                         and not precision_fallback_allowed()
                     ):
@@ -2701,6 +2713,7 @@ class DiffusionBackend:
                                 normalize_te_quant(text_encoder_quant) or "",
                                 te_outcome.reason or "no text encoder could be cast",
                                 off_label = "leave it unset to keep the dense bf16 encoder",
+                                auto_available = False,
                             )
                         )
 

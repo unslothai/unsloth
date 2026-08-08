@@ -182,3 +182,24 @@ export function resolvedSeedKey(
     part(resolved.attention_backend, false),
   ].join("|");
 }
+
+/**
+ * The Loaded-build panel's Transformer row when no dense quant engaged.
+ *
+ * Shared by the image and video pages because the mistake it prevents is the same on both: the
+ * default arm is BF16, and only a full diffusers repo actually is. A GGUF pick runs the
+ * checkpoint's own quantisation and a single-file safetensors runs whatever precision it was saved
+ * in (FP8 checkpoints are explicitly supported), so the BF16 arm has to be the LAST resort.
+ *
+ * `dtype === "gguf"` is the native sd.cpp engine, which reports no `model_kind` at all -- without
+ * that arm every native GGUF load, the default CPU path, was labelled BF16 in the one panel whose
+ * whole job is to say what actually loaded.
+ */
+export function denseTransformerBuildLabel(status: {
+  model_kind?: string | null;
+  dtype?: string | null;
+}): string {
+  if (status.model_kind === "gguf" || status.dtype === "gguf") return "GGUF (as-is)";
+  if (status.model_kind === "single_file") return "As in checkpoint";
+  return "BF16";
+}

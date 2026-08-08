@@ -16,7 +16,7 @@ import threading
 import time
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import core.inference.gpu_arbiter as gpu_arbiter
@@ -1055,3 +1055,26 @@ def test_signed_video_link_rejects_tampering_and_other_ids(client):
 
 def test_signed_url_mint_is_bearer_gated_and_404s_for_an_unknown_clip(client):
     assert client.get("/api/inference/video/gallery/does-not-exist/signed-url").status_code == 404
+
+
+def test_the_training_guard_runs_before_the_precision_probe(client, monkeypatch):
+    # The precision gate's support check quantises a real Linear on the GPU and synchronises, so
+    # running it first initialises a CUDA context and allocates next to the training subprocess
+    # for a load that is about to be refused anyway -- and an OOM there under that contention is
+    # not a verdict on the scheme. The image route already guards first; this one now does too.
+    import routes.video as video_routes
+
+    def _refuse_training() -> None:
+        raise HTTPException(status_code = 409, detail = "Training is running.")
+
+    monkeypatch.setattr(video_routes, "_guard_video_load_against_training", _refuse_training)
+    monkeypatch.setattr(
+        video_module,
+        "assert_video_precision_available",
+        lambda fam, **kw: pytest.fail("the precision probe ran while training was active"),
+    )
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "Lightricks/LTX-2.3", "transformer_quant": "nvfp4"},
+    )
+    assert resp.status_code == 409 and resp.json()["detail"] == "Training is running."

@@ -254,15 +254,28 @@ def precision_fallback_allowed() -> bool:
     return value in ("1", "true", "yes", "on")
 
 
-def precision_refusal_message(control: str, requested: str, reason: str, *, off_label: str) -> str:
+def precision_refusal_message(
+    control: str,
+    requested: str,
+    reason: str,
+    *,
+    off_label: str,
+    auto_available: bool = True,
+) -> str:
     """The client-facing refusal for a declined explicit precision: what was asked, why it could
-    not run, and the two settings that always work. ``off_label`` names this backend's "run the
-    checkpoint as-is" option, which differs between the image and video loaders."""
-    return (
-        f"{control}='{requested}' could not be used: {reason}. "
-        f"Choose Auto to let the backend pick the fastest precision this host can run, "
+    not run, and the settings that always work. ``off_label`` names this backend's "run the
+    checkpoint as-is" option, which differs between the image and video loaders.
+
+    ``auto_available`` is False for controls with no auto mode. ``text_encoder_quant`` is one:
+    both request models restrict it to fp8 / fp8_dynamic / int8 / nvfp4, so a user who followed a
+    "Choose Auto" instruction there got a 422 from request validation instead of a working load."""
+    remedy = (
+        "Choose Auto to let the backend pick the fastest precision this host can run, "
         f"or {off_label}."
+        if auto_available
+        else f"{off_label[:1].upper()}{off_label[1:]}."
     )
+    return f"{control}='{requested}' could not be used: {reason}. {remedy}"
 
 
 # ── resolved-record (status surface) ─────────────────────────────────────────

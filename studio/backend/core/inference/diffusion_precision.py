@@ -110,11 +110,17 @@ class TEQuantOutcome(NamedTuple):
     the short human-readable why when that differs from the request, and ``status`` is one of the
     ``RESOLVED_*`` constants. Every early return below used to be a bare ``None``: an int8 request
     silently became fp8, an offloaded load silently kept a dense encoder, and an unsupported GPU
-    returned without so much as a log line."""
+    returned without so much as a log line.
+
+    ``partial`` is True when SOME encoder took the cast and another did not. The mode did engage,
+    so ``mode`` is not None, but a pipeline conditioning off a mixture of quantised and dense
+    encoders is not the build that was asked for and the loaders refuse it like any other declined
+    explicit precision."""
 
     mode: Optional[str]
     reason: str = ""
     status: str = RESOLVED_APPLIED
+    partial: bool = False
 
 
 def quantize_text_encoders(
@@ -180,6 +186,7 @@ def quantize_text_encoders(
     else:
         caster = _cast_fp8
     cast: list[str] = []
+    failed: list[str] = []
     for attr in _TEXT_ENCODER_ATTRS:
         encoder = getattr(pipe, attr, None)
         if encoder is None:
@@ -188,12 +195,24 @@ def quantize_text_encoders(
             caster(encoder, target)
             cast.append(attr)
         except Exception as exc:  # noqa: BLE001 — leave this encoder dense
+            failed.append(attr)
             _warn(logger, f"{mode}:{attr}", exc)
     if not cast:
         return TEQuantOutcome(
             None,
             f"no text encoder on this pipeline could be cast to '{mode}' (see the server log)",
             RESOLVED_FELL_BACK,
+        )
+    if failed:
+        # A sibling took the cast, so `mode` DID engage -- but the encoders that did not are still
+        # dense bf16 and the prompt is conditioned by both. Reporting "applied" here was the one
+        # path where an engaged mode could still be a lie about the build that ran.
+        return TEQuantOutcome(
+            mode,
+            f"'{mode}' engaged on {', '.join(cast)} but {', '.join(failed)} could not be cast and "
+            "stayed dense bf16 (see the server log), so conditioning is a mixture",
+            RESOLVED_FELL_BACK,
+            True,
         )
     if downgrade_reason:
         return TEQuantOutcome(mode, downgrade_reason, RESOLVED_FELL_BACK)

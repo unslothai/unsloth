@@ -86,7 +86,9 @@ def test_dense_transformer_supported_requires_cuda_bf16(monkeypatch):
 
 def _allow(monkeypatch, allowed):
     """Force ``_scheme_supported`` to accept only ``allowed`` (simulates smoke results)."""
-    monkeypatch.setattr(tq, "_scheme_supported", lambda scheme, device: scheme in allowed)
+    monkeypatch.setattr(
+        tq, "_scheme_supported", lambda scheme, device, **kw: scheme in allowed
+    )
 
 
 def test_auto_blackwell_prefers_fp8_then_falls_back(monkeypatch):
@@ -347,6 +349,17 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
     fault[0] = RuntimeError("kernel unavailable")
     assert tq._smoke_probe(TQ_INT8, "cuda") is False
     assert tq._SMOKE_CACHE == {(TQ_INT8, "cuda"): False}
+
+    # And the PRE-EVICTION caller gets "could not tell", not "cannot run": the gate it feeds turns
+    # a False into a 409 before the arbiter has freed the VRAM the probe wanted, so answering
+    # "unsupported" there refuses a load the eviction was about to make room for. A non-memory
+    # failure stays False for that caller too -- that one is a real verdict.
+    tq._SMOKE_CACHE.clear()
+    fault[0] = _OOM("CUDA out of memory. Tried to allocate 2.00 GiB")
+    assert tq._smoke_probe(TQ_INT8, "cuda", unproven_ok = True) is True
+    assert tq._SMOKE_CACHE == {}
+    fault[0] = RuntimeError("kernel unavailable")
+    assert tq._smoke_probe(TQ_INT8, "cuda", unproven_ok = True) is False
 
 
 def test_an_oom_is_recognised_however_it_is_spelled():
@@ -816,3 +829,52 @@ def test_the_attention_trim_families_exclude_their_small_m_text_streams():
 
     assert exclude_tokens_for_scheme("fp8", "hunyuanvideo-1.5") == ()
     assert exclude_tokens_for_scheme(TQ_INT8, "ltx-2") == _INT8_EXCLUDE_NAME_TOKENS
+
+
+def test_the_pre_eviction_gate_does_not_refuse_on_an_indeterminate_probe(monkeypatch):
+    # The route-level precision gate asks the selector, not the probe, so unproven_ok has to reach
+    # through select_transformer_quant_scheme for the leniency to exist where it matters.
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    seen: list = []
+
+    def _supported(scheme, device, *, unproven_ok = False):
+        seen.append(unproven_ok)
+        return unproven_ok
+
+    monkeypatch.setattr(tq, "_scheme_supported", _supported)
+    target = types.SimpleNamespace(device = "cuda")
+    assert tq.select_transformer_quant_scheme(target, "fp8") is None
+    assert tq.select_transformer_quant_scheme(target, "fp8", unproven_ok = True) == "fp8"
+    assert seen == [False, True]
+
+
+def test_a_refusal_reason_does_not_carry_server_paths(monkeypatch):
+    # The torchao import error is interpolated into the precision-refusal RuntimeError, which both
+    # load routes return verbatim as the 409 detail. An ImportError routinely names the absolute
+    # file that raised it, so the reason has to be stripped while the log keeps the whole thing.
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", None)
+    monkeypatch.setattr(tq, "is_stubbed", lambda pkg: False)
+    broken = types.ModuleType("torchao.quantization")
+
+    def _raise():
+        raise ImportError(
+            "cannot import name 'ScalingType' from 'torch.nn.functional' "
+            "(/srv/unsloth/.venv/lib/python3.12/site-packages/torch/nn/functional.py)"
+        )
+
+    broken.__getattr__ = lambda name: _raise()
+    monkeypatch.setitem(sys.modules, "torchao.quantization", broken)
+    reason = tq.torchao_unavailable_reason()
+    assert reason is not None
+    assert "/srv/unsloth" not in reason and "site-packages" not in reason
+    # The actionable half survives: the caller still learns WHICH import broke.
+    assert "ScalingType" in reason and "torch.nn.functional" in reason
+
+
+def test_paths_are_stripped_without_eating_dotted_module_names():
+    assert tq._strip_paths("ImportError: no module 'torchao.quantization'") == (
+        "ImportError: no module 'torchao.quantization'"
+    )
+    assert "C:\\Users" not in tq._strip_paths(
+        r"ImportError: DLL load failed: C:\Users\me\.venv\Lib\site-packages\torchao\_C.pyd"
+    )

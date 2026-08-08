@@ -3234,6 +3234,36 @@ def test_explicit_text_encoder_quant_refuses_when_nothing_engaged(
     assert "text_encoder_quant='nvfp4' could not be used" in str(excinfo.value)
 
 
+def test_explicit_text_encoder_quant_refuses_a_partial_cast(fake_runtime, tmp_path, monkeypatch):
+    # One encoder took the cast and its sibling did not, so the mode DID engage -- and the old
+    # check, which only looked for "nothing engaged", let the load through and recorded the
+    # requested mode as the engaged precision while conditioning ran off a mixture of a quantised
+    # and a dense bf16 tower. That is the one lie this whole change exists to stop.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_precision import TEQuantOutcome
+
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    monkeypatch.setattr(
+        dmod,
+        "quantize_text_encoders",
+        lambda *a, **k: TEQuantOutcome(
+            "fp8", "'fp8' engaged on text_encoder but text_encoder_2 stayed dense", "fell_back", True
+        ),
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        DiffusionBackend().load_pipeline(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            text_encoder_quant = "fp8",
+        )
+    message = str(excinfo.value)
+    assert "text_encoder_quant='fp8' could not be used" in message
+    assert "text_encoder_2" in message
+    # And the remedy names something the request model accepts: text_encoder_quant has no "auto".
+    assert "Auto" not in message
+
+
 def test_text_encoder_int8_downgrade_is_reported_not_refused(fake_runtime, tmp_path, monkeypatch):
     # int8 without a measured keep-bf16 schedule becomes fp8. The encoder IS quantised, just not
     # the way asked, so this WARNS through the resolved record instead of stopping the load.

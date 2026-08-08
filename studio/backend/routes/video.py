@@ -156,6 +156,11 @@ async def load_video_model(
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
         )
+        # Refuse while training is running (VRAM competition) BEFORE the precision check below:
+        # that check runs an uncached quantise+matmul probe on the GPU, which would initialise a
+        # CUDA context and allocate alongside the training subprocess for a load that is about to
+        # be rejected anyway. Mirrors the image-load route, which already guards first.
+        _guard_video_load_against_training()
         # Same bar for an EXPLICIT precision this host can never honor. begin_load makes the
         # identical network-free check, but it runs inside acquire_for, which evicts chat under the
         # arbiter lock BEFORE the register callback -- so a refusal raised there arrives having
@@ -168,8 +173,6 @@ async def load_video_model(
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
         )
-        # Refuse while training is running (VRAM competition). Mirrors the image-load guard.
-        _guard_video_load_against_training()
         # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
 

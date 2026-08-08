@@ -23,6 +23,7 @@ probe is best-effort: an unsupported scheme yields None and the caller loads GGU
 
 from __future__ import annotations
 
+import re as _re
 from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
@@ -193,9 +194,30 @@ def torchao_unavailable_reason() -> Optional[str]:
         try:
             from torchao.quantization import quantize_  # noqa: F401
         except Exception as exc:  # noqa: BLE001 — any import failure means the same thing here
-            reason = f"{type(exc).__name__}: {exc}"
+            import logging
+
+            # The full text, paths included, goes to the server log; the client gets it stripped.
+            # This string is interpolated into the precision-refusal RuntimeError, which both load
+            # routes return verbatim as the 409 detail, and an ImportError routinely names the
+            # absolute file of the module that raised it.
+            logging.getLogger(__name__).warning("torchao is unusable: %s: %s", type(exc).__name__, exc)
+            reason = _strip_paths(f"{type(exc).__name__}: {exc}")
     _TORCHAO_UNAVAILABLE = (reason,)
     return reason
+
+
+# An absolute POSIX or Windows path, up to the first whitespace / quote / bracket. Deliberately
+# requires a directory separator so dotted module names ("torch.nn.functional") survive intact:
+# those are the actionable half of the message.
+_ABS_PATH_RE = _re.compile(r"(?:[A-Za-z]:)?[\\/](?:[^\s'\"()<>|]*[\\/])+[^\s'\"()<>|]*")
+
+
+def _strip_paths(text: str) -> str:
+    """``text`` with server filesystem paths replaced by ``<path>``.
+
+    Refusal reasons reach an authenticated caller as a 409 body. The reason a load was refused is
+    the caller's business; where this machine keeps its site-packages is not."""
+    return _ABS_PATH_RE.sub("<path>", text)
 
 
 # Cache of (scheme, device) -> bool so the quantise+matmul smoke test runs once.
@@ -297,6 +319,8 @@ def select_transformer_quant_scheme(
     target: Any,
     requested: Optional[str],
     family: Optional[str] = None,
+    *,
+    unproven_ok: bool = False,
 ) -> Optional[str]:
     """The concrete scheme to apply, or None to fall back to GGUF.
 
@@ -304,7 +328,13 @@ def select_transformer_quant_scheme(
     quantise+matmul smoke test, so an unavailable Blackwell fp4/mx kernel lands on fp8/int8
     with no error. An explicit scheme is honored only if supported (else None), never swapped.
     ``family`` applies the measured deny list (``_FAMILY_SCHEME_DENY``): schemes that produce
-    black frames / out-of-bar drift are skipped by ``auto`` and refused when explicit."""
+    black frames / out-of-bar drift are skipped by ``auto`` and refused when explicit.
+
+    ``unproven_ok`` is for the PRE-EVICTION route gate. The smoke test allocates, so a resident
+    chat/image/video model can make it fail for want of VRAM rather than for want of a kernel; the
+    gate runs before the arbiter has evicted that model, so treating "could not tell" as "not
+    supported" refuses a load the very next moment would have run. It answers "is this scheme
+    provably unusable here", and the real selection still happens after the handoff."""
     requested = normalize_transformer_quant(requested)
     if requested is None or not dense_transformer_supported(target):
         return None
@@ -312,7 +342,7 @@ def select_transformer_quant_scheme(
     if requested != TQ_AUTO:
         if _family_denied(family, requested):
             return None
-        return requested if _scheme_supported(requested, device) else None
+        return requested if _scheme_supported(requested, device, unproven_ok = unproven_ok) else None
     cap = _capability()
     if cap is None:
         return None
@@ -345,7 +375,7 @@ def _capability() -> Optional[tuple[int, int]]:
         return None
 
 
-def _scheme_supported(scheme: str, device: str) -> bool:
+def _scheme_supported(scheme: str, device: str, *, unproven_ok: bool = False) -> bool:
     """CUDA + (for fp8) the fp8 dtype + a cached quantise+matmul smoke test for ``scheme``."""
     try:
         import torch
@@ -355,10 +385,10 @@ def _scheme_supported(scheme: str, device: str) -> bool:
             return False
     except Exception:
         return False
-    return _smoke_probe(scheme, device)
+    return _smoke_probe(scheme, device, unproven_ok = unproven_ok)
 
 
-def _smoke_probe(scheme: str, device: str) -> bool:
+def _smoke_probe(scheme: str, device: str, *, unproven_ok: bool = False) -> bool:
     """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward and returns
     finite values. Cached per (scheme, device). Makes ``auto`` robust to a build lacking a
     prototype kernel: it fails here and the ladder moves on, rather than crashing at the first
@@ -394,12 +424,14 @@ def _smoke_probe(scheme: str, device: str) -> bool:
         ok = bool(torch.isfinite(out).all().item())
     except Exception as exc:  # noqa: BLE001
         if _is_out_of_memory(exc):
-            # NOT cached. An out-of-memory says nothing about the scheme, and the probe now runs on
-            # the ROUTE thread -- BEFORE the arbiter evicts the resident chat model, which is the
-            # whole point of raising the refusal early -- so it meets a full GPU by design. Caching
-            # it would refuse every later EXPLICIT request for this scheme for the life of the
-            # process, on a host that runs it fine once the eviction has happened.
-            return False
+            # NOT cached, and NOT a verdict. An out-of-memory says nothing about the scheme, and
+            # the probe now runs on the ROUTE thread -- BEFORE the arbiter evicts the resident chat
+            # model, which is the whole point of raising the refusal early -- so it meets a full
+            # GPU by design. Caching it would refuse every later EXPLICIT request for this scheme
+            # for the life of the process, on a host that runs it fine once the eviction has
+            # happened; and answering "unsupported" to the pre-eviction gate (``unproven_ok``)
+            # refuses THIS load for the same reason the eviction was about to remove.
+            return unproven_ok
         ok = False
     _SMOKE_CACHE[key] = ok
     return ok
