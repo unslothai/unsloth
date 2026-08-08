@@ -307,6 +307,9 @@ export function useTauriUpdate(isExternalServer = false) {
 
     const cleanups: (() => void)[] = [];
     try {
+      // A retry re-enters here, and start_backend_update spawns an
+      // environment-mutating child of its own.
+      if (!(await crashCleanupReady())) return;
       const { policy } = await resolveUpdatePolicy();
       if (policy.mode === "manual_linux_package") {
         const version = info?.version ?? updateRef.current?.version;
@@ -432,12 +435,8 @@ export function useTauriUpdate(isExternalServer = false) {
         // A backend started under a job that still has kill-on-close disabled is
         // the orphan this PR exists to prevent, so retry the re-arm and stop here
         // if it will not take.
-        if (!cleanupRearmedRef.current && !(await resumeCleanup())) {
+        if (!(await crashCleanupReady())) {
           retainFailure(msg, phaseRef.current ?? "shell_install");
-          setError(
-            "Update failed and crash cleanup could not be re-armed. Restart Unsloth Studio before continuing.",
-          );
-          setStatus("error");
           return;
         }
         try {
@@ -473,17 +472,22 @@ export function useTauriUpdate(isExternalServer = false) {
     await installUpdate();
   }
 
+  /** Every path that starts a child has to clear this first. */
+  async function crashCleanupReady(): Promise<boolean> {
+    if (cleanupRearmedRef.current) return true;
+    if (await resumeCleanup()) return true;
+    setError(
+      "Crash cleanup could not be re-armed. Restart Unsloth Studio before continuing.",
+    );
+    setStatus("error");
+    return false;
+  }
+
   async function skipAndRestart() {
     const skippedError = error;
     // Same gate as the recovery path: this is offered on every error, so it is
     // the other way a user could start a backend under a disarmed job.
-    if (!cleanupRearmedRef.current && !(await resumeCleanup())) {
-      setError(
-        "Crash cleanup could not be re-armed. Restart Unsloth Studio before continuing.",
-      );
-      setStatus("error");
-      return;
-    }
+    if (!(await crashCleanupReady())) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("start_server", { port: 8888 });

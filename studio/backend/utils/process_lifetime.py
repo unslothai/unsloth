@@ -714,7 +714,12 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
         if not _pid_alive(pid):
             # Same as the startup sweep: a leader that exited first can still
             # have a group holding the GPU behind it.
-            _reap_orphaned_group(pgid, pid, timeout)
+            if not _reap_orphaned_group(pgid, pid, timeout) and _group_has_members(pgid):
+                survivors.append(pid)
+                with _record_lock:
+                    _tracked_pids[pid] = identity
+                    if pgid is not None:
+                        _tracked_pgids[pid] = pgid
             continue
         if current is not None and identity is not None and not _same_identity(identity, current):
             continue  # definitely recycled by something else; drop it
@@ -766,20 +771,28 @@ def reap_recorded_children(timeout: float = 5.0) -> "list[int]":
     if directory is None or not directory.is_dir():
         return []
     killed: "list[int]" = []
-    # Repeated while it keeps finding things: a worker's record is skipped while
-    # its owner is alive, and that owner may be terminated later in the same
-    # sweep by the record of the backend that spawned it.
+    # A record is skipped while its owner is alive, and that owner may be
+    # terminated later in the same sweep by the record of the backend that
+    # spawned it. Only those deferred records are revisited, so nothing is
+    # signalled twice.
+    pending = sorted(directory.glob("*.json"))
     for _pass in range(4):
+        deferred: "list" = []
         found: "list[int]" = []
-        for path in sorted(directory.glob("*.json")):
-            found.extend(_reap_one_record(path, timeout))
+        for path in pending:
+            reaped, owner_alive = _reap_one_record(path, timeout)
+            found.extend(reaped)
+            if owner_alive:
+                deferred.append(path)
         killed.extend(found)
-        if not found:
+        if not deferred or not found:
             break
+        pending = deferred
     return killed
 
 
-def _reap_one_record(path, timeout: float) -> "list[int]":
+def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
+    """``(pids signalled, whether it was left alone because its owner is alive)``."""
     import json
 
     killed: "list[int]" = []
@@ -787,10 +800,10 @@ def _reap_one_record(path, timeout: float) -> "list[int]":
         record = json.loads(path.read_text(encoding = "utf-8"))
     except Exception:
         _unlink(path)
-        return killed
+        return killed, False
     if not isinstance(record, dict):
         _unlink(path)
-        return killed
+        return killed, False
 
     owner_pid = record.get("owner_pid")
     owner_identity = record.get("owner_identity")
@@ -805,9 +818,16 @@ def _reap_one_record(path, timeout: float) -> "list[int]":
         or _same_identity(owner_identity, current_owner)
     )
     if owner_pid == os.getpid() and owner_matches:
-        return killed  # our own record
-    if isinstance(owner_pid, int) and owner_matches and _pid_alive(owner_pid):
-        return killed  # that Studio is still running; its children are its own
+        return killed, False  # our own record
+    if (
+        isinstance(owner_pid, int)
+        and owner_matches
+        and _pid_alive(owner_pid)
+        # os.kill(pid, 0) succeeds for a zombie, and a Studio nobody has waited
+        # on yet is still a dead one whose sidecars are orphans.
+        and not _pid_is_zombie(owner_pid)
+    ):
+        return killed, True  # that Studio is still running; its children are its own
 
     unresolved = False
     children = record.get("children")
@@ -819,8 +839,12 @@ def _reap_one_record(path, timeout: float) -> "list[int]":
             # The leader can exit first and leave the group running (the shim
             # crashing while its visual server holds the GPU). The group is then
             # the only handle left on those children.
-            if _reap_orphaned_group(entry.get("pgid"), pid, timeout):
+            pgid = entry.get("pgid")
+            if _reap_orphaned_group(pgid, pid, timeout):
                 killed.append(pid)
+            elif _group_has_members(pgid):
+                # Still there, so this record is the only handle on it.
+                unresolved = True
             continue
         identity = entry.get("identity")
         current = _identity_or_none(pid)
@@ -856,7 +880,7 @@ def _reap_one_record(path, timeout: float) -> "list[int]":
             )
         except Exception:
             pass
-    return killed
+    return killed, False
 
 
 def _own_process_group(pid: int) -> Optional[int]:

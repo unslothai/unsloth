@@ -697,7 +697,7 @@ def test_the_windows_breadcrumb_fallback_takes_the_whole_tree(tmp_path, monkeypa
         ),
         encoding = "utf-8",
     )
-    killed = pl._reap_one_record(record, timeout = 1.0)
+    killed, _deferred = pl._reap_one_record(record, timeout = 1.0)
     assert killed == [4242]
     assert trees == [4242], "only the leader was signalled"
 
@@ -756,22 +756,6 @@ def test_a_group_leader_is_reaped_with_its_children(tmp_path, monkeypatch):
         assert not _alive(grandchild), "the visual server survived its runner"
     finally:
         _kill(leader.pid)
-
-
-def test_every_restart_path_checks_the_rearm():
-    """Skip & Restart is offered on every error, so gating only the recovery
-    path still lets a user start a backend under a disarmed job."""
-    hook = (
-        Path(__file__).resolve().parents[2] / "frontend" / "src" / "hooks" / "use-tauri-update.ts"
-    )
-    source = hook.read_text(encoding = "utf-8")
-    starts = [
-        block for block in source.split("async function ")[1:] if 'invoke("start_server"' in block
-    ]
-    assert starts, "no restart path found"
-    for block in starts:
-        name = block.split("(")[0]
-        assert "cleanupRearmedRef.current" in block, f"{name} restarts without checking the re-arm"
 
 
 def test_forgetting_a_leader_keeps_its_live_group(tmp_path, monkeypatch):
@@ -997,6 +981,89 @@ def test_a_failed_taskkill_falls_through_to_the_leader(monkeypatch):
     monkeypatch.setattr(sp, "run", lambda *a, **k: _Ok())
     pl._windows_terminate_tree(4242)
     assert fallbacks == []
+
+
+def test_a_zombie_owner_does_not_shield_its_children(tmp_path, monkeypatch):
+    """os.kill(pid, 0) succeeds for a zombie, and the sweep runs once, so its
+    sidecars would survive until another restart."""
+    import json
+
+    from utils import process_lifetime as pl
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    directory = tmp_path / "children"
+    directory.mkdir(parents = True)
+
+    monkeypatch.setattr(pl, "_is_windows", lambda: False)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: pid == 9500)
+    monkeypatch.setattr(pl, "_identity_or_none", lambda pid: "same")
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "same")
+    terminated = []
+    monkeypatch.setattr(pl, "_posix_terminate", lambda pid, timeout = 5.0: terminated.append(pid))
+
+    (directory / "9500.json").write_text(json.dumps({
+        "owner_pid": 9500, "owner_identity": "same",
+        "children": [{"pid": 9501, "identity": "same"}],
+    }), encoding = "utf-8")
+
+    pl.reap_recorded_children(timeout = 1.0)
+    assert terminated == [9501], "a zombie Studio kept its orphans alive"
+
+
+def test_a_group_that_cannot_be_taken_keeps_its_record(tmp_path, monkeypatch):
+    """_reap_orphaned_group returning False has to leave the breadcrumb, or the
+    next startup has no handle on the survivors."""
+    import json
+
+    from utils import process_lifetime as pl
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    directory = tmp_path / "children"
+    directory.mkdir(parents = True)
+
+    monkeypatch.setattr(pl, "_is_windows", lambda: False)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(pl, "_identity_or_none", lambda pid: None)
+    monkeypatch.setattr(pl, "_reap_orphaned_group", lambda pgid, pid, timeout: False)
+    monkeypatch.setattr(pl, "_group_has_members", lambda pgid: True)
+
+    record = directory / "9600.json"
+    record.write_text(json.dumps({
+        "owner_pid": 9600, "owner_identity": "gone",
+        "children": [{"pid": 9601, "identity": "same", "pgid": 9601}],
+    }), encoding = "utf-8")
+
+    pl._reap_one_record(record, timeout = 1.0)
+    assert record.is_file(), "the last handle on a live group was deleted"
+
+
+def test_the_backstop_keeps_a_group_it_could_not_take(monkeypatch):
+    from utils import process_lifetime as pl
+
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(pl, "_reap_orphaned_group", lambda pgid, pid, timeout: False)
+    monkeypatch.setattr(pl, "_group_has_members", lambda pgid: True)
+    pl._tracked_pids.clear()
+    pl._tracked_pgids.clear()
+    pl._tracked_pids[9700] = "same"
+    pl._tracked_pgids[9700] = 9700
+
+    assert pl.terminate_all(timeout = 1.0) == [9700]
+    assert pl._tracked_pids.get(9700) == "same"
+    assert pl._tracked_pgids.get(9700) == 9700
+
+
+def test_every_child_starting_path_checks_the_rearm():
+    """The backend updater is a child too, and a retry re-enters installUpdate."""
+    hook = (
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "hooks" / "use-tauri-update.ts"
+    )
+    source = hook.read_text(encoding = "utf-8")
+    for block in source.split("async function ")[1:]:
+        name = block.split("(")[0]
+        if 'invoke("start_server"' in block or 'invoke("start_backend_update"' in block:
+            assert "crashCleanupReady()" in block, f"{name} starts a child without the check"
 
 
 if __name__ == "__main__":
