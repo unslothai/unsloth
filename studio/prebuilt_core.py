@@ -56,6 +56,21 @@ except ImportError:
     FileLock = None
     FileLockTimeout = None
 
+# Every prebuilt download below goes through urllib in a fresh interpreter the
+# backend spawns, so it misses main.py's OS-trust-store injection. Gating is an
+# inline copy of backend/utils/native_tls.py: this module is vendored standalone
+# and cannot import backend modules. Keep the two in sync.
+_flag = os.environ.get("UNSLOTH_STUDIO_NATIVE_TLS", "").strip().lower()
+if _flag in {"1", "true", "yes"} or (
+    _flag not in {"0", "false", "no"} and sys.platform in ("darwin", "win32")
+):
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
+del _flag
+
 
 class PrebuiltFallback(RuntimeError):
     pass

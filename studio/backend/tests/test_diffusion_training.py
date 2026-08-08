@@ -126,11 +126,29 @@ def _crashing_target(*, event_queue, stop_queue, config):
 
 
 def test_default_target_activates_native_tls_before_diffusion_trainer(monkeypatch):
-    """The diffusion service has its own spawn target, outside training/worker.py."""
+    """The diffusion service has its own spawn target, outside training/worker.py.
+
+    TLS activation imports third-party code (truststore, urllib3, requests), so it
+    has to run inside the scrub wrapper, and still before diffusers is imported.
+    """
+    import os
+    import sys
+    import types
     import core.training.diffusion_training_service as service
+    import utils.native_path_leases as leases
 
     calls = []
-    monkeypatch.setattr("utils.native_tls.activate_native_tls", lambda: calls.append("native_tls"))
+    monkeypatch.setenv(leases.LEASE_SECRET_ENV, "secret")
+
+    def _activate():
+        calls.append("native_tls")
+        assert leases.LEASE_SECRET_ENV not in os.environ
+
+    monkeypatch.setattr("utils.native_tls.activate_native_tls", _activate)
+
+    trainer = types.ModuleType("core.training.diffusion_lora_trainer")
+    trainer.run_diffusion_training_process = lambda **kwargs: calls.append("trainer")
+    monkeypatch.setitem(sys.modules, "core.training.diffusion_lora_trainer", trainer)
 
     def _run_without_native_path_secret(target, **kwargs):
         calls.append("native_path_secret")
@@ -140,6 +158,8 @@ def test_default_target_activates_native_tls_before_diffusion_trainer(monkeypatc
             "stop_queue": "stop",
             "config": {"base_model": "example/model"},
         }
+        os.environ.pop(leases.LEASE_SECRET_ENV, None)  # what the real wrapper does first
+        return target(**kwargs)
 
     monkeypatch.setattr(
         "utils.native_path_leases.run_without_native_path_secret",
@@ -150,7 +170,7 @@ def test_default_target_activates_native_tls_before_diffusion_trainer(monkeypatc
         event_queue = "events", stop_queue = "stop", config = {"base_model": "example/model"}
     )
 
-    assert calls == ["native_tls", "native_path_secret"]
+    assert calls == ["native_path_secret", "native_tls", "trainer"]
 
 
 _CFG = {"base_model": "b", "data_dir": "d", "output_dir": "/tmp/out", "train_steps": 2}

@@ -26,10 +26,16 @@ from utils import native_tls
 
 @pytest.fixture(autouse = True)
 def _reset_activation(monkeypatch):
+    import os
+
     monkeypatch.setattr(native_tls, "_activated", False)
-    monkeypatch.delenv("UNSLOTH_STUDIO_NATIVE_TLS", raising = False)
-    monkeypatch.delenv("UV_SYSTEM_CERTS", raising = False)
-    monkeypatch.delenv("UV_NATIVE_TLS", raising = False)
+    for key in ("UNSLOTH_STUDIO_NATIVE_TLS", "UV_SYSTEM_CERTS", "UV_NATIVE_TLS"):
+        monkeypatch.delenv(key, raising = False)
+    yield
+    # activate_native_tls() setdefaults the UV vars, and monkeypatch records no
+    # undo for a var that was absent, so drop them or they leak into later tests.
+    for key in ("UV_SYSTEM_CERTS", "UV_NATIVE_TLS"):
+        os.environ.pop(key, None)
 
 
 def _fake_truststore(monkeypatch):
@@ -91,6 +97,21 @@ def test_activate_keeps_explicit_uv_override(monkeypatch):
     _fake_truststore(monkeypatch)
 
     assert native_tls.activate_native_tls() is True
+    assert os.environ["UV_SYSTEM_CERTS"] == "0"
+    # uv treats either var as an opt-in, so the legacy name must mirror the
+    # opt-out rather than default to "1" and re-enable it (matches install.sh).
+    assert os.environ["UV_NATIVE_TLS"] == "0"
+
+
+def test_activate_mirrors_legacy_uv_override(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("UV_NATIVE_TLS", "0")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert os.environ["UV_NATIVE_TLS"] == "0"
     assert os.environ["UV_SYSTEM_CERTS"] == "0"
 
 

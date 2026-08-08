@@ -18,9 +18,9 @@ mechanism pip enables by default since 24.2. Injection is process-wide but
 does not survive into spawned interpreters, so each network-touching entry
 point (main.py and the download, inference, training, diffusion-training,
 export, and data-recipe workers) calls :func:`activate_native_tls` before its
-first TLS connection;
-the ``python -c`` transformers probe carries an inline copy of the gating
-because it cannot import backend modules. Activation also exports
+first TLS connection; the ``python -c`` probes and the standalone prebuilt
+installers carry an inline copy of the gating because they cannot import
+backend modules. Activation also exports
 ``UV_SYSTEM_CERTS``/``UV_NATIVE_TLS`` for uv child installers (wheel repairs,
 lazy accelerators), whose rustls ignores in-process injection.
 
@@ -29,7 +29,10 @@ and the fleets where TLS inspection is common), opt-in on Linux via
 ``UNSLOTH_STUDIO_NATIVE_TLS=1`` (distro OpenSSL configurations vary), opt-out
 anywhere with ``0``. Explicit ``SSL_CERT_FILE``/``REQUESTS_CA_BUNDLE``
 overrides keep working: clients pass them as ``verify=...``/``cafile``, which
-``load_verify_locations`` honours on the injected context too.
+``load_verify_locations`` honours on the injected context too. They become
+additive rather than exclusive though, since truststore keeps the OS anchors
+alongside them; ``UNSLOTH_STUDIO_NATIVE_TLS=0`` is the way back to a bundle
+being the only trust root.
 """
 
 from __future__ import annotations
@@ -70,15 +73,18 @@ def activate_native_tls() -> bool:
     # uv/pip child installers (wheel repairs, lazy accelerator installs) do
     # their own TLS: uv's rustls ignores in-process injection entirely, so
     # mirror install.sh and point them at the OS store too (both vars: uv
-    # >= 0.11 reads UV_SYSTEM_CERTS, older reads UV_NATIVE_TLS). setdefault
-    # keeps explicit user overrides.
-    os.environ.setdefault("UV_SYSTEM_CERTS", "1")
-    os.environ.setdefault("UV_NATIVE_TLS", "1")
+    # >= 0.11 reads UV_SYSTEM_CERTS, older reads UV_NATIVE_TLS). Mirror one
+    # resolved value across both rather than defaulting each to "1": uv takes
+    # either var as an opt-in, so an opt-out written in one spelling has to
+    # carry to the other or the unset name silently re-enables it.
+    os.environ.setdefault("UV_SYSTEM_CERTS", os.environ.get("UV_NATIVE_TLS", "1"))
+    os.environ.setdefault("UV_NATIVE_TLS", os.environ["UV_SYSTEM_CERTS"])
     try:
         import truststore
         truststore.inject_into_ssl()
     except Exception:
-        _logger.debug("truststore injection failed; keeping certifi defaults", exc_info = True)
+        # The one failure this feature exists to prevent, so say so out loud.
+        _logger.warning("truststore injection failed; TLS keeps certifi defaults", exc_info = True)
         return False
     _activated = True
     return True

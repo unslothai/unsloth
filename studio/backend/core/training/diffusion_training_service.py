@@ -51,19 +51,18 @@ def _finite_or_none(value: Any) -> Optional[float]:
 
 
 def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
+    # Fresh spawned interpreters do not inherit main.py's OS-trust-store injection.
+    # Runs inside the secret scrub, and still before the trainer imports diffusers.
+    from utils.native_tls import activate_native_tls
+    activate_native_tls()
+
     # Imported lazily so this module (and the route layer) stays torch-free at import.
     from .diffusion_lora_trainer import run_diffusion_training_process
     run_diffusion_training_process(event_queue = event_queue, stop_queue = stop_queue, config = config)
 
 
 def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    # Fresh spawned interpreters do not inherit main.py's OS-trust-store injection.
-    # Activate before the trainer imports torch/diffusers and calls from_pretrained.
-    from utils.native_tls import activate_native_tls
-
-    activate_native_tls()
-
-    # Self-bind to parent death and scrub the native path secret, like the other workers.
+    # First thing in the child (before torch): self-bind to parent death and scrub the native path secret, like the other workers.
     from utils.native_path_leases import run_without_native_path_secret
 
     run_without_native_path_secret(
@@ -382,7 +381,12 @@ class DiffusionTrainingService:
                 },
                 daemon = True,
             )
-            self._proc.start()
+            # Keep the lease secret out of the child's inherited env, like the
+            # inference / export / training / data-recipe orchestrators do.
+            from utils.native_path_leases import native_path_secret_removed_for_child_start
+
+            with native_path_secret_removed_for_child_start():
+                self._proc.start()
             try:
                 from utils.process_lifetime import adopt_pid
                 adopt_pid(self._proc.pid)  # bind to parent lifetime (no zombie on exit)
