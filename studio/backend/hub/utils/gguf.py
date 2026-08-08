@@ -400,7 +400,6 @@ def _is_state_filename_fallback(variant: str, path: Path) -> bool:
     cannot be spelled back, and a resume would re-key it to a further hash.
     """
     from hub.utils.state_dir import variant_is_hashed_fragment
-
     return variant_is_hashed_fragment(variant) and path.stem.lower().endswith(
         f"--variant--{variant.strip().lower()}"
     )

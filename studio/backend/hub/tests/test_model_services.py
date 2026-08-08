@@ -4008,6 +4008,7 @@ def test_partial_gguf_reconstruction_drops_a_variant_read_off_the_filename(monke
     variants, _has_vision = result
     assert sorted(variant.quant for variant in variants) == ["Q4_K_M", digest]
 
+
 def test_download_registry_serializes_cross_transport_variant_downloads():
     # An HTTP append-resume and an XET rewrite of the same shared blob would
     # corrupt each other, so different-transport variants are serialized.
