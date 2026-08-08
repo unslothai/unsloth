@@ -500,12 +500,19 @@ def _fake_smi(
 @pytest.mark.parametrize(
     "mask, expected",
     [
-        (None, "9.0"),
+        # No mask: the whole box is visible, and one uncovered card in it is still an
+        # install this report has to call degraded.
+        (None, "9.0,12.0"),
         ("1", "12.0"),
-        ("1,0", "12.0"),
+        # BOTH, in mask order: a rank landing on the second card falls back to SDPA
+        # whatever the first can do, so a verdict from device 0 alone is a false all-clear.
+        ("1,0", "12.0,9.0"),
+        ("0,1", "9.0,12.0"),
         ("GPU-bbbbbbbb-5555-6666-7777-888888888888", "12.0"),
         ("GPU-bbbbbbbb", "12.0"),
         ("7", None),
+        # CUDA stops at the first entry it cannot resolve, and so does this.
+        ("1,nonsense", "12.0"),
     ],
 )
 def test_the_capability_follows_the_mask_the_app_runs_under(monkeypatch, mask, expected):

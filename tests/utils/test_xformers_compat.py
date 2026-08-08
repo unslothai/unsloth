@@ -73,11 +73,25 @@ def test_xformers_for_torch(torch_version, xformers_version):
     assert xc.xformers_for_torch(torch_version) == xformers_version
 
 
-@pytest.mark.parametrize("torch_version", ["2.11.0", "2.12.0", "2.13.0"])
-def test_no_xformers_release_is_built_for_torch_2_11_or_later(torch_version):
-    # 0.0.35's `torch>=2.10` makes pip accept these pairings, but no wheel is compiled
-    # for them. None is the honest answer; guessing 0.0.35 here would recommend the
-    # exact install that produces the P0.
+@pytest.mark.parametrize("torch_version", ["2.11.0", "2.12.0", "2.13.0", "2.11.1+cu128"])
+def test_the_stable_abi_release_covers_a_torch_with_no_row(torch_version):
+    """0.0.35 is the answer above the floor, not "no release exists".
+
+    xFormers moved to the PyTorch stable API/ABI in 0.0.34, whose notes state that binaries
+    targeting 2.10+ are "compatible with any later version" -- which is why
+    describe_xformers_mismatch accepts a 2.10-built wheel on 2.11. Returning None here made
+    the two halves disagree: the diagnosis said "your CUDA family is wrong" while the fix
+    hint said no release exists, so downgrade torch or build from source. The hint names the
+    CUDA index alongside the version, which is what repairs the family.
+    """
+    assert xc.xformers_for_torch(torch_version) == "0.0.35"
+
+
+@pytest.mark.parametrize("torch_version", ["2.9.5", "2.8.3", "2.11.0.dev20260101"])
+def test_a_torch_the_guarantee_does_not_reach_is_still_unknown(torch_version):
+    # Below the floor there is no stable ABI to lean on, and a pre-release is not something
+    # to make a compatibility promise about. Naming a version there sends the user back into
+    # the same mismatch.
     assert xc.xformers_for_torch(torch_version) is None
 
 

@@ -32,7 +32,7 @@ import utils.hardware.accelerator_probe as probe
 def _no_real_capability(monkeypatch):
     # Never shell out to nvidia-smi from a unit test; each test says what the host is.
     monkeypatch.delenv("UNSLOTH_PROBE_DEVICE_CC", raising = False)
-    monkeypatch.setattr(probe, "_device_compute_capability", lambda: None)
+    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ())
 
 
 def _op(
@@ -72,7 +72,7 @@ def test_a_loaded_xformers_with_no_kernel_for_this_gpu_is_not_working(monkeypatc
     # sm_120 (RTX 50-series) against a build whose ops all cap at sm_90: the library loads,
     # _cpp_library_load_exception is None, and attention silently runs on SDPA.
     _install_xformers(monkeypatch, [_op(maximum = (9, 0)), _op(minimum = (10, 0), operator = None)])
-    monkeypatch.setattr(probe, "_device_compute_capability", lambda: (12, 0))
+    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((12, 0),))
 
     entry = probe.probe_xformers()
     assert entry["imports"] is True
@@ -83,7 +83,7 @@ def test_a_loaded_xformers_with_no_kernel_for_this_gpu_is_not_working(monkeypatc
 
 def test_a_kernel_that_covers_this_gpu_still_reports_working(monkeypatch):
     _install_xformers(monkeypatch, [_op(maximum = (9, 0)), _op(minimum = (10, 0))])
-    monkeypatch.setattr(probe, "_device_compute_capability", lambda: (12, 0))
+    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((12, 0),))
 
     entry = probe.probe_xformers()
     assert entry["runs"] is True and entry["error"] is None
@@ -100,7 +100,7 @@ def test_an_unknown_capability_leaves_the_load_status_alone(monkeypatch):
 def test_an_unrecognised_op_table_leaves_the_load_status_alone(monkeypatch):
     # A future xformers that renames ALL_FW_OPS must not be reported as broken.
     _install_xformers(monkeypatch, [])
-    monkeypatch.setattr(probe, "_device_compute_capability", lambda: (12, 0))
+    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((12, 0),))
 
     assert probe.probe_xformers()["runs"] is True
 
@@ -108,10 +108,54 @@ def test_an_unrecognised_op_table_leaves_the_load_status_alone(monkeypatch):
 def test_a_failed_library_load_still_wins(monkeypatch):
     _install_xformers(monkeypatch, [_op(minimum = (7, 0))])
     sys.modules["xformers._cpp_lib"]._cpp_library_load_exception = OSError("undefined symbol")
-    monkeypatch.setattr(probe, "_device_compute_capability", lambda: (12, 0))
+    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((12, 0),))
 
     entry = probe.probe_xformers()
     assert entry["runs"] is False and "undefined symbol" in entry["error"]
+
+
+def test_every_visible_gpu_has_to_have_a_kernel(monkeypatch):
+    """CUDA_VISIBLE_DEVICES=0,1 across a mixed pair. The rank that lands on the sm_120 card
+    falls back to SDPA whatever the sm_90 card can do, so a verdict taken from the first
+    visible GPU is the same false all-clear in a smaller box."""
+    _install_xformers(monkeypatch, [_op(maximum = (9, 0))])
+    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((9, 0), (12, 0)))
+
+    entry = probe.probe_xformers()
+    assert entry["runs"] is False
+    assert "12.0" in entry["error"], "the report must name the GPU that is not covered"
+
+
+def test_a_pair_the_build_covers_is_still_working(monkeypatch):
+    _install_xformers(monkeypatch, [_op(minimum = (7, 0))])
+    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((9, 0), (12, 0)))
+    assert probe.probe_xformers()["runs"] is True
+
+
+def test_flash_attn_on_a_card_no_prebuilt_wheel_covers_is_unknown(monkeypatch):
+    """The extension can load and the first launch still fail, because no kernel image in
+    the build covers the card. Our own installer refuses to fetch a prebuilt wheel on
+    sm_100+, so one that got there another way is not something to call Working -- and this
+    child must not launch a kernel to find out."""
+    monkeypatch.setitem(sys.modules, "flash_attn", types.ModuleType("flash_attn"))
+    monkeypatch.setitem(
+        sys.modules, "flash_attn.flash_attn_interface", types.ModuleType("iface")
+    )
+    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((12, 0),))
+
+    entry = probe.probe_flash_attn()
+    assert entry["imports"] is True
+    assert entry["runs"] is None, "unknown, not a verdict either way"
+    assert "12.0" in entry["error"]
+
+
+def test_flash_attn_on_a_supported_card_still_reports_working(monkeypatch):
+    monkeypatch.setitem(sys.modules, "flash_attn", types.ModuleType("flash_attn"))
+    monkeypatch.setitem(
+        sys.modules, "flash_attn.flash_attn_interface", types.ModuleType("iface")
+    )
+    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((9, 0),))
+    assert probe.probe_flash_attn()["runs"] is True
 
 
 def test_the_capability_is_parsed_from_the_override(monkeypatch):
@@ -120,9 +164,13 @@ def test_the_capability_is_parsed_from_the_override(monkeypatch):
     fresh = importlib.reload(probe)
     try:
         monkeypatch.setenv("UNSLOTH_PROBE_DEVICE_CC", "12.0")
-        assert fresh._device_compute_capability() == (12, 0)
+        assert fresh._device_compute_capabilities() == ((12, 0),)
+        # The parent sends every visible one, comma separated; the child cannot re-resolve
+        # the mask because the parent cleared it.
+        monkeypatch.setenv("UNSLOTH_PROBE_DEVICE_CC", "9.0,12.0")
+        assert fresh._device_compute_capabilities() == ((9, 0), (12, 0))
         monkeypatch.setenv("UNSLOTH_PROBE_DEVICE_CC", "not a capability")
-        assert fresh._device_compute_capability() is None
+        assert fresh._device_compute_capabilities() == ()
     finally:
         importlib.reload(probe)
 
@@ -229,7 +277,7 @@ def test_the_kernel_verdict_also_applies_on_the_register_extensions_path(monkeyp
     cpp_lib = sys.modules["xformers._cpp_lib"]
     del cpp_lib._cpp_library_load_exception
     cpp_lib._register_extensions = lambda: None
-    monkeypatch.setattr(probe, "_device_compute_capability", lambda: (12, 0))
+    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((12, 0),))
 
     entry = probe.probe_xformers()
     assert entry["runs"] is False and "no memory-efficient attention kernel" in entry["error"]

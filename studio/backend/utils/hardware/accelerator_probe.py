@@ -102,8 +102,8 @@ def _with_kernel_verdict(entry: Dict[str, Any]) -> Dict[str, Any]:
     context. Unknown at any step leaves the load-status answer alone -- an install that
     cannot be checked is not an install that is broken.
     """
-    capability = _device_compute_capability()
-    if capability is None:
+    capabilities = _device_compute_capabilities()
+    if not capabilities:
         return entry
     try:
         from xformers.ops import fmha
@@ -112,7 +112,23 @@ def _with_kernel_verdict(entry: Dict[str, Any]) -> Dict[str, Any]:
     ops = getattr(fmha, "ALL_FW_OPS", None)
     if not ops:
         return entry
-    usable = False
+    # ANY visible GPU without a kernel is a degraded install: with CUDA_VISIBLE_DEVICES=0,1
+    # across a mixed pair, the rank that lands on the uncovered card falls back to SDPA
+    # whatever the other card can do.
+    for capability in capabilities:
+        if _has_usable_op(ops, capability):
+            continue
+        entry["runs"] = False
+        entry["error"] = (
+            f"xformers loaded but ships no memory-efficient attention kernel for this GPU "
+            f"(compute capability {capability[0]}.{capability[1]}), so attention falls "
+            f"back to SDPA"
+        )
+        return entry
+    return entry
+
+
+def _has_usable_op(ops, capability) -> bool:
     for op in ops:
         minimum = getattr(op, "CUDA_MINIMUM_COMPUTE_CAPABILITY", None)
         maximum = getattr(op, "CUDA_MAXIMUM_COMPUTE_CAPABILITY", None)
@@ -122,24 +138,24 @@ def _with_kernel_verdict(entry: Dict[str, Any]) -> Dict[str, Any]:
             continue
         if maximum is not None and capability > maximum:
             continue
-        usable = True
-        break
-    if not usable:
-        entry["runs"] = False
-        entry["error"] = (
-            f"xformers loaded but ships no memory-efficient attention kernel for this GPU "
-            f"(compute capability {capability[0]}.{capability[1]}), so attention falls "
-            f"back to SDPA"
-        )
-    return entry
+        return True
+    return False
 
 
 def _device_compute_capability():
-    """This host's compute capability as ``(major, minor)``, or None when unknown.
+    """The FIRST visible compute capability as ``(major, minor)``, or None when unknown."""
+    capabilities = _device_compute_capabilities()
+    return capabilities[0] if capabilities else None
+
+
+def _device_compute_capabilities():
+    """Every compute capability this process can use, as ``(major, minor)`` tuples.
 
     Through nvidia-smi rather than torch: reading it from torch initialises CUDA, and the
     whole point of this child is that it never holds a context. UNSLOTH_PROBE_DEVICE_CC
-    overrides, which is also how the tests drive it.
+    carries the parent's already-mask-resolved answer (comma separated), which is also how
+    the tests drive it -- the child cannot resolve the mask itself, because the parent
+    cleared it.
     """
     override = os.environ.get("UNSLOTH_PROBE_DEVICE_CC", "").strip()
     text = override
@@ -162,16 +178,27 @@ def _device_compute_capability():
             )
             if result.returncode != 0:
                 return None
-            # First line: the probe describes one host, and a mixed box's weakest card is
-            # not what a "does this install work" answer should hinge on.
-            text = (result.stdout or "").strip().splitlines()[0] if result.stdout.strip() else ""
+            # Every row: with no mask in the environment the whole box is visible, and one
+            # uncovered card in it is still an install this report has to call degraded.
+            text = ",".join(line.strip() for line in (result.stdout or "").splitlines() if line.strip())
         except BaseException:
-            return None
-    try:
-        major, _, minor = text.strip().partition(".")
-        return (int(major), int(minor or 0))
-    except (AttributeError, ValueError):
-        return None
+            return ()
+    capabilities = []
+    for part in str(text).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            major, _, minor = part.partition(".")
+            capabilities.append((int(major), int(minor or 0)))
+        except (AttributeError, ValueError):
+            return ()
+    return tuple(capabilities)
+
+
+# sm_100 (B200) and up: no prebuilt flash-attn wheel exists, which is why
+# install_python_stack refuses to fetch one there.
+_FLASH_ATTN_PREBUILT_CEILING = (10, 0)
 
 
 def probe_flash_attn() -> Dict[str, Any]:
@@ -181,10 +208,25 @@ def probe_flash_attn() -> Dict[str, Any]:
         return entry
     try:
         import flash_attn.flash_attn_interface  # noqa: F401
-        entry["runs"] = True
     except BaseException as exc:
         entry["runs"] = False
         entry["error"] = _error(exc)
+        return entry
+    # The extension can load and the first kernel launch still fail, because no kernel image
+    # in the build covers this card. Our own installer skips prebuilt FlashAttention on
+    # sm_100+ for exactly that reason (studio/install_python_stack.py), so a wheel that got
+    # there another way is not something to call Working -- and this child must not launch a
+    # kernel to find out. Unknown, with the reason, rather than a verdict either way.
+    unsupported = [c for c in _device_compute_capabilities() if c >= _FLASH_ATTN_PREBUILT_CEILING]
+    if unsupported:
+        entry["runs"] = None
+        entry["error"] = (
+            "flash-attn imported, but no prebuilt wheel covers compute capability "
+            f"{unsupported[0][0]}.{unsupported[0][1]}; whether its kernels launch here "
+            "cannot be established without running one"
+        )
+        return entry
+    entry["runs"] = True
     return entry
 
 

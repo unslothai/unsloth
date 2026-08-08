@@ -211,3 +211,41 @@ test("not installed stays not installed, probed or not", () => {
   assert.ok(xformers);
   assert.equal(acceleratorHealth({ ...xformers, probed: true }, true), "broken");
 });
+
+test("a probe that ran but could not decide is unknown, not working", () => {
+  // `runs === null` from a probe that DID run means the kernel question could not be
+  // answered: an xformers layout with no recognised load record, a missing bitsandbytes
+  // checker, a torch with no dispatcher table, a flash-attn on a card no prebuilt wheel
+  // covers. It rendered as Working -- the false all-clear this report exists to remove,
+  // and one nothing else corrects, since those packages are not in `degraded` either.
+  const report = parseAcceleratorReport({
+    probed: true,
+    packages: {
+      flash_attn: {
+        version: "2.8.3",
+        installed: true,
+        probed: true,
+        imports: true,
+        runs: null,
+        reason: "no prebuilt wheel covers compute capability 12.0",
+      },
+      xformers: {
+        version: "0.0.34",
+        installed: true,
+        probed: true,
+        imports: true,
+        runs: true,
+      },
+    },
+    degraded: [],
+  });
+  assert.ok(report);
+  const [xformers, flash] = report.packages;
+  assert.equal(acceleratorHealth(xformers, report.probed), "working");
+  assert.equal(acceleratorHealth(flash, report.probed), "unknown");
+  // A failed import is still broken, whatever runs says.
+  assert.equal(
+    acceleratorHealth({ ...flash, imports: false }, report.probed),
+    "broken",
+  );
+});

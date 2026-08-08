@@ -285,3 +285,98 @@ def test_run_attention_flash_varlen_receives_window_and_softcap(monkeypatch):
 
 
 """Unit tests for packed-attention mask helpers with sliding-window logic."""
+
+
+def test_run_attention_sdpa_windows_an_unpacked_unmasked_batch(monkeypatch):
+    """No packing, no padding mask: the case that had nothing to hang the window off.
+
+    SDPA's ``is_causal`` is FULL causal -- it has no window -- so with neither the xformers
+    bias nor flash's ``window_size`` in play, a model whose config declares a sliding window
+    attended its entire causal history. That is reachable from a Mistral training step the
+    moment xFormers is disabled and FlashAttention is absent, which is precisely what the
+    kernel probe can now decide.
+    """
+    captured = {}
+
+    def _fake_sdpa(Q, K, V, **kwargs):
+        captured["mask"] = kwargs.get("attn_mask")
+        captured["is_causal"] = kwargs.get("is_causal")
+        return torch.zeros_like(Q)
+
+    monkeypatch.setattr(attention_dispatch, "scaled_dot_product_attention", _fake_sdpa)
+
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.SDPA,
+        n_kv_heads = 1,
+        n_groups = 1,
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 1,
+        q_len = 6,
+        kv_seq_len = 6,
+        n_heads = 1,
+        head_dim = 1,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+        sliding_window = 3,
+    )
+    Q = torch.zeros(1, 1, 6, 1)
+
+    attention_dispatch.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
+
+    mask = captured["mask"]
+    assert mask is not None, "a declared window must not fall through to plain is_causal"
+    assert captured["is_causal"] is False
+    assert mask.shape == (1, 1, 6, 6)
+    # Row 5 sees 3, 4, 5 and nothing older; the future stays masked either way.
+    assert [bool(v) for v in mask[0, 0, 5]] == [False, False, False, True, True, True]
+
+
+def test_run_attention_sdpa_leaves_a_short_sequence_alone(monkeypatch):
+    # Shorter than the window: nothing to clamp, and the cheap is_causal path must survive.
+    captured = {}
+    monkeypatch.setattr(
+        attention_dispatch,
+        "scaled_dot_product_attention",
+        lambda Q, K, V, **kw: (captured.update(kw), torch.zeros_like(Q))[1],
+    )
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.SDPA, n_kv_heads = 1, n_groups = 1
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 4,
+        n_heads = 1,
+        head_dim = 1,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+        sliding_window = 8,
+    )
+    Q = torch.zeros(1, 1, 4, 1)
+    attention_dispatch.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
+    assert captured["attn_mask"] is None and captured["is_causal"] is True
+
+
+def test_mistral_hands_the_dispatcher_its_configured_window():
+    """The context Mistral builds omitted `sliding_window` entirely, so even a correct SDPA
+    window path had nothing to act on."""
+    import ast
+    from pathlib import Path
+
+    src = Path(attention_dispatch.__file__).resolve().parents[1] / "models" / "mistral.py"
+    tree = ast.parse(src.read_text(encoding = "utf-8"))
+    contexts = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "AttentionContext"
+    ]
+    assert contexts, "AttentionContext construction not found in mistral.py"
+    for call in contexts:
+        assert "sliding_window" in {kw.arg for kw in call.keywords}

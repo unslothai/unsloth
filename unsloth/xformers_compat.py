@@ -247,16 +247,38 @@ def expected_torch_for_xformers(xformers_version: Any) -> Optional[str]:
     return XFORMERS_TORCH_PINS.get(release)
 
 
+# The newest release whose ``_C`` is a stable-ABI build, and the torch release it was
+# compiled against. Above the floor these two are what covers a torch nobody has shipped a
+# row for yet.
+_STABLE_ABI_XFORMERS = "0.0.35"
+_STABLE_ABI_BUILT_FOR = XFORMERS_BUILT_FOR_TORCH[_STABLE_ABI_XFORMERS]
+
+
 def xformers_for_torch(torch_version: Any) -> Optional[str]:
-    """The newest xformers release built for ``torch_version``, or None if unknown.
+    """The newest xformers release that runs on ``torch_version``, or None if unknown.
 
     Takes a full torch version (local tag and all) so callers can pass
     ``torch.__version__`` straight in.
+
+    Beyond the exact table, the stable ABI answers the rest: 0.0.34+ binaries target
+    PyTorch 2.10+ and the release notes say such builds are "compatible with any later
+    version". Returning None for torch 2.11 contradicted this module's own
+    ``describe_xformers_mismatch``, which accepts exactly that pairing -- so the diagnosis
+    said "your CUDA family is wrong" and the fix hint said "no release exists, downgrade
+    torch or build from source". Only for a plain release: a dev/rc torch is not something
+    to make a compatibility promise about.
     """
     release = normalize_release(torch_version)
     if release is None:
         return None
-    return TORCH_TO_XFORMERS.get(release)
+    exact = TORCH_TO_XFORMERS.get(release)
+    if exact is not None:
+        return exact
+    if normalize_release_with_post(torch_version) is None:
+        return None  # pre-release: unknown is the honest answer
+    if stable_abi_covers(_STABLE_ABI_BUILT_FOR, release):
+        return _STABLE_ABI_XFORMERS
+    return None
 
 
 def declared_torch_pin(xformers_version: Any = None) -> Optional[str]:

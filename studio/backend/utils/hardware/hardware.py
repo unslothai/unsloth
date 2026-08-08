@@ -1202,13 +1202,18 @@ _CUDA_VISIBLE_PROBES = frozenset({"bitsandbytes"})
 
 
 def _visible_compute_capability() -> Optional[str]:
-    """Compute capability of the GPU this process can actually use, as "12.0", or None.
+    """Compute capabilities this process can actually use, comma-joined ("9.0,12.0"), or None.
 
     nvidia-smi lists PHYSICAL devices and ignores CUDA_VISIBLE_DEVICES, so the first row is not
     necessarily the app's device: on a mixed host masked to an sm_120 card, reading row 0 (an
     sm_90 part) evaluates the wrong op table and can report xFormers as working while the
     visible GPU has no kernel. Resolved here, in the parent, because the child is started with
     the mask cleared and cannot recover it.
+
+    EVERY visible device, not the first: with CUDA_VISIBLE_DEVICES=0,1 across a mixed pair, a
+    rank landing on the second card falls back to SDPA while a verdict taken from the first
+    says "Working". A report that covers only one of the GPUs a run will use is the same false
+    all-clear in a smaller box.
     """
     exe = shutil.which("nvidia-smi")
     if not exe:
@@ -1236,15 +1241,23 @@ def _visible_compute_capability() -> Optional[str]:
         return None
     mask = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
     if not mask:
-        return rows[0][2]
-    first = mask.split(",")[0].strip()
-    if not first:
+        return ",".join(dict.fromkeys(capability for _i, _u, capability in rows))
+    selected = []
+    for token in mask.split(","):
+        token = token.strip()
+        if not token:
+            # CUDA stops at the first invalid entry, and so does this.
+            break
+        for index, uuid, capability in rows:
+            # The mask names either an ordinal or a GPU UUID, and a UUID may be abbreviated.
+            if token == index or uuid == token or uuid.startswith(token):
+                selected.append(capability)
+                break
+        else:
+            break
+    if not selected:
         return None
-    for index, uuid, capability in rows:
-        # The mask names either an ordinal or a GPU UUID, and a UUID may be abbreviated.
-        if first == index or uuid == first or uuid.startswith(first):
-            return capability
-    return None
+    return ",".join(dict.fromkeys(selected))
 
 
 def _probe_packages(names) -> Dict[str, Any]:

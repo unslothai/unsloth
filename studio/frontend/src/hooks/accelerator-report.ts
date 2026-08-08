@@ -124,8 +124,14 @@ export function acceleratorHealth(
 ): Health {
   if (!pkg.installed) return "absent";
   if (!(pkg.probed ?? reportProbed)) return "unknown";
-  if (!pkg.imports || pkg.runs === false) return "broken";
-  return "working";
+  if (!pkg.imports) return "broken";
+  // `runs === null` from a probe that DID run means the kernel question could not be
+  // answered: an xformers layout with no recognised load record, a missing bitsandbytes
+  // checker, a torch with no dispatcher table, a flash-attn on a card no prebuilt wheel
+  // covers. Reading that as Working is the false all-clear this report exists to remove,
+  // and those packages are not in `degraded` either, so nothing else would say it.
+  if (pkg.runs === null) return "unknown";
+  return pkg.runs ? "working" : "broken";
 }
 
 /** True when something is installed and cannot load -- the case worth a banner. */

@@ -138,6 +138,12 @@ def MistralAttention_fast_forward(
         seq_info = seq_info,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
+        # The window the flash path already gets through window_size. SDPA needs it too, and
+        # not only in the branch above: training takes `elif self.training: pass`, so no 4D
+        # mask is synthesized, and with xformers off and flash absent the local window was the
+        # one thing nothing carried -- every sequence past config.sliding_window silently
+        # attended its whole causal history.
+        sliding_window = None if window_size == (-1, -1) else sw,
         prefix_seg_info = _pg_seg,
     )
 
