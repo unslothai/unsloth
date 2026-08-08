@@ -583,9 +583,7 @@ def test_a_convincing_uv_function_is_not_accepted_as_uv(tmp_path):
     """
     profile = 'function uv { Write-Output "uv 99.0.0" }\n'
     body = _uv_probe_body('    "RESOLVED:$(Resolve-UvExecutable)"')
-    res = _run_with_profile(
-        tmp_path, body, path_override = tmp_path / "emptybin", profile = profile
-    )
+    res = _run_with_profile(tmp_path, body, path_override = tmp_path / "emptybin", profile = profile)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
     assert "RESOLVED:" in res.stdout and "RESOLVED:uv" not in res.stdout, (
         "a function named uv must not resolve to the bare token; it would then be pinned and "
@@ -605,9 +603,7 @@ def test_an_alias_to_a_real_uv_is_followed_to_the_executable(tmp_path):
     fake = _fake_uv(tmp_path / "aliased", version = "0.12.4")
     profile = f"Set-Alias uv {_ps_literal(fake)}\n"
     body = _uv_probe_body('    "RESOLVED:$(Resolve-UvExecutable)"')
-    res = _run_with_profile(
-        tmp_path, body, path_override = tmp_path / "emptybin", profile = profile
-    )
+    res = _run_with_profile(tmp_path, body, path_override = tmp_path / "emptybin", profile = profile)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
     assert f"RESOLVED:{fake}" in res.stdout, (
         f"an alias to a real executable must resolve to {str(fake)!r}, not to the alias name; "
