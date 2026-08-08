@@ -88,6 +88,21 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
     refreshRef.current = refresh;
   }, [refresh]);
 
+  // Nothing is listening while disabled, so the terminal event for a load in
+  // flight is missed and its optimistic row would come back on re-enable as one
+  // no poll can retire: `withPendingLoads` only yields to a status row for the
+  // same runtime, and a failed or since-unloaded load has none. Drop them and
+  // let the poll say what is really resident.
+  //
+  // Adjusted during render rather than in an effect: React re-runs this render
+  // before committing, so the stale rows never reach the DOM, and the guard
+  // makes it run once per transition.
+  const [wasEnabled, setWasEnabled] = useState(enabled);
+  if (wasEnabled !== enabled) {
+    setWasEnabled(enabled);
+    if (!enabled && pending.size > 0) setPending(new Map());
+  }
+
   // The load call announces itself, so the row and the toast appear together
   // and a finished load is re-read at once instead of on the next tick.
   useEffect(() => {

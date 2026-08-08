@@ -164,8 +164,12 @@ export async function getVideoStatus(
   return parseJson(await authFetch("/api/inference/video/status", { signal }));
 }
 
-export async function getVideoLoadProgress(): Promise<VideoLoadProgress> {
-  return parseJson(await authFetch("/api/inference/video/load-progress"));
+export async function getVideoLoadProgress(
+  signal?: AbortSignal,
+): Promise<VideoLoadProgress> {
+  return parseJson(
+    await authFetch("/api/inference/video/load-progress", { signal }),
+  );
 }
 
 export async function getVideoGenerateProgress(): Promise<VideoGenerateProgress> {
@@ -186,7 +190,7 @@ export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatu
           body: JSON.stringify(body),
         }),
       ),
-    async () => (await getVideoLoadProgress()).phase,
+    async (signal) => (await getVideoLoadProgress(signal)).phase,
   );
 }
 

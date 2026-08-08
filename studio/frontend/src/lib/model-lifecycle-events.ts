@@ -92,8 +92,17 @@ export type LoadPhase = "downloading" | "finalizing" | "ready" | "error" | null;
 
 /** How often the settle poll asks; overridable so a test need not sleep. */
 export const BACKGROUND_LOAD_POLL_MS = 2000;
+/** Well past a healthy load-progress read, so only a real hang trips it. */
+export const BACKGROUND_READ_TIMEOUT_MS = 10_000;
 /** A backend that stops answering must not leave the row loading forever. */
 export const BACKGROUND_LOAD_DEADLINE_MS = 60 * 60 * 1000;
+
+/** Cadences, all optional: the defaults are what production uses. */
+export type BackgroundLoadTiming = {
+  pollMs?: number;
+  readTimeoutMs?: number;
+  deadlineMs?: number;
+};
 
 /**
  * The same announcement for the two loads that only *start* the work: images
@@ -110,15 +119,15 @@ export async function withBackgroundLoadNotice<T>(
   runtime: ModelRuntime,
   model: string | null,
   start: () => Promise<T>,
-  readPhase: () => Promise<LoadPhase>,
-  pollMs: number = BACKGROUND_LOAD_POLL_MS,
+  readPhase: (signal: AbortSignal) => Promise<LoadPhase>,
+  timing: BackgroundLoadTiming = {},
 ): Promise<T> {
   notifyModelLifecycle({ runtime, loading: true, model });
   let started = false;
   try {
     const result = await start();
     started = true;
-    void settleWhenLoadEnds(runtime, model, readPhase, pollMs);
+    void settleWhenLoadEnds(runtime, model, readPhase, timing);
     return result;
   } finally {
     // A load that never started settles here; one that did settles from the
@@ -130,21 +139,49 @@ export async function withBackgroundLoadNotice<T>(
 async function settleWhenLoadEnds(
   runtime: ModelRuntime,
   model: string | null,
-  readPhase: () => Promise<LoadPhase>,
-  pollMs: number,
+  readPhase: (signal: AbortSignal) => Promise<LoadPhase>,
+  timing: BackgroundLoadTiming,
 ): Promise<void> {
-  const deadline = Date.now() + BACKGROUND_LOAD_DEADLINE_MS;
+  const pollMs = timing.pollMs ?? BACKGROUND_LOAD_POLL_MS;
+  const readTimeoutMs = timing.readTimeoutMs ?? BACKGROUND_READ_TIMEOUT_MS;
+  const deadline =
+    Date.now() + (timing.deadlineMs ?? BACKGROUND_LOAD_DEADLINE_MS);
   try {
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, pollMs));
       // An unreadable read is not proof the load ended: a restarting backend or
       // one dropped request would end the row early and hide a live load. Only
-      // a terminal phase settles it, and the deadline covers a backend that
-      // never answers again.
-      const phase = await readPhase().catch(() => undefined);
+      // a terminal phase settles it.
+      const phase = await boundedRead(readPhase, readTimeoutMs);
       if (phase === "ready" || phase === "error") return;
     }
   } finally {
     notifyModelLifecycle({ runtime, loading: false, model });
   }
 }
+
+/**
+ * One read, abandoned if it does not answer. A backend that accepts the
+ * connection and never replies would otherwise park this `await` forever, so
+ * the loop would never test its deadline again and the row would stay loading
+ * for the life of the tab -- the deadline only bounds the loop if every turn of
+ * it terminates.
+ *
+ * A plain AbortController rather than AbortSignal.timeout, which the older
+ * WebKitGTK builds Tauri embeds do not have.
+ */
+async function boundedRead(
+  readPhase: (signal: AbortSignal) => Promise<LoadPhase>,
+  readTimeoutMs: number,
+): Promise<LoadPhase | undefined> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), readTimeoutMs);
+  try {
+    return await readPhase(controller.signal);
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+

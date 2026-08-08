@@ -209,8 +209,12 @@ export async function getDiffusionInferenceInfo(): Promise<DiffusionInferenceInf
   return parseJson(await authFetch("/api/inference/images/info"));
 }
 
-export async function getDiffusionLoadProgress(): Promise<DiffusionLoadProgress> {
-  return parseJson(await authFetch("/api/inference/images/load-progress"));
+export async function getDiffusionLoadProgress(
+  signal?: AbortSignal,
+): Promise<DiffusionLoadProgress> {
+  return parseJson(
+    await authFetch("/api/inference/images/load-progress", { signal }),
+  );
 }
 
 export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> {
@@ -232,7 +236,7 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
           body: JSON.stringify(body),
         }),
       ),
-    async () => (await getDiffusionLoadProgress()).phase,
+    async (signal) => (await getDiffusionLoadProgress(signal)).phase,
   );
 }
 
