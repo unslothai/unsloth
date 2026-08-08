@@ -733,9 +733,7 @@ def get_settings(current_subject: str = Depends(get_current_subject)):
 
 
 @router.put("/settings", response_model = ChatSettingsResponse)
-def put_settings(
-    payload: dict[str, Any], current_subject: str = Depends(get_current_subject)
-):
+def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_current_subject)):
     try:
         parsed = ChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
