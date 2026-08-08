@@ -1315,17 +1315,8 @@ def _run_login(
     on_login_url: Optional[Callable[[str], None]],
     cancelled: Optional[Callable[[], bool]],
 ) -> None:
-    proc = _spawn_login(binary)
-    try:
-        from utils.process_lifetime import adopt_pid
-        adopt_pid(proc.pid)
-    except Exception:
-        pass
-    record["login_pid"] = proc.pid
-    record["login_created"] = _process_create_time(proc.pid)
-    _write(_RECORD, record)
-
     seen = []
+    proc = reader = None
 
     def _drain():
         for line in proc.stdout or ():
@@ -1338,10 +1329,18 @@ def _run_login(
                 except Exception:
                     pass
 
-    reader = threading.Thread(target = _drain, daemon = True, name = "cloudflared-login")
-    reader.start()
-    deadline = time.monotonic() + _LOGIN_DEADLINE
     try:
+        proc = _spawn_login(binary)
+        with suppress(Exception):
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(proc.pid)
+        record["login_pid"] = proc.pid
+        record["login_created"] = _process_create_time(proc.pid)
+        _write(_RECORD, record)
+        thread = threading.Thread(target = _drain, daemon = True, name = "cloudflared-login")
+        thread.start()
+        reader = thread
+        deadline = time.monotonic() + _LOGIN_DEADLINE
         while proc.poll() is None:
             if cancelled is not None and cancelled():
                 raise ProvisioningError("cancelled", "Cloudflare setup was cancelled.")
@@ -1349,19 +1348,21 @@ def _run_login(
                 raise ProvisioningError("login_timed_out", "The Cloudflare login did not finish.")
             time.sleep(0.2)
     finally:
-        if proc.poll() is None:
-            _terminate(proc)
-        with suppress(Exception):
-            from utils.process_lifetime import forget_pid
-            forget_pid(proc.pid)
-        # Delete cert.pem only when its final digest proves this run created it.
-        _capture_certificate(record)
-        reader.join(timeout = 2.0)
-        with suppress(Exception):
-            proc.stdout.close()
-        record.pop("login_pid", None)
-        record.pop("login_created", None)
-        _write(_RECORD, record)
+        if proc is not None:
+            if proc.poll() is None:
+                _terminate(proc)
+            with suppress(Exception):
+                from utils.process_lifetime import forget_pid
+                forget_pid(proc.pid)
+            # Delete cert.pem only when its final digest proves this run created it.
+            _capture_certificate(record)
+            if reader is not None:
+                reader.join(timeout = 2.0)
+            with suppress(Exception):
+                proc.stdout.close()
+            record.pop("login_pid", None)
+            record.pop("login_created", None)
+            _write(_RECORD, record)
 
     text = "".join(seen)
     if _LOGIN_REFUSED in text:

@@ -1814,6 +1814,21 @@ def test_the_login_child_is_written_down_on_disk_while_it_runs(cf):
     assert ct._read(ct._RECORD) is None
 
 
+@pytest.mark.parametrize("landing", ["adopting the pid", "reading its create time"])
+def test_an_interrupt_before_the_wait_still_ends_the_login_child(cf, monkeypatch, landing):
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt("a shutdown lands with the child already spawned")
+
+    if landing == "adopting the pid":
+        monkeypatch.setattr(process_lifetime, "adopt_pid", interrupt)
+    else:
+        monkeypatch.setattr(ct, "_process_create_time", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        _provision()
+    assert cf.child is not None and cf.child.returncode == -15
+    assert 999_000 not in process_lifetime._tracked_pids
+
+
 def test_every_command_is_pinned_to_the_certificate_we_proved(monkeypatch):
     monkeypatch.setenv("TUNNEL_ORIGIN_CERT", "/somewhere/else/cert.pem")
     monkeypatch.setenv("TUNNEL_FORCE_PROVISIONING_DNS", "1")
