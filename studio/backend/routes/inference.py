@@ -20149,9 +20149,7 @@ async def diffusion_download_plan(
 
 
 def _assert_native_precision_unset(
-    *,
-    transformer_quant: Optional[str] = None,
-    text_encoder_quant: Optional[str] = None,
+    *, transformer_quant: Optional[str] = None, text_encoder_quant: Optional[str] = None
 ) -> None:
     """Refuse an EXPLICIT precision on the native sd.cpp engine, which cannot honour one.
 

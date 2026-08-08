@@ -200,7 +200,9 @@ def torchao_unavailable_reason() -> Optional[str]:
             # This string is interpolated into the precision-refusal RuntimeError, which both load
             # routes return verbatim as the 409 detail, and an ImportError routinely names the
             # absolute file of the module that raised it.
-            logging.getLogger(__name__).warning("torchao is unusable: %s: %s", type(exc).__name__, exc)
+            logging.getLogger(__name__).warning(
+                "torchao is unusable: %s: %s", type(exc).__name__, exc
+            )
             reason = _strip_paths(f"{type(exc).__name__}: {exc}")
     _TORCHAO_UNAVAILABLE = (reason,)
     return reason
@@ -375,7 +377,12 @@ def _capability() -> Optional[tuple[int, int]]:
         return None
 
 
-def _scheme_supported(scheme: str, device: str, *, unproven_ok: bool = False) -> bool:
+def _scheme_supported(
+    scheme: str,
+    device: str,
+    *,
+    unproven_ok: bool = False,
+) -> bool:
     """CUDA + (for fp8) the fp8 dtype + a cached quantise+matmul smoke test for ``scheme``."""
     try:
         import torch
@@ -388,7 +395,12 @@ def _scheme_supported(scheme: str, device: str, *, unproven_ok: bool = False) ->
     return _smoke_probe(scheme, device, unproven_ok = unproven_ok)
 
 
-def _smoke_probe(scheme: str, device: str, *, unproven_ok: bool = False) -> bool:
+def _smoke_probe(
+    scheme: str,
+    device: str,
+    *,
+    unproven_ok: bool = False,
+) -> bool:
     """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward and returns
     finite values. Cached per (scheme, device). Makes ``auto`` robust to a build lacking a
     prototype kernel: it fails here and the ladder moves on, rather than crashing at the first
