@@ -26,6 +26,7 @@ import {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
@@ -567,6 +568,8 @@ export function ResourcesTab() {
         )}
       </SettingsSection>
 
+      <ModelMemorySection />
+
       <SettingsSection title={t("settings.resources.storage.title")}>
         <InfoRow
           label={t("settings.resources.storage.systemDisk")}
@@ -581,6 +584,7 @@ export function ResourcesTab() {
         <SettingsRow
           label={t("settings.resources.storage.modelsFolder")}
           description={t("settings.resources.storage.modelsFolderDescription")}
+          hint={t("settings.resources.storage.modelsFolderHint")}
           className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
         >
           <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
