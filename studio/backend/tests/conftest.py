@@ -246,6 +246,7 @@ def _no_outbound_network(request, monkeypatch):
                 f"outbound network blocked in tests (tried {address!r}); "
                 f"stub the call, or mark the test with @pytest.mark.allow_network",
             )
+
         return blocked
 
     monkeypatch.setattr(socket.socket, "connect", _guard(real_connect))
@@ -294,9 +295,7 @@ def _hub_reachable_without_probing(monkeypatch):
 
     from utils import utils as utils_utils
 
-    monkeypatch.setattr(
-        utils_utils, "_hf_reachability", (time.monotonic(), False), raising = False
-    )
+    monkeypatch.setattr(utils_utils, "_hf_reachability", (time.monotonic(), False), raising = False)
 
 
 @pytest.fixture(scope = "session")
