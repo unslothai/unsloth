@@ -374,10 +374,12 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
     },
     "flux.2-klein": {"params": "4B", "qlora_vram_gb": 10, "gated": False, "note": ""},
     "flux.2-dev": {"params": "32B", "qlora_vram_gb": 28, "gated": True, "note": ""},
-    # Video. Measured on a B200: 12.6 GB peak in the training loop (nf4, rank 32, 512px
-    # stills, batch 1, gradient checkpointing), but the run PEAKS at ~33 GB while the
-    # Gemma3-12B conditioning stack is resident, before it is freed and the transformer
-    # loads. The quoted figure is the whole run, since that is what a card must hold.
+    # Video. Measured on a B200: the training LOOP peaks at 11.2 GB (nf4, rank 32, 512px
+    # stills, batch 1, gradient checkpointing), but the RUN peaks at 34.8 GB earlier, while
+    # the Gemma3-12B conditioning stack is resident and captions are encoded -- before it is
+    # freed and the transformer loads. The quoted figure covers the whole run, since that is
+    # what a card has to hold. Lightricks quote 80 GB recommended / 32 GB with their int8
+    # low-VRAM config for their own trainer.
     "ltx-2": {
         "params": "19B",
         "qlora_vram_gb": 36,
