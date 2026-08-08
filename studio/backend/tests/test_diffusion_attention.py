@@ -690,8 +690,10 @@ def test_deterministic_refusal_is_memoised(monkeypatch):
         return {
             "platform_tag": "win_amd64",
             "python_tag": "cp313",
-            "torch_version": "2.11.0+cu130",
-            "cuda_version": "13.0",
+            # A CUDA family with no xFormers wheel on any index: the refusal has to be a
+            # real one, and torch 2.11 itself now resolves through the stable-ABI rows.
+            "torch_version": "2.11.0+cu124",
+            "cuda_version": "12.4",
         }
 
     monkeypatch.setattr(wu, "probe_torch_wheel_env", _probe)
@@ -699,7 +701,7 @@ def test_deterministic_refusal_is_memoised(monkeypatch):
     for _ in range(3):
         url, reason = att._xformers_wheel_target()
         assert url is None
-        assert "no xFormers wheel is published for torch 2.11.0+cu130" in reason
+        assert "no xFormers wheel is published for torch 2.11.0+cu124" in reason
     assert len(calls) == 1
 
 

@@ -3662,6 +3662,25 @@ exit 0
         "2.13.0" = @{ "cu126" = "0.0.35";       "cu128" = "0.0.35";       "cu130" = "0.0.35" }
     }
 
+    # The stable-ABI era in one place: every torch STRICTLY ABOVE the floor resolves to this
+    # wheel, which is compiled against the floor release and works on any later one by
+    # upstream's own guarantee. The exact rows above still win.
+    #
+    # An exact-key table alone refuses the PATCH releases -- 2.10.1, 2.11.1, 2.12.1 are all
+    # supported builds, and none of them can be listed here, because they are published
+    # after this script ships. Each one silently left the machine with no xFormers.
+    $script:XformersStableAbiFloor = "2.10.0"
+    $script:XformersStableAbiVersion = "0.0.35"
+    $script:XformersStableAbiFamilies = @("cu126", "cu128", "cu130")
+
+    # "2.12.1" -> [version]2.12.1, or $null for a dev/rc/nightly string, which names no
+    # released torch and must not be swept into the era comparison.
+    function ConvertTo-TorchReleaseVersion {
+        param([string]$Release)
+        if (-not $Release -or -not [regex]::IsMatch($Release, '^\d+(\.\d+)*$')) { return $null }
+        try { return [version]$Release } catch { return $null }
+    }
+
     # xFormers version built for exactly ($TorchVersion, $CudaTag), or $null when that pair
     # has no published wheel -- in which case we install nothing rather than a mismatch.
     function Get-XformersWheelVersion {
@@ -3669,10 +3688,44 @@ exit 0
         if (-not $TorchVersion -or -not $CudaTag) { return $null }
         # "2.10.0+cu130" -> "2.10.0"; a dev/rc suffix has no wheel and must miss the table.
         $release = ($TorchVersion -split '\+', 2)[0].Trim()
-        if (-not $script:XformersWheelVersions.ContainsKey($release)) { return $null }
-        $byFamily = $script:XformersWheelVersions[$release]
-        if (-not $byFamily.ContainsKey($CudaTag)) { return $null }
-        return $byFamily[$CudaTag]
+        if ($script:XformersWheelVersions.ContainsKey($release)) {
+            $byFamily = $script:XformersWheelVersions[$release]
+            if ($byFamily.ContainsKey($CudaTag)) { return $byFamily[$CudaTag] }
+            return $null
+        }
+        # Not listed: above the stable-ABI floor the answer is known without a row.
+        $parsed = ConvertTo-TorchReleaseVersion $release
+        if ($null -eq $parsed) { return $null }
+        if ($parsed -gt [version]$script:XformersStableAbiFloor -and $script:XformersStableAbiFamilies -contains $CudaTag) {
+            return $script:XformersStableAbiVersion
+        }
+        return $null
+    }
+
+    # The torch build the SELECTED wheel records in its cpp_lib.json, which is what
+    # Get-InstalledXformersBuild reads back. For an exact-era wheel that is the resident
+    # torch; for the stable-ABI wheel it is the floor release it was compiled against, so
+    # comparing against the resident torch marked a perfectly good 0.0.35 as mismatched and
+    # force-reinstalled it on every run.
+    function Get-XformersExpectedTorchBuild {
+        param([string]$Version, [string]$TorchVersion, [string]$CudaTag)
+        if ($Version -eq $script:XformersStableAbiVersion) {
+            return "$($script:XformersStableAbiFloor)+$CudaTag"
+        }
+        return $TorchVersion
+    }
+
+    # The interpreter tag in the wheel FILENAME: 0.0.31..0.0.34 ship one cp39-abi3 wheel,
+    # 0.0.35 switched to py39-none (a packaging change -- the extension never bound the
+    # CPython ABI). Unknown releases return $null so a direct URL is never guessed.
+    # Mirrors _XFORMERS_FILENAME_PYTHON_TAGS in studio/backend/utils/wheel_utils.py.
+    function Get-XformersFilenamePythonTag {
+        param([string]$Version)
+        $parsed = ConvertTo-TorchReleaseVersion (($Version -split '[^0-9.]', 2)[0].TrimEnd('.'))
+        if ($null -eq $parsed) { return $null }
+        if ($parsed -ge [version]"0.0.31" -and $parsed -le [version]"0.0.34") { return "cp39-abi3" }
+        if ($parsed -eq [version]"0.0.35") { return "py39-none" }
+        return $null
     }
 
     # What the RESIDENT xformers actually is: "<version> <torch-it-was-built-for>", e.g.
@@ -4189,20 +4242,42 @@ exit 0
                 # "not in the table", which also covers families we have no row for (cu118,
                 # cu124) as well as torch releases upstream never built against.
                 substep "no matching xFormers wheel for torch $_xfTorchVersion -- skipping it (attention falls back to torch SDPA)."
-            } elseif ((Get-InstalledXformersBuild -PythonExe $VenvPython) -eq "$_xfVersion $_xfTorchVersion") {
+            } elseif ((Get-InstalledXformersBuild -PythonExe $VenvPython) -eq "$_xfVersion $(Get-XformersExpectedTorchBuild -Version $_xfVersion -TorchVersion $_xfTorchVersion -CudaTag $_xfCudaTag)") {
                 substep "xFormers $_xfVersion already matches torch $_xfTorchVersion."
             } else {
-                # Index leaf comes from the torch that is actually resident. $TorchIndexUrl
-                # is reused only when it already points at that same family, so a custom
-                # mirror keeps working; otherwise (empty after the --torch-backend=auto
-                # fallback, or stale at /cpu) rebuild it, still honouring
-                # UNSLOTH_PYTORCH_MIRROR.
-                $_xfIndexUrl = $TorchIndexUrl
-                if (-not $_xfIndexUrl -or (Get-TorchIndexLeafName $_xfIndexUrl) -ne $_xfCudaTag) {
+                # How to fetch it, in two cases.
+                #
+                # An EXPLICIT index pin is authoritative and stays whole. Its final component
+                # is not required to be the CUDA family: a documented full-URL override can be
+                # an authenticated PEP 503 mirror, and comparing its leaf threw exactly that
+                # index away -- the one that had just supplied the resident CUDA torch --
+                # leaving an air-gapped host unable to reach any wheel at all.
+                #
+                # Otherwise install the DIRECT wheel URL rather than resolving a version off
+                # an index. --default-index does not make an index exclusive (uv's --index /
+                # UV_INDEX are used "in addition to" it), and cu126 / cu128 / cu130 publish
+                # the SAME version string, so a machine with UV_INDEX set -- PyPI's CUDA-12.8
+                # build, say -- could satisfy a pinned 0.0.35 from the wrong family and
+                # recreate the silent extension failure this whole step exists to prevent.
+                # A URL cannot be resolved anywhere else. UNSLOTH_PYTORCH_MIRROR is still
+                # honoured, as it is everywhere else in this script.
+                $_xfIndexUrl = $null
+                $_xfWheelUrl = $null
+                if ($TorchIndexPinned -and $TorchIndexUrl) {
+                    $_xfIndexUrl = $TorchIndexUrl
+                } else {
                     $_xfBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
-                    $_xfIndexUrl = "$_xfBase/$_xfCudaTag"
+                    $_xfPyTag = Get-XformersFilenamePythonTag $_xfVersion
+                    if ($_xfPyTag) {
+                        $_xfWheelUrl = "$_xfBase/$_xfCudaTag/xformers-$_xfVersion-$_xfPyTag-win_amd64.whl"
+                    } else {
+                        # Unknown filename shape: fall back to the index rather than guessing
+                        # a URL that 404s.
+                        $_xfIndexUrl = "$_xfBase/$_xfCudaTag"
+                    }
                 }
-                substep "installing xFormers $_xfVersion for torch $_xfTorchVersion ($(Remove-IndexUrlCredentials $_xfIndexUrl))..."
+                $_xfSource = if ($_xfWheelUrl) { $_xfWheelUrl } else { $_xfIndexUrl }
+                substep "installing xFormers $_xfVersion for torch $_xfTorchVersion ($(Remove-IndexUrlCredentials $_xfSource))..."
                 # --no-deps: the wheel declares torch==<exact release>, and acting on that can
                 #   pull a PyPI (CUDA 12.8) torch over the CUDA build just installed.
                 # --reinstall-package: cu126 / cu128 / cu130 all publish the SAME xformers
@@ -4214,7 +4289,11 @@ exit 0
                 # also safe under a profile's Set-StrictMode.
                 $_xfUv = Get-Variable -Name 'UvExe' -Scope Script -ValueOnly -ErrorAction SilentlyContinue
                 if (-not $_xfUv) { $_xfUv = 'uv' }
-                $_xfExit = Invoke-InstallCommandRetry -Label "install xFormers" { & $_xfUv pip install --python $VenvPython --no-deps --reinstall-package xformers "xformers==$_xfVersion" --default-index $_xfIndexUrl }
+                $_xfExit = if ($_xfWheelUrl) {
+                    Invoke-InstallCommandRetry -Label "install xFormers" { & $_xfUv pip install --python $VenvPython --no-deps --reinstall-package xformers $_xfWheelUrl }
+                } else {
+                    Invoke-InstallCommandRetry -Label "install xFormers" { & $_xfUv pip install --python $VenvPython --no-deps --reinstall-package xformers "xformers==$_xfVersion" --default-index $_xfIndexUrl }
+                }
                 if ($_xfExit -ne 0) {
                     substep "[WARN] could not install xFormers $_xfVersion (exit $_xfExit); attention falls back to torch SDPA." "Yellow"
                 }

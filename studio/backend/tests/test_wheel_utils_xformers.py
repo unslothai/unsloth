@@ -145,7 +145,11 @@ class TestXformersWheelUrl:
                 "are per-interpreter and unnameable here",
             ),
             ("2.10.0+cu124", "12.4", "cu124 stopped at xFormers 0.0.29"),
-            ("2.11.0+cu130", "13.0", "torch 2.11 has no xFormers wheel on any index"),
+            (
+                "2.11.0+cu124",
+                "12.4",
+                "cu124 stopped at xFormers 0.0.29, so the stable-ABI era does not rescue it",
+            ),
             ("2.10.0.dev20260101+cu130", "13.0", "a nightly torch has no matching wheel"),
             ("2.6.0+cu126", "12.6", "below the oldest row"),
         ],
@@ -236,7 +240,75 @@ def test_every_url_the_matrix_can_produce_is_live(platform_tag):
             with urllib.request.urlopen(urllib.request.Request(url, method = "HEAD"), timeout = 30):
                 pass
         except urllib.error.HTTPError as exc:
-            dead.append(f"{exc.code} {url}")
+            # Only a 404 says the matrix row names a wheel that does not exist. A 403 / 429
+            # / 5xx is the CDN having a moment, and failing the suite on one turns a
+            # correct matrix into a red build whenever download.pytorch.org rate-limits the
+            # 14-request sweep -- the opposite of this test's stated contract.
+            if exc.code == 404:
+                dead.append(f"{exc.code} {url}")
+            else:
+                pytest.skip(f"download.pytorch.org returned {exc.code} for {url}")
         except (urllib.error.URLError, TimeoutError) as exc:
             pytest.skip(f"download.pytorch.org unreachable: {exc}")
     assert dead == [], "matrix rows pointing at wheels that do not exist:\n" + "\n".join(dead)
+
+
+class TestStableAbiPatchReleases:
+    """A supported resident build must not be refused for want of a table row.
+
+    The exact-key matrix can only ever list releases that exist when it is written, so
+    2.10.1 / 2.11.1 / 2.12.1 -- all of them builds this repo names as supported elsewhere --
+    resolved to nothing and left Studio on native attention with no xFormers at all.
+    """
+
+    @pytest.mark.parametrize(
+        "torch_version",
+        ["2.10.1+cu130", "2.11.1+cu130", "2.12.4+cu130", "2.14.0+cu130", "2.13.2+cu128"],
+    )
+    def test_a_patch_release_above_the_floor_resolves_to_the_stable_abi_wheel(self, torch_version):
+        family = torch_version.split("+", 1)[1]
+        cuda = {"cu126": "12.6", "cu128": "12.8", "cu130": "13.0"}[family]
+        url = wheel_utils.xformers_wheel_url(
+            _env(torch_version = torch_version, cuda_version = cuda)
+        )
+        assert url is not None and "xformers-0.0.35-py39-none-win_amd64.whl" in url
+        assert f"/{family}/" in url
+
+    def test_an_exact_row_still_wins_over_the_fallback(self):
+        # 2.10.0 is the last exact-pinned era release: it must keep resolving to 0.0.34.
+        url = wheel_utils.xformers_wheel_url(
+            _env(torch_version = "2.10.0+cu130", cuda_version = "13.0")
+        )
+        assert url is not None and "xformers-0.0.34-" in url
+
+    @pytest.mark.parametrize(
+        ("torch_version", "cuda_version", "why"),
+        [
+            ("2.9.2+cu130", "13.0", "below the floor there is no stable ABI to lean on"),
+            ("2.11.0.dev20260101+cu130", "13.0", "a nightly is not a released torch"),
+            ("2.12.0+cu124", "12.4", "cu124 publishes nothing in the stable-ABI era"),
+        ],
+    )
+    def test_the_fallback_stays_bounded(self, torch_version, cuda_version, why):
+        assert (
+            wheel_utils.xformers_wheel_url(
+                _env(torch_version = torch_version, cuda_version = cuda_version)
+            )
+            is None
+        ), why
+
+
+class TestPytorchMirror:
+    def test_the_wheel_url_follows_the_configured_mirror(self, monkeypatch):
+        # An air-gapped install has one lever, UNSLOTH_PYTORCH_MIRROR, and the rest of the
+        # installer stack already honours it. A hard-coded download.pytorch.org here was the
+        # one path that could not reach a mirror-only host.
+        monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/pytorch/whl/")
+        url = wheel_utils.xformers_wheel_url(_env())
+        assert url is not None
+        assert url.startswith("https://mirror.example/pytorch/whl/cu130/xformers-")
+
+    def test_the_default_is_unchanged_without_the_mirror(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
+        url = wheel_utils.xformers_wheel_url(_env())
+        assert url is not None and url.startswith("https://download.pytorch.org/whl/cu130/")

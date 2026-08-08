@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import os
 import platform
 import re
 import shutil
@@ -247,6 +248,19 @@ def direct_wheel_url(
 # tests/python/test_windows_xformers_wheel_match.py.
 PYTORCH_WHEEL_INDEX_BASE_URL = "https://download.pytorch.org/whl"
 
+
+def pytorch_wheel_index_base_url() -> str:
+    """Where torch-family wheels are fetched from: ``UNSLOTH_PYTORCH_MIRROR`` when set.
+
+    Read per call rather than frozen at import: this module is imported early, and the
+    mirror is the one setting an air-gapped deployment has. The whole installer stack
+    already honours it (``install_python_stack._PYTORCH_WHL_BASE``, install.sh, setup.ps1),
+    so a direct-URL install that hard-coded download.pytorch.org was the one path that
+    could not reach a mirror-only host -- it failed the explicit xFormers request and
+    dropped the user back to native attention.
+    """
+    return (os.environ.get("UNSLOTH_PYTORCH_MIRROR") or PYTORCH_WHEEL_INDEX_BASE_URL).rstrip("/")
+
 _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
     # torch 2.7.0 (xFormers 0.0.30) is deliberately absent: it predates the stable-ABI
     # switch, so it publishes one wheel per interpreter and stops at cp312, and Studio's
@@ -258,13 +272,29 @@ _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
     "2.9.0": {"cu126": "0.0.33.post1", "cu128": "0.0.33.post1", "cu130": "0.0.33.post1"},
     "2.9.1": {"cu126": "0.0.33.post2", "cu128": "0.0.33.post2", "cu130": "0.0.33.post2"},
     "2.10.0": {"cu126": "0.0.34", "cu128": "0.0.34", "cu130": "0.0.34"},
-    # Stable-ABI era: one wheel serves every torch from 2.11 on. Keyed per release
-    # rather than open ended so an unknown torch still resolves to nothing instead of
-    # guessing, and so a future exact-pinned release can displace a single row.
+    # Stable-ABI era: one wheel serves every torch from 2.11 on. The rows stay listed so a
+    # future exact-pinned release can displace a single one of them, but they are no longer
+    # the only way in: _XFORMERS_STABLE_ABI below covers the patch releases between them.
     "2.11.0": {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"},
     "2.12.0": {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"},
     "2.13.0": {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"},
 }
+
+# The stable-ABI floor and what serves it: every torch STRICTLY ABOVE this maps to this
+# release, per CUDA family. Exact rows above still win, so a future exact-pinned wheel
+# displaces the fallback for its own release.
+#
+# An exact-key table alone refuses the patch releases: 2.10.1, 2.11.1 and 2.12.1 are all
+# supported resident builds this file names elsewhere, and each of them missed and left
+# Studio on native attention. Enumerating patches is not an option -- they are published
+# after this code ships -- and 0.0.35 is compiled against 2.10.0 by design, with upstream
+# stating that "binary builds targeting PyTorch 2.10+ will be compatible with any later
+# version". So above 2.10.0 the answer is known without a table.
+#
+# Still bounded, not open-ended in the other direction: below the floor there is no stable
+# ABI and an unlisted pair must keep resolving to nothing rather than guessing.
+_XFORMERS_STABLE_ABI_FLOOR: tuple[int, ...] = (2, 10, 0)
+_XFORMERS_STABLE_ABI_VERSIONS = {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"}
 
 # The interpreter tag in the wheel FILENAME, which xFormers has changed twice: 0.0.30 and
 # earlier ship one wheel per cpXY (and stop at cp312), 0.0.31..0.0.34 ship a single
@@ -332,12 +362,28 @@ def xformers_cuda_family(cuda_version: str | None) -> str | None:
 
 
 def xformers_wheel_version(torch_version: str | None, cuda_family: str | None) -> str | None:
-    """The xFormers release built for exactly this (torch, CUDA family), else None."""
+    """The xFormers release for this (torch, CUDA family), else None.
+
+    An exact row wins. Failing that, any release above the stable-ABI floor resolves to the
+    wheel that serves that whole era: the exact table cannot list patch releases that are
+    published after this code ships, and refusing them left supported builds (2.11.1,
+    2.12.1) with no xFormers at all.
+    """
     if not torch_version or not cuda_family:
         return None
     # '2.10.0+cu130' -> '2.10.0'. A dev/rc torch has no wheel and must miss the table.
     release = str(torch_version).split("+", 1)[0].strip()
-    return _XFORMERS_WHEEL_VERSIONS.get(release, {}).get(cuda_family)
+    exact = _XFORMERS_WHEEL_VERSIONS.get(release, {}).get(cuda_family)
+    if exact is not None:
+        return exact
+    # A dev/nightly/rc suffix ('2.11.0.dev20260101') is not a released torch, so it stays
+    # out: _xformers_version_tuple stops at the first non-numeric chunk, which would read
+    # it as the release itself.
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", release):
+        return None
+    if _xformers_version_tuple(release) > _XFORMERS_STABLE_ABI_FLOOR:
+        return _XFORMERS_STABLE_ABI_VERSIONS.get(cuda_family)
+    return None
 
 
 def xformers_wheel_url(env: dict[str, str] | None) -> str | None:
@@ -360,7 +406,7 @@ def xformers_wheel_url(env: dict[str, str] | None) -> str | None:
     if python_tag is None:
         return None
     return (
-        f"{PYTORCH_WHEEL_INDEX_BASE_URL}/{family}"
+        f"{pytorch_wheel_index_base_url()}/{family}"
         f"/xformers-{version}-{python_tag}-{platform_leaf}.whl"
     )
 

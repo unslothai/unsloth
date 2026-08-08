@@ -40,8 +40,14 @@ def _selector_harness() -> str:
     return "\n".join(
         (
             _extract(r"^    \$script:XformersWheelVersions = @\{.*?^    \}", source),
+            _extract(r"^    \$script:XformersStableAbiFloor = [^\n]*", source),
+            _extract(r"^    \$script:XformersStableAbiVersion = [^\n]*", source),
+            _extract(r"^    \$script:XformersStableAbiFamilies = [^\n]*", source),
             _extract(r"^    function ConvertTo-TorchFlavorTag \{.*?^    \}", source),
+            _extract(r"^    function ConvertTo-TorchReleaseVersion \{.*?^    \}", source),
             _extract(r"^    function Get-XformersWheelVersion \{.*?^    \}", source),
+            _extract(r"^    function Get-XformersExpectedTorchBuild \{.*?^    \}", source),
+            _extract(r"^    function Get-XformersFilenamePythonTag \{.*?^    \}", source),
         )
     )
 
@@ -82,8 +88,17 @@ SELECTION_CASES = [
     # such builds are "compatible with any later version".
     ("2.11.0+cu130", "0.0.35"),
     ("2.13.0+cu128", "0.0.35"),
-    # Still refused: a torch with no row at all must not borrow a neighbour's wheel.
-    ("2.14.0+cu130", ""),
+    # And so does every release above the floor that the table cannot list, because they
+    # are published after this script ships. Refusing them left supported builds with no
+    # xFormers at all.
+    ("2.10.1+cu130", "0.0.35"),
+    ("2.11.1+cu128", "0.0.35"),
+    ("2.12.4+cu126", "0.0.35"),
+    ("2.14.0+cu130", "0.0.35"),
+    # Bounded in both directions: below the floor there is no stable ABI to lean on, and a
+    # CUDA family that publishes nothing gains no wheel from the era.
+    ("2.9.2+cu130", ""),
+    ("2.12.0+cu124", ""),
     # Non-CUDA and nightly builds must miss the table outright.
     ("2.10.0+cpu", ""),
     ("2.10.0+rocm6.4", ""),
@@ -128,6 +143,20 @@ def test_installer_installs_xformers_from_the_torch_index():
     assert "--default-index $_xfIndexUrl" in block
     assert "xformers==$_xfVersion" in block
     assert "UNSLOTH_SKIP_XFORMERS" in block
+    # An explicit index pin is authoritative and is reused WHOLE. Its leaf is not required
+    # to name the CUDA family: a documented full-URL override can be an authenticated
+    # mirror, and rebuilding a download.pytorch.org URL over it strands an air-gapped host.
+    assert "if ($TorchIndexPinned -and $TorchIndexUrl)" in block
+    assert "Get-TorchIndexLeafName" not in block
+    # Unpinned, install the direct wheel URL: --default-index does not make an index
+    # exclusive, and cu126/cu128/cu130 share a version string, so a machine with UV_INDEX
+    # set can satisfy the pin from the wrong CUDA family.
+    assert "$_xfWheelUrl = \"$_xfBase/$_xfCudaTag/xformers-$_xfVersion-$_xfPyTag-win_amd64.whl\"" in block
+    assert "--reinstall-package xformers $_xfWheelUrl" in block
+    # The already-installed check compares against the wheel's OWN build target, not the
+    # resident torch: the stable-ABI wheel records the floor release it was compiled
+    # against, so the old comparison force-reinstalled a correct 0.0.35 on every run.
+    assert "Get-XformersExpectedTorchBuild -Version $_xfVersion" in block
 
 
 def test_installer_never_installs_an_unpinned_xformers():
@@ -171,3 +200,80 @@ def test_installed_build_probe_reads_cpp_lib_json():
     assert "import xformers" not in block
     # Invoke-BoundedPythonProbe interpolates the code into a double-quoted -c argument.
     assert '"' not in block.split("$code = ", 1)[1].split("\n", 1)[0].strip("'")
+
+
+# Torch releases the exact tables cannot list, and the answer both selectors must give.
+# The two implementations resolve the same machine (install.ps1 during install, wheel_utils
+# on demand from Studio), so a fallback that lives in only one of them is a machine whose
+# answer changes depending on which one asked.
+STABLE_ABI_PARITY_CASES = [
+    ("2.10.1+cu130", "13.0", "0.0.35"),
+    ("2.11.1+cu128", "12.8", "0.0.35"),
+    ("2.12.4+cu126", "12.6", "0.0.35"),
+    ("2.14.0+cu130", "13.0", "0.0.35"),
+    ("2.9.2+cu130", "13.0", ""),
+    ("2.12.0+cu124", "12.4", ""),
+]
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize(("torch_version", "cuda_version", "expected"), STABLE_ABI_PARITY_CASES)
+def test_both_selectors_agree_outside_the_exact_tables(torch_version, cuda_version, expected):
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "studio" / "backend"))
+    try:
+        from utils import wheel_utils
+    finally:
+        sys.path.pop(0)
+
+    family = wheel_utils.xformers_cuda_family(cuda_version)
+    python_side = wheel_utils.xformers_wheel_version(torch_version, family) or ""
+    ps_side = _run_pwsh(
+        f"{_selector_harness()}\n"
+        f"$v = '{torch_version}'\n"
+        "$tag = ConvertTo-TorchFlavorTag $v\n"
+        'Write-Output "[$(Get-XformersWheelVersion -TorchVersion $v -CudaTag $tag)]"\n'
+    )
+    assert python_side == expected
+    assert ps_side == f"[{expected}]"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_the_already_installed_check_uses_the_wheels_own_build_target():
+    """A resident 0.0.35 records the torch it was COMPILED against (the stable-ABI floor),
+    not the torch it is running under. Comparing against the resident torch made every
+    correct install look mismatched, so each run force-reinstalled a good wheel -- and
+    warned about a failed xFormers install whenever the index was unreachable."""
+    out = _run_pwsh(
+        f"{_selector_harness()}\n"
+        "Write-Output \"[$(Get-XformersExpectedTorchBuild -Version '0.0.35' "
+        "-TorchVersion '2.12.1+cu130' -CudaTag 'cu130')]\"\n"
+        "Write-Output \"[$(Get-XformersExpectedTorchBuild -Version '0.0.34' "
+        "-TorchVersion '2.10.0+cu128' -CudaTag 'cu128')]\"\n"
+    )
+    # The stable-ABI wheel reports the floor release; an exact-era wheel reports the torch
+    # it was pinned to, which is the resident one.
+    assert out.splitlines() == ["[2.10.0+cu130]", "[2.10.0+cu128]"]
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_the_direct_wheel_filename_tag_matches_the_python_resolver():
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "studio" / "backend"))
+    try:
+        from utils import wheel_utils
+    finally:
+        sys.path.pop(0)
+
+    versions = ["0.0.31.post1", "0.0.32.post2", "0.0.33.post2", "0.0.34", "0.0.35"]
+    ps_out = _run_pwsh(
+        f"{_selector_harness()}\n"
+        + "\n".join(
+            f"Write-Output \"[$(Get-XformersFilenamePythonTag '{v}')]\"" for v in versions
+        )
+    )
+    assert ps_out.splitlines() == [
+        f"[{wheel_utils.xformers_filename_python_tag(v)}]" for v in versions
+    ]
