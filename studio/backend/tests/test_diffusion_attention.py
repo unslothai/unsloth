@@ -373,9 +373,7 @@ def test_xformers_installs_the_cuda_matched_wheel_not_the_package_name(monkeypat
 _CREDENTIALED_WHEEL = (
     "https://svc:s3cr3t@mirror.internal/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
 )
-_REDACTED_WHEEL = (
-    "https://mirror.internal/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
-)
+_REDACTED_WHEEL = "https://mirror.internal/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
 
 
 class _CapturingLogger:
