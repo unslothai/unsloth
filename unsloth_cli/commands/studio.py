@@ -2819,6 +2819,20 @@ def _wait_for_windows_setup_process(process) -> int:
         raise
 
 
+# -NoProfile below drops $PSDefaultParameterValues wholesale, and on a corporate host
+# whose only egress is a profile entry such as 'Invoke-WebRequest:Proxy' that is the sole
+# route to the VC++ runtime and the uv installer that setup.ps1 downloads. install.ps1
+# already keeps exactly the proxy keys out of the profile table it discards, so it hands
+# them over in this variable and the child puts them back. Nothing else from the profile
+# comes with them, which is the whole point of -NoProfile.
+_PS_PROXY_DEFAULTS_PRELUDE = (
+    "$__unslothProxyDefaults = $env:_UNSLOTH_PS_PROXY_DEFAULTS; "
+    "if ($__unslothProxyDefaults) { try { "
+    "(ConvertFrom-Json $__unslothProxyDefaults).PSObject.Properties | ForEach-Object { "
+    "$PSDefaultParameterValues[$_.Name] = $_.Value } } catch { } }; "
+)
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     """Find and run the studio setup/update script."""
     script = _find_setup_script(repo_root)
@@ -2836,10 +2850,15 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
 
     if platform.system() == "Windows":
         powershell_args = ["powershell.exe"]
+        # -NoProfile unconditionally, not just on the hidden branch. setup.ps1 wants
+        # nothing from the user's profile, and a profile that aliases uv or python, or
+        # sets Set-StrictMode / $PSDefaultParameterValues, breaks it the same way it
+        # used to break install.ps1 -- which hands off to exactly here, from a console
+        # where stdout is a tty and the hidden branch therefore does not fire. Every
+        # other PowerShell child in the tree already passes it.
+        powershell_args.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            powershell_args.extend(
-                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
-            )
+            powershell_args.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
         # Use -Command + `*>&1` (not -File) so setup.ps1's Write-Host output
         # (Information stream #6) merges into stdout. -File drops it when
         # stdout is a pipe, e.g. `unsloth studio update --local 2>&1 | tee`.
@@ -2850,7 +2869,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                f"& '{script_pwsh_literal}' *>&1",
+                f"{_PS_PROXY_DEFAULTS_PRELUDE}& '{script_pwsh_literal}' *>&1",
             ]
         )
         # Explicitly hand std handles to the child so CI tee sees setup.ps1's
@@ -2904,8 +2923,13 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
 
     if is_windows:
         ps_argv: list[str] = ["powershell.exe"]
+        # -NoProfile unconditionally, for the same reason as _run_setup_script above:
+        # this runs install.ps1, and gating it on the hidden branch means the visible
+        # path -- a console, where a profile is exactly what IS loaded -- was the one
+        # that did not get it.
+        ps_argv.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            ps_argv.extend(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"])
+            ps_argv.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
 
         for script in candidates:
             try:

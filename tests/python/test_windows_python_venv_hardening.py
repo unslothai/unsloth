@@ -398,7 +398,8 @@ def test_readiness_gate_precedes_installs_and_names_both_interpreters():
     marker = source.index(
         '[System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "")'
     )
-    first_uv_pip = source.index("uv pip install --python $VenvPython")
+    # Anchored past the command token: uv is invoked as the resolved $script:UvExe.
+    first_uv_pip = source.index("pip install --python $VenvPython")
     gpu_detection = source.index("function Invoke-AmdSmiNoElevate")
 
     assert marker < gate < gpu_detection < first_uv_pip

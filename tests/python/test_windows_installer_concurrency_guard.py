@@ -776,7 +776,8 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     )
     assert "if ($StudioRedirectMode -eq 'legacy')" not in source
     assert "& $UnslothExe studio -p 8888" not in source
-    assert "--clear" not in source[source.index("uv venv $VenvDir") :][:200]
+    # Anchored past the command token: uv is invoked as the resolved $script:UvExe.
+    assert "--clear" not in source[source.index("venv $VenvDir") :][:200]
 
 
 def test_tauri_runtime_uses_the_same_gate_before_backend_spawn():

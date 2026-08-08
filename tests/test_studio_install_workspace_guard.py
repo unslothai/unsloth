@@ -336,7 +336,8 @@ def test_install_sh_writes_venv_marker_after_uv_venv():
 def test_install_ps1_writes_venv_marker_after_uv_venv():
     """install.ps1 must write .unsloth-studio-owned into $VenvDir after `uv venv` succeeds."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    venv_create = src.index("uv venv $VenvDir --python")
+    # Anchored past the command token: uv is invoked as the resolved $script:UvExe.
+    venv_create = src.index("venv $VenvDir --python")
     tail = src[venv_create : venv_create + 1500]
     assert (
         ".unsloth-studio-owned" in tail
