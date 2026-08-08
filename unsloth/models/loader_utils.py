@@ -291,7 +291,6 @@ def _prefer_legacy_lowercase_cache(
         config_path = os.path.join(snapshot, "config.json")
         try:
             import json
-
             with open(config_path, encoding = "utf-8") as config_file:
                 config = json.load(config_file)
 
@@ -403,9 +402,7 @@ def get_model_name(
     if new_model_name is not None:
         # A caller-supplied ref only survives case-only canonicalization. Cross-repo
         # mapper and BAD_MAPPINGS redirects are loaded from their default branch.
-        cache_revision = (
-            revision if new_model_name.lower() == str(model_name).lower() else None
-        )
+        cache_revision = revision if new_model_name.lower() == str(model_name).lower() else None
         new_model_name = _prefer_legacy_lowercase_cache(
             new_model_name,
             cache_dir,

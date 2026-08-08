@@ -263,6 +263,7 @@ def test_primary_mapper_resolution_receives_the_requested_revision():
         assert revision_kwarg is not None, f"{class_name} must pass revision to cache selection"
         assert getattr(revision_kwarg.value, "id", None) == "revision"
 
+
 def test_all_config_probes_receive_the_explicit_cache_dir():
     tree = _tree(LOADER)
     for class_name in ("FastLanguageModel", "FastModel"):
@@ -275,7 +276,9 @@ def test_all_config_probes_receive_the_explicit_cache_dir():
         assert probes
         for probe in probes:
             cache_kwarg = next((kw for kw in probe.keywords if kw.arg == "cache_dir"), None)
-            assert cache_kwarg is not None, f"{class_name} probe at line {probe.lineno} drops cache_dir"
+            assert (
+                cache_kwarg is not None
+            ), f"{class_name} probe at line {probe.lineno} drops cache_dir"
             assert ast.unparse(cache_kwarg.value).replace(" ", "").replace("'", '"') == (
                 'kwargs.get("cache_dir")'
             )
