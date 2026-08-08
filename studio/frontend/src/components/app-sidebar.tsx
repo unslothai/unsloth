@@ -164,6 +164,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -701,18 +702,23 @@ export function AppSidebar() {
   const [scrolled, setScrolled] = useState(false);
   // Bottom fade hides at the very bottom / for short lists so the last row isn't washed out.
   const [canScrollDown, setCanScrollDown] = useState(false);
-  // Driven only from onScroll + a content-change effect below. No
-  // ResizeObserver: its callback-driven setState caused a render loop (React
-  // #185). Both setters bail out when unchanged, so neither path can loop.
-  const syncScrollState = useCallback((el: HTMLDivElement) => {
-    // Rail width: 0 where scrollbars overlay (macOS default), 8px where they
-    // are classic (Show scroll bars: Always, Windows, Linux). Only rows inside
-    // the scroller lose it, so the rows outside pad by it to keep one edge.
-    // Written straight to the DOM: state here would loop (React #185).
+  // Rail width: 0 where scrollbars overlay (macOS default) or the list does not
+  // overflow, 8px where they are classic (Show scroll bars: Always, Windows,
+  // Linux). Only rows inside the scroller lose it, so the rows outside pad by it
+  // to keep one edge. Written straight to the DOM: state here would loop
+  // (React #185).
+  const measureScrollRail = useCallback((el: HTMLDivElement) => {
     el.parentElement?.style.setProperty(
       "--sidebar-rail",
       `${el.offsetWidth - el.clientWidth}px`,
     );
+  }, []);
+
+  // Driven only from onScroll + a content-change effect below. No
+  // ResizeObserver: its callback-driven setState caused a render loop (React
+  // #185). Both setters bail out when unchanged, so neither path can loop.
+  const syncScrollState = useCallback((el: HTMLDivElement) => {
+    measureScrollRail(el);
     const nextScrolled = el.scrollTop > 0;
     setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
     const nextCanScrollDown =
@@ -720,7 +726,7 @@ export function AppSidebar() {
     setCanScrollDown((prev) =>
       prev === nextCanScrollDown ? prev : nextCanScrollDown,
     );
-  }, []);
+  }, [measureScrollRail]);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
@@ -937,12 +943,18 @@ export function AppSidebar() {
 
   // Recompute bottom-fade on mount and whenever list height can change: onScroll never fires
   // for short, non-scrolling lists. Guarded setState below can't loop.
-  useEffect(() => {
+  // Measures the rail on the same beat: a classic scrollbar only takes width
+  // once the list overflows, so mount and every one of these is when that can
+  // change. Runs before paint, since a frame on the 0px fallback is a frame of
+  // the misalignment the rail width exists to cancel.
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    measureScrollRail(el);
     const next = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
     setCanScrollDown((prev) => (prev === next ? prev : next));
   }, [
+    measureScrollRail,
     recentChatItems.length,
     runItems.length,
     projects.length,

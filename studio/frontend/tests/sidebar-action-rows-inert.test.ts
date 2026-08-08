@@ -102,6 +102,14 @@ test("the sidebar list measures its scroll rail", async () => {
     source,
     /el\.parentElement\?\.style\.setProperty\(\s*"--sidebar-rail",\s*`\$\{el\.offsetWidth - el\.clientWidth\}px`,\s*\)/,
   );
+  // Scroll events alone would leave the first paint on the 0px fallback, so a
+  // list that overflows on arrival stays misaligned until the user scrolls it.
+  // Measured on mount and on every content change too, before paint.
+  assert.match(
+    source,
+    /useLayoutEffect\(\(\) => \{\s*const el = scrollRef\.current;\s*if \(!el\) return;\s*measureScrollRail\(el\);/,
+  );
+  assert.match(source, /const syncScrollState = useCallback\(\(el: HTMLDivElement\) => \{\s*measureScrollRail\(el\);/);
   const css = await readFile(
     new URL("../src/index.css", import.meta.url),
     "utf8",
