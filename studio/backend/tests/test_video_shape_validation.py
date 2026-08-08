@@ -292,9 +292,10 @@ def test_a_family_without_presets_still_enforces_its_frame_lattice(client, backe
     assert resp.status_code == 422, resp.text
     assert "97" in resp.json()["detail"] and "105" in resp.json()["detail"]
     # And an on-lattice count against the same preset-less family still runs.
-    assert client.post(
-        "/api/inference/video/generate", json = _payload(num_frames = 97)
-    ).status_code == 200
+    assert (
+        client.post("/api/inference/video/generate", json = _payload(num_frames = 97)).status_code
+        == 200
+    )
 
 
 def test_generate_omitting_the_shape_uses_the_family_defaults(client, backend):
