@@ -14,10 +14,9 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """A broken TensorFlow / Flax install must not break importing Unsloth.
 
-Transformers 4.x imports either backend merely because it is installed, through
-`image_transforms.py`, which `processing_utils` reaches and Unsloth imports. On
-Colab an install cell that moves protobuf then leaves TF raising `cannot import
-name 'runtime_version'` at the first `from unsloth import ...`.
+Transformers 4.x imports either backend merely because it is installed, via
+`processing_utils` -> `image_transforms`; on Colab a protobuf-moving install cell
+then leaves TF raising `cannot import name 'runtime_version'`.
 """
 
 import ast
@@ -62,8 +61,7 @@ def test_the_backends_are_opted_out_of_before_transformers_loads():
 
 
 def test_an_explicit_choice_is_never_overwritten():
-    """`setdefault`, not assignment: someone who wants the TF classes in the
-    same process keeps them."""
+    """`setdefault`, not assignment: someone who wants TF in-process keeps it."""
     body = ast.unparse(_guard_block())
     assert "os.environ.setdefault" in body
     assert "os.environ[" not in body, "an assignment would override the user"
@@ -71,8 +69,7 @@ def test_an_explicit_choice_is_never_overwritten():
 
 @pytest.mark.parametrize("value", ["0", "1"])
 def test_transformers_reads_the_variable_from_the_environment(value):
-    """The half that lives in Transformers. Without this the opt-out is inert,
-    and it is read once at import, which is why ours has to land first."""
+    """The half in Transformers: read once at import, so ours must land first."""
     env = dict(os.environ, USE_TF = value)
     out = subprocess.run(
         [
@@ -91,8 +88,7 @@ def test_transformers_reads_the_variable_from_the_environment(value):
 
 
 def test_the_guard_is_skipped_once_transformers_is_loaded():
-    """Nothing to fix at that point: an already-imported Transformers has
-    settled the question, and rewriting the variable would only mislead."""
+    """Nothing to fix then: an already-imported Transformers settled it."""
     block = _guard_block()
     scope = {"os": os, "sys": type("S", (), {"modules": {"transformers": object()}})()}
     before = os.environ.get("USE_TF")
