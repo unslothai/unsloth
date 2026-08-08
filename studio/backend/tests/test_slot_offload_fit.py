@@ -202,7 +202,11 @@ class TestMtpReserveIsRepricedPerCandidate:
     per slot. Holding it at the requested count over-charged every candidate, so a smaller
     one that fits was rejected and the load kept --fit and offloaded to host (PR #8172)."""
 
-    def _fit(self, mtp_for_slots, base_mib = 22000):
+    def _fit(
+        self,
+        mtp_for_slots,
+        base_mib = 22000,
+    ):
         return _backend()._slots_that_fit_on_gpu(
             4,
             CTX,
