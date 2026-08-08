@@ -125,8 +125,6 @@ configs:
   data_files:
   - card/part-1.parquet
   - card/part-2.parquet
-- config_name: ../unsafe
-  data_files: card/secret.parquet
 dataset_info:
 - config_name: measured
   splits:
@@ -156,6 +154,22 @@ Dataset card.
         {"dataset": "", "config": "legacy", "split": "test"},
         {"dataset": "", "config": "measured", "split": "validation"},
     ]
+
+
+def test_snapshot_options_reject_a_config_name_the_builder_refuses(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: ../unsafe\n  data_files: a.jsonl\n"
+        "- config_name: good\n  data_files: b.jsonl\n---\n",
+        encoding = "utf-8",
+    )
+    (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets raises InvalidConfigName on the blacklisted characters, so the good sibling
+    # never gets built either and skipping the bad one would advertise a dead option.
+    assert local_options._snapshot_options(snapshot) == set()
 
 
 def test_snapshot_options_do_not_follow_metadata_outside_cache(tmp_path):
@@ -221,6 +235,61 @@ def test_snapshot_options_keep_a_declared_config_name_when_inferring(tmp_path):
 
     # datasets still builds config foo over the inferred patterns, so default would 422.
     assert local_options._snapshot_options(snapshot) == {("foo", "train")}
+
+
+def test_snapshot_options_read_a_list_valued_declared_path(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "a").mkdir(parents = True)
+    (snapshot / "b").mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: a\n  data_files:\n  - split: train\n    path:\n"
+        "    - a/train.jsonl\n- config_name: b\n  data_dir: b\n---\n",
+        encoding = "utf-8",
+    )
+    (snapshot / "a" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    # The list form still fixes the dataset's module, so the csv config cannot be offered.
+    assert local_options._snapshot_options(snapshot) == {("a", "train")}
+
+
+def test_snapshot_options_infer_a_config_whose_data_files_is_null(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "a").mkdir(parents = True)
+    (snapshot / "b").mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: a\n  data_files: a/train.jsonl\n"
+        "- config_name: b\n  data_files: null\n  data_dir: b\n---\n",
+        encoding = "utf-8",
+    )
+    (snapshot / "a" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b" / "test.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets treats a null value as no data_files and infers that config's patterns.
+    assert local_options._snapshot_options(snapshot) == {("a", "train"), ("b", "test")}
+
+
+def test_snapshot_options_reject_a_data_dir_with_an_embedded_null(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        '---\nconfigs:\n- config_name: cfg\n  data_dir: "foo\\0bar"\n---\n', encoding = "utf-8"
+    )
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # Path.resolve raises on the null, and the endpoint has to answer, not fail.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_an_oversized_standalone_yaml(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / ".huggingface.yaml").write_text(
+        "configs:\n- config_name: foo\n#" + "x" * (2 * 1024 * 1024), encoding = "utf-8"
+    )
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
 
 
 def test_snapshot_options_reject_a_split_whose_archive_escapes_the_cache(tmp_path):

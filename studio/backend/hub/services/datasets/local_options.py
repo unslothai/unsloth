@@ -162,7 +162,7 @@ def _safe_data_dir(value: Any) -> Optional[str]:
         return None
     if value.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", value):
         return None
-    if "\\" in value or ".." in value:
+    if "\\" in value or ".." in value or "\x00" in value:
         return None
     return value
 
@@ -187,8 +187,10 @@ def _declared_configs(payload: Any) -> Any:
             return _UNPARSABLE_METADATA
         name = _valid_option(item.get("config_name"), _CONFIG_RE)
         if name is None:
-            continue
-        if "data_files" in item:
+            # datasets raises InvalidConfigName on these rather than skipping the config,
+            # so nothing in the snapshot is loadable and inference must not step in.
+            return _UNPARSABLE_METADATA
+        if item.get("data_files") is not None:
             # Declared, so _add_config_options owns it; an empty one simply finds nothing.
             declared[name] = None
         else:
@@ -384,6 +386,8 @@ def _snapshot_card_data(snapshot: Path) -> Any:
         if isinstance(payload, dict):
             card.update(payload)
 
+    if _snapshot_metadata_is_oversized(snapshot, _STANDALONE_YAML):
+        return _UNPARSABLE_METADATA
     standalone = _snapshot_metadata_file(snapshot, _STANDALONE_YAML)
     if standalone is not None:
         try:
@@ -445,7 +449,7 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
     files: list[_DataFile] = []
     try:
         root = snapshot.resolve(strict = True)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return files
 
     for directory, dirnames, filenames in os.walk(root, followlinks = False):
@@ -579,7 +583,11 @@ def _declared_module(payload: Any) -> Optional[str]:
         elif isinstance(entries, dict):
             paths = [value for value in entries.values() if isinstance(value, str)]
         elif isinstance(entries, list):
-            paths = [entry.get("path") if isinstance(entry, dict) else entry for entry in entries]
+            # A declared path is one glob or a list of them.
+            paths = []
+            for entry in entries:
+                value = entry.get("path") if isinstance(entry, dict) else entry
+                paths.extend(value if isinstance(value, list) else [value])
         else:
             continue
         named = [
