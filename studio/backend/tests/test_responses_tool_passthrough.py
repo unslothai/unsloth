@@ -1175,6 +1175,45 @@ class TestResponsesStreamAdapter:
         assert entry["total_tokens"] == 5
         assert entry["context_length"] == 4096
 
+    def test_final_chunk_timings_reach_the_monitor(self, monkeypatch):
+        """Responses recorded usage but never timings, so a local request counted into
+        total tokens and never into the Throughput tile, which rates on decode_ms.
+        The final chunk can also carry timings with no usage of its own."""
+        import routes.inference as inf_mod
+
+        chunks = [
+            {"choices": [{"delta": {"content": "33"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 11, "completion_tokens": 50}},
+            {"choices": [], "timings": {"prompt_ms": 9000.0, "predicted_ms": 1000.0}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        [entry] = monitor.snapshot()
+        assert entry["decode_ms"] == 1000
+        assert entry["completion_tokens"] == 50
+        assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
+
     def test_function_call_chunk_updates_monitor_reply(self, monkeypatch):
         import routes.inference as inf_mod
 
