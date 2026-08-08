@@ -1281,7 +1281,13 @@ def test_begin_load_answers_without_waiting_on_the_header_probe(monkeypatch):
     probed: list[str] = []
 
     class _Slow:
-        def get(self, url, headers = None, timeout = None, stream = False):
+        def get(
+            self,
+            url,
+            headers = None,
+            timeout = None,
+            stream = False,
+        ):
             probed.append(url)
             _time.sleep(30)
             raise AssertionError("unreachable")
@@ -1313,18 +1319,20 @@ def test_the_worker_publishes_the_real_encoder_repos_before_fetching(monkeypatch
     # local On Device directory lands exactly here.
     repo, filename = "unsloth/FLUX.2-klein-GGUF", "flux-2-klein-Q4_K_M.gguf"
     monkeypatch.setattr(
-        bk.SdCppDiffusionBackend, "_flux2_inner_dim",
-        staticmethod(lambda repo_id, fn, fam, tok, allow_network = True:
-                     4096 if allow_network else None),
+        bk.SdCppDiffusionBackend,
+        "_flux2_inner_dim",
+        staticmethod(
+            lambda repo_id, fn, fam, tok, allow_network = True: 4096 if allow_network else None
+        ),
     )
 
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     monkeypatch.setattr(b, "_run_load", lambda **kwargs: None)
     b.begin_load(repo, gguf_filename = filename)
     token = b._load_token
-    assert not nine_b & set(b.loading_repo_ids()), (
-        "fixture is not discriminating: begin_load already guessed the 9B encoders"
-    )
+    assert not nine_b & set(
+        b.loading_repo_ids()
+    ), "fixture is not discriminating: begin_load already guessed the 9B encoders"
 
     monkeypatch.setattr(b, "_resolve_backend", lambda: ("oneshot", None, _FakeEngine()))
     monkeypatch.setattr(b, "_preflight_companion_repos", lambda *a, **k: None)
@@ -1349,6 +1357,6 @@ def test_the_worker_publishes_the_real_encoder_repos_before_fetching(monkeypatch
     )
 
     assert seen_at_fetch, "the fetch was never reached"
-    assert nine_b <= set(seen_at_fetch[0]), (
-        "the delete guard did not name the encoders this load is about to write"
-    )
+    assert nine_b <= set(
+        seen_at_fetch[0]
+    ), "the delete guard did not name the encoders this load is about to write"
