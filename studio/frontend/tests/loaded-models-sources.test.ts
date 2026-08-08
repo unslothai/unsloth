@@ -218,6 +218,22 @@ test("a GGUF image load does not print GGUF twice", () => {
   assert.equal(image.detail, "flux · GGUF · cuda");
 });
 
+// Gemma 3n and friends take audio in but answer as chat. Every backend sets
+// is_audio from `audio_type is not None and audio_type != "audio_vlm"`
+// (model_config.py, mlx_inference.py; llama_cpp.py keeps _is_audio False for
+// csm/whisper/audio_vlm), so the TTS test never sees one.
+test("an audio-input VLM stays a chat row, not Speech", () => {
+  const [row] = describeInferenceStatus(
+    inferenceStatus({
+      active_model: "unsloth/gemma-3n-E4B-it",
+      is_audio: false,
+      audio_type: "audio_vlm",
+      has_audio_input: true,
+    }),
+  );
+  assert.equal(row.kind, "text");
+});
+
 test("a row opens the page its runtime is used on", () => {
   assert.deepEqual(loadedModelTarget("chat"), {
     open: "route",

@@ -7,7 +7,7 @@ import test from "node:test";
 import {
   type MonitorFrame,
   stackBottomInset,
-  stackMaxHeight,
+  stackGeometry,
 } from "../src/features/settings/stores/monitor-frame-store.ts";
 
 const W = 1440;
@@ -70,8 +70,43 @@ test("a monitor beside the download panel but under a banner is dodged", () => {
 
 // Lifting the stack without shortening it pushes its top off the screen.
 test("lifting the stack shortens it by the same amount", () => {
-  assert.equal(stackMaxHeight(16), "calc(100dvh - 32px)");
-  assert.equal(stackMaxHeight(324), "calc(100dvh - 340px)");
+  assert.equal(stackGeometry(null, W, H).maxHeight, H - 32);
+  const lifted = stackGeometry(corner(300), W, H);
+  assert.ok(lifted.bottom > 16);
+  assert.equal(lifted.maxHeight, H - lifted.bottom - 16);
+});
+
+// A monitor parked high is not lifted over, since the room is beneath it, but
+// the stack grows upwards and would still run into it.
+test("a monitor high in the column caps the stack instead of lifting it", () => {
+  const frame: MonitorFrame = {
+    left: W - 272,
+    top: 16,
+    right: W - 16,
+    bottom: 316,
+  };
+  const geometry = stackGeometry(frame, W, H);
+  // Nothing to lift over: the free space is below it.
+  assert.equal(geometry.bottom, 16);
+  // The stack's top edge stays clear of the monitor's bottom edge.
+  assert.ok(H - geometry.bottom - geometry.maxHeight >= frame.bottom);
+  assert.ok(geometry.maxHeight < H - 32, "it must actually be capped");
+});
+
+test("a monitor high but outside the column does not cap the stack", () => {
+  const frame: MonitorFrame = { left: 16, top: 16, right: 272, bottom: 316 };
+  assert.equal(stackGeometry(frame, W, H).maxHeight, H - 32);
+});
+
+// A monitor filling almost the whole column would otherwise leave no stack.
+test("the cap never shrinks the stack below its floor", () => {
+  const frame: MonitorFrame = {
+    left: W - 272,
+    top: 0,
+    right: W - 16,
+    bottom: H / 2 - 1,
+  };
+  assert.ok(stackGeometry(frame, W, H).maxHeight >= 120);
 });
 
 test("a monitor filling the height still leaves the stack room", () => {

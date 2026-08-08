@@ -21,9 +21,8 @@ import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
   applyCustomizationToDocument,
-  stackMaxHeight,
   useAppearanceCustomStore,
-  useStackBottomInset,
+  useStackGeometry,
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
@@ -242,7 +241,7 @@ function TauriUpdateLayer({
   appContent: ReactNode;
 }) {
   const update = useTauriUpdate(isExternalServer);
-  const stackBottomInset = useStackBottomInset();
+  const stack = useStackGeometry();
   const isUpdating =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
@@ -263,10 +262,7 @@ function TauriUpdateLayer({
     // Capped like the browser stack: the download panel shares it, so both must fit.
     <div
       className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
-      style={{
-        bottom: stackBottomInset,
-        maxHeight: stackMaxHeight(stackBottomInset),
-      }}
+      style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
     >
       <UpdateBanner
         status={update.status}
@@ -380,7 +376,7 @@ function DesktopChromeVarsEffect({
 
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const stackBottomInset = useStackBottomInset();
+  const stack = useStackGeometry();
   const {
     status,
     logs,
@@ -516,10 +512,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             pushes the top of the stack off screen. */}
         <div
           className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
-          style={{
-            bottom: stackBottomInset,
-            maxHeight: stackMaxHeight(stackBottomInset),
-          }}
+          style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
         >
           <WebUpdateBanner
             positioned={false}

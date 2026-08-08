@@ -53,6 +53,14 @@ const MIN_STACK_ROOM = 120;
  * update banners, the download panel and the loaded models card all land
  * underneath it.
  */
+/** Whether the monitor overlaps the column the stack's overlays occupy. */
+function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
+  const columnLeft = viewportWidth - STACK_INSET - STACK_WIDTH;
+  return (
+    frame.right > columnLeft && frame.left < viewportWidth - STACK_INSET
+  );
+}
+
 export function stackBottomInset(
   frame: MonitorFrame | null,
   viewportWidth: number,
@@ -61,11 +69,8 @@ export function stackBottomInset(
   if (!frame) return STACK_INSET;
   // Only dodge a monitor that is actually in the stack's column and low
   // enough to be in its way; one dragged elsewhere leaves the corner free.
-  const columnLeft = viewportWidth - STACK_INSET - STACK_WIDTH;
-  const inColumn =
-    frame.right > columnLeft && frame.left < viewportWidth - STACK_INSET;
   const lowEnough = frame.bottom > viewportHeight / 2;
-  if (!(inColumn && lowEnough)) return STACK_INSET;
+  if (!(inStackColumn(frame, viewportWidth) && lowEnough)) return STACK_INSET;
   const lifted = viewportHeight - frame.top + STACK_GAP;
   return Math.max(
     STACK_INSET,
@@ -77,13 +82,42 @@ export function stackBottomInset(
  * How tall the stack may grow while sitting on `bottomInset`, keeping its own
  * margin at the top. Lifting the stack over the monitor shortens it by the same
  * amount, or a long download list plus the card runs off the top of the screen.
+ *
+ * A monitor parked high in the same column is not lifted over, because the free
+ * space is underneath it. It still has to be dodged: the stack grows upwards
+ * from the bottom, and a full download list plus the card is easily tall enough
+ * to reach it. Cap the height at the gap below it instead.
  */
-export function stackMaxHeight(bottomInset: number): string {
-  return `calc(100dvh - ${bottomInset + STACK_INSET}px)`;
+export function stackMaxHeight(
+  frame: MonitorFrame | null,
+  viewportWidth: number,
+  viewportHeight: number,
+  bottomInset: number,
+): number {
+  const ownMargin = viewportHeight - bottomInset - STACK_INSET;
+  if (!frame || !inStackColumn(frame, viewportWidth)) return ownMargin;
+  if (frame.bottom > viewportHeight / 2) return ownMargin;
+  const belowMonitor = viewportHeight - bottomInset - frame.bottom - STACK_GAP;
+  return Math.max(MIN_STACK_ROOM, Math.min(ownMargin, belowMonitor));
 }
 
-/** `stackBottomInset` in px, recomputed as the monitor moves or resizes. */
-export function useStackBottomInset(): number {
+export type StackGeometry = { bottom: number; maxHeight: number };
+
+/** Where the overlay stack sits and how tall it may be, given the monitor. */
+export function stackGeometry(
+  frame: MonitorFrame | null,
+  viewportWidth: number,
+  viewportHeight: number,
+): StackGeometry {
+  const bottom = stackBottomInset(frame, viewportWidth, viewportHeight);
+  return {
+    bottom,
+    maxHeight: stackMaxHeight(frame, viewportWidth, viewportHeight, bottom),
+  };
+}
+
+/** `stackGeometry` in px, recomputed as the monitor moves or resizes. */
+export function useStackGeometry(): StackGeometry {
   const frame = useMonitorFrameStore((state) => state.frame);
   const [viewport, setViewport] = useState(() => ({
     width: typeof window === "undefined" ? 0 : window.innerWidth,
@@ -96,5 +130,5 @@ export function useStackBottomInset(): number {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  return stackBottomInset(frame, viewport.width, viewport.height);
+  return stackGeometry(frame, viewport.width, viewport.height);
 }

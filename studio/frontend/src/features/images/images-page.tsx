@@ -1197,6 +1197,20 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     loadToastId.current = null;
   }, []);
 
+  // Client-side state that only means anything while a model is resident: the
+  // in-flight replacement load's tracking, and the Reapply target. Shared with
+  // the indicator eject, which frees the runtime without going through the
+  // page's own Unload.
+  const dropResidentState = useCallback(() => {
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+    dismissLoadToast();
+    lastLoadSig.current = null;
+    // Leaving this set would let Reapply reload the model that was just freed.
+    lastLoad.current = null;
+    setCanReapply(false);
+  }, [dismissLoadToast]);
+
   // Mirror to the module cache so a tab switch re-renders instantly.
   useEffect(() => {
     galleryCache.images = images;
@@ -1547,10 +1561,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [active, refreshStatus]);
 
   // Ejected from the loaded models indicator, which does not run handleUnload:
-  // without this the controls keep offering to generate on a freed runtime.
+  // without this the controls keep offering to generate on a freed runtime, and
+  // Reapply still points at the model that was just ejected. The runtime is
+  // already free, so this is handleUnload without the unload call.
   useEffect(
-    () => subscribeModelEjected("image", () => void refreshStatus()),
-    [refreshStatus],
+    () =>
+      subscribeModelEjected("image", () => {
+        dropResidentState();
+        setQuant(null);
+        void refreshStatus();
+      }),
+    [refreshStatus, dropResidentState],
   );
 
   // Collapse the body-ported popovers when leaving the tab: the open flag stays set, so returning would pop them back open.
@@ -2090,13 +2111,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   const handleUnload = useCallback(async () => {
     // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too, or the toast leaks forever.
-    if (pollTimer.current) clearTimeout(pollTimer.current);
-    pollTimer.current = null;
-    dismissLoadToast();
-    lastLoadSig.current = null;
-    // Drop the Reapply target with the model: the ejected pick is no longer resident, so leaving it set would let Reapply reload the ejected model.
-    lastLoad.current = null;
-    setCanReapply(false);
+    dropResidentState();
     setBusy("unloading");
     try {
       setStatus(await unloadDiffusionModel());
@@ -2107,7 +2122,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     } finally {
       setBusy(null);
     }
-  }, [refreshStatus, dismissLoadToast]);
+  }, [refreshStatus, dropResidentState]);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
