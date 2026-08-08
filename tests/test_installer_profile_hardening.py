@@ -79,15 +79,15 @@ def _ps_literal(value: object) -> str:
 
 def test_prologue_neutralizes_profile_state():
     block = _extract_prologue()
-    assert "Set-StrictMode -Off" in block, (
-        "this script's $env:X -in @(...) and unassigned-$script: idioms are errors under Latest"
-    )
-    assert "$PSDefaultParameterValues = $_UnslothKeptDefaults" in block, (
-        "a profile entry like 'Start-Process:WindowStyle' otherwise rebinds cmdlets here"
-    )
-    assert "$PSNativeCommandUseErrorActionPreference = $false" in block, (
-        "with it on, a failing native command throws past Exit-InstallFailure and skips rollback"
-    )
+    assert (
+        "Set-StrictMode -Off" in block
+    ), "this script's $env:X -in @(...) and unassigned-$script: idioms are errors under Latest"
+    assert (
+        "$PSDefaultParameterValues = $_UnslothKeptDefaults" in block
+    ), "a profile entry like 'Start-Process:WindowStyle' otherwise rebinds cmdlets here"
+    assert (
+        "$PSNativeCommandUseErrorActionPreference = $false" in block
+    ), "with it on, a failing native command throws past Exit-InstallFailure and skips rollback"
 
 
 def test_proxy_defaults_are_carried_across_rather_than_dropped():
@@ -95,9 +95,9 @@ def test_proxy_defaults_are_carried_across_rather_than_dropped():
     entry is the only route to python.org -- and those users are the ones who never run
     -NoProfile, so they would be trading one broken install for another."""
     block = _extract_prologue()
-    assert ":Proxy(Credential|UseDefaultCredentials)?$" in block, (
-        "the filter must keep proxy-shaped keys, which can only ever enable a download"
-    )
+    assert (
+        ":Proxy(Credential|UseDefaultCredentials)?$" in block
+    ), "the filter must keep proxy-shaped keys, which can only ever enable a download"
 
 
 def test_profile_hardening_precedes_every_use_it_protects():
@@ -136,12 +136,12 @@ def test_script_scoped_uv_state_is_reset_per_invocation():
         ("\n    $script:UvInstallDestDir = $null\n", "foreach ($d in @($script:UvInstallDestDir"),
     ):
         init_idx = _locate(src, reset, "a per-invocation reset")
-        assert init_idx < _locate(src, first_read, "the first read"), (
-            f"{reset.strip()} must come before the first read"
-        )
-    assert "$script:UvExe = 'uv'" in src, (
-        "the reset value must stay the bare token, so an unforeseen path behaves as it does today"
-    )
+        assert init_idx < _locate(
+            src, first_read, "the first read"
+        ), f"{reset.strip()} must come before the first read"
+    assert (
+        "$script:UvExe = 'uv'" in src
+    ), "the reset value must stay the bare token, so an unforeseen path behaves as it does today"
 
 
 def test_no_bare_uv_token_survives_at_a_call_site():
@@ -150,9 +150,9 @@ def test_no_bare_uv_token_survives_at_a_call_site():
     src = _install_ps1()
     assert "{ uv " not in src, "install scriptblocks must invoke $script:UvExe, not the bare token"
     assert "& uv " not in src, "the version probe must invoke the resolved executable"
-    assert src.count("{ & $script:UvExe ") >= 27, (
-        "every uv scriptblock must route through the resolved path"
-    )
+    assert (
+        src.count("{ & $script:UvExe ") >= 27
+    ), "every uv scriptblock must route through the resolved path"
 
 
 def test_uv_is_resolved_as_an_application():
@@ -163,13 +163,13 @@ def test_uv_is_resolved_as_an_application():
         "Application-only lookup is what skips an alias or function, and ordering across "
         "several matches is only documented for -All"
     )
-    assert "return 'uv'" in body, (
-        "with nothing on PATH the bare token must come back, so resolution stays exactly today's"
-    )
+    assert (
+        "return 'uv'" in body
+    ), "with nothing on PATH the bare token must come back, so resolution stays exactly today's"
     probe = _extract_function("Test-UvVersionOk")
-    assert "Resolve-UvExecutable" in probe and "$script:UvExe = $exe" in probe, (
-        "the probe must pin the executable that answered, so later PATH edits cannot swap it"
-    )
+    assert (
+        "Resolve-UvExecutable" in probe and "$script:UvExe = $exe" in probe
+    ), "the probe must pin the executable that answered, so later PATH edits cannot swap it"
 
 
 def test_setup_ps1_handoff_never_inherits_the_profile():
@@ -180,9 +180,9 @@ def test_setup_ps1_handoff_never_inherits_the_profile():
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
     start = _locate(src, 'powershell_args = ["powershell.exe"]', "the setup.ps1 launch")
     branch = _locate(src[start:], "_should_hide_windows_subprocesses()", "the hidden-window branch")
-    assert '"-NoProfile"' in src[start : start + branch], (
-        "-NoProfile must be added unconditionally, before the hidden-window branch"
-    )
+    assert (
+        '"-NoProfile"' in src[start : start + branch]
+    ), "-NoProfile must be added unconditionally, before the hidden-window branch"
 
 
 # ── executable: run the extracted code under a hostile profile ──
@@ -285,9 +285,7 @@ def _profile_paths(env: dict[str, str]) -> dict[str, Path]:
         env = env,
     )
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
-    reported = dict(
-        line.strip().split("=", 1) for line in res.stdout.splitlines() if "=" in line
-    )
+    reported = dict(line.strip().split("=", 1) for line in res.stdout.splitlines() if "=" in line)
     return {scope: Path(reported.get(scope, "")) for scope in _PROFILE_SCOPES}
 
 
@@ -416,9 +414,9 @@ def test_bare_uv_token_is_hijacked_by_the_profile(tmp_path):
         path_prepend = _fake_uv(tmp_path / "bin").parent,
     )
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
-    assert "MATCHED:none" in res.stdout, (
-        "if the bare token resolves past the alias, this suite can no longer detect a regression"
-    )
+    assert (
+        "MATCHED:none" in res.stdout
+    ), "if the bare token resolves past the alias, this suite can no longer detect a regression"
     # Write-Host swallowed the arguments instead of running uv, which is the whole failure mode.
     assert "RAW:[]" in res.stdout, f"expected the alias to eat the call; got {res.stdout!r}"
 
@@ -495,12 +493,12 @@ def test_a_profile_cannot_make_a_failing_native_command_terminating(tmp_path):
     )
     res = _run_with_profile(tmp_path, body)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
-    assert "THREW:" not in res.stdout, (
-        f"a failing native command became terminating: {res.stdout!r}"
-    )
-    assert "AFTER_NATIVE:7" in res.stdout, (
-        "the exit code must still be readable, which is how every caller here branches"
-    )
+    assert (
+        "THREW:" not in res.stdout
+    ), f"a failing native command became terminating: {res.stdout!r}"
+    assert (
+        "AFTER_NATIVE:7" in res.stdout
+    ), "the exit code must still be readable, which is how every caller here branches"
 
 
 def _uv_probe_body(*extra: str) -> str:
@@ -534,16 +532,16 @@ def test_uv_probe_finds_the_real_uv_behind_a_profile_alias(tmp_path):
     )
     res = _run_with_profile(tmp_path, body, path_prepend = fake.parent)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
-    assert "OK:True" in res.stdout, (
-        "a uv on PATH must be detected even with an alias shadowing the name"
-    )
-    assert f"PINNED:{fake}" in res.stdout, (
-        f"the probe must pin {str(fake)!r} exactly; got {res.stdout!r}"
-    )
+    assert (
+        "OK:True" in res.stdout
+    ), "a uv on PATH must be detected even with an alias shadowing the name"
+    assert (
+        f"PINNED:{fake}" in res.stdout
+    ), f"the probe must pin {str(fake)!r} exactly; got {res.stdout!r}"
     # The scriptblock form the installer actually uses must reach the executable, not the alias.
-    assert "CALLSITE:uv 0.12.1" in res.stdout, (
-        "install scriptblocks must run the resolved uv; the alias would echo the arguments"
-    )
+    assert (
+        "CALLSITE:uv 0.12.1" in res.stdout
+    ), "install scriptblocks must run the resolved uv; the alias would echo the arguments"
 
 
 @requires_pwsh
