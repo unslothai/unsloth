@@ -113,23 +113,51 @@ test("the cap never shrinks the stack below its floor", () => {
 // the stack across the monitor's own top edge, which is where its Close and
 // collapse controls are. The chat UI suite maximises the monitor and then
 // clicks Close, and the card swallowed the click.
-test("a monitor too tall to lift over is left in the corner", () => {
+//
+// Nothing above such a monitor is free, so the stack goes inside it, and the
+// two things it may not bury are the header at the top and the native resize
+// grip in the bottom-right corner (Chromium's hit area reaches 15px in from
+// that corner, Firefox's 12px). Both edges are checked, because the inset
+// alone does not hold the top: an expanded download list plus the loaded
+// models card grows from the bottom right back over the header.
+/** Where the stack's own edges land, given everything it dodges. */
+function stackEdges(frame: MonitorFrame) {
+  const { bottom, maxHeight } = stackGeometry(frame, W, H);
+  return { bottom, top: H - bottom - maxHeight, edge: H - bottom };
+}
+
+test("a monitor too tall to lift over keeps its header and grip clear", () => {
   const frame: MonitorFrame = {
     left: W - 272,
     top: 16,
     right: W - 16,
     bottom: H - 16,
   };
-  const inset = stackBottomInset(frame, W, H);
-  assert.equal(inset, 16, "no lift can clear it, so do not half-lift");
-  // The monitor's own controls sit just inside its top edge; the stack must
-  // stay well below them.
-  assert.ok(H - inset > frame.top + 64, "the stack stays off the top bar");
+  const { top, edge } = stackEdges(frame);
+  assert.ok(edge <= frame.bottom - 16, "the stack sits clear of the resize grip");
+  assert.ok(top >= frame.top + 64, "and stops below the header controls");
 });
 
-test("a monitor resized to fill the viewport is left in the corner", () => {
+test("a monitor resized to fill the viewport keeps its header and grip clear", () => {
   const frame: MonitorFrame = { left: 16, top: 16, right: W - 16, bottom: H - 16 };
-  assert.equal(stackBottomInset(frame, W, H), 16);
+  const { top, edge } = stackEdges(frame);
+  assert.ok(edge <= frame.bottom - 16, "the stack sits clear of the resize grip");
+  assert.ok(top >= frame.top + 64, "and stops below the header controls");
+});
+
+// Too tall to lift over, but it stops short of the bottom edge. The corner is
+// free after all, so the stack keeps it and is capped to the room underneath
+// rather than being pushed up inside the monitor.
+test("a monitor too tall to lift over but clear of the bottom is sat under", () => {
+  const frame: MonitorFrame = {
+    left: W - 272,
+    top: 16,
+    right: W - 16,
+    bottom: H / 2 + 100,
+  };
+  const { bottom, top } = stackEdges(frame);
+  assert.equal(bottom, 16, "the corner is free, so stay in it");
+  assert.ok(top >= frame.bottom, "and the stack stays underneath the monitor");
 });
 
 // The lift is dropped only when it cannot clear; one that fits still applies.

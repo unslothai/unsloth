@@ -71,6 +71,15 @@ const STACK_GAP = 8;
 const STACK_WIDTH = 448;
 // Never lift so far that the stack itself is pushed off the top.
 const MIN_STACK_ROOM = 120;
+// The monitor's own controls, measured from its top edge: 12px of panel
+// padding, a 24px control row (the drag handle and the size-6 Close button),
+// an 8px rule and an 8px margin come to 54. Rounded up so a font or a border
+// cannot eat the margin.
+const MONITOR_HEADER = 64;
+// Its native `resize` grip, in the opposite corner. Chromium's hit area
+// reaches 15px in from the bottom-right corner and Firefox's 12px, so one
+// STACK_INSET of clearance takes the stack off all of it.
+const MONITOR_GRIP = 16;
 
 /**
  * How far above the bottom edge the overlay stack must sit to clear the Live
@@ -86,6 +95,20 @@ function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
   );
 }
 
+/** The lift that clears the monitor's top edge, and whether it fits. */
+function liftOver(frame: MonitorFrame, viewportHeight: number): number {
+  return viewportHeight - frame.top + STACK_GAP;
+}
+
+function liftFits(frame: MonitorFrame, viewportHeight: number): boolean {
+  return liftOver(frame, viewportHeight) <= viewportHeight - MIN_STACK_ROOM;
+}
+
+/** Room for the stack underneath the monitor, sitting at its own inset. */
+function roomBelow(frame: MonitorFrame, viewportHeight: number): number {
+  return viewportHeight - STACK_INSET - frame.bottom - STACK_GAP;
+}
+
 export function stackBottomInset(
   frame: MonitorFrame | null,
   viewportWidth: number,
@@ -96,13 +119,26 @@ export function stackBottomInset(
   // enough to be in its way; one dragged elsewhere leaves the corner free.
   const lowEnough = frame.bottom > viewportHeight / 2;
   if (!(inStackColumn(frame, viewportWidth) && lowEnough)) return STACK_INSET;
-  const lifted = viewportHeight - frame.top + STACK_GAP;
+  if (liftFits(frame, viewportHeight)) {
+    return Math.max(STACK_INSET, liftOver(frame, viewportHeight));
+  }
   // Too tall to lift over. Clamping the lift instead of dropping it parks the
   // stack across the box's own top edge, over the controls it is dodging: a
   // monitor resized to fill the viewport had its Close button swallowed by the
-  // loaded models card. Nothing above it is free, so stay in the corner.
-  if (lifted > viewportHeight - MIN_STACK_ROOM) return STACK_INSET;
-  return Math.max(STACK_INSET, lifted);
+  // loaded models card.
+  //
+  // If it still ends above the bottom edge there is room underneath it, so the
+  // corner is free and `stackMaxHeight` keeps the stack short enough to stay
+  // there.
+  if (roomBelow(frame, viewportHeight) >= MIN_STACK_ROOM) return STACK_INSET;
+  // Otherwise it fills the viewport and there is no free space at all. Sit
+  // inside it, off its resize grip; `stackMaxHeight` keeps the top of the stack
+  // below its header. Taking the corner instead buries the grip, which is the
+  // only way back to a smaller monitor.
+  return Math.max(
+    STACK_INSET,
+    viewportHeight - frame.bottom + MONITOR_GRIP + STACK_GAP,
+  );
 }
 
 /**
@@ -114,6 +150,15 @@ export function stackBottomInset(
  * space is underneath it. It still has to be dodged: the stack grows upwards
  * from the bottom, and a full download list plus the card is easily tall enough
  * to reach it. Cap the height at the gap below it instead.
+ *
+ * The same applies to a monitor too tall to lift over: the bottom inset alone
+ * decides where the stack starts, and an expanded download list plus the loaded
+ * models card is easily tall enough to grow from there back over the monitor's
+ * header, which is what the inset was dodging.
+ *
+ * The branch is decided on the frame's own inset, not the one passed in, so it
+ * agrees with `stackBottomInset`; only the height it returns uses the inset the
+ * stack actually sits at, which folds in every other box.
  */
 export function stackMaxHeight(
   frame: MonitorFrame | null,
@@ -123,9 +168,21 @@ export function stackMaxHeight(
 ): number {
   const ownMargin = viewportHeight - bottomInset - STACK_INSET;
   if (!frame || !inStackColumn(frame, viewportWidth)) return ownMargin;
-  if (frame.bottom > viewportHeight / 2) return ownMargin;
   const belowMonitor = viewportHeight - bottomInset - frame.bottom - STACK_GAP;
-  return Math.max(MIN_STACK_ROOM, Math.min(ownMargin, belowMonitor));
+  if (frame.bottom <= viewportHeight / 2) {
+    return Math.max(MIN_STACK_ROOM, Math.min(ownMargin, belowMonitor));
+  }
+  // Lifted clear of it: the space above the monitor is its own limit.
+  if (liftFits(frame, viewportHeight)) return ownMargin;
+  // Too tall to lift over but still leaving room underneath: stay under it.
+  if (roomBelow(frame, viewportHeight) >= MIN_STACK_ROOM) {
+    return Math.max(MIN_STACK_ROOM, Math.min(ownMargin, belowMonitor));
+  }
+  // Sitting inside it. Stop below its header, or the Close button goes back
+  // under the stack the inset just moved off it.
+  const belowHeader =
+    viewportHeight - bottomInset - frame.top - MONITOR_HEADER - STACK_GAP;
+  return Math.max(MIN_STACK_ROOM, Math.min(ownMargin, belowHeader));
 }
 
 export type StackGeometry = { bottom: number; maxHeight: number };
