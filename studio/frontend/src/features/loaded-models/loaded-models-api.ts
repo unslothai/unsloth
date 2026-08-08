@@ -114,9 +114,16 @@ async function bounded<T>(
  * an unreadable source keeps what it last showed and a readable one is always
  * replaced, including by an empty answer, which is how an unload still clears.
  */
+export type LoadedModelsRead = {
+  entries: LoadedModelEntry[];
+  /** Sources whose status did not come back, so nothing in this read is
+   *  evidence about them. */
+  unreadable: LoadedModelSource[];
+};
+
 export async function readLoadedModels(
   previous: readonly LoadedModelEntry[] = [],
-): Promise<LoadedModelEntry[]> {
+): Promise<LoadedModelsRead> {
   const [inference, diffusion, video, stt] = await Promise.all([
     settled(readInferenceStatus),
     settled(getDiffusionStatus),
@@ -125,12 +132,23 @@ export async function readLoadedModels(
   ]);
   const kept = (source: LoadedModelSource) =>
     previous.filter((row) => row.source === source);
-  return mergeLoadedModels([
-    inference === null ? kept("chat") : describeInferenceStatus(inference),
-    diffusion === null ? kept("image") : describeDiffusionStatus(diffusion),
-    video === null ? kept("video") : describeVideoStatus(video),
-    stt === null ? kept("stt") : describeSttStatus(stt),
+  const unreadable: LoadedModelSource[] = [];
+  const group = <T>(
+    source: LoadedModelSource,
+    status: T | null,
+    describe: (value: T) => LoadedModelEntry[],
+  ) => {
+    if (status !== null) return describe(status);
+    unreadable.push(source);
+    return kept(source);
+  };
+  const entries = mergeLoadedModels([
+    group("chat", inference, describeInferenceStatus),
+    group("image", diffusion, describeDiffusionStatus),
+    group("video", video, describeVideoStatus),
+    group("stt", stt, describeSttStatus),
   ]);
+  return { entries, unreadable };
 }
 
 /** Release the model this row names, and only that one. See eject-chat-model.ts. */

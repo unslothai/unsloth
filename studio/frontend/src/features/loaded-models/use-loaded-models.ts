@@ -17,6 +17,8 @@ const POLL_INTERVAL_MS = 5000;
 
 const NO_ENTRIES: LoadedModelEntry[] = [];
 
+const ALL_SOURCES: LoadedModelSource[] = ["chat", "image", "video", "stt"];
+
 export type UseLoadedModels = {
   entries: LoadedModelEntry[];
   /** What the polls actually found, whether or not the card is showing it. The
@@ -78,10 +80,22 @@ export function useLoadedModels(
   // Retired only once a read has landed, so the row never blinks out in the gap
   // between the load finishing and the status that replaces it arriving.
   const settledRef = useRef<Set<LoadedModelSource>>(new Set());
-  const retireSettled = useCallback(() => {
+  /**
+   * Drop the optimistic rows for loads that have finished, now that a read has
+   * replaced them. `unreadable` names the sources that read could say nothing
+   * about: retiring those would take away the row for a model that has just
+   * finished loading, on the strength of a request that failed. They stay
+   * settled, so the next readable poll retires them instead.
+   */
+  const retireSettled = useCallback((unreadable: LoadedModelSource[] = []) => {
     if (settledRef.current.size === 0) return;
-    const done = settledRef.current;
-    settledRef.current = new Set();
+    const done = [...settledRef.current].filter(
+      (source) => !unreadable.includes(source),
+    );
+    if (done.length === 0) return;
+    settledRef.current = new Set(
+      [...settledRef.current].filter((source) => !done.includes(source)),
+    );
     setPending((prev) => {
       const next = new Map(prev);
       for (const source of done) next.delete(source);
@@ -105,14 +119,17 @@ export function useLoadedModels(
     const generation = generationRef.current;
     // What the card shows now, so a source that fails to answer keeps its rows
     // rather than being read as empty.
+    let unreadable: LoadedModelSource[] = [];
     void readLoadedModels(polledRef.current)
       .then((next) => {
+        unreadable = next.unreadable;
         if (mountedRef.current && generation === generationRef.current) {
-          setEntries(next);
+          setEntries(next.entries);
         }
       })
       .catch(() => {
-        // Every source fails soft; nothing left to report.
+        // The whole read failed, so it is evidence about nothing at all.
+        unreadable = ALL_SOURCES;
       })
       .finally(() => {
         inFlightRef.current = false;
@@ -122,8 +139,9 @@ export function useLoadedModels(
           return;
         }
         // This read is the one that supersedes them, so retire only once no
-        // further read is already queued.
-        if (mountedRef.current) retireSettled();
+        // further read is already queued, and only for the sources it could
+        // actually see.
+        if (mountedRef.current) retireSettled(unreadable);
       });
   }, [track, retireSettled]);
   useEffect(() => {
