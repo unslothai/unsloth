@@ -154,18 +154,22 @@ class TestGetModelName(unittest.TestCase):
                     self._assert_mapping(model_name, load_in_4bit, expected, should_change)
 
     def test_static_mapper_contract(self):
+        # A lowercased key is how __get_model_name always looks up; the value it
+        # gets back is used verbatim as a repo id, so it must carry the casing
+        # the repo actually has. Each expectation below was checked against the
+        # Hub's canonical id. MAP_TO_UNSLOTH_16bit below already worked this way.
         contracts = [
-            ("qwen/qwen3-8b", "unsloth/qwen3-8b-unsloth-bnb-4bit"),
-            ("qwen/qwen3-8b-fp8", "unsloth/qwen3-8b-unsloth-bnb-4bit"),
+            ("qwen/qwen3-8b", "unsloth/Qwen3-8B-unsloth-bnb-4bit"),
+            ("qwen/qwen3-8b-fp8", "unsloth/Qwen3-8B-unsloth-bnb-4bit"),
             (
                 "mistralai/ministral-3-3b-instruct-2512",
-                "unsloth/ministral-3-3b-instruct-2512-unsloth-bnb-4bit",
+                "unsloth/Ministral-3-3B-Instruct-2512-unsloth-bnb-4bit",
             ),
             (
                 "allenai/olmo-3-7b-instruct",
-                "unsloth/olmo-3-7b-instruct-unsloth-bnb-4bit",
+                "unsloth/Olmo-3-7B-Instruct-unsloth-bnb-4bit",
             ),
-            ("unsloth/kimi-k2-instruct", "unsloth/kimi-k2-instruct-bf16"),
+            ("unsloth/kimi-k2-instruct", "unsloth/Kimi-K2-Instruct-BF16"),
         ]
         for src, expected in contracts:
             with self.subTest(src = src):
