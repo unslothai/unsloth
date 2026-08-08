@@ -1814,7 +1814,7 @@ def _train_dit(
         # checkpoint_failed events, so a run that crashes after a save is still known to be
         # resumable (and one whose save failed is still known to be blocked).
         nonlocal wrote_checkpoint
-        write_resume_checkpoint(
+        written, _error = write_resume_checkpoint(
             cfg,
             step = step,
             model = transformer,
@@ -1833,7 +1833,9 @@ def _train_dit(
             # name left there: they carry higher step numbers and a later Resume would pick them.
             discard_existing = not (wrote_checkpoint or resumed),
         )
-        wrote_checkpoint = True
+        # Only a bundle that actually landed retires the discard; see the LoRA trainer.
+        if written:
+            wrote_checkpoint = True
 
     # bf16 autocast around the forward + loss, matching the diffusers dreambooth scripts: it reconciles the fp32 LoRA params with the bnb 4-bit base matmuls. Without it the 4-bit backward on FLUX dies.
     autocast = (

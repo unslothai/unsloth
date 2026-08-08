@@ -200,18 +200,47 @@ def test_a_real_fsync_failure_fails_the_save_but_an_unsupported_one_does_not(run
     assert dc.read_checkpoint(run_dir / "checkpoint-2") is not None
 
 
-def test_re_saving_a_step_that_already_has_a_valid_bundle_keeps_it(run_dir):
-    # Only reachable by resuming at N and stopping before N+1, where the state is byte-identical.
-    # Keeping it avoids _promote's one destructive branch (swapping a good bundle out to make
-    # room), where a kill would leave the slot empty.
+def test_re_saving_the_bundle_this_run_resumed_from_keeps_it(run_dir):
+    # Resuming at N and stopping before N+1 re-saves byte-identical state, so keeping what is
+    # there avoids _promote's one destructive branch (swapping a good bundle out to make room),
+    # where a kill would leave the slot empty.
     run = _Run(run_dir)
     first, _ = run.save(9)
     before = (run_dir / "checkpoint-9" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
-    second, error = run.save(9)
+    resumed = _Run(run_dir, resume_from_checkpoint = str(run_dir / "checkpoint-9"))
+    second, error = resumed.save(9)
     assert error is None and second == first
     assert (run_dir / "checkpoint-9" / dc.TRAINER_STATE_FILENAME).read_text(
         encoding = "utf-8"
     ) == before
+
+
+def test_a_same_step_bundle_from_another_run_is_overwritten(run_dir):
+    # The dangerous half of the same arithmetic: resume checkpoint-10 in a folder that also
+    # holds checkpoint-15 and stop at 15. The old shortcut saw "step 15 already exists" and
+    # returned it, so checkpoint_saved named a bundle whose optimizer, scheduler, sampler and
+    # RNG were from the EARLIER run and this run's state was dropped on the floor.
+    seeded = _Run(run_dir)
+    seeded.save(10)
+    seeded.step_once(0.5)
+    seeded.save(15)
+    stale = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
+
+    resumed = _Run(run_dir, seed = 7, resume_from_checkpoint = str(run_dir / "checkpoint-10"))
+    resumed.step_once(1.5)
+    path, error = resumed.save(15)
+
+    assert error is None and path == str(run_dir / "checkpoint-15")
+    written = dc.read_checkpoint(run_dir / "checkpoint-15")
+    assert written is not None
+    # It is this run's state now, not the one that was sitting there.
+    assert (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(
+        encoding = "utf-8"
+    ) != stale
+    from safetensors.torch import load_file
+
+    restored = load_file(run_dir / "checkpoint-15" / dc.ADAPTER_FILENAME)
+    assert torch.allclose(restored["weight"], resumed.model.weight)
 
 
 def test_incomplete_or_inconsistent_bundles_are_rejected(run_dir):
@@ -1367,3 +1396,142 @@ def test_the_fingerprint_probe_does_not_read_whole_images(tmp_path):
     a.write_bytes(body)
     b.write_bytes(body[: 2 * dc._PROBE_BYTES] + b"X" + body[2 * dc._PROBE_BYTES + 1 :])
     assert dc._content_probe(a) == dc._content_probe(b)
+
+
+def test_a_mid_sized_image_is_covered_end_to_end(tmp_path):
+    """A file between one and two probe windows is read IN FULL, not head-only.
+
+    The old gate only sampled a tail past 2 x _PROBE_BYTES, so anything from 64 KiB to
+    128 KiB -- which is most JPEGs in a LoRA dataset -- contributed its first 64 KiB and
+    nothing else. A same-length replacement sharing that head kept the fingerprint intact
+    and the preflight accepted changed training images.
+    """
+    path = tmp_path / "mid.jpg"
+    head = b"H" * dc._PROBE_BYTES
+    path.write_bytes(head + b"A" * (dc._PROBE_BYTES // 2))
+    entries = [(str(path), "a cat")]
+    before = dc.dataset_fingerprint(entries)
+
+    path.write_bytes(head + b"B" * (dc._PROBE_BYTES // 2))
+    assert path.stat().st_size == dc._PROBE_BYTES + dc._PROBE_BYTES // 2
+    assert dc.dataset_fingerprint(entries) != before
+
+
+def test_a_failed_first_save_does_not_retire_the_discard(run_dir, monkeypatch):
+    """A run that has written nothing yet still owns its output directory.
+
+    A transient failure at the first save_steps interval used to flip wrote_checkpoint
+    anyway, so the next successful save ran with discard_existing=False and an earlier run's
+    higher-numbered bundle survived beside it -- and a later Resume by output directory
+    picked that stale bundle over this run's state.
+    """
+    import core.training.diffusion_train_common as dtc
+
+    # An earlier run of the same adapter name left a bundle behind, at a higher step.
+    stale = _Run(run_dir)
+    stale.save(40)
+    assert (run_dir / "checkpoint-40").is_dir()
+
+    wrote_checkpoint = False
+    run = _Run(run_dir)
+    failing = {"n": 1}
+    real_save = dc.save_checkpoint
+
+    def _save(**kwargs):
+        if failing["n"] > 0:
+            failing["n"] -= 1
+            raise OSError(28, "No space left on device")
+        return real_save(**kwargs)
+
+    monkeypatch.setattr(dc, "save_checkpoint", _save)
+
+    def _attempt(step):
+        nonlocal wrote_checkpoint
+        written, _error = dtc.write_resume_checkpoint(
+            run.cfg,
+            step = step,
+            model = run.model,
+            optimizer = run.optimizer,
+            lr_scheduler = run.lr_sched,
+            identity = run.identity,
+            sampler = run.sampler,
+            rng_streams = run.streams,
+            discard_existing = not wrote_checkpoint,
+        )
+        if written:
+            wrote_checkpoint = True
+        return written
+
+    assert _attempt(5) is None  # ENOSPC: nothing was written
+    assert wrote_checkpoint is False
+    assert _attempt(6) is not None
+
+    # The stale higher-numbered bundle is gone, so a Resume by output directory picks step 6.
+    assert not (run_dir / "checkpoint-40").exists()
+    latest = dc.latest_valid_checkpoint(run_dir)
+    assert latest is not None and dc.checkpoint_step(latest[0]) == 6
+
+
+def test_a_partial_ema_shadow_is_refused_rather_than_half_restored():
+    """A readable EMA file covering only SOME of the live shadows is not a resumable EMA.
+
+    load_state_dict skips what it cannot match by design, so continuing here averages
+    restored shadows for some parameters against freshly initialised ones for the rest --
+    for every later update and for the exported EMA adapter -- while the run reports a
+    clean resume.
+    """
+    from core.training.diffusion_train_extras import LoRAEMA
+
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4, bias = False), torch.nn.Linear(4, 4))
+    ema = LoRAEMA(model, decay = 0.99)
+    full = ema.state_dict()
+    assert len(full) > 1
+
+    complete = ema.missing_from(full)
+    assert complete == ()
+
+    partial = {next(iter(full)): next(iter(full.values()))}
+    missing = ema.missing_from(partial)
+    assert missing and len(missing) == len(full) - 1
+
+    # A shape change counts too: load_state_dict skips those on the same branch.
+    mangled = {name: tensor[:1].clone() for name, tensor in full.items()}
+    assert len(ema.missing_from(mangled)) == len(full)
+
+
+def test_a_resume_refuses_a_checkpoint_whose_ema_is_incomplete(run_dir):
+    """The end of the same fence, on the real restore path: the run stops with a reason
+    rather than continuing on a half-restored average."""
+    from core.training.diffusion_checkpoint import ResumeError
+    from core.training.diffusion_train_extras import LoRAEMA
+    from safetensors.torch import save_file
+
+    run = _Run(run_dir)
+    ema = LoRAEMA(run.model, decay = 0.99)
+    path, error = run.save(3, ema = ema)
+    assert error is None and path is not None
+
+    # A wider model on the resume side: the saved shadow covers only part of it, which is the
+    # shape a re-wrap (or a hand-edited bundle) produces.
+    save_file(
+        {"weight": torch.zeros(4, 4)},
+        str(Path(path) / dc.EMA_FILENAME),
+    )
+    resumed = _Run(run_dir, resume_from_checkpoint = path)
+    resumed.model = torch.nn.Sequential(
+        torch.nn.Linear(4, 4, bias = False), torch.nn.Linear(4, 4, bias = False)
+    )
+    wider = LoRAEMA(resumed.model, decay = 0.99)
+
+    with pytest.raises(ResumeError) as excinfo:
+        restore_resume_state(
+            resumed.cfg,
+            model = run.model,
+            optimizer = resumed.optimizer,
+            lr_scheduler = resumed.lr_sched,
+            identity = resumed.identity,
+            sampler = resumed.sampler,
+            rng_streams = resumed.streams,
+            ema = wider,
+        )
+    assert "EMA state is missing or mis-shaped" in str(excinfo.value)

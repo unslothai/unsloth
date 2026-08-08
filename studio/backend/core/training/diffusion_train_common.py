@@ -1219,6 +1219,10 @@ def write_resume_checkpoint(
             progress = _json_safe_progress(progress),
             save_total_limit = int(cfg.save_total_limit or 0),
             discard_existing = discard_existing,
+            # What this run resumed from, so the "step already written" shortcut can tell
+            # "we are re-saving the bundle we started from" apart from "another run left a
+            # bundle at this number".
+            source_checkpoint = getattr(cfg, "resume_from_checkpoint", None),
         )
         # Reported per save, not only at the end: a run that later CRASHES must still be known to
         # have resumable state (and a run whose write failed must still be known to be blocked).
@@ -1325,6 +1329,19 @@ def restore_resume_state(
     if ema is not None:
         ema_state = ckpt.tensors("ema")
         if ema_state:
+            missing = ema.missing_from(ema_state)
+            if missing:
+                # A readable but INCOMPLETE shadow set. load_state_dict keeps the freshly
+                # initialised shadow for anything it cannot match, so continuing here would
+                # blend restored EMA weights with initialisation noise for the rest -- and
+                # report a clean resume while doing it. There is no honest way to continue
+                # this run's EMA, so say so instead.
+                named = ", ".join(missing[:3]) + ("..." if len(missing) > 3 else "")
+                raise ResumeError(
+                    f"This checkpoint's EMA state is missing or mis-shaped for {len(missing)} "
+                    f"of this run's adapter tensors ({named}), so the averaged weights cannot "
+                    f"be continued. Resume with EMA disabled, or start a new run."
+                )
             ema.load_state_dict(ema_state, updates = ckpt.ema_updates)
         else:
             # EMA is not part of the validated identity, so a resume may turn it on for a run

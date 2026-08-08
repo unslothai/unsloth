@@ -520,7 +520,7 @@ def run_diffusion_lora_training(
             # checkpoint_failed events, so a run that crashes after a save is still known to be
             # resumable (and one whose save failed is still known to be blocked).
             nonlocal wrote_checkpoint
-            write_resume_checkpoint(
+            written, _error = write_resume_checkpoint(
                 cfg,
                 step = step,
                 model = unet,
@@ -536,7 +536,12 @@ def run_diffusion_lora_training(
                 # would pick them over this run's.
                 discard_existing = not (wrote_checkpoint or resumed),
             )
-            wrote_checkpoint = True
+            # Only a bundle that actually landed retires the discard. A first save that failed
+            # (a transient ENOSPC at the first save_steps interval, say) wrote nothing, so the
+            # next attempt still has to clear an earlier run's higher-numbered bundles -- which
+            # a later Resume by output directory would otherwise pick over this run's state.
+            if written:
+                wrote_checkpoint = True
 
         for opt_step in range(resumed, cfg.train_steps):
             optimizer.zero_grad(set_to_none = True)

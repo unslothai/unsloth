@@ -118,6 +118,22 @@ class LoRAEMA:
     def state_dict(self) -> dict[str, Any]:
         return {name: t.detach().clone() for name, t in self._shadow.items()}
 
+    def missing_from(self, state: dict[str, Any]) -> tuple[str, ...]:
+        """Live shadow names a saved EMA state does not cover, by name or by shape.
+
+        ``load_state_dict`` skips those entries by design (a differently-wrapped model should
+        degrade rather than raise), which is exactly why a caller restoring a run has to ask:
+        a partial EMA silently blends restored shadows for some parameters with freshly
+        initialised ones for the rest, and every later update and the exported EMA adapter
+        carry that mixture while the run reports a clean resume."""
+        saved = state or {}
+        missing = []
+        for name, shadow in self._shadow.items():
+            entry = saved.get(name)
+            if entry is None or tuple(entry.shape) != tuple(shadow.shape):
+                missing.append(name)
+        return tuple(missing)
+
     def load_state_dict(
         self,
         state: dict[str, Any],

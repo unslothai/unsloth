@@ -262,8 +262,12 @@ def _content_probe(path: Any) -> str:
         digest = hashlib.sha256()
         with open(path, "rb") as handle:
             digest.update(handle.read(_PROBE_BYTES))
-            if size > _PROBE_BYTES * 2:
-                handle.seek(-_PROBE_BYTES, os.SEEK_END)
+            if size > _PROBE_BYTES:
+                # Every byte past the head is covered, either as the tail sample or, for a file
+                # under 2x the probe, in full. The old `> 2 * _PROBE_BYTES` gate left a band
+                # (64 KiB to 128 KiB, which is most JPEGs) reading its first 64 KiB and nothing
+                # else, so a same-length replacement sharing a head went unnoticed.
+                handle.seek(max(_PROBE_BYTES, size - _PROBE_BYTES))
                 digest.update(handle.read(_PROBE_BYTES))
     # ValueError: open() rejects an embedded NUL rather than raising OSError.
     except (OSError, ValueError):
@@ -476,6 +480,7 @@ def save_checkpoint(
     progress: Optional[dict[str, Any]] = None,
     save_total_limit: int = DEFAULT_SAVE_TOTAL_LIMIT,
     discard_existing: bool = False,
+    source_checkpoint: Optional[str | os.PathLike[str]] = None,
 ) -> str:
     """Write one resumable ``checkpoint-<step>`` bundle and return its path.
 
@@ -484,6 +489,10 @@ def save_checkpoint(
     state. Everything lands in a hidden staging directory whose manifest is written last;
     the directory is then promoted with a single ``os.replace``, so a kill at any instant
     leaves the previous checkpoint intact and no valid-looking partial behind.
+
+    ``source_checkpoint`` is the bundle this run resumed FROM, when it resumed. It is what
+    makes the "this step is already written" shortcut below safe: without it, a stop at a
+    step some OTHER run happens to have written would silently keep that run's state.
 
     ``discard_existing`` drops any bundle already in the directory first. A run that did NOT
     resume owns its output dir outright (it overwrites the published adapter there too), so
@@ -513,12 +522,21 @@ def save_checkpoint(
         # what this writer promises.
         doomed = list_checkpoints(root)
     else:
-        # Re-reaching a step that already has a VALID bundle only happens one way: the run
+        # Re-reaching a step that already has a VALID bundle happens one way SAFELY: the run
         # resumed at N and stopped before N+1 completed, so its state is byte-identical to what
-        # is already there. Keeping it avoids the one destructive branch in _promote (swapping a
-        # good bundle out to make room), where a kill would leave the slot empty.
+        # is already there, and keeping it avoids the one destructive branch in _promote
+        # (swapping a good bundle out to make room), where a kill would leave the slot empty.
+        #
+        # It has to be THAT bundle, though. Resuming checkpoint-10 in a folder that also holds
+        # checkpoint-15 and stopping at 15 is the same arithmetic and a completely different
+        # situation: the freshly trained optimizer, scheduler, sampler and RNG would be dropped
+        # on the floor and checkpoint_saved would name a bundle from an earlier run.
         existing = root / f"{CHECKPOINT_PREFIX}{step}"
-        if read_checkpoint(existing) is not None:
+        if (
+            source_checkpoint is not None
+            and Path(source_checkpoint).expanduser().resolve() == existing.resolve()
+            and read_checkpoint(existing) is not None
+        ):
             return str(existing)
     staging = root / f"{_STAGING_PREFIX}{step}-{uuid.uuid4().hex[:8]}"
     staging.mkdir(parents = True, exist_ok = False)
