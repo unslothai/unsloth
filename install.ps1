@@ -1059,13 +1059,6 @@ public static class UnslothStudioFinalPathV2
                 # Core only), so the loser adopts the winner's id.
                 $_idTmp = $_studioIdFile + ".$PID.tmp"
                 [System.IO.File]::WriteAllText($_idTmp, $_studioRootId)
-                # An interrupted write leaves a zero-length id, which the length
-                # check above already treats as missing. Clear it so the claim
-                # below replaces it instead of adopting an empty expected id.
-                if ((Test-Path -LiteralPath $_studioIdFile) -and `
-                    ((Get-Item -LiteralPath $_studioIdFile).Length -eq 0)) {
-                    Remove-Item -LiteralPath $_studioIdFile -Force -ErrorAction SilentlyContinue
-                }
                 try {
                     [System.IO.File]::Move($_idTmp, $_studioIdFile)
                 } catch [System.IO.IOException] {
@@ -1076,7 +1069,8 @@ public static class UnslothStudioFinalPathV2
                     if ($_adoptedRootId) {
                         $_studioRootId = $_adoptedRootId
                     } else {
-                        # Raced against a writer that left nothing usable.
+                        # Zero-length incumbent is an interrupted write, not an
+                        # id. Replace it with one atomic rename, no unlink.
                         Move-Item -LiteralPath $_idTmp -Destination $_studioIdFile -Force
                     }
                 } finally {

@@ -630,11 +630,8 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
         '        _css_new_id=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d " \\n")\n'
         '        _t="$_css_id_file.$$.tmp"\n'
         '        printf "%s" "$_css_new_id" > "$_t"\n'
-        '        if [ -e "$_css_id_file" ] && [ ! -s "$_css_id_file" ]; then rm -f "$_css_id_file"; fi\n'
-        '        ln "$_t" "$_css_id_file" 2>/dev/null || {\n'
-        '            mkdir "$_css_id_file.lock" 2>/dev/null &&\n'
-        '                { [ -s "$_css_id_file" ] || mv "$_t" "$_css_id_file"; rmdir "$_css_id_file.lock"; }\n'
-        "        }\n"
+        '        ln "$_t" "$_css_id_file" 2>/dev/null \\\n'
+        '            || { [ -s "$_css_id_file" ] || mv "$_t" "$_css_id_file"; }\n'
         '        rm -f "$_t"\n'
         "    fi\n"
         '    cat "$_css_id_file"\n'
@@ -665,14 +662,11 @@ def test_install_sh_publishes_the_id_without_clobbering():
         '[ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"', ""
     ), "the only remaining mv must be the no-hard-link fallback, guarded on the destination"
     assert (
-        'mkdir "$_css_id_file.lock"' in block
-    ), "the no-hard-link fallback must claim atomically with mkdir, not a bare -s test"
-    assert (
         '[ -s "$_css_id_file" ] || mv' in block
-    ), "the no-hard-link fallback must still refuse to clobber an existing id"
+    ), "the mv branch must refuse to replace a usable incumbent id"
     assert (
-        '[ -e "$_css_id_file" ] && [ ! -s "$_css_id_file" ]' in block
-    ), "a zero-length id is an interrupted write and must be cleared, not adopted"
+        'rm -f "$_css_id_file"' not in block
+    ), "never unlink the id: an unlink opens a window where a valid id is deleted"
     assert 'rm -f "$_css_id_tmp"' in block, "the temp sibling must not be left behind"
 
 
@@ -721,12 +715,8 @@ def test_install_sh_id_publish_replaces_a_blank_incumbent(tmp_path):
         f'_css_new_id="{fresh}"\n'
         '_css_id_tmp="$_css_id_file.$$.$(printf "%.8s" "$_css_new_id").tmp"\n'
         'printf "%s" "$_css_new_id" > "$_css_id_tmp"\n'
-        'if [ -e "$_css_id_file" ] && [ ! -s "$_css_id_file" ]; then rm -f "$_css_id_file"; fi\n'
         'if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then\n'
-        '    if mkdir "$_css_id_file.lock" 2>/dev/null; then\n'
-        '        [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"\n'
-        '        rmdir "$_css_id_file.lock"\n'
-        "    fi\n"
+        '    [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"\n'
         "fi\n"
         'rm -f "$_css_id_tmp"\n'
         'cat "$_css_id_file"\n'
@@ -762,11 +752,11 @@ def test_install_ps1_publishes_the_id_without_clobbering():
         "$_studioRootId = $_adoptedRootId" in block
     ), "the adopted id must become the value baked into the launcher"
     assert (
-        "(Get-Item -LiteralPath $_studioIdFile).Length -eq 0" in block
-    ), "install.ps1 must clear a zero-length id before claiming, not adopt it as an empty id"
-    assert (
         "if ($_adoptedRootId)" in block
     ), "install.ps1 must only adopt a non-empty id, so a blank one cannot become the expected id"
+    assert (
+        "Remove-Item -LiteralPath $_studioIdFile" not in block
+    ), "never unlink the id: an unlink opens a window where a valid id is deleted"
 
 
 def test_install_sh_create_shortcuts_fails_fast_when_no_entropy():
