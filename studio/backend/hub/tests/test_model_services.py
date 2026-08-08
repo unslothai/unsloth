@@ -3983,11 +3983,10 @@ def test_partial_gguf_reconstruction_dedupes_variant_casing(monkeypatch):
 
 
 def test_partial_gguf_reconstruction_drops_a_variant_read_off_the_filename(monkeypatch):
-    # A payload that cannot name its variant leaves the reader the filename, whose
-    # fragment is a digest. That names nothing: it cannot be spelled back and a
-    # resume would re-key it to a further hash. A variant genuinely called
-    # sha256-<32 hex> reads the same but is stored under the hash of itself, so the
-    # file it came from tells the two apart where the spelling cannot.
+    # An unreadable payload leaves the reader the filename, whose digest fragment
+    # names nothing and would re-key to a further hash on resume. A variant genuinely
+    # called sha256-<32 hex> reads the same but is stored under the hash of itself, so
+    # the file it came from tells them apart where the spelling cannot.
     digest = "sha256-" + "0" * 32
     entries = [
         # variant, the file it was recovered from

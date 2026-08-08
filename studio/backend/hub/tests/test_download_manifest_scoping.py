@@ -63,10 +63,10 @@ def test_purge_state_removes_legacy_owned_by_the_deleted_cache(monkeypatch, tmp_
 
 
 def test_a_scope_whose_payload_is_lost_reads_back_as_a_digest(monkeypatch, tmp_path):
-    """A scope is unspellable in a filename, so it is stored hashed. Lose the
-    payload and the reader falls back to that filename, handing the caller the
-    digest instead of "@diffusion" -- and the older tag spells it without the
-    "@" a scope test would look for. Both have to be recognisable as digests."""
+    """A scope is unspellable in a filename, so it is stored hashed. Lose the payload
+    and the reader falls back to that filename, handing back the digest instead of
+    "@diffusion" -- and the older tag spells it without the "@". Both have to be
+    recognisable as digests."""
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir(parents = True)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")

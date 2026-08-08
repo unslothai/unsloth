@@ -305,13 +305,10 @@ def gguf_variant_blob_hashes(
 def _is_scope_key(variant: str) -> bool:
     """Whether a stored variant key is a download SCOPE ("@diffusion"), not a quant.
 
-    A scoped job rides the variant slot to keep its state apart from the full
-    snapshot's, and the "@" prefix is what keeps it out of the quant namespace
-    (see test_scope_keys_apart_from_the_full_snapshot). Its manifest names the
-    file it fetched, so reconstructing quants from download state would list the
-    scope beside the real quant: the same .gguf twice, one of them "@diffusion"
-    and permanently partial. That second row also costs the picker its
-    single-quant collapse, since one quant on disk then reads as two.
+    A scoped job rides the variant slot with an "@" prefix to keep its state out
+    of the quant namespace. Its manifest names the file it fetched, so rebuilding
+    quants from download state would list the same .gguf twice, the scope row
+    permanently partial, and cost the picker its single-quant collapse.
     """
     return variant.startswith("@")
 
@@ -321,15 +318,12 @@ def _quants_from_state(
 ) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     """``list_partial_gguf_variants_from_state`` with download scopes dropped.
 
-    A scope whose payload is gone is dropped by the lister already, which is the
-    only place that can tell a recovered digest from a variant truly named like
-    one (see _is_state_filename_fallback). Left here is the readable case, where
-    the key really is "@diffusion".
-
-    None for scopes alone as much as for nothing at all: that is a listing of no
-    quants, so the caller must fall through rather than serve one. A scope whose
-    manifest names no .gguf reconstructs as ``f"{variant}.gguf"``, a file that
-    never existed.
+    A scope whose payload is gone is dropped by the lister, the only place that
+    can tell a recovered digest from a variant truly named like one (see
+    _is_state_filename_fallback); left here is the readable "@diffusion" case.
+    Scopes alone return None like nothing at all, since a scope naming no .gguf
+    reconstructs as ``f"{variant}.gguf"``, a file that never existed, so the
+    caller must fall through rather than serve one.
     """
     partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
     if partial is None:

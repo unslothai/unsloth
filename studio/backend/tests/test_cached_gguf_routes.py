@@ -4155,10 +4155,9 @@ def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path)
 
 def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
     """A scoped job ("@diffusion") rides the variant slot, so its manifest names the
-    same .gguf the real quant does. Reconstructing quants from download state listed
-    it beside the quant: one file, twice, the second permanently partial. That also
-    cost the picker its single-quant collapse, since one quant read as two. A real
-    cancelled quant still has to survive, or it loses its resume."""
+    same .gguf the real quant does: rebuilding from download state listed one file
+    twice, the second permanently partial, costing the picker its single-quant
+    collapse. A real cancelled quant must still survive, or it loses its resume."""
     repo_dir = tmp_path / "models--org--repo"
     (repo_dir / "snapshots" / "rev").mkdir(parents = True)
 
@@ -4179,8 +4178,7 @@ def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
             repo_dir / "snapshots" / "rev",
         ),
     )
-    # Download state holds both: the scope the diffusion load ran under, and a quant
-    # the user cancelled.
+    # State holds both: the scope the diffusion load ran under, and a cancelled quant.
     monkeypatch.setattr(
         GV,
         "list_partial_gguf_variants_from_state",
@@ -4226,10 +4224,9 @@ def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
 
 
 def test_a_scope_alone_in_state_is_not_an_answer(monkeypatch, tmp_path):
-    """The state-only fallbacks reconstruct from the same manifests, so a scope reaching
-    them is worse than a duplicate row: naming no .gguf, it reconstructs as
-    "@diffusion.gguf", a file never on disk. Scopes alone mean no quants, so the fallback
-    has to decline and let the next answer through."""
+    """A scope reaching the state-only fallbacks is worse than a duplicate row: naming
+    no .gguf, it reconstructs as "@diffusion.gguf", a file never on disk. So scopes
+    alone must make the fallback decline and let the next answer through."""
     repo_dir = tmp_path / "models--org--repo"
     (repo_dir / "snapshots" / "rev").mkdir(parents = True)
 
