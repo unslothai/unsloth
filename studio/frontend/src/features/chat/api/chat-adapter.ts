@@ -100,6 +100,7 @@ import {
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
+  CpuFallbackReason,
   GgufVariantDetail,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
@@ -1752,6 +1753,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedTensorParallel",
   "gpuMemoryMode",
   "loadedGpuMemoryMode",
+  "loadedCpuFallback",
   "gpuLayers",
   "loadedGpuLayers",
   "nCpuMoe",
@@ -2365,17 +2367,26 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         : undefined,
     });
   };
-  const showAutoLoadSuccess = (message: string): void => {
+  // Like the interactive load toast: an auto-load that lost GPU acceleration
+  // must not read as a plain success.
+  const showAutoLoadSuccess = (
+    message: string,
+    cpuFallbackReason?: CpuFallbackReason | null,
+  ): void => {
     const options = {
-      description: undefined,
+      description: cpuFallbackReason
+        ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
+        : undefined,
       duration: 5000,
       icon: undefined,
     };
+    const showToast = cpuFallbackReason ? toast.warning : toast.success;
+    const title = cpuFallbackReason ? `${message} on CPU` : message;
     if (autoLoadToastDismissed) {
-      toast.success(message, options);
+      showToast(title, options);
       return;
     }
-    toast.success(message, { ...options, id: toastId });
+    showToast(title, { ...options, id: toastId });
   };
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
@@ -2807,7 +2818,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ggufVariant: candidate.ggufVariant,
         });
       }
-      showAutoLoadSuccess(candidate.successLabel);
+      showAutoLoadSuccess(candidate.successLabel, loadResp.cpu_fallback_reason);
     });
     return true;
   }
@@ -3116,6 +3127,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         });
         showAutoLoadSuccess(
           `Loaded ${DEFAULT_CHAT_MODEL_LABEL} (${DEFAULT_CHAT_MODEL_VARIANT})`,
+          loadResp.cpu_fallback_reason,
         );
       });
       return { loaded: true, blockedByTrustRemoteCode: false };

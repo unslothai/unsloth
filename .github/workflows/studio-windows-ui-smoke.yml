@@ -20,6 +20,7 @@ on:
       - 'pyproject.toml'
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-windows-ui-smoke.yml'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
@@ -185,27 +186,28 @@ jobs:
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
-          # *>&1 redirects ALL PowerShell streams (stdout, stderr,
-          # warning, verbose, debug, information) into the success
-          # stream so Tee-Object captures everything. install.ps1
-          # and setup.ps1 emit step/substep markers via Write-Host
-          # which lands on the Information stream (PS 5+); without
-          # the wildcard redirect, those markers (including
-          # "prebuilt installed and validated") never reach
-          # logs/install.log and the post-step grep asserter fails.
-          $ProgressPreference = 'SilentlyContinue'
-          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
+          # install.ps1 runs as a CHILD process, not in-process. Its own
+          # lines now go to [Console]::Out (Write-StudioLine), not the
+          # Information stream, so an in-process `*>&1 | Tee-Object` would
+          # put them on the step log and never in logs/install.log. As a
+          # native command its stdout IS the pipeline, and the setup.ps1
+          # grandchild inherits that handle, so its markers land in the log
+          # too -- they used to bypass Tee-Object entirely.
+          # -Command rather than -File: $ProgressPreference is a preference
+          # variable, so it does not cross a process boundary on its own.
+          $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
+          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 | Tee-Object -FilePath logs/install.log
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         run: |
-          # install.ps1's setup.ps1 child writes "prebuilt installed
-          # and validated" to its own console host -- that output
-          # does NOT come back through this parent step's stdout
-          # pipeline (no matter how aggressively we redirect: *>&1,
-          # tee, etc.). Verify the install via the filesystem
-          # instead. setup.ps1 writes UNSLOTH_PREBUILT_INFO.json
-          # next to the install dir on success, and lays the
-          # binaries under build/bin/Release/ on Windows.
+          # The filesystem is the authority here: setup.ps1's "prebuilt
+          # installed and validated" reaches logs/install.log only because
+          # install.ps1 is spawned as a child process, and a marker that
+          # depends on process topology is a weak thing to gate on.
+          # setup.ps1 writes UNSLOTH_PREBUILT_INFO.json next to the install
+          # dir on success, and lays the binaries under build/bin/Release/
+          # on Windows.
           STUDIO_HOME=~/.unsloth/studio
           LLAMA_DIR=~/.unsloth/llama.cpp
           INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
@@ -364,6 +366,11 @@ jobs:
       - name: Edge permission controls
         run: |
           bash .github/scripts/run-studio-permission-browser.sh 18895 chromium msedge
+
+      # Real Edge, which is also the WebView2 the desktop app embeds on Windows.
+      - name: Loaded-models indicator (Edge)
+        run: |
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 chromium msedge
 
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |

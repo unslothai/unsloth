@@ -788,35 +788,40 @@ def test_deleting_a_mid_chain_ancestor_relinks_to_the_surviving_grandparent(tmp_
     assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
 
 
-def test_a_relink_to_a_surviving_message_that_is_not_the_ancestor_is_rejected(
-    tmp_path, monkeypatch
-):
-    # The allowance is only ever the parent the server itself would compute, so a client cannot
+def test_a_relink_to_a_surviving_message_that_is_not_the_ancestor_is_ignored(tmp_path, monkeypatch):
+    # The bulk sync keeps the server copy instead of rejecting the batch, so the protection is
+    # that the claim is dropped: the reseat is walked from the stored chain, and a client cannot
     # use a pruned parent as cover for pointing a protected message anywhere it likes.
     _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 3)
     payload = _without(messages, "a1", "a2")
     next(m for m in payload if m["id"] == "prompt")["parentId"] = "report"
 
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.sync_chat_messages("src", payload, prune_missing = True)
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
 
 
-def test_a_relink_with_nothing_pruned_is_still_rejected(tmp_path, monkeypatch):
+def test_a_relink_with_nothing_pruned_leaves_the_stored_parent_alone(tmp_path, monkeypatch):
     _, messages = _research_thread(tmp_path, monkeypatch)
     payload = [dict(m) for m in messages]
     next(m for m in payload if m["id"] == "prompt")["parentId"] = None
 
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.sync_chat_messages("src", payload, prune_missing = True)
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    # Nothing was deleted, so there is no repair to make and the claim is simply dropped.
+    assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
 
 
-def test_a_relink_is_still_rejected_when_pruning_is_off(tmp_path, monkeypatch):
+def test_a_relink_is_ignored_when_pruning_is_off(tmp_path, monkeypatch):
     _, messages = _research_thread(tmp_path, monkeypatch)
     payload = _without(messages, "a0")
     payload[0]["parentId"] = None
 
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.sync_chat_messages("src", payload, prune_missing = False)
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = False)
+
+    # With pruning off the omitted ancestor survives, so the stored parent still resolves.
+    assert {m["id"] for m in synced} >= {"a0", "prompt"}
+    assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
 
 
 @pytest.mark.parametrize(
@@ -828,22 +833,36 @@ def test_a_relink_is_still_rejected_when_pruning_is_off(tmp_path, monkeypatch):
         ("createdAt", 999),
     ],
 )
-def test_the_relink_allowance_does_not_unlock_any_other_edit(tmp_path, monkeypatch, field, value):
+def test_the_reseat_does_not_carry_any_other_edit(tmp_path, monkeypatch, field, value):
+    # Structure is repaired, content is not adopted: the reseat must not become a hole through
+    # which a drifted autosave rewrites the protected row.
     _, messages = _research_thread(tmp_path, monkeypatch)
+    stored = next(m for m in messages if m["id"] == "prompt")
     payload = _without(messages, "a0")
     payload[0]["parentId"] = None
     payload[0][field] = value
 
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.sync_chat_messages("src", payload, prune_missing = True)
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    prompt = next(m for m in synced if m["id"] == "prompt")
+    # The deleted ancestor was the root, so the repair is a reseat to the root.
+    assert prompt["parentId"] is None
+    # .get on both sides: an absent key is how a None metadata comes back, and the point is
+    # that the client's value is not there either way.
+    assert prompt.get(field) == stored.get(field)
+    assert prompt.get(field) != value
 
 
 def test_deleting_a_protected_message_itself_is_still_refused(tmp_path, monkeypatch):
+    # Update permission is not delete permission. Omitting a protected message no longer 409s
+    # the batch, but it must not delete it either.
     _, messages = _research_thread(tmp_path, monkeypatch)
 
     for dropped in ("prompt", "report"):
-        with pytest.raises(studio_db.ChatMessageProtectedError):
-            studio_db.sync_chat_messages("src", _without(messages, dropped), prune_missing = True)
+        synced = studio_db.sync_chat_messages(
+            "src", _without(messages, dropped), prune_missing = True
+        )
+        assert dropped in {m["id"] for m in synced}
 
 
 def test_a_research_prompt_already_at_the_root_is_unaffected(tmp_path, monkeypatch):

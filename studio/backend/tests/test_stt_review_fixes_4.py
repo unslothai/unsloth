@@ -333,18 +333,18 @@ def test_unknown_model_is_never_memoised(monkeypatch):
 
 
 def test_download_status_reports_progress_without_holding_the_lock():
-    """_cache_bytes() walks the cache; a cancel must not queue behind it."""
+    """_downloaded_bytes() stats the cache; a cancel must not queue behind it."""
     state = mtmd_mod._MtmdDownloadState()
     observed = []
 
-    def slow_cache_bytes(model_id = None):
+    def slow_downloaded_bytes(*_args, **_kwargs):
         # The lock must be free while this runs.
         observed.append(state._lock.acquire(blocking = False))
         if observed[-1]:
             state._lock.release()
         return 1
 
-    state._cache_bytes = slow_cache_bytes
+    state._downloaded_bytes = slow_downloaded_bytes
     state._model_id = "qwen3-asr-0.6b"
     state._thread = threading.Thread(target = lambda: time.sleep(0.5), daemon = True)
     state._thread.start()
