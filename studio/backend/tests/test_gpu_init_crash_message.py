@@ -94,6 +94,8 @@ def _run_cpu_fallback_load(
     vulkan = True,
     cpu_fallback = False,
     resident_fallback = False,
+    cancel_after = None,
+    sink = None,
 ):
     def _gguf_string(value: str) -> bytes:
         encoded = value.encode()
@@ -171,6 +173,8 @@ def _run_cpu_fallback_load(
     def _wait_for_health(timeout):
         if len(launches) == 1 and first_output:
             backend._stdout_lines = [first_output]
+        if cancel_after is not None and len(launches) >= cancel_after:
+            backend._cancel_event.set()
         return returncodes[len(launches) - 1] is None
 
     def _prepare_cpu_fallback(_binary, failed_cmd, _env, _server_caps):
@@ -188,6 +192,10 @@ def _run_cpu_fallback_load(
     backend._wait_for_health = _wait_for_health
     backend._prepare_cpu_fallback_launch = _prepare_cpu_fallback
     monkeypatch.setattr(subprocess, "Popen", _popen)
+    # Lets a test that expects the load to raise still read what was spawned.
+    if sink is not None:
+        sink["launches"] = launches
+        sink["fallback_sources"] = fallback_sources
     if resident_fallback:
         backend._cpu_fallback_reason = "vulkan_startup_crash"
 
@@ -959,6 +967,39 @@ def test_a_replay_request_needs_the_same_bar_as_the_crash_path(monkeypatch, tmp_
     assert loaded is True
     assert fallback_sources == []
     assert backend._cpu_fallback_reason is None
+
+
+def test_a_cancelled_load_never_spawns_the_cpu_replay(monkeypatch, tmp_path):
+    """An /unload racing the crash must not leave a CPU server behind."""
+    sink = {}
+    with pytest.raises(Exception):
+        _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [-11, -11, None],
+            cancel_after = 1,
+            sink = sink,
+        )
+
+    assert sink["fallback_sources"] == []
+
+
+def test_an_accepted_replay_request_normalizes_the_placement(monkeypatch, tmp_path):
+    """A client that sends only the flag must still end up on manual/0, or the
+    session reports an Auto GPU placement for a CPU-only server."""
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [None],
+        cpu_fallback = True,
+    )
+
+    assert loaded is True
+    assert backend._cpu_fallback_reason == "vulkan_startup_crash"
+    assert backend._gpu_memory_mode == "manual"
+    assert backend._gpu_layers == 0
+    assert backend._gpu_ids is None
+    assert backend._last_load_intent.cpu_fallback is True
 
 
 def test_an_ineligible_replay_request_drops_the_recovery_state(monkeypatch, tmp_path):

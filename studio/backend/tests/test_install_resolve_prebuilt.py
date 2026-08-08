@@ -1986,6 +1986,38 @@ def test_reusing_an_install_still_records_the_routing_gfx(tmp_path):
     assert json.loads(marker_path.read_text())["rocm_gfx"] == "gfx1034"
 
 
+@pytest.mark.parametrize("backend", ["vulkan", None, "hip"])
+def test_only_the_automatic_route_records_a_routing_gfx(tmp_path, backend):
+    """Every other install names its arch in the asset. A stale copy there would
+    assert ROCm on a host whose AMD GPU is gone."""
+    marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(json.dumps({"llama_backend": backend, "asset": "win-hip.zip"}))
+
+    ilp.sync_marker_rocm_gfx(tmp_path, "gfx1034")
+
+    assert "rocm_gfx" not in json.loads(marker_path.read_text())
+
+    checksums = ilp.ApprovedReleaseChecksums(
+        repo = UPSTREAM,
+        release_tag = "b9925",
+        upstream_tag = "b9925",
+        source_repo = UPSTREAM,
+        source_repo_url = f"https://github.com/{UPSTREAM}",
+    )
+    ilp.write_prebuilt_metadata(
+        tmp_path,
+        requested_tag = "latest",
+        llama_tag = "b9925",
+        release_tag = "b9925",
+        choice = _choice("windows-vulkan", "llama-b9925-bin-win-vulkan-x64.zip"),
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+        llama_backend = backend,
+        rocm_gfx = "gfx1034",
+    )
+    assert "rocm_gfx" not in json.loads(marker_path.read_text())
+
+
 def test_non_amd_installs_record_no_routing_gfx(tmp_path):
     """The key is absent unless an arch actually routed the install."""
     checksums = ilp.ApprovedReleaseChecksums(

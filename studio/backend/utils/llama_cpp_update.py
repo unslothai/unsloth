@@ -480,10 +480,11 @@ def _run_llama_phase(
             env["UNSLOTH_FORCE_VULKAN"] = "1"
             env["UNSLOTH_LLAMA_CPP_BACKEND"] = "vulkan"
         # A Vulkan asset name carries no arch, so the marker is the only record of
-        # the gfx an automatic AMD route was decided on. Advisory, not an override:
-        # the installer applies it only when this host's own probe finds none, so a
-        # replaced GPU still wins.
-        if rocm_gfx:
+        # the gfx an automatic AMD route was decided on. Automatic markers only: on
+        # any other install the arch is recoverable from the asset, and replaying it
+        # would assert ROCm on a host whose AMD GPU is gone. Advisory even then: the
+        # installer applies it only when this host's own probe finds none.
+        if rocm_gfx and llama_backend == "auto":
             env["UNSLOTH_ROCM_GFX_REMEMBERED"] = rocm_gfx
         _flow.stream_installer(
             cmd,

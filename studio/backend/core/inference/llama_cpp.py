@@ -11997,7 +11997,13 @@ class LlamaCppBackend:
                     """
                     nonlocal intent, gpu_memory_mode, gpu_layers, n_cpu_moe
                     nonlocal tensor_parallel, tensor_split, gpu_indices, use_fit, _spawn_cwd
-                    if not self._is_signal_crash(failed_rc) or not _cpu_fallback_eligible:
+                    # Cancel check like every other retry here: an /unload racing
+                    # the crash must not leave a CPU server running behind it.
+                    if (
+                        not self._is_signal_crash(failed_rc)
+                        or not _cpu_fallback_eligible
+                        or self._cancel_event.is_set()
+                    ):
                         return False
                     fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
                     prepared = self._prepare_cpu_fallback_launch(
@@ -12101,7 +12107,22 @@ class LlamaCppBackend:
                                 "`unsloth studio update` to repair the managed llama.cpp runtime."
                             )
                         cmd, _spawn_cwd = prepared
-                        self._cpu_fallback_reason = "vulkan_startup_crash"
+                        # Same normalization the crash path applies, so a client
+                        # that sent only the flag cannot leave the session
+                        # reporting an Auto/GPU placement for a CPU-only server
+                        # (which then fails holds_no_vram and keeps chat's GPU).
+                        intent = self._apply_cpu_fallback_state(
+                            intent,
+                            is_vision = self._is_vision,
+                            mmproj_has_audio = self._mmproj_has_audio,
+                        )
+                        gpu_memory_mode = intent.gpu_memory_mode
+                        gpu_layers = intent.gpu_layers
+                        n_cpu_moe = intent.n_cpu_moe
+                        tensor_parallel = intent.tensor_parallel
+                        tensor_split = intent.tensor_split
+                        gpu_indices = None
+                        use_fit = False
                     else:
                         # Phase 1 kept the recovery state for a replay this request
                         # turned out not to qualify for. Drop it now, or this load

@@ -5766,6 +5766,7 @@ def write_prebuilt_metadata(
     )
     if fingerprint is None:
         raise PrebuiltFallback(f"cannot compute install fingerprint for {choice.name}")
+    _persisted_backend = persisted_llama_backend(llama_backend, choice)
     metadata = {
         "requested_tag": requested_tag,
         "tag": llama_tag,
@@ -5778,13 +5779,14 @@ def write_prebuilt_metadata(
         "force_cpu": force_cpu,
         # Explicit Vulkan is recorded as "vulkan"; automatic Windows AMD routing is
         # recorded as "auto" so runtime recovery can distinguish them.
-        "llama_backend": persisted_llama_backend(llama_backend, choice),
-        # The AMD gfx this host routed on. A Vulkan asset name carries no arch, so
-        # rocm_install_args() cannot rebuild --rocm-gfx from it, and the Windows
-        # driver-only hosts that reach Vulkan automatically have no probe of their
-        # own (hipinfo/amd-smi absent). Without this the updater re-detects a
-        # ROCm-less host and drops the bundle to CPU.
-        **({"rocm_gfx": rocm_gfx} if rocm_gfx else {}),
+        "llama_backend": _persisted_backend,
+        # The AMD gfx an AUTOMATIC route was decided on. A Vulkan asset name carries
+        # no arch for rocm_install_args() to rebuild, and the Windows driver-only
+        # hosts that reach Vulkan automatically have no probe of their own
+        # (hipinfo/amd-smi absent), so the updater would re-detect a ROCm-less host
+        # and drop the bundle to CPU. Recorded nowhere else: on every other install
+        # the asset names the arch, and a stale copy would outlive its GPU.
+        **({"rocm_gfx": rocm_gfx} if rocm_gfx and _persisted_backend == "auto" else {}),
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
@@ -5936,6 +5938,10 @@ def sync_marker_rocm_gfx(install_dir: Path, rocm_gfx: str | None) -> None:
     except (OSError, ValueError):
         return
     if not isinstance(marker, dict) or marker.get("rocm_gfx") == rocm_gfx:
+        return
+    # Only the automatic route needs it: every other install names its arch in
+    # the asset, and a stale one would outlive the GPU it describes.
+    if marker.get("llama_backend") != "auto":
         return
     marker["rocm_gfx"] = rocm_gfx
     if not _write_marker(marker_path, marker):
