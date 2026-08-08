@@ -2825,6 +2825,59 @@ def _wait_for_windows_setup_process(process) -> int:
 # already keeps exactly the proxy keys out of the profile table it discards, so it hands
 # them over in this variable and the child puts them back. Nothing else from the profile
 # comes with them, which is the whole point of -NoProfile.
+# Emitted by a short-lived PowerShell that DOES load the profile, so the -NoProfile child can be
+# given back the one thing it needs from it. Mirrors install.ps1's filter exactly: proxy-shaped
+# keys only, matched case-insensitively, and only values that survive JSON (a PSCredential does
+# not, and the environment is the wrong place for one).
+_PS_PROXY_PROBE = (
+    "$ErrorActionPreference = 'SilentlyContinue'; "
+    "$PSModuleAutoLoadingPreference = 'All'; "
+    "$out = @{}; "
+    "foreach ($k in @($PSDefaultParameterValues.Keys)) { "
+    "if ($k -is [string] -and [regex]::IsMatch($k, ':Proxy(Credential|UseDefaultCredentials)?$', "
+    "[System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) { "
+    "$v = $PSDefaultParameterValues[$k]; "
+    "if ($v -is [uri]) { $out[$k] = $v.AbsoluteUri } "
+    "elseif ($v -is [string] -or $v -is [bool]) { $out[$k] = $v } } }; "
+    "if ($out.Count -gt 0) { $out | ConvertTo-Json -Compress }"
+)
+
+
+def _probe_profile_proxy_defaults(powershell: str) -> Optional[str]:
+    """The caller's profile proxy defaults as JSON, or None.
+
+    install.ps1 hands these over in the environment, but a standalone `unsloth studio update`
+    has no installer above it: the profile ran in the console the user typed into, and a
+    PowerShell variable does not reach this Python process, let alone the -NoProfile child
+    below it. So ask for it, in a throwaway process whose only job is to print the table.
+
+    Entirely best effort. A profile that is slow, interactive or broken costs one timeout and
+    the child proceeds exactly as it does today."""
+    try:
+        probe = subprocess.run(
+            [powershell, "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+             _PS_PROXY_PROBE],
+            capture_output = True,
+            text = True,
+            timeout = 20,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    payload = (probe.stdout or "").strip()
+    if not payload:
+        return None
+    try:
+        # Validated rather than trusted: a profile that prints a banner would otherwise have us
+        # hand the child a string ConvertFrom-Json throws on.
+        parsed = json.loads(payload)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict) or not parsed:
+        return None
+    return json.dumps(parsed)
+
+
 _PS_PROXY_DEFAULTS_PRELUDE = (
     "$__unslothProxyDefaults = $env:_UNSLOTH_PS_PROXY_DEFAULTS; "
     "if ($__unslothProxyDefaults) { try { "
@@ -2850,6 +2903,13 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
 
     if platform.system() == "Windows":
         powershell_args = ["powershell.exe"]
+        # install.ps1 publishes this around the handoff; a standalone update has to go and find
+        # it, because -NoProfile below drops the profile that holds it and setup.ps1 downloads
+        # the VC++ runtime and the uv installer on its own.
+        if not os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS"):
+            probed = _probe_profile_proxy_defaults("powershell.exe")
+            if probed:
+                env = {**(env or os.environ), "_UNSLOTH_PS_PROXY_DEFAULTS": probed}
         # -NoProfile unconditionally, not just on the hidden branch. setup.ps1 wants
         # nothing from the user's profile, and a profile that aliases uv or python, or
         # sets Set-StrictMode / $PSDefaultParameterValues, breaks it the same way it

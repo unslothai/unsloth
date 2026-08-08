@@ -710,7 +710,7 @@ def test_only_serializable_proxy_keys_reach_the_child(tmp_path):
         "  'Start-Process:WindowStyle' = 'Hidden'\n"
         "}\n"
         f". '{block}'\n"
-        "Write-Output $env:_UNSLOTH_PS_PROXY_DEFAULTS\n",
+        "Write-Output $script:UnslothProxyHandoffJson\n",
         encoding = "utf-8",
         newline = "",
     )
@@ -767,3 +767,119 @@ def test_the_child_restores_the_proxy_and_nothing_else(tmp_path):
         assert result.returncode == 0, f"the prelude must not fail the launch on {absent!r}"
         assert "IWR=\n" in result.stdout or result.stdout.startswith("IWR=\n")
         assert not result.stderr.strip(), f"the prelude leaked an error on {absent!r}"
+
+
+# ── the proxy handoff, hardened ───────────────────────────────────────────────
+
+
+def test_module_autoloading_is_restored_before_the_handoff_needs_it():
+    """Ordering. The handoff calls ConvertTo-Json, which lives in Microsoft.PowerShell.Utility,
+    so under a profile's $PSModuleAutoLoadingPreference = 'None' a fresh PowerShell 7 session
+    would terminate there -- taking out the exact configuration the handoff exists to support."""
+    source = _install_ps1()
+    autoload = _locate(source, "$PSModuleAutoLoadingPreference = 'All'", "the autoloading reset")
+    convert = _locate(source, "ConvertTo-Json -Compress", "the handoff serialization")
+    assert autoload < convert, (
+        "ConvertTo-Json runs before module autoloading is restored, so a profile that disables "
+        "it kills the install before the proxy is ever carried across"
+    )
+
+
+@requires_pwsh
+def test_the_filter_takes_lowercase_keys_and_uri_values(tmp_path):
+    """Both are ordinary PowerShell. Parameter names bind case-insensitively, and [uri] is the
+    type the Proxy parameter actually takes, so a careful profile writes it that way. Dropping
+    either leaves a corporate host with no route out."""
+    block = tmp_path / "block.ps1"
+    block.write_text(_extract_prologue(), encoding = "utf-8", newline = "")
+    driver = tmp_path / "drive.ps1"
+    driver.write_text(
+        "$PSDefaultParameterValues = @{\n"
+        "  'invoke-webrequest:proxy' = [uri]'http://proxy.corp:8080'\n"
+        "  'Invoke-RestMethod:PROXYUSEDEFAULTCREDENTIALS' = $true\n"
+        "  'Start-Process:WindowStyle' = 'Hidden'\n"
+        "}\n"
+        f". '{block}'\n"
+        "Write-Output $script:UnslothProxyHandoffJson\n",
+        encoding = "utf-8",
+        newline = "",
+    )
+    handoff = subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(driver)],
+        capture_output = True,
+        text = True,
+        check = False,
+    ).stdout
+
+    assert "proxy.corp:8080" in handoff, "a [uri] value was dropped at the process boundary"
+    assert "PROXYUSEDEFAULTCREDENTIALS" in handoff, "a lowercase-cmdlet key was filtered out"
+    assert "WindowStyle" not in handoff, "only proxy keys are carried"
+
+
+def test_the_handoff_is_published_only_around_the_setup_child():
+    """Under "irm ... | iex" the prologue runs in the CALLER's session, so an environment
+    variable set there outlives the install on every path, early returns included. A later
+    `unsloth studio update` from that console would then reapply stale proxy JSON."""
+    source = _install_ps1()
+    prologue = _extract_prologue()
+    assert "$env:_UNSLOTH_PS_PROXY_DEFAULTS =" not in prologue, (
+        "the prologue publishes the handoff into the session it was invoked from"
+    )
+    assert "$script:UnslothProxyHandoffJson" in prologue, "the prologue must hold it instead"
+    # Set beside the other child-scoped variables, and restored with them.
+    assert "$previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS" in source
+    assert "$env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff" in source
+    gate = _locate(source, "$previousSetupRuntimeGateHandoff =", "the runtime-gate handoff")
+    proxy = _locate(source, "$previousProxyHandoff =", "the proxy handoff save")
+    call = _locate(source, "    try {\n        & $UnslothExe @studioArgs", "the child invocation")
+    assert gate < call and proxy < call, "the handoff must be in place before the child runs"
+
+
+def test_a_standalone_update_reconstructs_the_proxy_for_itself():
+    """install.ps1 publishes the handoff; `unsloth studio update` typed into a console has no
+    installer above it, and the profile that holds the proxy ran in a shell whose variables
+    never reach this Python process. So it is asked for, before -NoProfile drops it."""
+    src = STUDIO_COMMAND.read_text(encoding = "utf-8")
+    assert "_probe_profile_proxy_defaults" in src
+    start = _locate(src, 'powershell_args = ["powershell.exe"]', "the setup.ps1 launch")
+    guard = _locate(src[start:], "_probe_profile_proxy_defaults(", "the probe call")
+    noprofile = _locate(src[start:], '"-NoProfile"', "the -NoProfile flag")
+    assert guard < noprofile, "the probe has to run while the profile is still reachable"
+    # ...and only when the installer did not already hand one over.
+    assert '_UNSLOTH_PS_PROXY_DEFAULTS' in src[start : start + guard]
+
+
+@requires_pwsh
+def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_path):
+    """Executable, against a profile pwsh genuinely loads: strict mode on, module autoloading
+    off, a lowercase key and a [uri] value. The probe has to survive all of it and return only
+    the proxy entries."""
+    src = STUDIO_COMMAND.read_text(encoding = "utf-8")
+    start = _locate(src, "_PS_PROXY_PROBE = (", "the probe script")
+    namespace: dict = {}
+    exec(src[start : src.index(")\n", start) + 1], namespace)  # noqa: S102 - our own source
+
+    home = tmp_path / "config"
+    (home / "powershell").mkdir(parents = True)
+    (home / "powershell" / "Microsoft.PowerShell_profile.ps1").write_text(
+        "Set-StrictMode -Version Latest\n"
+        "$PSModuleAutoLoadingPreference = 'None'\n"
+        "$PSDefaultParameterValues['invoke-webrequest:proxy'] = [uri]'http://proxy.corp:8080'\n"
+        "$PSDefaultParameterValues['Start-Process:WindowStyle'] = 'Hidden'\n",
+        encoding = "utf-8",
+        newline = "",
+    )
+    result = subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NonInteractive", "-Command", namespace["_PS_PROXY_PROBE"]],
+        capture_output = True,
+        text = True,
+        check = False,
+        env = {**os.environ, "XDG_CONFIG_HOME": str(home), "HOME": str(tmp_path)},
+    )
+    payload = result.stdout.strip()
+    if "proxy.corp" not in payload:
+        pytest.skip(f"pwsh did not load the planted profile (got {payload!r})")
+    assert "WindowStyle" not in payload, "the probe carried a non-proxy default across"
+    import json as _json
+
+    assert isinstance(_json.loads(payload), dict), "the probe must emit parseable JSON"

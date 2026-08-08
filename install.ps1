@@ -55,12 +55,31 @@ function Install-UnslothStudio {
     # its proxy here and lose it one process later. Credentials are deliberately not
     # carried: a PSCredential does not serialize, and an environment variable is the
     # wrong place for one.
+    # 'All' is the default. A profile that sets 'None' -- the tweak people copy to shave
+    # startup time -- is fatal here on PowerShell 7, which loads NO modules at startup:
+    # Test-Path, Write-Host, Select-Object, ConvertFrom-Json, Get-FileHash,
+    # Invoke-WebRequest, Expand-Archive, Start-Process and Get-Content all stop resolving,
+    # and the script dies on its first step with a CommandNotFoundException naming a cmdlet
+    # the reader assumes is always there. Windows PowerShell 5.1 preloads Utility and
+    # Management so it survives, which is exactly the kind of difference that makes this
+    # reproduce on one machine and not another.
+    #
+    # FIRST of the four, because the proxy handoff below calls ConvertTo-Json, which is also
+    # in Microsoft.PowerShell.Utility. Under 'None' that would throw before this line ran --
+    # taking out the one configuration the handoff exists to support.
+    $PSModuleAutoLoadingPreference = 'All'
+
     # IsMatch, not -match, so the filter does not leave $Matches behind in this scope
     # for the rest of the install to trip over.
     $_UnslothKeptDefaults = @{}
     foreach ($_UnslothDefaultKey in @($PSDefaultParameterValues.Keys)) {
+        # IgnoreCase: 'invoke-webrequest:proxy' is valid PowerShell and binds the same
+        # parameter, so a case-sensitive filter drops a working proxy on a technicality.
         if ($_UnslothDefaultKey -is [string] -and
-            [regex]::IsMatch($_UnslothDefaultKey, ':Proxy(Credential|UseDefaultCredentials)?$')) {
+            [regex]::IsMatch(
+                $_UnslothDefaultKey,
+                ':Proxy(Credential|UseDefaultCredentials)?$',
+                [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
             $_UnslothKeptDefaults[$_UnslothDefaultKey] = $PSDefaultParameterValues[$_UnslothDefaultKey]
         }
     }
@@ -69,15 +88,24 @@ function Install-UnslothStudio {
     $_UnslothProxyHandoff = @{}
     foreach ($_UnslothDefaultKey in @($_UnslothKeptDefaults.Keys)) {
         $_UnslothDefaultValue = $_UnslothKeptDefaults[$_UnslothDefaultKey]
-        if ($_UnslothDefaultValue -is [string] -or $_UnslothDefaultValue -is [bool]) {
+        # [uri] is the form the parameter actually takes, so it is what a careful profile
+        # assigns; it serializes to its own string. A PSCredential is still left behind --
+        # it does not round-trip, and the environment is the wrong place for one.
+        if ($_UnslothDefaultValue -is [uri]) {
+            $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultValue.AbsoluteUri
+        } elseif ($_UnslothDefaultValue -is [string] -or $_UnslothDefaultValue -is [bool]) {
             $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultValue
         }
     }
-    if ($_UnslothProxyHandoff.Count -gt 0) {
-        $env:_UNSLOTH_PS_PROXY_DEFAULTS = ($_UnslothProxyHandoff | ConvertTo-Json -Compress)
-    } else {
-        Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
-    }
+    # Held, not published. Under "irm ... | iex" this runs in the caller's own session, so an
+    # environment variable set here outlives the install -- including on every early-return
+    # path -- and a later `unsloth studio update` from that console would reapply this JSON
+    # long after the profile proxy changed or went away. It goes into the environment around
+    # the setup child and comes straight back out; assigned unconditionally so a second run in
+    # the same console cannot inherit the first one's value.
+    $script:UnslothProxyHandoffJson =
+        if ($_UnslothProxyHandoff.Count -gt 0) { $_UnslothProxyHandoff | ConvertTo-Json -Compress }
+        else { $null }
 
     # PowerShell 7 only, and $false is its default: a profile that flips it on turns
     # every non-zero native exit into a terminating error, which combined with the
@@ -87,16 +115,6 @@ function Install-UnslothStudio {
     # native calls, so this covers the ones outside it. Harmless on Windows
     # PowerShell 5.1, where the variable simply does not exist.
     $PSNativeCommandUseErrorActionPreference = $false
-
-    # 'All' is the default. A profile that sets 'None' -- the tweak people copy to
-    # shave startup time -- is fatal here on PowerShell 7, which loads NO modules at
-    # startup: Test-Path, Write-Host, Select-Object, ConvertFrom-Json, Get-FileHash,
-    # Invoke-WebRequest, Expand-Archive, Start-Process and Get-Content all stop
-    # resolving, and the script dies on its first step with a CommandNotFoundException
-    # naming a cmdlet the reader assumes is always there. Windows PowerShell 5.1
-    # preloads Utility and Management so it survives, which is exactly the kind of
-    # difference that makes this reproduce on one machine and not another.
-    $PSModuleAutoLoadingPreference = 'All'
 
     # Reset per invocation, for the reason spelled out at $script:IsIntelXpu further
     # down: under "irm ... | iex" $script: is the caller's session scope, so a second
@@ -4335,6 +4353,15 @@ exit 0
     $previousSetupRuntimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
     $hadPreviousSetupRuntimeGateHandoff = ($null -ne $previousSetupRuntimeGateHandoff)
     $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
+    # The proxy defaults kept out of the discarded profile table, for the duration of the child
+    # only. setup.ps1 runs with -NoProfile and downloads on its own; see the prologue.
+    $previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS
+    $hadPreviousProxyHandoff = ($null -ne $previousProxyHandoff)
+    if ($script:UnslothProxyHandoffJson) {
+        $env:_UNSLOTH_PS_PROXY_DEFAULTS = $script:UnslothProxyHandoffJson
+    } else {
+        Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
+    }
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
@@ -4353,6 +4380,11 @@ exit 0
             $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff
         } else {
             Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousProxyHandoff) {
+            $env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff
+        } else {
+            Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
         }
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
