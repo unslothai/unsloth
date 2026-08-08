@@ -345,8 +345,13 @@ def test_load_rejects_bad_transformer_quant_422(client):
     assert resp.status_code == 422
 
 
-def test_load_threads_text_encoder_quant(client):
+def test_load_threads_text_encoder_quant(client, monkeypatch):
     # The load-time text_encoder_quant field reaches the backend (the video path also quantises the dense companion encoder).
+    #
+    # Under the precision escape hatch, because whether an fp8 encoder is available is a
+    # property of the HOST: on a CPU-only runner the gate refuses this pick with a 409 and the
+    # forwarding this test is about never happens. The hatch is the product's own bypass.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     resp = client.post(
         "/api/inference/video/load",
         json = {
@@ -923,6 +928,9 @@ def test_delete_guard_protects_the_loaded_video_companion_base(monkeypatch):
 
 def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
     # The plan drives the staged download, so it must use the encoder policy the load will run with: an fp8 request takes a hosted pre-cast encoder, and staging the dense one pulls ~49 GB of Gemma3.
+    # Same host-independence as the load twin: the plan now makes the precision check too, so
+    # without the escape hatch a GPU-less runner answers 409 and forwards nothing.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     backend = video_module.get_video_backend()
     seen: dict = {}
 
