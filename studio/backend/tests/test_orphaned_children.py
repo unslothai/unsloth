@@ -625,9 +625,9 @@ def test_the_diffusion_runner_leads_its_own_group():
                 continue
             if getattr(call.func, "attr", None) != "Popen":
                 continue
-            assert any(kw.arg == "start_new_session" for kw in call.keywords), (
-                "the runner shares Studio's process group, so its child is unreachable"
-            )
+            assert any(
+                kw.arg == "start_new_session" for kw in call.keywords
+            ), "the runner shares Studio's process group, so its child is unreachable"
             return
     raise AssertionError("could not find the diffusion runner spawn")
 
@@ -672,9 +672,7 @@ def test_every_restart_path_checks_the_rearm():
     )
     source = hook.read_text(encoding = "utf-8")
     starts = [
-        block
-        for block in source.split("async function ")[1:]
-        if 'invoke("start_server"' in block
+        block for block in source.split("async function ")[1:] if 'invoke("start_server"' in block
     ]
     assert starts, "no restart path found"
     for block in starts:
