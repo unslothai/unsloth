@@ -162,3 +162,19 @@ def test_windows_extra_documents_the_cuda_matched_route():
     header = text.split("\nwindows = [", 1)[0]
     assert "unsloth[cu130-torch2100]" in header
     assert "unsloth[cu128-torch2100]" in header
+
+
+def test_install_ps1_matrix_agrees_with_pyproject():
+    source = (REPO_ROOT / "install.ps1").read_text(encoding = "utf-8")
+    body = re.search(
+        r"\$script:XformersWheelVersions\s*=\s*@\{(.*?)^\s*\}", source, re.DOTALL | re.MULTILINE
+    )
+    assert body, "could not find $script:XformersWheelVersions in install.ps1"
+    for (family, torch_tag), version in XFORMERS_WHEEL_MATRIX.items():
+        release = f"{torch_tag[0]}.{torch_tag[1:-1]}.{torch_tag[-1]}"
+        row = re.search(rf'^\s*"{re.escape(release)}"\s*=\s*@\{{(.*?)\}}', body.group(1), re.MULTILINE)
+        assert row, f"install.ps1 has no row for torch {release}"
+        assert f'"{family}" = "{version}"' in row.group(1), (
+            f"install.ps1 torch {release} row must map {family} -> {version}, got "
+            f"{row.group(1)!r}"
+        )
