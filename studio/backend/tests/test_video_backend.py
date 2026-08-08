@@ -1971,14 +1971,20 @@ def test_download_plan_restages_a_video_file_shadowed_in_the_live_cache(monkeypa
 
     live_root = "live"
 
-    def _cached(repo_id, filename, revision = None, expected_size = None, roots = None):
+    def _cached(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+        roots = None,
+    ):
         """A cache where only ``shadowed`` differs between the roots. ``roots = None`` means
         either root, which is exactly the verdict that must no longer be trusted here."""
         if filename != shadowed:
             return True
         if roots is None or roots == (None,):
-            return True                     # the good copy lives in the other root
-        return expected_size is None        # present in the live root, but the wrong size
+            return True  # the good copy lives in the other root
+        return expected_size is None  # present in the live root, but the wrong size
 
     monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(_cached))
     monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: live_root)
