@@ -984,3 +984,76 @@ def test_snapshot_options_reject_a_config_whose_other_split_escapes_the_cache(tm
     (snapshot / "test.jsonl").symlink_to(outside)
 
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_read_a_data_dir_that_merely_contains_dots(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: release..v2\n")
+    (snapshot / "release..v2").mkdir()
+    (snapshot / "release..v2" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_collapse_a_repeated_config_name_before_counting_defaults(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: default\n  data_files: a.jsonl\n- config_name: default\n  data_files: b.jsonl\n")
+    (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_null_data_files_on_the_first_config(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_files: null\n  data_dir: a\n- config_name: b\n  data_files: b/train.jsonl\n")
+    for name in ("a", "b"):
+        (snapshot / name).mkdir()
+        (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_validate_config_entries_past_the_option_cap(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    entries = "".join(
+        f"- config_name: c{index}\n  data_files: train.jsonl\n"
+        for index in range(local_options._MAX_OPTIONS + 1)
+    )
+    _card(snapshot, "configs:\n" + entries + "- config_name: bad/name\n  data_files: train.jsonl\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_ignore_front_matter_the_card_parser_will_not_take(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---   \nconfigs:\n- config_name: cfg\n  data_files: train.jsonl\n---\n", encoding = "utf-8"
+    )
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_read_front_matter_whose_closing_delimiter_is_padded(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: cfg\n  data_files: train.jsonl\n---   \n", encoding = "utf-8"
+    )
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_do_not_infer_past_an_unsafe_card_symlink(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    outside = tmp_path / "README.md"
+    outside.write_text("---\nconfigs:\n- config_name: outside\n  data_files: train.jsonl\n---\n", encoding = "utf-8")
+    (snapshot / "README.md").symlink_to(outside)
+
+    assert local_options._snapshot_options(snapshot) == set()

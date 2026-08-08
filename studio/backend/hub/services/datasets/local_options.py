@@ -145,6 +145,9 @@ _MAX_MODULE_INFERENCE_FILES = 200
 # lets that error out of DatasetCard.load, so nothing in the snapshot is loadable.
 _UNPARSABLE_METADATA = object()
 _STANDALONE_YAML = ".huggingface.yaml"
+# huggingface_hub's REGEX_YAML_BLOCK, which is what actually decides whether a README
+# has front matter. An opening --- followed by anything but a newline is plain text.
+_CARD_BLOCK_RE = re.compile(r"^(\s*---(?:\r\n|\r|\n))([\S\s]*?)((?:\r\n|\r|\n)---[ \t]*(\r\n|\n|$))")
 # A snapshot file and the module datasets would build it with, None when it is not data.
 _DataFile = tuple[PurePosixPath, Optional[str]]
 _CONFIG_RE = re.compile(r"[^<>:/\\|?*\x00-\x1f\x7f]+")
@@ -198,7 +201,10 @@ def _safe_data_dir(value: Any) -> Optional[str]:
         return None
     if value.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", value):
         return None
-    if "\\" in value or ".." in value or "\x00" in value:
+    if "\\" in value or "\x00" in value:
+        return None
+    # Only a real traversal component escapes; a directory merely spelled release..v2 does not.
+    if ".." in PurePosixPath(value).parts:
         return None
     return value
 
@@ -215,30 +221,38 @@ def _declared_configs(payload: Any) -> Any:
         return {}
     if not isinstance(payload, list):
         return _UNPARSABLE_METADATA
-    # A config called default is a default too, so it conflicts with a flagged sibling and
-    # get_default_config_name raises before anything loads.
-    defaults = sum(
-        1
-        for item in payload
-        if isinstance(item, dict) and (item.get("default") or item.get("config_name") == "default")
-    )
-    if defaults > 1:
-        return _UNPARSABLE_METADATA
-    declared: dict[str, Optional[str]] = {}
-    for item in payload[:_MAX_OPTIONS]:
+    # Every entry is checked, including past the cap: one unusable name anywhere makes
+    # datasets reject the whole list, while the cap only bounds what we go on to offer.
+    collapsed: dict[str, dict[str, Any]] = {}
+    for item in payload:
         if not isinstance(item, dict) or not isinstance(item.get("config_name"), str):
             return _UNPARSABLE_METADATA
-        name = _valid_option(item.get("config_name"), _CONFIG_RE)
+        name = _valid_option(item["config_name"], _CONFIG_RE)
         if name is None:
             # datasets raises InvalidConfigName on these rather than skipping the config,
             # so nothing in the snapshot is loadable and inference must not step in.
             return _UNPARSABLE_METADATA
         entries = item.get("data_files")
-        if entries is not None:
-            if not entries:
-                # Resolved while the builder is picked, so this raises whichever config the
-                # caller asks for and every sibling option is dead too.
-                return _UNPARSABLE_METADATA
+        if entries is not None and not entries:
+            # Resolved while the builder is picked, so this raises whichever config the
+            # caller asks for and every sibling option is dead too.
+            return _UNPARSABLE_METADATA
+        collapsed[name] = item
+    first = next(iter(collapsed.values()))
+    if "data_files" in first and first["data_files"] is None:
+        # datasets sanitizes the first config's declaration before it looks at a file, and a
+        # null one raises TypeError there.
+        return _UNPARSABLE_METADATA
+    # A config called default is a default too, so it conflicts with a flagged sibling and
+    # get_default_config_name raises before anything loads.
+    defaults = sum(
+        1 for name, item in collapsed.items() if item.get("default") or name == "default"
+    )
+    if defaults > 1:
+        return _UNPARSABLE_METADATA
+    declared: dict[str, Optional[str]] = {}
+    for name, item in list(collapsed.items())[:_MAX_OPTIONS]:
+        if item.get("data_files") is not None:
             # Declared, so _add_config_options owns it.
             declared[name] = None
         else:
@@ -392,8 +406,15 @@ def _snapshot_metadata_file(snapshot: Path, name: str) -> Optional[Path]:
 
 
 def _snapshot_metadata_exists(snapshot: Path, name: str) -> bool:
-    """The file is there, whether or not we were willing to read it."""
-    return resolved_dataset_snapshot_file(snapshot, name) is not None
+    """The file is there for the loader, whether or not we were willing to read it."""
+    return (snapshot / name).is_file()
+
+
+def _snapshot_metadata_is_unsafe(snapshot: Path, name: str) -> bool:
+    """The loader will read this file and we will not, so we cannot say what it declares."""
+    return _snapshot_metadata_exists(snapshot, name) and (
+        resolved_dataset_snapshot_file(snapshot, name) is None
+    )
 
 
 def _snapshot_metadata_is_oversized(snapshot: Path, name: str) -> bool:
@@ -404,20 +425,24 @@ def _snapshot_metadata_is_oversized(snapshot: Path, name: str) -> bool:
         return False
 
 
-def _read_card_metadata(path: Path) -> Optional[dict[str, Any]]:
+def _read_card_metadata(path: Path) -> Any:
     try:
-        lines = path.read_text(encoding = "utf-8").splitlines()
-        if not lines or lines[0].strip() != "---":
-            return None
-        end = next(index for index, line in enumerate(lines[1:], start = 1) if line.strip() == "---")
-        from yaml import YAMLError, safe_load
-
-        try:
-            payload = safe_load("\n".join(lines[1:end]))
-        except YAMLError:
-            return _UNPARSABLE_METADATA
-    except (ImportError, OSError, UnicodeError, ValueError, StopIteration):
+        content = path.read_text(encoding = "utf-8")
+    except (OSError, UnicodeError, ValueError):
         return None
+    block = _CARD_BLOCK_RE.search(content)
+    if block is None:
+        # RepoCard's own grammar, so a delimiter it will not accept leaves the card empty
+        # here too rather than handing us configs the loader never saw.
+        return None
+    try:
+        from yaml import YAMLError, safe_load
+    except ImportError:
+        return None
+    try:
+        payload = safe_load(block.group(2))
+    except YAMLError:
+        return _UNPARSABLE_METADATA
     # DatasetCard.load turns a null block into empty metadata but raises on anything else
     # that is not a mapping.
     if payload is None:
@@ -428,6 +453,12 @@ def _read_card_metadata(path: Path) -> Optional[dict[str, Any]]:
 def _snapshot_card_data(snapshot: Path) -> Any:
     """The card datasets would build: README front matter, then .huggingface.yaml over it."""
     card: dict[str, Any] = {}
+    if _snapshot_metadata_is_unsafe(snapshot, "README.md") or _snapshot_metadata_is_unsafe(
+        snapshot, _STANDALONE_YAML
+    ):
+        # datasets follows the symlink and builds that card's configs, so inferring here
+        # would offer a config it never created.
+        return _UNPARSABLE_METADATA
     if _snapshot_metadata_is_oversized(snapshot, "README.md"):
         # datasets parses it whatever its size, so treating it as absent invents options.
         return _UNPARSABLE_METADATA
