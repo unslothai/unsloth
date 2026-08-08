@@ -159,6 +159,61 @@ _MODULE_EXTENSIONS = {
     # would decide is unknowable and the snapshot is left alone.
     _INDETERMINATE_MODULE: ".zip",
 }
+# Every card key that is not config_name / data_files / data_dir / default is handed to the
+# builder config, so one of the wrong type raises while the split generates. Types as pinned
+# at datasets 4.3.0; None means the loader refuses the parameter whatever its value.
+_TEXT_PARAMETERS = {"encoding": str, "encoding_errors": str, "chunksize": int}
+_BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
+    "json": {
+        **_TEXT_PARAMETERS,
+        "field": str,
+        "use_threads": bool,
+        "block_size": int,
+        "newlines_in_values": None,
+    },
+    "csv": {
+        **_TEXT_PARAMETERS,
+        "sep": str,
+        "delimiter": str,
+        "header": (int, str, list),
+        "names": list,
+        "column_names": list,
+        "index_col": (int, str, list),
+        "usecols": list,
+        "prefix": str,
+        "mangle_dupe_cols": bool,
+        "engine": frozenset({"c", "python", "pyarrow"}),
+        "converters": dict,
+        "true_values": list,
+        "false_values": list,
+        "skipinitialspace": bool,
+        "skiprows": (int, list),
+        "nrows": int,
+        "na_values": (str, list),
+        "keep_default_na": bool,
+        "na_filter": bool,
+        "verbose": bool,
+        "skip_blank_lines": bool,
+        "thousands": str,
+        "decimal": str,
+        "lineterminator": str,
+        "quotechar": str,
+        "quoting": int,
+        "escapechar": str,
+        "comment": str,
+        "dialect": str,
+        "error_bad_lines": bool,
+        "warn_bad_lines": bool,
+        "skipfooter": int,
+        "doublequote": bool,
+        "memory_map": bool,
+        "float_precision": str,
+        "on_bad_lines": frozenset({"error", "warn", "skip"}),
+        "date_format": str,
+    },
+    "text": {**_TEXT_PARAMETERS, "keep_linebreaks": bool, "sample_by": str},
+    "parquet": {"batch_size": int, "columns": list, "filters": list},
+}
 _EXTENSION_MODULES = {
     extension: module for module, names in _MODULE_EXTENSIONS.items() for extension in names.split()
 }
@@ -271,7 +326,8 @@ def _known_dtype(dtype: str) -> bool:
     decimal = _DECIMAL_RE.fullmatch(dtype)
     if decimal is not None:
         precision, scale = int(decimal.group(2)), int(decimal.group(3))
-        return 0 < precision <= _DECIMAL_PRECISION[decimal.group(1)] and 0 <= scale <= precision
+        ceiling = _DECIMAL_PRECISION[decimal.group(1)]
+        return 0 < precision <= ceiling and 0 <= scale <= ceiling
     parameterised = re.fullmatch(r"([a-z0-9_]+)\[([^\]]*)\]", dtype)
     if parameterised is None:
         return False
@@ -287,6 +343,23 @@ def _known_dtype(dtype: str) -> bool:
     return (
         len(parameters) == 2 and parameters[1].startswith("tz=") and len(parameters[1]) > len("tz=")
     )
+
+
+def _valid_class_label(spec: dict[str, Any]) -> bool:
+    """ClassLabel takes its names as a list, or as a mapping datasets reads back into one,
+    which it only can when the ids are every integer from zero up."""
+    names = spec.get("names")
+    if names is None or isinstance(names, list):
+        return True
+    if not isinstance(names, dict):
+        return False
+    ids = set()
+    for key in names:
+        try:
+            ids.add(int(key))
+        except (TypeError, ValueError):
+            return False
+    return ids == set(range(len(ids)))
 
 
 def _valid_feature_node(node: Any) -> bool:
@@ -311,7 +384,7 @@ def _valid_feature_node(node: Any) -> bool:
     if role in {"large_list", "list", "sequence", "struct"}:
         return _valid_feature_node(node[role])
     if role == "class_label":
-        return isinstance(node["class_label"], dict)
+        return isinstance(node["class_label"], dict) and _valid_class_label(node["class_label"])
     # A feature class, with the mapping under it being its keyword arguments. datasets
     # expands that value with **, so anything but a mapping raises there.
     return role.replace("_", "").lower() in _FEATURE_TYPE_NAMES and isinstance(node[role], dict)
@@ -472,6 +545,14 @@ def _add_dataset_info_options(options: set[tuple[str, str]], payload: Any) -> No
         _add_info_options(options, info, fallback_config = config)
 
 
+def _valid_info_version(version: Any) -> bool:
+    """datasets parses this field into a Version, which only reads a mapping or an x.y.z
+    string, so anything else raises before a config could be built."""
+    if version is None or isinstance(version, dict):
+        return True
+    return isinstance(version, str) and _VERSION_RE.fullmatch(version) is not None
+
+
 def _valid_dataset_info(payload: Any) -> bool:
     """datasets walks this while it builds DatasetInfosDict, so a field of the wrong shape
     raises there rather than when a split is chosen."""
@@ -486,6 +567,7 @@ def _valid_dataset_info(payload: Any) -> bool:
     entries = payload if isinstance(payload, list) else [payload]
     return all(
         isinstance(entry, dict)
+        and _valid_info_version(entry.get("version"))
         and isinstance(field(entry, "features"), (list, dict))
         and isinstance(field(entry, "splits"), (list, dict))
         # datasets walks each child with .get or .pop, so a scalar in there raises too.
@@ -939,6 +1021,13 @@ def _split_module(files: Iterable[_DataFile]) -> Optional[str]:
     return _EXTENSION_MODULES[best[1]]
 
 
+def _empty_file(path: Path) -> bool:
+    try:
+        return path.stat().st_size == 0
+    except OSError:
+        return True
+
+
 def _offerable_split(
     entries: Iterable[_DataFile], snapshot: Path, root: str, module: str
 ) -> Optional[bool]:
@@ -946,6 +1035,7 @@ def _offerable_split(
     the builder would read escapes the cache. One safe file is not enough: datasets loads
     them all, so an escape anywhere condemns the whole config rather than the one split."""
     trainable = False
+    empty = False
     for path, _file_module in entries:
         # datasets keeps every zip, and folder metadata for its own builders, whatever module
         # won, so those are read as well and have to clear the resolver too.
@@ -958,10 +1048,18 @@ def _offerable_split(
         )
         if not retained:
             continue
-        if resolved_dataset_snapshot_file(snapshot, root + path.as_posix()) is None:
+        resolved = resolved_dataset_snapshot_file(snapshot, root + path.as_posix())
+        if resolved is None:
             return None
-        trainable = trainable or _has_snapshot_data_extension(path.name)
-    return trainable
+        if not _has_snapshot_data_extension(path.name):
+            continue
+        if _empty_file(resolved):
+            # An empty file fails the whole generation for every builder but json, which
+            # skips it and carries on as long as one file still holds rows.
+            empty = True
+            continue
+        trainable = True
+    return trainable and not (empty and module != "json")
 
 
 def _declared_path_groups(item: dict[str, Any]) -> list[list[str]]:
@@ -1187,6 +1285,32 @@ def _missing_literal_configs(collapsed: dict[str, dict[str, Any]], snapshot: Pat
     return dead
 
 
+def _valid_parameter(rule: Any, value: Any) -> bool:
+    if rule is None:
+        return value is None
+    if value is None:
+        return True
+    if isinstance(rule, frozenset):
+        return value in rule
+    types = rule if isinstance(rule, tuple) else (rule,)
+    if bool not in types and isinstance(value, bool):
+        return False
+    return isinstance(value, types)
+
+
+def _misparameterised_configs(collapsed: dict[str, dict[str, Any]], module: str) -> set[str]:
+    """Configs handing the chosen builder a parameter it cannot use. It takes them without
+    complaint and then raises while the split generates, so the option is dead."""
+    rules = _BUILDER_PARAMETERS.get(module)
+    if rules is None:
+        return set()
+    return {
+        name
+        for name, item in collapsed.items()
+        if any(key in rules and not _valid_parameter(rules[key], value) for key, value in item.items())
+    }
+
+
 def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _DeclaredFiles) -> set[str]:
     """Configs the loader cannot build. It lets a wildcard match nothing, so only a literal
     that is missing raises on its own; a whole group matching nothing raises either way."""
@@ -1282,7 +1406,18 @@ def _snapshot_module(snapshot: Path, scans: dict[str, Optional[list]]) -> str:
     return (grouped and _grouped_module(grouped)) or _INDETERMINATE_MODULE
 
 
-def _resolved_data_dir(snapshot: Path, raw: str) -> Optional[str]:
+_DIRECTORY_SCAN = "\x00dirs"
+
+
+def _snapshot_directory_names(snapshot: Path, scans: dict[str, Any]) -> list[str]:
+    """Every directory in the snapshot, listed once and reused by each wildcard data_dir."""
+    if _DIRECTORY_SCAN not in scans:
+        scanned = _snapshot_all_files(snapshot)
+        scans[_DIRECTORY_SCAN] = sorted(scanned[1]) if scanned else []
+    return scans[_DIRECTORY_SCAN]
+
+
+def _resolved_data_dir(snapshot: Path, raw: str, directories: list[str]) -> Optional[str]:
     """The directory a config is scoped to, or None when we cannot name exactly one.
 
     The loader globs this string, so every step of it has to be there and a wildcard in it
@@ -1298,9 +1433,8 @@ def _resolved_data_dir(snapshot: Path, raw: str) -> Optional[str]:
         pattern = _normalized_dir(raw) or ""
         matched = sorted(
             relative
-            for path in snapshot.rglob("*")
-            if path.is_dir()
-            and matcher.match(relative := path.relative_to(snapshot).as_posix())
+            for relative in directories
+            if matcher.match(relative)
             and _explicit_parts(relative + "/x", "__") == _explicit_parts(pattern + "/x", "__")
             and _explicit_parts(relative, ".") == _explicit_parts(pattern, ".")
         )
@@ -1321,13 +1455,15 @@ def _inferred_snapshot_options(
     Known gaps, all of which hide an option rather than offer a dead one: names longer than
     _MAX_OPTION_LENGTH are dropped because the picker cannot start them, splits made only of
     files outside TRAINING_DATA_EXTS are not offered, a zip's module is left unknown rather
-    than read out of the archive, and external symlinks stay rejected for cache safety.
+    than read out of the archive, and external symlinks stay rejected for cache safety. The
+    one dead option left is a card recording the wrong row count, which only shows up once
+    the data is read.
     """
     options: set[tuple[str, str]] = set()
     scans = {} if scans is None else scans
     for config, data_dir in configs:
         raw = data_dir.strip("/")
-        root = _resolved_data_dir(snapshot, raw)
+        root = _resolved_data_dir(snapshot, raw, _snapshot_directory_names(snapshot, scans))
         if root is None:
             continue
         if root not in scans:
@@ -1357,7 +1493,57 @@ def _inferred_snapshot_options(
     return options
 
 
+def _info_split_sets(payload: Any, declared: dict[str, Optional[set[str]]]) -> None:
+    """Record the splits dataset_info promises per config, or None when it promises a size
+    the data cannot match. datasets verifies the built splits against these, so a promise
+    that does not hold takes the config down with it."""
+    entries = payload if isinstance(payload, list) else [payload]
+    if isinstance(payload, dict) and not ("splits" in payload or "config_name" in payload):
+        entries = []
+        for name, entry in payload.items():
+            if isinstance(entry, dict):
+                entries.append({"config_name": entry.get("config_name", name), **entry})
+    for entry in entries:
+        if not isinstance(entry, dict) or "splits" not in entry:
+            continue
+        config = _config_name(entry.get("config_name"))
+        if config is None:
+            continue
+        splits = entry["splits"]
+        sized = list(splits.values()) if isinstance(splits, dict) else splits
+        counted = all(
+            isinstance(item, dict) and isinstance(item.get("num_examples"), int)
+            and not isinstance(item.get("num_examples"), bool) and item["num_examples"] > 0
+            for item in sized
+        ) if isinstance(sized, list) else False
+        declared[config] = set(_split_names(splits)) if counted else None
+
+
+def _verified_by_info(
+    options: set[tuple[str, str]], declared: dict[str, Optional[set[str]]]
+) -> set[tuple[str, str]]:
+    """dataset_info is a promise datasets checks after it builds, so a config whose splits
+    do not come out exactly as promised raises rather than loading part of itself.
+
+    It cannot check the row counts themselves without reading the data, so a card promising
+    the wrong number of rows still leaves an option that fails when it starts.
+    """
+    dead = set()
+    for config, promised in declared.items():
+        offered = {split for name, split in options if name == config}
+        if offered and promised != offered:
+            dead.add(config)
+    return {entry for entry in options if entry[0] not in dead}
+
+
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
+    promised: dict[str, Optional[set[str]]] = {}
+    return _verified_by_info(_snapshot_card_options(snapshot, promised), promised)
+
+
+def _snapshot_card_options(
+    snapshot: Path, promised: dict[str, Optional[set[str]]]
+) -> set[tuple[str, str]]:
     options: set[tuple[str, str]] = set()
     # Cards may name thousands of configs; one scan per directory serves them all.
     scans: dict[str, Optional[list]] = {}
@@ -1371,12 +1557,16 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         # datasets raises building MetadataConfigs, well before it ever looks at a file.
         return options
     info = card_data.get("dataset_info")
+    if not isinstance(info, (list, dict)):
+        # DatasetInfosDict skips anything that is neither, so the rest of the card still stands.
+        info = None
     if info is not None and not _valid_dataset_info(info):
         # DatasetInfosDict calls .get on each entry, so anything else raises before a split
         # could start.
         return options
     _add_config_options(options, card_data.get("configs"))
-    _add_dataset_info_options(options, info)
+    if info is not None:
+        _info_split_sets(info, promised)
 
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)
@@ -1391,16 +1581,19 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             # The local factory opens the plural file whenever it exists and lets the decode
             # error out. The singular one is an ignored data filename it never reads here.
             return set()
-        if filename == "dataset_infos.json":
-            if not isinstance(payload, dict) or not all(
-                isinstance(entry, dict) for entry in payload.values()
-            ):
-                # The factory iterates this payload and builds a DatasetInfo per entry, so
-                # any other shape raises before a split could start.
-                return set()
-            _add_dataset_info_options(options, payload)
-        else:
-            _add_info_options(options, payload)
+        if filename != "dataset_infos.json":
+            # The local factory never opens the singular file, so it promises nothing.
+            continue
+        if not isinstance(payload, dict) or not all(
+            isinstance(entry, dict) for entry in payload.values()
+        ):
+            # The factory iterates this payload and builds a DatasetInfo per entry, so
+            # any other shape raises before a split could start.
+            return set()
+        if len(payload) == 1:
+            # A lone legacy entry is renamed, whatever the old config was called.
+            payload = {"default": next(iter(payload.values()))}
+        _info_split_sets(payload, promised)
     # datasets infers patterns per config, so a config with no data_files still gets them even
     # when a sibling config declared its own, and it builds under that config's name.
     pending = [
@@ -1433,6 +1626,7 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             return options
         dead = (
             unresolvable
+            | _misparameterised_configs(collapsed, required)
             | _mismatched_configs(collapsed, required, declared_files)
             | _emptied_configs(info)
         )

@@ -150,12 +150,9 @@ Dataset card.
         item.model_dump()
         for item in local_options._sorted_options(local_options._snapshot_options(snapshot))
     ] == [
-        {"dataset": "", "config": "default", "split": "holdout"},
         {"dataset": "", "config": "card", "split": "train"},
         {"dataset": "", "config": "implicit-list", "split": "train"},
         {"dataset": "", "config": "implicit-train", "split": "train"},
-        {"dataset": "", "config": "legacy", "split": "test"},
-        {"dataset": "", "config": "measured", "split": "validation"},
     ]
 
 
@@ -2019,7 +2016,7 @@ def test_snapshot_options_reject_a_decimal_dtype_outside_its_precision(tmp_path)
     assert local_options._snapshot_options(snapshot) == set()
 
 
-def test_snapshot_options_reject_a_decimal_dtype_scaled_past_its_precision(tmp_path):
+def test_snapshot_options_accept_a_decimal_dtype_scaled_past_its_precision(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
     _card(
         snapshot,
@@ -2028,7 +2025,8 @@ def test_snapshot_options_reject_a_decimal_dtype_scaled_past_its_precision(tmp_p
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
-    assert local_options._snapshot_options(snapshot) == set()
+    # Arrow caps the scale at the same ceiling as the precision, not at the precision.
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
 
 
 def test_snapshot_options_accept_a_decimal_dtype_within_its_precision(tmp_path):
@@ -2075,3 +2073,213 @@ def test_snapshot_options_drop_a_missing_literal_when_the_walk_is_truncated(tmp_
         (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == {("here", "train")}
+
+
+def test_snapshot_options_reject_a_class_label_with_gaps_in_its_ids(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+                    "    dtype:\n      class_label:\n        names:\n          '0': a\n          '2': b\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_accept_a_class_label_numbered_from_zero(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+                    "    dtype:\n      class_label:\n        names:\n          '0': a\n          '1': b\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_class_label_whose_names_are_a_scalar(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+                    "    dtype:\n      class_label:\n        names: 5\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_ignore_a_scalar_dataset_info(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info: 123\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_an_unparsable_dataset_info_version(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n  version: bad\n"
+                    "  splits:\n  - name: train\n    num_examples: 1\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_dataset_info_version_that_is_not_a_string(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info:\n  version: 1.0\n  splits:\n  - name: train\n    num_examples: 1\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_split_made_only_of_empty_files(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text("", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_a_json_split_holding_one_empty_file(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train-a.jsonl").write_text("", encoding = "utf-8")
+    (snapshot / "train-b.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # The json builder skips an empty file, so the split still generates.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_csv_split_holding_one_empty_file(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train-a.csv").write_text("", encoding = "utf-8")
+    (snapshot / "train-b.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_builder_parameter_of_the_wrong_type(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  encoding: 123\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_parameter_the_json_builder_refuses(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  newlines_in_values: false\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_a_parameter_another_builder_would_refuse(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  sep: 123\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # sep belongs to the csv builder, and the json one never sees it.
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_keep_a_parameter_no_builder_recognises(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  totally_unknown: 5\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_drop_a_config_whose_dataset_info_promises_another_split(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info:\n  splits:\n  - name: train\n    num_examples: 1\n"
+                    "  - name: test\n    num_examples: 1\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_drop_a_config_whose_dataset_info_omits_a_split(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info:\n  splits:\n  - name: train\n    num_examples: 1\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "test.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_drop_a_dataset_info_split_with_no_row_count(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info:\n  splits:\n  - name: train\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets checks the recorded sizes after building, and an unset count never matches.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_a_config_its_dataset_info_agrees_with(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info:\n  splits:\n  - name: train\n    num_examples: 1\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_ignore_a_dataset_info_naming_an_undeclared_config(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n"
+                    "- config_name: other\n  splits:\n  - name: train\n    num_examples: 1\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_ignore_the_singular_dataset_info_json(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "dataset_info.json").write_text(
+        json.dumps({"splits": {"holdout": {"name": "holdout", "num_examples": 1}}}),
+        encoding = "utf-8",
+    )
+
+    # The local factory never opens it, so it neither names a split nor hides one.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_rename_a_lone_legacy_dataset_infos_entry(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "dataset_infos.json").write_text(
+        json.dumps({"org--data": {"splits": {"test": {"name": "test", "num_examples": 1}}}}),
+        encoding = "utf-8",
+    )
+
+    # The lone entry becomes the default config, whose splits then have to match.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_share_one_directory_listing_across_wildcard_data_dirs(tmp_path, monkeypatch):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_dir: 'one*'\n- config_name: b\n  data_dir: 'two*'\n")
+    for name in ("one", "two"):
+        (snapshot / name).mkdir()
+        (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    walks = []
+    original = local_options._snapshot_all_files
+    monkeypatch.setattr(
+        local_options,
+        "_snapshot_all_files",
+        lambda path: (walks.append(path), original(path))[1],
+    )
+
+    assert local_options._snapshot_options(snapshot) == {("a", "train"), ("b", "train")}
+    assert len(walks) == 2
