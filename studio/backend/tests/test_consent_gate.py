@@ -24,6 +24,7 @@ from utils.security import (
     evaluate_remote_code_consent_for_targets,
     is_trusted_org_repo,
     remote_code_fingerprint,
+    remote_code_config_paths,
     scan_remote_code_files,
     should_block_remote_code,
 )
@@ -105,6 +106,71 @@ class TestConsentGate:
         assert d.has_remote_code is False
         assert d.blocked is False
         assert "no-op" in d.reason
+
+    def test_load_subdirectory_auto_map_is_scanned(self, tmp_path):
+        model = tmp_path / "model"
+        llm = model / "LLM"
+        llm.mkdir(parents = True)
+        (llm / "config.json").write_text(
+            '{"auto_map":{"AutoModel":"modeling_evil.Model"}}',
+            encoding = "utf-8",
+        )
+        (llm / "modeling_evil.py").write_text(
+            "import subprocess\nsubprocess.Popen(['id'])\n",
+            encoding = "utf-8",
+        )
+
+        decision = evaluate_remote_code_consent_for_targets(
+            [str(model)],
+            trust_remote_code = True,
+            load_subdirs_by_target = {str(model): ("LLM",)},
+        )
+
+        assert decision.has_remote_code is True
+        assert decision.blocked is True
+        assert decision.max_severity == HIGH
+        assert decision.fingerprint
+
+    def test_linked_load_subdirectory_fails_closed(self, tmp_path):
+        model = tmp_path / "model"
+        linked_llm = tmp_path / "linked-llm"
+        model.mkdir()
+        linked_llm.mkdir()
+        (linked_llm / "config.json").write_text(
+            '{"auto_map":{"AutoModel":"modeling_evil.Model"}}',
+            encoding = "utf-8",
+        )
+        (linked_llm / "modeling_evil.py").write_text("VALUE = 1\n", encoding = "utf-8")
+        try:
+            (model / "LLM").symlink_to(linked_llm, target_is_directory = True)
+        except OSError as error:
+            pytest.skip(f"directory symlinks are unavailable: {error}")
+
+        decision = evaluate_remote_code_consent_for_targets(
+            [str(model)],
+            trust_remote_code = True,
+            load_subdirs_by_target = {str(model): ("LLM",)},
+        )
+
+        assert decision.has_remote_code is True
+        assert decision.blocked is True
+        assert decision.approvable is False
+        assert "could not be downloaded and scanned" in decision.findings_summary
+
+    @pytest.mark.parametrize(
+        "subdir",
+        [
+            "../outside",
+            "/outside",
+            "C:/outside",
+            "C:outside",
+            "LLM/C:outside",
+            r"nested\\outside",
+        ],
+    )
+    def test_remote_code_config_paths_reject_escaping_subdirectories(self, subdir):
+        with pytest.raises(ValueError, match = "Invalid remote-code load subdirectory"):
+            remote_code_config_paths((subdir,))
 
     def test_unknown_auto_map_is_scanned_not_skipped(self):
         # Unreadable config (private/gated/offline) is "unknown", not "no code": scan, not no-op.
@@ -711,7 +777,9 @@ class TestStructuredFindingsForDialog:
             lambda target, *_args, **_kwargs: base_targets.append(target) or "someone/base",
         )
         monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda *_args: True)
-        monkeypatch.setattr(remote_code_scan, "external_auto_map_repos", lambda *_args: set())
+        monkeypatch.setattr(
+            remote_code_scan, "external_auto_map_repos", lambda *_args, **_kwargs: set()
+        )
         monkeypatch.setattr(
             security,
             "preflight_remote_code_consent_for_targets",
@@ -765,7 +833,9 @@ class TestStructuredFindingsForDialog:
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda *_args: True)
-        monkeypatch.setattr(remote_code_scan, "external_auto_map_repos", lambda *_args: set())
+        monkeypatch.setattr(
+            remote_code_scan, "external_auto_map_repos", lambda *_args, **_kwargs: set()
+        )
         monkeypatch.setattr(
             security,
             "preflight_remote_code_consent_for_targets",
@@ -839,7 +909,9 @@ class TestStructuredFindingsForDialog:
             lambda target, *_args, **_kwargs: base_targets.append(target) or "someone/base",
         )
         monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda *_args: True)
-        monkeypatch.setattr(remote_code_scan, "external_auto_map_repos", lambda *_args: set())
+        monkeypatch.setattr(
+            remote_code_scan, "external_auto_map_repos", lambda *_args, **_kwargs: set()
+        )
         monkeypatch.setattr(
             security,
             "preflight_remote_code_consent_for_targets",

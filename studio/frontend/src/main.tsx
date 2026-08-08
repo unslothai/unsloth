@@ -9,6 +9,7 @@ import { App } from "./app/app";
 import { fetchDeviceType } from "./config/env";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
+import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
 
 const globalCrypto = globalThis.crypto as Crypto | undefined;
 
@@ -47,6 +48,9 @@ const uaLower = navigator.userAgent.toLowerCase();
 if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
 }
+
+// Keep right-edge controls clear of overlay scrollbars.
+watchOverlayScrollbarGutter(window);
 
 createRoot(rootElement).render(
   <StrictMode>

@@ -75,9 +75,13 @@ setup_fail() {
     [ "$exit_code" -ne 0 ] || exit_code=1
     local message
     message=$(printf '%s' "$*" | tr '\r\n' '  ')
-    case "${UNSLOTH_TAURI_MODE:-0}" in
-        1|true) printf '[TAURI:ERROR] %s\n' "$message" ;;
-    esac
+    # Match setup.ps1: update.rs sets UNSLOTH_TAURI_UPDATE everywhere and promotes
+    # this line over the generic "Update exited with code N". Test each variable
+    # separately: one joined subject lets a comma in either value alias the other arm.
+    local tauri_marker=0
+    case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) tauri_marker=1 ;; esac
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) tauri_marker=1 ;; esac
+    if [ "$tauri_marker" -eq 1 ]; then printf '[TAURI:ERROR] %s\n' "$message"; fi
     exit "$exit_code"
 }
 
@@ -275,6 +279,304 @@ _resolve_cuda_archs() {
         fi
     done <<< "$_raw_caps"
     printf '%s' "$_archs"
+}
+
+# Reserved for the OS, and budgeted per compile job, both in MiB. Measured on
+# llama.cpp with CUDA 13.1, the heaviest translation units (flash-attention
+# template instances) peak at ~400 MiB RSS each, and -j20 peaked at 8.2 GiB
+# across ~30 processes, since nvcc forks cicc and ptxas. 2048 is deliberately
+# above that: it must also cover MSVC and hipcc, older and far heavier CUDA
+# toolkits (ggml-org/llama.cpp#17844 climbs past 16 GiB), and the link step.
+# Erring high costs build time; erring low costs the machine.
+_LLAMA_BUILD_RESERVE_MB=2048
+_LLAMA_BUILD_MB_PER_JOB=2048
+
+# Echo the cmake -j count. Args: core count, total RAM MiB ("" = unreadable,
+# which keeps the old core-count behaviour). UNSLOTH_LLAMA_BUILD_JOBS wins.
+# Pure, so the tests can drive it without faking hardware.
+_llama_jobs_for() {
+    local _cores=$1 _mem_mb=$2 _jobs
+    if [[ "${UNSLOTH_LLAMA_BUILD_JOBS:-}" =~ ^[0-9]+$ ]] && [ "$UNSLOTH_LLAMA_BUILD_JOBS" -ge 1 ]; then
+        printf '%s' "$UNSLOTH_LLAMA_BUILD_JOBS"
+        return 0
+    fi
+    if ! [[ "$_cores" =~ ^[0-9]+$ ]] || [ "$_cores" -lt 1 ]; then _cores=4; fi
+    if ! [[ "$_mem_mb" =~ ^[0-9]+$ ]]; then
+        printf '%s' "$_cores"
+        return 0
+    fi
+    _jobs=$(( (_mem_mb - _LLAMA_BUILD_RESERVE_MB) / _LLAMA_BUILD_MB_PER_JOB ))
+    [ "$_jobs" -lt 1 ] && _jobs=1
+    [ "$_jobs" -gt "$_cores" ] && _jobs=$_cores
+    printf '%s' "$_jobs"
+}
+
+# Echo the first line of $1 with whitespace stripped, or nothing. A builtin read
+# plus an expansion, not `head | tr`: this is best-effort on the install's
+# critical path under `set -euo pipefail`, and a failing pipeline took the whole
+# install down. -r alone does not rule that out (a directory passes it, and a
+# cgroup can be torn down between the test and the open); -f does.
+_cg_read() {
+    local _v=""
+    [ -f "$1" ] && [ -r "$1" ] || return 0
+    IFS= read -r _v < "$1" 2>/dev/null || true
+    printf '%s' "${_v//[[:space:]]/}"
+    return 0
+}
+
+# Echo $1 when it is a real limit. v2 writes "max"; v1 a near-2^63 sentinel.
+# Zero is a limit, not the absence of one: memory.high throttles and never
+# invokes the OOM killer (cgroup-v2.rst), so a process runs happily under
+# MemoryHigh=0 and must not then be handed its full core count.
+_cg_limit() {
+    [[ "$1" =~ ^[0-9]+$ ]] || return 0
+    [ "$1" -lt 4611686018427387904 ] && printf '%s' "$1"
+    return 0
+}
+
+# Echo "$1/$2" and every ancestor up to $1, innermost first, NUL-delimited: a
+# mount point may contain a newline, so a line-delimited list would split one
+# path into two. dirname is inlined for the same reason ($() eats a trailing
+# newline).
+_cg_dirs() {
+    local _root=$1 _cur
+    if [ -n "${2:-}" ] && [ "$2" != "/" ]; then
+        _cur="$_root/${2#/}"
+        while [ "$_cur" != "$_root" ] && [ "$_cur" != "/" ]; do
+            printf '%s\0' "$_cur"
+            case "$_cur" in
+                */*) _cur=${_cur%/*}; [ -n "$_cur" ] || _cur="/" ;;
+                *) break ;;
+            esac
+        done
+    fi
+    printf '%s\0' "$_root"
+}
+
+# The mountinfo path decoder as an awk function, in one place so its two callers
+# cannot drift. mountinfo escapes space, tab, newline and backslash as \040 and
+# friends; strtonum is a gawk extension, so the octal maths is done by hand to
+# also run under the mawk and BSD awk that Debian and macOS ship.
+_cg_unesc_prog() {
+    cat <<'_CG_AWK_UNESC'
+        function unesc(s,   out, i, c, o, v) {
+            out = ""; i = 1
+            while (i <= length(s)) {
+                c = substr(s, i, 1)
+                if (c == "\\" && substr(s, i + 1, 3) ~ /^[0-7][0-7][0-7]$/) {
+                    o = substr(s, i + 1, 3)
+                    v = (substr(o, 1, 1) + 0) * 64 + (substr(o, 2, 1) + 0) * 8 + (substr(o, 3, 1) + 0)
+                    out = out sprintf("%c", v); i += 4
+                } else { out = out c; i++ }
+            }
+            return out
+        }
+_CG_AWK_UNESC
+}
+
+# Echo $1 with its mountinfo escapes decoded. Decoding is deliberately late:
+# \011 and \012 decode to the very tab and newline that delimit the records
+# below, so decoding at the read would split one record into two. An escaped
+# path holds neither, so it travels intact and is decoded here.
+_cg_unesc() {
+    [ -n "$1" ] || return 0
+    printf '%s\n' "$1" | awk "$(_cg_unesc_prog)"'{ printf "%s", unesc($0); exit }' || true
+    return 0
+}
+
+# Echo every matching cgroup hierarchy as "<mount root><tab><mount point>", both
+# still escaped. $1 = a mountinfo file, $2 = "cgroup2" or a v1 controller name.
+# mountinfo is "... <root> <mountpoint> <opts> [tags] - <fstype> <source>
+# <superopts>", and a v1 hierarchy lists its controllers in the super options,
+# so a co-mounted or relocated one is found by name rather than assumed to sit
+# at <root>/<name>.
+_cg_mounts() {
+    [ -r "$1" ] || return 0
+    awk -v want="$2" '
+        {
+            for (i = 1; i <= NF; i++) if ($i == "-") break
+            if (i + 3 > NF) next
+            if (want == "cgroup2") {
+                if ($(i + 1) == "cgroup2") print $4 "\t" $5
+                next
+            }
+            if ($(i + 1) != "cgroup") next
+            n = split($(i + 3), opts, ",")
+            for (j = 1; j <= n; j++) if (opts[j] == want) { print $4 "\t" $5; next }
+        }' "$1" 2>/dev/null || true
+    return 0
+}
+
+# Echo the process's path within a mount, or nothing when the mount does not
+# expose it. Args: mount root, process cgroup path. A bind-mounted subtree shows
+# a mount root like /slice while /proc/self/cgroup reports /slice/job and the
+# files sit at <mountpoint>/job, so joining the two unmapped walks a path that
+# does not exist and settles on an outer limit instead of the binding one.
+_cg_rel() {
+    local _root=$1 _rel=$2
+    [ -n "$_rel" ] || return 0
+    [ "$_root" = "/" ] && { printf '%s' "$_rel"; return 0; }
+    case "$_rel" in
+        "$_root") printf '%s' "/" ;;
+        "$_root"/*) printf '%s' "${_rel#"$_root"}" ;;
+        # Not under this mount's root: nothing here describes this process.
+        *) : ;;
+    esac
+    return 0
+}
+
+# Echo EVERY "<root><tab><point>" on stdin whose root contains the process path
+# ($1), still escaped, one per line; or the first seen when none does. A
+# hierarchy can be mounted twice with different subtree roots (rootless podman
+# inside rootless podman): taking the first steps past the binding mount, and
+# taking only the most specific hides a limit above the narrower mount's root.
+# So every containing mount is inspected and the smallest allowance wins, which
+# makes the answer order-independent.
+_cg_pick_mounts() {
+    local _rel=$1 _root _point _droot _any="" _firstroot="" _firstpoint=""
+    while IFS=$'\t' read -r _root _point; do
+        [ -n "$_point" ] || continue
+        if [ -z "$_firstpoint" ]; then _firstroot=$_root; _firstpoint=$_point; fi
+        # /proc/self/cgroup is not escaped, so the root is compared decoded.
+        _droot=$(_cg_unesc "$_root")
+        [ -n "$(_cg_rel "$_droot" "$_rel")" ] || continue
+        printf '%s\t%s\n' "$_root" "$_point"
+        _any=1
+    done
+    [ -n "$_any" ] || [ -z "$_firstpoint" ] || printf '%s\t%s\n' "$_firstroot" "$_firstpoint"
+    return 0
+}
+
+# Echo the memory free under the binding cgroup limit in MiB, or nothing. Args:
+# fallback cgroup root, /proc/self/cgroup path, /proc/self/mountinfo path; all
+# arguments so the tests can drive a real tree. Mirrors dataset_num_proc.py:
+# reading the hierarchy root alone only works with a private cgroup namespace,
+# and under Slurm, systemd or --cgroupns=host the binding limit is the process's
+# own path or an ancestor's. Each limit pairs with the usage of the directory
+# that set it, since an ancestor's usage counts siblings this process cannot
+# see, and the smallest remaining allowance wins.
+_cgroup_free_mb() {
+    local _root=$1 _proc=$2 _mnt=${3:-} _rel _dir _used _limit _free _name _min=""
+    local _v2rel _v1rel _v2mnts _v1mnts _mroot _mpoint
+    _cg_consider() {
+        [ -n "$1" ] || return 0
+        if [[ "$2" =~ ^[0-9]+$ ]]; then _free=$(( $1 - $2 )); else _free=$1; fi
+        [ "$_free" -lt 0 ] && _free=0
+        if [ -z "$_min" ] || [ "$_free" -lt "$_min" ]; then _min=$_free; fi
+        return 0
+    }
+    # The process path is read first so the right mount can be chosen among
+    # several. Only the first two colons are delimiters: a systemd unit name may
+    # contain one, and -F: with $3 would truncate the path there.
+    _v2rel=$(awk '/^0::/ { print substr($0, 4); exit }' "$_proc" 2>/dev/null || true)
+    _v1rel=$(awk '
+        {
+            a = index($0, ":"); if (a == 0) next
+            rest = substr($0, a + 1)
+            b = index(rest, ":"); if (b == 0) next
+            if (substr(rest, 1, b - 1) ~ /(^|,)memory(,|$)/) { print substr(rest, b + 1); exit }
+        }' "$_proc" 2>/dev/null || true)
+    _v2mnts=$(_cg_mounts "$_mnt" cgroup2 | _cg_pick_mounts "$_v2rel")
+    _v1mnts=$(_cg_mounts "$_mnt" memory | _cg_pick_mounts "$_v1rel")
+    # Fall back to the conventional layout when mountinfo is unreadable.
+    [ -n "$_v2mnts" ] || _v2mnts=$(printf '/\t%s' "$_root")
+    [ -n "$_v1mnts" ] || _v1mnts=$(printf '/\t%s' "$_root/memory")
+
+    # The v2 line is "0::<path>"; systemd hybrid mode adds v1 lines alongside.
+    while IFS=$'\t' read -r _mroot _mpoint; do
+        [ -n "$_mpoint" ] || continue
+        # Decode now that a single path is in hand, after it survived the tab-
+        # and newline-delimited transport. The sentinel keeps $() from eating a
+        # trailing newline.
+        _mroot=$(_cg_unesc "$_mroot"; printf X); _mroot=${_mroot%X}
+        _mpoint=$(_cg_unesc "$_mpoint"; printf X); _mpoint=${_mpoint%X}
+        [ -d "$_mpoint" ] || continue
+        _rel=$(_cg_rel "$_mroot" "$_v2rel")
+        while IFS= read -r -d '' _dir; do
+            _used=$(_cg_read "$_dir/memory.current")
+            for _name in memory.max memory.high; do
+                _limit=$(_cg_limit "$(_cg_read "$_dir/$_name")")
+                _cg_consider "$_limit" "$_used"
+            done
+        done < <(_cg_dirs "$_mpoint" "$_rel")
+    done <<< "$_v2mnts"
+
+    # v1 is "<id>:<controllers>:<path>", and mounts are often combined.
+    while IFS=$'\t' read -r _mroot _mpoint; do
+        [ -n "$_mpoint" ] || continue
+        _mroot=$(_cg_unesc "$_mroot"; printf X); _mroot=${_mroot%X}
+        _mpoint=$(_cg_unesc "$_mpoint"; printf X); _mpoint=${_mpoint%X}
+        [ -d "$_mpoint" ] || continue
+        _rel=$(_cg_rel "$_mroot" "$_v1rel")
+        while IFS= read -r -d '' _dir; do
+            _used=$(_cg_read "$_dir/memory.usage_in_bytes")
+            _limit=$(_cg_limit "$(_cg_read "$_dir/memory.limit_in_bytes")")
+            _cg_consider "$_limit" "$_used"
+        done < <(_cg_dirs "$_mpoint" "$_rel")
+    done <<< "$_v1mnts"
+
+    [ -n "$_min" ] && printf '%d' "$(( _min / 1048576 ))"
+    return 0
+}
+
+# macOS available memory in MiB, read from vm_stat on stdin; empty when the
+# output does not parse. free + inactive is the reclaim-aware equivalent of
+# MemAvailable, and the page size is read from the header rather than assumed to
+# be 4096, which is wrong on Apple Silicon. Only those two: xnu's
+# osfmk/mach/vm_statistics.h says speculative pages "are already accounted for
+# in free_count", and purgeable is an attribute of a page rather than a queue,
+# so a volatile page is already counted on active or inactive. Adding either
+# double-counts. Under-counting is the safe direction for a cap: it costs build
+# time on a busy Mac rather than the machine.
+_vm_stat_avail_mb() {
+    awk '
+        /page size of/ {
+            for (i = 1; i < NF; i++) if ($i == "of") { ps = $(i + 1) + 0; break }
+        }
+        /^Pages (free|inactive)/ {
+            gsub(/\./, "", $NF); pages += $NF
+        }
+        # A zero page count is a reading; only a missing page size is a failure.
+        END { if (ps > 0) printf "%d", pages * ps / 1048576 }' || true
+    return 0
+}
+
+# Usable RAM in MiB; empty when it cannot be read. MemAvailable, not MemTotal: a
+# workstation with 8 GiB already resident cannot host a 14 GiB compile just
+# because 16 GiB is fitted. /proc is not namespaced either, so a lower cgroup
+# allowance wins. $1 is the meminfo file, an argument like every other reader's
+# path here so the tests can pin a number instead of racing the live one.
+_usable_ram_mb() {
+    local _meminfo=${1:-/proc/meminfo} _bytes _mb="" _free _avail
+    if [ -r "$_meminfo" ]; then
+        # MemAvailable counts reclaimable page cache; MemFree does not. Absent
+        # before Linux 3.14, where MemTotal is the only thing to go on. `|| true`
+        # because bash applies errexit to a failing assignment in POSIX mode, and
+        # an unreadable meminfo must cost the cap, not the install.
+        _mb=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024; exit }' "$_meminfo") || true
+        [ -n "$_mb" ] || _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' "$_meminfo") || true
+    elif _bytes=$(sysctl -n hw.memsize 2>/dev/null); then
+        [[ "$_bytes" =~ ^[0-9]+$ ]] && _mb=$(( _bytes / 1048576 ))
+        # macOS has no MemAvailable, so hw.memsize is installed RAM and would
+        # hand a busy Mac a budget it cannot honour; vm_stat is the equivalent,
+        # with installed RAM as the fallback when it does not parse. Zero is
+        # kept: a Mac with nothing reclaimable should build at 1 job, not take
+        # its full core count.
+        _avail=$(vm_stat 2>/dev/null | _vm_stat_avail_mb || true)
+        if [[ "$_avail" =~ ^[0-9]+$ ]]; then _mb=$_avail; fi
+    fi
+    _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup /proc/self/mountinfo)
+    if [[ "$_free" =~ ^[0-9]+$ ]]; then
+        if [ -z "$_mb" ] || [ "$_free" -lt "$_mb" ]; then _mb=$_free; fi
+    fi
+    printf '%s' "$_mb"
+    return 0
+}
+
+_llama_build_jobs() {
+    _llama_jobs_for \
+        "$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)" \
+        "$(_usable_ram_mb)"
 }
 
 # Opt-in staged GPU smoke test after a source build (#5854 gap 2). Default off:
@@ -533,6 +835,65 @@ rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/tmp/unsloth_compiled_cache"
 
+# WebView caches keyed by the bundle id can keep serving the previous frontend
+# after an update. Cache-only: storage, cookies, settings, models and the studio
+# database are untouched.
+_clear_webview_caches() {
+    # No HOME: bail rather than let `set -u` abort or "" expand to /Library and /.cache.
+    [ -n "${HOME:-}" ] || return 0
+    _wvc_bid="ai.unsloth.studio"
+    _wvc_paths=()
+    # The app's version stamp dir (main.rs webview_profile_root), which on macOS
+    # is not the cache dir, so it is tracked separately.
+    _wvc_root=""
+    case "$(uname -s 2>/dev/null)" in
+        Darwin)
+            # WKWebView keeps every cache-typed store under Library/Caches/<bid>;
+            # Library/WebKit/<bid> is user storage and is left alone.
+            _wvc_paths=("$HOME/Library/Caches/$_wvc_bid")
+            _wvc_root="$HOME/Library/Application Support/$_wvc_bid"
+            ;;
+        Linux)
+            # wry points WebKitGTK's base-cache dir at the app data dir, so the
+            # caches sit beside localstorage/, databases/ and cookies, which stay.
+            # A relative XDG_DATA_HOME is invalid per the XDG spec and dropped by
+            # dirs, so match Tauri and use the default rather than rm -rf under
+            # whatever directory the installer runs from.
+            _wvc_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+            case "$_wvc_data" in /*) ;; *) _wvc_data="$HOME/.local/share" ;; esac
+            _wvc_data="$_wvc_data/$_wvc_bid"
+            _wvc_paths=(
+                "$_wvc_data/WebKitCache"
+                "$_wvc_data/CacheStorage"
+                "$_wvc_data/serviceworkers"
+            )
+            _wvc_root="$_wvc_data"
+            ;;
+        *) return 0 ;;
+    esac
+    # Drop the version stamp first. An update runs while the old WebView still holds
+    # these files, so the rm below can fail; the app's own clear is the retry, and it
+    # is skipped while the stamp matches the running version. Unconditional, since a
+    # repair or a local rebuild leaves the version unchanged and a redundant clear on
+    # the next launch is the cheap side. An `if`, not `[ ... ] && rm`: under `set -e`
+    # that compound returns 1 when the guard is false and would abort the install.
+    if [ -n "$_wvc_root" ]; then
+        rm -f "$_wvc_root/.webview-cache-cleared" 2>/dev/null || true
+    fi
+    _wvc_cleared=false
+    for _wvc_p in "${_wvc_paths[@]}"; do
+        # -L too: a dangling symlink still occupies the path.
+        [ -e "$_wvc_p" ] || [ -L "$_wvc_p" ] || continue
+        rm -rf "$_wvc_p" 2>/dev/null && _wvc_cleared=true || true
+    done
+    if [ "$_wvc_cleared" = true ]; then
+        substep "cleared stale WebView caches ($_wvc_bid); settings and data kept"
+    fi
+    return 0
+}
+# Not called here: under `set -e` with no trap, clearing before the UNSLOTH_STUDIO_HOME
+# / STUDIO_HOME override is validated lets a typo'd override delete the cache, then abort.
+
 # ── Detect Colab ──
 IS_COLAB=false
 keynames=$'\n'$(printenv | cut -d= -f1)
@@ -577,10 +938,19 @@ if [ -n "$_studio_override" ]; then
 else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
+
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
 VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
+
+# The override is validated, so a typo can no longer cost the cache. Venv-gated because
+# a writable-but-empty override still aborts at the venv check below, and clearing first
+# would cost the cache for a run that then does nothing; a fresh install has neither venv
+# nor cache. Still before any install work, while the old frontend is the one on disk.
+if [ -x "$VENV_DIR/bin/python" ]; then
+    _clear_webview_caches
+fi
 
 _STUDIO_OWNED_MARKER=".unsloth-studio-owned"
 _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
@@ -608,11 +978,18 @@ _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
-# Search (+x), not read (+r), is what the marker probes need: inside a directory
-# we cannot search every probe reports absent, so our own install reads as someone else's.
+# Marker probes need search (+x), not read (+r): in an unsearchable dir every probe reports absent, so our install looks foreign.
 _studio_dir_unsearchable() {
     [ -d "$1" ] || return 1
-    ( cd "$1" ) 2>/dev/null && return 1
+    ( cd -- "$1" ) 2>/dev/null && return 1
+    return 0
+}
+
+# Also needs +r for callers that list or replace the tree: mode 111 is searchable but still fails install_llama_prebuilt.py.
+_studio_dir_unreadable() {
+    [ -d "$1" ] || return 1
+    _studio_dir_unsearchable "$1" && return 0
+    ls -A -- "$1" >/dev/null 2>&1 && return 1
     return 0
 }
 
@@ -637,6 +1014,41 @@ _path_access_denied() {
         setup_fail 1 "Permission denied reading $_pad_label at $_pad_dir. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access, or move it aside, then re-run setup."
     fi
     setup_fail 1 "Permission denied reading the existing $_pad_label at $_pad_dir. Delete or rename that folder (Unsloth reinstalls it) or restore access, then re-run setup. Reinstalling the app does not reset it."
+}
+
+# POSIX follows a final symlink when the path ends in /, so "link/" is never -L. Strip it, but never past the root.
+_studio_rstrip_slash() {
+    _srs_path="$1"
+    while [ "$_srs_path" != "/" ] && [ "${_srs_path%/}" != "$_srs_path" ]; do
+        _srs_path="${_srs_path%/}"
+    done
+    printf '%s' "$_srs_path"
+}
+
+# An unsearchable ancestor makes a real path read as missing. Walk up to the deepest
+# ancestor we can stat and report it as the blocker; stay quiet if the path is just absent.
+_report_denied_ancestor() {
+    _rda_probe="$(_studio_rstrip_slash "$1")"
+    _rda_hops=0
+    while [ ! -e "$_rda_probe" ] && [ "$_rda_probe" != "/" ] && [ "$_rda_probe" != "." ]; do
+        # An unfollowable symlink is the deepest name we have, so walk its target:
+        # the denied ancestor lives there. The hop cap breaks symlink cycles.
+        if [ -L "$_rda_probe" ] && [ "$_rda_hops" -lt 40 ]; then
+            _rda_hops=$((_rda_hops + 1))
+            _rda_target="$(readlink -- "$_rda_probe")" || break
+            case "$_rda_target" in
+                /*) _rda_probe="$_rda_target" ;;
+                *) _rda_probe="$(dirname -- "$_rda_probe")/$_rda_target" ;;
+            esac
+            _rda_probe="$(_studio_rstrip_slash "$_rda_probe")"
+            continue
+        fi
+        # -- keeps a leading-dash path an operand, not a dirname option.
+        _rda_probe="$(dirname -- "$_rda_probe")"
+    done
+    if _studio_dir_unsearchable "$_rda_probe"; then
+        _path_access_denied "$_rda_probe" "$2" owner-unverified
+    fi
 }
 
 _assert_studio_owned_or_absent() {
@@ -1569,10 +1981,17 @@ _has_local_llama_server() {
 _LOCAL_LLAMA_CPP_LINKED=false
 if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
+        # A build under an unsearchable ancestor cannot be stat'd, so report permissions
+        # rather than sending the user to fix a path that is already correct.
+        _report_denied_ancestor "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" "UNSLOTH_LOCAL_LLAMA_CPP_DIR"
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
         setup_fail 1 "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR"
     fi
-    _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd -P)"
+    # In an if condition so a denied dir reports instead of tripping errexit.
+    if ! _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" 2>/dev/null && pwd -P)"; then
+        # owner-unverified: this is the user's own tree, never advise deleting it.
+        _path_access_denied "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" "UNSLOTH_LOCAL_LLAMA_CPP_DIR" owner-unverified
+    fi
     # Canonicalize the install path the same way before comparing: _RESOLVED_LOCAL
     # is fully resolved, but LLAMA_CPP_DIR is textual ($UNSLOTH_HOME/llama.cpp). If
     # $HOME (or UNSLOTH_HOME) contains a symlink, the two never match even when the
@@ -1582,7 +2001,13 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     _CANON_LLAMA_CPP_DIR="$LLAMA_CPP_DIR"
     _LLAMA_CPP_PARENT="$(dirname "$LLAMA_CPP_DIR")"
     if [ -d "$_LLAMA_CPP_PARENT" ]; then
-        _CANON_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" && pwd -P)/$(basename "$LLAMA_CPP_DIR")"
+        # Nothing can be written under a parent we cannot search, so report here
+        # rather than let the link below abort raw a few lines later.
+        if _canon_parent="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" 2>/dev/null && pwd -P)"; then
+            _CANON_LLAMA_CPP_DIR="$_canon_parent/$(basename "$LLAMA_CPP_DIR")"
+        else
+            _path_access_denied "$_LLAMA_CPP_PARENT" "Unsloth install directory" owner-unverified
+        fi
     fi
     if [ "$_RESOLVED_LOCAL" = "$_CANON_LLAMA_CPP_DIR" ]; then
         # Points at the canonical install location itself: never delete-then-link
@@ -1620,7 +2045,9 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         fi
         rm -rf "$LLAMA_CPP_DIR" || true
         if [ -e "$LLAMA_CPP_DIR" ]; then
-            if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+            # Unreadable, not just unsearchable: mode 111 defeats the rm above and
+            # would fall through to the generic message.
+            if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
                 _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
             fi
             step "llama.cpp" "the existing install could not be replaced with a link" "$C_ERR"
@@ -1632,6 +2059,18 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         _LOCAL_LLAMA_CPP_LINKED=true
         _NEED_LLAMA_SOURCE_BUILD=false
         _SKIP_PREBUILT_INSTALL=true
+    fi
+fi
+
+# Every branch below replaces $LLAMA_CPP_DIR or builds into it, and the source-build
+# swap only reaches its own guards after the whole build, so check here instead.
+# Local-link paths are excluded: they already replaced or reused the tree above.
+if [ "$_LOCAL_LLAMA_CPP_LINKED" != true ]; then
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    fi
+    if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
+        _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
 fi
 
@@ -1656,6 +2095,11 @@ else
     # ownership check below ever runs.
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
         _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    fi
+    # The ownership check above misses the default cache; stop before pathlib
+    # turns an unreadable one into a traceback.
+    if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
+        _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
     _PREBUILT_CMD=(
         python "$SCRIPT_DIR/install_llama_prebuilt.py"
@@ -2217,7 +2661,8 @@ else
 
             substep "$_BUILD_DESC..."
 
-            NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+            NCPU=$(_llama_build_jobs)
+            verbose_substep "parallel jobs: $NCPU (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)"
             CMAKE_GENERATOR_ARGS=""
             if command -v ninja &>/dev/null; then
                 CMAKE_GENERATOR_ARGS="-G Ninja"
@@ -2325,7 +2770,9 @@ else
             # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
             rm -rf "$LLAMA_CPP_DIR" || true
             if [ -e "$LLAMA_CPP_DIR" ]; then
-                if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                # Same probe as the other replace sites: the hoisted guard covers a
+                # tree already denied, this catches one denied mid-build.
+                if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
                     _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
                 fi
                 step "llama.cpp" "built, but the existing install could not be replaced" "$C_ERR"
