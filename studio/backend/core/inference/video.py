@@ -827,29 +827,37 @@ class VideoBackend:
         # Keyed by repo so a 2.3 pick's checkpoint and extras stay ONE scoped job; two entries would collide on the job key.
         entries: dict[str, dict[str, Any]] = {}
         total = 0
+        checkpoint_bytes = 0
+        planned: dict[str, set[str]] = {}
 
         def add(
             repo: str,
             files: list[tuple[str, int]],
             gguf: Optional[str] = None,
+            revision: Optional[str] = None,
         ) -> int:
-            if not files:
-                return 0
-            entry = entries.setdefault(
-                repo, {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None}
-            )
-            seen = set(entry["files"])
-            added = 0
+            """Count every required file, but stage only the ones the loader cannot already
+            resolve. The page now plans EVERY hub pick, so an unfiltered entry would re-stage
+            a model that is fully on disk. Returns the full size, cached or not."""
+            from core.inference.diffusion import DiffusionBackend
+
+            seen = planned.setdefault(repo, set())
+            required = 0
             for name, size in files:
                 if name in seen:
                     continue
                 seen.add(name)
+                required += int(size)
+                if DiffusionBackend._hub_file_is_cached(repo, name, revision, int(size)):
+                    continue
+                entry = entries.setdefault(
+                    repo, {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None}
+                )
                 entry["files"].append(name)
                 entry["bytes"] += int(size)
-                added += int(size)
-            if gguf:
-                entry["gguf_filename"] = gguf
-            return added
+            if gguf and repo in entries:
+                entries[repo]["gguf_filename"] = gguf
+            return required
 
         try:
             api = HfApi(token = hf_token or None)
@@ -860,7 +868,10 @@ class VideoBackend:
                     for s in (info.siblings or [])
                     if s.rfilename == gguf_filename
                 ]
-                total += add(repo_id, sizes, gguf = gguf_filename)
+                checkpoint_bytes = sum(size for _name, size in sizes)
+                total += add(
+                    repo_id, sizes, gguf = gguf_filename, revision = getattr(info, "sha", None)
+                )
                 if ltx23:
                     # The 2.3 assembly reads these companion files at load; without them here they would be pulled inline, outside the panel's disk preflight.
                     from .video_ltx2 import ltx23_extras_files, LTX23_EXTRAS_REPO
@@ -878,6 +889,7 @@ class VideoBackend:
                             for s in (extras_info.siblings or [])
                             if s.rfilename in wanted
                         ],
+                        revision = getattr(extras_info, "sha", None),
                     )
             # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the dense shards.
             te_sources = self._te_prequant_sources(fam, text_encoder_quant)
@@ -894,11 +906,19 @@ class VideoBackend:
                         ltx23 = ltx23,
                         skip_te_components = tuple(te_files),
                     ),
+                    revision = getattr(info, "sha", None),
                 )
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
             logger.warning("video.download_plan_failed: %s", exc)
-            return {"entries": [], "total_bytes": 0}
-        return {"entries": list(entries.values()), "total_bytes": total}
+            return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
+        return {
+            "entries": list(entries.values()),
+            # Remaining vs the full footprint: cache state changes what is left to fetch, never
+            # what the load needs on disk.
+            "total_bytes": sum(entry["bytes"] for entry in entries.values()),
+            "required_bytes": total,
+            "checkpoint_bytes": int(checkpoint_bytes),
+        }
 
     @staticmethod
     def _pick_looks_like_ltx23(

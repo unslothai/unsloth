@@ -1111,20 +1111,30 @@ def test_diffusion_pages_stage_downloads_through_the_manager():
         stage_fn = re.search(r"const loadOrStage = useCallback\(.*?\n  \);", src, re.S)
         assert stage_fn, f"{rel}: loadOrStage not found"
         body = stage_fn.group(0)
-        if rel == "features/images/images-page.tsx":
-            # A cached GGUF can still be missing a separate text encoder or VAE. Every Hub
-            # image pick therefore needs the backend's cache-aware plan; only local picks
-            # can bypass it. The plan returns no entries when the full load is cached.
-            assert 'source !== "hub"' in body, f"{rel}: local picks would be planned"
-            assert (
-                "isDownloaded !== false" not in body
-            ), f"{rel}: cached checkpoint would hide missing companion assets"
-        else:
-            # Video currently has no independent companion-footprint resolver, so a fully
-            # cached selection can still take the direct path.
-            assert "isDownloaded !== false" in body, f"{rel}: cached picks would re-stage"
+        # A cached GGUF can still be missing a separate text encoder or VAE, and only the plan
+        # sees that, so every Hub pick is planned and only local picks bypass it. Safe on both
+        # pages because both planners filter against the cache: a fully cached pick returns no
+        # entries. Flipping this on a planner that does not filter would re-stage a whole model.
+        assert 'source !== "hub"' in body, f"{rel}: local picks would be planned"
+        assert (
+            "isDownloaded !== false" not in body
+        ), f"{rel}: cached checkpoint would hide missing companion assets"
         # A missing plan must still load rather than dead-end.
         assert "catch" in body, f"{rel}: no fallback when the plan is unavailable"
+
+
+def test_every_diffusion_planner_filters_the_cache_before_staging():
+    """Planning every Hub pick is only safe on a planner that skips files already on disk;
+    without that an unchanged, fully cached model stages its whole footprint again. The two
+    move together, so pin them together rather than leaving it to a comment."""
+    root = WORKDIR / "studio" / "backend" / "core" / "inference"
+    for name in ("diffusion.py", "sd_cpp_backend.py", "video.py"):
+        src = (root / name).read_text(encoding = "utf-8")
+        plan = re.search(r"def download_plan\(.*?\n    (?=@|def )", src, re.S)
+        assert plan, f"{name}: download_plan not found"
+        assert "_hub_file_is_cached" in plan.group(0), (
+            f"{name}: download_plan stages files without checking the cache"
+        )
 
 
 def test_image_load_fallback_names_requirements_instead_of_only_the_model():

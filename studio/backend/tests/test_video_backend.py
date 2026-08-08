@@ -1882,6 +1882,73 @@ def _plan_api(monkeypatch, repos):
             return _PlanInfo(repos[repo_id])
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    # These tests describe their cache state explicitly; never let a developer's real Studio
+    # cache make an entry disappear from an otherwise hermetic plan.
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: False),
+    )
+
+
+def _plan_cache(monkeypatch, cached):
+    """Force the plan's cache verdict for every file."""
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: cached(filename)),
+    )
+
+
+def test_download_plan_omits_cached_video_files_but_keeps_the_footprint(monkeypatch):
+    # The Video page plans every hub pick, so an unfiltered plan would re-stage a model that is
+    # already on disk. required_bytes stays the full footprint either way.
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+    _plan_cache(monkeypatch, lambda name: name.endswith(".gguf"))
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+    )
+
+    staged = {f for e in plan["entries"] for f in e["files"]}
+    assert "ltx-2.3-22b-distilled.gguf" not in staged, "a cached checkpoint must not restage"
+    assert staged, "its uncached companions still have to be fetched"
+    assert plan["checkpoint_bytes"] > 0
+    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
+    assert plan["required_bytes"] == plan["total_bytes"] + plan["checkpoint_bytes"]
+
+
+def test_download_plan_is_empty_when_the_whole_video_pick_is_cached(monkeypatch):
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+    _plan_cache(monkeypatch, lambda name: True)
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+    )
+
+    assert plan["entries"] == [] and plan["total_bytes"] == 0
+    # Nothing to fetch, but the load still needs every one of those bytes on disk.
+    assert plan["required_bytes"] > 0
 
 
 def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):

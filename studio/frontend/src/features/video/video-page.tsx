@@ -1215,9 +1215,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     async (
       repoId: string,
       opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
-      isDownloaded?: boolean,
+      source: ModelSelectorChangeMeta["source"] = "hub",
     ): Promise<boolean> => {
-      if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
+      // Every Hub pick needs the plan, not just an undownloaded one: a cached checkpoint can
+      // still be missing its base repo's text encoder or VAE, and only the plan can see that.
+      // The plan is cache-aware, so a fully cached pick comes back with no entries.
+      if (source !== "hub") return handleLoadRef.current(repoId, opts);
       try {
         const plan = await getVideoDownloadPlan({
           model_path: repoId,
@@ -1273,7 +1276,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       routeSearch.quant,
       loadSpecFor(wanted, VIDEO_CATALOG),
     );
-    void loadOrStage(pick.repoId, pick.opts, false);
+    void loadOrStage(pick.repoId, pick.opts, "hub");
   }, [active, routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
 
   // Reload the current model with the current advanced options.
@@ -1296,7 +1299,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.isDownloaded);
+        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.source);
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for picker feedback, reverted if the load fails to START; the poll owns the after-start revert.
@@ -1311,7 +1314,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
-          meta.isDownloaded,
+          meta.source,
         ).then((started) => {
           if (!started) {
             setQuant(prevQuant);
@@ -1374,7 +1377,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded);
+      void loadOrStage(id, { kind: "pipeline" }, meta.source);
     },
     [busy, handleLoad, loadOrStage, quant],
   );
