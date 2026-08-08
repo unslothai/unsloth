@@ -802,6 +802,122 @@ fn begin_quit() -> Option<QuitGuard> {
     (!QUIT_IN_PROGRESS.swap(true, Ordering::SeqCst)).then_some(QuitGuard)
 }
 
+/// Asks the renderer for the closing overlay. Reaping the backend takes up to ~18s on
+/// Windows, which is the only platform that asks for it: `stop_spawned_backend` spends up
+/// to 2 liveness requests and 2 shutdown requests at `LOCAL_HTTP_TIMEOUT` (2s each), then
+/// waits twice for the child to exit (5s each) either side of the CTRL_BREAK. Without this
+/// the window just sits there looking frozen for all of it. See `request_quit`.
+const APP_CLOSING_EVENT: &str = "app-closing";
+
+/// Takes that overlay back down, for the quits that never reach the exit.
+const APP_CLOSING_CANCELLED_EVENT: &str = "app-closing-cancelled";
+
+/// Raises the overlay, and retracts it again unless `keep` is called. A guard rather than
+/// paired emits so that every way out of the reap takes it back down, early returns and
+/// unwinds alike, because the app is still there afterwards and an overlay left up would
+/// cover it with no way back. Nothing under `cleanup_child_processes` panics today: its one
+/// `.expect` reads a `ShutdownFlag` managed on the line after the `BackendState` that gates
+/// it, and everything below recovers poisoned locks instead of unwrapping them. So the
+/// unwind arm is cheap insurance against a future reap, not a live case.
+struct ClosingOverlay<E: Fn(&str)> {
+    emit: E,
+    retract: bool,
+}
+
+impl<E: Fn(&str)> ClosingOverlay<E> {
+    fn raise(emit: E) -> Self {
+        emit(APP_CLOSING_EVENT);
+        Self {
+            emit,
+            retract: true,
+        }
+    }
+
+    /// The process is on its way out, so the overlay stays up for the rest of its life.
+    fn keep(mut self) {
+        self.retract = false;
+    }
+}
+
+impl<E: Fn(&str)> Drop for ClosingOverlay<E> {
+    fn drop(&mut self) {
+        if self.retract {
+            (self.emit)(APP_CLOSING_CANCELLED_EVENT);
+        }
+    }
+}
+
+/// Whether this quit has a window worth covering.
+///
+/// Windows only, for the reason `request_quit` gives. Past that the question is whether
+/// there is anything on screen to explain. The tray's Quit reaches `request_quit` without
+/// going through the main window at all, and an autostart launch passes `--hidden`, whose
+/// window is built `"visible": false` and never shown, so the overlay would paint into a
+/// window nobody can see. Showing the window first was the other option and it is worse: a
+/// window that pops open because you asked the app to go away is a surprise, and there is
+/// no frozen window to explain when none is on screen.
+///
+/// A minimized window does count as visible, and that is the answer we want rather than an
+/// accident: Tauri's `is_visible` is `IsWindowVisible`, which reports the `WS_VISIBLE`
+/// style bit, and minimizing does not clear it. The user can restore part way through the
+/// reap, and the frozen window this exists to explain is exactly what they must not find.
+///
+/// The visibility read is injected rather than taken off an `AppHandle`, which cannot be
+/// built in a test, and it is asked for only on Windows: the getter blocks on a round trip
+/// to the event loop, and nothing off Windows raises an overlay to spend it on.
+///
+/// `None` means there is no main window, which is nothing to cover. A visibility that
+/// cannot be read raises the overlay anyway: an emit into a hidden window costs nothing,
+/// and an unexplained frozen window is the whole failure being fixed.
+fn quit_raises_the_overlay(
+    windows: bool,
+    main_window_visible: impl FnOnce() -> Option<Result<bool, String>>,
+) -> bool {
+    if !windows {
+        return false;
+    }
+    match main_window_visible() {
+        None => false,
+        Some(Ok(visible)) => visible,
+        Some(Err(error)) => {
+            warn!("Could not read the main window visibility ({error}); covering the quit anyway");
+            true
+        }
+    }
+}
+
+/// Confirm, cover the window, reap. Returns whether the caller should now exit.
+///
+/// Split out with its blocking parts injected because the order is the whole point and an
+/// `AppHandle` cannot be built in a test. `cover` comes in the same way rather than off a
+/// `cfg!`, so both platforms stay covered by tests on whichever one is running them.
+///
+/// The overlay goes up after the confirmations, never before: each one can put a "Keep
+/// training?" dialog on screen, and an overlay behind it would announce the opposite of
+/// what it is asking. It still lands before the reap, which is the whole of the wait.
+fn quit_sequence(
+    confirm: impl Fn() -> bool,
+    cover: impl FnOnce() -> bool,
+    reap: impl FnOnce(),
+    emit: impl Fn(&str),
+) -> bool {
+    if !confirm() {
+        return false;
+    }
+    // Asked after the confirmations rather than alongside them: a dialog sits on screen for
+    // as long as the user takes to answer it, and the window state that decides this is the
+    // one the reap is about to block. A declined quit never asks, which also keeps the
+    // blocking visibility read off the path that stays in the app.
+    //
+    // `None` is the whole no-op: nothing raised, so nothing to retract on the way out.
+    let overlay = cover().then(|| ClosingOverlay::raise(emit));
+    reap();
+    if let Some(overlay) = overlay {
+        overlay.keep();
+    }
+    true
+}
+
 /// Confirm, reap the backend, then exit. Off the caller's thread because the confirmations
 /// block, and never exit first: that would orphan the backend tree.
 fn request_quit(app: &tauri::AppHandle) {
@@ -815,23 +931,38 @@ fn request_quit(app: &tauri::AppHandle) {
         .name("request-quit".to_string())
         .spawn(move || {
             let _guard = guard;
-            if !confirm_quit_during_install(&app) {
-                return;
+            // Driven from here rather than the CloseRequested arm so the tray Quit is
+            // covered on the same terms as the close button.
+            let quitting = quit_sequence(
+                || {
+                    confirm_quit_during_install(&app)
+                        && confirm_quit_during_update(&app)
+                        && confirm_quit_during_shell_update(&app)
+                        && confirm_quit_during_training(&app)
+                        && confirm_quit_during_downloads(&app)
+                },
+                || {
+                    quit_raises_the_overlay(
+                        // Windows only. macOS never reaches here from the close button,
+                        // which hides to the tray, and on Linux the button already quit
+                        // without an overlay: the freeze this covers was reported on
+                        // Windows, where stop_backend spends its liveness, shutdown and
+                        // CTRL_BREAK budgets in series.
+                        cfg!(target_os = "windows"),
+                        || {
+                            app.get_webview_window("main")
+                                .map(|window| window.is_visible().map_err(|e| e.to_string()))
+                        },
+                    )
+                },
+                || cleanup_child_processes(&app),
+                |event| {
+                    let _ = app.emit(event, ());
+                },
+            );
+            if quitting {
+                app.exit(0);
             }
-            if !confirm_quit_during_update(&app) {
-                return;
-            }
-            if !confirm_quit_during_shell_update(&app) {
-                return;
-            }
-            if !confirm_quit_during_training(&app) {
-                return;
-            }
-            if !confirm_quit_during_downloads(&app) {
-                return;
-            }
-            cleanup_child_processes(&app);
-            app.exit(0);
         });
     if let Err(error) = spawned {
         warn!("Could not spawn the quit thread: {error}");
@@ -1040,6 +1171,7 @@ fn main() {
             native_clipboard::read_native_clipboard_files,
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
+            native_file_dialogs::save_native_file_from_url,
             native_file_dialogs::pick_native_chat_import,
             native_file_dialogs::pick_native_training_config,
             native_intents::drain_native_intents,
@@ -1120,9 +1252,12 @@ fn main() {
             } => show_main_window(app),
             tauri::RunEvent::Exit => {
                 // Safety net for framework-driven exits. When another path already owns
-                // cleanup, this blocks the main event-loop thread until that path is
-                // done: worst case roughly 15s, waiting on the graceful-then-force stop
-                // of the installer (5s), the updater (5s) and the backend (5s).
+                // cleanup, this blocks the main event-loop thread until that path is done.
+                // Worst case is roughly 15s on Unix, waiting on the graceful-then-force
+                // stop of the installer (5s), the updater (5s) and the backend (5s), and
+                // roughly 18s on Windows, where those first two graceful waits are
+                // `#[cfg(unix)]` and go straight to the force kill, but the backend spends
+                // its liveness, shutdown and CTRL_BREAK budgets in series instead.
                 cleanup_child_processes(app);
             }
             _ => {}
@@ -1340,6 +1475,182 @@ mod tests {
         assert!(
             begin_quit().is_some(),
             "a panicking quit must release the guard"
+        );
+    }
+
+    #[test]
+    fn a_quit_that_reaches_exit_covers_the_reap() {
+        let events = std::cell::RefCell::new(Vec::new());
+
+        let quitting = quit_sequence(
+            || true,
+            || true,
+            || events.borrow_mut().push("reap".to_string()),
+            |event| events.borrow_mut().push(event.to_string()),
+        );
+
+        assert!(quitting);
+        // The reap blocks for up to ~15s, so an overlay emitted after it paints too late
+        // to cover anything.
+        assert_eq!(events.into_inner(), ["app-closing", "reap"]);
+    }
+
+    #[test]
+    fn a_quit_with_nothing_to_cover_reaps_without_asking_for_an_overlay() {
+        let events = std::cell::RefCell::new(Vec::new());
+
+        let quitting = quit_sequence(
+            || true,
+            || false,
+            || events.borrow_mut().push("reap".to_string()),
+            |event| events.borrow_mut().push(event.to_string()),
+        );
+
+        assert!(quitting, "the overlay is presentation, not part of quitting");
+        assert_eq!(
+            events.into_inner(),
+            ["reap"],
+            "macOS closes to the tray and Linux quit without an overlay before this \
+             existed, so neither may see the event at all, and neither may a tray quit \
+             with no window on screen"
+        );
+    }
+
+    #[test]
+    fn a_declined_quit_never_raises_the_overlay() {
+        let events = std::cell::RefCell::new(Vec::new());
+
+        let quitting = quit_sequence(
+            || false,
+            || true,
+            || events.borrow_mut().push("reap".to_string()),
+            |event| events.borrow_mut().push(event.to_string()),
+        );
+
+        assert!(!quitting, "a declined confirmation must not reach the exit");
+        assert!(
+            events.into_inner().is_empty(),
+            "the confirmations are dialogs, and an overlay behind one would claim the app \
+             is closing while it asks whether to keep going"
+        );
+    }
+
+    // The visibility read blocks on a round trip to the event loop, and the window state
+    // that decides the overlay is the one the reap will block, not the one from before a
+    // dialog the user sat on for a minute.
+    #[test]
+    fn a_declined_quit_never_asks_whether_the_window_is_visible() {
+        let asked = std::cell::Cell::new(false);
+
+        let quitting = quit_sequence(
+            || false,
+            || {
+                asked.set(true);
+                true
+            },
+            || panic!("a declined quit must not reap"),
+            |_| panic!("a declined quit must not emit"),
+        );
+
+        assert!(!quitting);
+        assert!(
+            !asked.get(),
+            "the window question is only worth asking once the quit is committed"
+        );
+    }
+
+    #[test]
+    fn a_panicking_reap_takes_the_overlay_back_down() {
+        let events = std::cell::RefCell::new(Vec::new());
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            quit_sequence(
+                || true,
+                || true,
+                || panic!("the reap panicked"),
+                |event| events.borrow_mut().push(event.to_string()),
+            )
+        }));
+
+        assert!(unwound.is_err());
+        assert_eq!(
+            events.into_inner(),
+            ["app-closing", "app-closing-cancelled"],
+            "a panicking reap leaves the app up, so the overlay cannot cover it"
+        );
+    }
+
+    #[test]
+    fn a_panicking_reap_with_nothing_to_cover_stays_silent() {
+        let events = std::cell::RefCell::new(Vec::new());
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            quit_sequence(
+                || true,
+                || false,
+                || panic!("the reap panicked"),
+                |event| events.borrow_mut().push(event.to_string()),
+            )
+        }));
+
+        assert!(unwound.is_err());
+        assert!(
+            events.into_inner().is_empty(),
+            "nothing was raised, so the unwind has nothing to retract: a cancel here would \
+             be the guard half-armed"
+        );
+    }
+
+    // The tray's Quit reaches request_quit without going through the main window, and an
+    // autostart launch passes --hidden, whose window is built "visible": false and never
+    // shown. An overlay there paints into a window nobody can see.
+    #[test]
+    fn a_quit_with_the_window_hidden_raises_no_overlay() {
+        assert!(
+            !quit_raises_the_overlay(true, || Some(Ok(false))),
+            "there is no frozen window to explain when no window is on screen"
+        );
+    }
+
+    // Not an accident of the API: Tauri's is_visible is IsWindowVisible, which reports the
+    // WS_VISIBLE style bit, and minimizing does not clear it. Restoring part way through
+    // the reap has to find the overlay rather than the freeze it explains.
+    #[test]
+    fn a_minimized_window_still_gets_the_overlay() {
+        assert!(quit_raises_the_overlay(true, || Some(Ok(true))));
+    }
+
+    #[test]
+    fn a_quit_with_no_main_window_at_all_raises_no_overlay() {
+        assert!(
+            !quit_raises_the_overlay(true, || None),
+            "a window that does not exist cannot be looking frozen"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_window_visibility_still_gets_the_overlay() {
+        assert!(
+            quit_raises_the_overlay(true, || Some(Err("no window handle".to_string()))),
+            "an emit into a hidden window costs nothing, and an unexplained frozen window \
+             is the failure this exists to fix"
+        );
+    }
+
+    #[test]
+    fn the_window_visibility_is_never_read_off_windows() {
+        let asked = std::cell::Cell::new(false);
+
+        let raised = quit_raises_the_overlay(false, || {
+            asked.set(true);
+            Some(Ok(true))
+        });
+
+        assert!(!raised, "only Windows shows the freeze this covers");
+        assert!(
+            !asked.get(),
+            "the getter blocks on a round trip to the event loop, and nothing off Windows \
+             raises an overlay to spend it on"
         );
     }
 

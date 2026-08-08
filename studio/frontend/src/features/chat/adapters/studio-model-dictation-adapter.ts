@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -224,7 +225,9 @@ export function loadSttModel(
   signal?: AbortSignal,
 ): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
-  return queueSttLifecycle(async () => {
+  // Announced so the indicator shows the load immediately, as the toast does.
+  return queueSttLifecycle(() =>
+    withModelLoadNotice("stt", model, async () => {
     const response = await authFetch("/api/inference/audio/stt/load", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -238,7 +241,8 @@ export function loadSttModel(
       const detail = body?.detail ?? `HTTP ${response.status}`;
       throw sttRequestError(response.status, detail);
     }
-  });
+    }),
+  );
 }
 
 /** Start a background download of a dictation model. */

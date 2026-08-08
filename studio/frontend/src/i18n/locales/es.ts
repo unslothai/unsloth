@@ -415,6 +415,9 @@ export const es = {
         showLlamaUpdates: "Notificaciones de actualización de llama.cpp",
         showLlamaUpdatesDescription:
           "Avisa cuando haya una compilación más reciente de llama.cpp para ejecutar nuevos modelos. Desactívalo si solo entrenas.",
+        showLoadedModels: "Indicador de modelos cargados",
+        showLoadedModelsDescription:
+          "Muestra una pequeña tarjeta en la esquina inferior derecha con todos los modelos actualmente en memoria (chat, voz, imagen, vídeo), con un botón para expulsar cada uno.",
       },
       startup: {
         sectionTitle: "Inicio",

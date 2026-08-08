@@ -386,6 +386,9 @@ export const zhCN = {
         showLlamaUpdates: "llama.cpp 更新通知",
         showLlamaUpdatesDescription:
           "当有可用于运行新模型的新版 llama.cpp 构建时通知你。如果只进行训练，可以关闭此项。",
+        showLoadedModels: "已加载模型指示器",
+        showLoadedModelsDescription:
+          "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
       },
       startup: {
         sectionTitle: "启动",
