@@ -1132,9 +1132,9 @@ def test_every_diffusion_planner_filters_the_cache_before_staging():
         src = (root / name).read_text(encoding = "utf-8")
         plan = re.search(r"def download_plan\(.*?\n    (?=@|def )", src, re.S)
         assert plan, f"{name}: download_plan not found"
-        assert "_hub_file_is_cached" in plan.group(0), (
-            f"{name}: download_plan stages files without checking the cache"
-        )
+        assert "_hub_file_is_cached" in plan.group(
+            0
+        ), f"{name}: download_plan stages files without checking the cache"
 
 
 def test_image_load_fallback_names_requirements_instead_of_only_the_model():

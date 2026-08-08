@@ -1896,7 +1896,6 @@ def _plan_api(monkeypatch, repos):
 def _plan_cache(monkeypatch, cached):
     """Force the plan's cache verdict for every file."""
     from core.inference.diffusion import DiffusionBackend
-
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
