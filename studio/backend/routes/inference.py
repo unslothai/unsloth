@@ -20769,10 +20769,11 @@ async def get_gallery_audio_file(
     path = await asyncio.to_thread(audio_gallery.owned_audio_path, audio_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Audio not found.")
-    data = await asyncio.to_thread(path.read_bytes)
+    from fastapi.responses import FileResponse
+
     # immutable content (id is unique per clip), so let the browser cache it
-    return Response(
-        content = data,
+    return FileResponse(
+        path,
         media_type = "audio/wav",
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
     )

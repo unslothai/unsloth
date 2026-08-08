@@ -131,6 +131,7 @@ const HUB_TASKS_BY_MODE = {
 } as const;
 
 const PAGE_SIZE = 50;
+const TTS_MAX_TOKENS = 8192;
 // WAV clips run a few MB a minute; 64 MB keeps a healthy scrollback resident.
 const CLIP_BLOB_BUDGET_BYTES = 64 * 1024 * 1024;
 
@@ -562,7 +563,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           {
             model_path: repoId,
             hf_token: hfApiToken(getHfToken()) ?? null,
-            max_seq_length: 2048,
+            max_seq_length: TTS_MAX_TOKENS,
             load_in_4bit: false,
             is_lora: false,
             gguf_variant: ggufFilename ?? null,
@@ -1617,7 +1618,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                     label="Max tokens"
                     value={maxTokens}
                     min={256}
-                    max={8192}
+                    max={TTS_MAX_TOKENS}
                     step={256}
                     onChange={setMaxTokens}
                   />

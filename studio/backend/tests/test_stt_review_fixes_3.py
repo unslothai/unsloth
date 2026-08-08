@@ -447,10 +447,13 @@ def test_audio_is_never_sent_to_a_server_another_client_swapped_in(spawned, monk
     monkeypatch.setattr(
         MtmdSttSidecar,
         "_post_transcribe",
-        lambda self, port, model_id, wav, seconds = None: posted.append((port, model_id)) or "hi",
+        lambda self, port, model_id, wav, seconds = None, **kwargs: posted.append(
+            (port, model_id)
+        )
+        or "hi",
     )
 
-    def swap_after_load(self, model = None):
+    def swap_after_load(self, model = None, request_cancel_event = None):
         # Stands in for another client switching the singleton in the gap.
         with self._lock:
             self._process = _FakeProcess()
@@ -504,13 +507,163 @@ def test_dictation_still_works_on_cpu_during_training(spawned, monkeypatch):
     monkeypatch.setattr(
         MtmdSttSidecar,
         "_post_transcribe",
-        lambda self, port, model_id, wav, seconds = None: "on cpu",
+        lambda self, port, model_id, wav, seconds = None, **kwargs: "on cpu",
     )
 
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     result = sidecar.transcribe(b"audio", model = "qwen3-asr-0.6b")
     assert result["text"] == "on cpu"
     sidecar.unload()
+
+
+def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
+    monkeypatch.setattr(mtmd_mod, "ensure_engine_available", lambda: None)
+    monkeypatch.setattr(MtmdSttSidecar, "_ensure_model_downloaded", lambda *args: None)
+    monkeypatch.setattr(mtmd_mod, "_decode_audio_bounded", lambda audio: b"\x00\x00" * 16000)
+    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+
+    class _AliveProcess:
+        terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+    process = _AliveProcess()
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    sidecar._process = process
+    sidecar._port = 65000
+    sidecar._model_id = "qwen3-asr-0.6b"
+    monkeypatch.setattr(sidecar, "load", lambda model, **kwargs: None)
+
+    first_cancel = threading.Event()
+    second_cancel = threading.Event()
+    both_started = threading.Event()
+    started_lock = threading.Lock()
+    started = 0
+    release_second = threading.Event()
+
+    def post(_port, _model, _wav, _seconds = None, *, cancel_event = None):
+        nonlocal started
+        with started_lock:
+            started += 1
+            if started == 2:
+                both_started.set()
+        assert both_started.wait(timeout = 5)
+        if cancel_event is first_cancel:
+            assert first_cancel.wait(timeout = 5)
+            raise mtmd_mod.SttTranscriptionCancelledError("Transcription cancelled.")
+        assert release_second.wait(timeout = 5)
+        return "sibling survived"
+
+    monkeypatch.setattr(sidecar, "_post_transcribe", post)
+    results = []
+    errors = []
+
+    def run(cancel_event):
+        try:
+            results.append(
+                sidecar.transcribe(
+                    b"audio", model = "qwen3-asr-0.6b", cancel_event = cancel_event
+                )["text"]
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target = run, args = (first_cancel,))
+    second = threading.Thread(target = run, args = (second_cancel,))
+    first.start()
+    second.start()
+    assert both_started.wait(timeout = 5)
+    sidecar.cancel_transcription(first_cancel)
+    release_second.set()
+    first.join(timeout = 5)
+    second.join(timeout = 5)
+
+    assert results == ["sibling survived"]
+    assert len(errors) == 1 and isinstance(errors[0], mtmd_mod.SttTranscriptionCancelledError)
+    assert process.terminated is False
+    assert sidecar._active_requests == 0
+
+
+def test_mtmd_disconnect_closes_the_request_connection(monkeypatch):
+    requested = threading.Event()
+    shutdown = threading.Event()
+
+    class _Socket:
+        def shutdown(self, _how):
+            shutdown.set()
+
+    class _Connection:
+        def __init__(self, *args, **kwargs):
+            self.sock = _Socket()
+
+        def request(self, *args, **kwargs):
+            requested.set()
+
+        def getresponse(self):
+            assert shutdown.wait(timeout = 5)
+            raise OSError("request connection closed")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mtmd_mod.http.client, "HTTPConnection", _Connection)
+    sidecar = MtmdSttSidecar()
+    cancelled = threading.Event()
+    errors = []
+
+    def post():
+        try:
+            sidecar._post_transcribe(
+                65000,
+                "qwen3-asr-0.6b",
+                b"RIFFwav",
+                cancel_event = cancelled,
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target = post)
+    worker.start()
+    assert requested.wait(timeout = 5)
+    cancelled.set()
+    worker.join(timeout = 5)
+
+    assert shutdown.is_set()
+    assert len(errors) == 1 and isinstance(errors[0], OSError)
+
+
+def test_mtmd_disconnect_cancels_only_its_owned_startup():
+    class _StartingProcess:
+        terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+    sidecar = MtmdSttSidecar()
+    owner = threading.Event()
+    sibling = threading.Event()
+    load_cancel = threading.Event()
+    process = _StartingProcess()
+    sidecar._loading = True
+    sidecar._load_cancel_event = load_cancel
+    sidecar._load_owner_cancel_event = owner
+    sidecar._starting_process = process
+
+    assert sidecar.cancel_transcription(sibling) is True
+    assert sibling.is_set()
+    assert not load_cancel.is_set()
+    assert process.terminated is False
+
+    assert sidecar.cancel_transcription(owner) is True
+    assert owner.is_set() and load_cancel.is_set()
+    assert process.terminated is True
 
 
 def test_a_startup_cancelled_for_training_is_retryable_not_unavailable(spawned, monkeypatch):

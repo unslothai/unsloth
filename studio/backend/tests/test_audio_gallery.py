@@ -6,6 +6,7 @@ listing order, safe id handling, orphan-pair skipping, and delete/clear."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -124,6 +125,26 @@ def test_owned_audio_path_serves_only_owned_clips():
     assert gallery.owned_audio_path(ours["id"]) is not None
     assert gallery.owned_audio_path("../../etc/passwd") is None
     assert gallery.owned_audio_path("missing") is None
+
+
+def test_gallery_file_route_streams_the_owned_wav(monkeypatch):
+    from fastapi.responses import FileResponse
+    from routes.inference import get_gallery_audio_file
+
+    record = gallery.save(_wav(), _meta())
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda self: pytest.fail("the route must not buffer the WAV before responding"),
+    )
+    response = asyncio.run(
+        get_gallery_audio_file(record["id"], current_subject = "tester")
+    )
+
+    assert isinstance(response, FileResponse)
+    assert Path(response.path) == gallery.gallery_dir() / f"{record['id']}.wav"
+    assert response.media_type == "audio/wav"
+    assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
 
 
 def test_delete_removes_both_files():

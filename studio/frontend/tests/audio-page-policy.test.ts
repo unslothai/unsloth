@@ -56,6 +56,12 @@ test("cached GGUF quant labels remain exact when no filename is present", () => 
   );
 });
 
+test("TTS load context matches the advertised generation ceiling", () => {
+  assert.match(audioPageSource, /const TTS_MAX_TOKENS = 8192/);
+  assert.match(audioPageSource, /max_seq_length: TTS_MAX_TOKENS/);
+  assert.match(audioPageSource, /label="Max tokens"[\s\S]*max=\{TTS_MAX_TOKENS\}/);
+});
+
 test("Mac rejects safetensors-only TTS and redirects sibling families", () => {
   assert.equal(
     macTtsPickAction({ isMac: true, isGguf: false, ggufSibling: null }),
