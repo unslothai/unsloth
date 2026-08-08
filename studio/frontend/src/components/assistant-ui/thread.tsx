@@ -2103,7 +2103,7 @@ const Composer: FC<{
         },
         () =>
           toast.error("Could not paste files.", {
-            description: "The clipboard item is unsupported, unreadable, or over 20 MB.",
+            description: "The clipboard item is unsupported, unreadable, or exceeds its size limit.",
           }),
       );
     },
