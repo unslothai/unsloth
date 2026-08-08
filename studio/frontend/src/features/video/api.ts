@@ -112,7 +112,9 @@ export interface VideoLoadRequest {
 export interface VideoGenerateRequest {
   prompt: string;
   negative_prompt?: string;
-  // Width/height/num_frames/fps default per loaded family (the backend snaps them to its lattice), so they are optional.
+  // Width/height/num_frames/fps default per loaded family, so they are optional. When sent they must match that family's
+  // rules -- width/height one of status.defaults.resolution_presets, num_frames on the k*frame_step+1 lattice -- or the
+  // backend answers 422 with the supported shapes (the same rules the video page's selects are built from).
   width?: number;
   height?: number;
   num_frames?: number;
