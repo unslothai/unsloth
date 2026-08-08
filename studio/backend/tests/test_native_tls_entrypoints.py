@@ -5,12 +5,14 @@
 
 Injection is process-local and does not survive a spawn, so a missing call is
 invisible until someone behind a TLS-inspecting proxy hits that one code path.
-Static checks only: no import, no network.
+No network: module-level calls are checked by AST, probe scripts by reading the
+assembled source off the module.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
 
 import pytest
@@ -28,11 +30,12 @@ _ENTRYPOINTS = [
     "core/data_recipe/jobs/worker.py",
 ]
 
-# `python -c` children cannot import backend modules, so they carry an inline copy
-# of the gating. Keyed by the assignment or function that builds the script.
-_INLINE_SCRIPTS = [
-    ("utils/transformers_version.py", "_PROBE_CONFIG_SCRIPT"),
-    ("utils/models/model_config.py", "_build_vision_check_script"),
+# `python -c` children cannot import backend modules, so they carry the gate as
+# source. Read the assembled script off the module: it is built by concatenation,
+# so scraping the literals out of the AST would miss the generated part.
+_PROBE_SCRIPTS = [
+    ("utils.transformers_version", "_PROBE_CONFIG_SCRIPT"),
+    ("utils.models.model_config", "_VISION_CHECK_SCRIPT"),
 ]
 
 
@@ -52,25 +55,6 @@ def _import_time_calls(body):
     return names
 
 
-def _script_text(tree, name):
-    """Concatenate, in source order, the string literals that build a `-c` script."""
-    for node in ast.walk(tree):
-        named = (
-            isinstance(node, ast.Assign)
-            and any(getattr(t, "id", None) == name for t in node.targets)
-        ) or (isinstance(node, ast.FunctionDef) and node.name == name)
-        if named:
-            parts = sorted(
-                (
-                    (child.lineno, child.col_offset, child.value)
-                    for child in ast.walk(node)
-                    if isinstance(child, ast.Constant) and isinstance(child.value, str)
-                ),
-            )
-            return "\n".join(part[2] for part in parts)
-    raise AssertionError(f"{name} not found")
-
-
 @pytest.mark.parametrize("relative", _ENTRYPOINTS)
 def test_entrypoint_activates_native_tls_at_module_level(relative):
     tree = ast.parse((_BACKEND / relative).read_text(encoding = "utf-8"))
@@ -79,17 +63,32 @@ def test_entrypoint_activates_native_tls_at_module_level(relative):
     ), f"{relative} spawns a fresh interpreter but never calls activate_native_tls()"
 
 
-@pytest.mark.parametrize(("relative", "name"), _INLINE_SCRIPTS)
-def test_probe_script_injects_before_it_downloads(relative, name):
-    script = _script_text(ast.parse((_BACKEND / relative).read_text(encoding = "utf-8")), name)
-    # The shared helper, or an inline copy that must honour the opt-out itself.
+@pytest.mark.parametrize(("module", "attr"), _PROBE_SCRIPTS)
+def test_probe_script_activates_before_it_downloads(module, attr):
+    script = getattr(importlib.import_module(module), attr)
+    ast.parse(script)  # it is real source; a paste error only shows up in the child
+    # The shared helper, or the generated gate, which honours the opt-out itself.
     activate = max(script.find("activate_native_tls"), script.find("inject_into_ssl"))
-    assert activate != -1, f"{name} lost its native TLS activation"
+    assert activate != -1, f"{attr} lost its native TLS activation"
     if "inject_into_ssl" in script:
-        assert (
-            "UNSLOTH_STUDIO_NATIVE_TLS" in script
-        ), f"{name} injects without honouring the opt-out"
-    assert activate < script.find(".from_pretrained("), f"{name} downloads before activating"
+        assert "UNSLOTH_STUDIO_NATIVE_TLS" in script, f"{attr} injects without the opt-out"
+    assert activate < script.find(".from_pretrained("), f"{attr} downloads before activating"
+
+
+def test_prebuilt_core_gate_matches_the_generated_source():
+    """The one copy that cannot be generated at runtime, so assert it verbatim.
+
+    prebuilt_core.py is vendored beside the backend and imports nothing from it,
+    so its gate is a paste. Drift here is silent: the installers would keep
+    downloading against certifi while everything else used the OS store.
+    """
+    from utils.native_tls import inline_gate_source
+
+    source = (_BACKEND.parent / "prebuilt_core.py").read_text(encoding = "utf-8")
+    assert inline_gate_source() in source, (
+        "prebuilt_core.py's gate has drifted from native_tls.inline_gate_source(); "
+        "paste the current output of that function over it"
+    )
 
 
 def test_backend_serves_no_tls_in_process():

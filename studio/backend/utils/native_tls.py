@@ -38,6 +38,8 @@ import sys
 
 _NATIVE_TLS_ENV = "UNSLOTH_STUDIO_NATIVE_TLS"
 _DEFAULT_ON_PLATFORMS = ("darwin", "win32")
+_TRUTHY = ("1", "true", "yes")
+_FALSEY = ("0", "false", "no")
 
 _logger = logging.getLogger(__name__)
 _activated = False
@@ -46,11 +48,37 @@ _activated = False
 def native_tls_enabled() -> bool:
     """Resolve ``UNSLOTH_STUDIO_NATIVE_TLS`` against the platform default."""
     flag = os.environ.get(_NATIVE_TLS_ENV, "").strip().lower()
-    if flag in {"1", "true", "yes"}:
+    if flag in _TRUTHY:
         return True
-    if flag in {"0", "false", "no"}:
+    if flag in _FALSEY:
         return False
     return sys.platform in _DEFAULT_ON_PLATFORMS
+
+
+# Children that cannot import this module carry the gate as source instead: the
+# `python -c` probes, and prebuilt_core.py, which is vendored standalone beside
+# the backend. Generating it from the same constants is what stops the copies
+# drifting from native_tls_enabled(); the child only needs os and sys imported.
+_INLINE_GATE = """\
+_flag = os.environ.get({env!r}, '').strip().lower()
+if _flag in {truthy!r} or (_flag not in {falsey!r} and sys.platform in {platforms!r}):
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
+del _flag
+"""
+
+
+def inline_gate_source() -> str:
+    """The gate as executable source, for a child that cannot import this module."""
+    return _INLINE_GATE.format(
+        env = _NATIVE_TLS_ENV,
+        truthy = _TRUTHY,
+        falsey = _FALSEY,
+        platforms = _DEFAULT_ON_PLATFORMS,
+    )
 
 
 def activate_native_tls() -> bool:

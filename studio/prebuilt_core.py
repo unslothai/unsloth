@@ -57,13 +57,12 @@ except ImportError:
     FileLockTimeout = None
 
 # Prebuilt downloads use urllib in a fresh spawned interpreter, so they miss
-# main.py's OS-trust-store injection. Inline copy of the gating in
-# backend/utils/native_tls.py (this module is vendored standalone and cannot
-# import backend modules) -- keep the two in sync.
-_flag = os.environ.get("UNSLOTH_STUDIO_NATIVE_TLS", "").strip().lower()
-if _flag in {"1", "true", "yes"} or (
-    _flag not in {"0", "false", "no"} and sys.platform in ("darwin", "win32")
-):
+# main.py's OS-trust-store injection. This module is vendored standalone and
+# cannot import backend modules, so the gate is pasted from
+# backend/utils/native_tls.py's inline_gate_source(); the copy below must match
+# it verbatim, which test_native_tls_entrypoints.py asserts.
+_flag = os.environ.get('UNSLOTH_STUDIO_NATIVE_TLS', '').strip().lower()
+if _flag in ('1', 'true', 'yes') or (_flag not in ('0', 'false', 'no') and sys.platform in ('darwin', 'win32')):
     try:
         import truststore
         truststore.inject_into_ssl()
