@@ -970,6 +970,18 @@ export interface McpImageToolResult {
   images: { data: string; mimeType: string }[];
 }
 
+/**
+ * A python/terminal result carrying the chat's sandbox context alongside the
+ * text the model actually saw.
+ */
+export function isSandboxToolResult(
+  val: unknown,
+): val is { text: string; sessionId: string } {
+  if (typeof val !== "object" || val === null) return false;
+  const v = val as { text?: unknown; sessionId?: unknown };
+  return typeof v.text === "string" && typeof v.sessionId === "string";
+}
+
 export function isMcpImageToolResult(
   val: unknown,
 ): val is McpImageToolResult {
@@ -1011,7 +1023,9 @@ function serializeToolResultPart(
     // content; serialise a sentinel JSON so legitimately empty tool
     // outputs still round-trip the follow-up turn to the provider.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
-  } else if (isMcpImageToolResult(result)) {
+  } else if (isMcpImageToolResult(result) || isSandboxToolResult(result)) {
+    // Replay the stdout the model saw, not the card's sessionId/images/files:
+    // stringifying the wrapper feeds it internal metadata instead of the output.
     content = result.text.length > 0 ? result.text : JSON.stringify({ result: "" });
   } else {
     try {

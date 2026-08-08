@@ -9,6 +9,16 @@ export type SandboxFile = {
 
 const FILES_MARKER = "\n__FILES__:";
 
+function isSandboxFile(entry: unknown): entry is SandboxFile {
+  if (typeof entry !== "object" || entry === null) return false;
+  const { name, size } = entry as { name?: unknown; size?: unknown };
+  return (
+    typeof name === "string" &&
+    name.length > 0 &&
+    (size === null || size === undefined || typeof size === "number")
+  );
+}
+
 /**
  * Split a tool result into its visible text and the files the call created.
  *
@@ -26,8 +36,12 @@ export function extractCreatedFiles(raw: string): {
   const nextMarker = raw.indexOf("\n__", payloadStart);
   const end = nextMarker === -1 ? raw.length : nextMarker;
   try {
-    const parsed = JSON.parse(raw.slice(payloadStart, end)) as SandboxFile[];
-    if (!Array.isArray(parsed)) return { text: raw, files: [] };
+    const parsed: unknown = JSON.parse(raw.slice(payloadStart, end));
+    // Every entry, not just the array: a tool printing `__FILES__:[null]` would
+    // otherwise have its output eaten and throw while rendering file.name.
+    if (!Array.isArray(parsed) || !parsed.every(isSandboxFile)) {
+      return { text: raw, files: [] };
+    }
     return { text: raw.slice(0, start) + raw.slice(end), files: parsed };
   } catch {
     return { text: raw, files: [] };

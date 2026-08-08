@@ -293,11 +293,23 @@ def _strip_files_sentinel(result: str) -> str:
     if end == -1:
         end = len(result)
     try:
-        if not isinstance(json.loads(result[payload_start:end]), list):
-            return result
+        entries = json.loads(result[payload_start:end])
     except (ValueError, TypeError):
         return result
+    # Every entry, not just the list: the executor emits {"name": str, "size":
+    # int | None}, and anything else is a tool that happened to print the marker.
+    if not isinstance(entries, list) or not all(_is_file_entry(e) for e in entries):
+        return result
     return result[:start] + result[end:]
+
+
+def _is_file_entry(entry: object) -> bool:
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("name"), str)
+        and bool(entry.get("name"))
+        and (entry.get("size") is None or isinstance(entry.get("size"), int))
+    )
 
 
 def strip_result_for_model(result: str) -> str:

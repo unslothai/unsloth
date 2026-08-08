@@ -338,7 +338,7 @@ def test_the_walk_is_bounded(tmp_path, monkeypatch):
         (deep / "f.txt").write_text("x")
     found = tools._snapshot_workdir_files(str(workdir))
     assert found, "nothing was found at all"
-    assert max(name.count("/") for name in found) < tools._MAX_SNAPSHOT_DEPTH + 1
+    assert max(name.count("/") + 1 for name in found) <= tools._MAX_SANDBOX_PATH_SEGMENTS
 
 
 def test_files_written_before_a_timeout_are_still_reported(tmp_path, monkeypatch):
@@ -465,6 +465,66 @@ def test_the_migration_is_serialised(tmp_path, monkeypatch):
     assert len(results) == 6
     for workdir in results:
         assert (workdir / "data.csv").is_file(), f"{workdir} lost its files"
+
+
+def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):
+    """The walk and the download route must agree, or the card advertises a
+    file that always 404s."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes.inference import _contained_sandbox_path
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_agree11"))
+    before = tools._snapshot_workdir_files(str(workdir))
+    deep = workdir
+    for level in range(6):
+        deep = deep / f"d{level}"
+        deep.mkdir()
+        (deep / f"f{level}.csv").write_text("x")
+
+    reported = json.loads(
+        tools._created_file_sentinels(str(workdir), before).split("__FILES__:")[1].split("\n")[0]
+    )
+    assert reported, "nothing was reported at all"
+    for entry in reported:
+        # Must not raise: whatever the snapshot names, the route must serve.
+        try:
+            _sandbox_dir, resolved = _contained_sandbox_path("__LOCALID_agree11", entry["name"])
+        except HTTPException as refused:
+            raise AssertionError(f"{entry['name']} reported but refused ({refused.status_code})")
+        assert os.path.isfile(resolved), entry["name"]
+
+
+def test_a_same_timestamp_overwrite_is_still_reported(tmp_path, monkeypatch):
+    """Coarse-resolution volumes (FAT/exFAT) can repeat mtime_ns."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_coarse1"))
+    target = workdir / "report.csv"
+    target.write_text("a")
+    before = tools._snapshot_workdir_files(str(workdir))
+    target.write_text("a,b,c,d")
+    os.utime(target, ns = (before["report.csv"][0], before["report.csv"][0]))  # same tick
+    assert "report.csv" in tools._created_file_sentinels(str(workdir), before)
+
+
+@pytest.mark.parametrize("payload", [
+    "[null]", "[1, 2]", '["a.csv"]', '[{"size": 3}]', '[{"name": ""}]',
+    '[{"name": 5}]', '[{"name": "a.csv", "size": "big"}]',
+])
+def test_a_malformed_files_envelope_is_left_as_text(payload):
+    """Only the executor's own envelope is protocol; anything else is output."""
+    from core.inference.tool_loop_controller import strip_result_for_model
+
+    printed = f"tool output\n__FILES__:{payload}"
+    assert strip_result_for_model(printed) == printed
 
 
 if __name__ == "__main__":

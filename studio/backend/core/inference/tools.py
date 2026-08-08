@@ -10358,24 +10358,31 @@ def _drain_process_output(
 _INTERNAL_FILE_PREFIXES = ("studio_exec_",)  # the sandbox's own scratch files
 _MAX_REPORTED_FILES = 25
 # A build step or an unpacked archive can leave thousands of files; the walk is
-# bounded so a tool call cannot turn into a filesystem crawl.
-_MAX_SNAPSHOT_DEPTH = 4
+# bounded so a tool call cannot turn into a filesystem crawl. Counted in path
+# segments, the same unit the download route enforces, so the card can never
+# advertise a file that route would refuse.
+_MAX_SANDBOX_PATH_SEGMENTS = 4
 _MAX_SNAPSHOT_FILES = 2000  # a shard-writing script must not blow up the result
 
 
-def _snapshot_workdir_files(workdir: str | None) -> "dict[str, int]":
-    """name -> mtime_ns for every regular file, for the post-run diff.
+def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
+    """relative path -> change key for every regular file, for the post-run diff.
 
     All files, not just images: a .csv the model wrote used to be invisible.
+    Size rides along with mtime because FAT/exFAT and some network volumes have
+    coarse timestamps, where an overwrite inside one tick would look unchanged.
     """
-    snapshot: "dict[str, int]" = {}
+    snapshot: "dict[str, tuple]" = {}
     if not workdir or not os.path.isdir(workdir):
         return snapshot
     # Walked, not listed: a script writing outputs/report.csv is ordinary, and a
     # top-level listing saw only the directory and dropped it.
     for base, dirs, names in os.walk(workdir):
+        # depth 0 is the workdir itself, whose files are one segment.
         depth = base[len(workdir) :].count(os.sep)
-        dirs[:] = [] if depth >= _MAX_SNAPSHOT_DEPTH else [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [] if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1 else [
+            d for d in dirs if not d.startswith(".")
+        ]
         for name in names:
             if name.startswith(".") or name.startswith(_INTERNAL_FILE_PREFIXES):
                 continue
@@ -10384,7 +10391,8 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, int]":
                 if not os.path.isfile(path) or os.path.islink(path):
                     continue
                 relative = os.path.relpath(path, workdir).replace(os.sep, "/")
-                snapshot[relative] = os.stat(path).st_mtime_ns
+                stat = os.stat(path)
+                snapshot[relative] = (stat.st_mtime_ns, stat.st_size)
             except OSError:
                 continue
             if len(snapshot) >= _MAX_SNAPSHOT_FILES:
@@ -10392,7 +10400,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, int]":
     return snapshot
 
 
-def _created_file_sentinels(workdir: str | None, before: "dict[str, int]") -> str:
+def _created_file_sentinels(workdir: str | None, before: "dict[str, tuple]") -> str:
     """Sentinels naming the files this call created or overwrote.
 
     ``__IMAGES__`` renders inline as before; ``__FILES__`` carries every file
@@ -10401,7 +10409,7 @@ def _created_file_sentinels(workdir: str | None, before: "dict[str, int]") -> st
     """
     after = _snapshot_workdir_files(workdir)
     changed = sorted(
-        name for name, mtime in after.items() if name not in before or before[name] != mtime
+        name for name, key in after.items() if name not in before or before[name] != key
     )
     if not changed:
         return ""

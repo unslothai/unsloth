@@ -13530,9 +13530,10 @@ def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
     return os.path.realpath(resolver(session_id))
 
 
-# A tool may write into a subdirectory, so a single segment is not enough. The
-# depth matches the snapshot walk's.
-_MAX_SANDBOX_PATH_SEGMENTS = 4
+# A tool may write into a subdirectory, so a single segment is not enough. Taken
+# from the snapshot walk rather than restated, so the card can never advertise a
+# file this route would then refuse.
+from core.inference.tools import _MAX_SANDBOX_PATH_SEGMENTS
 
 
 def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
@@ -13572,6 +13573,7 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
     names: "list[str]" = []
     for base, dirs, entries in os.walk(sandbox_dir):
         depth = base[len(sandbox_dir) :].count(os.sep)
+        # depth 0 is the sandbox itself, whose files are one segment.
         dirs[:] = (
             []
             if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
