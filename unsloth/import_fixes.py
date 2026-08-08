@@ -2967,10 +2967,148 @@ def _is_broken_vllm_error(error) -> bool:
     return False
 
 
+_VLLM_RELEASES_URL = "https://github.com/vllm-project/vllm/releases"
+_VLLM_INSTALL_DOCS_URL = (
+    "https://docs.vllm.ai/en/latest/getting_started/installation/gpu/"
+)
+
+# A plain release version, e.g. "0.23.0". Anything else (rc / dev / post builds)
+# has no matching GitHub release asset, so we never name a wheel for it.
+_VLLM_RELEASE_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)*$")
+
+# Normalises platform.machine() onto the arch spelling used in wheel names.
+_VLLM_WHEEL_ARCHES = {
+    "x86_64": "x86_64",
+    "amd64": "x86_64",
+    "x64": "x86_64",
+    "aarch64": "aarch64",
+    "arm64": "aarch64",
+}
+
+
+def _both_arches(manylinux_tag):
+    return {"x86_64": manylinux_tag, "aarch64": manylinux_tag}
+
+
+# vLLM ships exactly one CUDA build per release as the unsuffixed "default" wheel
+# and the other under a "+cuXXX" local version tag. Which CUDA major is the default
+# flipped at 0.20.0 (release notes: "CUDA 13.0 default"), the "+cuXXX" tag has been
+# cu130 and then cu129, and the manylinux tag has moved manylinux1 -> 2_31 -> 2_35 ->
+# 2_34 -> 2_24 -> 2_28, differing between the two wheels of the same release. So the
+# asset name cannot be derived from a formula: vLLM's own docs document a
+# "+cu${CUDA_VERSION}" pattern that 404s (vllm-project/vllm#37847), and no release
+# has ever published a "+cu128" wheel.
+#
+# Each entry is (min_version, max_version, {cuda_major: (local_tag, {arch: manylinux})}),
+# transcribed from the actual release assets. A CUDA major or arch that is absent was
+# never published for that range. Extend the table when a new vLLM release lands; until
+# then newer versions fall back to the release page instead of a fabricated filename.
+_VLLM_WHEEL_ASSETS = (
+    (
+        "0.11.0",
+        "0.11.0",
+        {12: ("", {"x86_64": "manylinux1", "aarch64": "manylinux2014"})},
+    ),
+    (
+        "0.11.1",
+        "0.11.2",
+        {
+            12: ("", {"x86_64": "manylinux1", "aarch64": "manylinux2014"}),
+            13: ("cu130", {"x86_64": "manylinux1"}),
+        },
+    ),
+    (
+        "0.12.0",
+        "0.12.0",
+        {
+            12: ("", _both_arches("manylinux_2_31")),
+            13: ("cu130", {"x86_64": "manylinux_2_31"}),
+        },
+    ),
+    (
+        "0.13.0",
+        "0.19.1",
+        {
+            12: ("", _both_arches("manylinux_2_31")),
+            13: ("cu130", _both_arches("manylinux_2_35")),
+        },
+    ),
+    (
+        "0.20.0",
+        "0.20.2",
+        {
+            12: ("cu129", _both_arches("manylinux_2_31")),
+            13: ("", _both_arches("manylinux_2_35")),
+        },
+    ),
+    (
+        "0.21.0",
+        "0.21.0",
+        {
+            12: ("cu129", _both_arches("manylinux_2_34")),
+            13: ("", _both_arches("manylinux_2_24")),
+        },
+    ),
+    (
+        "0.22.0",
+        "0.26.0",
+        {
+            12: ("cu129", _both_arches("manylinux_2_28")),
+            13: ("", _both_arches("manylinux_2_28")),
+        },
+    ),
+)
+
+# From this release on, the default (unsuffixed) wheel is the CUDA 13 build and the
+# CUDA 12 build carries "+cu129", so we can still name the right variant for a release
+# newer than the table above even though its manylinux tag is unknown.
+_VLLM_CUDA13_DEFAULT_SINCE = "0.20.0"
+
+
+def _get_vllm_wheel_url(vllm_version, cuda_major, cpu_arch):
+    """URL of the published vLLM wheel for this release/CUDA/arch, else None."""
+    if not _VLLM_RELEASE_VERSION_RE.match(vllm_version or ""):
+        return None
+    arch = _VLLM_WHEEL_ARCHES.get(str(cpu_arch).lower())
+    if arch is None:
+        return None
+    try:
+        wanted = TrueVersion(vllm_version)
+    except Exception:
+        return None
+    for low, high, by_cuda in _VLLM_WHEEL_ASSETS:
+        if not TrueVersion(low) <= wanted <= TrueVersion(high):
+            continue
+        local_tag, manylinux_by_arch = by_cuda.get(cuda_major, (None, {}))
+        manylinux = manylinux_by_arch.get(arch)
+        if manylinux is None:
+            return None
+        local = f"+{local_tag}" if local_tag else ""
+        return (
+            f"{_VLLM_RELEASES_URL}/download/v{vllm_version}/"
+            f"vllm-{vllm_version}{local}-cp38-abi3-{manylinux}_{arch}.whl"
+        )
+    return None
+
+
+def _get_vllm_wheel_variant_hint(vllm_version, cuda_major):
+    """Which wheel of a release to pick, when we cannot name the exact file."""
+    if not _VLLM_RELEASE_VERSION_RE.match(vllm_version or ""):
+        return None
+    try:
+        if TrueVersion(vllm_version) < TrueVersion(_VLLM_CUDA13_DEFAULT_SINCE):
+            return None
+    except Exception:
+        return None
+    if cuda_major >= 13:
+        return "the default wheel (the one with no `+cuXXX` suffix)"
+    if cuda_major == 12:
+        return "the `+cu129` wheel"
+    return None
+
+
 def _get_vllm_cuda_mismatch_message(error):
     """If the error is a CUDA version mismatch, return a helpful install message."""
-    import re as _re
-
     checked = set()
     current = error
     wanted_cuda = None
@@ -2978,9 +3116,9 @@ def _get_vllm_cuda_mismatch_message(error):
         checked.add(id(current))
         message = str(current)
         # Extract the CUDA version vllm was built for, e.g. "libcudart.so.12"
-        match = _re.search(r"libcudart\.so\.(\d+)", message)
+        match = re.search(r"libcudart\.so\.(\d+)", message)
         if match:
-            wanted_cuda = match.group(1)
+            wanted_cuda = int(match.group(1))
             break
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     if wanted_cuda is None:
@@ -2988,38 +3126,64 @@ def _get_vllm_cuda_mismatch_message(error):
 
     # Detect what CUDA version is actually available on the system
     system_cuda_display = None  # Human-readable, e.g. "13.0"
-    system_cuda_tag = None  # For wheel URL, e.g. "130"
+    system_cuda_major = None
     try:
         import torch
         cuda_version = torch.version.cuda  # e.g. "13.0" or "12.8"
         if cuda_version:
             system_cuda_display = cuda_version
-            system_cuda_tag = cuda_version.replace(".", "")[:3]  # "130" or "128"
+            system_cuda_major = int(str(cuda_version).split(".")[0])
     except Exception:
         pass
 
-    if system_cuda_tag is None or system_cuda_tag.startswith(wanted_cuda):
+    if system_cuda_major is None or system_cuda_major == wanted_cuda:
         return None  # Not a mismatch or can't determine
 
     try:
         vllm_version = importlib_version("vllm").split("+")[0]
     except Exception:
-        vllm_version = "VLLM_VERSION"
+        vllm_version = None
 
+    system = ""
     cpu_arch = "x86_64"
     try:
         import platform
+        system = platform.system()
         cpu_arch = platform.machine()
     except Exception:
         pass
 
-    return (
+    header = (
         f"Unsloth: vLLM was built for CUDA {wanted_cuda} but this system has "
-        f"CUDA {system_cuda_display}. Please reinstall vLLM with the correct CUDA version:\n"
-        f"\n"
-        f"  uv pip install https://github.com/vllm-project/vllm/releases/download/"
-        f"v{vllm_version}/vllm-{vllm_version}+cu{system_cuda_tag}-cp38-abi3-"
-        f"manylinux_2_35_{cpu_arch}.whl"
+        f"CUDA {system_cuda_display}. "
+    )
+
+    # vLLM only publishes CUDA wheels for Linux (Windows users go through WSL).
+    if system and system != "Linux":
+        return (
+            f"{header}Please reinstall a vLLM build for CUDA {system_cuda_major}; "
+            f"vLLM publishes CUDA wheels for Linux only, so see\n\n  "
+            f"{_VLLM_INSTALL_DOCS_URL}"
+        )
+
+    wheel_url = _get_vllm_wheel_url(vllm_version, system_cuda_major, cpu_arch)
+    if wheel_url is not None:
+        return (
+            f"{header}Please reinstall vLLM with the correct CUDA version:\n\n  "
+            f"uv pip install {wheel_url}"
+        )
+
+    # Unknown / unmapped release: never invent a filename, point at the real assets.
+    hint = _get_vllm_wheel_variant_hint(vllm_version, system_cuda_major)
+    hint = f"Download {hint} for your platform" if hint else "Pick the wheel for your platform"
+    release_page = (
+        f"{_VLLM_RELEASES_URL}/tag/v{vllm_version}"
+        if _VLLM_RELEASE_VERSION_RE.match(vllm_version or "")
+        else _VLLM_RELEASES_URL
+    )
+    return (
+        f"{header}Please reinstall a vLLM build for CUDA {system_cuda_major}. "
+        f"{hint} from\n\n  {release_page}"
     )
 
 
