@@ -2515,15 +2515,23 @@ def sync_chat_messages(
                 - research_ids
             )
         protected = set() if allow_research_update else research_ids
-        # Content is dropped, structure is not: the prune below can delete a protected
+        messages = [m for m in messages if str(m["id"]) not in protected]
+        # Content is dropped, structure is not: the prune below can delete a research
         # message's parent, and a dangling parent makes the whole thread unimportable. The
         # replacement is walked from the stored chain, never taken from the client.
+        #
+        # Candidates come from research_ids rather than `protected` because the delete exempts
+        # research rows whatever allow_research_update says, so a narrower set would leave one
+        # dangling. Ids the batch itself writes are excluded: an authorized caller reparenting
+        # a research row must not have that overwritten by the repair.
+        reseat_candidates = research_ids - {str(m["id"]) for m in messages}
         reseat_parents = {
             message_id: _surviving_parent_id(conn, thread_id, message_id, pruned)
-            for message_id, stored_parent in _parents_of(conn, thread_id, protected).items()
+            for message_id, stored_parent in _parents_of(
+                conn, thread_id, reseat_candidates
+            ).items()
             if stored_parent is not None and stored_parent in pruned
         }
-        messages = [m for m in messages if str(m["id"]) not in protected]
         _raise_if_chat_message_thread_conflicts(
             conn,
             thread_id,

@@ -3567,3 +3567,88 @@ def test_omitting_the_whole_research_pair_keeps_the_turn_joined(research_home):
     assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] == "root"
     assert studio_db.get_chat_message("thread-1", "assistant-1")["parentId"] == "user-1"
     assert _thread_imports_cleanly()
+
+
+def _ancestor_and_research_prompt() -> None:
+    """`ancestor -> user-1`, with the pair claimed by a run. `ancestor` is prunable."""
+    studio_db.upsert_chat_message(
+        {
+            "id": "ancestor",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "ancestor"}],
+            "createdAt": 1,
+        }
+    )
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "parentId": "ancestor",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed?"}],
+            "createdAt": 3,
+        },
+        allow_research_update = True,
+    )
+
+
+def test_an_authorized_sync_still_reseats_a_research_row_it_omits(research_home):
+    # allow_research_update empties `protected`, but the delete exempts research rows either
+    # way. An omitted research row therefore survives with a parent the same batch deleted,
+    # so the reseat has to be derived from the research ids, not from `protected`.
+    _ancestor_and_research_prompt()
+
+    studio_db.sync_chat_messages(
+        "thread-1", [], prune_missing = True, allow_research_update = True
+    )
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] is None
+    assert _thread_imports_cleanly()
+
+
+def test_an_authorized_reparent_of_a_research_row_is_not_overwritten(research_home):
+    # The other half: when the batch carries the research row, that write is authorized and
+    # the repair must not clobber it, even though the row's stored parent is being pruned.
+    _ancestor_and_research_prompt()
+    studio_db.upsert_chat_message(
+        {
+            "id": "keeper",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "keeper"}],
+            "createdAt": 2,
+        }
+    )
+
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [
+            {
+                "id": "keeper",
+                "threadId": "thread-1",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "keeper"}],
+                "createdAt": 2,
+            },
+            {
+                "id": "user-1",
+                "threadId": "thread-1",
+                "parentId": "keeper",
+                "role": "user",
+                "content": [{"type": "text", "text": "What changed?"}],
+                "createdAt": 3,
+            },
+        ],
+        prune_missing = True,
+        allow_research_update = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] == "keeper"
+    assert _thread_imports_cleanly()
