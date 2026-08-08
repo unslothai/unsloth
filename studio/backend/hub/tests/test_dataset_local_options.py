@@ -223,6 +223,127 @@ def test_snapshot_options_keep_a_declared_config_name_when_inferring(tmp_path):
     assert local_options._snapshot_options(snapshot) == {("foo", "train")}
 
 
+def test_snapshot_options_reject_a_card_datasets_cannot_build_configs_from(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text("---\nconfigs: nope\n---\n", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # MetadataConfigs raises on this long before datasets looks at a file.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_infer_per_config_beside_an_explicit_one(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "foo").mkdir(parents = True)
+    (snapshot / "bar").mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: foo\n  data_files: foo/train.jsonl\n"
+        "- config_name: bar\n  data_dir: bar\n---\n",
+        encoding = "utf-8",
+    )
+    (snapshot / "foo" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "bar" / "test.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("foo", "train"), ("bar", "test")}
+
+
+def test_snapshot_options_take_the_last_of_duplicate_config_names(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "foo" / "a").mkdir(parents = True)
+    (snapshot / "foo" / "b").mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: foo\n  data_dir: foo/a\n"
+        "- config_name: foo\n  data_dir: foo/b\n---\n",
+        encoding = "utf-8",
+    )
+    (snapshot / "foo" / "a" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "foo" / "b" / "test.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets keys metadata configs by name, so the later entry replaces the earlier one.
+    assert local_options._snapshot_options(snapshot) == {("foo", "test")}
+
+
+def test_snapshot_options_drop_a_config_whose_data_dir_is_unsafe(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "bar").mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: cfg\n  data_dir: foo/../bar\n---\n", encoding = "utf-8"
+    )
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "bar" / "test.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # Widening the config to the whole snapshot would offer a split it never scoped.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_split_holding_an_external_symlink(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "train").mkdir(parents = True)
+    (snapshot / "train" / "safe.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text('{"text":"outside"}\n', encoding = "utf-8")
+    (snapshot / "train" / "leak.jsonl").symlink_to(outside)
+
+    # datasets would read both files, so one safe file does not make the split safe.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_count_a_file_once_per_matching_keyword(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train_training.csv").write_text("text\nrow\n", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "test.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets resolves train's keyword patterns separately, so the csv lands in train twice
+    # and wins it, leaving train on csv and test on json.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"train.txt.csv": "row\n", "test.txt": "row\n"},
+        {
+            "train/a.geoparquet": "x",
+            "train/b.gpq": "x",
+            "train/c.jsonl": "{}\n",
+            "train/d.jsonl": "{}\n",
+            "test/a.parquet": "x",
+        },
+        {
+            "train/a.txt": "row\n",
+            "train/b.xml": "<r/>",
+            "test/a.txt": "row\n",
+            "test/b.jsonl": "{}\n",
+        },
+    ],
+)
+def test_snapshot_options_follow_the_loaders_extension_counting(tmp_path, files):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    for name, body in files.items():
+        path = snapshot / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(body, encoding = "utf-8")
+
+    # Every suffix counts under its own name, so these all end on mismatched split modules.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_media_builders_apart(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    for split, media in (("train", "jpg"), ("test", "mp3")):
+        (snapshot / split).mkdir(parents = True)
+        for index in range(2):
+            (snapshot / split / f"{index}.{media}").write_bytes(b"media")
+        (snapshot / split / "rows.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # imagefolder and audiofolder are different builders, so datasets refuses the snapshot.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
 def test_snapshot_options_infer_under_a_declared_data_dir(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
     (snapshot / "foo").mkdir(parents = True)
