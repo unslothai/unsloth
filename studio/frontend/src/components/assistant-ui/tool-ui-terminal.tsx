@@ -18,7 +18,6 @@ import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
 import { SandboxFiles } from "./sandbox-files-view";
 import type { SandboxFile } from "./sandbox-files";
-import { stringifyToolResult } from "@/lib/strip-ansi";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
 import { stringifyToolResult } from "@/lib/strip-ansi";
