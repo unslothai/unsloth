@@ -66,6 +66,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { cn } from "@/lib/utils";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
+import { downloadUrl, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 
 import {
@@ -176,14 +177,18 @@ function saveLink(href: string, filename: string) {
   link.click();
 }
 
-// MP4 saves the original file straight from its signed link; WebM / GIF are transcoded by the backend on demand (501 when the codec is absent).
+// MP4 saves the original file from its signed link; WebM / GIF are transcoded by the backend on demand (501 when the codec is absent).
 async function downloadVideo(
   src: string,
   video: GalleryVideo,
   format: VideoExportFormat = "mp4",
 ) {
   if (format === "mp4") {
-    saveLink(src, exportFilename(video, format));
+    // Not saveLink: the signed link is on the backend origin, and an anchor's download attribute is
+    // ignored cross-origin, so it would navigate instead of saving. downloadUrl fetches the bytes and
+    // goes through the native chooser under Tauri, and stays an anchor download on the web, where the
+    // link is same-origin. The WebM / GIF branch keeps saveLink: a blob: URL is always same-origin.
+    await downloadUrl(src, exportFilename(video, format));
     return;
   }
   const blob = await fetchGalleryVideoExport(video.id, format);
@@ -835,7 +840,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const handleDownload = useCallback(
     async (src: string, video: GalleryVideo, format: "mp4" | "webm" | "gif") => {
       if (format === "mp4") {
-        void downloadVideo(src, video, format);
+        // Saving now goes through the native chooser, which rejects when the user cancels it, so the
+        // call needs the same guard as the other native saves rather than an unhandled rejection.
+        void downloadVideo(src, video, format).catch((err) => {
+          if (!isDownloadCancelled(err)) {
+            toast.error(
+              err instanceof Error ? err.message : "Failed to save the video",
+            );
+          }
+        });
         return;
       }
       const toastId = toast.loading(`Converting to ${format.toUpperCase()}…`);
