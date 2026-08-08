@@ -261,6 +261,7 @@ def pytorch_wheel_index_base_url() -> str:
     """
     return (os.environ.get("UNSLOTH_PYTORCH_MIRROR") or PYTORCH_WHEEL_INDEX_BASE_URL).rstrip("/")
 
+
 _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
     # torch 2.7.0 (xFormers 0.0.30) is deliberately absent: it predates the stable-ABI
     # switch, so it publishes one wheel per interpreter and stops at cp312, and Studio's

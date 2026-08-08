@@ -151,7 +151,10 @@ def test_installer_installs_xformers_from_the_torch_index():
     # Unpinned, install the direct wheel URL: --default-index does not make an index
     # exclusive, and cu126/cu128/cu130 share a version string, so a machine with UV_INDEX
     # set can satisfy the pin from the wrong CUDA family.
-    assert "$_xfWheelUrl = \"$_xfBase/$_xfCudaTag/xformers-$_xfVersion-$_xfPyTag-win_amd64.whl\"" in block
+    assert (
+        '$_xfWheelUrl = "$_xfBase/$_xfCudaTag/xformers-$_xfVersion-$_xfPyTag-win_amd64.whl"'
+        in block
+    )
     assert "--reinstall-package xformers $_xfWheelUrl" in block
     # The already-installed check compares against the wheel's OWN build target, not the
     # resident torch: the stable-ABI wheel records the floor release it was compiled
@@ -270,9 +273,7 @@ def test_the_direct_wheel_filename_tag_matches_the_python_resolver():
     versions = ["0.0.31.post1", "0.0.32.post2", "0.0.33.post2", "0.0.34", "0.0.35"]
     ps_out = _run_pwsh(
         f"{_selector_harness()}\n"
-        + "\n".join(
-            f"Write-Output \"[$(Get-XformersFilenamePythonTag '{v}')]\"" for v in versions
-        )
+        + "\n".join(f"Write-Output \"[$(Get-XformersFilenamePythonTag '{v}')]\"" for v in versions)
     )
     assert ps_out.splitlines() == [
         f"[{wheel_utils.xformers_filename_python_tag(v)}]" for v in versions

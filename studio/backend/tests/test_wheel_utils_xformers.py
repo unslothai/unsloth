@@ -268,9 +268,7 @@ class TestStableAbiPatchReleases:
     def test_a_patch_release_above_the_floor_resolves_to_the_stable_abi_wheel(self, torch_version):
         family = torch_version.split("+", 1)[1]
         cuda = {"cu126": "12.6", "cu128": "12.8", "cu130": "13.0"}[family]
-        url = wheel_utils.xformers_wheel_url(
-            _env(torch_version = torch_version, cuda_version = cuda)
-        )
+        url = wheel_utils.xformers_wheel_url(_env(torch_version = torch_version, cuda_version = cuda))
         assert url is not None and "xformers-0.0.35-py39-none-win_amd64.whl" in url
         assert f"/{family}/" in url
 
