@@ -45,8 +45,12 @@ class _FakeInstallerPopen:
             captured_kwargs.update(kwargs)
         if on_start is not None:
             on_start(list(cmd))
+        self.pid = 515151  # a real Popen has one; the lifetime record needs it
         self.returncode = returncode
         self.stdout = iter(lines or [])
+
+    def poll(self):
+        return self.returncode
 
     def wait(self):
         return self.returncode

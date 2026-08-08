@@ -883,7 +883,9 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
         pid = entry.get("pid") if isinstance(entry, dict) else None
         if not isinstance(pid, int):
             continue
-        if not _pid_alive(pid):
+        # A zombie is a dead leader nobody has waited on: it holds nothing, and
+        # signalling it would burn the whole grace period answering probes.
+        if not _pid_alive(pid) or _pid_is_zombie(pid):
             # The leader can exit first and leave the group running (the shim
             # crashing while its visual server holds the GPU). The group is then
             # the only handle left on those children.

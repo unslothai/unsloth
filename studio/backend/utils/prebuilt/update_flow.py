@@ -25,7 +25,7 @@ from typing import Callable, Optional
 import structlog
 
 from utils.child_stdio import utf8_child_env
-from utils.process_lifetime import child_popen_kwargs
+from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
 logger = structlog.get_logger(__name__)
 
@@ -312,6 +312,9 @@ def stream_installer(
         env = utf8_child_env(env),
         **child_popen_kwargs(),
     )
+    # The kwargs above are empty on macOS, so record it: an installer that
+    # outlives its owner keeps replacing files under the next launch.
+    adopt_pid(proc.pid)
     timed_out = threading.Event()
 
     def _kill_on_timeout() -> None:
@@ -335,6 +338,8 @@ def stream_installer(
         returncode = proc.wait()
     finally:
         watchdog.cancel()
+        if proc.poll() is not None:
+            forget_pid(proc.pid)
     if timed_out.is_set():
         raise RuntimeError(f"installer timed out after {timeout_seconds}s")
     if returncode != 0:

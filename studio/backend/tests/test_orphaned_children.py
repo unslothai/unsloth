@@ -1179,5 +1179,50 @@ def test_a_group_of_only_zombies_is_not_alive():
         child.wait(timeout = 10)
 
 
+def test_a_zombie_child_is_not_signalled_or_waited_on(tmp_path, monkeypatch):
+    """Under a non-reaping PID 1 a zombie answers every probe, so terminating it
+    burns the full grace period per record and reaps nothing."""
+    import json
+
+    from utils import process_lifetime as pl
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    directory = tmp_path / "children"
+    directory.mkdir(parents = True)
+
+    monkeypatch.setattr(pl, "_is_windows", lambda: False)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: pid == 9901)
+    monkeypatch.setattr(pl, "_identity_or_none", lambda pid: None)
+    monkeypatch.setattr(pl, "_group_has_members", lambda pgid: False)
+    terminated = []
+    monkeypatch.setattr(pl, "_posix_terminate", lambda pid, timeout = 5.0: terminated.append(pid))
+
+    record = directory / "9900.json"
+    record.write_text(json.dumps({
+        "owner_pid": 9900, "owner_identity": "gone",
+        "children": [{"pid": 9901, "identity": "same", "pgid": 9901}],
+    }), encoding = "utf-8")
+
+    started = time.monotonic()
+    pl._reap_one_record(record, timeout = 5.0)
+    assert terminated == [], "a zombie was signalled"
+    assert time.monotonic() - started < 1.0, "startup waited out the grace period"
+
+
+def test_the_component_installer_is_recorded_while_it_runs():
+    """It rewrites files in place, so one surviving a crash overlaps the next
+    launch."""
+    import ast
+    import inspect
+
+    from utils.prebuilt import update_flow
+
+    tree = ast.parse(inspect.getsource(update_flow.stream_installer))
+    body = ast.dump(tree)
+    assert "adopt_pid" in body, "the installer is never recorded"
+    assert "forget_pid" in body, "the record is never cleared"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
