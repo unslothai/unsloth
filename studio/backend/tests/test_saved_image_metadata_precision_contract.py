@@ -45,7 +45,7 @@ import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.image_gallery as gallery
 from auth.authentication import get_current_subject
 from core.inference.diffusion import DiffusionBackend
-from routes.inference import studio_router
+from routes.inference import router as openai_router, studio_router
 
 _FRONTEND = Path(__file__).resolve().parents[2] / "frontend" / "src"
 
@@ -217,6 +217,17 @@ def stub_runtime(monkeypatch):
         uninstall_arch_patches()
     except Exception:  # noqa: BLE001 - teardown must not mask the test's own failure
         pass
+    # ...and evict the patch modules themselves. They were imported (lazily, by load_pipeline)
+    # WHILE the fakes were installed, so their module-level `torch`, `F` and diffusers class
+    # globals are bound to the stubs. monkeypatch puts sys.modules["torch"] back but not these,
+    # so every later test in the process -- and any real load -- would go on running against
+    # module bodies that closed over the fakes. Dropping the cache entries makes the next import
+    # rebind them under whatever runtime is installed then.
+    for cached in (
+        "core.inference.diffusion_eager_patches",
+        "core.inference.diffusion_arch_patches",
+    ):
+        sys.modules.pop(cached, None)
 
 
 @pytest.fixture
@@ -429,6 +440,9 @@ def engaged_client(monkeypatch, tmp_path):
 
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
+    # The OpenAI-compatible images route lives on the other router, mounted at /v1 in
+    # production. Both persistence paths reach the same gallery, so both are exercised here.
+    app.include_router(openai_router, prefix = "/v1")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     return TestClient(app), backend, saved
 
@@ -472,6 +486,65 @@ def test_the_persisted_recipe_records_the_engaged_build_not_the_load_request(eng
         assert body.get(field) == expected, (
             f"the generate response dropped {field!r}: the route recorded {meta[field]!r} and "
             f"the serialized body says {body.get(field)!r}"
+        )
+
+
+def test_the_openai_route_persists_the_same_build(engaged_client):
+    """The other supported way to make an image.
+
+    /v1/images/generations goes through the same backend and the same gallery, and its recipe
+    was missing every build key -- so an image made through an OpenAI client listed with no
+    quant, no kind and no filename while the contract above stayed green.
+    """
+    client, backend, saved = engaged_client
+    load = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-Q4_K_M.gguf",
+            "transformer_quant": _EngagedBackend.requested,
+        },
+    )
+    assert load.status_code == 200, load.text
+
+    generated = client.post(
+        "/v1/images/generations",
+        json = {"prompt": "a sloth", "n": 1, "response_format": "url"},
+    )
+    assert generated.status_code == 200, generated.text
+
+    assert len(saved) == 1
+    meta = saved[0]
+    assert meta["transformer_quant"] == _EngagedBackend.engaged
+    assert meta["model_kind"] == "gguf"
+    assert meta["gguf_filename"] == "z-image-Q4_K_M.gguf"
+    assert meta["baked_loras"] == []
+
+
+def test_the_stub_runtime_does_not_outlive_its_own_test(stub_runtime):
+    """The patch modules are imported lazily by load_pipeline, i.e. WHILE the fakes are
+    installed, so their module globals close over them. monkeypatch restores sys.modules["torch"]
+    but not those, and every later test in the process would then run against module bodies
+    bound to a fake torch. The fixture has to evict them."""
+    import core.inference.diffusion_eager_patches  # noqa: F401 — imported under the stubs
+
+    assert sys.modules["torch"] is stub_runtime
+    # The eviction itself is asserted by the sibling test below, which runs after teardown.
+
+
+def test_the_patch_modules_are_not_left_cached_against_the_fakes():
+    """Runs outside the stub fixture: whatever the test above imported must be gone."""
+    for cached in (
+        "core.inference.diffusion_eager_patches",
+        "core.inference.diffusion_arch_patches",
+    ):
+        module = sys.modules.get(cached)
+        if module is None:
+            continue
+        # Present only because something imported it under the REAL runtime.
+        torch_global = getattr(module, "torch", None)
+        assert torch_global is None or torch_global is sys.modules.get("torch"), (
+            f"{cached} is cached with a torch that is not the live one"
         )
 
 
