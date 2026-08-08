@@ -556,9 +556,7 @@ def _variant_manifest_in_any_cache(
 
 def _manifest_hashes(manifest: download_manifest.Manifest) -> frozenset[str]:
     """The manifest's expected-file identity, for comparing two caches' answers."""
-    return frozenset(
-        f"{f.sha256 or ''}:{f.path}:{f.size}" for f in (manifest.expected_files or ())
-    )
+    return frozenset(f"{f.sha256 or ''}:{f.path}:{f.size}" for f in (manifest.expected_files or ()))
 
 
 async def get_gguf_download_progress_response(

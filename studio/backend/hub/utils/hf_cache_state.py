@@ -405,9 +405,7 @@ def preferred_repo_cache_dirs(
     # dir the active root does hold is found whatever its casing; the canonical
     # name below is only ever a placeholder for one that is not there yet.
     active_entries = list(
-        iter_active_repo_cache_dirs(
-            repo_type, repo_id, root = active_root, scan_errors = scan_errors
-        )
+        iter_active_repo_cache_dirs(repo_type, repo_id, root = active_root, scan_errors = scan_errors)
     )
     if active_entries:
         return active_entries

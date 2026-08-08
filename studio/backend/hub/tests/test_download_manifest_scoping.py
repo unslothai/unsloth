@@ -656,7 +656,9 @@ def test_the_active_cache_must_have_a_manifest_when_it_is_scanned(monkeypatch, t
     monkeypatch.setattr(
         download_manifest,
         "_canonical_hub_cache",
-        lambda path = None: str(active_repo.parent) if path in (None, active_repo.parent) else str(path),
+        lambda path = None: str(active_repo.parent)
+        if path in (None, active_repo.parent)
+        else str(path),
     )
     monkeypatch.setattr(
         download_manifest,
@@ -693,9 +695,10 @@ def test_an_unreadable_cache_root_is_unknown_rather_than_absent(monkeypatch, tmp
 
     # The enumeration reports the skip rather than only swallowing it...
     errors: list = []
-    assert hf_cache_state.preferred_repo_cache_dirs(
-        "model", "unsloth/Model-GGUF", scan_errors = errors
-    ) == []
+    assert (
+        hf_cache_state.preferred_repo_cache_dirs("model", "unsloth/Model-GGUF", scan_errors = errors)
+        == []
+    )
     assert errors and isinstance(errors[0], OSError)
 
     # ...and the reading built on it says unknown by omitting cache_path entirely.
