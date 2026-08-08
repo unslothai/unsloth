@@ -48,10 +48,17 @@ _UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4"})
 # What a card may name as a feature dtype, as datasets 4.3 reads it: a pyarrow value alias,
 # optionally parameterised, or one of its own feature classes.
 _VALUE_DTYPES = frozenset(
-    "null bool int8 int16 int32 int64 uint8 uint16 uint32 uint64 float16 float32 float64 "
-    "time32 time64 timestamp date32 date64 duration decimal128 decimal256 binary "
-    "large_binary string large_string".split()
+    "null bool bool_ int8 int16 int32 int64 uint8 uint16 uint32 uint64 float float16 float32 "
+    "float64 double date32 date64 binary large_binary string large_string utf8 large_utf8".split()
 )
+# The parameterised ones, with the units pyarrow actually takes.
+_DTYPE_UNITS = {
+    "time32": frozenset({"s", "ms"}),
+    "time64": frozenset({"us", "ns"}),
+    "timestamp": frozenset({"s", "ms", "us", "ns"}),
+    "duration": frozenset({"s", "ms", "us", "ns"}),
+}
+_DECIMAL_RE = re.compile(r"decimal(?:128|256)\([0-9]+, ?[0-9]+\)")
 # Compared with the underscores stripped, since a card may spell these in snake case.
 _FEATURE_TYPE_NAMES = frozenset(
     "value classlabel translation translationvariablelanguages largelist list array2d "
@@ -256,8 +263,18 @@ def _normalized_dir(value: str) -> Optional[str]:
 
 
 def _known_dtype(dtype: str) -> bool:
-    base = re.split(r"[\[(]", dtype, maxsplit = 1)[0]
-    return base in _VALUE_DTYPES or dtype.replace("_", "").lower() in _FEATURE_TYPE_NAMES
+    """A dtype datasets can turn into a Value, or one of its feature classes by name."""
+    if dtype in _VALUE_DTYPES or dtype.replace("_", "").lower() in _FEATURE_TYPE_NAMES:
+        return True
+    if _DECIMAL_RE.fullmatch(dtype):
+        return True
+    parameterised = re.fullmatch(r"([a-z0-9_]+)\[([^\]]*)\]", dtype)
+    if parameterised is None:
+        return False
+    units = _DTYPE_UNITS.get(parameterised.group(1))
+    # A timestamp may carry a timezone after its unit.
+    unit = parameterised.group(2).split(",")[0].strip()
+    return units is not None and unit in units
 
 
 def _valid_feature_node(node: Any) -> bool:
@@ -357,11 +374,6 @@ def _collapsed_configs(payload: Any) -> Any:
         entries = item.get("data_files")
         if not _valid_declared_data_files(entries):
             return _UNPARSABLE_METADATA
-        if entries is not None and not entries and not collapsed:
-            # The first config's declaration is resolved while the builder is picked, so an
-            # empty one there raises for every config. A later one only kills itself, and
-            # _unresolvable_configs drops it.
-            return _UNPARSABLE_METADATA
         collapsed[name] = item
     return collapsed
 
@@ -380,6 +392,11 @@ def _declared_configs(payload: Any) -> Any:
     if not collapsed:
         return {}
     first = next(iter(collapsed.values()))
+    if "data_files" in first and not first["data_files"] and first["data_files"] != "":
+        # The effective first config's declaration is resolved while the builder is picked,
+        # so an empty or null one there raises for every config. A later one only kills
+        # itself, and _unresolvable_configs drops it.
+        return _UNPARSABLE_METADATA
     if "data_files" in first and first["data_files"] is None:
         # datasets sanitizes the first config's declaration before it looks at a file, and a
         # null one raises TypeError there.
@@ -450,14 +467,18 @@ def _valid_dataset_info(payload: Any) -> bool:
     def children(value: Any) -> list[Any]:
         return list(value.values()) if isinstance(value, dict) else value
 
+    def field(entry: dict[str, Any], name: str) -> Any:
+        # datasets skips the conversion when the field is absent or null.
+        return entry.get(name) or []
+
     entries = payload if isinstance(payload, list) else [payload]
     return all(
         isinstance(entry, dict)
-        and isinstance(entry.get("features", []), (list, dict))
-        and isinstance(entry.get("splits", []), (list, dict))
+        and isinstance(field(entry, "features"), (list, dict))
+        and isinstance(field(entry, "splits"), (list, dict))
         # datasets walks each child with .get or .pop, so a scalar in there raises too.
-        and all(isinstance(child, dict) for child in children(entry.get("features", [])))
-        and all(isinstance(child, dict) for child in children(entry.get("splits", [])))
+        and all(isinstance(child, dict) for child in children(field(entry, "features")))
+        and all(isinstance(child, dict) for child in children(field(entry, "splits")))
         for entry in entries
     )
 
@@ -762,6 +783,9 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
                 filename in _IGNORED_DATA_FILENAMES
             ):
                 continue
+            if (base / filename).is_symlink() and not (base / filename).exists():
+                # fsspec drops a dangling link before it picks a split pattern.
+                continue
             if len(files) >= _MAX_SNAPSHOT_DATA_FILES:
                 return None
             files.append((PurePosixPath((relative / filename).as_posix()), _file_module(filename)))
@@ -771,7 +795,7 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
     return files
 
 
-def _snapshot_all_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
+def _snapshot_all_files(snapshot: Path) -> Optional[tuple[list[PurePosixPath], set[str]]]:
     """Every file a declared pattern could name, hidden and __ ones included.
 
     Default inference does not see these: fsspec's ** does not descend a directory link, so
@@ -780,12 +804,13 @@ def _snapshot_all_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
     still refuses one that points outside it.
     """
     found: list[PurePosixPath] = []
+    directories: set[str] = set()
     try:
         root = snapshot.resolve(strict = True)
         # <cache>/datasets--org--name/snapshots/<sha>
         repo = snapshot.parent.parent.resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
-        return found
+        return found, directories
 
     def inside(path: Path) -> bool:
         try:
@@ -793,7 +818,6 @@ def _snapshot_all_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
         except (OSError, RuntimeError, ValueError):
             return False
 
-    seen: set[str] = set()
     for directory, dirnames, filenames in os.walk(root, followlinks = True):
         base = Path(directory)
         try:
@@ -802,19 +826,24 @@ def _snapshot_all_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
             dirnames[:] = []
             continue
         try:
-            real = str(base.resolve(strict = True))
+            real = base.resolve(strict = True)
         except (OSError, RuntimeError, ValueError):
             dirnames[:] = []
             continue
-        if real in seen:
-            # A link back into somewhere already walked; nothing new below it.
+        if real in base.parents:
+            # A link back up its own branch. Two links to one directory are both real names
+            # for it, so only a cycle is pruned here, not a second alias.
             dirnames[:] = []
             continue
-        seen.add(real)
+        if relative.parts:
+            directories.add(relative.as_posix())
         dirnames[:] = [
             name for name in dirnames if not (base / name).is_symlink() or inside(base / name)
         ]
         for filename in filenames:
+            if (base / filename).is_symlink() and not (base / filename).exists():
+                # A dangling link is not a file to fsspec, so it is not one here either.
+                continue
             if len(found) >= _MAX_SNAPSHOT_DATA_FILES:
                 # Past the cap this is a traversal-order prefix, and deciding a declaration is
                 # missing from a prefix would drop configs that are really there.
@@ -822,7 +851,7 @@ def _snapshot_all_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
             found.append(PurePosixPath((relative / filename).as_posix()))
     # fsspec returns each glob's matches sorted, and only the first files decide the module.
     found.sort(key = lambda path: path.as_posix())
-    return found
+    return found, directories
 
 
 def _keyword_splits(path: str, patterns: _KeywordPatterns) -> dict[str, list[tuple[int, int]]]:
@@ -1011,7 +1040,10 @@ def _glob_matcher(pattern: str) -> "Optional[re.Pattern[str]]":
             start = index + 1
             if pattern[start : start + 1] == "!":
                 start += 1
-            end = pattern.index("]", start + 1)
+            end = pattern.find("]", start + 1)
+            if end < 0:
+                # fsspec reads this as a class that never closes and matches nothing.
+                return None
             body = pattern[index + 1 : end]
             if body.startswith("!"):
                 body = "^" + body[1:]
@@ -1040,15 +1072,14 @@ class _DeclaredFiles:
 
     Resolution is the one part of this module that is not linear in the snapshot, so a
     literal goes through a lookup and the globs share a work budget. Past the budget nothing
-    is determinate and the caller offers nothing rather than guessing.
+    further is determinate and the caller stops inferring.
     """
 
-    def __init__(self, paths: list[PurePosixPath]) -> None:
+    def __init__(self, paths: list[PurePosixPath], directories: set[str]) -> None:
         self.paths = paths
         self.index = {path.as_posix(): path for path in paths}
-        self.directories = {
-            "/".join(path.parts[:depth]) for path in paths for depth in range(1, len(path.parts))
-        }
+        # Every real directory, including the empty ones a declaration may step through.
+        self.directories = directories
         self.budget = _MAX_RESOLUTION_WORK
         self.exhausted = False
 
@@ -1128,9 +1159,9 @@ def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _Declared
         if _config_root(item) is None:
             dead.add(name)
             continue
-        version = item.get("version")
-        if version is not None and (
-            not isinstance(version, str) or _VERSION_RE.fullmatch(version) is None
+        if "version" in item and (
+            not isinstance(item["version"], str)
+            or _VERSION_RE.fullmatch(item["version"]) is None
         ):
             # datasets parses this into a Version for the cache directory and raises there.
             dead.add(name)
@@ -1145,7 +1176,8 @@ def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _Declared
                     matched = True
                 elif not any(character in pattern for character in "*?["):
                     dead.add(name)
-            if group and not matched:
+            if not matched:
+                # An empty group resolves to nothing just as surely as one that misses.
                 dead.add(name)
     return dead
 
@@ -1228,10 +1260,14 @@ def _resolved_data_dir(snapshot: Path, raw: str) -> Optional[str]:
         matcher = _glob_matcher(_normalized_dir(raw) or "")
         if matcher is None:
             return None
+        pattern = _normalized_dir(raw) or ""
         matched = sorted(
             relative
             for path in snapshot.rglob("*")
-            if path.is_dir() and matcher.match(relative := path.relative_to(snapshot).as_posix())
+            if path.is_dir()
+            and matcher.match(relative := path.relative_to(snapshot).as_posix())
+            and _explicit_parts(relative + "/x", "__") == _explicit_parts(pattern + "/x", "__")
+            and _explicit_parts(relative, ".") == _explicit_parts(pattern, ".")
         )
         return matched[0] if len(matched) == 1 else None
     if not (snapshot / raw).is_dir():
@@ -1341,10 +1377,12 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     # naming only an unshowable config still stops datasets inferring a default one.
     collapsed = _collapsed_configs(card_data.get("configs"))
     if collapsed:
-        walked = _snapshot_all_files(snapshot)
-        if walked is None:
-            return set()
-        declared_files = _DeclaredFiles(walked)
+        scanned = _snapshot_all_files(snapshot)
+        if scanned is None:
+            # Too large to index. Explicit declarations stand on their own, so keep them and
+            # simply do not infer anything further.
+            return options
+        declared_files = _DeclaredFiles(*scanned)
         unresolvable = _unresolvable_configs(collapsed, declared_files)
         if next(iter(collapsed)) in unresolvable:
             # The first config is resolved before any module is chosen, so a declaration that
@@ -1356,7 +1394,7 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         # One builder serves every config, so a config declaring another format is dead:
         # it either fails to generate or silently misreads its own files.
         if declared_files.exhausted:
-            return set()
+            return options
         dead = (
             unresolvable
             | _mismatched_configs(collapsed, required, declared_files)

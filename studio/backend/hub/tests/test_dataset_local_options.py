@@ -1386,7 +1386,8 @@ def test_snapshot_all_files_come_back_in_resolved_order(tmp_path):
     for name in ("z/b.csv", "a/y.jsonl", ".hidden.jsonl"):
         (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
 
-    paths = [path.as_posix() for path in local_options._snapshot_all_files(snapshot)]
+    found, _directories = local_options._snapshot_all_files(snapshot)
+    paths = [path.as_posix() for path in found]
     assert paths == sorted(paths)
     assert ".hidden.jsonl" in paths
 
@@ -1837,3 +1838,120 @@ def test_snapshot_options_do_not_walk_a_directory_link_out_of_the_cache(tmp_path
     (snapshot / "data").symlink_to(os.path.relpath(outside, snapshot))
 
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_accept_null_optional_dataset_info_fields(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n  features: null\n  splits: null\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+@pytest.mark.parametrize("dtype", ["float", "double", "utf8", "bool_", "time32[ms]", "duration[ns]"])
+def test_snapshot_options_accept_every_value_alias_the_loader_takes(tmp_path, dtype):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+@pytest.mark.parametrize("dtype", ["timestamp[bogus]", "time32[us]", "decimal128(x)"])
+def test_snapshot_options_reject_a_parameterised_dtype_the_loader_refuses(tmp_path, dtype):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_declared_options_when_the_scan_is_truncated(tmp_path, monkeypatch):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: train.jsonl\n")
+    for index in range(3):
+        (snapshot / f"train-{index}.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    monkeypatch.setattr(local_options, "_MAX_SNAPSHOT_DATA_FILES", 2)
+
+    # The declaration stands on its own; only further inference is given up.
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_an_explicit_null_version(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  version: null\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_survive_a_glob_class_that_never_closes(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: 'x[!].jsonl'\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_step_through_an_empty_directory(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: empty/../train.jsonl\n")
+    (snapshot / "empty").mkdir()
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_let_a_later_config_replace_an_empty_first_one(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: []\n- config_name: cfg\n  data_files: train.jsonl\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_declared_split_with_an_empty_path_list(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files:\n  - split: train\n    path: []\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_ignore_a_dangling_symlink_when_inferring(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "test.jsonl").symlink_to("nowhere-at-all")
+
+    # fsspec drops it before it picks a split pattern, so train is still offerable.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_keep_a_second_alias_of_one_blob_directory(tmp_path):
+    repo = tmp_path / "datasets--org--data"
+    snapshot = repo / "snapshots" / "commit"
+    blobs = repo / "blobs" / "dir"
+    blobs.mkdir(parents = True)
+    (blobs / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: two/train.jsonl\n")
+    for name in ("one", "two"):
+        (snapshot / name).symlink_to(os.path.relpath(blobs, snapshot))
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_skip_a_hidden_directory_when_matching_a_wildcard_data_dir(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: '*'\n")
+    (snapshot / "vis").mkdir()
+    (snapshot / "vis" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / ".hid").mkdir()
+    (snapshot / ".hid" / "x.txt").write_text("x\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
