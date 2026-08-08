@@ -1351,7 +1351,10 @@ def test_snapshot_options_read_a_declared_path_that_starts_with_a_dot(tmp_path):
 
 def test_snapshot_options_reject_a_declared_path_list_holding_a_non_string(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_files:\n  - split: train\n    path:\n    - a.jsonl\n    - 123\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_files:\n  - split: train\n    path:\n    - a.jsonl\n    - 123\n",
+    )
     (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == set()
@@ -1359,7 +1362,9 @@ def test_snapshot_options_reject_a_declared_path_list_holding_a_non_string(tmp_p
 
 def test_snapshot_options_keep_a_config_whose_wildcard_alternative_misses(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: a\n  data_files:\n  - a.jsonl\n  - 'missing-*.jsonl'\n")
+    _card(
+        snapshot, "configs:\n- config_name: a\n  data_files:\n  - a.jsonl\n  - 'missing-*.jsonl'\n"
+    )
     (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     # The loader swallows FileNotFoundError for a pattern with magic in it.
