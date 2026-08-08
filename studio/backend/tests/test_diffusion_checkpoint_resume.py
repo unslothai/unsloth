@@ -1045,9 +1045,7 @@ def test_a_truncated_tensor_storage_is_refused(run_dir):
 
     assert dc.read_checkpoint(run_dir / "checkpoint-2") is None
     fresh = _Run(run_dir)
-    fresh.cfg = __import__("dataclasses").replace(
-        fresh.cfg, resume_from_checkpoint = str(run_dir)
-    )
+    fresh.cfg = __import__("dataclasses").replace(fresh.cfg, resume_from_checkpoint = str(run_dir))
     with pytest.raises(dc.ResumeError):
         fresh.restore()
 

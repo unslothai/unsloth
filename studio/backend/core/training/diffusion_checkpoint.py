@@ -896,9 +896,7 @@ def describe_resume_state(
         root = Path(str(output_dir)).expanduser()
         if not root.is_dir():
             return {**blank, "resume_blocked_reason": "This run's output folder no longer exists."}
-        found = latest_valid_checkpoint(
-            root, not_before = started_at, not_after = ended_at
-        )
+        found = latest_valid_checkpoint(root, not_before = started_at, not_after = ended_at)
     except OSError:
         return blank
     if found is None:
