@@ -217,6 +217,63 @@ def _scan_paths() -> Dict[str, list]:
     return {"path": paths} if paths else {}
 
 
+# Top-level dirs several wheels write into, so one uninstall deletes another's
+# files and the survivor's RECORD describes a file nothing recreates. einx and
+# torchao both ship test/conftest.py, and install_python_stack.py
+# force-reinstalls torchao every update.
+_SHARED_NON_RUNTIME_ROOTS = frozenset(
+    (
+        "test",
+        "tests",
+        "doc",
+        "docs",
+        "example",
+        "examples",
+        "benchmark",
+        "benchmarks",
+        "sample",
+        "samples",
+        "scripts",
+    )
+)
+
+# Rewritten in place by our own setup: setup.ps1/setup.sh run `npm install`
+# inside the installed tree, and npm dedupes hoisted entries under
+# legacy-peer-deps, shrinking the lockfile below its recorded size.
+_INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
+
+
+def _shared_non_runtime(rel: str, name: str) -> bool:
+    """A third-party row under a top-level dir several wheels write into.
+
+    Ownership of these is unreliable: whichever wheel installed last wins, and
+    any of them uninstalling takes the others' files with it. Never applied to
+    what we ship, because a missing __init__.py does NOT make a directory
+    unimportable (PEP 420) and this repo imports scripts.* itself, so our own
+    top-level trees stay checked. Applied while reading RECORD, not when
+    reporting, so the row also stays out of the ownership tally and the `limit`
+    budget.
+    """
+    if _canonical(name) in _OUR_DISTRIBUTIONS:
+        return False
+    parts = tuple(p for p in rel.replace("\\", "/").split("/") if p and p != ".")
+    return len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS
+
+
+# What Unsloth ships. Its top-level trees are ours to guarantee, so they are
+# never exempted however they are named.
+_OUR_DISTRIBUTIONS = frozenset(("unsloth", "unsloth-zoo", "unsloth-studio"))
+
+
+def _installer_rewritten(rel: str) -> bool:
+    """A file our own setup rewrites in place, so its recorded size drifts.
+
+    Only the size is unreliable. The file disappearing is still damage, so the
+    row is kept and only its size dropped.
+    """
+    return rel.replace("\\", "/").rsplit("/", 1)[-1] in _INSTALLER_REWRITTEN_NAMES
+
+
 def damaged_installed_files(limit: int = 8) -> List[str]:
     """Installed files that are gone, or shorter than pip recorded.
 
@@ -235,6 +292,11 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     landed is the one on disk, so its size says nothing about either RECORD --
     in EITHER direction. Sizes are therefore compared after the whole scan, once
     multiply-owned paths are known, rather than during it.
+
+    Rows that cannot be import-time damage are dropped up front, and a file our
+    own setup rewrites keeps its existence check but loses its size. The answer
+    to a finding is "reinstall over the top", so a file no reinstall would
+    change must not produce one. See _shared_non_runtime, _installer_rewritten.
 
     Scanned over the interpreter's own site-packages rather than all of
     sys.path. distributions() searches every sys.path entry, so a damaged
@@ -273,11 +335,13 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
             # size recorded inside itself; .pyc is regenerated from source.
             if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
                 continue
+            if _shared_non_runtime(rel, name):
+                continue
             # The size field is optional and real wheels do leave it blank. Keep
             # the row anyway with an unknown size: existence is still checkable,
             # and dropping the row meant a deletion went unreported.
             recorded: Optional[int] = None
-            if len(row) >= 3 and row[2]:
+            if len(row) >= 3 and row[2] and not _installer_rewritten(rel):
                 try:
                     recorded = int(row[2])
                 except ValueError:

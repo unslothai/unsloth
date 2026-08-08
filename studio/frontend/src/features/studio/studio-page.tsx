@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
+import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { useHfTokenStore } from "@/features/hub";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
@@ -17,6 +19,7 @@ import { MediaPageLink } from "@/components/media-page-link";
 import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
 import { ArrowLeft01Icon, Image03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactElement,
   useCallback,
@@ -69,6 +72,16 @@ export function StudioPage(): ReactElement {
       isDatasetImage: s.isDatasetImage,
     })),
   );
+  // Unknown until /api/health reports; see the showTrainingHydrating note below.
+  const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const navigate = useNavigate();
+  // Once the verdict lands and it really is chat-only, leave: the guard let this load on the
+  // guess, so without this a chat-only host would sit on a Train page it cannot use.
+  useEffect(() => {
+    if (capabilitiesUnknown || !chatOnly) return;
+    void navigate({ to: "/chat", replace: true });
+  }, [capabilitiesUnknown, chatOnly, navigate]);
   const hfToken = useHfTokenStore((s) => s.token);
   const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
   const ensureModelDefaultsLoaded = useTrainingConfigStore(
@@ -137,7 +150,13 @@ export function StudioPage(): ReactElement {
     t,
   });
 
-  const showTrainingHydrating = !hasHydratedRuntime && isHydratingRuntime;
+  // The root guard now lets /studio through while the hardware verdict is out (redirecting on
+  // the browser-platform guess strands a healthy host on /chat), so the page owns the wait:
+  // show the same loading panel as a hydrating runtime rather than a half-built wizard. The
+  // wait ends by itself: AppSidebar (mounted on this route) re-reads /api/health while the
+  // verdict is unknown and writes it to this same store, so no second poll is needed here.
+  const showTrainingHydrating =
+    capabilitiesUnknown || (!hasHydratedRuntime && isHydratingRuntime);
   const showHistoryBack = activeTab === "history" && !!selectedHistoryRunId;
 
   return (
@@ -196,7 +215,8 @@ export function StudioPage(): ReactElement {
             <GuidedTour {...tour.tourProps} celebrate={isConfigTour} />
 
             {showTrainingHydrating ? (
-              <div className="rounded-2xl border border-border/60 p-8 text-sm text-muted-foreground">
+              <div className="flex items-center gap-3 rounded-2xl border border-border/60 p-8 text-sm text-muted-foreground">
+                <Spinner className="size-4 shrink-0" />
                 {t("studio.loadingRuntime")}
               </div>
             ) : (
