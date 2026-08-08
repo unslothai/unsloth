@@ -58,13 +58,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
     ],
 )
 def test_capability_gate(capability, probe_result, expect_disabled):
+    # `capability` is documentation now: the gate reads the kernel, not the number. It used
+    # to be read at the call site, which is what put an unguarded CUDA query at module scope.
     calls = {"n": 0}
 
     def probe():
         calls["n"] += 1
         return probe_result
 
-    assert ad._xformers_disabled_for_capability(capability, probe = probe) is expect_disabled
+    assert ad._xformers_disabled(probe = probe) is expect_disabled
     # Exactly once, on every capability: the decision is the kernel's to make, and it is
     # one tiny forward, so there is no reason to run it twice or to skip it.
     assert calls["n"] == 1
@@ -311,3 +313,73 @@ def test_import_survives_a_local_rank_that_names_no_visible_device(local_rank):
         result.returncode == 0
     ), f"import unsloth crashed with LOCAL_RANK={local_rank!r}:\n{result.stderr[-2000:]}"
     assert "IDX 0" in result.stdout, result.stdout[-2000:]
+
+
+def test_no_unguarded_cuda_query_runs_at_import():
+    """A CUDA capability query is not safe to run at module scope.
+
+    The driver refuses it when the device is busy, in exclusive-compute mode, or otherwise
+    unavailable, and at module scope that is `import unsloth` raising -- over a diagnostic
+    whose worst outcome is "keep xformers on and let the real forward decide". Every such
+    read has to sit inside a function that can answer "unknown"."""
+    import ast
+
+    tree = ast.parse((_REPO_ROOT / "unsloth" / "utils" / "attention_dispatch.py").read_text())
+    offenders = []
+    for node in tree.body:
+        # Module scope only. A call inside a def runs when something calls it, and every
+        # such caller here is already guarded.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            if isinstance(child.func, ast.Attribute) and child.func.attr in (
+                "get_device_capability",
+                "get_device_properties",
+            ):
+                offenders.append(ast.unparse(child))
+    assert offenders == [], f"unguarded CUDA query at import: {offenders}"
+
+
+def test_an_unavailable_device_leaves_the_fp32_answer_unknown(monkeypatch):
+    # Same query, same refusal. It must degrade to "cannot tell" rather than propagate.
+    monkeypatch.setattr(ad.torch.cuda, "is_available", lambda: True)
+
+    def _refuse(index = None):
+        raise RuntimeError("CUDA error: device is currently in use by another process")
+
+    monkeypatch.setattr(ad.torch.cuda, "get_device_capability", _refuse)
+    assert ad._probe_device_major() is None
+
+
+def test_the_model_code_reads_the_probed_verdict_not_the_bare_import():
+    """`HAS_XFORMERS = xformers is not None` recomputed in llama.py ignored the probe.
+
+    Mistral answers "xFormers is on" by skipping the 4D sliding-window mask and letting the
+    xFormers bias carry the window. With the dispatcher already fallen back to SDPA, that
+    mask is the only thing making the window local, so every sequence longer than
+    config.sliding_window silently attended to the whole causal history."""
+    import ast
+
+    tree = ast.parse((_REPO_ROOT / "unsloth" / "models" / "llama.py").read_text())
+    assigned = [
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name) and target.id == "HAS_XFORMERS"
+    ]
+    assert assigned == [], "llama.py recomputes HAS_XFORMERS instead of taking the probed one"
+    imported = [
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("attention_dispatch")
+        for alias in node.names
+    ]
+    assert "HAS_XFORMERS" in imported
+
+    from unsloth.models import llama
+    from unsloth.utils import attention_dispatch
+
+    assert llama.HAS_XFORMERS is attention_dispatch.HAS_XFORMERS

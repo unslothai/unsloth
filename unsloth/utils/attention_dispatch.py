@@ -131,7 +131,7 @@ def _xformers_runs_on_device() -> bool:
         return False
 
 
-def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
+def _xformers_disabled(probe = _xformers_runs_on_device) -> bool:
     # Probe on EVERY capability, not just sm_120+. The old gate returned early below
     # sm_120 on the assumption that xformers always works there, which only holds when
     # the wheel matches the runtime: a cu128-built xformers on a cu130 torch is just as
@@ -142,9 +142,12 @@ def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_devi
     # cutlass op is capability-rejected (it caps at sm_90) and its flash-2 op runs only
     # if the build ships an sm_120 kernel (unslothai/unsloth#4631).
     #
-    # `capability` is unused now that the answer is always the real op, but it stays in
-    # the signature: it is the thing being decided about, and callers pass it explicitly.
-    del capability
+    # No capability argument: the answer is always the real op now, and reading the
+    # capability at the call site put an UNGUARDED torch.cuda.get_device_capability() at
+    # module scope. CUDA refuses that query when the device is busy, in exclusive mode or
+    # temporarily unavailable, and there it raised before the probe could classify the
+    # failure as inconclusive -- turning `import unsloth` into a crash over a diagnostic
+    # whose worst answer is "keep xformers on and let the forward decide".
     return not probe()
 
 
@@ -154,7 +157,7 @@ def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_devi
 # already initialised (_XFORMERS_FP32_UNSUPPORTED below forces the same lazy init).
 XFORMERS_DISABLED_REASON = XFORMERS_BROKEN_REASON
 if HAS_XFORMERS and torch.cuda.is_available():
-    if _xformers_disabled_for_capability(torch.cuda.get_device_capability(_PROBE_DEVICE_INDEX)):
+    if _xformers_disabled():
         if XFORMERS_PROBE_INCONCLUSIVE:
             # The GPU was busy or full, which says nothing about the build. Keep xformers
             # and let the real forward pass decide; turning it off here would be a silent
@@ -189,9 +192,23 @@ if HAS_XFORMERS and torch.cuda.is_available():
 # above used, so the two answers describe the same GPU: on a mixed box, reading the fp32
 # capability off device 0 while probing this rank's device is how a display card ends up
 # deciding downcast policy for a compute card.
-_XFORMERS_FP32_UNSUPPORTED = (
-    torch.cuda.is_available() and torch.cuda.get_device_capability(_PROBE_DEVICE_INDEX)[0] >= 10
-)
+def _probe_device_major() -> Optional[int]:
+    """Major compute capability of the probed device, or None if CUDA will not say.
+
+    Guarded for the same reason the probe is: a busy or exclusive-mode device makes this
+    query raise, and at module scope that is an import crash rather than a missing answer.
+    """
+    if not torch.cuda.is_available():
+        return None
+    try:
+        return torch.cuda.get_device_capability(_PROBE_DEVICE_INDEX)[0]
+    except Exception:
+        return None
+
+
+# None (unknown) is treated as supported: downcasting fp32 that did not need it is a
+# quality regression, and the fp16/bf16 paths are unaffected either way.
+_XFORMERS_FP32_UNSUPPORTED = (_probe_device_major() or 0) >= 10
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
 # PrefixGrouper kernel, resolved once when the env gate is on so PG-off users never load
