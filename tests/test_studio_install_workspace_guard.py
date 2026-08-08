@@ -634,7 +634,7 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
         '        ln "$_t" "$_css_id_file" 2>/dev/null || {\n'
         '            mkdir "$_css_id_file.lock" 2>/dev/null &&\n'
         '                { [ -s "$_css_id_file" ] || mv "$_t" "$_css_id_file"; rmdir "$_css_id_file.lock"; }\n'
-        '        }\n'
+        "        }\n"
         '        rm -f "$_t"\n'
         "    fi\n"
         '    cat "$_css_id_file"\n'
@@ -726,8 +726,8 @@ def test_install_sh_id_publish_replaces_a_blank_incumbent(tmp_path):
         '    if mkdir "$_css_id_file.lock" 2>/dev/null; then\n'
         '        [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"\n'
         '        rmdir "$_css_id_file.lock"\n'
-        '    fi\n'
-        'fi\n'
+        "    fi\n"
+        "fi\n"
         'rm -f "$_css_id_tmp"\n'
         'cat "$_css_id_file"\n'
     )
