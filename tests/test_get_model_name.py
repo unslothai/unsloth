@@ -13,8 +13,13 @@ def _no_remote_mapper():
     return {}, {}, {}, {}, {}
 
 
-
-def _write_cached_model(repo_cache, commit, *, sharded = False, complete = True):
+def _write_cached_model(
+    repo_cache,
+    commit,
+    *,
+    sharded = False,
+    complete = True,
+):
     snapshot = os.path.join(repo_cache, "snapshots", commit)
     os.makedirs(snapshot)
     open(os.path.join(snapshot, "config.json"), "w").close()
@@ -224,9 +229,7 @@ class TestGetModelName(unittest.TestCase):
                 ),
                 legacy,
             )
-            open(
-                os.path.join(canonical_snapshot, "model-00001-of-00001.safetensors"), "w"
-            ).close()
+            open(os.path.join(canonical_snapshot, "model-00001-of-00001.safetensors"), "w").close()
             self.assertEqual(
                 get_model_name(
                     "unsloth/Meta-Llama-3.1-8B-Instruct",
