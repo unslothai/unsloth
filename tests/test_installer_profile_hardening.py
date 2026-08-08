@@ -687,7 +687,7 @@ def test_the_setup_launch_reapplies_the_proxy_it_told_the_child_to_forget():
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
     start = _locate(src, 'powershell_args = ["powershell.exe"]', "the setup.ps1 launch")
     # The f-string itself, not the comment above it that also quotes *>&1.
-    command = _locate(src[start:], "f\"", "the -Command f-string")
+    command = _locate(src[start:], 'f"', "the -Command f-string")
     assert (
         "_PS_PROXY_DEFAULTS_PRELUDE" in src[start + command : start + command + 200]
     ), "the prelude has to run before setup.ps1, not merely exist"
