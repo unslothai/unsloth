@@ -737,10 +737,6 @@ jobs:
           rm -f certificate.p12
 
       # ── Windows: install Azure Trusted Signing CLI ──
-<<<<<<< HEAD
-      - name: Install trusted-signing-cli
-        if: matrix.platform == 'windows-2022'
-=======
       # `cargo install` builds this from source: 241s and 248s on the last two
       # cache-miss runs. It was only ever fast when the ~550 MB rust-cache
       # happened to restore `~/.cargo/bin` too, and that entry is the first
@@ -749,7 +745,7 @@ jobs:
       # compile off the critical path independently of the big Rust cache.
       - name: Restore trusted-signing-cli
         id: cache_trusted_signing_cli
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2022'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.cargo/bin/trusted-signing-cli.exe
@@ -758,15 +754,14 @@ jobs:
           key: trusted-signing-cli-0.10.0-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install trusted-signing-cli
-        if: matrix.platform == 'windows-latest' && steps.cache_trusted_signing_cli.outputs.cache-hit != 'true'
->>>>>>> origin/main
+        if: matrix.platform == 'windows-2022' && steps.cache_trusted_signing_cli.outputs.cache-hit != 'true'
         run: |
           cargo install trusted-signing-cli --version 0.10.0 --locked
 
       # Unconditional: on a cache hit the install step above is skipped, and the
       # cargo bin dir still has to reach PATH or signing fails.
       - name: Add cargo bin to PATH
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2022'
         run: |
           echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
