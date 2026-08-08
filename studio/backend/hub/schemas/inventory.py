@@ -49,6 +49,19 @@ class GgufVariantDetail(BaseModel):
             "this to pick Resume (http) vs Redownload (xet) labels."
         ),
     )
+    dependency_key: Optional[str] = Field(
+        None,
+        description = (
+            "Opaque grouping key: variants sharing a key share one companion "
+            "download footprint (text encoders, VAE, tokenizer, configs), so a "
+            "footprint resolved for one of them is correct for all of them. The "
+            "companion set is NOT repository-wide -- one repo can hold GGUFs of "
+            "different diffusion families, and FLUX.2-klein picks its text "
+            "encoder per checkpoint size -- so a client must group by this key "
+            "rather than per repo. Null means unknown (no family resolved); "
+            "clients should then treat the repo as a single group."
+        ),
+    )
 
 
 class GgufVariantsResponse(BaseModel):

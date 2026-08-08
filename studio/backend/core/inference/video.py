@@ -577,6 +577,9 @@ class VideoBackend:
                         kwargs["gguf_filename"],
                         kwargs.get("hf_token"),
                         cancel_event = cancel_event,
+                        # The plan counts a file cached under EITHER root and stages neither, so the
+                        # load has to resolve through both or it re-pulls what the planner skipped.
+                        reuse_other_cache_root = True,
                     )
                 )
             # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + TE + tokenizer; recompute the estimate.
@@ -827,29 +830,62 @@ class VideoBackend:
         # Keyed by repo so a 2.3 pick's checkpoint and extras stay ONE scoped job; two entries would collide on the job key.
         entries: dict[str, dict[str, Any]] = {}
         total = 0
+        checkpoint_bytes = 0
+        planned: dict[str, set[str]] = {}
+        # Where the loader would resolve each file (live root / other root / nowhere), and the
+        # entry labels, both keyed by repo so the staging decision can be made once per repo.
+        located: dict[str, dict[str, tuple[Optional[str], int]]] = {}
+        labels: dict[str, dict[str, Any]] = {}
 
         def add(
             repo: str,
             files: list[tuple[str, int]],
             gguf: Optional[str] = None,
+            revision: Optional[str] = None,
+            checkpoint: bool = False,
         ) -> int:
-            if not files:
-                return 0
-            entry = entries.setdefault(
-                repo, {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None}
-            )
-            seen = set(entry["files"])
-            added = 0
+            """Count every required file and record, per root, where the loader would find it.
+            Which of them to stage is decided per REPO once every add is in (see below), not here:
+            the 2.3 path adds one repo across several calls, and a call that happens to hold only
+            other-root files cannot see that the repo straddles both. Returns the full size.
+
+            ``checkpoint`` marks the entry holding the SELECTED model so the panel can label it
+            without re-deriving the answer from the repo id, which the plan itself may have
+            rewritten. Same envelope key the image planners emit, so one page-side map serves both."""
+            from core.inference.diffusion import DiffusionBackend
+
+            def _where(name: str, size: int) -> Optional[str]:
+                live = hub_cache_dir()
+                if DiffusionBackend._hub_file_is_cached(repo, name, revision, size, roots = (live,)):
+                    return "live"
+                if not DiffusionBackend._hub_file_is_cached(
+                    repo, name, revision, size, roots = (None,)
+                ):
+                    return None
+                # A stale live copy under the right name shadows the good one, because
+                # reuse_other_cache_root switches roots only when the live lookup finds NOTHING.
+                # Presence alone is what that switch tests, so ask without the size.
+                if DiffusionBackend._hub_file_is_cached(repo, name, revision, None, roots = (live,)):
+                    return None
+                return "other"
+
+            seen = planned.setdefault(repo, set())
+            where = located.setdefault(repo, {})
+            label = labels.setdefault(repo, {"gguf": None, "checkpoint": False})
+            if gguf:
+                label["gguf"] = gguf
+            # Only ever raised, never cleared: a repo holding both the checkpoint and companion
+            # files (a 2.3 pick whose extras live in the checkpoint repo) is keyed once, so a later
+            # companion add would otherwise unflag what the checkpoint add marked.
+            label["checkpoint"] = label["checkpoint"] or checkpoint
+            required = 0
             for name, size in files:
                 if name in seen:
                     continue
                 seen.add(name)
-                entry["files"].append(name)
-                entry["bytes"] += int(size)
-                added += int(size)
-            if gguf:
-                entry["gguf_filename"] = gguf
-            return added
+                required += int(size)
+                where[name] = (_where(name, int(size)), int(size))
+            return required
 
         try:
             api = HfApi(token = hf_token or None)
@@ -860,7 +896,14 @@ class VideoBackend:
                     for s in (info.siblings or [])
                     if s.rfilename == gguf_filename
                 ]
-                total += add(repo_id, sizes, gguf = gguf_filename)
+                checkpoint_bytes = sum(size for _name, size in sizes)
+                total += add(
+                    repo_id,
+                    sizes,
+                    gguf = gguf_filename,
+                    revision = getattr(info, "sha", None),
+                    checkpoint = True,
+                )
                 if ltx23:
                     # The 2.3 assembly reads these companion files at load; without them here they would be pulled inline, outside the panel's disk preflight.
                     from .video_ltx2 import ltx23_extras_files, LTX23_EXTRAS_REPO
@@ -878,6 +921,7 @@ class VideoBackend:
                             for s in (extras_info.siblings or [])
                             if s.rfilename in wanted
                         ],
+                        revision = getattr(extras_info, "sha", None),
                     )
             # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the dense shards.
             te_sources = self._te_prequant_sources(fam, text_encoder_quant)
@@ -894,11 +938,52 @@ class VideoBackend:
                         ltx23 = ltx23,
                         skip_te_components = tuple(te_files),
                     ),
+                    revision = getattr(info, "sha", None),
+                    # A pipeline pick has no single file: the base IS the selected model (base =
+                    # repo_id above). Under a GGUF pick the base is a companion, so it stays unflagged.
+                    checkpoint = kind == "pipeline",
                 )
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
             logger.warning("video.download_plan_failed: %s", exc)
-            return {"entries": [], "total_bytes": 0}
-        return {"entries": list(entries.values()), "total_bytes": total}
+            return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
+        for repo, where in located.items():
+            # Files STRADDLING the two roots cannot be handed to from_pretrained as one snapshot:
+            # _predownload_base returns no directory in that state and the assembly is pinned to
+            # hub_cache_dir(), so the other-root subset is invisible to it and gets re-pulled
+            # inline, past this plan's progress, cancel and disk preflight, failing offline after a
+            # plan that reported nothing left to do. A repo living wholly in the other root is fine,
+            # which is what reuse_other_cache_root is for. A file missing everywhere downloads INTO
+            # the live root, so it counts as live: dropping it would read a mixed repo as unsplit
+            # and stage only the missing part, manufacturing the very split this avoids.
+            split = {w or "live" for w, _size in where.values()} == {"live", "other"}
+            staged = [
+                (name, size)
+                for name, (w, size) in where.items()
+                if w is None or (split and w != "live")
+            ]
+            if not staged:
+                continue
+            names = [name for name, _size in staged]
+            gguf = labels[repo]["gguf"]
+            entries[repo] = {
+                "repo_id": repo,
+                "files": names,
+                "bytes": sum(size for _name, size in staged),
+                "gguf_filename": gguf,
+                # The flag describes the ENTRY, not the pick: a 2.3 repo holding both the cached
+                # checkpoint and its missing extras stages companion files only, and labelling that
+                # "Model file" misdescribes what is downloading. A pipeline pick has no single file,
+                # so the repo itself is the model and anything staged from it is part of it.
+                "checkpoint": labels[repo]["checkpoint"] and (gguf is None or gguf in names),
+            }
+        return {
+            "entries": list(entries.values()),
+            # Remaining vs the full footprint: cache state changes what is left to fetch, never
+            # what the load needs on disk.
+            "total_bytes": sum(entry["bytes"] for entry in entries.values()),
+            "required_bytes": total,
+            "checkpoint_bytes": int(checkpoint_bytes),
+        }
 
     @staticmethod
     def _pick_looks_like_ltx23(
@@ -947,6 +1032,8 @@ class VideoBackend:
                     source.filename,
                     hf_token,
                     cancel_event = cancel,
+                    # Pre-quant encoders are planned with the same both-roots probe.
+                    reuse_other_cache_root = True,
                 )
             except Exception as exc:  # noqa: BLE001 -- no pre-cast file just means the dense encoder
                 if cancel.is_set():
@@ -994,17 +1081,38 @@ class VideoBackend:
                 return None
             from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-            snapshot_root: Optional[Path] = None
+            snapshot_root: Optional[str] = None
+            roots: set[str] = set()
             for name, _ in files:
                 # Explicit check: a cached file returns without consulting the event, so a warm-cache sweep would run to completion after a cancel.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 local = Path(
-                    hf_hub_download_with_xet_fallback(base, name, hf_token, cancel_event = cancel)
+                    hf_hub_download_with_xet_fallback(
+                        base,
+                        name,
+                        hf_token,
+                        cancel_event = cancel,
+                        # Same reason as the checkpoint: the plan already treats either root as cached.
+                        reuse_other_cache_root = True,
+                    )
                 )
+                # The resolved path minus the file's own relative parts, so a subfolder entry yields
+                # the same root as a top-level one. Not resolve()d: that follows the link into blobs/.
+                try:
+                    root = str(local.parents[len(Path(name).parts) - 1])
+                except (IndexError, ValueError, OSError):
+                    root = ""
+                roots.add(root)
                 if name == "model_index.json":
-                    snapshot_root = local.parent
-            return str(snapshot_root) if snapshot_root is not None else None
+                    snapshot_root = root or None
+            # Only hand back a snapshot the WHOLE set lives in. reuse_other_cache_root resolves each
+            # file through whichever root holds it, so a moved cache can serve the manifest from the
+            # old root while the rest land in the live one, and from_pretrained would then be pointed
+            # at a tree missing the others. Mirrors the image prefetch path.
+            if snapshot_root is not None and roots != {snapshot_root}:
+                return None
+            return snapshot_root
         except Exception as exc:  # noqa: BLE001 -- fall back to from_pretrained's own pull
             if cancel.is_set():
                 raise
@@ -1593,7 +1701,15 @@ class VideoBackend:
             return root
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-        return Path(hf_hub_download_with_xet_fallback(repo_id, gguf_filename or "", hf_token))
+        return Path(
+            hf_hub_download_with_xet_fallback(
+                repo_id,
+                gguf_filename or "",
+                hf_token,
+                # Matches the planner's both-roots cache probe, as the diffusion fetches already do.
+                reuse_other_cache_root = True,
+            )
+        )
 
     # ── generation ───────────────────────────────────────────────────────────
 

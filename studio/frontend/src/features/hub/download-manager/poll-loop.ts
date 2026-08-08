@@ -705,6 +705,12 @@ export async function startJob(
       : opts.adopt && existing?.scopedFiles
         ? { scopedFiles: existing.scopedFiles }
         : {}),
+    // The staged plan's own verdict on which entry is the picked model, so the panel labels it without guessing from file extensions. An adopted job keeps the existing record, since only the stager can supply it.
+    ...(req.checkpoint !== undefined
+      ? { checkpoint: req.checkpoint }
+      : opts.adopt && existing?.checkpoint !== undefined
+        ? { checkpoint: existing.checkpoint }
+        : {}),
   });
 
   if (!opts.adopt) {

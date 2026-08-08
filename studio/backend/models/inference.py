@@ -2905,9 +2905,17 @@ class DiffusionDownloadPlanEntry(BaseModel):
         "also pull the packaged root single, transformer/ shards and fp16 twins the loader "
         "never opens (tens of GB on a FLUX repo).",
     )
-    bytes: int = Field(0, description = "Declared size of those files, 0 when unknown")
+    bytes: int = Field(
+        0, description = "Declared size of the files still missing from cache, 0 when unknown"
+    )
     gguf_filename: Optional[str] = Field(
         None, description = "Set when this entry is the single-file GGUF checkpoint"
+    )
+    checkpoint: bool = Field(
+        False,
+        description = "This entry holds the SELECTED model rather than a companion repo. The "
+        "planner has to say so: a gated base is staged from its ungated mirror, so the entry's "
+        "repo id is not the id the caller picked and the role cannot be recovered downstream.",
     )
 
 
@@ -2916,7 +2924,16 @@ class DiffusionDownloadPlanResponse(BaseModel):
     same file scope the loader would. Empty entries mean nothing to download (local path)."""
 
     entries: List[DiffusionDownloadPlanEntry] = Field(default_factory = list)
-    total_bytes: int = Field(0, description = "Sum across entries, 0 when the estimate failed")
+    total_bytes: int = Field(
+        0, description = "Sum of the remaining download entries, 0 when ready or unknown"
+    )
+    required_bytes: int = Field(
+        0,
+        description = "Full declared footprint of every file the load requires, including cached files",
+    )
+    checkpoint_bytes: int = Field(
+        0, description = "Declared size of the selected checkpoint within required_bytes"
+    )
 
 
 class DiffusionStatusResponse(BaseModel):

@@ -50,6 +50,18 @@ export interface ModelSelectorChangeMeta {
   nativePathExpiresAtMs?: number | null;
 }
 
+/** Full on-disk requirement for a model pick, including its checkpoint and
+ * companion assets (text encoders, VAE, tokenizer/config files, etc.). */
+export interface ModelDownloadFootprint {
+  requiredBytes: number;
+  checkpointBytes: number;
+}
+
+export type ModelDownloadFootprintResolver = (
+  id: string,
+  meta: ModelSelectorChangeMeta,
+) => Promise<ModelDownloadFootprint | null>;
+
 export interface ModelPickTarget {
   id: string;
   displayName: string;
