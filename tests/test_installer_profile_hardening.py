@@ -1130,9 +1130,9 @@ def test_a_stale_alias_does_not_block_a_current_uv_on_path(tmp_path):
         check = False,
     )
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    assert lines and lines[0] == "True", (
-        f"the gate stopped at the stale alias: {result.stdout!r} {result.stderr!r}"
-    )
+    assert (
+        lines and lines[0] == "True"
+    ), f"the gate stopped at the stale alias: {result.stdout!r} {result.stderr!r}"
     assert lines[-1].endswith("current.ps1"), "the passing candidate must be the pinned one"
 
 
