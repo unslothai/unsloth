@@ -520,9 +520,11 @@ def clear_breadcrumb() -> None:
         if _tracked_pids:
             _write_breadcrumb()
             return
+        # Inside the lock: a spawn landing between the check and the unlink
+        # would otherwise write a record we then delete.
         path = _breadcrumb_file()
-    if path is not None:
-        _unlink(path)
+        if path is not None:
+            _unlink(path)
 
 
 def _identity_or_none(pid) -> "Optional[str]":
@@ -629,8 +631,11 @@ def adopt_pid(pid: Optional[int]) -> None:
 
 def terminate_all(timeout: float = 5.0) -> "list[int]":
     """Backstop sweep over adopted pids, after per-subsystem cleanup. SIGTERM,
-    then SIGKILL the survivors after `timeout`. Skips a pid whose identity no
-    longer matches (recycled). Idempotent and teardown-safe.
+    then SIGKILL the survivors after `timeout`. Idempotent and teardown-safe.
+
+    Signals only a pid whose recorded start-time identity still matches. A pid
+    that cannot be verified is left alone and kept in the record, so the startup
+    sweep can retry it rather than this process signalling a stranger.
 
     Returns the pids still alive afterwards, so the caller can keep them in the
     crash record rather than dropping the only handle on them."""
@@ -638,8 +643,16 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
     for pid, identity in list(_tracked_pids.items()):
         with _record_lock:
             _tracked_pids.pop(pid, None)
-        if identity is not None and _pid_identity(pid) != identity:
-            continue  # pid was reused by an unrelated process
+        current = _pid_identity(pid)
+        if current is not None and identity is not None and current != identity:
+            continue  # definitely recycled by something else; drop it
+        if identity is None or current is None:
+            # Cannot prove this is still our child, so do not signal it. Keep it
+            # recorded while it is alive: the startup sweep runs the same test.
+            if _pid_alive(pid) and not _pid_is_zombie(pid):
+                with _record_lock:
+                    _tracked_pids[pid] = identity
+            continue
         try:
             if _is_windows():
                 os.kill(pid, signal.SIGTERM)
@@ -722,9 +735,12 @@ def _reap_one_record(path, timeout: float) -> "list[int]":
                 pass
         else:
             _posix_terminate(pid, timeout = timeout)
-        # Counted once signalled: an unwaited child lingers as a zombie, which
-        # a liveness re-check would read as alive.
         killed.append(pid)
+        # These belong to a process that is gone, so they cannot be our zombies;
+        # one still running means the kill did not take, and the record is the
+        # only handle the next launch would have on it.
+        if _pid_alive(pid) and not _pid_is_zombie(pid):
+            unresolved = True
 
     if not unresolved:
         _unlink(path)
