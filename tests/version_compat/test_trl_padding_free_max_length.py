@@ -1522,7 +1522,11 @@ def _packing_aware_stub():
             )
             return seen["dataloader"]
 
-        def evaluate(self, eval_dataset = None, **kw):
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
             override = eval_dataset is not None
             return self.get_eval_dataloader(eval_dataset if override else self.eval_dataset)
 
@@ -1531,7 +1535,11 @@ def _packing_aware_stub():
             seen["prepared"] = dataset
             return dataset.map(lambda e: e)  # packing always yields a NEW object
 
-        def evaluate(self, eval_dataset = None, **kw):
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
             if (
                 not self._skip_prepare_dataset
                 and eval_dataset is not None
@@ -1569,12 +1577,16 @@ def test_a_split_no_packer_reaches_is_still_capped_under_eval_packing():
         return seen
 
     # Stored split, `evaluate()` with no argument. TRL never prepares it.
-    for flags in ({"eval_packing": True}, {"packing": True}, {"eval_packing": True, "packing": True}):
+    for flags in (
+        {"eval_packing": True},
+        {"packing": True},
+        {"eval_packing": True, "packing": True},
+    ):
         seen = _run(lambda s: s.evaluate(), **flags)
         assert "prepared" not in seen, "TRL does not prepare a stored split"
-        assert max(len(r) for r in seen["dataloader"]["input_ids"]) <= cap, (
-            f"{flags}: an overlength stored split reached the collator"
-        )
+        assert (
+            max(len(r) for r in seen["dataloader"]["input_ids"]) <= cap
+        ), f"{flags}: an overlength stored split reached the collator"
 
     # A named split: `evaluate("name")` is excluded from TRL's prep by name.
     Stub, seen = _packing_aware_stub()
@@ -1586,9 +1598,9 @@ def test_a_split_no_packer_reaches_is_still_capped_under_eval_packing():
     stub.eval_dataset = {"validation": _tokenized_dataset(tok)}
     stub.evaluate(eval_dataset = "validation")
     assert "prepared" not in seen
-    assert max(len(r) for r in seen["dataloader"]["input_ids"]) <= cap, (
-        "an overlength named split reached the collator"
-    )
+    assert (
+        max(len(r) for r in seen["dataloader"]["input_ids"]) <= cap
+    ), "an overlength named split reached the collator"
 
     # `skip_prepare_dataset`: the split IS passed, and TRL still never packs it.
     seen = _run(
@@ -1597,16 +1609,16 @@ def test_a_split_no_packer_reaches_is_still_capped_under_eval_packing():
         skip_prepare = True,
     )
     assert "prepared" not in seen
-    assert max(len(r) for r in seen["dataloader"]["input_ids"]) <= cap, (
-        "skip_prepare_dataset + eval_packing let an overlength split through"
-    )
+    assert (
+        max(len(r) for r in seen["dataloader"]["input_ids"]) <= cap
+    ), "skip_prepare_dataset + eval_packing let an overlength split through"
 
     # The control, and the deferral this branch exists for: when TRL really does
     # prepare the split, the packer must still receive the FULL rows.
     seen = _run(lambda s: s.evaluate(eval_dataset = s.eval_dataset), eval_packing = True)
-    assert max(len(r) for r in seen["prepared"]["input_ids"]) > cap, (
-        "the split was cut before TRL's packer could redistribute the overflow"
-    )
+    assert (
+        max(len(r) for r in seen["prepared"]["input_ids"]) > cap
+    ), "the split was cut before TRL's packer could redistribute the overflow"
 
 
 def test_the_installed_trl_is_on_the_side_of_1_7_0_that_its_version_says():
