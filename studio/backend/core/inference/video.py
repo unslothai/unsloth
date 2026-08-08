@@ -856,6 +856,14 @@ class VideoBackend:
                     )
                 finally:
                     self._teardown_waiters -= 1
+        if native_device == "cpu":
+            # /video/load acquired the VIDEO GPU claim off the resolved device target, but no
+            # accelerator binary was available and this runtime committed to the CPU build, so it
+            # holds no VRAM. Drop the stale claim, or the next chat/image acquire evicts a model
+            # that is not on the GPU. release_if keeps the token check atomic against a newer load
+            # that took ownership already. Mirrors /images/load's release for a CPU-only native load.
+            from .gpu_arbiter import VIDEO, release_if
+            release_if(VIDEO, lambda: token is None or token == self._load_token)
 
     def _rollback_precommit_globals(self, token: Optional[int]) -> None:
         """Restore process-wide speed globals (cudnn.benchmark / TF32 / the compiled

@@ -2008,6 +2008,127 @@ def test_h3_native_load_honors_install_switch_and_maps_xpu_to_vulkan(monkeypatch
     assert backend._state.device == "cpu"
 
 
+def test_h3_native_cpu_fallback_releases_the_video_gpu_claim(monkeypatch, tmp_path):
+    """The accelerator binary is missing, so the runtime commits to the CPU build and holds no
+    VRAM; /video/load's VIDEO claim (taken off the non-CPU device target) must not survive it,
+    else the next chat/image acquire evicts a model that is not on the GPU."""
+    from core.inference import gpu_arbiter
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: "/existing/sd-cli" if accelerator == "cpu" else None,
+    )
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+
+    assert backend._state is not None
+    assert backend._state.device == "cpu"
+    assert gpu_arbiter.current_owner() is None
+
+
+def test_h3_native_accelerator_load_keeps_the_video_gpu_claim(monkeypatch, tmp_path):
+    """The counterpart: when the accelerator binary IS there the runtime really uses the GPU,
+    so the VIDEO claim has to stay."""
+    from core.inference import gpu_arbiter
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: "/existing/sd-cli",
+    )
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+
+    assert backend._state is not None
+    assert backend._state.device == "cuda"
+    assert gpu_arbiter.current_owner() == gpu_arbiter.VIDEO
+
+
 def test_h3_native_generation_dispatch_does_not_import_torch(monkeypatch):
     from core.inference.video import _VideoLoadState
 
