@@ -58,5 +58,11 @@ export function idleProbeVerdict(
   if (downloadedBytes > 0) return "active";
   if (cacheMeasured === false) return "active";
   if (targetPresent === false) return "gone";
+  // A MEASURED scan with no cache path is an absence, however it was serialized. The GGUF
+  // progress route sets response_model_exclude_none, so its measured-empty answer drops
+  // cache_path entirely rather than sending null -- which read as "older backend, unknown"
+  // and re-adopted a job whose cache was deleted, blocking a fresh download of it. An older
+  // backend sends no cache_measured at all and keeps the null-only rule below.
+  if (cacheMeasured === true) return cachePath == null ? "gone" : "active";
   return cachePath === null ? "gone" : "active";
 }

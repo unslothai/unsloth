@@ -65,6 +65,20 @@ test("a variant whose own files are gone does not survive on a sibling's cache d
   assert.equal(idleProbeVerdict(0, null, true), "gone", "no cache at all is still gone");
 });
 
+test("a measured scan with no cache path retires the job however it was serialized", () => {
+  // /api/hub/gguf-download-progress sets response_model_exclude_none, so its measured-empty
+  // answer OMITS cache_path rather than sending null. Read as "older backend, unknown", that
+  // re-adopted a job whose cache directory had been deleted and blocked a fresh download of it.
+  assert.equal(idleProbeVerdict(0, undefined, null, true), "gone");
+  assert.equal(idleProbeVerdict(0, null, null, true), "gone");
+  // A measured scan that DID find the cache is still active, and an unmeasured one is unknown.
+  assert.equal(idleProbeVerdict(0, "/hub/models--unsloth--x", null, true), "active");
+  assert.equal(idleProbeVerdict(0, undefined, null, false), "active");
+  // An older backend sends no flag at all and keeps the null-only rule.
+  assert.equal(idleProbeVerdict(0, undefined, null, undefined), "active");
+});
+
+
 test("a scan that never happened does not retire a job", () => {
   // The reading is unknown, not empty. It travels as its own flag because these responses go
   // through DownloadProgressResponse, whose cache_path defaults to null -- so omitting the key
