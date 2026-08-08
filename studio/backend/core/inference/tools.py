@@ -7155,7 +7155,6 @@ def sandbox_root() -> str:
         return os.path.expanduser(override)
     try:
         from utils.paths.storage_roots import studio_root
-
         return os.path.join(str(studio_root()), "sandbox")
     except Exception:
         return _legacy_sandbox_root()
@@ -7218,7 +7217,9 @@ def _get_workdir(session_id: str | None = None) -> str:
             workdir = project_workdir
         elif session_id and _SESSION_ID_RE.match(session_id):
             workdir = os.path.join(sandbox_root_path, session_id)
-            if not os.path.realpath(workdir).startswith(os.path.realpath(sandbox_root_path) + os.sep):
+            if not os.path.realpath(workdir).startswith(
+                os.path.realpath(sandbox_root_path) + os.sep
+            ):
                 workdir = os.path.join(sandbox_root_path, "_invalid")
         elif session_id:
             workdir = os.path.join(sandbox_root_path, "_invalid")
@@ -10344,8 +10345,7 @@ def _created_file_sentinels(workdir: str | None, before: "dict[str, int]") -> st
     """
     after = _snapshot_workdir_files(workdir)
     changed = sorted(
-        name for name, mtime in after.items()
-        if name not in before or before[name] != mtime
+        name for name, mtime in after.items() if name not in before or before[name] != mtime
     )
     if not changed:
         return ""

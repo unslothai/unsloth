@@ -370,7 +370,6 @@ async def delete_threads(
     removed = 0
     try:
         from core.inference.tools import remove_session_sandbox
-
         for thread_id in payload.ids:
             if remove_session_sandbox(thread_id, delete_files = payload.delete_files):
                 removed += 1

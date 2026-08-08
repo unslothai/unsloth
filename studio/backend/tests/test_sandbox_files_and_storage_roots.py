@@ -61,13 +61,13 @@ def test_legacy_sandbox_is_migrated(tmp_path, monkeypatch):
     fake_home = tmp_path / "userprofile"
     studio_home = tmp_path / "studio_home"
     legacy = fake_home / "studio_sandbox" / "__LOCALID_old1234"
-    legacy.mkdir(parents=True)
+    legacy.mkdir(parents = True)
     (legacy / "results.csv").write_text("a,b\n1,2\n")
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
 
     from core.inference import tools
 
@@ -112,10 +112,7 @@ def test_sandbox_listing_route_exists():
 
     sandbox_routes = sorted(r.path for r in router.routes if "sandbox" in r.path)
     print(f"\nsandbox routes = {sandbox_routes}")
-    assert sandbox_routes == [
-        "/sandbox/{session_id}",
-        "/sandbox/{session_id}/{filename}",
-    ]
+    assert sandbox_routes == ["/sandbox/{session_id}", "/sandbox/{session_id}/{filename}"]
 
     import inspect
     from routes import inference
@@ -138,10 +135,11 @@ def test_both_executors_report_created_files(tmp_path, monkeypatch):
     workdir = tools.get_sandbox_workdir(session)
 
     for name, run in (
-        ("py.csv", lambda: tools._python_exec(
-            "open('py.csv','w').write('a,b\\n')", session_id=session)),
-        ("sh.csv", lambda: tools._bash_exec(
-            "printf 'a,b\\n' > sh.csv", session_id=session)),
+        (
+            "py.csv",
+            lambda: tools._python_exec("open('py.csv','w').write('a,b\\n')", session_id = session),
+        ),
+        ("sh.csv", lambda: tools._bash_exec("printf 'a,b\\n' > sh.csv", session_id = session)),
     ):
         result = run()
         print(f"\n{name} -> {result!r}")
@@ -152,7 +150,7 @@ def test_both_executors_report_created_files(tmp_path, monkeypatch):
     # The sentinel never reaches the model.
     from core.inference.tool_loop_controller import strip_result_for_model
 
-    stripped = strip_result_for_model("done\n__FILES__:[{\"name\": \"x.csv\"}]")
+    stripped = strip_result_for_model('done\n__FILES__:[{"name": "x.csv"}]')
     assert "__FILES__" not in stripped
     assert stripped.strip() == "done"
 
@@ -164,7 +162,7 @@ def test_internal_temp_files_are_not_reported(tmp_path, monkeypatch):
     from core.inference import tools
 
     tools._workdirs.clear()
-    result = tools._python_exec("print('hi')", session_id="__LOCALID_tmp999")
+    result = tools._python_exec("print('hi')", session_id = "__LOCALID_tmp999")
     assert "studio_exec_" not in result
     assert "__FILES__" not in result
 
@@ -185,7 +183,7 @@ def test_tool_description_says_files_are_kept():
 def test_compiled_cache_is_pinned_under_the_studio_home(tmp_path, monkeypatch):
     """Not left CWD-relative, which put it in %USERPROFILE% on Windows."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
-    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising=False)
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
 
     import importlib
     from utils.paths import storage_roots
@@ -209,7 +207,7 @@ def test_cache_cleanup_finds_the_configured_and_cwd_caches(tmp_path, monkeypatch
 
     monkeypatch.chdir(tmp_path)
     configured = tmp_path / "studio_home" / "compiled_cache"
-    configured.mkdir(parents=True)
+    configured.mkdir(parents = True)
     (tmp_path / "unsloth_compiled_cache").mkdir()
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(configured))
 
@@ -241,7 +239,7 @@ def test_deleting_a_chat_cleans_up_its_sandbox(tmp_path, monkeypatch):
     # Not deleted implicitly: those files are the user's.
     assert tools.remove_session_sandbox("__LOCALID_files22") is False
     assert (withfile / "keep.csv").is_file()
-    assert tools.remove_session_sandbox("__LOCALID_files22", delete_files=True) is True
+    assert tools.remove_session_sandbox("__LOCALID_files22", delete_files = True) is True
     assert not withfile.exists()
 
 
@@ -253,7 +251,7 @@ def test_sandbox_removal_cannot_escape_the_root(tmp_path, monkeypatch):
     outside = tmp_path / "precious"
     outside.mkdir()
     for bad in ("..", "../precious", "/etc", "project-abc", ""):
-        assert tools.remove_session_sandbox(bad, delete_files=True) is False
+        assert tools.remove_session_sandbox(bad, delete_files = True) is False
     assert outside.is_dir()
 
 

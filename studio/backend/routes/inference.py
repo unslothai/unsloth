@@ -13496,7 +13496,6 @@ _SANDBOX_MEDIA_TYPES = {
 
 def _sandbox_dir_for(session_id: str) -> str:
     from core.inference.tools import get_sandbox_workdir
-
     return os.path.realpath(get_sandbox_workdir(session_id))
 
 
@@ -13551,12 +13550,14 @@ async def list_sandbox_files(
                 stat = os.stat(path)
             except OSError:
                 continue
-            files.append({
-                "name": name,
-                "size": stat.st_size,
-                "modified": int(stat.st_mtime),
-                "inline": os.path.splitext(name)[1].lower() in _SANDBOX_MEDIA_TYPES,
-            })
+            files.append(
+                {
+                    "name": name,
+                    "size": stat.st_size,
+                    "modified": int(stat.st_mtime),
+                    "inline": os.path.splitext(name)[1].lower() in _SANDBOX_MEDIA_TYPES,
+                }
+            )
     return {"path": sandbox_dir, "files": files}
 
 
@@ -13602,7 +13603,7 @@ async def serve_sandbox_file(
         ascii_name = safe_filename.encode("ascii", "replace").decode("ascii").replace('"', "_")
         quoted = _urlquote(safe_filename)
         headers["Content-Disposition"] = (
-            f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quoted}'
+            f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
         )
 
     return FileResponse(
