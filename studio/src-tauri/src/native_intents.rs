@@ -667,7 +667,9 @@ mod tests {
         let path = temp_path("note").with_extension("pdf");
         fs::write(&path, b"%PDF-1.4").unwrap();
         let (_state, entry) = attachment_entry(&path);
-        let err = read_attachment_payload(&entry).unwrap_err();
+        let Err(err) = read_attachment_payload(&entry) else {
+            panic!("expected the read to be refused");
+        };
         assert!(err.contains("Only chat image attachments"));
         let _ = fs::remove_file(path);
     }
@@ -678,7 +680,9 @@ mod tests {
         fs::write(&path, b"the dropped image").unwrap();
         let (_state, entry) = attachment_entry(&path);
         fs::write(&path, b"a different file entirely").unwrap();
-        let err = read_attachment_payload(&entry).unwrap_err();
+        let Err(err) = read_attachment_payload(&entry) else {
+            panic!("expected the read to be refused");
+        };
         assert!(err.contains("changed"), "unexpected error: {err}");
         let _ = fs::remove_file(path);
     }
@@ -688,7 +692,9 @@ mod tests {
         let path = temp_path("huge").with_extension("png");
         fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
         let (_state, entry) = attachment_entry(&path);
-        let err = read_attachment_payload(&entry).unwrap_err();
+        let Err(err) = read_attachment_payload(&entry) else {
+            panic!("expected the read to be refused");
+        };
         assert!(err.contains("too large"), "unexpected error: {err}");
         let _ = fs::remove_file(path);
     }
