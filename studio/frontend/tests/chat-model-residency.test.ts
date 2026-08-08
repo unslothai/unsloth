@@ -128,7 +128,11 @@ test("the picker's Loaded badge asks residency, not the selection", () => {
     ),
     "utf8",
   );
-  assert.match(pickers, /const loadedModelId = chatModelLoaded\(\{/);
+  assert.match(pickers, /const chatLoadedModelId = chatModelLoaded\(\{/);
+  assert.match(
+    pickers,
+    /const loadedModelId = loadedModelIdOverride \?\? chatLoadedModelId/,
+  );
   assert.match(pickers, /residentCheckpoint,/);
   assert.doesNotMatch(
     pickers,

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useNavigate } from "@tanstack/react-router";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -50,7 +49,6 @@ import {
   type HfSortKey,
   useHubModelSearch,
 } from "@/features/hub";
-import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import {
   classifyUnslothSupport,
   downloadManager,
@@ -61,6 +59,7 @@ import {
   useHfTokenStore,
   useOnlineStatus,
 } from "@/features/hub";
+import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { extractParamLabel } from "@/lib/model-size";
@@ -83,6 +82,7 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
   type Dispatch,
@@ -97,12 +97,33 @@ import {
   useState,
 } from "react";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
+import {
+  type CommunityModelPolicy,
+  allowedHiddenModelIdMatches,
+  communityAudioRowIsRunnable,
+  curatedAudioInventoryMatches,
+  curatedAudioInventoryTask,
+  filesystemRowsSupportedForTask,
+  macTtsHubRowIsRunnable,
+  shouldDiscoverCommunityModels,
+  shouldRecommendCommunityModels,
+  taskCatalogFormatMatches,
+  taskForMediaPick,
+  taskPickerRowMatches,
+} from "./audio-picker-policy";
 import { FolderBrowser } from "./folder-browser";
 import {
   type ModelCapabilities,
   detectCapabilities,
   hasAnyCapability,
 } from "./model-capabilities";
+import {
+  AUDIO_CATALOG,
+  type CatalogGroup,
+  artifactForRepoId,
+  curatedSizeBytesFor,
+  groupForRepoId,
+} from "./model-catalog";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -158,11 +179,6 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
-import {
-  type CatalogGroup,
-  artifactForRepoId,
-  curatedSizeBytesFor,
-} from "./model-catalog";
 import { describeVariantListingError } from "./variant-listing-error";
 import {
   shouldMountVariantExpander,
@@ -174,9 +190,14 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
-/** Repos published by Unsloth; the rest group under the "Other models" section. */
+/** The primary namespace used by runtime trust gates. */
 function isUnslothRepoId(repoId: string): boolean {
   return repoId.toLowerCase().startsWith("unsloth/");
+}
+
+/** Official publisher namespaces used only for visual On Device grouping. */
+function isUnslothPublisherRepoId(repoId: string): boolean {
+  return isUnslothOwner(splitRepoLabel(repoId).owner);
 }
 
 /** Lowercase and strip separators for fuzzy search. */
@@ -1028,10 +1049,9 @@ function useSoleDownloadedQuants(
     });
   }, [repos, variantsVersion]);
 
-  const [entries, setEntries] =
-    useState<ReadonlyMap<string, SoleQuantEntry<SoleDownloadedQuant>>>(
-      EMPTY_SOLE_QUANT_ENTRIES,
-    );
+  const [entries, setEntries] = useState<
+    ReadonlyMap<string, SoleQuantEntry<SoleDownloadedQuant>>
+  >(EMPTY_SOLE_QUANT_ENTRIES);
   const { quants, pending, stale } = useMemo(
     () => partitionSoleQuants(targets, entries, { enabled }),
     [targets, entries, enabled],
@@ -1088,6 +1108,7 @@ function useSoleDownloadedQuants(
 
 function GgufVariantExpander({
   repoId,
+  pipelineTag,
   loadId,
   cachePath,
   onSelect,
@@ -1106,6 +1127,7 @@ function GgufVariantExpander({
   onHasVision,
 }: {
   repoId: string;
+  pipelineTag?: string | null;
   /** Snapshot the cached listing pinned this repo to, if any. */
   loadId?: string | null;
   /** Cache directory this downloaded row represents, if any. */
@@ -1218,7 +1240,12 @@ function GgufVariantExpander({
 
   const handleVariantClick = useCallback(
     // ``filename`` is required, not decorative: the diffusion pages load a quant with {kind: "gguf", filename} and gate that branch on meta.ggufFilename, so a quant label alone made every Images/Video GGUF pick a dead click.
-    (quant: string, filename: string, downloaded?: boolean, sizeBytes?: number) => {
+    (
+      quant: string,
+      filename: string,
+      downloaded?: boolean,
+      sizeBytes?: number,
+    ) => {
       const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
@@ -1231,9 +1258,18 @@ function GgufVariantExpander({
         expectedBytes: sizeBytes,
         contextLength: isAvailable ? nativeContext : undefined,
         isGguf: true,
+        pipelineTag,
       });
     },
-    [repoId, loadId, isLocalPath, onSelect, sourceOverride, nativeContext],
+    [
+      repoId,
+      loadId,
+      isLocalPath,
+      onSelect,
+      sourceOverride,
+      nativeContext,
+      pipelineTag,
+    ],
   );
 
   // GGUF fit classification matching llama-server's _select_gpus logic:
@@ -1610,19 +1646,30 @@ export const IMAGE_GEN_TASKS = [
 // image-to-video is included because HF gives the LTX-2 family that pipeline_tag, so a text-to-video-only filter dropped it out of Video Hub search.
 export const VIDEO_GEN_TASKS = ["text-to-video", "image-to-video"] as const;
 
+// Speech pipeline tasks: owned by the Audio page. TTS picks load there rather than into chat; ASR picks map to the dictation sidecar.
+export const AUDIO_GEN_TASKS = [
+  "text-to-speech",
+  "automatic-speech-recognition",
+] as const;
+
 // Diffusion GGUF archs the Images backend cannot assemble yet (SD/SDXL/PixArt/Wan/...). The backend tags them with this task so the chat picker hides them and the Images picker leaves them out (they would 400 on load).
 const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
 
-// Generation tasks the Images / Video pages own. Not chat-loadable, so an on-device pick routes to its page instead.
-const DIFFUSION_PAGE_TASKS: readonly string[] = [
+// Generation tasks the Images / Video / Audio pages own. Not chat-loadable, so an on-device pick routes to its page instead.
+const MEDIA_PAGE_TASKS: readonly string[] = [
   ...IMAGE_GEN_TASKS,
   ...VIDEO_GEN_TASKS,
+  ...AUDIO_GEN_TASKS,
 ];
 
 /** The page that runs this task, or null when chat should handle the pick. */
-function diffusionPageForTask(task: string | null | undefined): "images" | "video" | null {
-  if (!task || !DIFFUSION_PAGE_TASKS.includes(task)) return null;
-  return (VIDEO_GEN_TASKS as readonly string[]).includes(task) ? "video" : "images";
+function mediaPageForTask(
+  task: string | null | undefined,
+): "images" | "video" | "audio" | null {
+  if (!task || !MEDIA_PAGE_TASKS.includes(task)) return null;
+  if ((VIDEO_GEN_TASKS as readonly string[]).includes(task)) return "video";
+  if ((AUDIO_GEN_TASKS as readonly string[]).includes(task)) return "audio";
+  return "images";
 }
 
 // Editing/inpaint checkpoints are tagged image-to-image but need an input image the text-to-image backend rejects (mirrors
@@ -1647,9 +1694,26 @@ function passesTaskGate(
   repoTask: string | null | undefined,
   repoId: string | null | undefined,
   filter: HfTaskFilter,
+  catalog?: CatalogGroup[],
+  activeCatalogArtifactIds?: ReadonlySet<string>,
 ): boolean {
-  if (filter)
-    return taskMatchesFilter(repoTask, filter) && !isImageEditModel(repoId);
+  if (filter) {
+    const exactArtifact =
+      repoId && catalog ? artifactForRepoId(repoId, catalog) : null;
+    return (
+      (taskMatchesFilter(repoTask, filter) ||
+        curatedAudioInventoryMatches({
+          isActiveCatalogArtifact: Boolean(
+            repoId &&
+              activeCatalogArtifactIds?.has(repoId.trim().toLowerCase()),
+          ),
+          catalogScope: exactArtifact?.group.scope,
+          catalogTask: exactArtifact?.group.task,
+          pickerTask: filter,
+        })) &&
+      !isImageEditModel(repoId)
+    );
+  }
   // Unfiltered (chat) picker: an on-device diffusion model stays listed and routes to the Images/Video page on click; only the never-loadable tag is hidden.
   return repoTask !== UNSUPPORTED_DIFFUSION_TASK;
 }
@@ -1813,17 +1877,23 @@ function localPathTooltip(name: string, path: string): ReactNode {
   );
 }
 
-function localModelMeta(isGguf = false): ModelSelectorChangeMeta {
+function localModelMeta(
+  isGguf = false,
+  pipelineTag?: string | null,
+): ModelSelectorChangeMeta {
   return {
     source: "local",
     isLora: false,
     isDownloaded: true,
     ...(isGguf ? { isGguf: true } : {}),
+    pipelineTag: pipelineTag ?? null,
   };
 }
 
-function localDirectGgufMeta(): ModelSelectorChangeMeta {
-  return localModelMeta(true);
+function localDirectGgufMeta(
+  pipelineTag?: string | null,
+): ModelSelectorChangeMeta {
+  return localModelMeta(true, pipelineTag);
 }
 
 /** Hugging Face address for an online/Hub row, or undefined when the repo id is
@@ -1853,6 +1923,8 @@ function localModelMatchesFormat(
 
 export function HubModelPicker({
   models,
+  additionalOnDeviceModels = [],
+  loadedModelIdOverride,
   loraModels = [],
   externalModels = [],
   value,
@@ -1867,8 +1939,13 @@ export function HubModelPicker({
   onEject,
   task,
   catalog,
+  communityModelPolicy = "none",
 }: {
   models: ModelOption[];
+  /** Task-runtime downloads that use a cache layout the shared Hub inventory
+   * cannot represent (for example the two-file STT sidecars). */
+  additionalOnDeviceModels?: ModelOption[];
+  loadedModelIdOverride?: string;
   /** Fine-tuned models, shown as a section in the On Device view. */
   loraModels?: LoraModelOption[];
   /** Connected provider models, shown in the Connected section. */
@@ -1890,6 +1967,10 @@ export function HubModelPicker({
   task?: HfTaskFilter;
   /** Curated catalog for a task-scoped picker: one canonical row per model, with its published formats as the second level. */
   catalog?: CatalogGroup[];
+  /** Also surface community (non-unsloth) models carrying `task`'s pipeline tags,
+   *  below the unsloth rows and in search. Opt-in: the runtime has to load an
+   *  arbitrary publisher's checkpoint, true of audio, not of the curated pages. */
+  communityModelPolicy?: CommunityModelPolicy;
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
@@ -1900,13 +1981,14 @@ export function HubModelPicker({
   // cannot disagree.
   const selectedCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
-  const loadedModelId = chatModelLoaded({
+  const chatLoadedModelId = chatModelLoaded({
     checkpoint: selectedCheckpoint,
     isExternalModel: isExternalModelId(selectedCheckpoint),
     residentCheckpoint,
   })
     ? selectedCheckpoint
     : undefined;
+  const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
   // Loaded GGUF quant of the active model; marks the matching pinned row.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
@@ -1958,6 +2040,36 @@ export function HubModelPicker({
     enabled: online && section === "recommended",
   });
 
+  // Two hooks for the same reason the unsloth pair exists: browse must not refetch
+  // per keystroke, search must not be pinned to the empty query. pinUnslothFirst is
+  // off since the unsloth rows already sit above these.
+  const communityDiscoveryEnabled =
+    shouldDiscoverCommunityModels(communityModelPolicy) &&
+    Boolean(task) &&
+    online &&
+    section === "recommended";
+  const communityRecommendedEnabled =
+    shouldRecommendCommunityModels(communityModelPolicy) &&
+    communityDiscoveryEnabled;
+  const communityQuerySearch = useHubModelSearch(debouncedQuery, {
+    task,
+    ownerScope: "all",
+    sortBy: recommendedSortBy,
+    sortDirection: "desc",
+    pinUnslothFirst: false,
+    accessToken,
+    enabled: communityDiscoveryEnabled && debouncedQuery.trim().length > 0,
+  });
+  const communityBrowse = useHubModelSearch("", {
+    task,
+    ownerScope: "all",
+    sortBy: recommendedSortBy,
+    sortDirection: "desc",
+    pinUnslothFirst: false,
+    accessToken,
+    enabled: communityRecommendedEnabled && debouncedQuery.trim().length === 0,
+  });
+
   // Lowercased repo ids confirmed GGUF by the store or HF search. Absence means
   // "no hint" -> hasGgufSuffix is the fallback (don't conflate unknown with
   // known-not-GGUF). Lowercased so store and HF IDs match regardless of casing.
@@ -1972,11 +2084,21 @@ export function HubModelPicker({
   // in Recommended still expands variants instead of loading as a checkpoint.
   const resultGgufIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const result of [...results, ...recommendedSearch.results]) {
+    for (const result of [
+      ...results,
+      ...recommendedSearch.results,
+      ...communityQuerySearch.results,
+      ...communityBrowse.results,
+    ]) {
       if (result.isGguf) ids.add(result.id.toLowerCase());
     }
     return ids;
-  }, [results, recommendedSearch.results]);
+  }, [
+    results,
+    recommendedSearch.results,
+    communityQuerySearch.results,
+    communityBrowse.results,
+  ]);
   const isKnownGgufRepo = useCallback(
     (id: string): boolean => {
       const key = id.toLowerCase();
@@ -2108,7 +2230,24 @@ export function HubModelPicker({
     });
   }, []);
 
-  const pickerInventory = useChatPickerInventory({ enabled: true });
+  // `models` is already narrowed to this Audio mode and platform (notably the
+  // macOS TTS runtime). Use only exact artifacts from that active contract for
+  // downloaded-task and hidden-chat-sidecar exceptions.
+  const activeCatalogArtifactIds = useMemo(
+    () =>
+      new Set(
+        task && catalog
+          ? models
+              .filter((model) => artifactForRepoId(model.id, catalog) !== null)
+              .map((model) => model.id.trim().toLowerCase())
+          : [],
+      ),
+    [catalog, models, task],
+  );
+  const pickerInventory = useChatPickerInventory({
+    enabled: true,
+    allowedHiddenModelIds: activeCatalogArtifactIds,
+  });
   const { cachedGguf, cachedModels, cachedReady, refreshInventory } =
     pickerInventory;
   const cachedReadyAtMount = useRef(cachedReady);
@@ -2322,28 +2461,78 @@ export function HubModelPicker({
   const isChatSupported = useCallback(
     (r: HfModelResult) => {
       // Image/Video tab (task set): only task-matching, non-editing results.
-      if (task) return taskMatchesFilter(r.pipelineTag, task) && !isImageEditModel(r.id);
-      return classifyUnslothSupport({
-        modelId: r.id,
-        pipelineTag: r.pipelineTag,
-        tags: r.tags,
-        libraryName: r.libraryName,
-        quantMethod: r.quantMethod,
-        deviceType,
-      }).status !== "unsupported";
+      if (task)
+        return (
+          taskMatchesFilter(r.pipelineTag, task) && !isImageEditModel(r.id)
+        );
+      return (
+        classifyUnslothSupport({
+          modelId: r.id,
+          pipelineTag: r.pipelineTag,
+          tags: r.tags,
+          libraryName: r.libraryName,
+          quantMethod: r.quantMethod,
+          deviceType,
+        }).status !== "unsupported"
+      );
     },
     [deviceType, task],
   );
 
+  const isTaskRuntimeSupported = useCallback(
+    (result: HfModelResult) => {
+      const isStt = Boolean(
+        task && taskMatchesFilter("automatic-speech-recognition", task),
+      );
+      const isTts = Boolean(task && taskMatchesFilter("text-to-speech", task));
+      return (
+        communityAudioRowIsRunnable({
+          isStt,
+          isTts,
+          isGguf: result.isGguf,
+          id: result.id,
+          baseModel: result.baseModel,
+          tags: result.tags,
+          libraryName: result.libraryName,
+        }) &&
+        macTtsHubRowIsRunnable({
+          isMac,
+          isTts,
+          isGguf: result.isGguf,
+          hasRunnableGgufSibling: Boolean(
+            catalog &&
+              groupForRepoId(result.id, catalog)?.artifacts.some(
+                (artifact) => artifact.format === "gguf",
+              ),
+          ),
+        })
+      );
+    },
+    [catalog, isMac, task],
+  );
+
+  const taskCatalogSeedIds = useMemo(
+    () =>
+      task
+        ? new Set(models.map((model) => model.id.trim().toLowerCase()))
+        : undefined,
+    [models, task],
+  );
+
   const recommendedIds = useMemo(() => {
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
-      .filter((id) => !isHiddenModelId(id))
+      .filter(
+        (id) =>
+          !isHiddenModelId(id) ||
+          allowedHiddenModelIdMatches(taskCatalogSeedIds, id),
+      )
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
       // Task-scoped pages load single-file GGUF only; chat-only keeps runnable formats (GGUF anywhere, plus MLX/safetensors on Mac).
       // A curated artifact stays listed whatever its format: loadSpecFor knows how to load each, and a GGUF-only rule hid every non-GGUF curated model.
       .filter((id) =>
         task
-          ? isKnownGgufRepo(id) || Boolean(catalog && artifactForRepoId(id, catalog))
+          ? isKnownGgufRepo(id) ||
+            Boolean(catalog && artifactForRepoId(id, catalog))
           : !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
       )
       // Member repos of a catalog group would collapse into the canonical group row, but nothing renders those rows yet and a
@@ -2366,6 +2555,7 @@ export function HubModelPicker({
     isMac,
     task,
     catalog,
+    taskCatalogSeedIds,
   ]);
 
   const showHfSection = debouncedQuery.trim().length > 0;
@@ -2384,14 +2574,14 @@ export function HubModelPicker({
   const catalogSeedRows = useMemo<HfModelResult[]>(() => {
     if (!task) return [];
     return dedupe(models.map((model) => model.id))
-      .filter((id) => !isHiddenModelId(id))
       .filter((id) => !isMobileVariant(id))
       .filter((id) => !isImageEditModel(id))
       .filter((id) => {
         const isG = isKnownGgufRepo(id);
-        return formatFilter === "all"
-          ? isRecommendableFormat(id, isG, isMac)
-          : matchesFormatFilter(id, isG, formatFilter);
+        return taskCatalogFormatMatches(
+          formatFilter,
+          matchesFormatFilter(id, isG, formatFilter),
+        );
       })
       .map((id) => ({
         id,
@@ -2401,24 +2591,57 @@ export function HubModelPicker({
         // Size from the catalog, not an id "<n>B" guess: the guess is missing for
         // most curated ids and wrong for others (Wan2.2-TI2V-5B is 30 GB, not 2),
         // and non-unsloth ids never get a listing row to correct it.
-        curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,
+        curatedSizeBytes: catalog
+          ? curatedSizeBytesFor(id, catalog)
+          : undefined,
       }));
-  }, [catalog, models, formatFilter, isKnownGgufRepo, isMac, task]);
+  }, [catalog, models, formatFilter, isKnownGgufRepo, task]);
+
+  const isUnslothOwned = useCallback(
+    (id: string) => id.toLowerCase().startsWith("unsloth/"),
+    [],
+  );
+
+  /** Pipeline tag is the only signal the Hub gives us, since the real test is the
+   *  checkpoint's tokenizer and that needs the download first. Exports in another
+   *  serialization are never loadable, so drop those by name (as FP8 does above). */
+  const isLoadableCommunityRepo = useCallback(
+    (id: string) =>
+      !/(^|[-_/.])(onnx|openvino|tflite|coreml)([-_./]|$)/i.test(id),
+    [],
+  );
 
   // Recommended suggests GGUF anywhere; on Mac also MLX and safetensors. The
   // "recommended" sort also drops models too big for the device. Already-
   // downloaded models stay visible (badged), never hidden.
   const recommendedRows = useMemo(() => {
+    const catalogSeedIds = new Set(
+      catalogSeedRows.map((row) => row.id.toLowerCase()),
+    );
+    const keepCommon = (r: HfModelResult) => {
+      const isCatalogSeed = catalogSeedIds.has(r.id.toLowerCase());
+      return (
+        !isMobileVariant(r.id) &&
+        taskPickerRowMatches({
+          isCatalogSeed,
+          isHidden: isHiddenModelId(r.id),
+          format: formatFilter,
+          matchesFormat: matchesFormatFilter(r.id, r.isGguf, formatFilter),
+          matchesTask: isChatSupported(r),
+          isRecommendable: isRecommendableFormat(r.id, r.isGguf, isMac),
+        })
+      );
+    };
     const keep = (r: HfModelResult) =>
-      !isHiddenModelId(r.id) &&
-      !isMobileVariant(r.id) &&
-      isChatSupported(r) &&
-      // No pick: device-recommended formats (GGUF, plus MLX on Mac). A pick wins.
-      (formatFilter === "all"
-        ? isRecommendableFormat(r.id, r.isGguf, isMac)
-        : matchesFormatFilter(r.id, r.isGguf, formatFilter)) &&
+      keepCommon(r) &&
       // Task pages load single-file GGUF, plus curated artifacts in any format.
-      (!task || r.isGguf || Boolean(catalog && artifactForRepoId(r.id, catalog)));
+      (!task ||
+        r.isGguf ||
+        Boolean(catalog && artifactForRepoId(r.id, catalog)));
+    // A community row has no catalog artifact by definition, so the curated clause
+    // above would drop every third-party safetensors checkpoint. The rest applies.
+    const keepCommunity = (r: HfModelResult) =>
+      keepCommon(r) && isTaskRuntimeSupported(r);
     // Members are not filtered here (see recommendedIds): it dropped them from
     // Hub search too. "recommended" always device-filters; the "Fits on device"
     // tick extends that to the other sorts.
@@ -2430,13 +2653,24 @@ export function HubModelPicker({
       // Downloaded models show regardless of fit.
       downloadedSet.has(r.id.toLowerCase()) ||
       hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu);
-    return orderRecommendedRows({
+    const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,
       keep,
       deviceFiltered,
       fits,
     });
+    if (!communityRecommendedEnabled) return unslothRows;
+    // Appended below everything unsloth publishes, so scrolling past the unsloth
+    // uploads continues into the wider Hub. Same keep/fits gates.
+    const above = new Set(unslothRows.map((r) => r.id.toLowerCase()));
+    const communityRows = communityBrowse.results
+      .filter((r) => !r.id.toLowerCase().startsWith("unsloth/"))
+      .filter((r) => isLoadableCommunityRepo(r.id))
+      .filter((r) => !above.has(r.id.toLowerCase()))
+      .filter(keepCommunity)
+      .filter((r) => !deviceFiltered || fits(r));
+    return [...unslothRows, ...communityRows];
   }, [
     recommendedSearch.results,
     catalogSeedRows,
@@ -2445,11 +2679,15 @@ export function HubModelPicker({
     fitOnDeviceOnly,
     formatFilter,
     isMac,
+    isTaskRuntimeSupported,
     gpu,
     inferenceGpu,
     isChatSupported,
     task,
     catalog,
+    communityRecommendedEnabled,
+    communityBrowse.results,
+    isLoadableCommunityRepo,
   ]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
@@ -2458,7 +2696,12 @@ export function HubModelPicker({
       string,
       { meta: string | null; status: VramFitStatus | null; est: number }
     >();
-    for (const r of recommendedSearch.results) {
+    // Community rows come from their own listing; without them folded in here
+    // they render with no size or VRAM chip.
+    for (const r of [
+      ...recommendedSearch.results,
+      ...communityBrowse.results,
+    ]) {
       const isG = isKnownGgufRepo(r.id);
       // GGUF param count comes from the repo name or the GGUF metadata, so even
       // repos with no "<n>B" token (Kimi, MiniMax) show a param chip.
@@ -2516,13 +2759,44 @@ export function HubModelPicker({
       map.set(r.id, { meta, status, est });
     }
     return map;
-  }, [recommendedSearch.results, isKnownGgufRepo, gpu, inferenceGpu]);
+  }, [
+    recommendedSearch.results,
+    communityBrowse.results,
+    isKnownGgufRepo,
+    gpu,
+    inferenceGpu,
+  ]);
+
+  // Hub pipeline tag per repo id, handed to the page on pick so a task page can
+  // classify an uncurated repo it has no catalog entry for.
+  const pipelineTagById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of [
+      ...results,
+      ...recommendedSearch.results,
+      ...communityQuerySearch.results,
+      ...communityBrowse.results,
+    ]) {
+      if (r.pipelineTag && !map.has(r.id)) map.set(r.id, r.pipelineTag);
+    }
+    return map;
+  }, [
+    results,
+    recommendedSearch.results,
+    communityQuerySearch.results,
+    communityBrowse.results,
+  ]);
 
   // Tag-accurate capabilities keyed by repo id, pooled from both HF listings.
   // Rows look it up by id and fall back to name detection when absent.
   const capsById = useMemo(() => {
     const map = new Map<string, ModelCapabilities>();
-    for (const r of [...results, ...recommendedSearch.results]) {
+    for (const r of [
+      ...results,
+      ...recommendedSearch.results,
+      ...communityQuerySearch.results,
+      ...communityBrowse.results,
+    ]) {
       if (map.has(r.id)) continue;
       map.set(
         r.id,
@@ -2534,17 +2808,37 @@ export function HubModelPicker({
       );
     }
     return map;
-  }, [results, recommendedSearch.results]);
+  }, [
+    results,
+    recommendedSearch.results,
+    communityQuerySearch.results,
+    communityBrowse.results,
+  ]);
 
   // Ordered by the On Device dropdown (recent/download date/size/name). The gate keeps diffusion GGUFs in the Images/Video picker and out of chat.
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
-        cachedGguf.filter((c) => passesTaskGate(c.task, c.repo_id, task)),
+        cachedGguf.filter((c) =>
+          passesTaskGate(
+            c.task,
+            c.repo_id,
+            task,
+            catalog,
+            activeCatalogArtifactIds,
+          ),
+        ),
         downloadedSort,
         loadTimes,
       ),
-    [cachedGguf, downloadedSort, loadTimes, task],
+    [
+      cachedGguf,
+      downloadedSort,
+      loadTimes,
+      task,
+      catalog,
+      activeCatalogArtifactIds,
+    ],
   );
   // Cached non-GGUF repos. In chat, passesTaskGate drops diffusers image repos; the Images picker keeps them, but only unsloth-hosted ones this backend can load. Base repos are cached as dependencies and fail the trust gate.
   const sortedCachedModels = useMemo(
@@ -2554,22 +2848,61 @@ export function HubModelPicker({
           (c) =>
             // A partially-downloaded snapshot is not on-device: listing it as loadable errors or triggers a silent multi-GB re-fetch.
             !c.partial &&
-            passesTaskGate(c.task, c.repo_id, task) &&
+            passesTaskGate(
+              c.task,
+              c.repo_id,
+              task,
+              catalog,
+              activeCatalogArtifactIds,
+            ) &&
             // Diffusion pickers: unsloth repos plus any repo the backend can LOAD. Gate on a curated ARTIFACT (what loadSpecFor resolves), not a group-key match: a base / uncurated-quant sibling matches the group by key but dead-ends at the trust gate.
             // An unsloth repo must also be a full pipeline: the fall-through loads uncataloged rows as "pipeline", and from_pretrained on a single-file checkpoint repo fails. Curated single-file artifacts stay, since loadSpecFor carries their filename.
             (!task ||
               (isUnslothRepoId(c.repo_id) && !c.single_file) ||
-              (catalog ? artifactForRepoId(c.repo_id, catalog) !== null : false)),
+              ((c.task === "automatic-speech-recognition" ||
+                c.task === "text-to-speech") &&
+                communityAudioRowIsRunnable({
+                  isStt: c.task === "automatic-speech-recognition",
+                  isTts: c.task === "text-to-speech",
+                  isGguf: false,
+                  id: c.repo_id,
+                  tags: c.tags,
+                  libraryName: c.library_name,
+                }) &&
+                macTtsHubRowIsRunnable({
+                  isMac,
+                  isTts: c.task === "text-to-speech",
+                  isGguf: false,
+                  hasRunnableGgufSibling: Boolean(
+                    catalog &&
+                      groupForRepoId(c.repo_id, catalog)?.artifacts.some(
+                        (artifact) => artifact.format === "gguf",
+                      ),
+                  ),
+                })) ||
+              (catalog
+                ? artifactForRepoId(c.repo_id, catalog) !== null
+                : false)),
         ),
         downloadedSort,
         loadTimes,
       ),
-    [cachedModels, downloadedSort, loadTimes, task, catalog],
+    [
+      cachedModels,
+      downloadedSort,
+      loadTimes,
+      task,
+      catalog,
+      activeCatalogArtifactIds,
+      isMac,
+    ],
   );
   // Task-scoped loads put the whole pipeline on ONE device, so quant fit uses the device the load lands on (the lowest visible ordinal), not the multi-GPU sum or the largest card: sizing against the bigger card OOMs the smaller one. Chat keeps the sum.
   // The source is picked per row (a GGUF row sizes against the inference GPU, anything else against the system view); this only decides how much of it a row may claim.
   const expanderGpuGbFrom = (info: typeof inferenceGpu) =>
-    info.available ? loadScopedGpu(info, Boolean(task)).memoryTotalGb : undefined;
+    info.available
+      ? loadScopedGpu(info, Boolean(task)).memoryTotalGb
+      : undefined;
   const expanderGpuGb = expanderGpuGbFrom(inferenceGpu);
   const expanderSystemGpuGb = expanderGpuGbFrom(gpu);
 
@@ -2585,15 +2918,32 @@ export function HubModelPicker({
       sortLocalModels(
         lmStudioModels.filter(
           (m) =>
+            filesystemRowsSupportedForTask(task, m.task) &&
             // The backend tags every local model with its task for exactly this: on the Images/Video pages a chat GGUF must not be offered.
-            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
-            localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
+            passesTaskGate(
+              m.task,
+              m.model_id ?? m.id,
+              task,
+              catalog,
+              activeCatalogArtifactIds,
+            ) &&
+            localModelMatchesFormat(m, formatFilter) &&
+            matchesLocalQuery(m),
         ),
         downloadedSort,
         loadTimes,
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery, task],
+    [
+      lmStudioModels,
+      downloadedSort,
+      formatFilter,
+      loadTimes,
+      localQuery,
+      task,
+      catalog,
+      activeCatalogArtifactIds,
+    ],
   );
   // Local ./models entries. Chat-only Unsloth runs GGUF (any host) and MLX (Mac only), so raw checkpoints there are hidden (mirrors the cached
   // non-GGUF rule); an MLX build a Mac user dropped in stays selectable. A task-scoped picker (Images) is exempt: the image backend loads local pipelines even there.
@@ -2602,7 +2952,14 @@ export function HubModelPicker({
       sortLocalModels(
         localDirModels.filter(
           (m) =>
-            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
+            filesystemRowsSupportedForTask(task, m.task) &&
+            passesTaskGate(
+              m.task,
+              m.model_id ?? m.id,
+              task,
+              catalog,
+              activeCatalogArtifactIds,
+            ) &&
             (!chatOnly ||
               Boolean(task) ||
               localModelIsGguf(m) ||
@@ -2623,6 +2980,8 @@ export function HubModelPicker({
       localQuery,
       chatOnly,
       task,
+      catalog,
+      activeCatalogArtifactIds,
     ],
   );
   const sortedCustomFolderModels = useMemo(
@@ -2630,46 +2989,93 @@ export function HubModelPicker({
       sortLocalModels(
         customFolderModels.filter(
           (m) =>
-            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
-            localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
+            filesystemRowsSupportedForTask(task, m.task) &&
+            passesTaskGate(
+              m.task,
+              m.model_id ?? m.id,
+              task,
+              catalog,
+              activeCatalogArtifactIds,
+            ) &&
+            localModelMatchesFormat(m, formatFilter) &&
+            matchesLocalQuery(m),
         ),
         customSort,
         loadTimes,
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [customFolderModels, customSort, formatFilter, loadTimes, localQuery, task],
+    [
+      customFolderModels,
+      customSort,
+      formatFilter,
+      loadTimes,
+      localQuery,
+      task,
+      catalog,
+      activeCatalogArtifactIds,
+    ],
   );
 
   // Chat cannot load a diffusion model but the Images/Video pages can, so a pick routes to the page that runs it instead of hiding it or letting it 400. Task-scoped pickers select normally.
   const navigateToPage = useNavigate();
   const diffusionTaskById = useMemo(() => {
     const byId = new Map<string, string>();
-    const put = (id: string | null | undefined, t: string | null | undefined) => {
-      if (id && t) byId.set(id.toLowerCase(), t);
+    const put = (
+      id: string | null | undefined,
+      t: string | null | undefined,
+      exactAudioArtifact = id ? artifactForRepoId(id, AUDIO_CATALOG) : null,
+    ) => {
+      const task = curatedAudioInventoryTask({
+        inventoryTask: t,
+        isExactCatalogArtifact: Boolean(exactAudioArtifact),
+        catalogScope: exactAudioArtifact?.group.scope,
+        catalogTask: exactAudioArtifact?.group.task,
+      });
+      if (id && task) byId.set(id.toLowerCase(), task);
     };
     for (const c of cachedGguf) put(c.repo_id, c.task);
     for (const c of cachedModels) put(c.repo_id, c.task);
     // Both ids: a local row's click passes m.id (a filesystem path for models_dir / LM Studio entries) while m.model_id is its HF-style name, so keying on one alone makes the lookup below miss.
     const putLocal = (m: LocalModelInfo) => {
-      put(m.id, m.task);
-      put(m.model_id, m.task);
+      const exactAudioArtifact = m.model_id
+        ? artifactForRepoId(m.model_id, AUDIO_CATALOG)
+        : null;
+      put(m.id, m.task, exactAudioArtifact);
+      put(m.model_id, m.task, exactAudioArtifact);
     };
     for (const m of lmStudioModels) putLocal(m);
     for (const m of localDirModels) putLocal(m);
     for (const m of customFolderModels) putLocal(m);
     return byId;
-  }, [cachedGguf, cachedModels, lmStudioModels, localDirModels, customFolderModels]);
+  }, [
+    cachedGguf,
+    cachedModels,
+    lmStudioModels,
+    localDirModels,
+    customFolderModels,
+  ]);
 
   const onSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
       if (!task) {
-        const page = diffusionPageForTask(diffusionTaskById.get(id.toLowerCase()));
+        const pickedTask = taskForMediaPick(
+          meta.pipelineTag,
+          diffusionTaskById.get(id.toLowerCase()),
+        );
+        const page = mediaPageForTask(pickedTask);
         if (page) {
           void navigateToPage({
             to: `/${page}`,
             // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant instead; dropping it
             // made every non-curated GGUF repo arrive as a bare repo id.
-            search: diffusionRouteSearch(id, meta),
+            search:
+              page === "audio"
+                ? {
+                    model: id,
+                    quant: meta.ggufFilename ?? undefined,
+                    task: meta.pipelineTag ?? undefined,
+                  }
+                : diffusionRouteSearch(id, meta),
           });
           return;
         }
@@ -2732,6 +3138,59 @@ export function HubModelPicker({
   // Non-GGUF cached rows are not shown in chat-only mode, so the empty-state logic must use this (not visibleCachedModels) or the picker can go
   // blank. A task-scoped picker (Images) is exempt: the image backend loads local diffusers/safetensors pipelines even on chat-only hosts.
   const visibleCachedModelRows = chatOnly && !task ? [] : visibleCachedModels;
+
+  const visibleAdditionalOnDeviceModels = useMemo(() => {
+    const alreadyListed = new Set(
+      [...cachedGguf, ...cachedModels].map((model) =>
+        model.repo_id.trim().toLowerCase(),
+      ),
+    );
+    const seen = new Set<string>();
+    const needle = normalizeForSearch(debouncedQuery.trim());
+    const filtered = additionalOnDeviceModels.filter((model) => {
+      const id = model.id.trim().toLowerCase();
+      if (!id || alreadyListed.has(id) || seen.has(id)) return false;
+      seen.add(id);
+      return (
+        matchesFormatFilter(model.id, model.isGguf === true, formatFilter) &&
+        (!needle ||
+          normalizeForSearch(
+            `${model.id} ${model.name} ${model.description ?? ""}`,
+          ).includes(needle))
+      );
+    });
+    return sortCachedRepos(
+      filtered.map((model) => ({
+        repo_id: model.id,
+        size_bytes: model.deviceSizeBytes ?? 0,
+        model,
+      })),
+      downloadedSort,
+      loadTimes,
+    ).map(({ model }) => model);
+  }, [
+    additionalOnDeviceModels,
+    cachedGguf,
+    cachedModels,
+    debouncedQuery,
+    downloadedSort,
+    formatFilter,
+    loadTimes,
+  ]);
+  const unslothAdditionalOnDeviceModels = useMemo(
+    () =>
+      visibleAdditionalOnDeviceModels.filter((model) =>
+        isUnslothPublisherRepoId(model.id),
+      ),
+    [visibleAdditionalOnDeviceModels],
+  );
+  const otherAdditionalOnDeviceModels = useMemo(
+    () =>
+      visibleAdditionalOnDeviceModels.filter(
+        (model) => !isUnslothPublisherRepoId(model.id),
+      ),
+    [visibleAdditionalOnDeviceModels],
+  );
 
   // Unfiltered list, so typing a query doesn't re-run resolution.
   const soleQuants = useSoleDownloadedQuants(sortedCachedGguf, {
@@ -2861,24 +3320,28 @@ export function HubModelPicker({
   // Split downloaded models so non-Unsloth repos get their own "Other models"
   // section above Fine-tuned.
   const unslothCachedGguf = useMemo(
-    () => visibleCachedGguf.filter((c) => isUnslothRepoId(c.repo_id)),
+    () => visibleCachedGguf.filter((c) => isUnslothPublisherRepoId(c.repo_id)),
     [visibleCachedGguf],
   );
   const otherCachedGguf = useMemo(
-    () => visibleCachedGguf.filter((c) => !isUnslothRepoId(c.repo_id)),
+    () => visibleCachedGguf.filter((c) => !isUnslothPublisherRepoId(c.repo_id)),
     [visibleCachedGguf],
   );
   const unslothCachedModelRows = useMemo(
     () =>
       visibleCachedModelRows.filter(
-        (c) => isUnslothRepoId(c.repo_id) && !pinnedSet.has(pinKey(c.repo_id)),
+        (c) =>
+          isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSet.has(pinKey(c.repo_id)),
       ),
     [visibleCachedModelRows, pinnedSet],
   );
   const otherCachedModelRows = useMemo(
     () =>
       visibleCachedModelRows.filter(
-        (c) => !isUnslothRepoId(c.repo_id) && !pinnedSet.has(pinKey(c.repo_id)),
+        (c) =>
+          !isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSet.has(pinKey(c.repo_id)),
       ),
     [visibleCachedModelRows, pinnedSet],
   );
@@ -2962,12 +3425,13 @@ export function HubModelPicker({
     [filteredRecommendedIds],
   );
 
-  const hfIds = useMemo(() => {
-    // Only the Unsloth tab searches the HF listing, and only Unsloth models.
-    if (!showHfSection || section !== "recommended") return [];
-    return (
-      results
+  // One pipeline for both listings, so community rows clear the same gates;
+  // `owned` is the only difference.
+  const searchIdsFrom = useCallback(
+    (rows: readonly HfModelResult[], owned: (id: string) => boolean) =>
+      rows
         .filter(isChatSupported)
+        .filter(isTaskRuntimeSupported)
         .filter(
           (r) =>
             !fitOnDeviceOnly ||
@@ -2976,7 +3440,7 @@ export function HubModelPicker({
         )
         .map((result) => result.id)
         .filter((id) => !isHiddenModelId(id))
-        .filter((id) => id.toLowerCase().startsWith("unsloth/"))
+        .filter(owned)
         .filter((id) => !recommendedSet.has(id))
         // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
         // on Mac (matches the empty Recommended view so search stays consistent).
@@ -2987,22 +3451,61 @@ export function HubModelPicker({
         .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
-        )
+        ),
+    [
+      recommendedSet,
+      chatOnly,
+      isKnownGgufRepo,
+      isChatSupported,
+      isTaskRuntimeSupported,
+      formatFilter,
+      fitOnDeviceOnly,
+      downloadedSet,
+      searchRowFits,
+      isMac,
+    ],
+  );
+
+  const hfIds = useMemo(() => {
+    // Only the Unsloth tab searches the HF listing.
+    if (!showHfSection || section !== "recommended") return [];
+    return searchIdsFrom(results, isUnslothOwned);
+  }, [results, showHfSection, section, searchIdsFrom, isUnslothOwned]);
+
+  // Community search hits, listed after the unsloth ones. Deduped against them so
+  // a repo the unsloth listing already returned is not shown twice.
+  const communitySearchIds = useMemo(() => {
+    if (!communityDiscoveryEnabled || !showHfSection) return [];
+    const above = new Set(hfIds.map((id) => id.toLowerCase()));
+    const runnable = new Set(
+      communityQuerySearch.results
+        .filter(isTaskRuntimeSupported)
+        .map((result) => result.id.toLowerCase()),
     );
+    return searchIdsFrom(
+      communityQuerySearch.results,
+      (id) =>
+        !isUnslothOwned(id) &&
+        isLoadableCommunityRepo(id) &&
+        runnable.has(id.toLowerCase()),
+    ).filter((id) => !above.has(id.toLowerCase()));
   }, [
-    recommendedSet,
-    results,
+    communityDiscoveryEnabled,
     showHfSection,
-    section,
-    chatOnly,
-    isKnownGgufRepo,
-    isChatSupported,
-    formatFilter,
-    fitOnDeviceOnly,
-    downloadedSet,
-    searchRowFits,
-    isMac,
+    communityQuerySearch.results,
+    hfIds,
+    searchIdsFrom,
+    isUnslothOwned,
+    isLoadableCommunityRepo,
+    isTaskRuntimeSupported,
   ]);
+
+  /** Unsloth first, then community: one list so rows, keyboard order and the
+   *  empty state cannot drift apart. */
+  const searchRowIds = useMemo(
+    () => [...hfIds, ...communitySearchIds],
+    [hfIds, communitySearchIds],
+  );
 
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
@@ -3026,9 +3529,11 @@ export function HubModelPicker({
     // Downloaded (Unsloth) rows (query-filtered) on the On Device tab only.
     if (
       section === "downloaded" &&
-      cachedReady &&
+      (cachedReady || unslothAdditionalOnDeviceModels.length > 0) &&
       !downloadedCollapsed &&
-      (unslothCachedGguf.length > 0 || unslothCachedModelRows.length > 0)
+      (unslothCachedGguf.length > 0 ||
+        unslothCachedModelRows.length > 0 ||
+        unslothAdditionalOnDeviceModels.length > 0)
     ) {
       keys.push(
         ...unslothCachedGguf.map((model) =>
@@ -3040,6 +3545,11 @@ export function HubModelPicker({
           makeModelOptionKey("downloaded-model", model.repo_id),
         ),
       );
+      keys.push(
+        ...unslothAdditionalOnDeviceModels.map((model) =>
+          makeModelOptionKey("additional-on-device", model.id),
+        ),
+      );
     }
 
     // Unsloth-tab search keys (curated matches + HF unsloth results).
@@ -3049,16 +3559,20 @@ export function HubModelPicker({
           makeModelOptionKey("search-recommended", id),
         ),
       );
-      keys.push(...hfIds.map((id) => makeModelOptionKey("search-hf", id)));
+      keys.push(
+        ...searchRowIds.map((id) => makeModelOptionKey("search-hf", id)),
+      );
       return keys;
     }
 
     // Other (non-Unsloth) downloaded rows sit just above Fine-tuned.
     if (
       section === "downloaded" &&
-      cachedReady &&
+      (cachedReady || otherAdditionalOnDeviceModels.length > 0) &&
       !otherModelsCollapsed &&
-      (otherCachedGguf.length > 0 || otherCachedModelRows.length > 0)
+      (otherCachedGguf.length > 0 ||
+        otherCachedModelRows.length > 0 ||
+        otherAdditionalOnDeviceModels.length > 0)
     ) {
       keys.push(
         ...otherCachedGguf.map((model) =>
@@ -3068,6 +3582,11 @@ export function HubModelPicker({
       keys.push(
         ...otherCachedModelRows.map((model) =>
           makeModelOptionKey("downloaded-model", model.repo_id),
+        ),
+      );
+      keys.push(
+        ...otherAdditionalOnDeviceModels.map((model) =>
+          makeModelOptionKey("additional-on-device", model.id),
         ),
       );
     }
@@ -3120,7 +3639,7 @@ export function HubModelPicker({
     fineTunedRows,
     fineTunedCollapsed,
     filteredRecommendedIds,
-    hfIds,
+    searchRowIds,
     sortedLmStudio,
     lmStudioCollapsed,
     recommendedRows,
@@ -3130,8 +3649,10 @@ export function HubModelPicker({
     localDirCollapsed,
     unslothCachedGguf,
     unslothCachedModelRows,
+    unslothAdditionalOnDeviceModels,
     otherCachedGguf,
     otherCachedModelRows,
+    otherAdditionalOnDeviceModels,
     otherModelsCollapsed,
   ]);
 
@@ -3204,13 +3725,33 @@ export function HubModelPicker({
     return map;
   }, [filteredRecommendedIds, recommendedParamCountById, isKnownGgufRepo, gpu]);
 
-  const { scrollRef, sentinelRef } = useHubInfiniteScroll(
+  const searchHasMore =
+    hasMore || (communityDiscoveryEnabled && communityQuerySearch.hasMore);
+  const searchIsLoadingMore =
+    isLoadingMore || communityQuerySearch.isLoadingMore;
+  const fetchSearchMore = useCallback((): boolean | undefined => {
+    const unslothRequested = hasMore ? fetchMore() : false;
+    const communityRequested =
+      communityDiscoveryEnabled && communityQuerySearch.hasMore
+        ? communityQuerySearch.fetchMore()
+        : false;
+    if (unslothRequested || communityRequested) return true;
+    return undefined;
+  }, [
+    hasMore,
     fetchMore,
-    scannedCount,
+    communityDiscoveryEnabled,
+    communityQuerySearch.hasMore,
+    communityQuerySearch.fetchMore,
+  ]);
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(
+    fetchSearchMore,
+    scannedCount + communityQuerySearch.scannedCount,
     {
-      enabled: online && hasMore,
-      isFetching: isLoading || isLoadingMore,
-      resultCount: results.length,
+      enabled: online && searchHasMore,
+      isFetching:
+        isLoading || communityQuerySearch.isLoading || searchIsLoadingMore,
+      resultCount: results.length + communityQuerySearch.results.length,
       resetKey: debouncedQuery,
     },
   );
@@ -3242,13 +3783,33 @@ export function HubModelPicker({
   const recommendedSentinelRef = useCallback((node: HTMLDivElement | null) => {
     setRecommendedSentinel(node);
   }, []);
+  const recommendedHasMore =
+    recommendedSearch.hasMore ||
+    (communityRecommendedEnabled && communityBrowse.hasMore);
+  const recommendedIsLoadingMore =
+    recommendedSearch.isLoadingMore || communityBrowse.isLoadingMore;
+  const fetchRecommendedMore = useCallback(() => {
+    if (recommendedSearch.hasMore) {
+      recommendedSearch.fetchMore();
+      return;
+    }
+    if (communityRecommendedEnabled && communityBrowse.hasMore) {
+      communityBrowse.fetchMore();
+    }
+  }, [
+    recommendedSearch.hasMore,
+    recommendedSearch.fetchMore,
+    communityRecommendedEnabled,
+    communityBrowse.hasMore,
+    communityBrowse.fetchMore,
+  ]);
   useEffect(() => {
-    if (!recommendedSentinel || !recommendedSearch.hasMore) return;
+    if (!recommendedSentinel || !recommendedHasMore) return;
     const root = scrollRef.current;
     if (!root) return;
     const obs = new IntersectionObserver(
       ([e]) => {
-        if (e.isIntersecting) recommendedSearch.fetchMore();
+        if (e.isIntersecting) fetchRecommendedMore();
       },
       { threshold: 0, root },
     );
@@ -3256,9 +3817,10 @@ export function HubModelPicker({
     return () => obs.disconnect();
   }, [
     recommendedSentinel,
-    recommendedSearch.hasMore,
-    recommendedSearch.fetchMore,
+    recommendedHasMore,
+    fetchRecommendedMore,
     recommendedSearch.results.length,
+    communityBrowse.results.length,
     scrollRef,
   ]);
 
@@ -3274,10 +3836,11 @@ export function HubModelPicker({
           source: "hub",
           isLora: false,
           isDownloaded: downloadedSet.has(id.toLowerCase()),
+          pipelineTag: pipelineTagById.get(id) ?? null,
         });
       }
     },
-    [onSelect, isKnownGgufRepo, downloadedSet],
+    [onSelect, isKnownGgufRepo, downloadedSet, pipelineTagById],
   );
 
   // On Device owns the downloaded and custom-folder models; the Unsloth tab
@@ -3289,6 +3852,7 @@ export function HubModelPicker({
     pinnedRows.length === 0 &&
     visibleCachedGguf.length === 0 &&
     visibleCachedModelRows.length === 0 &&
+    visibleAdditionalOnDeviceModels.length === 0 &&
     sortedLmStudio.length === 0 &&
     sortedLocalDir.length === 0 &&
     // Fine-tuned models are on-device too: don't show the empty state above a
@@ -3433,7 +3997,9 @@ export function HubModelPicker({
   const hasConnected = externalModels.length > 0;
   // The Other models section and its shortcut only show with non-Unsloth downloads.
   const hasOtherModels =
-    otherCachedGguf.length > 0 || otherCachedModelRows.length > 0;
+    otherCachedGguf.length > 0 ||
+    otherCachedModelRows.length > 0 ||
+    otherAdditionalOnDeviceModels.length > 0;
 
   const downloadedRowButtonClassName =
     "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
@@ -3482,6 +4048,8 @@ export function HubModelPicker({
                 // The row loads one quant, so it is a GGUF pick like the expander's; without this the pages asked for a
                 // pipeline, which a GGUF repo rejects. No filename: the pin stores a label, resolved against the listing.
                 isGguf: true,
+                pipelineTag:
+                  diffusionTaskById.get(entry.repoId.toLowerCase()) ?? null,
               })
             }
             vramStatus={null}
@@ -3499,6 +4067,8 @@ export function HubModelPicker({
                   ggufVariant: entry.quant,
                   isDownloaded: true,
                   isGguf: true,
+                  pipelineTag:
+                    diffusionTaskById.get(entry.repoId.toLowerCase()) ?? null,
                 })
               }
             />
@@ -3571,6 +4141,7 @@ export function HubModelPicker({
       isDownloaded: true,
       expectedBytes,
       isGguf: true,
+      pipelineTag: c.task ?? null,
     };
     return (
       <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
@@ -3685,6 +4256,7 @@ export function HubModelPicker({
         {expanderOpen && (
           <GgufVariantExpander
             repoId={c.repo_id}
+            pipelineTag={c.task ?? null}
             loadId={c.load_id}
             cachePath={c.cache_path}
             onDevice={true}
@@ -3748,6 +4320,7 @@ export function HubModelPicker({
                 isLora: false,
                 loadId: c.load_id,
                 isDownloaded: true,
+                pipelineTag: c.task ?? null,
               })
             }
             vramStatus={null}
@@ -3765,6 +4338,7 @@ export function HubModelPicker({
                   loadId: c.load_id,
                   isDownloaded: true,
                   isGguf: false,
+                  pipelineTag: c.task ?? null,
                 })
               }
             />
@@ -3806,6 +4380,44 @@ export function HubModelPicker({
             }}
           />
         </span>
+      </div>
+    );
+  };
+
+  const renderAdditionalOnDeviceModelRow = (model: ModelOption) => {
+    const optionKey = makeModelOptionKey("additional-on-device", model.id);
+    const isSelected = value === model.id;
+    const pipelineTag = typeof task === "string" ? task : (task?.[0] ?? null);
+    return (
+      <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
+        <div className="min-w-0 flex-1">
+          <ModelRow
+            label={model.id}
+            hubUrl={hubRepoUrl(model.id)}
+            meta={`${model.isGguf === true ? "GGUF" : "Safetensors"}${model.deviceSize ? ` · ${model.deviceSize}` : ""}`}
+            quantChip={model.deviceQuant}
+            selected={isSelected}
+            loaded={model.deviceLoaded === true}
+            capabilities={detectCapabilities({
+              id: model.id,
+              pipelineTag: pipelineTag ?? undefined,
+            })}
+            alignMeta="device"
+            optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+            onClick={() =>
+              onSelect(model.id, {
+                source: "hub",
+                isLora: false,
+                isDownloaded: true,
+                isGguf: model.isGguf === true,
+                pipelineTag,
+              })
+            }
+            vramStatus={null}
+            className={downloadedRowButtonClassName}
+          />
+        </div>
+        <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
       </div>
     );
   };
@@ -4011,7 +4623,8 @@ export function HubModelPicker({
                 {/* Downloaded (Unsloth) stays visible (filtered) while searching. */}
                 {showDownloaded &&
                 (unslothCachedGguf.length > 0 ||
-                  unslothCachedModelRows.length > 0) ? (
+                  unslothCachedModelRows.length > 0 ||
+                  unslothAdditionalOnDeviceModels.length > 0) ? (
                   <>
                     <ListLabel
                       divider={pinnedRows.length > 0}
@@ -4097,6 +4710,10 @@ export function HubModelPicker({
                       unslothCachedGguf.map(renderDownloadedGgufRow)}
                     {!downloadedCollapsed &&
                       unslothCachedModelRows.map(renderDownloadedModelRow)}
+                    {!downloadedCollapsed &&
+                      unslothAdditionalOnDeviceModels.map(
+                        renderAdditionalOnDeviceModelRow,
+                      )}
                   </>
                 ) : null}
 
@@ -4118,6 +4735,10 @@ export function HubModelPicker({
                       otherCachedGguf.map(renderDownloadedGgufRow)}
                     {!otherModelsCollapsed &&
                       otherCachedModelRows.map(renderDownloadedModelRow)}
+                    {!otherModelsCollapsed &&
+                      otherAdditionalOnDeviceModels.map(
+                        renderAdditionalOnDeviceModelRow,
+                      )}
                   </div>
                 ) : null}
 
@@ -4434,11 +5055,17 @@ export function HubModelPicker({
                                   )}
                                   onClick={() => {
                                     if (isDirectGguf) {
-                                      onSelect(m.id, localDirectGgufMeta());
+                                      onSelect(
+                                        m.id,
+                                        localDirectGgufMeta(m.task),
+                                      );
                                     } else if (isGguf) {
                                       toggleGgufExpanded(m.id);
                                     } else {
-                                      onSelect(m.id, localModelMeta());
+                                      onSelect(
+                                        m.id,
+                                        localModelMeta(false, m.task),
+                                      );
                                     }
                                   }}
                                   onArrowDownIntoChildren={
@@ -4463,7 +5090,10 @@ export function HubModelPicker({
                                       m.model_id ?? m.display_name
                                     }`}
                                     onConfigure={() =>
-                                      onConfigure(m.id, localDirectGgufMeta())
+                                      onConfigure(
+                                        m.id,
+                                        localDirectGgufMeta(m.task),
+                                      )
                                     }
                                   />
                                 )}
@@ -4473,7 +5103,10 @@ export function HubModelPicker({
                                       m.model_id ?? m.display_name
                                     }`}
                                     onConfigure={() =>
-                                      onConfigure(m.id, localModelMeta())
+                                      onConfigure(
+                                        m.id,
+                                        localModelMeta(false, m.task),
+                                      )
                                     }
                                   />
                                 )}
@@ -4500,7 +5133,8 @@ export function HubModelPicker({
                                       : undefined
                                   }
                                   systemRamGb={
-                                    inferenceGpu.systemRamAvailableGb || undefined
+                                    inferenceGpu.systemRamAvailableGb ||
+                                    undefined
                                   }
                                   budgetKnown={inferenceGpu.budgetKnown}
                                 />
@@ -4565,11 +5199,17 @@ export function HubModelPicker({
                                   )}
                                   onClick={() => {
                                     if (isGgufFile) {
-                                      onSelect(m.id, localDirectGgufMeta());
+                                      onSelect(
+                                        m.id,
+                                        localDirectGgufMeta(m.task),
+                                      );
                                     } else if (isGguf) {
                                       toggleGgufExpanded(m.id);
                                     } else {
-                                      onSelect(m.id, localModelMeta());
+                                      onSelect(
+                                        m.id,
+                                        localModelMeta(false, m.task),
+                                      );
                                     }
                                   }}
                                   onArrowDownIntoChildren={
@@ -4594,7 +5234,10 @@ export function HubModelPicker({
                                       m.model_id ?? m.display_name
                                     }`}
                                     onConfigure={() =>
-                                      onConfigure(m.id, localDirectGgufMeta())
+                                      onConfigure(
+                                        m.id,
+                                        localDirectGgufMeta(m.task),
+                                      )
                                     }
                                   />
                                 )}
@@ -4604,7 +5247,10 @@ export function HubModelPicker({
                                       m.model_id ?? m.display_name
                                     }`}
                                     onConfigure={() =>
-                                      onConfigure(m.id, localModelMeta())
+                                      onConfigure(
+                                        m.id,
+                                        localModelMeta(false, m.task),
+                                      )
                                     }
                                   />
                                 )}
@@ -4684,11 +5330,17 @@ export function HubModelPicker({
                                   )}
                                   onClick={() => {
                                     if (isGgufFile) {
-                                      onSelect(m.id, localDirectGgufMeta());
+                                      onSelect(
+                                        m.id,
+                                        localDirectGgufMeta(m.task),
+                                      );
                                     } else if (isGguf) {
                                       toggleGgufExpanded(m.id);
                                     } else {
-                                      onSelect(m.id, localModelMeta());
+                                      onSelect(
+                                        m.id,
+                                        localModelMeta(false, m.task),
+                                      );
                                     }
                                   }}
                                   onArrowDownIntoChildren={
@@ -4709,7 +5361,10 @@ export function HubModelPicker({
                                       m.model_id ?? m.display_name
                                     }`}
                                     onConfigure={() =>
-                                      onConfigure(m.id, localDirectGgufMeta())
+                                      onConfigure(
+                                        m.id,
+                                        localDirectGgufMeta(m.task),
+                                      )
                                     }
                                   />
                                 )}
@@ -4719,7 +5374,10 @@ export function HubModelPicker({
                                       m.model_id ?? m.display_name
                                     }`}
                                     onConfigure={() =>
-                                      onConfigure(m.id, localModelMeta())
+                                      onConfigure(
+                                        m.id,
+                                        localModelMeta(false, m.task),
+                                      )
                                     }
                                   />
                                 )}
@@ -4778,7 +5436,9 @@ export function HubModelPicker({
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
                               showSize={hubRowsShowSize}
-                              hideOwner={true}
+                              // A community row without its owner reads as an
+                              // unsloth upload, and two publishers would collide.
+                              hideOwner={isUnslothOwned(id)}
                               downloaded={downloadedSet.has(id.toLowerCase())}
                               capabilities={capsById.get(id)}
                               meta={
@@ -4807,9 +5467,7 @@ export function HubModelPicker({
                               }}
                               vramStatus={info?.status ?? null}
                               vramEst={info?.est}
-                              gpuGb={
-                                isG ? expanderGpuGb : expanderSystemGpuGb
-                              }
+                              gpuGb={isG ? expanderGpuGb : expanderSystemGpuGb}
                               onArrowDownIntoChildren={
                                 expandedGguf === id
                                   ? () => focusFirstChildOption(optionKey)
@@ -4819,6 +5477,7 @@ export function HubModelPicker({
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 repoId={id}
+                                pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
                                 onConfigure={onConfigure}
                                 hfToken={hfToken || undefined}
@@ -4851,11 +5510,11 @@ export function HubModelPicker({
                         );
                       })
                     )}
-                    {recommendedSearch.hasMore && (
+                    {recommendedHasMore && (
                       <>
                         <div ref={recommendedSentinelRef} className="h-px" />
                         {/* Only while a page is in flight; on hasMore it sat under a usable list. */}
-                        {recommendedSearch.isLoadingMore ? (
+                        {recommendedIsLoadingMore ? (
                           <div className="flex items-center justify-center py-2">
                             <Spinner className="size-3.5 text-muted-foreground" />
                           </div>
@@ -4917,7 +5576,9 @@ export function HubModelPicker({
                               isKnownGgufRepo(id) ? undefined : vram?.est
                             }
                             gpuGb={
-                              isKnownGgufRepo(id) ? expanderGpuGb : expanderSystemGpuGb
+                              isKnownGgufRepo(id)
+                                ? expanderGpuGb
+                                : expanderSystemGpuGb
                             }
                             onArrowDownIntoChildren={
                               expandedGguf === id
@@ -4932,6 +5593,7 @@ export function HubModelPicker({
                           {expandedGguf === id && (
                             <GgufVariantExpander
                               repoId={id}
+                              pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
                               onConfigure={onConfigure}
                               hfToken={hfToken || undefined}
@@ -4968,14 +5630,16 @@ export function HubModelPicker({
 
                 {showHfSection && section === "recommended" ? (
                   <>
-                    {hfIds.length === 0 && !isLoading ? (
+                    {searchRowIds.length === 0 && !isLoading ? (
                       filteredRecommendedIds.length === 0 ? (
                         <div className="px-2.5 py-2 text-xs text-muted-foreground">
-                          No matching Unsloth models.
+                          {communityDiscoveryEnabled
+                            ? "No matching models."
+                            : "No matching Unsloth models."}
                         </div>
                       ) : null
                     ) : (
-                      hfIds.map((id) => {
+                      searchRowIds.map((id) => {
                         const vram = vramMap.get(id);
                         const isSearchGguf = isKnownGgufRepo(id);
                         const optionKey = makeModelOptionKey("search-hf", id);
@@ -5023,7 +5687,9 @@ export function HubModelPicker({
                               }
                               vramEst={isSearchGguf ? undefined : vram?.est}
                               gpuGb={
-                                isSearchGguf ? expanderGpuGb : expanderSystemGpuGb
+                                isSearchGguf
+                                  ? expanderGpuGb
+                                  : expanderSystemGpuGb
                               }
                               onArrowDownIntoChildren={
                                 expandedGguf === id
@@ -5038,6 +5704,7 @@ export function HubModelPicker({
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 repoId={id}
+                                pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
                                 onConfigure={onConfigure}
                                 hfToken={hfToken || undefined}
@@ -5071,7 +5738,7 @@ export function HubModelPicker({
                       })
                     )}
                     <div ref={sentinelRef} className="h-px" />
-                    {isLoadingMore ? (
+                    {searchIsLoadingMore ? (
                       <div className="flex items-center justify-center py-2">
                         <Spinner className="size-3.5 text-muted-foreground" />
                       </div>

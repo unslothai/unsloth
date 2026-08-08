@@ -114,9 +114,7 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             4096,
             main_module,
-            request_max_bytes_getter = lambda path: (
-                128 if path.endswith("/transcribe/raw") else 4096
-            ),
+            request_max_bytes_getter = lambda path: 128 if path.endswith("/transcribe/raw") else 4096,
         )
         c = TestClient(app)
 
@@ -137,7 +135,9 @@ class TestMaxBodyMiddleware:
         from utils.upload_limits import (
             STT_AUDIO_JSON_MAX_BYTES,
             STT_AUDIO_RAW_MAX_BYTES,
+            upload_request_limit_bytes,
         )
+
         assert (
             main_module._get_request_body_max_bytes("/api/inference/audio/transcribe/raw")
             == STT_AUDIO_RAW_MAX_BYTES
@@ -146,6 +146,18 @@ class TestMaxBodyMiddleware:
             main_module._get_request_body_max_bytes("/api/inference/audio/transcribe")
             == STT_AUDIO_JSON_MAX_BYTES
         )
+        # The OpenAI transcriptions route is multipart, so it gets headroom over the raw cap, on both mounts.
+        for path in ("/v1/audio/transcriptions", "/api/inference/audio/transcriptions"):
+            assert main_module._get_request_body_max_bytes(path) == upload_request_limit_bytes(
+                STT_AUDIO_RAW_MAX_BYTES
+            ), path
+            assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+            ), path
+            assert main_module._get_upload_passthrough_request_max_bytes(path + "/") == (
+                upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+            ), path
 
     def test_settings_put_body_over_cap_rejected(self, main_module):
         app = _make_protected_app(1024, main_module)
@@ -301,6 +313,8 @@ class TestMaxBodyMiddleware:
         for path in (
             "/v1/images/generations",
             "/v1/audio/generate",
+            "/v1/audio/speech",
+            "/v1/audio/transcriptions",
             "/v1/embeddings",
             "/v1/responses",
             "/v1/messages",
@@ -839,6 +853,9 @@ def health_app(tmp_path, monkeypatch):
 
     import main as _main
 
+    # This fixture exercises bearer redaction, not hardware startup. Keep the
+    # payload settled even on macOS while MLX self-repair holds the live verdict.
+    monkeypatch.setattr(_main, "_hardware_snapshot", lambda: (False, None))
     app = FastAPI()
     app.add_api_route("/api/health", _main.health_check, methods = ["GET"])
 

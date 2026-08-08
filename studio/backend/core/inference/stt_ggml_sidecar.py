@@ -50,6 +50,7 @@ from core.inference.stt_sidecar import (
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
+    SttTranscriptionCancelledError,
     _capture_stt_hub_cache,
     _claim_stt_repository,
     _decode_audio_bounded,
@@ -60,6 +61,7 @@ from core.inference.stt_sidecar import (
     _prepare_stt_cache_for_http,
     _read_revision_record,
     _TARGET_SAMPLE_RATE,
+    _terminate_process_on_cancel,
     _training_active,
     _write_revision_record,
     normalize_whisper_language,
@@ -662,6 +664,7 @@ class GgmlSttSidecar:
 
     def __init__(self, keep_alive_seconds: float = STT_KEEP_ALIVE_SECONDS) -> None:
         self._lock = threading.RLock()
+        self._load_state_lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._model_id: Optional[str] = None
@@ -677,6 +680,7 @@ class GgmlSttSidecar:
         # lock, so the event is the source of truth and terminating the process
         # is a best-effort fast path.
         self._load_cancel_event: Optional[threading.Event] = None
+        self._load_owner_cancel_event: Optional[threading.Event] = None
         self._starting_process: Optional[subprocess.Popen] = None
         # Set before the updater waits for _lock, then kept set while it owns
         # the lock and atomically replaces the managed install tree. New loads
@@ -700,7 +704,8 @@ class GgmlSttSidecar:
     def is_loading(self) -> bool:
         # True only while whisper-server is starting (seconds to bind its GPU
         # backend); load() sets and clears the flag around that window.
-        return self._loading
+        with self._load_state_lock:
+            return self._loading
 
     @property
     def keep_alive_seconds(self) -> float:
@@ -791,13 +796,27 @@ class GgmlSttSidecar:
         # so act without the lock: signal abort and terminate the starting
         # process. _wait_for_server observes the event and raises, then load()
         # reaps the process and releases the lock.
-        if not self._loading:
-            return False
-        event = self._load_cancel_event
-        if event is None:
-            return False
-        event.set()
-        process = self._starting_process
+        with self._load_state_lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None:
+                return False
+            event.set()
+            process = self._starting_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        return True
+
+    def _cancel_owned_load(self, owner: threading.Event) -> bool:
+        """Cancel startup only when it belongs to this transcription."""
+        with self._load_state_lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None or self._load_owner_cancel_event is not owner:
+                return False
+            event.set()
+            process = self._starting_process
         if process is not None and process.poll() is None:
             try:
                 process.terminate()
@@ -834,18 +853,25 @@ class GgmlSttSidecar:
             )
         return path
 
-    def load(self, model: Optional[str] = None) -> None:
+    def load(
+        self,
+        model: Optional[str] = None,
+        request_cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         """Start (or switch) whisper-server for the requested curated model."""
+        if request_cancel_event is not None and request_cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         self._raise_if_update_in_progress()
         model_id = resolve_ggml_model_id(model)
         with self._lock:
+            if request_cancel_event is not None and request_cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
             self._raise_if_update_in_progress()
             binary = ensure_engine_available()
             if self._process_alive() and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
                 return
             model_path = self._ensure_model_downloaded(model_id)
-            self._release_locked()
             reservation, port = self._reserve_free_port()
             command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
             marker = _whisper_install_marker(binary)
@@ -864,10 +890,17 @@ class GgmlSttSidecar:
                 model_id,
                 port,
             )
-            cancel_event = threading.Event()
-            self._load_cancel_event = cancel_event
-            self._loading = True
+            cancel_event = (
+                request_cancel_event if request_cancel_event is not None else threading.Event()
+            )
+            with self._load_state_lock:
+                self._load_cancel_event = cancel_event
+                self._load_owner_cancel_event = request_cancel_event
+                self._loading = True
             try:
+                if cancel_event.is_set():
+                    raise SttLoadCancelledError("GGUF STT model loading was cancelled.")
+                self._release_locked()
                 # Release the reservation as late as possible: whisper-server
                 # binds the port moments after this close.
                 reservation.close()
@@ -883,7 +916,8 @@ class GgmlSttSidecar:
                     # never orphans a server holding the model.
                     **child_popen_kwargs(),
                 )
-                self._starting_process = process
+                with self._load_state_lock:
+                    self._starting_process = process
                 adopt_pid(process.pid)  # terminate_all backstop for graceful exits
                 try:
                     self._wait_for_server(process, port, cancel_event)
@@ -899,9 +933,11 @@ class GgmlSttSidecar:
                 self._schedule_idle_unload_locked()
             finally:
                 reservation.close()  # no-op when already released before spawn
-                self._loading = False
-                self._load_cancel_event = None
-                self._starting_process = None
+                with self._load_state_lock:
+                    self._loading = False
+                    self._load_cancel_event = None
+                    self._load_owner_cancel_event = None
+                    self._starting_process = None
 
     @staticmethod
     def _wait_for_server(
@@ -955,6 +991,7 @@ class GgmlSttSidecar:
         model: Optional[str] = None,
         language: Optional[str] = None,
         fast: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Transcribe encoded audio bytes via whisper-server.
 
@@ -965,6 +1002,8 @@ class GgmlSttSidecar:
         ensure_engine_available()
         model_id = resolve_ggml_model_id(model)
         lang = normalize_whisper_language(language)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         known_languages = _known_whisper_languages()
         if lang is not None and known_languages is not None and lang not in known_languages:
             raise SttLanguageError(
@@ -974,12 +1013,32 @@ class GgmlSttSidecar:
         # only to 409 (matches the Transformers sidecar's preflight).
         self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         with self._lock:
+            cancel_done = threading.Event()
             try:
-                self.load(model_id)
+                if cancel_event is None:
+                    self.load(model_id)
+                else:
+                    self.load(model_id, request_cancel_event = cancel_event)
+                process = self._process
+                if cancel_event is not None:
+                    threading.Thread(
+                        target = _terminate_process_on_cancel,
+                        args = (process, cancel_event, cancel_done),
+                        daemon = True,
+                    ).start()
                 text = self._post_inference(wav_bytes, lang, fast)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
+            except Exception:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
+                raise
             finally:
+                cancel_done.set()
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
         return {
@@ -988,6 +1047,11 @@ class GgmlSttSidecar:
             "duration": duration,
             "model": model_id,
         }
+
+    def cancel_transcription(self, cancel_event: threading.Event) -> bool:
+        already_cancelled = cancel_event.is_set()
+        cancel_event.set()
+        return self._cancel_owned_load(cancel_event) or not already_cancelled
 
     def _post_inference(self, wav_bytes: bytes, lang: Optional[str], fast: bool) -> str:
         boundary = uuid.uuid4().hex

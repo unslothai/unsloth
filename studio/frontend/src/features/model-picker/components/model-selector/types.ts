@@ -10,6 +10,14 @@ export interface ModelOption {
   description?: string;
   icon?: ReactNode;
   isGguf?: boolean;
+  /** Fixed quant used by a specialized on-device runtime. Generic Hub GGUF
+   * rows discover their variants dynamically instead. */
+  deviceQuant?: string;
+  /** Fallback metadata for task-owned caches that an older generic inventory
+   * cannot describe. Current servers normally provide a full cached row. */
+  deviceSize?: string;
+  deviceSizeBytes?: number;
+  deviceLoaded?: boolean;
 }
 
 export interface LoraModelOption extends ModelOption {
@@ -47,6 +55,9 @@ export interface ModelSelectorChangeMeta {
   loadId?: string | null;
   /** Native path token so an active-model reload can reopen a file-picked GGUF. */
   nativePathToken?: string;
+  /** Hub pipeline tag for an uncurated pick, so a task page can tell which task
+   *  the repo does when it is not in the page's catalog. */
+  pipelineTag?: string | null;
   nativePathExpiresAtMs?: number | null;
 }
 

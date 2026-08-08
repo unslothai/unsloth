@@ -1815,7 +1815,7 @@ def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
 
     class _TtsBackend:
         active_model_name = "org/TTS"
-        models = {"org/TTS": {"is_audio": True}}
+        models = {"org/TTS": {"is_audio": True, "audio_type": "snac"}}
 
         def generate_audio_response(self, **kwargs):
             # Sampled mid-generation: the window a concurrent swap would tear down in.
@@ -2235,7 +2235,7 @@ def test_audio_generation_unregisters_when_it_fails(monkeypatch):
 
     class _BrokenTtsBackend:
         active_model_name = "org/TTS"
-        models = {"org/TTS": {"is_audio": True}}
+        models = {"org/TTS": {"is_audio": True, "audio_type": "snac"}}
 
         def generate_audio_response(self, **kwargs):
             raise RuntimeError("codec exploded")

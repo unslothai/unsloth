@@ -31,7 +31,12 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 # 1. Hidden-model GGUF companions ------------------------------------------------
 def test_curated_gguf_dictation_repos_are_hidden():
-    from utils.hidden_models import _HIDDEN_STT_REPO_IDS, is_hidden_model
+    from utils.hidden_models import (
+        _HIDDEN_STT_REPO_IDS,
+        is_curated_stt_repo_id,
+        is_hidden_model,
+    )
+
     for repo in (
         "unslothai/whisper-tiny-GGUF",
         "unslothai/whisper-base-GGUF",
@@ -41,11 +46,19 @@ def test_curated_gguf_dictation_repos_are_hidden():
     ):
         assert repo in _HIDDEN_STT_REPO_IDS
         assert is_hidden_model(repo) is True
+        assert is_curated_stt_repo_id(repo.lower()) is True
         # Case-insensitive, matching how the cache stores the repo id.
         assert is_hidden_model(repo.lower()) is True
 
     # A same-prefix but genuinely different repo is NOT hidden.
     assert is_hidden_model("unslothai/whisper-large-v3-GGUF-finetune") is False
+    assert is_curated_stt_repo_id("unslothai/whisper-large-v3-GGUF-finetune") is False
+
+
+def test_stt_load_has_no_engine_wide_cancel_endpoint():
+    import routes.inference as inference_route
+    assert not hasattr(inference_route, "stt_load_cancel")
+    assert all(route.path != "/audio/stt/load/cancel" for route in inference_route.router.routes)
 
 
 # 2. GGUF status accessors are lock-free ----------------------------------------

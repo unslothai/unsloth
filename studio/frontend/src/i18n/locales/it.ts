@@ -52,6 +52,7 @@ export const it = {
       recipes: "Ricette",
       images: "Immagini",
       video: "Video",
+      audio: "Audio",
       more: "Altro",
       customizeSidebar: "Personalizza la barra laterale",
       newBadge: "Novità",

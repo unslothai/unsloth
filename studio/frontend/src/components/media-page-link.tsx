@@ -12,9 +12,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-/** The link out to another page's workspace (Images, Video, image training). Kept out of the
- *  page's mode strip, which switches modes within a page, and parked at the far right past a
- *  divider so it reads as leaving rather than as another mode. */
+/** The link out to another page's workspace (Images, Video, Audio, image training). Kept out
+ *  of the page's mode strip, which switches modes within a page, and parked at the far right
+ *  past a divider so it reads as leaving rather than as another mode. */
 export function MediaPageLink({
   to,
   label,
@@ -22,7 +22,7 @@ export function MediaPageLink({
   tooltip,
   onNavigate,
 }: {
-  to: "/images" | "/video";
+  to: "/images" | "/video" | "/audio";
   label: string;
   icon: IconSvgElement;
   /** Needed on a translated page: the default prefix below is English. */

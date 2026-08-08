@@ -142,6 +142,21 @@ def _isolate_xet_health_state():
 
 
 @pytest.fixture(autouse = True)
+def _isolate_audio_gallery(monkeypatch, tmp_path):
+    """Keep generated-clip persistence out of the developer's real gallery.
+
+    /audio/generate persists every clip, so any test driving that route with a fake
+    TTS core left silent wavs (named after fixtures like "some/custom-tts") in
+    ``studio_root()/audio``, where the Audio page then listed them. Done here rather
+    than per-suite so no test can leak.
+    """
+    from core.inference import audio_gallery
+
+    monkeypatch.setattr(audio_gallery, "studio_root", lambda: tmp_path)
+    yield
+
+
+@pytest.fixture(autouse = True)
 def _no_background_model_scan(monkeypatch):
     """Keep the /v1 admission hook from scanning the real HF cache during tests.
 

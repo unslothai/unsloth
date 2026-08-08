@@ -85,6 +85,7 @@ export const ja = {
       recipes: "レシピ",
       images: "画像",
       video: "動画",
+      audio: "音声",
       more: "その他",
       customizeSidebar: "サイドバーをカスタマイズ",
       newBadge: "新機能",

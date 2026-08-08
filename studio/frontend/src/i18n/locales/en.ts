@@ -78,6 +78,7 @@ export const en = {
       recipes: "Recipes",
       images: "Images",
       video: "Video",
+      audio: "Audio",
       more: "More",
       // Last entry of the More flyout; opens Settings -> Appearance.
       customizeSidebar: "Customize sidebar",

@@ -1320,9 +1320,6 @@ def test_is_hidden_model_hides_dictation_models(tmp_path):
 
 
 def test_list_cached_models_hides_custom_whisper_by_config(monkeypatch, tmp_path):
-    # Regression: the legacy /cached-models picker must pass the snapshot path so
-    # the config check hides a custom (non-curated) Whisper checkpoint; a bare
-    # repo id cannot ("user/whisper-finetune" is not in the curated set).
     repo_path = tmp_path / "models--user--whisper-finetune"
     snap = repo_path / "snapshots" / "abc"
     snap.mkdir(parents = True)
@@ -1353,7 +1350,7 @@ def test_list_cached_models_hides_custom_whisper_by_config(monkeypatch, tmp_path
     )
     # The route passed the snapshot path (not just the repo id) ...
     assert any(str(repo_path) in values for values in captured)
-    # ... so the custom Whisper checkpoint is hidden from the chat picker.
+    # ... so the legacy chat inventory keeps hiding the custom checkpoint.
     assert result["cached"] == []
 
 

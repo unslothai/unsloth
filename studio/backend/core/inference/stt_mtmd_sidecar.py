@@ -15,6 +15,7 @@ files, so downloads run the shared worker twice.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import socket
 import subprocess
@@ -38,6 +39,7 @@ from core.inference.stt_sidecar import (
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
+    SttTranscriptionCancelledError,
     _SelectedHubFile,
     _capture_stt_hub_cache,
     _claim_stt_repository,
@@ -548,6 +550,7 @@ class MtmdSttSidecar:
         # training. Kept so a dictation after the run does not stay on CPU.
         self._gpu_disabled = False
         self._load_cancel_event: Optional[threading.Event] = None
+        self._load_owner_cancel_event: Optional[threading.Event] = None
         self._update_in_progress = False
         self._keep_alive_seconds = keep_alive_seconds
         self._idle_timer: Optional[threading.Timer] = None
@@ -647,6 +650,21 @@ class MtmdSttSidecar:
                 pass
         return True
 
+    def _cancel_owned_load(self, owner: threading.Event) -> bool:
+        """Cancel startup only when it belongs to this transcription."""
+        with self._lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None or self._load_owner_cancel_event is not owner:
+                return False
+            event.set()
+            process = self._starting_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        return True
+
     def wait_for_load_to_settle(self) -> None:
         """Block until a cancelled startup has been reaped and its VRAM freed.
 
@@ -696,17 +714,30 @@ class MtmdSttSidecar:
             )
         return paths
 
-    def load(self, model: Optional[str] = None) -> None:
+    def load(
+        self,
+        model: Optional[str] = None,
+        request_cancel_event: Optional[threading.Event] = None,
+    ) -> None:
+        if request_cancel_event is not None and request_cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         self._raise_if_update_in_progress()
         model_id = resolve_mtmd_model_id(model)
         binary = ensure_engine_available()
         # Startup happens outside _lock (it is slow), so this keeps two callers
         # from each spawning a server and orphaning the first.
         with self._start_lock:
+            if request_cancel_event is not None and request_cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
             self._raise_if_update_in_progress()
-            self._load_locked(model_id, binary)
+            self._load_locked(model_id, binary, request_cancel_event)
 
-    def _load_locked(self, model_id: str, binary: str) -> None:
+    def _load_locked(
+        self,
+        model_id: str,
+        binary: str,
+        request_cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         with self._lock:
             training = _training_active()
             if self._process_alive() and self._model_id == model_id:
@@ -722,11 +753,16 @@ class MtmdSttSidecar:
             # Announced before the slow probe and reap: is_loading() is read lock-free,
             # so a training start would otherwise see False and wait out the startup in
             # unload() instead of cancelling this load.
-            cancel_event = threading.Event()
+            cancel_event = (
+                request_cancel_event if request_cancel_event is not None else threading.Event()
+            )
             self._load_cancel_event = cancel_event
+            self._load_owner_cancel_event = request_cancel_event
             self._loading = True
             released = False
             try:
+                if cancel_event.is_set():
+                    raise SttLoadCancelledError("Dictation model loading was cancelled.")
                 # Before the release: a 409 for a model that is not downloaded
                 # must not cost the user the server they were already using.
                 model_path, mmproj_path = self._ensure_model_downloaded(model_id)
@@ -744,6 +780,7 @@ class MtmdSttSidecar:
                 if not released:
                     self._loading = False
                     self._load_cancel_event = None
+                    self._load_owner_cancel_event = None
             # Re-read last: _release_locked() reaps the old server, which can
             # take seconds, and training admission that already passed its own
             # check cannot come back to cancel this load. Publishing _loading
@@ -818,6 +855,7 @@ class MtmdSttSidecar:
             with self._lock:
                 self._loading = False
                 self._load_cancel_event = None
+                self._load_owner_cancel_event = None
                 self._starting_process = None
 
     @staticmethod
@@ -849,6 +887,7 @@ class MtmdSttSidecar:
         model: Optional[str] = None,
         language: Optional[str] = None,
         fast: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
@@ -857,6 +896,8 @@ class MtmdSttSidecar:
         """
         ensure_engine_available()
         model_id = resolve_mtmd_model_id(model)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         # No training guard here on purpose: load() starts the server with
         # -ngl 0 --no-mmproj-offload while a run is active, so this transcribes
         # on CPU exactly as whisper.cpp and Transformers do. Refusing after a
@@ -864,9 +905,11 @@ class MtmdSttSidecar:
         # Reject a missing model before decoding, matching the other sidecars.
         self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        self.load(model_id)
+        self.load(model_id, request_cancel_event = cancel_event)
         with self._lock:
             port = self._port
             if port is None or not self._process_alive():
@@ -887,7 +930,15 @@ class MtmdSttSidecar:
         try:
             # Outside the lock: a held lock would block unload, including the
             # one a training run performs, for the whole request timeout.
-            text = self._post_transcribe(port, model_id, wav_bytes, audio_seconds)
+            text = self._post_transcribe(
+                port, model_id, wav_bytes, audio_seconds, cancel_event = cancel_event
+            )
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+        except Exception:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            raise
         finally:
             with self._lock:
                 self._active_requests -= 1
@@ -899,12 +950,19 @@ class MtmdSttSidecar:
             "model": model_id,
         }
 
+    def cancel_transcription(self, cancel_event: threading.Event) -> bool:
+        already_cancelled = cancel_event.is_set()
+        cancel_event.set()
+        return self._cancel_owned_load(cancel_event) or not already_cancelled
+
     def _post_transcribe(
         self,
         port: int,
         model_id: str,
         wav_bytes: bytes,
         audio_seconds: Optional[float] = None,
+        *,
+        cancel_event: Optional[threading.Event] = None,
     ) -> str:
         spec = MTMD_STT_MODELS[model_id]
         payload = {
@@ -927,16 +985,57 @@ class MtmdSttSidecar:
             "temperature": 0,
             "max_tokens": _transcript_token_budget(audio_seconds),
         }
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{port}/v1/chat/completions",
-            data = json.dumps(payload).encode("utf-8"),
-            headers = {"Content-Type": "application/json"},
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", port, timeout = _TRANSCRIBE_TIMEOUT_SECONDS
         )
-        with urllib.request.urlopen(request, timeout = _TRANSCRIBE_TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read().decode("utf-8"))
+        cancel_done = threading.Event()
+        if cancel_event is not None:
+            threading.Thread(
+                target = _close_connection_on_cancel,
+                args = (connection, cancel_event, cancel_done),
+                daemon = True,
+            ).start()
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            connection.request(
+                "POST",
+                "/v1/chat/completions",
+                body = json.dumps(payload).encode("utf-8"),
+                headers = {"Content-Type": "application/json"},
+            )
+            with connection.getresponse() as response:
+                response_body = response.read()
+                if not 200 <= response.status < 300:
+                    raise RuntimeError(
+                        f"MTMD transcription server returned HTTP {response.status}."
+                    )
+                body = json.loads(response_body.decode("utf-8"))
+        finally:
+            cancel_done.set()
+            connection.close()
         choices = body.get("choices") or []
         text = (choices[0].get("message", {}).get("content") or "") if choices else ""
         return _clean_transcript(text, spec.transcript_marker)
+
+
+def _close_connection_on_cancel(
+    connection: http.client.HTTPConnection, cancel_event: threading.Event, done: threading.Event
+) -> None:
+    while not done.is_set():
+        if not cancel_event.wait(0.05):
+            continue
+        while not done.is_set():
+            sock = connection.sock
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                connection.close()
+                return
+            time.sleep(0.01)
+        return
 
 
 def _clean_transcript(text: str, marker: Optional[str]) -> str:

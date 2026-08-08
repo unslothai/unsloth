@@ -81,6 +81,7 @@ export const zhCN = {
       recipes: "配方",
       images: "图像",
       video: "视频",
+      audio: "音频",
       more: "更多",
       customizeSidebar: "自定义侧边栏",
       newBadge: "新",

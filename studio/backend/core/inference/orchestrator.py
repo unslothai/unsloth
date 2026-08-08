@@ -27,6 +27,10 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Sequence, Tuple, Union
+from core.inference.audio_errors import (
+    AUDIO_UNSUPPORTED_CODE,
+    AudioBackendUnsupportedError,
+)
 from utils.hardware import get_device, prepare_gpu_selection
 from utils.utils import hf_env_offline
 
@@ -56,9 +60,21 @@ _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _DISPATCH_DRAIN_TIMEOUT = 5.0
 
+_AUDIO_GENERATION_TIMEOUT = 120.0
+_AUDIO_GENERATION_BASE_TOKENS = 2048
+AUDIO_GENERATION_MAX_TOKENS = 8192
+_AUDIO_CANCEL_DRAIN_TIMEOUT = 5.0
+
 # Max wait for a cancelled generation to release _gen_lock before unload_model
 # tears the subprocess down. Only bounds a wedged worker.
 _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
+
+
+def _audio_generation_timeout(max_new_tokens: int) -> float:
+    """Keep the existing floor, but give longer requested audio room to finish."""
+    max_new_tokens = min(AUDIO_GENERATION_MAX_TOKENS, max(1, int(max_new_tokens)))
+    token_scale = max(1.0, max_new_tokens / _AUDIO_GENERATION_BASE_TOKENS)
+    return _AUDIO_GENERATION_TIMEOUT * token_scale
 
 
 _MLX_RUNTIME_MIRROR_FIELDS = (
@@ -147,6 +163,11 @@ class InferenceOrchestrator:
         # Set during a switch so a generation winning the _gen_lock handoff bails
         # instead of starting on the outgoing model.
         self._unload_pending = False
+        # Blocking TTS has no token response that can safely establish worker ownership
+        # while it is queued behind compare-mode work. Reserve the dispatcher admission
+        # lane for the whole TTS request so its shared cancel event cannot hit a sibling.
+        # Mutated under _dispatcher_lifecycle_lock while holding _gen_lock.
+        self._exclusive_tts_pending = False
 
         # Dispatcher state for compare mode (adapter-controlled requests):
         # bypass _gen_lock, send commands directly, read from per-request
@@ -636,17 +657,23 @@ class InferenceOrchestrator:
                     return None
             return resp
 
-        def drain(timeout: float = 5.0) -> None:
+        def drain(timeout: float = 5.0) -> bool:
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 resp = read_one(timeout = min(0.5, deadline - time.monotonic()))
                 if resp is None:
                     if not self._ensure_subprocess_alive():
-                        return
+                        return True
                     continue
-                if resp.get("type", "") in ("gen_done", "gen_error"):
-                    return
-            logger.warning("Timed out waiting for gen_done after cancel")
+                if resp.get("type", "") in (
+                    "gen_done",
+                    "gen_error",
+                    "audio_done",
+                    "audio_error",
+                ):
+                    return True
+            logger.warning("Timed out waiting for terminal response after cancel")
+            return False
 
         def release() -> None:
             with self._mailbox_lock:
@@ -829,7 +856,7 @@ class InferenceOrchestrator:
             # after the stop, become the resp_queue reader, and consume the
             # worker's "unloaded" reply (unroutable, so dropped) before
             # unload_model's _wait_response sees it -- hanging the unload 300s.
-            if self._unload_pending:
+            if self._unload_pending or self._exclusive_tts_pending:
                 return False
             if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
                 return False
@@ -956,6 +983,9 @@ class InferenceOrchestrator:
         if self._unload_pending:
             yield GenStreamError("Error: model is being unloaded", public = True)
             return
+        if self._exclusive_tts_pending:
+            yield GenStreamError("Error: audio generation is in progress", public = True)
+            return
 
         # Ensure the dispatcher runs. _start_dispatcher serializes concurrent starters under
         # _dispatcher_lifecycle_lock and returns True only for the caller that actually spawned
@@ -1013,14 +1043,16 @@ class InferenceOrchestrator:
                 or self.active_model_name != expected_model
                 or not dispatcher_alive
             )
-            if not unloading:
+            tts_reserved = self._exclusive_tts_pending
+            blocked = unloading or tts_reserved
+            if not blocked:
                 self._mailboxes[request_id] = mailbox
                 if cancel_event is not None:
                     self._request_cancel_events[request_id] = cancel_event
             # When bailing without a mailbox, note whether any OTHER compare request still
             # routes through the dispatcher; if none and this call started it, stop it below.
-            orphaned_dispatcher = unloading and not dispatcher_preexisting and not self._mailboxes
-        if unloading:
+            orphaned_dispatcher = blocked and not dispatcher_preexisting and not self._mailboxes
+        if blocked:
             # A racing unload can pass its _wait_dispatcher_idle() while the dispatcher was
             # stopped, then set _unload_pending. The one we just started would otherwise
             # linger with no mailboxes, race unload_model's _wait_response for the "unloaded"
@@ -1029,7 +1061,12 @@ class InferenceOrchestrator:
             # _stop_dispatcher joins the dispatcher, which itself takes that lock.
             if orphaned_dispatcher:
                 self._stop_dispatcher()
-            yield GenStreamError("Error: model is being unloaded", public = True)
+            detail = (
+                "Error: audio generation is in progress"
+                if tts_reserved
+                else "Error: model is being unloaded"
+            )
+            yield GenStreamError(detail, public = True)
             return
 
         # Claim before sending, like the locked path: dispatched runs are concurrent by design,
@@ -1092,15 +1129,15 @@ class InferenceOrchestrator:
                 return
         logger.warning("Timed out draining mailbox after cancel")
 
-    def _wait_dispatcher_idle(self) -> bool:
+    def _wait_dispatcher_idle(self, cancel_event = None) -> bool:
         """Wait for all dispatched requests to complete, then stop dispatcher.
 
         Returns True if the dispatcher was stopped (all mailboxes drained, or no
         dispatcher was running), and False if it was left running because compare
         requests were still active after _DISPATCH_IDLE_TIMEOUT.
 
-        Called before the _gen_lock path so the dispatcher thread isn't competing
-        for resp_queue reads.
+        Callers must reserve admission before using this as an exclusive handoff;
+        TTS does so under _gen_lock, while older direct paths call it before the lock.
         """
         if self._dispatcher_thread is None or not self._dispatcher_thread.is_alive():
             return True
@@ -1108,10 +1145,15 @@ class InferenceOrchestrator:
         # Wait for all mailboxes to be emptied (dispatched requests complete)
         deadline = time.monotonic() + _DISPATCH_IDLE_TIMEOUT
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                return False
             with self._mailbox_lock:
                 if not self._mailboxes:
                     break
             time.sleep(0.1)
+
+        if cancel_event is not None and cancel_event.is_set():
+            return False
 
         # Only stop dispatcher if all mailboxes drained. If compare requests
         # are still active, leave it running so their token routing isn't
@@ -1471,10 +1513,15 @@ class InferenceOrchestrator:
     # the same, so one object knows everything that is resident and Voice
     # settings and Model Hub cannot report different things about one model.
 
-    def load_stt_model(self, model: Optional[str], engine: str) -> None:
+    def load_stt_model(
+        self,
+        model: Optional[str],
+        engine: str,
+        request_cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         """Make a dictation model resident on its sidecar."""
         from core.inference import stt_registry
-        stt_registry.load(model, engine)
+        stt_registry.load(model, engine, request_cancel_event)
 
     def unload_stt_model(self, engines: Optional[Sequence[str]] = None) -> list:
         """Release dictation models (all engines by default); returns refusals."""
@@ -2009,6 +2056,7 @@ class InferenceOrchestrator:
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
+        cancel_event = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate).
 
@@ -2020,65 +2068,152 @@ class InferenceOrchestrator:
             raise RuntimeError("No active model")
         expected_model = self.active_model_name
 
-        # Serialize under _gen_lock (sole resp_queue reader) and refuse to start on the
-        # outgoing model once an unload is pending, like the text and audio-input paths.
-        # Without this a concurrent /audio/generate could run TTS on a model being switched.
+        # Serialize under _gen_lock and reserve dispatcher admission before waiting for
+        # compare work to drain. A bare idle wait is racy: a compare request can register
+        # between the wait and this command, leaving TTS queued without safe ownership of
+        # the worker's single shared cancel event.
         with self._gen_lock:
-            # Recheck under the lock (see _generate_inner): a raced unload/switch may have
-            # cleared or swapped the model while we waited.
-            if self._unload_pending or self.active_model_name != expected_model:
-                raise RuntimeError("model is being unloaded")
-
-            request_id = str(uuid.uuid4())
-
-            cmd = {
-                "type": "generate_audio",
-                "request_id": request_id,
-                "text": text,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "min_p": min_p,
-                "max_new_tokens": max_new_tokens,
-                "repetition_penalty": repetition_penalty,
-            }
-            if use_adapter is not None:
-                cmd["use_adapter"] = use_adapter
-
-            # Same shared-queue hazard as _generate_inner: see _direct_reader.
-            read_one, _drain, release_mailbox = self._direct_reader(request_id)
+            with self._dispatcher_lifecycle_lock:
+                self._exclusive_tts_pending = True
             try:
-                self._send_cmd(cmd)
+                dispatcher_idle = self._wait_dispatcher_idle(cancel_event = cancel_event)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("Audio generation cancelled")
+                if not dispatcher_idle:
+                    raise RuntimeError(
+                        "Cannot start audio generation while compare requests are active"
+                    )
 
-                deadline = time.monotonic() + 120.0
-                while time.monotonic() < deadline:
-                    remaining = max(0.1, deadline - time.monotonic())
-                    resp = read_one(timeout = min(remaining, 1.0))
+                # Recheck after the dispatcher wait: unload can set its flag without
+                # _gen_lock, and a switch may have completed while this call was queued.
+                if self._unload_pending or self.active_model_name != expected_model:
+                    raise RuntimeError("model is being unloaded")
 
-                    if resp is None:
-                        if not self._ensure_subprocess_alive():
-                            raise RuntimeError(self._subprocess_crash_message("audio generation"))
-                        continue
+                # Bound public API integers before either enqueuing work or
+                # calculating the floating-point watchdog deadline.
+                max_new_tokens = min(
+                    AUDIO_GENERATION_MAX_TOKENS,
+                    max(1, int(max_new_tokens)),
+                )
+                generation_timeout = _audio_generation_timeout(max_new_tokens)
+                request_id = str(uuid.uuid4())
 
-                    rtype = resp.get("type", "")
+                cmd = {
+                    "type": "generate_audio",
+                    "request_id": request_id,
+                    "text": text,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "top_k": top_k,
+                    "min_p": min_p,
+                    "max_new_tokens": max_new_tokens,
+                    "repetition_penalty": repetition_penalty,
+                }
+                if use_adapter is not None:
+                    cmd["use_adapter"] = use_adapter
 
-                    if rtype == "audio_done":
-                        wav_bytes = base64.b64decode(resp["wav_base64"])
-                        sample_rate = resp["sample_rate"]
-                        return wav_bytes, sample_rate
+                # Same shared-queue hazard as _generate_inner: see _direct_reader.
+                read_one, _drain, release_mailbox = self._direct_reader(request_id)
+                try:
+                    # Claim before enqueueing so request-scoped reset ownership follows the same
+                    # discipline as text and audio-input generation.
+                    with self._send_order_lock:
+                        self._claim_worker(cancel_event)
+                        self._send_cmd(cmd)
 
-                    if rtype == "audio_error":
-                        raise RuntimeError(resp.get("error", "Audio generation failed"))
+                    deadline = time.monotonic() + generation_timeout
+                    cancel_signalled = False
+                    cancel_deadline = None
+                    worker_started = False
+                    while time.monotonic() < deadline:
+                        if (
+                            cancel_event is not None
+                            and cancel_event.is_set()
+                            and cancel_deadline is None
+                        ):
+                            cancel_deadline = time.monotonic() + _AUDIO_CANCEL_DRAIN_TIMEOUT
+                            deadline = cancel_deadline
+                        if (
+                            worker_started
+                            and cancel_event is not None
+                            and cancel_event.is_set()
+                            and not cancel_signalled
+                            and self._owns_worker(cancel_event)
+                        ):
+                            # audio_started is emitted after the worker clears stale state,
+                            # so this signal cannot be erased or hit an earlier request.
+                            self._cancel_generation()
+                            cancel_signalled = True
+                        remaining = max(0.1, deadline - time.monotonic())
+                        resp = read_one(timeout = min(remaining, 1.0))
 
-                    if rtype == "error":
-                        raise RuntimeError(resp.get("error", "Unknown error"))
+                        if resp is None:
+                            if not self._ensure_subprocess_alive():
+                                raise RuntimeError(
+                                    self._subprocess_crash_message("audio generation")
+                                )
+                            continue
 
-                    if rtype == "status":
-                        continue
+                        rtype = resp.get("type", "")
+                        if rtype == "audio_started":
+                            self._mark_worker_started(cancel_event)
+                            worker_started = True
+                            continue
 
-                raise RuntimeError("Timeout waiting for audio generation (120s)")
+                        if rtype == "audio_done":
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise RuntimeError("Audio generation cancelled")
+                            wav_bytes = base64.b64decode(resp["wav_base64"])
+                            sample_rate = resp["sample_rate"]
+                            return wav_bytes, sample_rate
+
+                        if rtype == "audio_error":
+                            if resp.get("cancelled") or (
+                                cancel_event is not None and cancel_event.is_set()
+                            ):
+                                raise RuntimeError("Audio generation cancelled")
+                            # Tagged code = no path for this task, not a failure.
+                            if resp.get("code") == AUDIO_UNSUPPORTED_CODE:
+                                raise AudioBackendUnsupportedError(
+                                    resp.get("error", "This backend cannot generate audio."),
+                                    hint = resp.get("hint"),
+                                )
+                            raise RuntimeError(resp.get("error", "Audio generation failed"))
+
+                        if rtype == "error":
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise RuntimeError("Audio generation cancelled")
+                            raise RuntimeError(resp.get("error", "Unknown error"))
+
+                        if rtype == "status":
+                            continue
+
+                    # A caller cancellation already spent the drain window polling this
+                    # request's mailbox. Tear down an unresponsive worker now instead of
+                    # waiting out the much longer generation watchdog or draining twice.
+                    if cancel_deadline is not None:
+                        if self._shutdown_subprocess(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT):
+                            self.active_model_name = None
+                            self.models.clear()
+                        raise RuntimeError("Audio generation cancelled")
+
+                    # Do not release worker ownership or dispatcher exclusivity over a
+                    # command that may still be generating. Cancel, consume its terminal
+                    # response, and tear down a worker that does not acknowledge promptly.
+                    self._cancel_generation()
+                    if not _drain(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT):
+                        if self._shutdown_subprocess(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT):
+                            self.active_model_name = None
+                            self.models.clear()
+                    raise RuntimeError(
+                        f"Timeout waiting for audio generation ({generation_timeout:g}s)"
+                    )
+                finally:
+                    self._release_worker(cancel_event)
+                    release_mailbox()
             finally:
-                release_mailbox()
+                with self._dispatcher_lifecycle_lock:
+                    self._exclusive_tts_pending = False
 
     def generate_whisper_response(
         self,

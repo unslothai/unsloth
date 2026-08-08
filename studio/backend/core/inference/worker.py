@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
+from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
@@ -510,27 +511,57 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         )
 
 
-def _drain_skip_generate(cmd: dict, resp_queue: Any, drain_event) -> bool:
+def _drain_skip_generate(
+    cmd: dict,
+    resp_queue: Any,
+    drain_event,
+    *,
+    audio: bool = False,
+) -> bool:
     """Skip a generate queued behind a cancelled one during an unload.
 
     The parent sets ``drain_event`` for the whole unload. Because the parent's
     per-token ``cancel_event`` is cleared at the start of every generate, a cancel
     set while this generate was still queued would otherwise be lost when it is
-    dequeued. If the drain is in effect, emit an immediate (empty) ``gen_done`` so
-    the parent's stream/mailbox drains fast and the switch stays fast, and report
-    the generate was skipped so the caller does not clear the cancel or run it.
+    dequeued. If the drain is in effect, emit an immediate terminal response
+    (``gen_done`` or ``audio_error``) so the parent's mailbox drains fast and the
+    switch stays fast, and report the generate was skipped so the caller does not
+    clear the cancel or run it.
     """
     if drain_event is None or not drain_event.is_set():
         return False
     request_id = cmd.get("request_id", "")
     logger.info("Skipping generate for request %s: unload draining", request_id)
+    response = {
+        "type": "audio_error" if audio else "gen_done",
+        "request_id": request_id,
+        "cancelled": True,
+    }
+    if audio:
+        response["error"] = "Audio generation cancelled"
+    else:
+        response["stats"] = None
+    _send_response(resp_queue, response)
+    return True
+
+
+def _prepare_generate_audio(cmd, resp_queue: Any, cancel_event, drain_event) -> bool:
+    """Clear stale cancellation and acknowledge when this TTS command owns the worker.
+
+    The durable unload drain is checked on both sides of the clear so an unload
+    landing in that window skips TTS instead of having its shared cancel erased.
+    The parent does not signal request cancellation until it receives audio_started.
+    """
+    if _drain_skip_generate(cmd, resp_queue, drain_event, audio = True):
+        return False
+    cancel_event.clear()
+    if _drain_skip_generate(cmd, resp_queue, drain_event, audio = True):
+        return False
     _send_response(
         resp_queue,
         {
-            "type": "gen_done",
-            "request_id": request_id,
-            "cancelled": True,
-            "stats": None,
+            "type": "audio_started",
+            "request_id": cmd.get("request_id", ""),
         },
     )
     return True
@@ -693,7 +724,7 @@ def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
-def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
+def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle TTS audio generation — returns WAV bytes + sample_rate."""
     request_id = cmd.get("request_id", "")
     try:
@@ -707,6 +738,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
             max_new_tokens = cmd.get("max_new_tokens", 2048),
             repetition_penalty = cmd.get("repetition_penalty", 1.0),
             use_adapter = cmd.get("use_adapter"),
+            cancel_event = cancel_event,
         )
 
         # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
@@ -1025,6 +1057,15 @@ def run_inference_process(
                             "type": "audio_error",
                             "request_id": cmd.get("request_id"),
                             "error": "Text-to-speech is not supported on the MLX backend yet.",
+                            # Lets the parent raise a typed error, not a generic 500.
+                            "code": AUDIO_UNSUPPORTED_CODE,
+                            # Only some TTS families publish a GGUF build, so name the
+                            # host as the general fix and GGUF as the conditional one.
+                            "hint": (
+                                "Run it on a non-MLX host, or load a GGUF build of it "
+                                "if one is published -- llama.cpp carries the "
+                                "snac/bicodec/dac decoders."
+                            ),
                         },
                     )
                 elif cmd_type == "share_object":
@@ -1277,8 +1318,9 @@ def run_inference_process(
                 _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "generate_audio":
-                cancel_event.clear()
-                _handle_generate_audio(backend, cmd, resp_queue)
+                if not _prepare_generate_audio(cmd, resp_queue, cancel_event, drain_event):
+                    continue
+                _handle_generate_audio(backend, cmd, resp_queue, cancel_event)
 
             elif cmd_type == "generate_audio_input":
                 cancel_event.clear()

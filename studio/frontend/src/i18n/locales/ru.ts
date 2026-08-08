@@ -85,6 +85,7 @@ export const ru = {
       recipes: "Рецепты",
       images: "Изображения",
       video: "Видео",
+      audio: "Аудио",
       more: "Ещё",
       customizeSidebar: "Настроить боковую панель",
       newBadge: "Новое",

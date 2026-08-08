@@ -189,8 +189,9 @@ export async function fetchSttStatus(
 export function sttEngineStatusFor(
   status: SttStatus,
   model: string,
+  engineOverride?: SttEngine,
 ): SttEngineStatus | undefined {
-  const engine = sttEngineFor(model);
+  const engine = engineOverride ?? sttEngineFor(model);
   if (engine === "mtmd") return status.mtmd;
   if (engine === "gguf" && status.gguf?.available) return status.gguf;
   return status.transformers;
@@ -218,7 +219,11 @@ export async function validateSttModel(
 }
 
 /** Load a selected model that is already downloaded. */
-export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
+export function loadSttModel(
+  model: string,
+  engine?: SttEngine,
+  signal?: AbortSignal,
+): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
   // Announced so the indicator shows the load immediately, as the toast does.
   return queueSttLifecycle(() =>
@@ -227,6 +232,7 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, engine: resolvedEngine }),
+      signal,
     });
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
@@ -243,6 +249,7 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
 export async function startSttDownload(
   model: string,
   hfToken?: string,
+  engine?: SttEngine,
 ): Promise<void> {
   const response = await authFetch("/api/inference/audio/stt/download", {
     method: "POST",
@@ -250,7 +257,7 @@ export async function startSttDownload(
       "Content-Type": "application/json",
       ...hubTokenHeader(hfToken),
     },
-    body: JSON.stringify({ model, engine: sttEngineFor(model) }),
+    body: JSON.stringify({ model, engine: engine ?? sttEngineFor(model) }),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as {
@@ -262,11 +269,14 @@ export async function startSttDownload(
 
 /** Stop an in-flight model download. Partial files stay cached, so starting the
  * same download again resumes from where it stopped. */
-export async function cancelSttDownload(model: string): Promise<void> {
+export async function cancelSttDownload(
+  model: string,
+  engine?: SttEngine,
+): Promise<void> {
   const response = await authFetch("/api/inference/audio/stt/download/cancel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, engine: sttEngineFor(model) }),
+    body: JSON.stringify({ model, engine: engine ?? sttEngineFor(model) }),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as {
@@ -277,11 +287,13 @@ export async function cancelSttDownload(model: string): Promise<void> {
 }
 
 /** Release the local STT model and its RAM/VRAM allocations. */
-export function unloadSttModel(): Promise<void> {
+export function unloadSttModel(engine?: SttEngine): Promise<void> {
   return queueSttLifecycle(async () => {
-    const response = await authFetch("/api/inference/audio/stt/unload", {
-      method: "POST",
-    });
+    const query = engine ? `?engine=${encodeURIComponent(engine)}` : "";
+    const response = await authFetch(
+      `/api/inference/audio/stt/unload${query}`,
+      { method: "POST" },
+    );
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
         detail?: string;

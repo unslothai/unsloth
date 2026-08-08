@@ -32,6 +32,7 @@ def _bare_orchestrator():
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
     o._unload_pending = False
+    o._exclusive_tts_pending = False
     o.active_model_name = "m"
     o.models = {"m": {}}
     o.loading_models = set()
@@ -349,14 +350,16 @@ def test_worker_drain_skip_emits_cancelled_gen_done_when_draining():
 
 def test_worker_generate_branches_check_drain_before_clearing_cancel():
     # Guarded branches check the drain skip before clearing cancel_event and
-    # again after, so a queued command can't erase an unload's cancel. Three
-    # today: MLX generate + generate_audio_input, and GPU generate.
+    # again after, so a queued command can't erase an unload's cancel. Four
+    # today: MLX generate + generate_audio_input, GPU generate, and GPU TTS.
     import inspect
 
     from core.inference import worker
 
     src = inspect.getsource(worker.run_inference_process)
-    assert src.count("_drain_skip_generate(cmd, resp_queue, drain_event)") == 6
+    audio_prepare = inspect.getsource(worker._prepare_generate_audio)
+    assert src.count("_drain_skip_generate(cmd, resp_queue, drain_event") == 6
+    assert audio_prepare.count("_drain_skip_generate(cmd, resp_queue, drain_event") == 2
 
 
 def test_worker_generate_rechecks_drain_after_clearing_cancel():
