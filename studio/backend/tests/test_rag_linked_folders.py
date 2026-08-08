@@ -732,9 +732,7 @@ def test_startup_recovers_terminal_rebuild_handoff(rag_home):
 
 
 @requires_sqlite_vec
-def test_linked_folder_ingestion_jobs_are_pruned_after_reconciliation(
-    rag_home, stub_embeddings
-):
+def test_linked_folder_ingestion_jobs_are_pruned_after_reconciliation(rag_home, stub_embeddings):
     source, folder = _folder(rag_home)
     (source / "notes.txt").write_text("temporary internal job", encoding = "utf-8")
 
@@ -910,9 +908,7 @@ def test_unlink_of_another_folder_does_not_wait_for_active_folder(rag_home):
     second_source = rag_home / "second"
     first_source.mkdir()
     second_source.mkdir()
-    first = folder_sync.create_folder(
-        scope_type = "project", scope_id = "one", path = str(first_source)
-    )
+    first = folder_sync.create_folder(scope_type = "project", scope_id = "one", path = str(first_source))
     second = folder_sync.create_folder(
         scope_type = "project", scope_id = "two", path = str(second_source)
     )
@@ -967,9 +963,7 @@ def test_project_rag_cleanup_retires_every_folder_before_best_effort_deletion(
         source = rag_home / name
         source.mkdir()
         folders.append(
-            folder_sync.create_folder(
-                scope_type = "project", scope_id = "project", path = str(source)
-            )
+            folder_sync.create_folder(scope_type = "project", scope_id = "project", path = str(source))
         )
     failed_id = folders[0]["id"]
     original_delete = folder_sync.delete_folder
@@ -993,9 +987,7 @@ def test_project_rag_cleanup_retires_every_folder_before_best_effort_deletion(
     replacement = rag_home / "replacement"
     replacement.mkdir()
     with pytest.raises(ValueError, match = "scope no longer exists"):
-        folder_sync.create_folder(
-            scope_type = "project", scope_id = "project", path = str(replacement)
-        )
+        folder_sync.create_folder(scope_type = "project", scope_id = "project", path = str(replacement))
 
 
 def test_preview_containment_is_component_aware(rag_home):

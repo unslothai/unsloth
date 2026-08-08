@@ -1219,6 +1219,7 @@ def start_auto_sync(*, admission_lock = None, admit = None) -> bool:
         retired = _thread if _thread is not None and _thread.is_alive() else None
         if retired is not None and not _stop.is_set():
             return False
+
     def launch() -> bool:
         global _thread, _thread_stop
         with _thread_lock:
