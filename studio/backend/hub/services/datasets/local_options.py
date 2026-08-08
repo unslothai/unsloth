@@ -48,6 +48,32 @@ _SPLIT_KEYWORDS = {
     "validation": ("validation", "valid", "dev", "val"),
     "test": ("test", "testing", "eval", "evaluation"),
 }
+# datasets' keyword globs, as regexes, in the order it resolves them. "sep" is its
+# NON_WORDS_CHARS, "**/" leads every pattern and "*" never crosses a directory.
+_SEP = "[-._ 0-9]"
+_FILENAME_KEYWORD_PATTERNS = (r"(?:.*/)?{keyword}%s[^/]*" % _SEP, r"(?:.*/)?[^/]*%s{keyword}%s[^/]*" % (_SEP, _SEP))
+_DIR_NAME_KEYWORD_PATTERNS = (
+    r"(?:.*/)?{keyword}/.*",
+    r"(?:.*/)?{keyword}%s[^/]*/.*" % _SEP,
+    r"(?:.*/)?[^/]*%s{keyword}/.*" % _SEP,
+    r"(?:.*/)?[^/]*%s{keyword}%s[^/]*/.*" % (_SEP, _SEP),
+)
+_KeywordPatterns = dict[str, list[tuple[tuple[int, int], "re.Pattern[str]"]]]
+
+
+def _keyword_patterns(bases: tuple[str, ...]) -> _KeywordPatterns:
+    return {
+        split: [
+            ((keyword_index, base_index), re.compile(base.format(keyword = re.escape(keyword)) + r"\Z"))
+            for keyword_index, keyword in enumerate(keywords)
+            for base_index, base in enumerate(bases)
+        ]
+        for split, keywords in _SPLIT_KEYWORDS.items()
+    }
+
+
+_DIR_NAME_SPLITS = _keyword_patterns(_DIR_NAME_KEYWORD_PATTERNS)
+_FILENAME_SPLITS = _keyword_patterns(_FILENAME_KEYWORD_PATTERNS)
 _SHARDED_DATA_RE = re.compile(r"^data/(?P<split>[^/]+)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]+$")
 # datasets drops these by basename (FILES_TO_IGNORE) before it infers anything, so a
 # metadata-only cache is empty rather than a bogus train split.
@@ -128,7 +154,11 @@ def _valid_option(
 ) -> Optional[str]:
     if not isinstance(value, str):
         return None
-    normalized = value.strip()
+    # The loader keeps the name it was given, so a padded one is only ever addressable
+    # padded, and we cannot offer that.
+    normalized = value
+    if normalized != normalized.strip():
+        return None
     if not normalized or len(normalized) > _MAX_OPTION_LENGTH:
         return None
     if has_unsafe_hf_dataset_option_characters(normalized):
@@ -179,7 +209,14 @@ def _declared_configs(payload: Any) -> Any:
         return {}
     if not isinstance(payload, list):
         return _UNPARSABLE_METADATA
-    if sum(1 for item in payload if isinstance(item, dict) and item.get("default")) > 1:
+    # A config called default is a default too, so it conflicts with a flagged sibling and
+    # get_default_config_name raises before anything loads.
+    defaults = sum(
+        1
+        for item in payload
+        if isinstance(item, dict) and (item.get("default") or item.get("config_name") == "default")
+    )
+    if defaults > 1:
         return _UNPARSABLE_METADATA
     declared: dict[str, Optional[str]] = {}
     for item in payload[:_MAX_OPTIONS]:
@@ -190,8 +227,13 @@ def _declared_configs(payload: Any) -> Any:
             # datasets raises InvalidConfigName on these rather than skipping the config,
             # so nothing in the snapshot is loadable and inference must not step in.
             return _UNPARSABLE_METADATA
-        if item.get("data_files") is not None:
-            # Declared, so _add_config_options owns it; an empty one simply finds nothing.
+        entries = item.get("data_files")
+        if entries is not None:
+            if not entries:
+                # Resolved while the builder is picked, so this raises whichever config the
+                # caller asks for and every sibling option is dead too.
+                return _UNPARSABLE_METADATA
+            # Declared, so _add_config_options owns it.
             declared[name] = None
         else:
             # Rewriting an unusable data_dir would silently change the config's scope.
@@ -343,6 +385,11 @@ def _snapshot_metadata_file(snapshot: Path, name: str) -> Optional[Path]:
     return path if 0 < size <= _MAX_METADATA_BYTES else None
 
 
+def _snapshot_metadata_exists(snapshot: Path, name: str) -> bool:
+    """The file is there, whether or not we were willing to read it."""
+    return resolved_dataset_snapshot_file(snapshot, name) is not None
+
+
 def _snapshot_metadata_is_oversized(snapshot: Path, name: str) -> bool:
     path = resolved_dataset_snapshot_file(snapshot, name)
     try:
@@ -392,12 +439,14 @@ def _snapshot_card_data(snapshot: Path) -> Any:
     if standalone is not None:
         try:
             from yaml import YAMLError, safe_load
+        except ImportError:
+            payload = None
+        else:
             try:
                 payload = safe_load(standalone.read_text(encoding = "utf-8"))
-            except YAMLError:
+            except (YAMLError, OSError, UnicodeError, ValueError):
+                # The loader opens this file unconditionally and lets the error out.
                 return _UNPARSABLE_METADATA
-        except (ImportError, OSError, UnicodeError, ValueError):
-            payload = None
         if payload is not None and not isinstance(payload, dict):
             # The loader feeds this straight to dict.update, which raises on a scalar.
             return _UNPARSABLE_METADATA
@@ -474,16 +523,15 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
     return files
 
 
-def _keyword_splits(parts: Iterable[str]) -> dict[str, list[int]]:
-    """Splits named by these path parts, each with the keyword positions that matched.
+def _keyword_splits(path: str, patterns: _KeywordPatterns) -> dict[str, list[tuple[int, int]]]:
+    """Splits this path is named for, each with the patterns that matched it.
 
-    datasets resolves every keyword pattern separately and concatenates, so a name carrying
-    two synonyms of one split appears twice in it, once at each synonym's own position.
+    datasets resolves every keyword pattern separately and concatenates, so a path a pattern
+    set matches twice is listed twice and counts twice when the module is inferred.
     """
-    tokens = {token for part in parts for token in re.split(r"[-._ 0-9]+", part) if token}
     matched = {}
-    for split, keywords in _SPLIT_KEYWORDS.items():
-        hits = [index for index, keyword in enumerate(keywords) if keyword in tokens]
+    for split, compiled in patterns.items():
+        hits = [order for order, matcher in compiled if matcher.match(path)]
         if hits:
             matched[split] = hits
     return matched
@@ -506,14 +554,14 @@ def _sharded_split_files(files: Iterable[_DataFile]) -> Optional[dict[str, list[
 
 
 def _keyword_split_files(
-    files: Iterable[_DataFile], naming: Callable[[PurePosixPath], Iterable[str]]
+    files: Iterable[_DataFile], patterns: _KeywordPatterns
 ) -> dict[str, list[_DataFile]]:
     ordered: dict[str, list[tuple[int, PurePosixPath, _DataFile]]] = {}
     for entry in files:
-        for split, indexes in _keyword_splits(naming(entry[0])).items():
-            ordered.setdefault(split, []).extend((index, entry[0], entry) for index in indexes)
+        for split, hits in _keyword_splits(entry[0].as_posix(), patterns).items():
+            ordered.setdefault(split, []).extend((order, entry[0], entry) for order in hits)
     return {
-        split: [entry for _first, _path, entry in sorted(rows, key = lambda row: row[:2])]
+        split: [entry for _order, _path, entry in sorted(rows, key = lambda row: row[:2])]
         for split, rows in ordered.items()
     }
 
@@ -546,9 +594,12 @@ def _split_module(files: Iterable[_DataFile]) -> Optional[str]:
     return _EXTENSION_MODULES[best[1]]
 
 
-def _offerable_split(entries: Iterable[_DataFile], snapshot: Path, root: str, module: str) -> bool:
-    """A split is offerable when it holds trainable data and every file the builder would
-    read stays inside the cache. One safe file is not enough: datasets loads them all."""
+def _offerable_split(
+    entries: Iterable[_DataFile], snapshot: Path, root: str, module: str
+) -> Optional[bool]:
+    """True when the split holds trainable data, False when it holds none, None when a file
+    the builder would read escapes the cache. One safe file is not enough: datasets loads
+    them all, so an escape anywhere condemns the whole config rather than the one split."""
     trainable = False
     for path, _file_module in entries:
         # datasets keeps every zip, and folder metadata for its own builders, whatever module
@@ -561,7 +612,7 @@ def _offerable_split(entries: Iterable[_DataFile], snapshot: Path, root: str, mo
         if not retained:
             continue
         if resolved_dataset_snapshot_file(snapshot, root + path.as_posix()) is None:
-            return False
+            return None
         trainable = trainable or _has_snapshot_data_extension(path.name)
     return trainable
 
@@ -629,9 +680,9 @@ def _inferred_snapshot_options(
         if grouped is None:
             continue
         if not grouped:
-            grouped = _keyword_split_files(files, lambda path: path.parent.parts)
+            grouped = _keyword_split_files(files, _DIR_NAME_SPLITS)
         if not grouped:
-            grouped = _keyword_split_files(files, lambda path: (path.name,))
+            grouped = _keyword_split_files(files, _FILENAME_SPLITS)
         if not grouped:
             grouped = {"train": files}
 
@@ -646,11 +697,13 @@ def _inferred_snapshot_options(
             # a builder that cannot read its files.
             continue
         prefix = root + "/" if root else ""
-        options.update(
-            (config, split)
+        offerable = {
+            split: _offerable_split(entries, snapshot, prefix, module)
             for split, entries in grouped.items()
-            if _offerable_split(entries, snapshot, prefix, module)
-        )
+        }
+        if any(state is None for state in offerable.values()):
+            continue
+        options.update((config, split) for split, state in offerable.items() if state)
     return options
 
 
@@ -671,6 +724,10 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)
         if metadata is None:
+            if filename == "dataset_infos.json" and _snapshot_metadata_exists(snapshot, filename):
+                # Present but empty or too big to read. The loader still opens it and lets the
+                # decode error out, so there is nothing here we could offer.
+                return set()
             continue
         payload = _safe_json_file(metadata, snapshot, allow_snapshot_symlink = True)
         if payload is None and filename == "dataset_infos.json":

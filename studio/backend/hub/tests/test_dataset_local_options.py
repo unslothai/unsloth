@@ -393,7 +393,7 @@ def test_keyword_split_files_place_each_synonym_at_its_own_position(tmp_path):
 
     # train resolves before training, so the csv's train copy leads and its training copy
     # sits beside the other training file rather than next to itself.
-    grouped = local_options._keyword_split_files(files, lambda path: (path.name,))
+    grouped = local_options._keyword_split_files(files, local_options._FILENAME_SPLITS)
     assert [str(path) for path, _module in grouped["train"]] == [
         "a_train_training.csv",
         "a_train_training.csv",
@@ -526,7 +526,7 @@ def test_keyword_split_files_follow_the_loaders_keyword_order(tmp_path):
     ]
 
     # validation resolves before dev, so its files come first in the sampled window.
-    grouped = local_options._keyword_split_files(files, lambda path: path.parent.parts)
+    grouped = local_options._keyword_split_files(files, local_options._DIR_NAME_SPLITS)
     assert [str(path) for path, _module in grouped["validation"]] == [
         "validation/a.jsonl",
         "dev/a.csv",
@@ -899,3 +899,80 @@ def test_local_options_rejects_an_arbitrary_supplied_path(tmp_path):
 
     assert response.cache_available is False
     assert response.splits == []
+
+
+def test_snapshot_options_reject_a_named_default_beside_a_flagged_one(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: default\n  data_files: a.jsonl\n- config_name: other\n  default: true\n  data_files: b.jsonl\n")
+    (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_a_named_default_without_a_flagged_one(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: default\n  data_files: a.jsonl\n- config_name: other\n  data_files: b.jsonl\n")
+    (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train"), ("other", "train")}
+
+
+def test_snapshot_options_reject_an_empty_declared_data_files(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_files: []\n- config_name: b\n  data_dir: b\n")
+    (snapshot / "b").mkdir()
+    (snapshot / "b" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_an_unreadable_standalone_yaml(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / ".huggingface.yaml").write_bytes(b"\xff\xfe configs: x\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_an_unreadable_plural_dataset_infos(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "dataset_infos.json").write_text("", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_count_a_repeated_keyword_once_per_pattern(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    # train_train.csv matches both filename patterns, so csv outvotes the single jsonl and
+    # the two splits disagree on the module.
+    (snapshot / "train_train.csv").write_text("text\nrow\n", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "test.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_config_name_the_loader_keeps_padded(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, 'configs:\n- config_name: " foo "\n  data_dir: d\n')
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_config_whose_other_split_escapes_the_cache(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    outside = tmp_path / "test.jsonl"
+    outside.write_text('{"text":"outside"}\n', encoding = "utf-8")
+    (snapshot / "test.jsonl").symlink_to(outside)
+
+    assert local_options._snapshot_options(snapshot) == set()
