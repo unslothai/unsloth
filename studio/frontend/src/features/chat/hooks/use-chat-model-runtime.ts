@@ -508,8 +508,14 @@ export function useChatModelRuntime() {
   // refresh. Re-read whenever another runtime finishes a load.
   useEffect(
     () =>
-      subscribeModelLifecycle(({ runtime, loading }) => {
-        if (loading || runtime === "chat") return;
+      subscribeModelLifecycle(({ runtime }) => {
+        // Dictation is a sidecar and takes no GPU ownership, so it evicts
+        // nothing. Chat's own loads already reconcile themselves.
+        if (runtime === "chat" || runtime === "stt") return;
+        // Both edges, not only the settle. The arbiter evicts chat inside the
+        // image or video load POST, before the download starts, so waiting for
+        // the load to finish left the picker and the header naming a model that
+        // had already gone and that 400s on send, for the whole download.
         void refresh({ includeLoras: false });
       }),
     [refresh],

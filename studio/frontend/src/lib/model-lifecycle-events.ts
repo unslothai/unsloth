@@ -139,6 +139,13 @@ export async function withBackgroundLoadNotice<T>(
   try {
     const result = await start();
     started = true;
+    // Announce a second time, now that the POST has returned. That is the
+    // instant the GPU arbiter has committed: acquire_for evicts whoever held
+    // the GPU inside this call, ahead of a download that can run for hours, so
+    // the first announcement was raised while the status it displaces was still
+    // correct. Listeners that re-read another runtime need this edge, and the
+    // rows this drives are keyed by runtime, so a repeat is a no-op for them.
+    notifyModelLifecycle({ runtime, loading: true, model });
     void settleWhenLoadEnds(runtime, model, readPhase, timing);
     return result;
   } finally {

@@ -6,6 +6,11 @@ import test from "node:test";
 // outlives the POST and settles from load-progress instead, which is what keeps
 // the indicator row and the page toast on screen for the same span.
 //
+// Two `loading: true` announcements per load, deliberately: one before the POST
+// so the row appears with the toast, and one after it returns, which is the
+// instant the GPU arbiter has committed its eviction. Listeners that re-read
+// another runtime need that second edge, so these assert both.
+//
 // model-lifecycle-events dispatches on `window`, so stand one up as an
 // EventTarget and import the module after it exists.
 class FakeWindow extends EventTarget {}
@@ -65,21 +70,24 @@ test("the notice outlives the POST and settles when the load reports ready", asy
       const phase = phases[Math.min(read++, phases.length - 1)];
       // Every non-terminal read must leave the row loading: the whole point is
       // that the notice spans the background load, not just the POST.
-      if (phase !== "ready") assert.equal(seen.length, 1);
+      if (phase !== "ready") assert.equal(seen.length, 2);
       return phase;
     },
     TIMING,
   );
 
-  // The POST has resolved, and the row must still say loading.
+  // The POST has resolved, and the row must still say loading: the second
+  // announcement is the post-commit one, not a settle.
   assert.equal(result, "started");
   assert.deepEqual(seen, [
+    { runtime: "image", loading: true, model: "unsloth/flux" },
     { runtime: "image", loading: true, model: "unsloth/flux" },
   ]);
 
   await settled;
   assert.equal(read, 3);
   assert.deepEqual(seen, [
+    { runtime: "image", loading: true, model: "unsloth/flux" },
     { runtime: "image", loading: true, model: "unsloth/flux" },
     { runtime: "image", loading: false, model: "unsloth/flux" },
   ]);
@@ -97,6 +105,7 @@ test("an errored load settles the notice too", async () => {
   );
   await settled;
   assert.deepEqual(seen, [
+    { runtime: "video", loading: true, model: "unsloth/wan" },
     { runtime: "video", loading: true, model: "unsloth/wan" },
     { runtime: "video", loading: false, model: "unsloth/wan" },
   ]);
@@ -150,7 +159,7 @@ test("an unreadable progress read does not end a live load", async () => {
     async () => {
       const answer = answers[Math.min(read++, answers.length - 1)];
       // A failed read is not proof the load ended, so the row is still up.
-      assert.equal(seen.length, 1);
+      assert.equal(seen.length, 2);
       if (answer instanceof Error) throw answer;
       return answer;
     },
@@ -189,6 +198,7 @@ test("a null phase is terminal, since it means the load left nothing behind", as
   assert.equal(read, 1);
   assert.deepEqual(seen, [
     { runtime: "video", loading: true, model: "unsloth/wan" },
+    { runtime: "video", loading: true, model: "unsloth/wan" },
     { runtime: "video", loading: false, model: "unsloth/wan" },
   ]);
   stop();
@@ -209,7 +219,7 @@ test("only downloading and finalizing keep the row up", async () => {
     async () => null,
     async () => {
       const phase = phases[Math.min(read++, phases.length - 1)];
-      if (phase !== "ready") assert.equal(seen.length, 1);
+      if (phase !== "ready") assert.equal(seen.length, 2);
       return phase;
     },
     TIMING,
@@ -217,8 +227,8 @@ test("only downloading and finalizing keep the row up", async () => {
 
   await settled;
   assert.equal(read, 3);
-  assert.equal(seen.length, 2);
-  assert.equal(seen[1].loading, false);
+  assert.equal(seen.length, 3);
+  assert.equal(seen[2].loading, false);
   stop();
 });
 
@@ -304,6 +314,7 @@ test("a long but healthy download is never abandoned", async () => {
   assert.equal(read, 12);
   assert.deepEqual(seen, [
     { runtime: "video", loading: true, model: "unsloth/wan" },
+    { runtime: "video", loading: true, model: "unsloth/wan" },
     { runtime: "video", loading: false, model: "unsloth/wan" },
   ]);
   stop();
@@ -331,5 +342,31 @@ test("a healthy read resets the stall window", async () => {
   await settled;
   // It survived past the point an unreset window would have expired.
   assert.ok(read > 4, `expected the window to restart, got ${read} reads`);
+  stop();
+});
+
+test("the load is announced again once the POST has committed", async () => {
+  const { seen, stop } = record();
+  let announcedBeforeStart = 0;
+
+  await withBackgroundLoadNotice(
+    "image",
+    "unsloth/flux",
+    async () => {
+      // The arbiter has not run yet, so a listener re-reading another runtime
+      // here would still see the model this load is about to evict.
+      announcedBeforeStart = seen.length;
+      return null;
+    },
+    async () => "ready",
+    TIMING,
+  );
+
+  assert.equal(announcedBeforeStart, 1, "announced optimistically first");
+  assert.equal(seen.length, 2, "and again once the backend has taken the GPU");
+  assert.deepEqual(
+    seen.map((s) => s.loading),
+    [true, true],
+  );
   stop();
 });

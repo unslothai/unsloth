@@ -148,7 +148,14 @@ test("the hub cards ask residency before saying Loaded", () => {
 // model lists change, never on a timer. So an eviction caused by the Images
 // page was never observed and residentCheckpoint stayed undefined, which reads
 // as loaded. The re-read has to be driven by the lifecycle event.
-test("another runtime finishing a load re-reads the chat status", () => {
+//
+// On the START of the other runtime's load, not only its finish. The GPU
+// arbiter evicts chat inside the image or video load POST, before the download
+// begins, and that download can run for hours: measured against a live backend,
+// /api/inference/status reported active_model null 1.8s after the POST returned,
+// and sending to the model the picker still named answered 400 "No model
+// loaded". Waiting for the settle left that gap open for the whole load.
+test("another runtime loading re-reads the chat status", () => {
   const hook = readFileSync(
     new URL(
       "../src/features/chat/hooks/use-chat-model-runtime.ts",
@@ -156,11 +163,14 @@ test("another runtime finishing a load re-reads the chat status", () => {
     ),
     "utf8",
   );
-  assert.match(
+  assert.match(hook, /subscribeModelLifecycle\(\(\{ runtime \}\) => \{/);
+  // Dictation holds no GPU ownership, so it is the one that stays excluded.
+  assert.match(hook, /if \(runtime === "chat" \|\| runtime === "stt"\) return;/);
+  assert.doesNotMatch(
     hook,
-    /subscribeModelLifecycle\(\(\{ runtime, loading \}\) => \{/,
+    /if \(loading \|\| runtime === "chat"\) return;/,
+    "the settle-only guard is what left the picker naming an evicted model",
   );
-  assert.match(hook, /if \(loading \|\| runtime === "chat"\) return;/);
   assert.match(hook, /void refresh\(\{ includeLoras: false \}\)/);
   // And the branch it feeds still clears residency.
   assert.match(hook, /residentCheckpoint: null,/);

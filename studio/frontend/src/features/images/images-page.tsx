@@ -1568,6 +1568,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     () =>
       subscribeModelEjected("image", () => {
         dropResidentState();
+        // That eject cancelled the replacement load, and its progress poll is
+        // the only thing that clears `busy` -- which dropResidentState has just
+        // stopped. Leaving it set locks the page: the picker ignores every
+        // choice while busy, and Unload is not offered once the status read
+        // comes back empty, so only an app reload recovered. Narrowed to
+        // "loading" so a generation in flight is left alone, as handleUnload's
+        // own finally does.
+        setBusy((prev) => (prev === "loading" ? null : prev));
         setQuant(null);
         void refreshStatus();
       }),
