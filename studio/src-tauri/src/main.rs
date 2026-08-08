@@ -1046,6 +1046,7 @@ fn main() {
             native_intents::register_native_model_path,
             native_intents::register_native_attachment_path,
             native_intents::register_native_dataset_path,
+            native_intents::read_native_attachment_file,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
             native_intents::consume_native_path_token,
@@ -1070,6 +1071,10 @@ fn main() {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
             reconcile_autostart_entry(app.handle());
+            // Recover legacy desktop installs before the first preflight.
+            if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
+                warn!("Desktop backend ownership id unavailable: {error}");
+            }
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;

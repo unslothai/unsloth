@@ -2043,17 +2043,63 @@ def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     }
 
 
-def _research_message_would_change(conn: sqlite3.Connection, thread_id: str, message: dict) -> bool:
+def _surviving_parent_id(
+    conn: sqlite3.Connection, thread_id: str, message_id: str, pruned: set
+) -> "str | None":
+    """The stored ancestor a message relinks to once `pruned` is deleted, or None at the root.
+
+    Walking the stored chain server side is what makes the relink allowance safe: the expected
+    parent is derived from rows the server already holds, so a client cannot smuggle an arbitrary
+    link past the guard by claiming its old parent went away.
+    """
+    seen = {message_id}
+    row = conn.execute(
+        "SELECT parent_id FROM chat_messages WHERE thread_id = ? AND id = ?",
+        (thread_id, message_id),
+    ).fetchone()
+    parent = row["parent_id"] if row is not None else None
+    while parent and str(parent) in pruned:
+        if str(parent) in seen:
+            # A cycle can only come from a corrupt thread; stop rather than spin.
+            return None
+        seen.add(str(parent))
+        row = conn.execute(
+            "SELECT parent_id FROM chat_messages WHERE thread_id = ? AND id = ?",
+            (thread_id, str(parent)),
+        ).fetchone()
+        parent = row["parent_id"] if row is not None else None
+    # Normalized the way the caller reads parentId (`or None`), so an empty stored parent_id
+    # cannot make the two disagree, and a self-link left by a corrupt chain resolves to the root.
+    survivor = str(parent) if parent else None
+    return None if survivor == message_id else survivor
+
+
+def _research_message_would_change(
+    conn: sqlite3.Connection,
+    thread_id: str,
+    message: dict,
+    pruned: set = frozenset(),
+) -> bool:
+    message_id = str(message["id"])
     row = conn.execute(
         "SELECT parent_id, role, content_json, metadata_json, attachments_json, created_at "
         "FROM chat_messages WHERE thread_id = ? AND id = ?",
-        (thread_id, str(message["id"])),
+        (thread_id, message_id),
     ).fetchone()
     if row is None:
         return False
 
     def canon(value: object) -> str | None:
         return json.dumps(value, sort_keys = True) if value is not None else None
+
+    stored_parent = row["parent_id"] or None
+    sent_parent = message.get("parentId") or None
+    parent_changed = sent_parent != stored_parent
+    if parent_changed and stored_parent is not None and str(stored_parent) in pruned:
+        # The same sync is deleting this message's parent, so the client is repairing a link this
+        # request is about to break rather than editing a protected message. Only the relink the
+        # server itself would compute is accepted; anything else is still a rejected edit.
+        parent_changed = sent_parent != _surviving_parent_id(conn, thread_id, message_id, pruned)
 
     # created_at is compared too: without it a client could re-upsert a protected message with an
     # unchanged body but a different timestamp and silently reorder the research prompt/response
@@ -2064,21 +2110,24 @@ def _research_message_would_change(conn: sqlite3.Connection, thread_id: str, mes
         != canon(json.loads(row["metadata_json"]) if row["metadata_json"] else None)
         or canon(message.get("attachments"))
         != canon(json.loads(row["attachments_json"]) if row["attachments_json"] else None)
-        or (message.get("parentId") or None) != (row["parent_id"] or None)
+        or parent_changed
         or str(message.get("role")) != str(row["role"])
         or int(message.get("createdAt", row["created_at"])) != int(row["created_at"])
     )
 
 
 def _guard_research_messages(
-    conn: sqlite3.Connection, thread_id: str, messages: list[dict]
+    conn: sqlite3.Connection,
+    thread_id: str,
+    messages: list[dict],
+    pruned: set = frozenset(),
 ) -> None:
     protected = _research_message_ids(conn, thread_id)
     if not protected:
         return
     for message in messages:
         if str(message["id"]) in protected and _research_message_would_change(
-            conn, thread_id, message
+            conn, thread_id, message, pruned
         ):
             raise ChatMessageProtectedError(
                 "Research prompts and responses are server-managed and cannot be edited"
@@ -2442,8 +2491,45 @@ def sync_chat_messages(
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
-        if not allow_research_update:
-            _guard_research_messages(conn, thread_id, messages)
+        # Research messages are server-managed: keep the server record rather than reject the
+        # batch on client drift. No _guard_research_messages call here as a result -- these ids
+        # never reach it. upsert_chat_message still guards, so the single-message route keeps
+        # rejecting edits.
+        research_ids = _research_message_ids(conn, thread_id)
+        # The rows this sync will delete, computed before the upsert so a relink forced by
+        # that deletion can be told apart from an edit. Research ids are subtracted because
+        # the delete below exempts them: counting one as pruned would walk the reseat past a
+        # parent that actually survives, detaching a research turn from its own prompt.
+        pruned: set = set()
+        if prune_missing:
+            retained = {str(m["id"]) for m in messages}
+            pruned = (
+                {
+                    str(row["id"])
+                    for row in conn.execute(
+                        "SELECT id FROM chat_messages WHERE thread_id = ?",
+                        (thread_id,),
+                    ).fetchall()
+                }
+                - retained
+                - research_ids
+            )
+        protected = set() if allow_research_update else research_ids
+        messages = [m for m in messages if str(m["id"]) not in protected]
+        # Content is dropped, structure is not: the prune below can delete a research
+        # message's parent, and a dangling parent makes the whole thread unimportable. The
+        # replacement is walked from the stored chain, never taken from the client.
+        #
+        # Candidates come from research_ids rather than `protected` because the delete exempts
+        # research rows whatever allow_research_update says, so a narrower set would leave one
+        # dangling. Ids the batch itself writes are excluded: an authorized caller reparenting
+        # a research row must not have that overwritten by the repair.
+        reseat_candidates = research_ids - {str(m["id"]) for m in messages}
+        reseat_parents = {
+            message_id: _surviving_parent_id(conn, thread_id, message_id, pruned)
+            for message_id, stored_parent in _parents_of(conn, thread_id, reseat_candidates).items()
+            if stored_parent is not None and stored_parent in pruned
+        }
         _raise_if_chat_message_thread_conflicts(
             conn,
             thread_id,
@@ -2509,11 +2595,9 @@ def sync_chat_messages(
                     (thread_id,),
                 ).fetchall()
             }
-            missing_ids = sorted(existing_ids - retained_ids)
-            if set(missing_ids) & _research_message_ids(conn, thread_id):
-                raise ChatMessageProtectedError(
-                    "Research prompts and responses cannot be deleted from their original thread"
-                )
+            # Update permission is not delete permission: prune-exempt even for
+            # allow_research_update callers.
+            missing_ids = sorted(existing_ids - retained_ids - research_ids)
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
                 chunk = missing_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
@@ -2521,6 +2605,7 @@ def sync_chat_messages(
                     f"DELETE FROM chat_messages WHERE thread_id = ? AND id IN ({placeholders})",
                     (thread_id, *chunk),
                 )
+            _reseat_protected_messages(conn, thread_id, reseat_parents)
             _recompute_chat_thread_updated_at(conn, thread_id)
         elif reconciled_messages:
             _bump_chat_thread_updated_at(
@@ -2540,6 +2625,33 @@ def sync_chat_messages(
         raise
     finally:
         conn.close()
+
+
+def _parents_of(conn, thread_id: str, message_ids: set) -> dict:
+    """Stored parent of each id in *message_ids*, for rows that exist."""
+    if not message_ids:
+        return {}
+    return {
+        str(row["id"]): (str(row["parent_id"]) if row["parent_id"] else None)
+        for row in conn.execute(
+            "SELECT id, parent_id FROM chat_messages WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchall()
+        if str(row["id"]) in message_ids
+    }
+
+
+def _reseat_protected_messages(conn, thread_id: str, reseat_parents: dict) -> None:
+    """Point protected messages at the ancestor that survived the prune.
+
+    Their own rows survive it, the parents they pointed at need not, and a dangling parent
+    makes the whole thread unimportable on the next load rather than just that turn.
+    """
+    for message_id, parent_id in reseat_parents.items():
+        conn.execute(
+            "UPDATE chat_messages SET parent_id = ? WHERE thread_id = ? AND id = ?",
+            (parent_id, thread_id, message_id),
+        )
 
 
 _RESEARCH_LINK_KEYS = {

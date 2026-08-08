@@ -2277,7 +2277,11 @@ async def scan_model_remote_code(
     never lands in a URL, browser history, or access log.
     """
     try:
-        from utils.security import preflight_remote_code_consent_for_targets
+        from utils.security import (
+            load_scan_target,
+            preflight_remote_code_consent_for_targets,
+            security_load_subdirs,
+        )
 
         local_model = is_local_path(model_name)
         if not local_model:
@@ -2321,21 +2325,38 @@ async def scan_model_remote_code(
         # Scan the adapter AND the base together (a LoRA runs both repos' code), pinned by one
         # combined fingerprint. Snapshot the primary's cache state BEFORE resolving the base: that
         # resolve downloads adapter_config.json, which would hide the adapter from cleanup on decline.
+        primary_cache_target, _ = load_scan_target(scan_target, ())
         try:
-            _primary_preexisting = is_local_path(model_name) or _repo_in_any_hf_cache(model_name)
+            _primary_preexisting = is_local_path(primary_cache_target) or _repo_in_any_hf_cache(
+                primary_cache_target
+            )
         except Exception:
             _primary_preexisting = True
-        security_targets = [scan_target]
+        requested_scan_target = scan_target
+        requested_security_targets = [requested_scan_target]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             # Resolve a LOCAL or REMOTE adapter's base so its code/weights are scanned too.
-            _base = get_base_model_from_lora_identifier(scan_target, hf_token)
+            _base = get_base_model_from_lora_identifier(requested_scan_target, hf_token)
             if _base:
-                security_targets.append(_base)
+                requested_security_targets.append(_base)
         except Exception:
             pass
-        security_targets = list(dict.fromkeys(security_targets))
+        security_targets: list[str] = []
+        consent_load_subdirs: dict[str, tuple] = {}
+        for _requested_target in dict.fromkeys(requested_security_targets):
+            _subdirs = security_load_subdirs(_requested_target, hf_token)
+            if _requested_target == requested_scan_target and requested_scan_target != model_name:
+                _subdirs = tuple(
+                    dict.fromkeys((*_subdirs, *security_load_subdirs(model_name, hf_token)))
+                )
+            _target, _subdirs = load_scan_target(_requested_target, _subdirs)
+            if _target not in consent_load_subdirs:
+                security_targets.append(_target)
+                consent_load_subdirs[_target] = ()
+            _subdirs = tuple(dict.fromkeys((*consent_load_subdirs[_target], *_subdirs)))
+            consent_load_subdirs[_target] = _subdirs
         # Record every repo OUR scan is first to pull into the cache (adapter, base, and external
         # auto_map repos), so a decline purges exactly what was downloaded. Computed BEFORE the
         # preflight downloads, against every cache the discard searches, so pre-existing repos stay.
@@ -2363,13 +2384,21 @@ async def scan_model_remote_code(
         for _target in security_targets:
             # Use the pre-base-resolution snapshot for the primary (see above).
             _mark_scan_created(
-                _target, preexisting = _primary_preexisting if _target == model_name else None
+                _target,
+                preexisting = _primary_preexisting if _target == primary_cache_target else None,
             )
-            for _ext in external_auto_map_repos(_target, hf_token):
+            for _ext in external_auto_map_repos(
+                _target,
+                hf_token,
+                load_subdirs = consent_load_subdirs[_target],
+            ):
                 external_refs.append(_ext)
                 _mark_scan_created(_ext)
         decision = preflight_remote_code_consent_for_targets(
-            security_targets, hf_token = hf_token, subject = current_subject
+            security_targets,
+            hf_token = hf_token,
+            subject = current_subject,
+            load_subdirs_by_target = consent_load_subdirs,
         )
         payload = decision.response_payload()
         payload["model_name"] = exact_snapshot_repo_id if exact_snapshot_path else model_name
@@ -2381,23 +2410,24 @@ async def scan_model_remote_code(
             and decision.reason == "approved by fingerprint"
         )
         # created_by_scan = primary flag (older clients); scan_created_repos drives cleanup.
-        payload["created_by_scan"] = model_name in scan_created_repos
+        payload["created_by_scan"] = primary_cache_target in scan_created_repos
         payload["scan_created_repos"] = scan_created_repos
         # Provider tag decided here, where locality/scan scope/external refs are known.
-        payload["provider"] = _consent_provider(
-            exact_snapshot_repo_id if exact_snapshot_path else model_name,
-            security_targets,
-            external_refs,
-        )
+        provider_target = exact_snapshot_repo_id if exact_snapshot_path else model_name
+        if requested_scan_target == model_name and primary_cache_target != model_name:
+            provider_target = primary_cache_target
+        payload["provider"] = _consent_provider(provider_target, security_targets, external_refs)
 
         # Malware gate (metadata-only): HF-flagged unsafe files, orthogonal to remote code.
-        from utils.security import evaluate_file_security, security_load_subdirs
+        from utils.security import evaluate_file_security
 
         unsafe_files: list = []
         security_blocked = False
         for _target in security_targets:
             _sec = evaluate_file_security(
-                _target, hf_token = hf_token, load_subdirs = security_load_subdirs(_target, hf_token)
+                _target,
+                hf_token = hf_token,
+                load_subdirs = consent_load_subdirs[_target],
             )
             security_blocked = security_blocked or _sec.blocked
             unsafe_files.extend(_sec.unsafe_files)

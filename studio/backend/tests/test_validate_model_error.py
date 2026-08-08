@@ -27,6 +27,15 @@ import routes.inference as inf  # noqa: E402
 from models.inference import ValidateModelRequest  # noqa: E402
 
 
+async def _inline_to_thread(function, /, *args, **kwargs):
+    return function(*args, **kwargs)
+
+
+@pytest.fixture(autouse = True)
+def _run_route_helpers_inline(monkeypatch):
+    monkeypatch.setattr(inf.asyncio, "to_thread", _inline_to_thread)
+
+
 def _provoke(
     monkeypatch,
     exc: BaseException,
@@ -160,6 +169,44 @@ def test_resolve_loaded_trc_falls_back_to_raw_auto_map(monkeypatch):
     assert inf._resolve_loaded_trust_remote_code("org/custom", {}, {}) is True
     monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: False)
     assert inf._resolve_loaded_trust_remote_code("org/plain", {}, {}) is False
+
+
+@pytest.mark.parametrize(
+    "model_identifier, expected_target",
+    [
+        ("Spark-TTS-0.5B/LLM", "unsloth/Spark-TTS-0.5B"),
+        ("unsloth/Spark-TTS-0.5B", "unsloth/Spark-TTS-0.5B"),
+    ],
+)
+def test_requires_trc_checks_bicodec_load_subdirectory(
+    monkeypatch, model_identifier, expected_target
+):
+    import utils.inference as inference_utils
+    import utils.models.model_config as model_config
+    import utils.security.consent as consent
+
+    calls = []
+    monkeypatch.setattr(inference_utils, "load_inference_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(model_config, "detect_audio_type", lambda *_a, **_k: "bicodec")
+    monkeypatch.setattr(
+        model_config,
+        "load_model_defaults",
+        lambda *_a, **_k: {"audio_type": "bicodec"},
+    )
+
+    def config_has_auto_map(
+        target,
+        token,
+        *,
+        load_subdirs = (),
+    ):
+        calls.append((target, token, load_subdirs))
+        return True
+
+    monkeypatch.setattr(consent, "_config_has_auto_map", config_has_auto_map)
+
+    assert inf._requires_trust_remote_code_for_model(model_identifier, "hf_test") is True
+    assert calls == [(expected_target, "hf_test", ("LLM",))]
 
 
 def _drive_validate_lora(monkeypatch, *, adapter_needs_trc, base_needs_trc):
