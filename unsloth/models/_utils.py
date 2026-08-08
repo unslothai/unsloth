@@ -2181,6 +2181,7 @@ elif DEVICE_TYPE == "xpu":
 from ..xformers_compat import (
     describe_xformers_mismatch,
     xformers_build_metadata,
+    xformers_for_torch,
 )
 
 # The installed wheel's own cpp_lib.json (torch / CUDA / Python it was compiled against),
@@ -2238,22 +2239,37 @@ def _announce_xformers_breakage(reason, error = None):
         "Unsloth: Xformers is installed but its optimized kernels cannot load.\n"
         f"{str(reason).strip().rstrip('.')}.\n"
         "Falling back to PyTorch SDPA attention - training still works, but it uses more memory.\n"
-        "To fix, install the xformers build that matches your torch:\n"
-        f'\npip install --no-deps --force-reinstall "xformers=={_matching_xformers_hint()}"\n'
-        "\nRun `python -m xformers.info` to see xformers' own report."
+        f"{_xformers_fix_hint()}"
     )
     if UNSLOTH_ENABLE_LOGGING and error is not None:
         print(str(error))
 
 
-def _matching_xformers_hint():
-    """The xformers release built for the running torch, or a generic placeholder."""
-    try:
-        from ..xformers_compat import xformers_for_torch
+def _xformers_fix_hint():
+    """How to repair the install, pinned when we know the matching release.
 
-        return xformers_for_torch(torch.__version__) or "<version for your torch>"
+    On a torch newer than any xformers release there IS no version to pin -- naming one
+    would send the user straight back into the same mismatch -- so say so instead.
+    """
+    try:
+        matching = xformers_for_torch(torch.__version__)
     except Exception:
-        return "<version for your torch>"
+        matching = None
+    if matching is not None:
+        return (
+            "To fix, install the xformers build that matches your torch:\n"
+            f'\npip install --no-deps --force-reinstall "xformers=={matching}"\n'
+            "\nRun `python -m xformers.info` to see xformers' own report."
+        )
+    return (
+        f"No xformers release is built for torch {torch.__version__.split('+')[0]} yet. "
+        "Either downgrade torch to a version xformers ships wheels for, or build xformers "
+        "from source:\n"
+        "\npip install ninja\n"
+        "pip install -v --no-build-isolation -U "
+        "git+https://github.com/facebookresearch/xformers.git@main#egg=xformers\n"
+        "\nRun `python -m xformers.info` to see xformers' own report."
+    )
 
 
 try:

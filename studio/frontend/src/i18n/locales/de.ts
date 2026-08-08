@@ -1119,6 +1119,20 @@ export const de = {
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
+      python: "Python",
+      accelerator: {
+        sectionTitle: "Optimierte Kernel",
+        sectionDescription:
+          "Schnellere Attention- und Quantisierungs-Kernel. Jeder wird gegen genau einen PyTorch-Build kompiliert, daher lädt bei abweichenden Versionen keiner davon und Unsloth fällt still auf langsamere Standardpfade zurück.",
+        working: "Funktioniert",
+        notLoading: "Lädt nicht",
+        notInstalled: "Nicht installiert",
+        notChecked: "Nicht geprüft",
+        builtFor: "Gebaut für {build}",
+        bannerTitle: "Optimierte Kernel sind installiert, laden aber nicht",
+        bannerBody:
+          "{packages} kann hier nicht geladen werden, daher greift Unsloth auf langsamere Standardpfade zurück. Training und Inferenz funktionieren weiterhin, brauchen aber mehr Speicher und Zeit.",
+      },
       updates: "Update",
       help: "Hilfe",
       documentation: "Dokumentation",

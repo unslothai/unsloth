@@ -1086,6 +1086,20 @@ export const hi = {
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
+      python: "Python",
+      accelerator: {
+        sectionTitle: "अनुकूलित कर्नेल",
+        sectionDescription:
+          "तेज़ अटेंशन और क्वांटाइज़ेशन कर्नेल। हर कर्नेल किसी एक PyTorch बिल्ड के लिए संकलित होता है, इसलिए संस्करण मेल न खाने पर कोई भी लोड नहीं होता और Unsloth चुपचाप धीमे डिफ़ॉल्ट पर लौट जाता है।",
+        working: "काम कर रहा है",
+        notLoading: "लोड नहीं हो रहा",
+        notInstalled: "इंस्टॉल नहीं है",
+        notChecked: "जाँचा नहीं गया",
+        builtFor: "{build} के लिए बनाया गया",
+        bannerTitle: "अनुकूलित कर्नेल इंस्टॉल हैं पर लोड नहीं हो रहे",
+        bannerBody:
+          "{packages} यहाँ लोड नहीं हो पा रहा, इसलिए Unsloth धीमे डिफ़ॉल्ट पर लौट रहा है। प्रशिक्षण और अनुमान अब भी चलते हैं, पर अधिक मेमोरी और समय लेते हैं।",
+      },
       updates: "अपडेट",
       help: "सहायता",
       documentation: "दस्तावेज़",

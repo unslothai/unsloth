@@ -1119,6 +1119,20 @@ export const fr = {
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
+      python: "Python",
+      accelerator: {
+        sectionTitle: "Noyaux optimisés",
+        sectionDescription:
+          "Noyaux d'attention et de quantification plus rapides. Chacun est compilé pour une seule version de PyTorch : en cas d'écart de version, aucun ne se charge et Unsloth revient silencieusement aux chemins plus lents.",
+        working: "Fonctionne",
+        notLoading: "Ne se charge pas",
+        notInstalled: "Non installé",
+        notChecked: "Non vérifié",
+        builtFor: "Compilé pour {build}",
+        bannerTitle: "Des noyaux optimisés sont installés mais ne se chargent pas",
+        bannerBody:
+          "{packages} ne peut pas se charger ici, Unsloth revient donc aux chemins plus lents. L'entraînement et l'inférence fonctionnent toujours, mais consomment plus de mémoire et de temps.",
+      },
       updates: "Mise à jour",
       help: "Aide",
       documentation: "Documentation",

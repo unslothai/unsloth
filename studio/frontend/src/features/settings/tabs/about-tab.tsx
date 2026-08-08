@@ -18,6 +18,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
+import { AcceleratorSection } from "../components/accelerator-status";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -203,8 +204,19 @@ export function AboutTab() {
               </code>
             </SettingsRow>
           ))}
+          {/* The other half of every "built for Python 3.10, running 3.13" report. It
+              was nowhere in the app, so bug reports never carried it. */}
+          {hw.python ? (
+            <SettingsRow label={t("settings.about.python")}>
+              <code className="font-mono text-xs text-muted-foreground">
+                {hw.python}
+              </code>
+            </SettingsRow>
+          ) : null}
         </SettingsSection>
       ) : null}
+
+      <AcceleratorSection hw={hw} />
 
       <SettingsSection title={t("settings.about.help")}>
         <SettingsRow label={t("settings.about.documentation")}>

@@ -1071,6 +1071,20 @@ export const en = {
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
+      python: "Python",
+      accelerator: {
+        sectionTitle: "Optimized kernels",
+        sectionDescription:
+          "Faster attention and quantization kernels. Each is compiled against one PyTorch build, so a version mismatch loads nothing and quietly falls back to slower defaults.",
+        working: "Working",
+        notLoading: "Not loading",
+        notInstalled: "Not installed",
+        notChecked: "Not checked",
+        builtFor: "Built for {build}",
+        bannerTitle: "Optimized kernels are installed but not loading",
+        bannerBody:
+          "{packages} cannot load here, so Unsloth is falling back to slower defaults. Training and inference still work, but they use more memory and time.",
+      },
       updates: "Update",
       help: "Help",
       documentation: "Documentation",

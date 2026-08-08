@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+/**
+ * Optimized-kernel health, for the About tab and the Settings banner.
+ *
+ * NVIDIA QA P0-1: the managed Windows xFormers was built for PyTorch 2.10.0+cu128 and
+ * Python 3.10.11 while the app ran cu130 and Python 3.13.2, so its CUDA extensions never
+ * loaded and memory-efficient attention silently went missing. Nothing in the UI said so
+ * -- the About tab showed a version string, which a mismatched wheel reports just as
+ * happily as a working one.
+ *
+ * So the version alone is never the status here. The status is whether the kernels load,
+ * and when they do not, what the wheel was built for versus what is running -- the pair
+ * that names the fix.
+ */
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  type AcceleratorPackage,
+  hasDeadAccelerator,
+} from "@/hooks/accelerator-report";
+import { type HardwareInfo, useHardwareInfo } from "@/hooks/use-hardware-info";
+import { type TranslationKey, useT } from "@/i18n";
+import { cn } from "@/lib/utils";
+import { Alert01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { SettingsRow } from "./settings-row";
+import { SettingsSection } from "./settings-section";
+
+// Import name -> display label. Not translated: these are package names.
+const PACKAGE_LABELS: Record<string, string> = {
+  xformers: "xFormers",
+  flash_attn: "FlashAttention",
+  torchao: "torchao",
+  bitsandbytes: "bitsandbytes",
+};
+
+function packageLabel(name: string): string {
+  return PACKAGE_LABELS[name] ?? name;
+}
+
+type Health = "working" | "broken" | "absent" | "unknown";
+
+/**
+ * Three questions collapse to one badge. `runs === false` and "imports but does not run"
+ * are the same thing to a user, and both mean the kernels are dead.
+ */
+function healthOf(pkg: AcceleratorPackage, probed: boolean): Health {
+  if (!pkg.installed) return "absent";
+  if (!probed) return "unknown";
+  if (!pkg.imports || pkg.runs === false) return "broken";
+  return "working";
+}
+
+const HEALTH_LABEL_KEYS: Record<Health, TranslationKey> = {
+  working: "settings.about.accelerator.working",
+  broken: "settings.about.accelerator.notLoading",
+  absent: "settings.about.accelerator.notInstalled",
+  unknown: "settings.about.accelerator.notChecked",
+};
+
+const HEALTH_CLASSES: Record<Health, string> = {
+  // Deliberately not colour-only: each badge carries its own word, so the state
+  // survives a screenshot in greyscale and a colour-vision difference.
+  working: "text-muted-foreground",
+  broken: "text-destructive font-medium",
+  absent: "text-muted-foreground/70",
+  unknown: "text-muted-foreground/70",
+};
+
+/** "torch 2.10.0+cu128 / Python 3.10.11" from a wheel's recorded build. */
+function describeBuild(pkg: AcceleratorPackage): string | null {
+  const build = pkg.builtFor;
+  if (!build) return null;
+  const parts: string[] = [];
+  if (build.torch) parts.push(`torch ${build.torch}`);
+  else if (build.cuda) parts.push(`CUDA ${build.cuda}`);
+  if (build.python) parts.push(`Python ${build.python}`);
+  return parts.length > 0 ? parts.join(" / ") : null;
+}
+
+function AcceleratorRow({
+  pkg,
+  probed,
+}: {
+  pkg: AcceleratorPackage;
+  probed: boolean;
+}) {
+  const t = useT();
+  const health = healthOf(pkg, probed);
+  const build = describeBuild(pkg);
+  // Only explain a broken one. On a healthy machine the build detail is noise, and the
+  // raw exception text is never the first thing to show.
+  const detail =
+    health === "broken"
+      ? build
+        ? t("settings.about.accelerator.builtFor", { build })
+        : pkg.reason
+      : null;
+
+  return (
+    <SettingsRow
+      label={packageLabel(pkg.name)}
+      description={detail}
+      alignTop={detail != null}
+      // The full reason stays reachable without dominating the row.
+      hint={health === "broken" && pkg.reason ? pkg.reason : undefined}
+    >
+      <span className="flex items-baseline gap-2">
+        <code className="font-mono text-xs text-muted-foreground">
+          {pkg.version ?? "—"}
+        </code>
+        <span className={cn("text-xs", HEALTH_CLASSES[health])}>
+          {t(HEALTH_LABEL_KEYS[health])}
+        </span>
+      </span>
+    </SettingsRow>
+  );
+}
+
+export function AcceleratorSection({ hw }: { hw: HardwareInfo }) {
+  const t = useT();
+  const report = hw.accelerators;
+  // Older backends do not send this at all; render nothing rather than an empty section.
+  if (!report || report.packages.length === 0) return null;
+
+  return (
+    <SettingsSection
+      title={t("settings.about.accelerator.sectionTitle")}
+      description={t("settings.about.accelerator.sectionDescription")}
+    >
+      {report.packages.map((pkg) => (
+        <AcceleratorRow key={pkg.name} pkg={pkg} probed={report.probed} />
+      ))}
+    </SettingsSection>
+  );
+}
+
+/**
+ * Shown on every Settings tab, not only the one a user would have to think to open. A
+ * dead kernel is silent by nature; this is the thing that surfaces it.
+ *
+ * Reads the hook itself rather than taking a prop so it can be mounted inside
+ * DialogContent, which Radix only renders while the dialog is open. That keeps the
+ * detail fetch -- and the native imports behind it -- off app startup.
+ */
+export function AcceleratorBanner() {
+  const t = useT();
+  const hw = useHardwareInfo();
+  if (!hasDeadAccelerator(hw.accelerators)) return null;
+
+  const packages = (hw.accelerators?.degraded ?? [])
+    .map(packageLabel)
+    .join(", ");
+  return (
+    <Alert variant="destructive" className="mb-4">
+      <HugeiconsIcon icon={Alert01Icon} />
+      <AlertTitle>{t("settings.about.accelerator.bannerTitle")}</AlertTitle>
+      <AlertDescription>
+        {t("settings.about.accelerator.bannerBody", { packages })}
+      </AlertDescription>
+    </Alert>
+  );
+}
