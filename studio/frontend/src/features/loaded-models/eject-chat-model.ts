@@ -24,8 +24,9 @@ export type EjectChatModelDeps = {
   /** True for a row the backend kept past the active model. Such a row is not
    *  resident by definition, so it is the one case worth naming directly. */
   cachedRow?: boolean;
-  /** Every model the runtime still holds, for confirming a cached row's unload.
-   *  Omitted leaves the call its own evidence, as it was before. */
+  /** Every model the runtime still holds, active or not: `loaded` from the same
+   *  status read. Both finds a target the active read cannot see and confirms
+   *  its unload. Omitted leaves the call its own evidence, as it was before. */
   readCached?: () => Promise<string[]>;
 };
 
@@ -71,14 +72,23 @@ export async function ejectChatModel(
   if (unloadedAliases.length > 0) {
     return { unloadedAliases, stillResident, replacedBy: null };
   }
-  if (deps.cachedRow) {
+  // A row that was already cached, or an active one that has become cached
+  // since the card last polled. A model replaced inside the five-second poll
+  // window is not gone: the Transformers backend only moves
+  // `active_model_name` and leaves the previous model in `backend.models`
+  // (core/inference/inference.py:620), which /status still reports under
+  // `loaded` (routes/inference.py:8112), still holding its weights. Either way
+  // the scoped read above cannot match it, so ask what the runtime is really
+  // holding before reporting the row as somebody else's.
+  const holdsTarget = (names: string[] | undefined) =>
+    names?.some((name) => deps.matches(target, name)) ?? false;
+  if (deps.cachedRow || holdsTarget(await deps.readCached?.())) {
     // A cached row is never the active model, so the scoped read can never
     // match it. Name it directly: the Transformers backend can still hold it.
     await deps.unload(target);
     // Then confirm, for the same reason every other path does: /unload answers
     // 200 for a name the backend no longer holds, so the call is not evidence.
-    const cached = await deps.readCached?.();
-    const survived = cached?.some((name) => deps.matches(target, name)) ?? false;
+    const survived = holdsTarget(await deps.readCached?.());
     return {
       unloadedAliases: survived ? [] : [target],
       stillResident: survived ? target : null,

@@ -159,3 +159,74 @@ test("the load path and the advertised repo id are the same row", async () => {
   await ejectChatModel("unsloth/Qwen3-4B", deps);
   assert.deepEqual(unloaded, [loadPath], "matched by identity, not by string");
 });
+
+/** A backend whose `loaded` list follows `timeline`, one entry per cached read,
+ *  with `active` resident throughout. What an eject sees when a load landed
+ *  between the card's last poll and the click. */
+function replacedBackend(
+  active: ResidentChatModel | null,
+  timeline: string[][],
+) {
+  const unloaded: string[] = [];
+  let read = 0;
+  return {
+    unloaded,
+    deps: {
+      readResident: async () => active,
+      unload: async (modelPath: string) => {
+        unloaded.push(modelPath);
+      },
+      matches: modelIdsMatch,
+      readCached: async () => timeline[Math.min(read++, timeline.length - 1)],
+    },
+  };
+}
+
+// The row is up to one poll old, and a replacement does not evict what it
+// replaced: the standard backend moves active_model_name and leaves the
+// previous model in its registry, which /status goes on reporting under
+// `loaded`. So another model being active is not evidence the row's is gone,
+// and taking it as such freed nothing while telling the user it had.
+test("a row replaced while still cached is unloaded, not written off", async () => {
+  const { unloaded, deps } = replacedBackend(resident("unsloth/Llama-3.2-3B"), [
+    ["unsloth/Qwen3-4B", "unsloth/Llama-3.2-3B"],
+    ["unsloth/Llama-3.2-3B"],
+  ]);
+  const result = await ejectChatModel("unsloth/Qwen3-4B", deps);
+  assert.deepEqual(
+    unloaded,
+    ["unsloth/Qwen3-4B"],
+    "the memory the click asked for is the memory released",
+  );
+  assert.deepEqual(result.unloadedAliases, ["unsloth/Qwen3-4B"]);
+  assert.equal(result.stillResident, null);
+  assert.equal(
+    result.replacedBy,
+    null,
+    "an eject that ran is not a row that had already gone",
+  );
+});
+
+// The other half of the same read: a runtime that really did let go still
+// reports the replacement and unloads nothing, which is the whole point of
+// scoping the eject to one row.
+test("a row replaced and really gone is still left alone", async () => {
+  const { unloaded, deps } = replacedBackend(resident("unsloth/Llama-3.2-3B"), [
+    ["unsloth/Llama-3.2-3B"],
+  ]);
+  const result = await ejectChatModel("unsloth/Qwen3-4B", deps);
+  assert.deepEqual(unloaded, [], "nothing but the row's own model may go");
+  assert.deepEqual(result.unloadedAliases, []);
+  assert.equal(result.replacedBy, "unsloth/Llama-3.2-3B");
+});
+
+// Same window, with the replacement since unloaded: nothing is active, but the
+// row's model is still held, so "already free" would have been wrong too.
+test("an idle runtime still holding the row releases it", async () => {
+  const { unloaded, deps } = replacedBackend(null, [["unsloth/Qwen3-4B"], []]);
+  const result = await ejectChatModel("unsloth/Qwen3-4B", deps);
+  assert.deepEqual(unloaded, ["unsloth/Qwen3-4B"]);
+  assert.deepEqual(result.unloadedAliases, ["unsloth/Qwen3-4B"]);
+  assert.equal(result.stillResident, null);
+  assert.equal(result.replacedBy, null);
+});
