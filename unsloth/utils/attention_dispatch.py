@@ -27,6 +27,7 @@ from torch.nn.functional import scaled_dot_product_attention
 
 from ..models._utils import *
 from ..models._utils import _announce_xformers_breakage  # not in __all__, needed by the probe gate
+from ..models._utils import UNSLOTH_ENABLE_LOGGING  # ditto: the inconclusive branch reads it at import time
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,

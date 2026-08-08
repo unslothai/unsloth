@@ -21,6 +21,7 @@ import {
   type AcceleratorReport,
   type Health,
   acceleratorHealth,
+  acceleratorShowsReason,
   hasDeadAccelerator,
 } from "@/hooks/accelerator-report";
 import { useAcceleratorReport } from "@/hooks/use-accelerator-report";
@@ -85,14 +86,19 @@ function AcceleratorRow({
   const t = useT();
   const health = acceleratorHealth(pkg, probed);
   const build = describeBuild(pkg);
-  // Only explain a broken one. On a healthy machine the build detail is noise, and the
-  // raw exception text is never the first thing to show.
-  const detail =
-    health === "broken"
-      ? build
-        ? t("settings.about.accelerator.builtFor", { build })
-        : pkg.reason
-      : null;
+  // Explain a broken one, and an unknown one that came with a reason. On a healthy machine
+  // the build detail is noise, and the raw exception text is never the first thing to show.
+  //
+  // The unknown arm matters because several probes return `runs: null` DELIBERATELY, with an
+  // explanation: flash-attn imported but no kernel was launched, torchao registered no native
+  // operator. Without it the row read "Not checked" and threw the reason away, so a skipped
+  // native extension was indistinguishable from a probe that never ran at all.
+  const explained = acceleratorShowsReason(health, pkg.reason);
+  const detail = !explained
+    ? null
+    : health === "broken" && build
+      ? t("settings.about.accelerator.builtFor", { build })
+      : pkg.reason;
 
   return (
     <SettingsRow
@@ -100,7 +106,7 @@ function AcceleratorRow({
       description={detail}
       alignTop={detail != null}
       // The full reason stays reachable without dominating the row.
-      hint={health === "broken" && pkg.reason ? pkg.reason : undefined}
+      hint={explained && pkg.reason ? pkg.reason : undefined}
     >
       <span className="flex items-baseline gap-2">
         <code className="font-mono text-xs text-muted-foreground">

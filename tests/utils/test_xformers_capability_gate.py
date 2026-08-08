@@ -428,3 +428,21 @@ def test_the_probed_device_follows_the_caller_selection(monkeypatch):
         lambda: (_ for _ in ()).throw(RuntimeError("no context")),
     )
     assert ad._resolve_probe_device_index() == 0
+
+
+def test_the_inconclusive_branch_can_actually_read_the_logging_flag():
+    """The inconclusive arm prints behind UNSLOTH_ENABLE_LOGGING at MODULE scope.
+
+    attention_dispatch pulls _utils in with `import *`, and UNSLOTH_ENABLE_LOGGING is not in
+    _utils.__all__, so the name only exists here because it is imported explicitly. Without
+    that import a busy or out-of-memory GPU -- newly classified as inconclusive -- raises
+    NameError during `import unsloth` instead of keeping xformers on.
+    """
+    from unsloth.models import _utils
+
+    assert "UNSLOTH_ENABLE_LOGGING" not in getattr(_utils, "__all__", ()), (
+        "if the flag is exported, this explicit import can go -- but not before"
+    )
+    assert hasattr(ad, "UNSLOTH_ENABLE_LOGGING"), (
+        "the inconclusive branch reads this name at import time"
+    )

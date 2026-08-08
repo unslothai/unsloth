@@ -81,20 +81,29 @@ def test_a_loaded_xformers_with_no_kernel_for_this_gpu_is_not_working(monkeypatc
     assert "12.0" in entry["error"]
 
 
-def test_a_kernel_that_covers_this_gpu_still_reports_working(monkeypatch):
+def test_a_kernel_that_covers_this_gpu_is_unknown_not_working(monkeypatch):
+    """The op table admitting this GPU is not evidence the build ships a kernel image for it.
+
+    CUDA_MINIMUM/MAXIMUM_COMPUTE_CAPABILITY are class constants describing what the op
+    supports in principle. A source build with TORCH_CUDA_ARCH_LIST set for other
+    architectures, or a wheel that dropped one, registers the very same op and fails the
+    first launch with "no kernel image is available". Establishing coverage needs a launch,
+    which this child does not do, so the honest answer is the one probe_flash_attn gives."""
     _install_xformers(monkeypatch, [_op(maximum = (9, 0)), _op(minimum = (10, 0))])
     monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((12, 0),))
 
     entry = probe.probe_xformers()
-    assert entry["runs"] is True and entry["error"] is None
+    assert entry["runs"] is None
+    assert "no kernel was launched" in entry["error"]
 
 
 def test_an_unknown_capability_leaves_the_load_status_alone(monkeypatch):
-    # No nvidia-smi, no answer. "Cannot be checked" must not become "broken".
+    # No nvidia-smi, no answer. "Cannot be checked" must not become "broken" -- nor "Working".
     _install_xformers(monkeypatch, [_op(maximum = (9, 0))])
 
     entry = probe.probe_xformers()
-    assert entry["runs"] is True and entry["error"] is None
+    assert entry["runs"] is None
+    assert "compute capability could not be read" in entry["error"]
 
 
 def test_an_unrecognised_op_table_leaves_the_load_status_alone(monkeypatch):
@@ -102,7 +111,9 @@ def test_an_unrecognised_op_table_leaves_the_load_status_alone(monkeypatch):
     _install_xformers(monkeypatch, [])
     monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((12, 0),))
 
-    assert probe.probe_xformers()["runs"] is True
+    entry = probe.probe_xformers()
+    assert entry["runs"] is None
+    assert "could not be enumerated" in entry["error"]
 
 
 def test_a_failed_library_load_still_wins(monkeypatch):
@@ -126,10 +137,11 @@ def test_every_visible_gpu_has_to_have_a_kernel(monkeypatch):
     assert "12.0" in entry["error"], "the report must name the GPU that is not covered"
 
 
-def test_a_pair_the_build_covers_is_still_working(monkeypatch):
+def test_a_pair_the_build_covers_is_unknown_not_working(monkeypatch):
+    # Covering both cards clears the proven-broken verdict; it does not earn "Working".
     _install_xformers(monkeypatch, [_op(minimum = (7, 0))])
     monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((9, 0), (12, 0)))
-    assert probe.probe_xformers()["runs"] is True
+    assert probe.probe_xformers()["runs"] is None
 
 
 @pytest.mark.parametrize("capabilities", [((12, 0),), ((9, 0),), ((8, 6),), ()])

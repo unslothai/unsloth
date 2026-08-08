@@ -89,7 +89,7 @@ def probe_xformers() -> Dict[str, Any]:
 
 
 def _with_kernel_verdict(entry: Dict[str, Any]) -> Dict[str, Any]:
-    """Downgrade a loaded-but-useless xFormers from "runs" to "does not run".
+    """Settle a loaded xFormers into "does not run" or "cannot be established".
 
     The library loading is necessary, not sufficient: a build with no kernel for THIS GPU
     (an sm_120 card against a wheel that ships none) loads fine, and every attention call
@@ -99,19 +99,21 @@ def _with_kernel_verdict(entry: Dict[str, Any]) -> Dict[str, Any]:
     Static, not a forward pass: this child runs with no visible GPU on purpose (a probe
     must not latch a CUDA context or take VRAM from a run in progress), so the verdict
     comes from the op table plus the capability read out of nvidia-smi, which needs no
-    context. Unknown at any step leaves the load-status answer alone -- an install that
-    cannot be checked is not an install that is broken.
+    context. That buys a sound NEGATIVE only: no op admitting this GPU proves attention
+    falls back, but an op that admits it proves nothing about the images the build was
+    compiled with. So every other exit here is unknown, never "Working" -- an install that
+    cannot be checked is neither broken nor verified.
     """
     capabilities = _device_compute_capabilities()
     if not capabilities:
-        return entry
+        return _unverified(entry, "this GPU's compute capability could not be read")
     try:
         from xformers.ops import fmha
     except BaseException:
-        return entry
+        return _unverified(entry, "xformers' attention operators could not be enumerated")
     ops = getattr(fmha, "ALL_FW_OPS", None)
     if not ops:
-        return entry
+        return _unverified(entry, "xformers' attention operators could not be enumerated")
     # ANY visible GPU without a kernel is a degraded install: with CUDA_VISIBLE_DEVICES=0,1
     # across a mixed pair, the rank that lands on the uncovered card falls back to SDPA
     # whatever the other card can do.
@@ -125,6 +127,22 @@ def _with_kernel_verdict(entry: Dict[str, Any]) -> Dict[str, Any]:
             f"back to SDPA"
         )
         return entry
+    # Coverage NOT established, only not-ruled-out. The capability bounds above are class
+    # constants describing what an op supports in principle; a wheel or source build compiled
+    # for other architectures still registers that op and still fails the first launch with
+    # "no kernel image is available". Establishing the compiled architectures needs a launch,
+    # which this child deliberately does not do (it holds no CUDA context). So the positive
+    # verdict becomes unknown, the same answer probe_flash_attn gives for the same build.
+    return _unverified(entry, "its operators admit this GPU, but no kernel was launched")
+
+
+def _unverified(entry: Dict[str, Any], why: str) -> Dict[str, Any]:
+    """Kernel coverage could not be established. Not broken, not confirmed working."""
+    entry["runs"] = None
+    entry["error"] = (
+        f"xformers loaded, but whether its build ships a usable attention kernel for this "
+        f"GPU is unknown: {why}"
+    )
     return entry
 
 

@@ -15,8 +15,12 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { parseAcceleratorReport, hasDeadAccelerator, acceleratorHealth } =
-  await import("../src/hooks/accelerator-report.ts");
+const {
+  parseAcceleratorReport,
+  hasDeadAccelerator,
+  acceleratorHealth,
+  acceleratorShowsReason,
+} = await import("../src/hooks/accelerator-report.ts");
 
 const BROKEN_XFORMERS = {
   python_version: "3.13.2",
@@ -248,4 +252,19 @@ test("a probe that ran but could not decide is unknown, not working", () => {
     acceleratorHealth({ ...flash, imports: false }, report.probed),
     "broken",
   );
+});
+
+
+test("an unknown result keeps the reason the backend sent with it", () => {
+  // Most unknowns are deliberate and carry an explanation -- flash-attn imported with no
+  // kernel launched, xformers registering an op whose image may be missing, torchao with no
+  // native operator. The row showed "Not checked" and discarded all of it, so a skipped
+  // native extension looked identical to a probe that never ran.
+  assert.equal(acceleratorShowsReason("unknown", "no kernel was launched"), true);
+  assert.equal(acceleratorShowsReason("broken", null), true);
+  // A reasonless unknown really is "not checked"; there is nothing to say.
+  assert.equal(acceleratorShowsReason("unknown", null), false);
+  assert.equal(acceleratorShowsReason("unknown", ""), false);
+  assert.equal(acceleratorShowsReason("working", "ignored"), false);
+  assert.equal(acceleratorShowsReason("absent", "ignored"), false);
 });

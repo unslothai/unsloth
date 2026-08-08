@@ -134,6 +134,24 @@ export function acceleratorHealth(
   return pkg.runs ? "working" : "broken";
 }
 
+/**
+ * Does the About row owe the user the backend's reason text?
+ *
+ * A broken row always did. An unknown one has to as well, because most unknowns are
+ * DELIBERATE and carry an explanation the row was throwing away: flash-attn imported with no
+ * kernel launched, xformers registering an op it may have no image for, torchao with no
+ * native operator. Rendering only "Not checked" made a skipped native extension look exactly
+ * like a probe that never ran. A reasonless unknown (the probe genuinely did not run) still
+ * shows nothing, which is the honest answer there.
+ */
+export function acceleratorShowsReason(
+  health: Health,
+  reason: string | null | undefined,
+): boolean {
+  if (health === "broken") return true;
+  return health === "unknown" && reason != null && reason !== "";
+}
+
 /** True when something is installed and cannot load -- the case worth a banner. */
 export function hasDeadAccelerator(report: AcceleratorReport | null): boolean {
   return (report?.degraded.length ?? 0) > 0;
