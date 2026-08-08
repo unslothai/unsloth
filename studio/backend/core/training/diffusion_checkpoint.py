@@ -92,6 +92,16 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("lora_alpha", "LoRA alpha"),
     ("lora_dropout", "LoRA dropout"),
     ("cfg_dropout", "caption dropout"),
+    # The trajectory. Each of these is read from the INCOMING config by the trainer while the
+    # optimizer moments and the scheduler position come from the bundle, so changing one
+    # continues a run whose objective or learning-rate curve is no longer the one those moments
+    # were produced under -- reported as a clean continue.
+
+    ("flow_shift", "timestep shift"),
+    ("weighting_scheme", "loss weighting scheme"),
+    ("snr_gamma", "min-SNR gamma"),
+    ("lr_scheduler", "learning-rate schedule"),
+    ("lr_warmup_steps", "learning-rate warmup"),
     ("precision", "mixed precision"),
     ("base_precision", "base precision"),
 )
@@ -99,7 +109,19 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
 # resolvable revision; the start route knows the dataset only after its own discovery pass).
 # Unknown on either side means "cannot tell", which must not be reported as a mismatch.
 _OPTIONAL_IDENTITY_FIELDS = frozenset(
-    {"base_revision", "dataset_fingerprint", "lora_dropout", "cfg_dropout"}
+    {
+        "base_revision",
+        "dataset_fingerprint",
+        "lora_dropout",
+        "cfg_dropout",
+        # Absent only in a manifest written before these were recorded, which reads as
+        # "cannot tell" rather than as a mismatch.
+        "flow_shift",
+        "weighting_scheme",
+        "snr_gamma",
+        "lr_scheduler",
+        "lr_warmup_steps",
+    }
 )
 # What source_revision() returns when it cannot resolve a revision offline.
 _UNRESOLVED_REVISION = "unresolved"
@@ -146,6 +168,13 @@ class CheckpointIdentity:
     # objective, while the run reports a clean continue. A bundle from before this field
     # existed reads None, which the optional rule skips rather than reporting as a mismatch.
     cfg_dropout: Optional[float] = None
+    # Trajectory-defining knobs, all optional for the same reason: a bundle from before they
+    # were recorded reads unknown, not mismatched.
+    flow_shift: Optional[str] = None
+    weighting_scheme: Optional[str] = None
+    snr_gamma: Optional[float] = None
+    lr_scheduler: Optional[str] = None
+    lr_warmup_steps: Optional[int] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -163,6 +192,11 @@ class CheckpointIdentity:
             # optional-field rule below skips rather than reporting as a mismatch.
             "lora_dropout": self.lora_dropout,
             "cfg_dropout": self.cfg_dropout,
+            "flow_shift": self.flow_shift,
+            "weighting_scheme": self.weighting_scheme,
+            "snr_gamma": self.snr_gamma,
+            "lr_scheduler": self.lr_scheduler,
+            "lr_warmup_steps": self.lr_warmup_steps,
             "precision": self.precision,
             "base_precision": self.base_precision,
             # Recorded for the UI / debugging only; a resolution change is a different training
@@ -188,6 +222,11 @@ class CheckpointIdentity:
                 lora_alpha = int(data.get("lora_alpha") or 0),
                 lora_dropout = _optional_float(data.get("lora_dropout")),
                 cfg_dropout = _optional_float(data.get("cfg_dropout")),
+                flow_shift = _optional_str(data.get("flow_shift")),
+                weighting_scheme = _optional_str(data.get("weighting_scheme")),
+                snr_gamma = _optional_float(data.get("snr_gamma")),
+                lr_scheduler = _optional_str(data.get("lr_scheduler")),
+                lr_warmup_steps = _optional_int(data.get("lr_warmup_steps")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
                 resolution = int(data.get("resolution") or 0),
@@ -247,6 +286,16 @@ def _optional_float(value: Any) -> Optional[float]:
         return None
     try:
         return round(float(value), 6)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    """An int, or None for anything unreadable. Same "cannot tell" as _optional_float."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 
@@ -379,6 +428,13 @@ def identity_for_config(
         lora_alpha = int(cfg.lora_alpha if cfg.lora_alpha is not None else cfg.lora_rank),
         lora_dropout = round(float(getattr(cfg, "lora_dropout", 0.0) or 0.0), 6),
         cfg_dropout = round(float(getattr(cfg, "cfg_dropout", 0.0) or 0.0), 6),
+        # flow_shift is float | "auto" | None, so it is recorded as text: "auto" and the number
+        # it resolves to are different runs, and comparing them as floats would lose that.
+        flow_shift = str(getattr(cfg, "flow_shift", None)),
+        weighting_scheme = str(getattr(cfg, "weighting_scheme", "") or "none"),
+        snr_gamma = _optional_float(getattr(cfg, "snr_gamma", None)),
+        lr_scheduler = str(getattr(cfg, "lr_scheduler", "") or "constant"),
+        lr_warmup_steps = int(getattr(cfg, "lr_warmup_steps", 0) or 0),
         # The EFFECTIVE precision, not the request: a pre-Ampere card resolves bf16 to fp16, and
         # recording the request let an fp16 bundle resume in bf16 on a newer card -- restored
         # moments continuing under different frozen-base numerics, reported as a clean resume.
@@ -836,18 +892,39 @@ def _prune_staging(root: Path) -> None:
     except OSError:
         return
     for entry in entries:
-        match = _STALE_SLOT.match(entry.name[len(_STAGING_PREFIX) :])
-        if match is not None:
-            slot = root / f"{CHECKPOINT_PREFIX}{int(match.group(1))}"
-            if not slot.exists():
-                try:
-                    os.replace(entry, slot)
-                except OSError:
-                    # Could not hand it back. Leaving it on disk is still better than
-                    # deleting the only copy of the run's last resumable state.
-                    pass
-                continue
+        if _recover_orphaned_slot(root, entry):
+            continue
         shutil.rmtree(entry, ignore_errors = True)
+
+
+def _recover_orphaned_slots(root: Path) -> None:
+    """Hand every stale orphan back to its empty slot. Read paths call this before deciding a
+    run has nothing to resume; it never deletes anything."""
+    try:
+        entries = list(root.glob(f"{_STAGING_PREFIX}*"))
+    except OSError:
+        return
+    for entry in entries:
+        _recover_orphaned_slot(root, entry)
+
+
+def _recover_orphaned_slot(root: Path, entry: Path) -> bool:
+    """True when ``entry`` is a stale bundle that must not be swept up: either it was handed
+    back to its empty slot, or the hand-back failed and leaving it on disk beats deleting the
+    only copy of the run's last resumable state."""
+    match = _STALE_SLOT.match(entry.name[len(_STAGING_PREFIX) :])
+    if match is None:
+        return False
+    slot = root / f"{CHECKPOINT_PREFIX}{int(match.group(1))}"
+    if slot.exists():
+        return False
+    try:
+        os.replace(entry, slot)
+    except OSError:
+        # Could not hand it back. Leaving it on disk is still better than deleting the only
+        # copy of the run's last resumable state.
+        pass
+    return True
 
 
 def prune_checkpoints(
@@ -909,6 +986,17 @@ def snapshot_checkpoints(output_dir: str | os.PathLike[str]) -> list[tuple[Path,
     cleanup time: a resumed run can overwrite a bundle that was already there, and by then the
     directory holds this run's state under the old name."""
     return [(path, _bundle_identity(path)) for path in list_checkpoints(output_dir)]
+
+
+def retire_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]") -> None:
+    """Drop THIS run's periodic bundles once it has finished successfully.
+
+    Same selection as ``clear_own_checkpoints`` and a different reason: nothing here is being
+    discarded, the run simply has no continuation left. Without it the newest bundle in the
+    directory is the last periodic save (the final iteration writes none), and a later resume
+    -- which cannot see that the run completed -- rolls the whole training state back to it.
+    """
+    clear_own_checkpoints(output_dir, preexisting)
 
 
 def clear_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]") -> None:
@@ -1070,6 +1158,12 @@ def latest_valid_checkpoint(
     its own. The identity gate cannot catch that -- same family, same base, same dataset, same
     LoRA shape -- so the earlier run resumes the later run's optimizer moments, LR position
     and RNG under its own config, and records the wrong lineage while doing it."""
+    # Repair first. A promotion killed between the swap-aside and the rename leaves the run's
+    # only bundle under the hidden stale name, and _prune_staging fixes that -- but it runs
+    # after a later successful save, which a user who cannot resume will never reach. So the
+    # read path that decides "there is nothing to resume" hands the orphan back to its slot
+    # before it answers. Idempotent, and it only ever touches an EMPTY slot.
+    _recover_orphaned_slots(Path(output_dir).expanduser())
     for candidate in list_checkpoints(output_dir):
         manifest = read_checkpoint(candidate)
         if manifest is None:
@@ -1286,6 +1380,44 @@ def _join_clauses(items: list[str]) -> str:
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
+def _assert_optimizer_buildable(path: Path, manifest: dict[str, Any]) -> None:
+    """Refuse moments this host provably cannot build an optimizer for, BEFORE teardown.
+
+    The trainers choose bitsandbytes AdamW8bit or torch AdamW from the HOST, so a bundle can
+    arrive with foreign moments -- and the child's own check then fires after the route has
+    evicted the resident inference models and loaded a multi-GB base, for a run that is
+    guaranteed to terminate without training.
+
+    Deliberately one-directional, and deliberately import-free. ``find_spec`` answers "is
+    bitsandbytes installed" without creating a CUDA context in the Studio process, but it
+    cannot tell an installed-and-broken wheel (which the trainer catches and falls back from)
+    from a working one. So only the case that cannot be wrong is refused here: 8-bit moments
+    with no bitsandbytes to load them, or with the fp32 override forcing torch AdamW. The
+    other direction stays with the child, where the real optimizer object exists.
+    """
+    saved = manifest.get("optimizer_class")
+    if not isinstance(saved, str) or "bitsandbytes" not in saved:
+        return
+    reason = None
+    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
+        reason = "UNSLOTH_DIFFUSION_FP32_OPTIM forces plain torch AdamW on this host"
+    else:
+        try:
+            import importlib.util
+
+            if importlib.util.find_spec("bitsandbytes") is None:
+                reason = "bitsandbytes is not installed on this host"
+        except (ImportError, ValueError):
+            reason = "bitsandbytes is not installed on this host"
+    if reason is None:
+        return
+    raise ResumeError(
+        f"'{path.name}' carries bitsandbytes 8-bit optimizer state, but {reason}, so its "
+        "moments cannot be restored. Install bitsandbytes (or unset the override) to continue "
+        "this run."
+    )
+
+
 def _assert_loadable(path: Path, manifest: dict[str, Any]) -> None:
     """Actually open every state file the manifest lists, and turn any failure into a
     ResumeError.
@@ -1375,6 +1507,7 @@ def preflight_resume(
         raise ResumeError(reason)
     # After the identity gate, so a mismatched bundle still fails fast on the cheap check.
     _assert_required_state(path, manifest)
+    _assert_optimizer_buildable(path, manifest)
     _assert_loadable(path, manifest)
     step = int(manifest.get("global_step") or 0)
     if target_steps and step >= int(target_steps):

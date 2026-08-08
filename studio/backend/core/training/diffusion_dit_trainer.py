@@ -63,6 +63,7 @@ from core.training.diffusion_train_common import (
 )
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
+    retire_own_checkpoints,
     list_checkpoints,
     resumed_into_this_dir,
     snapshot_checkpoints,
@@ -1989,6 +1990,11 @@ def _train_dit(
                 ema_path = str(Path(ema_dir) / DEFAULT_LORA_FILENAME)
             except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved
                 _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")
+        if not stopped:
+            # Same as the LoRA trainer: a completed run has nothing to resume, and the final
+            # iteration writes no bundle, so save_steps leaves the run's own checkpoint-400
+            # behind for a later resume to roll back to. An earlier run's bundles stay.
+            retire_own_checkpoints(out_dir, preexisting_checkpoints)
     else:
         # Discarded: the user asked to throw this run away. Before periodic checkpoints
         # existed a discard left nothing behind, because the output directory was only ever

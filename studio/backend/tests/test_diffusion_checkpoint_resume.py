@@ -1802,6 +1802,115 @@ def test_the_identity_covers_cfg_dropout(run_dir):
     assert "caption dropout" in (saved.mismatch_reason(dc.identity_for_config(changed.cfg)) or "")
 
 
+def test_the_identity_covers_the_trajectory_knobs(run_dir):
+    """Each of these is read from the INCOMING config while the moments and the scheduler
+    position come from the bundle, so changing one continues a run whose objective or
+    learning-rate curve is no longer the one those moments were produced under."""
+    base = _Run(run_dir)
+    for field, value, label in (
+        ("flow_shift", 3.0, "timestep shift"),
+        ("weighting_scheme", "logit_normal", "loss weighting scheme"),
+        ("snr_gamma", 1.0, "min-SNR gamma"),
+        ("lr_scheduler", "cosine", "learning-rate schedule"),
+        ("lr_warmup_steps", 25, "learning-rate warmup"),
+    ):
+        changed = _Run(run_dir, **{field: value})
+        reason = dc.identity_for_config(base.cfg).mismatch_reason(
+            dc.identity_for_config(changed.cfg)
+        )
+        assert reason is not None and label in reason, field
+        # A manifest from before the field was recorded reads unknown, not mismatched.
+        older = dc.CheckpointIdentity.from_dict(
+            {**dc.identity_for_config(base.cfg).as_dict(), field: None}
+        )
+        assert older is not None
+        assert older.mismatch_reason(dc.identity_for_config(changed.cfg)) is None, field
+    # And an unchanged config still resumes.
+    assert (
+        dc.identity_for_config(base.cfg).mismatch_reason(
+            dc.identity_for_config(_Run(run_dir).cfg)
+        )
+        is None
+    )
+
+
+def test_a_completed_run_does_not_leave_its_periodic_bundles_behind(run_dir):
+    """The last iteration deliberately writes no bundle, so with save_steps on the newest
+    thing left is the run's own checkpoint-400 of a run that finished at 500. The preflight
+    cannot see the run status, so a later resume rolled everything back and retrained 401-500."""
+    earlier = _Run(run_dir)
+    kept, error = earlier.save(3)
+    assert error is None and kept is not None
+    preexisting = dc.snapshot_checkpoints(run_dir)
+
+    run = _Run(run_dir)
+    mine, error = run.save(7)
+    assert error is None and mine is not None
+
+    dc.retire_own_checkpoints(run_dir, preexisting)
+
+    assert not Path(mine).exists(), "the completed run's own bundle must go"
+    assert Path(kept).exists(), "an earlier run's bundle stays resumable"
+
+    # And both trainers actually call it on the success path. Running either end to end needs a
+    # GPU and a multi-GB base, so the call site is checked in the source: the helper being
+    # correct is no use if nothing invokes it.
+    trainers = Path(dc.__file__).parent
+    for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
+        source = (trainers / name).read_text(encoding = "utf-8")
+        marker = source.find("retire_own_checkpoints(out_dir, preexisting_checkpoints)")
+        assert marker > 0, name
+        guard = source.rfind("if not stopped:", 0, marker)
+        assert guard > 0 and marker - guard < 700, (
+            f"{name} must retire its bundles only on a completed run"
+        )
+
+
+def test_a_swap_aside_orphan_is_found_by_the_resume_scan(run_dir):
+    """_prune_staging can hand the orphan back, but it runs only after a later successful
+    save -- which a user told "there is nothing to resume" will never reach. The read path
+    that makes that call has to repair first."""
+    run = _Run(run_dir)
+    path, error = run.save(4)
+    assert error is None and path is not None
+    stale = run_dir / f"{dc._STAGING_PREFIX}stale-4-cafebabe"
+    dc.os.replace(run_dir / "checkpoint-4", stale)
+    assert dc.list_checkpoints(run_dir) == []
+
+    found = dc.latest_valid_checkpoint(run_dir)
+
+    assert found is not None, "the complete bundle is still on disk"
+    assert found[0] == run_dir / "checkpoint-4"
+    assert not stale.exists()
+
+
+def test_eight_bit_moments_are_refused_when_the_host_cannot_build_them(run_dir, monkeypatch):
+    """The child's own check fires after the route has evicted the resident models and loaded
+    a multi-GB base, for a run guaranteed to terminate without training."""
+    from core.training.diffusion_checkpoint import ResumeError
+
+    run = _Run(run_dir)
+    path, error = run.save(4)
+    assert error is None and path is not None
+    manifest_path = Path(path) / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    manifest["optimizer_class"] = "bitsandbytes.optim.adamw.AdamW8bit"
+    manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    # The one direction that cannot be wrong: the override forces plain torch AdamW.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_FP32_OPTIM", "1")
+    with pytest.raises(ResumeError, match = "8-bit optimizer state"):
+        dc.preflight_resume(path, identity = run.identity, target_steps = 10)
+
+    # Without it, an installed bitsandbytes is not refused here -- an installed-but-broken
+    # wheel is the child's call, where the real optimizer object exists.
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_FP32_OPTIM")
+    import importlib.util
+
+    if importlib.util.find_spec("bitsandbytes") is not None:
+        assert dc.preflight_resume(path, identity = run.identity, target_steps = 10)[1] == 4
+
+
 def test_the_identity_covers_lora_dropout(run_dir):
     """Both trainers pass lora_dropout to the LoRA constructor, so it changes the stochastic
     forward the restored moments were produced against."""

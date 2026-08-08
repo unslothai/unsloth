@@ -71,6 +71,7 @@ from core.training.diffusion_train_common import (  # noqa: F401
 )
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
+    retire_own_checkpoints,
     list_checkpoints,
     resumed_into_this_dir,
     snapshot_checkpoints,
@@ -705,6 +706,14 @@ def run_diffusion_lora_training(
             # Mirror into loras/diffusion so the Images picker discovers it (its scan skips subdirs).
             # ``done`` (the step reached), not cfg.train_steps: a stop at 11/500 must not advertise 500.
             catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
+            if not stopped:
+                # A COMPLETED run has nothing to resume, and the last iteration deliberately
+                # writes no bundle -- so with save_steps on, the newest thing left in the
+                # directory is checkpoint-400 of a run that finished at 500. The preflight
+                # cannot see the run status, so a later resume with a raised target rolled the
+                # model, optimizer, scheduler, sampler and RNG back and retrained 401-500.
+                # Only this run's own bundles go; an earlier run's stay resumable.
+                retire_own_checkpoints(out_dir, preexisting_checkpoints)
         else:
             # Discarded: the user asked to throw this run away. Before periodic checkpoints
             # existed a discard left nothing behind, because the output directory was only
