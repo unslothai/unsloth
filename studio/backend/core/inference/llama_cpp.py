@@ -1942,6 +1942,8 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
             continue
         out.append(str(arg))
     return out
+
+
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
