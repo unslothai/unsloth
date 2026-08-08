@@ -174,7 +174,6 @@ def test_revision_survives_when_the_repo_is_unchanged():
     assert gate("my-branch", "myorg/my-ft", "myorg/my-ft") == "my-branch"
 
 
-
 def test_revision_survives_case_only_mapper_canonicalization():
     gate = _load_gate()
     assert (

@@ -259,6 +259,7 @@ def _prefer_legacy_lowercase_cache(
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
         from huggingface_hub.file_download import repo_folder_name
+
         try:
             from transformers.utils.hub import TRANSFORMERS_CACHE
         except ImportError:

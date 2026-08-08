@@ -222,7 +222,6 @@ class TestGetModelName(unittest.TestCase):
                     legacy,
                 )
 
-
     def test_static_mapper_contract(self):
         # A lowercased key is how __get_model_name always looks up; the value it
         # gets back is used verbatim as a repo id, so it must carry the casing
