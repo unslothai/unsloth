@@ -39,13 +39,19 @@ on:
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
   push:
-    branches: [main, pip]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -95,7 +101,7 @@ jobs:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -138,11 +144,11 @@ jobs:
           Write-Host "uninstall.ps1 parsed with no errors"
           pwsh -NoProfile -File tests/studio/test_uninstall_dual_install_icon.ps1
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -283,7 +289,7 @@ jobs:
       - name: Restore HF_HOME cache for unsloth/gemma-3-270m-it-GGUF
         id: cache-hf
         timeout-minutes: 15
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
           path: hf-cache
@@ -321,7 +327,7 @@ jobs:
         # on main at all. That is the thrash loop: PR misses -> downloads ->
         # saves its own copy -> evicts main's -> next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: hf-cache
           key: hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v3
@@ -336,16 +342,7 @@ jobs:
       - name: Wait for /api/health
         timeout-minutes: 10
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
-              jq -e '.status == "healthy"' /tmp/health.json
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Unsloth did not become healthy in 180s"
-          tail -200 logs/studio.log
-          exit 1
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Password rotation (old must fail, new must work)
         timeout-minutes: 3
@@ -602,7 +599,7 @@ jobs:
         if: ${{ !cancelled() && steps.shim.outcome == 'success' }}
         id: cache-gguf-tools
         timeout-minutes: 15
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
           path: gguf-cache-tools
@@ -624,7 +621,7 @@ jobs:
       - name: Save GGUF model cache
         if: always() && github.ref == 'refs/heads/main' && steps.download-gguf-tools.outcome == 'success' && hashFiles('gguf-cache-tools/**/*.gguf') != ''
         timeout-minutes: 15
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: gguf-cache-tools
           key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
@@ -1060,7 +1057,7 @@ jobs:
         if: ${{ !cancelled() && steps.shim.outcome == 'success' && steps.sdks.outcome == 'success' }}
         id: cache-hf-vision
         timeout-minutes: 20
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
           path: hf-cache-vision
@@ -1083,7 +1080,7 @@ jobs:
       - name: Save HF_HOME cache for unsloth/Qwen3-VL-2B-Instruct-GGUF (model + mmproj)
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf-vision.outcome == 'success'
         timeout-minutes: 20
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: hf-cache-vision
           key: ${{ runner.os }}-hf-unsloth/Qwen3-VL-2B-Instruct-GGUF-UD-IQ2_XXS-mmproj-F16.gguf-v3
@@ -1430,15 +1427,15 @@ jobs:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -1447,7 +1444,7 @@ jobs:
       # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
           path: hf-cache
@@ -1468,7 +1465,7 @@ jobs:
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: hf-cache
           key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
@@ -1719,11 +1716,11 @@ jobs:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -1812,14 +1809,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       # This workflow is in its own `paths` filter, so editing the bootstrap below
       # always runs this job. No pytest workflow filters on this file, so running the
       # guard here is what makes it fire on a workflow-only change.
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -1935,7 +1932,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -2007,7 +2004,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 

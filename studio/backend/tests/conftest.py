@@ -11,6 +11,7 @@ Model/variant for the managed mode resolve from ``--unsloth-model`` /
 ``--unsloth-gguf-variant``, then env vars, then ``test_studio_api.py`` defaults.
 """
 
+import itertools
 import os
 import sys
 from pathlib import Path
@@ -28,6 +29,30 @@ os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
 # The other half of the same guard: unsloth_zoo.__init__ refuses to import unless this is present, normally set by `import unsloth`. Without it
 # the patch backend's only route to the helpers is that ~940 MB import, which a CPU-only host cannot complete. run.py and main.py do the same.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+
+
+@pytest.fixture(scope = "session")
+def _studio_home_root(tmp_path_factory):
+    """One parent directory for every per-test studio home.
+
+    ``tmp_path_factory.mktemp`` scans the whole basetemp on every call to pick
+    the next number, so calling it once per test is quadratic in the number of
+    tests. Paid once per session here, the per-test cost below is a bare mkdir.
+    """
+    return tmp_path_factory.mktemp("studio_homes")
+
+
+_studio_home_counter = itertools.count()
+
+
+@pytest.fixture(autouse = True)
+def _isolate_studio_home(_studio_home_root, monkeypatch):
+    home = _studio_home_root / f"home-{next(_studio_home_counter)}"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    for name, module in tuple(sys.modules.items()):
+        if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
+            monkeypatch.setattr(module, "_schema_ready", False)
 
 
 # Pytest CLI options
@@ -78,6 +103,7 @@ def _isolate_xet_health_home(tmp_path_factory):
     from huggingface_hub import constants as hf_constants
 
     mp = MonkeyPatch()
+    mp.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path_factory.mktemp("studio_home_session")))
     # Pin these to what the hub resolved from the REAL environment before moving HF_HOME, which
     # also defaults HF_HUB_CACHE, HF_XET_CACHE and HF_TOKEN_PATH: moving it alone would send the
     # E2E server to an empty cache and token store, so a ~1.1GB GGUF redownload inside the 120s
@@ -273,7 +299,7 @@ def stub_embeddings(monkeypatch):
     monkeypatch.setattr(
         embeddings,
         "token_counter",
-        lambda model_name = None: (lambda t: len(t.split())),
+        lambda model_name = None: lambda t: len(t.split()),
     )
     monkeypatch.setattr(embeddings, "warm", lambda model_name = None: None)
     return dim

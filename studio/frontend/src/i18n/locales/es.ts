@@ -415,6 +415,14 @@ export const es = {
         showLlamaUpdatesDescription:
           "Avisa cuando haya una compilación más reciente de llama.cpp para ejecutar nuevos modelos. Desactívalo si solo entrenas.",
       },
+      startup: {
+        sectionTitle: "Inicio",
+        launchAtLogin: "Ejecutar Unsloth al iniciar sesión",
+        launchAtLoginDescription:
+          "Inicia Unsloth en segundo plano cuando inicias sesión. Permanece en la barra de menús o en la bandeja del sistema hasta que lo abras.",
+        loadError: "No se pudo cargar el ajuste de inicio automático.",
+        saveError: "No se pudo actualizar el ajuste de inicio automático.",
+      },
       gettingStarted: "Primeros pasos",
       startOnboarding: "Iniciar la configuración inicial",
       startOnboardingDescription:
@@ -720,6 +728,23 @@ export const es = {
         free: "Libre: {value}",
         total: "{value} en total",
       },
+      modelMemory: {
+        title: "Memoria del modelo",
+        keepResident: "Mantener el modelo en la memoria de la GPU",
+        keepResidentDescription: "Permanece en la VRAM entre mensajes.",
+        keepResidentHint: "No devuelve los pesos a la RAM del sistema mientras el modelo siga cargado. Desactiva la descarga automática por inactividad y, cuando los pesos sí residen en la RAM del host (memoria unificada o descarga parcial a la GPU), también pasa --mlock para que el sistema operativo no los pagine ni los vuelva a subir en tu siguiente mensaje.",
+        noRamReserve: "No reservar RAM del sistema para el modelo",
+        noRamReserveDescription: "No mantiene una copia completa en la RAM.",
+        noRamReserveHint: "Transfiere los pesos a la VRAM en lugar de mantener una copia completa en la RAM. Conserva la carga mapeada en memoria de llama.cpp y elimina --no-mmap y --mlock.",
+        mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",
+        memlockCapped: "Este sistema limita la memoria bloqueada a {limit}. Un modelo mayor no quedará fijado por completo; aumenta el límite con ulimit -l.",
+        reloadRequired: "Vuelve a cargar el modelo para aplicar las nuevas opciones de memoria.",
+        loadError: "No se pudieron cargar los ajustes de memoria del modelo",
+        saveError: "No se pudieron guardar los ajustes de memoria del modelo",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu memoria ram residente fijar anclar bloquear mantener cargado descargar inactivo mmap no-mmap load-mode paginacion intercambio",
+      },
       storage: {
         title: "Almacenamiento",
         systemDisk: "Disco del sistema",
@@ -728,8 +753,8 @@ export const es = {
         modelsFolder: "Carpeta de modelos",
         modelsFolderKeywords:
           "modelos carpeta directorio ruta ubicacion ubicación descargas descarga cache caché almacenamiento disco unidad mover cambiar models folder path hugging face",
-        modelsFolderDescription:
-          "Dónde se almacenan los modelos descargados. Cambia la ubicación para guardar los modelos fuera de la unidad del sistema.",
+        modelsFolderDescription: "Dónde se guardan los modelos descargados.",
+        modelsFolderHint: "Dónde se guardan los modelos descargados. Cámbialo para mantener los modelos fuera de tu unidad del sistema. Solo se aplica a las descargas nuevas: los modelos que ya tienes se quedan donde están.",
         openAction: "Abrir",
         copyAction: "Copiar ruta",
         copied: "Ruta copiada",
