@@ -8833,10 +8833,14 @@ class LlamaCppBackend:
         intent: GgufLoadIntent,
         extra_args: Optional[Iterable[str]],
         env: Optional[Mapping[str, str]] = None,
+        *,
+        allow_manual_cpu: bool = False,
     ) -> bool:
         """Whether a signal may replace automatic Vulkan placement with CPU."""
         return bool(
-            cls._cpu_fallback_request_eligible(intent, extra_args, env)
+            cls._cpu_fallback_request_eligible(
+                intent, extra_args, env, allow_manual_cpu = allow_manual_cpu
+            )
             and cls._is_vulkan_backend(binary)
             and cls._vulkan_prebuilt_was_auto_selected(binary)
         )
@@ -8865,9 +8869,22 @@ class LlamaCppBackend:
         if not source_matches and not self.matches_load_source(intent):
             return intent
         extras = list(intent.extra_args) if intent.extra_args is not None else None
+        # Judge the environment the replay actually runs with, not this process's:
+        # _cpu_isolated_replay pops every main-model placement var before the CPU
+        # child starts, and the launch-time gate is measured after the same scrubs.
+        # Reading os.environ here instead would decline to preserve a recovery over
+        # an inherited value no child ever saw, tearing down the healthy CPU server
+        # and re-running the Vulkan crash on every reload.
+        replay_env = {
+            name: value
+            for name, value in os.environ.items()
+            if name not in self._CPU_FALLBACK_MAIN_PLACEMENT_ENV_VARS
+            and name != "GGML_BACKEND_PATH"
+        }
         if not self._cpu_fallback_request_eligible(
             intent,
             extras,
+            replay_env,
             allow_manual_cpu = True,
         ):
             return intent
@@ -11967,9 +11984,17 @@ class LlamaCppBackend:
                     raise RuntimeError(detail)
 
                 def _try_auto_vulkan_cpu_fallback(
-                    failed_cmd: list[str], failed_rc: Optional[int]
+                    failed_cmd: list[str],
+                    failed_rc: Optional[int],
+                    *,
+                    terminal: bool = True,
                 ) -> bool:
-                    """Replay an eligible signal crash without devices."""
+                    """Replay an eligible signal crash without devices.
+
+                    ``terminal`` off reports a failed CPU spawn as "not recovered"
+                    instead of raising, for a caller that still holds another argv
+                    worth replaying.
+                    """
                     nonlocal intent, gpu_memory_mode, gpu_layers, n_cpu_moe
                     nonlocal tensor_parallel, tensor_split, gpu_indices, use_fit, _spawn_cwd
                     if not self._is_signal_crash(failed_rc) or not _cpu_fallback_eligible:
@@ -11987,6 +12012,13 @@ class LlamaCppBackend:
                         "startup; retrying once with llama.cpp devices disabled."
                     )
                     if not _spawn_and_wait(replay, label = "-cpu"):
+                        if not terminal:
+                            # The drafter this argv carries can be the reason it
+                            # cannot start anywhere, which the GPU crash says
+                            # nothing about. Reap the child and keep the staged
+                            # runtime so the caller's next argv can reuse it.
+                            self._kill_process()
+                            return False
                         cpu_rc = self._process.poll() if self._process is not None else None
                         detail = self._classify_llama_start_failure(
                             "\n".join(self._stdout_lines[-50:]),
@@ -12054,7 +12086,13 @@ class LlamaCppBackend:
                 # A runtime that is no longer the Vulkan build the recovery came
                 # from has nothing to replay, so run the request as sent rather
                 # than failing a load the current backend can serve.
-                if intent.cpu_fallback and self._is_vulkan_backend(binary):
+                # LoadRequest carries this flag, so a stale rollback or an API
+                # caller can ask for a replay the runtime never produced. Hold it
+                # to the same bar as the crash path (managed auto Vulkan, no
+                # explicit placement) and otherwise run the request as sent.
+                if intent.cpu_fallback and self._auto_vulkan_cpu_fallback_eligible(
+                    binary, intent, extra_args, env, allow_manual_cpu = True
+                ):
                     prepared = self._prepare_cpu_fallback_launch(binary, cmd, env, server_caps)
                     if prepared is None:
                         _raise_terminal_load_failure(
@@ -12377,17 +12415,24 @@ class LlamaCppBackend:
                                     )
                                 )
                     else:
-                        # Try the drafter launch first; a build with no draft-ngl
-                        # flag cannot pin one to CPU, so fall back to the
-                        # drafterless argv rather than losing the recovery.
+                        # Try the drafter launch first; a build that can neither
+                        # pin one to CPU nor start with it at all still recovers
+                        # on the drafterless argv, so keep that attempt
+                        # non-terminal and snapshot its argv -- a spawned replay
+                        # rebinds _last_spawn_cmd to its own command line.
+                        _drafterless_cpu_replay_cmd = list(_last_spawn_cmd)
                         _replayed = _spec_cpu_replay_cmd is not None and (
-                            _try_auto_vulkan_cpu_fallback(_spec_cpu_replay_cmd, _crash_rc)
+                            _try_auto_vulkan_cpu_fallback(
+                                _spec_cpu_replay_cmd, _crash_rc, terminal = False
+                            )
                         )
                         if _replayed:
                             # The drafter came back with the replay, so the
                             # speculative-disable diagnosis no longer applies.
                             self._spec_fallback_reason = None
-                        elif _try_auto_vulkan_cpu_fallback(_last_spawn_cmd, _crash_rc):
+                        elif _try_auto_vulkan_cpu_fallback(
+                            _drafterless_cpu_replay_cmd, _crash_rc
+                        ):
                             _replayed = True
                         if _replayed:
                             healthy = True

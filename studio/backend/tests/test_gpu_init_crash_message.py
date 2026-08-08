@@ -924,6 +924,58 @@ def test_drafter_replay_falls_back_to_the_stripped_command(monkeypatch, tmp_path
     assert backend._cpu_fallback_reason == "vulkan_startup_crash"
 
 
+def test_a_drafter_that_cannot_start_anywhere_still_recovers(monkeypatch, tmp_path):
+    """The drafter replay can be staged and still die of the drafter, so the
+    drafterless argv must get its own attempt rather than the load aborting."""
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        # The speculative CPU replay (4th launch) dies too; the drafterless one wins.
+        returncodes = [-11, -11, -11, 1, None],
+        extra_args = ["--spec-type", "mtp"],
+    )
+
+    assert loaded is True
+    assert len(fallback_sources) == 2
+    assert "--spec-default" not in fallback_sources[0]
+    assert "--spec-default" in fallback_sources[1]
+    assert backend._cpu_fallback_reason == "vulkan_startup_crash"
+
+
+def test_a_replay_request_needs_the_same_bar_as_the_crash_path(monkeypatch, tmp_path):
+    """cpu_fallback is client-supplied, so an explicitly GPU-pinned request must
+    not be silently staged onto CPU and reported as a Vulkan crash."""
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [None],
+        cpu_fallback = True,
+        extra_args = ["--device", "Vulkan0"],
+    )
+
+    assert loaded is True
+    assert fallback_sources == []
+    assert backend._cpu_fallback_reason is None
+
+
+def test_preserving_a_recovery_ignores_env_the_replay_strips(monkeypatch, tmp_path):
+    """The replay pops every main-model placement var, so an inherited one must
+    not stop the resident CPU intent from being carried into a reload."""
+    monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "tensor")
+    backend = LlamaCppBackend()
+    backend._cpu_fallback_reason = "vulkan_startup_crash"
+    intent = GgufLoadIntent(
+        model_identifier = "owner/model",
+        gguf_path = str(tmp_path / "model.gguf"),
+    )
+
+    preserved = backend._preserve_cpu_fallback_intent(intent, source_matches = True)
+
+    assert preserved.cpu_fallback is True
+    assert preserved.gpu_memory_mode == "manual"
+    assert preserved.gpu_layers == 0
+
+
 @pytest.mark.parametrize(
     "placement_env,extra_args",
     [

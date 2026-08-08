@@ -412,6 +412,7 @@ def _run_llama_phase(
     set_progress,
     force_cpu: bool = False,
     llama_backend: Optional[str] = None,
+    rocm_gfx: Optional[str] = None,
 ) -> dict:
     """The llama phase of a chained update: put the backend into a maintenance
     state, run the installer for the latest prebuilt, then refresh caches so the
@@ -462,7 +463,14 @@ def _run_llama_phase(
         ]
         if pin_release_tag:
             cmd.extend(["--published-release-tag", pin_release_tag])
-        cmd.extend(_rocm_install_args(asset))
+        rocm_args = _rocm_install_args(asset)
+        # A Vulkan asset name carries no arch, so the marker is the only way back to
+        # the --rocm-gfx setup.ps1 forwarded. Without it detect_host on a Windows AMD
+        # host with no HIP SDK (hipinfo/amd-smi absent) reports no ROCm at all and the
+        # automatic Vulkan route silently becomes the CPU bundle.
+        if not rocm_args and rocm_gfx:
+            rocm_args = ["--rocm-gfx", rocm_gfx]
+        cmd.extend(rocm_args)
         # Re-assert a deliberate CPU install (--force-cpu) so detect_host on a GPU host
         # does not re-route to a GPU/Vulkan bundle and revive the crash (#7213). --force-cpu
         # (not --cpu-fallback) also re-persists force_cpu, keeping the choice across future
@@ -611,6 +619,7 @@ def _plan_llama_phase() -> dict:
         asset = marker.get("asset")
         force_cpu = bool(marker.get("force_cpu"))
         llama_backend = marker.get("llama_backend")
+        rocm_gfx = marker.get("rocm_gfx")
         # Markers written before #7188 lack llama_backend, so an explicit
         # Vulkan selection cannot be distinguished from the earlier automatic
         # Intel route. Preserve the existing bundle rather than silently
@@ -663,6 +672,7 @@ def _plan_llama_phase() -> dict:
         # Source builds carry no forced-CPU marker, so nothing to preserve here.
         force_cpu = False
         llama_backend = None
+        rocm_gfx = None
         # No pin: source-build detection resolves via --resolve-prebuilt latest,
         # the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
@@ -686,6 +696,7 @@ def _plan_llama_phase() -> dict:
             "from_tag": from_tag,
             "force_cpu": force_cpu,
             "llama_backend": llama_backend,
+            "rocm_gfx": rocm_gfx,
         }
     }
 
@@ -739,6 +750,7 @@ def start_update() -> dict:
                         set_progress,
                         force_cpu = llama_spec.get("force_cpu", False),
                         llama_backend = llama_spec.get("llama_backend"),
+                        rocm_gfx = llama_spec.get("rocm_gfx"),
                     )
                 )
                 if llama_spec

@@ -5736,6 +5736,7 @@ def write_prebuilt_metadata(
     prebuilt_fallback_used: bool,
     force_cpu: bool = False,
     llama_backend: str | None = None,
+    rocm_gfx: str | None = None,
 ) -> None:
     source_asset_name, source_sha256 = selected_source_archive_metadata(
         approved_checksums,
@@ -5767,6 +5768,12 @@ def write_prebuilt_metadata(
         # Explicit Vulkan is recorded as "vulkan"; automatic Windows AMD routing is
         # recorded as "auto" so runtime recovery can distinguish them.
         "llama_backend": persisted_llama_backend(llama_backend, choice),
+        # The AMD gfx this host routed on. A Vulkan asset name carries no arch, so
+        # rocm_install_args() cannot rebuild --rocm-gfx from it, and the Windows
+        # driver-only hosts that reach Vulkan automatically have no probe of their
+        # own (hipinfo/amd-smi absent). Without this the updater re-detects a
+        # ROCm-less host and drops the bundle to CPU.
+        **({"rocm_gfx": rocm_gfx} if rocm_gfx else {}),
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
@@ -6258,6 +6265,7 @@ def validate_prebuilt_choice(
     quantized_path: Path,
     force_cpu: bool = False,
     llama_backend: str | None = None,
+    rocm_gfx: str | None = None,
 ) -> tuple[Path, Path]:
     source_repo, source_ref, source_archive, exact_source = preferred_source_archive(
         approved_checksums, llama_tag
@@ -6304,6 +6312,7 @@ def validate_prebuilt_choice(
         prebuilt_fallback_used = prebuilt_fallback_used,
         force_cpu = force_cpu,
         llama_backend = llama_backend,
+        rocm_gfx = rocm_gfx,
     )
     # Hashless external prebuilts are not in the approved-sha256
     # manifest and rely on the functional smoke test as their only integrity gate,
@@ -6392,6 +6401,7 @@ def validate_prebuilt_attempts(
     existing_install_dir: Path | None = None,
     force_cpu: bool = False,
     llama_backend: str | None = None,
+    rocm_gfx: str | None = None,
 ) -> tuple[AssetChoice, Path, bool]:
     attempt_list = list(attempts)
     if not attempt_list:
@@ -6454,6 +6464,7 @@ def validate_prebuilt_attempts(
                 quantized_path = quantized_path,
                 force_cpu = force_cpu,
                 llama_backend = llama_backend,
+                rocm_gfx = rocm_gfx,
             )
         except Exception as exc:
             remove_tree(staging_dir)
@@ -6949,6 +6960,10 @@ def install_prebuilt(
     # An explicit Vulkan choice only. The Windows-AMD auto-fallback is a rescue
     # from a missing HIP arch, so it must keep the CPU plans it can still use.
     strict_vulkan = force_vulkan_requested(llama_backend) and not force_cpu and not host.is_macos
+    # Read before the route, which rewrites the host to a Vulkan-only profile and
+    # drops the AMD arch with it. Recorded in the marker so the next update can
+    # forward the same --rocm-gfx setup.ps1 supplied and reach the same decision.
+    persist_rocm_gfx = _active_rocm_gfx_target(host)
     host, published_repo, published_release_tag, persist_llama_backend = _route_to_vulkan_prebuilt(
         host,
         published_repo,
@@ -7101,6 +7116,7 @@ def install_prebuilt(
                             # Persist only the deliberate choice, not a transient fallback.
                             force_cpu = persist_force_cpu,
                             llama_backend = persist_llama_backend,
+                            rocm_gfx = persist_rocm_gfx,
                         )
                     except ExistingInstallSatisfied as satisfied:
                         # Third reuse path: the reinstall was skipped, so
