@@ -35,6 +35,21 @@ import {
   verifyResident,
 } from "./loaded-models-sources";
 
+/** What describeInferenceStatus reads, without importing the chat types path. */
+type InferenceStatus = NonNullable<
+  Parameters<typeof describeInferenceStatus>[0]
+>;
+
+/** Read the chat runtime directly, as the dictation read below does, rather
+ *  than through the chat barrel. */
+async function readInferenceStatus(
+  signal?: AbortSignal,
+): Promise<InferenceStatus | null> {
+  const response = await authFetch("/api/inference/status", { signal });
+  if (!response.ok) return null;
+  return (await response.json()) as InferenceStatus;
+}
+
 async function readSttStatus(
   signal?: AbortSignal,
 ): Promise<SttStatusResponse | null> {
@@ -68,7 +83,7 @@ async function settled<T>(
 /** Everything resident right now, across all four runtimes. */
 export async function readLoadedModels(): Promise<LoadedModelEntry[]> {
   const [inference, diffusion, video, stt] = await Promise.all([
-    settled(getInferenceStatus),
+    settled(readInferenceStatus),
     settled(getDiffusionStatus),
     settled(getVideoStatus),
     settled(readSttStatus),

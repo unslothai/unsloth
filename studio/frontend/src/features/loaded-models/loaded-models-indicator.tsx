@@ -20,7 +20,6 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   AiBrain01Icon,
-  ArrowExpandDiagonal01Icon,
   Cancel01Icon,
   DragDropVerticalIcon,
   Image01Icon,
@@ -180,23 +179,12 @@ export function LoadedModelsIndicator({
     },
     [navigate],
   );
-  const {
-    position,
-    size,
-    panelRef,
-    startDrag,
-    startResize,
-    dragging,
-    resizing,
-    reset,
-    justDragged,
-  } = useDragPosition(LOADED_MODELS_PREFERENCE_KEYS);
+  const { position, panelRef, startDrag, dragging, justDragged } =
+    useDragPosition(LOADED_MODELS_PREFERENCE_KEYS.position);
 
   if (!enabled || entries.length === 0) return null;
 
   const countLabel = `${entries.length} ${entries.length === 1 ? "model" : "models"} loaded`;
-  // The pill keeps its own shape, so a resized card does not stretch it.
-  const sized = size && !collapsed ? size : null;
 
   return (
     <div
@@ -206,18 +194,14 @@ export function LoadedModelsIndicator({
         // Otherwise anchored bottom-right, or flowing as a right-aligned row
         // in the shared stack so overlays stack instead of overlapping.
         "pointer-events-none",
-        position && "fixed z-[9999]",
-        position && !sized && "w-fit",
+        position && "fixed z-[9999] w-fit",
         !position &&
           (positioned
             ? "fixed bottom-4 right-4 z-50"
             : "flex min-h-0 justify-end"),
-        (dragging || resizing) && "select-none",
+        dragging && "select-none",
       )}
-      style={{
-        ...(position ? { left: position.left, top: position.top } : null),
-        ...sized,
-      }}
+      style={position ? { left: position.left, top: position.top } : undefined}
     >
       {collapsed ? (
         <Tooltip>
@@ -248,45 +232,13 @@ export function LoadedModelsIndicator({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div
-          className={cn(
-            "menu-soft-surface group pointer-events-auto flex min-h-0 flex-col overflow-hidden rounded-[20px] p-1.5 font-heading",
-            // Sized: the wrapper already holds the clamped box, so filling it
-            // keeps the held corner exactly where the resize put it.
-            sized ? "size-full" : "w-[268px] max-w-[calc(100vw-2rem)]",
-          )}
-        >
+        <div className="menu-soft-surface pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
           <div className="flex items-center gap-1.5 px-1.5 pb-1 pt-0.5">
-            {/* The card is anchored bottom-right, where there is no room, so it
-                grows up and left and the grip belongs at the leading corner.
-                It shares the title icon's slot rather than adding another
-                control to an already small header. */}
-            <div className="relative flex size-[15px] shrink-0 items-center justify-center">
-              <HugeiconsIcon
-                icon={AiBrain01Icon}
-                strokeWidth={1.75}
-                className="size-[15px] text-muted-foreground transition-opacity group-hover:opacity-0"
-              />
-              <Tooltip>
-                <TooltipTrigger asChild={true}>
-                  <div
-                    aria-label="Drag to resize"
-                    onPointerDown={startResize}
-                    onDoubleClick={reset}
-                    className="absolute -inset-1.5 flex cursor-nwse-resize touch-none items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/[0.07] hover:text-foreground group-hover:opacity-100"
-                  >
-                    <HugeiconsIcon
-                      icon={ArrowExpandDiagonal01Icon}
-                      strokeWidth={2}
-                      className="size-3.5"
-                    />
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent side="left" sideOffset={6}>
-                  Drag to resize, double-click to reset
-                </TooltipContent>
-              </Tooltip>
-            </div>
+            <HugeiconsIcon
+              icon={AiBrain01Icon}
+              strokeWidth={1.75}
+              className="size-[15px] shrink-0 text-muted-foreground"
+            />
             <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
               Loaded models
             </span>
@@ -328,14 +280,8 @@ export function LoadedModelsIndicator({
               </TooltipContent>
             </Tooltip>
           </div>
-          {/* Capped so four resident runtimes still leave the banners on screen,
-              unless the user has given the card a height of their own. */}
-          <div
-            className={cn(
-              "flex min-h-0 flex-col gap-0.5 overflow-y-auto",
-              sized ? "flex-1" : "max-h-[min(272px,42dvh)]",
-            )}
-          >
+          {/* Capped so four resident runtimes still leave the banners on screen. */}
+          <div className="flex max-h-[min(272px,42dvh)] min-h-0 flex-col gap-0.5 overflow-y-auto">
             {entries.map((entry) => (
               <LoadedModelRow
                 key={entry.id}

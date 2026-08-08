@@ -5,10 +5,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  clampSize,
   clampToViewport,
   passedDragThreshold,
-  resizeFromTopLeft,
 } from "../src/features/loaded-models/use-drag-position.ts";
 
 const VIEWPORT = { width: 1440, height: 900 };
@@ -75,62 +73,4 @@ test("a window smaller than the card still leaves it reachable", () => {
     tiny,
   );
   assert.deepEqual(clamped, { left: 8, top: 8 });
-});
-
-/** The card where it rests by default: bottom-right, inset 16. */
-const RESTING = {
-  left: VIEWPORT.width - 16 - CARD.width,
-  top: VIEWPORT.height - 16 - CARD.height,
-  width: CARD.width,
-  height: CARD.height,
-};
-
-// The whole point of the top-left grip: the corner it is anchored to has no
-// room, so growing has to happen on the other side.
-test("resizing holds the bottom-right corner still", () => {
-  const grown = resizeFromTopLeft(RESTING, -120, -80);
-  assert.equal(grown.size.width, CARD.width + 120);
-  assert.equal(grown.size.height, CARD.height + 80);
-  assert.equal(
-    grown.position.left + grown.size.width,
-    RESTING.left + RESTING.width,
-  );
-  assert.equal(
-    grown.position.top + grown.size.height,
-    RESTING.top + RESTING.height,
-  );
-});
-
-test("dragging the grip inwards shrinks the card", () => {
-  const shrunk = resizeFromTopLeft(RESTING, 40, 20);
-  assert.equal(shrunk.size.width, CARD.width - 40);
-  assert.equal(shrunk.size.height, CARD.height - 20);
-  assert.equal(shrunk.position.left, RESTING.left + 40);
-});
-
-test("a resize cannot push the card past the top-left edge", () => {
-  const huge = resizeFromTopLeft(RESTING, -5000, -5000);
-  assert.equal(huge.position.left, 8);
-  assert.equal(huge.position.top, 8);
-  // Still anchored, so the box is exactly the room that was available.
-  assert.equal(huge.size.width, RESTING.left + RESTING.width - 8);
-  assert.equal(huge.size.height, RESTING.top + RESTING.height - 8);
-});
-
-test("a resize cannot shrink the card below its floor", () => {
-  const tiny = resizeFromTopLeft(RESTING, 5000, 5000);
-  assert.equal(tiny.size.width, 216);
-  assert.equal(tiny.size.height, 116);
-  // The floor wins, and the held corner still does not move.
-  assert.equal(
-    tiny.position.left + tiny.size.width,
-    RESTING.left + RESTING.width,
-  );
-});
-
-test("a floor larger than the room left still returns the floor", () => {
-  assert.deepEqual(clampSize({ width: 300, height: 300 }, 10, 10), {
-    width: 216,
-    height: 116,
-  });
 });
