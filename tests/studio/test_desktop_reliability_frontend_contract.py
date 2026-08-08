@@ -291,6 +291,11 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
         "media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*" in tauri_config
     )
 
+    # The save dialog now offers these to video, not just to the audio player.
+    dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
+    assert '("MPEG-4 video or audio", filter_extensions(["m4a", "mp4"]))' in dialogs
+    assert '("WebM video or audio", filter_extensions(["webm"]))' in dialogs
+
 
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
     helper = CLIPBOARD_FILES.read_text(encoding = "utf-8")

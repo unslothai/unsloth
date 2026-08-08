@@ -79,10 +79,11 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<String>) {
         Some("svg") => ("SVG image", filter_extensions(["svg"])),
         Some("wav") => ("WAV audio", filter_extensions(["wav"])),
         Some("mp3") => ("MP3 audio", filter_extensions(["mp3"])),
-        Some("m4a") | Some("mp4") => ("MPEG-4 audio", filter_extensions(["m4a", "mp4"])),
+        // Named for both tracks: the video gallery saves .mp4 through this dialog too.
+        Some("m4a") | Some("mp4") => ("MPEG-4 video or audio", filter_extensions(["m4a", "mp4"])),
         Some("ogg") | Some("oga") => ("Ogg audio", filter_extensions(["ogg", "oga"])),
         Some("flac") => ("FLAC audio", filter_extensions(["flac"])),
-        Some("webm") => ("WebM audio", filter_extensions(["webm"])),
+        Some("webm") => ("WebM video or audio", filter_extensions(["webm"])),
         Some(extension) if is_safe_filter_extension(extension) => {
             ("Export file", vec![extension.to_string()])
         }
@@ -438,7 +439,20 @@ mod tests {
         assert_save_filter("photo.PNG", "PNG image", &["png"]);
         assert_save_filter("shot.jpeg", "JPEG image", &["jpg", "jpeg"]);
         assert_save_filter("clip.wav", "WAV audio", &["wav"]);
-        assert_save_filter("voice.webm", "WebM audio", &["webm"]);
+        assert_save_filter("voice.webm", "WebM video or audio", &["webm"]);
+    }
+
+    #[test]
+    fn gallery_video_exports_offer_their_own_container() {
+        // The three Download menu formats, which reach this dialog via downloadUrl
+        // (MP4) and downloadFile (WebM / GIF).
+        assert_save_filter(
+            "Unsloth_video_20260808-120000_1670009728.mp4",
+            "MPEG-4 video or audio",
+            &["m4a", "mp4"],
+        );
+        assert_save_filter("clip.webm", "WebM video or audio", &["webm"]);
+        assert_save_filter("clip.gif", "GIF image", &["gif"]);
     }
 
     #[test]
