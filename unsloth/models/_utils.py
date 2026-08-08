@@ -3626,18 +3626,15 @@ def patch_peft_fast_inference(model):
         model.fast_generate = model.model.fast_generate
         model.fast_generate_batches = model.model.fast_generate_batches
 
-        # Loading a LoRA copies it into vLLM's own adapter tensors, so it only
-        # means anything with an engine.
+        # load_lora copies into vLLM's own adapter tensors, so it needs an engine.
         from unsloth_zoo.vllm_utils import load_lora
 
         model.load_lora = functools.partial(load_lora, model)
 
-    # Saving, though, is only `save_pretrained` over the lora_A/lora_B keys, so
-    # it never needed the engine. Gating it here meant a GRPO run with
-    # `fast_inference = False` reached `model.save_lora(...)` and got
-    # `AttributeError: 'Lfm2ForCausalLM' object has no attribute 'save_lora'`,
-    # which says nothing about vLLM. Only set when absent, so a model that
-    # already carries one keeps it.
+    # save_lora is only `save_pretrained` over the lora_A/lora_B keys, so it
+    # never did. Gating it there gave `fast_inference = False` GRPO runs
+    # `AttributeError: 'Lfm2ForCausalLM' object has no attribute 'save_lora'`.
+    # Set only when absent, so a model carrying its own keeps it.
     if not hasattr(model, "save_lora"):
         try:
             from unsloth_zoo.vllm_utils import save_lora

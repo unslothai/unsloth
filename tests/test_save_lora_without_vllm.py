@@ -14,19 +14,13 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """`save_lora` must be attached with or without a vLLM engine.
 
-`patch_peft_fast_inference` set `save_lora` only inside `if vllm_engine is not
-None`, but unsloth_zoo's `save_lora` is `save_pretrained` over the lora_A/lora_B
-keys of the state dict and never touches the engine. So a GRPO run with
-`fast_inference = False` reached the notebook's `model.save_lora(...)` and got
-
-    AttributeError: 'Lfm2ForCausalLM' object has no attribute 'save_lora'
-
-which names neither vLLM nor the flag that caused it. Found by running
-`LFM2.5_(1.2B)-GRPO`, which loads with `fast_inference = False` and saves at the
-end.
-
-`load_lora` stays gated: it copies tensors into vLLM's own adapter buffers, so
-without an engine there is nothing to load into.
+`patch_peft_fast_inference` set it only inside `if vllm_engine is not None`,
+but unsloth_zoo's `save_lora` is `save_pretrained` over the lora_A/lora_B keys
+and never touches the engine. So `LFM2.5_(1.2B)-GRPO`, which loads with
+`fast_inference = False` and saves at the end, got `AttributeError:
+'Lfm2ForCausalLM' object has no attribute 'save_lora'`, naming neither vLLM nor
+the flag that caused it. `load_lora` stays gated: it copies into vLLM's own
+adapter buffers.
 
 Source-level, because importing the module pulls the whole model stack.
 """
@@ -83,7 +77,7 @@ def test_save_lora_is_still_set_somewhere_in_the_function():
 
 
 def test_load_lora_stays_behind_the_engine_guard():
-    """It writes into vLLM's adapter tensors, so it must not be offered without one."""
+    """It writes into vLLM's adapter tensors, so it needs one."""
     function = _patch_function()
     guard = _engine_guard(function)
     assert "load_lora" in _assigned_attributes(guard)
@@ -92,7 +86,7 @@ def test_load_lora_stays_behind_the_engine_guard():
 
 
 def test_fast_generate_stays_behind_the_engine_guard():
-    """The other engine-only attributes must not have been loosened by accident."""
+    """The other engine-only attributes must not have been loosened too."""
     function = _patch_function()
     guard = _assigned_attributes(_engine_guard(function))
     for name in ("vllm_engine", "fast_generate", "fast_generate_batches"):
@@ -107,7 +101,7 @@ def test_an_existing_save_lora_is_not_replaced():
 
 
 def test_a_missing_zoo_helper_does_not_break_loading():
-    """Older unsloth_zoo has no `save_lora`; that must not break `from_pretrained`."""
+    """Older unsloth_zoo has no `save_lora`; that must not break loading."""
     function = _patch_function()
     handlers = [node for node in ast.walk(function) if isinstance(node, ast.Try)]
     assert handlers, "the save_lora import is unguarded, so an older zoo raises on load"
