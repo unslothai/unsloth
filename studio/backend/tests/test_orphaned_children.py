@@ -1230,5 +1230,41 @@ def test_the_component_installer_is_recorded_while_it_runs():
     assert "forget_pid" in body, "the record is never cleared"
 
 
+def test_a_fork_child_does_not_inherit_a_held_record_lock():
+    """A fork while another thread was adopting leaves it held here with nobody
+    to release it, and the first adoption after that blocks forever."""
+    from utils import process_lifetime as pl
+
+    held_spawner = pl._spawner_lock
+    held_record = pl._record_lock
+    held_record.acquire()
+    try:
+        pl._reset_after_fork()
+        assert pl._record_lock is not held_record, "the child kept the locked record lock"
+        assert pl._spawner_lock is not held_spawner
+        assert pl._record_lock.acquire(blocking = False), "the fresh lock is not free"
+        pl._record_lock.release()
+    finally:
+        held_record.release()
+
+
+def test_the_update_hook_asks_the_native_side_after_a_remount():
+    """A webview reload rebuilds the hook with its ref back at true while the
+    native job can still be disarmed."""
+    hook = (
+        Path(__file__).resolve().parents[2]
+        / "frontend" / "src" / "hooks" / "use-tauri-update.ts"
+    ).read_text(encoding = "utf-8")
+    assert "cleanupCheckedRef" in hook
+    gate = hook[hook.index("async function crashCleanupReady"):]
+    gate = gate[: gate.index("\n  }")]
+    assert '"desktop_update_cleanup_armed"' in gate, "the gate still trusts the ref alone"
+    assert gate.index("cleanupCheckedRef") < gate.index("if (cleanupRearmedRef.current) return true")
+
+    tauri = Path(__file__).resolve().parents[2] / "src-tauri" / "src"
+    assert "desktop_update_cleanup_armed" in (tauri / "main.rs").read_text(encoding = "utf-8")
+    assert "kill_on_close_armed" in (tauri / "windows_job.rs").read_text(encoding = "utf-8")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

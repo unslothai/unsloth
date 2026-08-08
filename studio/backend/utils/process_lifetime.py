@@ -309,10 +309,13 @@ _fork_reset_installed = False
 
 
 def _reset_after_fork() -> None:
-    """A fork child inherits _spawner_lock in whatever state it was in and a
+    """A fork child inherits both locks in whatever state they were in and a
     _spawner whose thread does not exist here. Start clean instead of deadlocking."""
-    global _spawner, _spawner_lock
+    global _spawner, _spawner_lock, _record_lock
     _spawner_lock = threading.Lock()
+    # A fork while another thread was inside adopt_pid / forget_pid leaves this
+    # held here with nobody to release it, and the first adoption blocks forever.
+    _record_lock = threading.Lock()
     _spawner = None
 
 

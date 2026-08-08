@@ -1054,6 +1054,7 @@ fn main() {
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             desktop_updater::check_desktop_update,
+            desktop_updater::desktop_update_cleanup_armed,
             desktop_updater::resume_desktop_update_cleanup,
             diagnostics::collect_support_diagnostics,
             native_clipboard::read_native_clipboard_files,

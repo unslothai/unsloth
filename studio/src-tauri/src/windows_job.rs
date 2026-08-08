@@ -112,6 +112,21 @@ pub fn suspend_for_update_installer() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Whether kill-on-close is currently in force.
+///
+/// The webview can reload after a suspension, which resets whatever the UI
+/// remembered while the job stays disarmed, so the UI asks rather than assumes.
+/// No job means nothing to disarm, and the caller has nothing to re-arm.
+#[cfg(windows)]
+pub fn kill_on_close_armed() -> std::io::Result<bool> {
+    let Some(job) = APP_JOB.get().and_then(Option::as_ref) else {
+        return Ok(true);
+    };
+
+    let limits = unsafe { query_job_limits(job) }?;
+    Ok(limits.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE != 0)
+}
+
 /// Re-arm crash cleanup after a suspension that did not end in an exit (a failed
 /// or abandoned install). Without it the app runs on with no reaper at all.
 #[cfg(windows)]

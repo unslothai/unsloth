@@ -120,6 +120,10 @@ export function useTauriUpdate(isExternalServer = false) {
   // Windows kill-on-close: false once a re-arm has failed, and every path that
   // starts a backend has to check it or the orphan risk comes straight back.
   const cleanupRearmedRef = useRef(true);
+  // A webview reload rebuilds this hook with the ref back at its initial value
+  // while the native job may still be disarmed, so the first gate of a mount
+  // asks the native side instead of trusting it.
+  const cleanupCheckedRef = useRef(false);
 
   async function resumeCleanup(): Promise<boolean> {
     try {
@@ -474,6 +478,15 @@ export function useTauriUpdate(isExternalServer = false) {
 
   /** Every path that starts a child has to clear this first. */
   async function crashCleanupReady(): Promise<boolean> {
+    if (!cleanupCheckedRef.current) {
+      cleanupCheckedRef.current = true;
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        cleanupRearmedRef.current = await invoke<boolean>("desktop_update_cleanup_armed");
+      } catch {
+        // Not a desktop build, or the command is unavailable: nothing to correct.
+      }
+    }
     if (cleanupRearmedRef.current) return true;
     if (await resumeCleanup()) return true;
     setError(

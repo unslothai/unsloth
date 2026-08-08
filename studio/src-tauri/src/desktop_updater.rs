@@ -30,6 +30,19 @@ pub(crate) async fn resume_desktop_update_cleanup() -> Result<(), String> {
     Ok(())
 }
 
+/// Whether crash cleanup is armed right now, for a UI that has just remounted.
+#[tauri::command]
+pub(crate) async fn desktop_update_cleanup_armed() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        crate::windows_job::kill_on_close_armed().map_err(|error| error.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(true)
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn check_desktop_update(
     webview: tauri::Webview,
