@@ -836,12 +836,9 @@ class TestResponsesNonStreamingAdapter:
 
     @staticmethod
     def _run_in_process_completion(monkeypatch, monitor, timings):
-        """Drive the wrapper over an in-process chat completion.
-
-        The real thing suppresses its own monitor row and answers with a serialized
-        ``ChatCompletion``, so the engine timings it computed have nowhere on the body to
-        ride out: the pydantic model has no ``timings`` field and drops the key.
-        """
+        """Drive the wrapper over an in-process chat completion, which suppresses its own
+        monitor row and answers with a ``ChatCompletion``: no ``timings`` field, so the
+        engine timings have no way to ride out on the body."""
         import routes.inference as inf_mod
         from models.inference import (
             ChatCompletion,
@@ -889,13 +886,12 @@ class TestResponsesNonStreamingAdapter:
         return asyncio.run(run())
 
     def test_in_process_engine_timings_reach_the_monitor(self, monkeypatch):
-        """A local non-streamed /v1/responses counted into total tokens and never into
-        the Throughput tile, which rates on decode_ms: the wrapper read the span off the
-        response body, and a ChatCompletion cannot carry one."""
+        """A local non-streamed /v1/responses never reached the Throughput tile: the
+        wrapper read decode_ms off the body, which a ChatCompletion cannot carry."""
         from models.inference import ChatCompletion
 
-        # The premise, asserted rather than assumed: pydantic ignores an undeclared
-        # field, so a body lookup alone can never find these.
+        # The premise, asserted rather than assumed: pydantic drops an undeclared field,
+        # so a body lookup alone can never find these.
         assert "timings" not in json.loads(
             ChatCompletion(choices = [], timings = {"predicted_ms": 1000.0}).model_dump_json()
         )
@@ -915,8 +911,8 @@ class TestResponsesNonStreamingAdapter:
         assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
 
     def test_a_relayed_decode_span_does_not_outlive_its_request(self, monkeypatch):
-        """The relay is scoped to one inner call, so an engine that reports no timings
-        must not inherit the previous request's span."""
+        """The relay is scoped to one inner call: a request with no timings must not
+        inherit the previous one's span."""
         monitor = ApiMonitor(max_entries = 3)
         self._run_in_process_completion(
             monkeypatch,
@@ -1271,9 +1267,8 @@ class TestResponsesStreamAdapter:
         assert entry["context_length"] == 4096
 
     def test_final_chunk_timings_reach_the_monitor(self, monkeypatch):
-        """Responses recorded usage but never timings, so a local request counted into
-        total tokens and never into the Throughput tile, which rates on decode_ms.
-        The final chunk can also carry timings with no usage of its own."""
+        """Responses recorded usage but never timings, so a local request never reached
+        the Throughput tile. The final chunk can carry timings with no usage of its own."""
         import routes.inference as inf_mod
 
         chunks = [

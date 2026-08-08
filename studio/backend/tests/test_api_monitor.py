@@ -1527,9 +1527,8 @@ def test_direct_busy_reads_the_live_counter(monkeypatch):
 
 
 def test_the_decode_span_comes_only_from_engine_timings(monkeypatch):
-    """The tile rates on decode_ms, so it must never carry a guess. Regression guard
-    for a model generating at 50 tok/s reading as 5 behind a busy slot: duration_ms
-    carries that wait and decode_ms must not."""
+    """duration_ms carries the queue wait, which read a 50 tok/s model as 5. decode_ms
+    must not."""
     monitor = ApiMonitor(max_entries = 3)
     monkeypatch.setattr(inference_route, "api_monitor", monitor)
     entry_id = monitor.start(
@@ -1568,8 +1567,8 @@ def test_a_timings_only_final_chunk_still_sets_the_decode_span(monkeypatch):
 
 
 def test_a_streamed_reply_alone_reports_no_decode_span():
-    """Timing the stream cannot say how many tokens rode in the first chunk, and never
-    sees reasoning tokens. Report nothing rather than a rate that inflates."""
+    """Timing the stream misses the first chunk's tokens and reasoning tokens entirely,
+    so report nothing rather than an inflated rate."""
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
         endpoint = "/v1/chat/completions",
@@ -1587,14 +1586,13 @@ def test_a_streamed_reply_alone_reports_no_decode_span():
 
 
 @pytest.mark.parametrize(
-    # "1000" is absent on purpose: _finite_float_or_none coerces a numeric string, the
-    # same as it already does for tok_per_sec and prompt_ms.
+    # "1000" is absent on purpose: _finite_float_or_none coerces a numeric string.
     "predicted_ms",
     [float("inf"), float("nan"), -1, "abc", None, 1e308, 10**400, {}, []],
 )
 def test_a_bad_predicted_ms_is_dropped_rather_than_raising(monkeypatch, predicted_ms):
-    """json.loads accepts a bare Infinity, and this runs inside streaming generators
-    where a raise truncates the user's response."""
+    """json.loads accepts a bare Infinity, and a raise inside a streaming generator
+    truncates the user's response."""
     monitor = ApiMonitor(max_entries = 3)
     monkeypatch.setattr(inference_route, "api_monitor", monitor)
     entry_id = monitor.start(

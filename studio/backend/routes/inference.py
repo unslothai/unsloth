@@ -3141,13 +3141,11 @@ def _monitor_prompt_from_messages(messages) -> str:
     return "\n\n".join(lines)
 
 
-# A wrapper route that keeps its own monitor row (Responses) suppresses the inner chat
-# handler's via skip_api_monitor, which also drops the engine timings computed inside it:
-# every in-process path answers with a ChatCompletion, and that pydantic model has no
-# timings field, so they cannot be read back off the serialized body. The wrapper leaves a
-# dict here for the duration of the inner call and reads the span out of it afterwards.
-# A dict rather than a plain value because a context is copied into tasks and threads:
-# reads flow down, writes do not flow back up, but a mutation of the shared dict does.
+# A wrapper route (Responses) suppresses the inner chat handler's monitor row, which also
+# drops the engine timings computed inside it: ChatCompletion has no timings field, so they
+# cannot be read back off the serialized body. The wrapper leaves a dict here for the inner
+# call and reads the span out afterwards. A dict because a context is copied into tasks and
+# threads: writes do not flow back up, but a mutation of the shared dict does.
 _monitor_perf_sink: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
     "unsloth_monitor_perf_sink",
     default = None,
@@ -3162,8 +3160,8 @@ def _monitor_usage(
     timings: Optional[dict] = None,
     stop_reason: Optional[str] = None,
 ):
-    # Only when the row is suppressed: a call that records its own timings needs no
-    # relay, and must not overwrite the wrapper's with a nested request's.
+    # Only when the row is suppressed: a call with its own row must not overwrite the
+    # wrapper's timings with a nested request's.
     if not monitor_id and isinstance(timings, dict) and timings:
         sink = _monitor_perf_sink.get()
         if sink is not None:
@@ -3182,9 +3180,8 @@ def _monitor_usage(
     if isinstance(timings, dict):
         tok_per_sec = timings.get("predicted_per_second")
         prompt_ms = timings.get("prompt_ms")
-        # The span the tile rates on. tok_per_sec is already a rate, so summing it
-        # across requests would average rates and let one tiny request outweigh a long
-        # one; the tile needs total tokens over total time.
+        # The span the tile rates on: it needs total tokens over total time, and summing
+        # the already-per-request tok_per_sec would let one tiny request outweigh a long one.
         decode_ms = timings.get("predicted_ms")
     if (
         tok_per_sec is not None
@@ -14959,10 +14956,9 @@ async def _responses_non_streaming(
             monitor_id,
             usage_data,
             _monitor_context_length(),
-            # Inner chat monitor is suppressed here, so perf stats must come off the body.
-            # Only the llama-server pass-through relays a body with timings in it; every
-            # in-process path returns a ChatCompletion, which has no field to carry them,
-            # so those arrive through the sink instead.
+            # The inner monitor is suppressed, so perf stats come off the body. Only the
+            # llama-server pass-through carries timings there; in-process paths return a
+            # ChatCompletion with no field for them, so those arrive through the sink.
             timings = (
                 (body.get("timings") if isinstance(body, dict) else None)
                 or inner_perf.get("timings")
@@ -15236,8 +15232,7 @@ async def _responses_stream(
 
         def _apply_usage(u, timings = None) -> None:
             nonlocal input_tokens, output_tokens
-            # No early return on a falsy usage: the final chunk can carry timings
-            # alone, and _monitor_usage decides whether either is worth recording.
+            # No early return on a falsy usage: the final chunk can carry timings alone.
             if isinstance(u, dict):
                 input_tokens = u.get("prompt_tokens", input_tokens)
                 output_tokens = u.get("completion_tokens", output_tokens)

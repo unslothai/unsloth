@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Split out of use-api-monitor.ts so the arithmetic runs under `node --test`: the hook
-// imports chat-api through the "@/" alias, which node cannot resolve.
+// imports through the "@/" alias, which node cannot resolve.
 
 import type { ApiMonitorEntry } from "../chat/types/api";
 
@@ -84,13 +84,9 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
       maxDurationMs =
         maxDurationMs == null ? duration : Math.max(maxDurationMs, duration);
       const generated = completionTokens(entry);
-      // Rate the engine's decode window, not the whole request: duration_ms carries
-      // queue wait and prefill, which reports a model generating at 50 tok/s as 5
-      // behind a busy slot.
-      // decode_ms is set only from engine timings, so a request without them is left
-      // out rather than dragged in at the old whole-request rate. tok_per_sec is not
-      // used here: it can come from the streamed window, and summing rates would let
-      // one tiny request outweigh a long one.
+      // Rate the decode window, not the whole request: duration_ms carries queue wait
+      // and prefill, which read a 50 tok/s model as 5. A request the engine did not
+      // time is skipped rather than folded in at the whole-request rate.
       const decodeMs = entry.decode_ms;
       if (decodeMs != null && decodeMs > 0 && generated != null && generated > 0) {
         generatedTokens += generated;

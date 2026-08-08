@@ -103,8 +103,8 @@ class ApiMonitorEntry:
     first_decode_monotonic: Optional[float] = None
     prompt_ms: Optional[float] = None
     tok_per_sec: Optional[float] = None
-    # The engine's own timings.predicted_ms. Only ever set from engine timings, never
-    # from the streamed window, so its presence is what makes a row safe to rate.
+    # timings.predicted_ms. Only ever set from engine timings, so its presence is what
+    # makes a row safe to rate.
     decode_ms: Optional[float] = None
     stop_reason: Optional[str] = None
     # Every finish reason seen so far. An n > 1 stream reports each choice in its own
@@ -177,10 +177,9 @@ class ApiMonitorEntry:
             "progress": self.progress,
             "ttft_ms": ttft_ms,
             "tok_per_sec": round(tok_per_sec, 2) if tok_per_sec is not None else None,
-            # Only the engine's decode span, never the streamed window: how many tokens
-            # rode in the first chunk is unknowable, and reasoning tokens are counted in
-            # the usage but generated before the first visible one. Both inflate a rate.
-            # Absent rather than guessed, so the tile can skip what it cannot trust.
+            # The engine's decode span, never the streamed window: the first chunk's token
+            # count is unknowable and reasoning tokens land before it, so both inflate a
+            # rate. Absent rather than guessed, so the tile can skip what it cannot trust.
             "decode_ms": int(self.decode_ms) if self.decode_ms is not None else None,
             "stop_reason": self.stop_reason,
         }
@@ -414,8 +413,7 @@ class ApiMonitor:
                 entry.tok_per_sec = tok_per_sec
             if prompt_ms is not None:
                 entry.prompt_ms = prompt_ms
-            # A day of decode is already absurd, so past that it is a bad reading
-            # rather than a slow model.
+            # Past a day of decode it is a bad reading, not a slow model.
             if decode_ms is not None and 0 <= decode_ms <= _MAX_DECODE_MS:
                 entry.decode_ms = decode_ms
             if stop_reason is not None:

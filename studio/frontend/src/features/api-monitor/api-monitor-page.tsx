@@ -455,8 +455,8 @@ function RequestDetail({
             label: "First token",
             value: entry.ttft_ms != null ? formatDuration(entry.ttft_ms) : "–",
           },
-          // Duration minus this is the wait, which keeps a queue behind a busy slot
-          // from reading as a slow model.
+          // Duration minus this is the wait, so a queued request does not read as a
+          // slow model.
           {
             label: "Generating",
             value: entry.decode_ms != null ? formatDuration(entry.decode_ms) : "–",

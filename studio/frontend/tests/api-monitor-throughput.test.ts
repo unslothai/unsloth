@@ -7,8 +7,8 @@ import test from "node:test";
 import { computeStats } from "../src/features/api-monitor/stats.ts";
 import type { ApiMonitorEntry } from "../src/features/chat/types/api.ts";
 
-// A request that waited 9s behind a busy slot, then generated 50 tokens in 1s.
-// Rated against the whole request that is 5 tok/s; against the decode window, 50.
+// Waited 9s behind a busy slot, then generated 50 tokens in 1s: 5 tok/s rated against
+// the whole request, 50 against the decode window.
 function queuedEntry(overrides: Partial<ApiMonitorEntry> = {}): ApiMonitorEntry {
   return {
     id: "apireq_1",
@@ -39,9 +39,8 @@ test("throughput rates the decode window, not the queue wait", () => {
 });
 
 test("a reply with no decode window is left out of the rate", () => {
-  // How many tokens rode in the first chunk is unknowable, and reasoning tokens are
-  // counted in the usage but generated before the window opens. Both inflate, so a
-  // request the engine did not time is skipped rather than guessed at.
+  // The first chunk's token count and reasoning tokens both inflate a guessed rate, so
+  // a request the engine did not time is skipped.
   const stats = computeStats([
     queuedEntry({ ttft_ms: null, decode_ms: null }),
   ]);
