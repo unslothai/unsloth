@@ -63,6 +63,35 @@ def test_a_token_that_still_bounces_names_the_account():
     assert "add a Hugging Face token" not in message
 
 
+def test_a_metadata_api_url_names_the_model_not_the_endpoint():
+    """HfApi.model_info is the first Hub call a load makes, and its 403 carries
+    /api/models/<owner>/<repo>, the shape huggingface_hub's own GatedRepoError docstring
+    shows. A two-segment match on that names "api/models" as the gated repo."""
+    message = hub_access_message(
+        _gated(
+            "403 Client Error. (Request ID: ViT1Bf7O) Cannot access gated repo for url "
+            "https://huggingface.co/api/models/ardent-figment/gated-model."
+        ),
+        had_token = False,
+    )
+
+    assert message is not None
+    assert "ardent-figment/gated-model is gated" in message
+    assert "https://huggingface.co/ardent-figment/gated-model" in message
+    assert "api/models" not in message
+
+
+def test_a_non_repo_api_url_falls_back_rather_than_inventing_a_repo():
+    message = hub_access_message(
+        _gated("403 Client Error. Cannot access gated repo for url https://huggingface.co/api/whoami-v2."),
+        had_token = False,
+    )
+
+    assert message is not None
+    assert "its Hugging Face page" in message
+    assert "api/" not in message
+
+
 def test_an_unparseable_repo_still_gives_the_instruction():
     message = hub_access_message(
         _gated("403 Client Error. Cannot access gated repo."), had_token = False

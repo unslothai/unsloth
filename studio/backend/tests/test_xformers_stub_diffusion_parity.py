@@ -51,8 +51,8 @@ _DIFFUSION_MODULES = [
 _ENTRY_POINT = _BACKEND / "run.py"
 _STUB_MODULE = "core._torchao_stub"
 _ML_ROOTS = frozenset({"diffusers", "peft", "torch", "torchao", "transformers", "xformers"})
-# Must run BEFORE the installers, not after: the probe imports torch on Windows, and these
-# set the env vars torch reads when it sizes its OpenMP/BLAS pools. Both import stdlib only.
+# Must run BEFORE the installers, not after: these set the env vars torch reads when it sizes
+# its OpenMP/BLAS pools, so nothing heavy may precede them. Imports stdlib only.
 _PRE_STUB = frozenset({"utils.cpu_threads"})
 
 

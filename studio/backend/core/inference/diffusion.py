@@ -157,8 +157,14 @@ def hub_cache_dir() -> str:
     return active_hf_hub_cache()
 
 
-# Repo id out of any hub URL in an error: ".../huggingface.co/<owner>/<name>/resolve/...".
-_HUB_REPO_RE = re.compile(r"huggingface\.co/([\w.\-]+/[\w.\-]+)")
+# Repo id out of any hub URL in an error. Two shapes reach here: a download's file URL,
+# ".../huggingface.co/<owner>/<name>/resolve/...", and a metadata call's API URL,
+# ".../huggingface.co/api/models/<owner>/<name>" -- the shape huggingface_hub's own
+# GatedRepoError docstring shows, and what HfApi.model_info raises, which is the first Hub
+# call _run_load makes. Without the prefix branch that one yields the repo id "api/models".
+_HUB_REPO_RE = re.compile(
+    r"huggingface\.co/(?:api/(?:models|datasets|spaces)/)?([\w.\-]+/[\w.\-]+)"
+)
 
 
 def _gated_in_chain(exc: BaseException) -> Optional[BaseException]:
@@ -206,7 +212,13 @@ def hub_access_message(exc: BaseException, *, had_token: bool) -> Optional[str]:
     if gated is None:
         return None
     found = _HUB_REPO_RE.search(str(gated))
-    repo = found.group(1) if found else None
+    # An API URL ends at the repo, so the sentence's full stop lands inside the name (dots are
+    # legal mid-name, as in FLUX.2-klein-9B, but a name never ends in one). A file URL is
+    # followed by /resolve/..., so this only bites the metadata shape.
+    repo = found.group(1).rstrip(".") if found else None
+    # Any other /api/<endpoint> URL (whoami-v2, ...) would parse as the repo "api/<endpoint>".
+    if repo and repo.split("/", 1)[0] == "api":
+        repo = None
     where = f"https://huggingface.co/{repo}" if repo else "its Hugging Face page"
     subject = repo or "This model"
     if had_token:
