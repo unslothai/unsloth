@@ -241,12 +241,50 @@ def _resolve_with_mappers(
     )
 
 
+def _prefer_legacy_lowercase_cache(repo_id, cache_dir = None, local_files_only = False):
+    """Use a pre-fix lowercase cache only when offline and no canonical cache exists."""
+    if (
+        not (local_files_only or _env_says_offline())
+        or type(repo_id) is not str
+        or repo_id.count("/") != 1
+    ):
+        return repo_id
+    legacy_repo_id = repo_id.lower()
+    if legacy_repo_id == repo_id:
+        return repo_id
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        from huggingface_hub.file_download import repo_folder_name
+
+        cache_root = HF_HUB_CACHE if cache_dir is None else os.path.expanduser(str(cache_dir))
+        canonical_cache = os.path.join(
+            cache_root, repo_folder_name(repo_id = repo_id, repo_type = "model")
+        )
+        legacy_cache = os.path.join(
+            cache_root, repo_folder_name(repo_id = legacy_repo_id, repo_type = "model")
+        )
+    except Exception:
+        return repo_id
+    def _has_snapshot(repo_cache):
+        snapshots = os.path.join(repo_cache, "snapshots")
+        try:
+            return any(os.path.isdir(os.path.join(snapshots, name)) for name in os.listdir(snapshots))
+        except OSError:
+            return False
+
+    if not _has_snapshot(canonical_cache) and _has_snapshot(legacy_cache):
+        return legacy_repo_id
+    return repo_id
+
+
 def get_model_name(
     model_name,
     load_in_4bit = True,
     load_in_fp8 = False,
     token = None,
     trust_remote_code = False,
+    cache_dir = None,
+    local_files_only = False,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -257,6 +295,11 @@ def get_model_name(
         float_to_int = FLOAT_TO_INT_MAPPER,
         map_to_unsloth_16bit = MAP_TO_UNSLOTH_16bit,
     )
+
+    if new_model_name is not None:
+        new_model_name = _prefer_legacy_lowercase_cache(
+            new_model_name, cache_dir, local_files_only
+        )
     # Remap "bad" names (e.g. oversized dynamic quants or MoEs)
     if (
         new_model_name is not None

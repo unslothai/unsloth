@@ -28,7 +28,12 @@ def _load_get_model_name():
     namespace["_env_says_offline"] = lambda: True
     namespace["_get_new_mapper"] = lambda: ({}, {}, {}, {}, {})
 
-    wanted = {"__get_model_name", "_resolve_with_mappers", "get_model_name"}
+    wanted = {
+        "__get_model_name",
+        "_resolve_with_mappers",
+        "_prefer_legacy_lowercase_cache",
+        "get_model_name",
+    }
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
             getattr(target, "id", None) == "BAD_MAPPINGS" for target in node.targets

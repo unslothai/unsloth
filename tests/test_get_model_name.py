@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 from unsloth.models.loader_utils import get_model_name
@@ -163,6 +165,45 @@ class TestGetModelName(unittest.TestCase):
             resolved,
             "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
         )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_offline_load_reuses_legacy_lowercase_cache(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            os.makedirs(os.path.join(legacy_cache, "snapshots", "legacy-commit"))
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    load_in_4bit = True,
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                ),
+                legacy,
+            )
+            # An empty repo shell is not a usable cache entry.
+            os.makedirs(canonical_cache)
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    load_in_4bit = True,
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                ),
+                legacy,
+            )
+            os.makedirs(os.path.join(canonical_cache, "snapshots", "canonical-commit"))
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    load_in_4bit = True,
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                ),
+                canonical,
+            )
 
     def test_static_mapper_contract(self):
         # A lowercased key is how __get_model_name always looks up; the value it
