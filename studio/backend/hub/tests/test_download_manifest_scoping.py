@@ -591,3 +591,80 @@ def test_variant_enumeration_sees_legacy_scope_when_handed_a_RESOLVED_root(monke
         "the resolved spelling lost the legacy scope, so an offline listing cannot see the "
         "partial download it is meant to offer a resume for"
     )
+
+
+def test_a_scanned_cache_with_no_manifest_refuses_the_others(monkeypatch, tmp_path):
+    """A cache that contributes nothing is not a cache that agrees.
+
+    Manifests get deleted, and older builds never wrote one, so a cache holding the COMPLETE
+    snapshot can have no manifest at all. Returning another cache's manifest then applies its
+    hashes to that snapshot's blobs -- filtering every one of them out -- and, worse, disables
+    the per-entry name-based fallback that would still have counted them. The finished variant
+    reports zero.
+    """
+    from pathlib import Path
+
+    from hub.services.models import downloads
+    from hub.utils import download_manifest
+
+    only = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "unsloth/Model-GGUF",
+        variant = "Q4_K_M",
+        started_at = "2026-01-01T00:00:00Z",
+        expected_files = (download_manifest.ExpectedFile("old.gguf", 10, "aaa"),),
+    )
+    first, second = tmp_path / "a" / "repo", tmp_path / "b" / "repo"
+    served: dict = {first.parent: only, second.parent: None}
+
+    monkeypatch.setattr(downloads, "preferred_repo_cache_dirs", lambda *a, **k: [first, second])
+    monkeypatch.setattr(download_manifest, "_canonical_hub_cache", lambda *a, **k: None)
+    monkeypatch.setattr(
+        download_manifest,
+        "read_manifest",
+        lambda repo_type, repo_id, variant = None, *, hub_cache = None: (
+            served.get(Path(hub_cache)) if hub_cache is not None else None
+        ),
+    )
+
+    assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is None
+
+    # ...and once that cache has its own agreeing manifest, the answer comes back.
+    served[second.parent] = only
+    assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is only
+
+
+def test_the_active_cache_must_have_a_manifest_when_it_is_scanned(monkeypatch, tmp_path):
+    """Same rule for the active cache: snapshot_progress scans it like any other."""
+    from pathlib import Path
+
+    from hub.services.models import downloads
+    from hub.utils import download_manifest
+
+    other = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "unsloth/Model-GGUF",
+        variant = "Q4_K_M",
+        started_at = "2026-01-01T00:00:00Z",
+        expected_files = (download_manifest.ExpectedFile("old.gguf", 10, "aaa"),),
+    )
+    active_repo, remembered = tmp_path / "active" / "repo", tmp_path / "b" / "repo"
+
+    monkeypatch.setattr(
+        downloads, "preferred_repo_cache_dirs", lambda *a, **k: [active_repo, remembered]
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "_canonical_hub_cache",
+        lambda path = None: str(active_repo.parent) if path in (None, active_repo.parent) else str(path),
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "read_manifest",
+        # The active cache (hub_cache=None) has none; the remembered one does.
+        lambda repo_type, repo_id, variant = None, *, hub_cache = None: (
+            None if hub_cache is None else other
+        ),
+    )
+
+    assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is None

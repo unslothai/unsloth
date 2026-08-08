@@ -510,15 +510,19 @@ def _variant_manifest_in_any_cache(
     # hashes to a remembered cache that has the complete variant, and filters every blob of it
     # out. That is the same wrong answer as two remembered caches disagreeing.
     found: list[download_manifest.Manifest] = []
-    manifest = download_manifest.read_manifest("model", repo_id, variant)
-    if manifest is not None:
-        found.append(manifest)
+    active_manifest = download_manifest.read_manifest("model", repo_id, variant)
+    if active_manifest is not None:
+        found.append(active_manifest)
     # The active cache was just probed by the call above and a state-dir miss is not free, so
     # skip the entry that repeats it. In the common case preferred_repo_cache_dirs returns only
     # that entry and this loop does no work at all.
     active = download_manifest._canonical_hub_cache()
     for entry in preferred_repo_cache_dirs("model", repo_id):
         if active is not None and download_manifest._canonical_hub_cache(entry.parent) == active:
+            if active_manifest is None:
+                # The cache snapshot_progress will scan, with no manifest of its own. Anything
+                # returned here would be another cache's answer applied to its blobs.
+                return None
             continue
         manifest = download_manifest.read_manifest(
             "model",
@@ -526,8 +530,13 @@ def _variant_manifest_in_any_cache(
             variant,
             hub_cache = entry.parent,
         )
-        if manifest is not None:
-            found.append(manifest)
+        if manifest is None:
+            # A scanned cache that contributed NOTHING. Its snapshot may be the complete one --
+            # a manifest can be deleted, or never written by an older build -- and returning
+            # some other cache's hashes filters every blob of it out AND disables the per-entry
+            # name-based fallback that would still have counted them. Refuse instead.
+            return None
+        found.append(manifest)
     if not found:
         return None
     # One answer, or several that agree: safe to apply to every scanned entry, which is what
