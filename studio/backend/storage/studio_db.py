@@ -2445,6 +2445,14 @@ def sync_chat_messages(
         # Research messages are server-managed: keep the server record rather than reject the batch on client drift.
         research_ids = _research_message_ids(conn, thread_id)
         protected = set() if allow_research_update else research_ids
+        # Content is dropped, structure is not: deleting an ancestor relinks its children,
+        # and discarding that leaves a protected message pointing at a row the prune below
+        # removes. The client cannot then reopen the thread at all.
+        proposed_parents = {
+            str(m["id"]): m.get("parentId")
+            for m in messages
+            if str(m["id"]) in protected
+        }
         messages = [m for m in messages if str(m["id"]) not in protected]
         _raise_if_chat_message_thread_conflicts(
             conn,
@@ -2521,6 +2529,9 @@ def sync_chat_messages(
                     f"DELETE FROM chat_messages WHERE thread_id = ? AND id IN ({placeholders})",
                     (thread_id, *chunk),
                 )
+            _relink_orphaned_protected_messages(
+                conn, thread_id, research_ids, proposed_parents
+            )
             _recompute_chat_thread_updated_at(conn, thread_id)
         elif reconciled_messages:
             _bump_chat_thread_updated_at(
@@ -2540,6 +2551,44 @@ def sync_chat_messages(
         raise
     finally:
         conn.close()
+
+
+
+# Distinguishes "row is gone" from "row has no parent"; both are safe, for different reasons.
+_MISSING = object()
+
+
+def _relink_orphaned_protected_messages(
+    conn,
+    thread_id: str,
+    research_ids: set,
+    proposed_parents: dict,
+) -> None:
+    """Reseat any protected message the prune just orphaned.
+
+    Its own row survives the prune, but the parent it points at need not, and a dangling
+    parent makes the whole thread unimportable on the next load. Prefer the parent the
+    client relinked it to, fall back to the thread root, and never touch content.
+    """
+    if not research_ids:
+        return
+    rows = {
+        row["id"]: row["parent_id"]
+        for row in conn.execute(
+            "SELECT id, parent_id FROM chat_messages WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchall()
+    }
+    for message_id in research_ids:
+        parent_id = rows.get(message_id, _MISSING)
+        if parent_id is _MISSING or parent_id is None or parent_id in rows:
+            continue
+        proposed = proposed_parents.get(message_id)
+        reseated = proposed if (proposed is None or proposed in rows) else None
+        conn.execute(
+            "UPDATE chat_messages SET parent_id = ? WHERE thread_id = ? AND id = ?",
+            (reseated, thread_id, message_id),
+        )
 
 
 _RESEARCH_LINK_KEYS = {

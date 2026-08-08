@@ -3381,3 +3381,124 @@ def test_route_prune_cannot_delete_research_messages(research_home):
     assert studio_db.get_chat_message("thread-1", "assistant-1") is not None
     assert studio_db.get_chat_message("thread-1", "chatter") is None
     assert research_db.get_run("run-1") is not None
+
+
+def _thread_imports_cleanly(thread_id = "thread-1") -> bool:
+    """Whether every parent link resolves, which is what MessageRepository.import needs.
+
+    assistant-ui's addOrUpdateMessage raises "Parent message not found" on a dangling
+    parent, and the whole thread stops opening, not just the affected turn.
+    """
+    rows = studio_db.list_chat_messages(thread_id)
+    ids = {row["id"] for row in rows}
+    return all(row["parentId"] is None or row["parentId"] in ids for row in rows)
+
+
+def test_deleting_an_ancestor_reseats_the_protected_prompt(research_home):
+    # The research prompt hangs off an earlier turn. Deleting that ancestor relinks the
+    # prompt in the client's repository, but its content is server-owned, so the whole
+    # message is dropped here: without carrying the relink, the stored prompt keeps a
+    # parent the prune then deletes and the thread can never be opened again.
+    for message_id, parent_id, created_at in (
+        ("root", None, 1),
+        ("ancestor", "root", 2),
+    ):
+        studio_db.upsert_chat_message(
+            {
+                "id": message_id,
+                "threadId": "thread-1",
+                "parentId": parent_id,
+                "role": "user",
+                "content": [{"type": "text", "text": message_id}],
+                "createdAt": created_at,
+            }
+        )
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "parentId": "ancestor",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed?"}],
+            "createdAt": 3,
+        },
+        allow_research_update = True,
+    )
+
+    # What the client sends after deleting "ancestor": survivors only, prompt reseated
+    # onto "root", and the research content lossily re-serialized as always.
+    _route_sync(
+        [
+            {
+                "id": "root",
+                "threadId": "thread-1",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "root"}],
+                "createdAt": 1,
+            },
+            {
+                "id": "user-1",
+                "threadId": "thread-1",
+                "parentId": "root",
+                "role": "user",
+                "content": [],
+                "createdAt": 3,
+            },
+        ],
+        prune_missing = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    prompt = studio_db.get_chat_message("thread-1", "user-1")
+    assert prompt is not None
+    assert prompt["parentId"] == "root"
+    # Content is still the server's.
+    assert prompt["content"] == [{"type": "text", "text": "What changed?"}]
+    assert _thread_imports_cleanly()
+
+
+def test_a_protected_prompt_falls_back_to_the_root_when_its_relink_is_gone(research_home):
+    # The client proposed a parent that the same prune removed. Rooting the prompt keeps
+    # the thread openable, which a dangling parent would not.
+    studio_db.upsert_chat_message(
+        {
+            "id": "ancestor",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "ancestor"}],
+            "createdAt": 1,
+        }
+    )
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "parentId": "ancestor",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed?"}],
+            "createdAt": 3,
+        },
+        allow_research_update = True,
+    )
+
+    _route_sync(
+        [
+            {
+                "id": "user-1",
+                "threadId": "thread-1",
+                "parentId": "also-gone",
+                "role": "user",
+                "content": [],
+                "createdAt": 3,
+            }
+        ],
+        prune_missing = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] is None
+    assert _thread_imports_cleanly()
