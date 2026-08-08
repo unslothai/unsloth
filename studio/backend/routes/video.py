@@ -49,7 +49,6 @@ router = APIRouter()
 def _training_is_active() -> bool:
     """The non-raising half of the load guard, for callers that must not take the GPU."""
     from routes.inference import _training_is_active as _images_training_is_active
-
     return _images_training_is_active()
 
 
