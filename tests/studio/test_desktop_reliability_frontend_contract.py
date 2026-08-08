@@ -41,6 +41,8 @@ DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
+DIFFUSION_TRAIN_PANEL = FRONTEND / "features/images/train/diffusion-train-panel.tsx"
+MEDIA_PAGE_LINK = FRONTEND / "components/media-page-link.tsx"
 VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
 VIDEO_API = FRONTEND / "features/video/api.ts"
 RAG_API = FRONTEND / "features/rag/api/rag-api.ts"
@@ -723,6 +725,87 @@ def test_media_pages_clear_the_custom_titlebar():
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
 
 
+def test_image_page_dividers_span_the_structural_panes():
+    """Spacing belongs inside the pane contents, not around the bordered row.
+
+    Padding on the row made the vertical divider start 36px late. Padding on the
+    preview pane then left an 8px gap where its gallery rule met that divider, while
+    row padding stopped the same rule 32px before the right edge.
+    """
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    section = source.split("Settings column + preview canvas", 1)[1]
+
+    row_class = re.search(
+        r'<div className="([^"]*overflow-y-auto overflow-x-hidden[^"]*)">',
+        section,
+    )
+    assert row_class
+    row_tokens = row_class.group(1).split()
+    assert not any(
+        token.startswith(("pl-", "pr-", "pt-", "px-"))
+        or token.startswith(("sm:pr-", "md:pl-", "md:pr-", "md:pt-", "md:px-"))
+        for token in row_tokens
+    )
+
+    assert "@[50rem]:flex-row" in section
+    assert "md:flex-row" not in section
+    assert "gap-4 px-10 pt-9 pb-20 @[50rem]:overflow-y-auto" in section
+    assert "overflow-hidden @[50rem]:min-h-0" in section
+    assert "overflow-hidden pl-2 md:min-h-0" not in section
+    assert "p-6 px-10 @[50rem]:pt-[60px]" in section
+    assert "border-t border-foreground/10 px-10 py-3" in section
+
+
+def test_image_page_header_tracks_the_preview_and_compacts_before_collision():
+    """The mode switch belongs to the preview, while narrow headers stay in flow.
+
+    Page-wide absolute centering put Create/Train over the model selector when the
+    sidebar consumed much of the viewport. It also left the settings divider with
+    no matching header geometry on wide screens.
+    """
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    shell = source.split('className="diffusion-surface', 1)[1].split(">", 1)[0]
+    header = source.split("Mirror the Create workspace's 408px rail", 1)[1].split("Train mode:", 1)[
+        0
+    ]
+
+    assert "@container" in shell
+    assert "grid-cols-[minmax(0,1fr)_auto]" in header
+    assert "@[50rem]:grid-cols-[408px_minmax(0,1fr)]" in header
+    assert "@[50rem]:border-r" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
+    assert "@[50rem]:col-start-2" in header
+    assert "@[50rem]:col-start-3" in header
+    assert "[&>button]:px-3" in header
+    assert "@[68rem]:[&>button]:px-11" in header
+    assert 'labelClassName="hidden @[50rem]:inline"' in header
+    assert 'arrowClassName="hidden @[50rem]:block"' in header
+    assert 'className="!h-[34px] max-w-full"' in header
+    assert "absolute inset-x-0" not in header
+
+
+def test_image_train_rail_tracks_the_shared_header_breakpoint():
+    """Create and Train keep one divider and stack at the same content width."""
+    source = DIFFUSION_TRAIN_PANEL.read_text(encoding = "utf-8")
+    layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
+
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
+    assert "pl-10 @[50rem]:w-[408px]" in layout
+    assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
+    assert "pb-7 pl-10 pr-1.5 pt-4 @[50rem]:overflow-y-auto @[50rem]:pt-[42px]" in layout
+    assert "overflow-x-hidden pr-5 pt-9" not in layout
+    assert layout.count("pt-[42px]") == 2
+    assert "md:w-[416px]" not in layout
+    assert "overflow-x-hidden pl-2" not in layout
+
+
+def test_compact_media_page_link_keeps_an_accessible_name():
+    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    button = source.split("<button", 1)[1].split("</button>", 1)[0]
+
+    assert "aria-label={label}" in button
+
+
 def test_media_page_headers_out_stack_the_mac_drag_region():
     """macOS insets the media pages 0px, so their 48px header overlaps the navbar's 34px drag
     strip: the band must out-stack it yet stay click-through (controls click, gaps drag)."""
@@ -734,17 +817,14 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         source = page.read_text(encoding = "utf-8")
-        before, marker, band = source.partition("h-[48px] shrink-0 items-start justify-between")
+        before, marker, band = source.partition("h-[48px] shrink-0")
         assert marker, page.name
         opening = before.rsplit('<div className="', 1)[1]
         for token in ("pointer-events-none", "relative", "z-40"):
             assert token in opening, (page.name, token)
 
         band = band.split("MediaPageLink", 1)[0]
-        groups = re.findall(r'<div className="([^"]*flex items-center gap-[^"]*)"', band)
-        assert len(groups) >= 2, (page.name, groups)
-        for group in groups:
-            assert "pointer-events-auto" in group, (page.name, group)
+        assert band.count("pointer-events-auto") >= 2, page.name
 
 
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
