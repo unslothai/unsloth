@@ -1981,11 +1981,31 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
+        // Same optimistic-then-revert contract as every other branch, and for the same
+        // reason: this branch applied its defaults without advancing the token or replacing
+        // the pending revert, so an earlier GGUF pick that failed afterwards still matched
+        // its own token and restored ITS quant, steps and guidance over this selection.
+        const prevQuant = quant;
+        const prevSteps = steps;
+        const prevGuidance = guidance;
+        const token = ++selectionToken.current;
+        quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance, token };
         setQuant(null);
         const d = defaultsFor(id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.isDownloaded);
+        void loadOrStage(
+          id,
+          { kind: spec.kind, filename: spec.filename },
+          meta.isDownloaded,
+        ).then((started) => {
+          if (!started && selectionToken.current === token) {
+            setQuant(prevQuant);
+            setSteps(prevSteps);
+            setGuidance(prevGuidance);
+            quantRevert.current = null;
+          }
+        });
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but revert if the load fails to START

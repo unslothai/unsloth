@@ -41,3 +41,30 @@ test("no rollback runs without checking that its selection is still current", ()
     ) ?? [];
   assert.ok(guarded.length >= 4, `expected every rollback guarded, found ${guarded.length}`);
 });
+
+function modelSelectBody(): string {
+  const start = source.indexOf("const handleModelSelect = useCallback(");
+  assert.ok(start > 0, "handleModelSelect not found");
+  const end = source.indexOf("[busy, handleLoad, loadOrStage, quant, steps, guidance]", start);
+  assert.ok(end > start, "handleModelSelect dependency list not found");
+  return source.slice(start, end);
+}
+
+test("every accepted selection advances the token, curated picks included", () => {
+  // The curated non-GGUF branch applied its defaults and returned without touching the
+  // token or the pending revert, so a GGUF pick that failed afterwards still matched its
+  // own token and restored ITS quant, steps and guidance over the curated selection --
+  // the token mechanism bypassed entirely by the one branch that did not opt in.
+  const body = modelSelectBody();
+  const applied = body.match(/defaultsFor\(id\)/g) ?? [];
+  const stamped = body.match(/const token = \+\+selectionToken\.current;/g) ?? [];
+  assert.ok(applied.length >= 5, `expected every selection branch, found ${applied.length}`);
+  assert.equal(
+    stamped.length,
+    applied.length,
+    "a branch applies a model's defaults without advancing the selection token",
+  );
+  // And each of them replaces the pending revert rather than leaving an older one armed.
+  const armed = body.match(/quantRevert\.current = \{ prev: prevQuant/g) ?? [];
+  assert.equal(armed.length, applied.length);
+});
