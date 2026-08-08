@@ -1300,9 +1300,7 @@ def test_every_pick_replaces_the_rollback_it_leaves_behind():
     its own. Every branch that moves the selection registers its own entry."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
-        select = re.search(
-            r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S
-        )
+        select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S)
         assert select, f"{rel}: handleModelSelect not found"
         body = select.group(1)
         assert body.count("const revert: PickRevert = { prev: quant, steps, guidance };") >= (
@@ -1311,9 +1309,9 @@ def test_every_pick_replaces_the_rollback_it_leaves_behind():
         # The curated non-GGUF branch is the one that historically had none.
         curated = re.search(r'if \(spec && spec\.kind !== "gguf"\) \{(.*?)\n      \}', body, re.S)
         assert curated, f"{rel}: curated non-gguf branch not found"
-        assert "quantRevert.current = revert;" in curated.group(1), (
-            f"{rel}: a curated pick moves the selection but leaves the previous pick's rollback live"
-        )
+        assert "quantRevert.current = revert;" in curated.group(
+            1
+        ), f"{rel}: a curated pick moves the selection but leaves the previous pick's rollback live"
 
 
 def test_staged_downloads_always_scope_their_files():

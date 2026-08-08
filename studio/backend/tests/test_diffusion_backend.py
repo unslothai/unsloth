@@ -5643,7 +5643,14 @@ def test_download_plan_restages_the_old_root_half_when_other_files_are_missing_t
     old_root_only = {"model_index.json"}
     absent = {"vae/diffusion_pytorch_model.safetensors"}
 
-    def probe(repo_id, filename, revision = None, expected_size = None, roots = None, **kwargs):
+    def probe(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+        roots = None,
+        **kwargs,
+    ):
         if filename in absent:
             return False
         asks_live = roots is not None and roots != (None,)
@@ -5654,9 +5661,9 @@ def test_download_plan_restages_the_old_root_half_when_other_files_are_missing_t
     plan = DiffusionBackend().download_plan("unsloth/Z-Image-Turbo", model_kind = "pipeline")
 
     staged = {f for entry in plan["entries"] for f in entry["files"]}
-    assert staged == old_root_only | absent, (
-        "staging only the absent files would leave the old-root half stranded across two roots"
-    )
+    assert (
+        staged == old_root_only | absent
+    ), "staging only the absent files would leave the old-root half stranded across two roots"
 
 
 def test_download_plan_stages_nothing_for_a_base_wholly_in_the_other_root(monkeypatch):
