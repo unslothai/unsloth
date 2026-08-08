@@ -183,6 +183,12 @@ export function useLoadedModels(
           toast.warning(
             `"${shortModelLabel(outcome.model)}" was loaded while ejecting, so it is still using memory. Eject again to release it.`,
           );
+        } else if (outcome.status === "unverified") {
+          // Neither success nor failure: say so, and leave the row for the poll
+          // to settle rather than claiming work that was not confirmed.
+          toast.warning(
+            `${label} was asked to unload, but its runtime did not confirm. Check the card in a moment.`,
+          );
         } else if (outcome.status === "replaced") {
           // Nothing was unloaded: this runtime holds something else now, and
           // releasing that is not what the click asked for.

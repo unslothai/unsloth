@@ -168,11 +168,21 @@ function clearChatSelectionFor(aliases: string[]): void {
 export type EjectOutcome =
   | { status: "ejected" }
   | { status: "replaced"; resident: string }
-  | { status: "stillResident"; model: string };
+  | { status: "stillResident"; model: string }
+  // The unload was accepted but the read that confirms it did not answer, so
+  // neither "done" nor "failed" is true. Reported as its own outcome rather
+  // than collapsed into either, since the whole point of the confirming read is
+  // that a 200 from this endpoint is not evidence.
+  | { status: "unverified" };
+
+/** `unload` could not confirm what the runtime holds, which is not the same as
+ *  confirming it holds nothing. */
+const UNVERIFIED = Symbol("unverified");
 
 /**
  * The three identity-less unloads, guarded by a fresh read of their runtime.
- * `unload` resolves to a model still resident afterwards, or null once free.
+ * `unload` resolves to a model still resident afterwards, null once free, or
+ * UNVERIFIED when the confirming read did not answer.
  *
  * This narrows the window to the round trip rather than closing it, since only
  * a backend that took the model id could do that, but the row itself is up to a
@@ -181,7 +191,7 @@ export type EjectOutcome =
 async function ejectRuntimeRow(
   entry: LoadedModelEntry,
   resident: string | null,
-  unload: () => Promise<string | null>,
+  unload: () => Promise<string | null | typeof UNVERIFIED>,
 ): Promise<EjectOutcome> {
   const verdict = verifyResident(entry.name, resident, modelIdsMatch);
   if (verdict === "replaced" && resident) {
@@ -190,6 +200,7 @@ async function ejectRuntimeRow(
   // Nothing resident: the row is stale and its memory is already free.
   if (verdict !== "match") return { status: "ejected" };
   const stillResident = await unload();
+  if (stillResident === UNVERIFIED) return { status: "unverified" };
   return stillResident
     ? { status: "stillResident", model: stillResident }
     : { status: "ejected" };
@@ -255,7 +266,10 @@ export async function ejectLoadedModel(
           // whisper-server is absent, so a 200 is not evidence this engine let
           // go. Re-read and report what it actually holds.
           const after = await bounded(readSttStatus);
-          if (!after) return null;
+          // A non-2xx read is null too, and reading that as "nothing left"
+          // would toast success and drop the row for a model still holding
+          // memory, which is the exact case this re-read exists to catch.
+          if (!after) return UNVERIFIED;
           return sttEngineStatus(after, engine)?.loaded_model ?? null;
         },
       );
