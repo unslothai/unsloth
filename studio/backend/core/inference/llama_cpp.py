@@ -2959,6 +2959,10 @@ def _backfill_usage_from_timings(usage, timings):
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
 
+# AMD APUs sharing one pool with system RAM: Strix Point/Halo and Krackan Point.
+# ggml's Vulkan probe flags these as iGPUs; ROCm has no such flag, so arch names it.
+_AMD_UNIFIED_MEMORY_ARCHS = frozenset({"gfx1150", "gfx1151", "gfx1152"})
+
 
 def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
     """Reserve host headroom on an integrated (shared-memory) Vulkan GPU.
@@ -4752,19 +4756,20 @@ class LlamaCppBackend:
         return requested > n_layers
 
     @staticmethod
-    def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
-        """True only for AMD unified-memory APUs (gfx1150/gfx1151/gfx1152), where
-        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM (it
-        hurts discrete GPUs). gpu_indices (PHYSICAL ids) scopes the check to the
-        selected GPUs, so a dGPU on a mixed host is not treated as unified-memory;
-        None means every visible GPU."""
+    def _rocm_arch_by_physical_id() -> dict[int, str]:
+        """PHYSICAL id -> lowercased gfx arch for every visible ROCm GPU.
+
+        One map for both unified-memory callers, so the memory probe and the mlock
+        gate cannot disagree. Empty off ROCm and on error: every caller then keeps
+        its discrete-GPU default.
+        """
         try:
             import torch
 
             if getattr(torch.version, "hip", None) is None:
-                return False
+                return {}
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
-                return False
+                return {}
             # Map visible ordinal -> physical id via the active ROCm mask (HIP,
             # then ROCR, then CUDA), mirroring _get_gpu_memory's ROCm branch.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
@@ -4782,14 +4787,28 @@ class LlamaCppBackend:
                     else ordinal
                 )
                 arch_by_id[pid] = _arch.split(":")[0].strip().lower()
-            for _i in list(gpu_indices) if gpu_indices is not None else list(arch_by_id):
-                # gfx1152 is Krackan Point (Radeon 860M/840M), the third RDNA 3.5
-                # APU: same shared GPU/system-RAM pool as Strix Point/Halo.
-                if arch_by_id.get(_i) in {"gfx1150", "gfx1151", "gfx1152"}:
-                    return True
+            return arch_by_id
         except Exception:
-            return False
-        return False
+            return {}
+
+    @staticmethod
+    def _rocm_unified_memory_gpu_ids() -> set[int]:
+        """PHYSICAL ids of visible ROCm GPUs whose "VRAM" is shared system RAM."""
+        return {
+            pid
+            for pid, arch in LlamaCppBackend._rocm_arch_by_physical_id().items()
+            if arch in _AMD_UNIFIED_MEMORY_ARCHS
+        }
+
+    @staticmethod
+    def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
+        """True only for AMD unified-memory APUs, where GGML_CUDA_ENABLE_UNIFIED_MEMORY
+        lets llama.cpp use shared system RAM (it hurts discrete GPUs). gpu_indices
+        (PHYSICAL ids) scopes the check, so a dGPU on a mixed host is not treated as
+        unified-memory; None means every visible GPU."""
+        arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
+        selected = list(gpu_indices) if gpu_indices is not None else list(arch_by_id)
+        return any(arch_by_id.get(_i) in _AMD_UNIFIED_MEMORY_ARCHS for _i in selected)
 
     # Datacenter / professional NVIDIA parts that benefit from the llama.cpp
     # FP32-accum / P2P tunings. Whole-word (\b) so short markers don't match
@@ -5003,7 +5022,9 @@ class LlamaCppBackend:
         are ggml's compact Vulkan ordinals (the space the pin selects via
         ``--device Vulkan<i>``). It reports ``total`` for discrete cards and 0
         for an iGPU (shared RAM) so the fit falls back to free*frac there.
-        Otherwise nvidia-smi / torch cover NVIDIA + AMD ROCm.
+        Otherwise nvidia-smi / torch cover NVIDIA + AMD ROCm. The torch branch
+        gives an AMD unified-memory APU the same treatment by arch name, since
+        ROCm reports no iGPU flag of its own.
 
         Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
         supported GPU is reachable.
@@ -5078,6 +5099,9 @@ class LlamaCppBackend:
             # Empty mask (CVD="") yields an empty list -> no GPUs, consistent
             # with the nvidia-smi path.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            # Shared-pool APU: same as the Vulkan iGPU path. Hold back the host
+            # margin, and report total 0 since that "total" is system RAM.
+            unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
@@ -5086,7 +5110,9 @@ class LlamaCppBackend:
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                gpus.append((idx, free_bytes // (1024 * 1024), total_bytes // (1024 * 1024)))
+                shared = idx in unified_ids
+                free_mib = _apply_igpu_host_reserve_mib(free_bytes // (1024 * 1024), shared)
+                gpus.append((idx, free_mib, 0 if shared else total_bytes // (1024 * 1024)))
             # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
             return sorted(gpus, key = lambda g: g[0])
         except Exception as e:

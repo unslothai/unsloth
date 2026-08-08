@@ -117,3 +117,77 @@ class TestApuRamShortfall:
     def test_available_system_memory_is_int_or_none(self):
         v = LlamaCppBackend._available_system_memory_mib()
         assert v is None or (isinstance(v, int) and v > 0)
+
+
+# The local B200's real profile, so the spoofed APU is sized like a machine we
+# actually have rather than an invented one. A large shared pool is exactly where
+# the missing host reserve mattered: 3% of 179 GiB is 5.4 GiB, but the reserve is
+# an absolute 1 GiB off free, and the "total" must not become a VRAM budget.
+_B200_TOTAL_MIB = 183359
+_B200_FREE_MIB = 181928
+_MIB = 1024 * 1024
+
+
+def _fake_torch_with_memory(hip, archs, free_mib, total_mib, *, cuda_ok = True):
+    """_fake_torch plus mem_get_info, which the memory probe needs."""
+    t = _fake_torch(hip, archs, cuda_ok = cuda_ok)
+    t.cuda.mem_get_info = lambda i: (free_mib * _MIB, total_mib * _MIB)
+    return t
+
+
+def _probe(monkeypatch, hip, archs, free_mib = _B200_FREE_MIB, total_mib = _B200_TOTAL_MIB):
+    for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_m, raising = False)
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch_with_memory(hip, archs, free_mib, total_mib)
+    )
+    # Force the torch branch: no Vulkan build, and nvidia-smi must not answer.
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "x"))
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.subprocess.run",
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no nvidia-smi")),
+    )
+    return LlamaCppBackend._get_gpu_memory()
+
+
+class TestTheRocmProbeReservesHostRamOnAnApu:
+    """ROCm reports no iGPU flag, so before this an APU was sized as a discrete
+    card: no host margin, and an absolute reserve taken off what is really
+    system RAM. The Vulkan probe already did both; this matches it."""
+
+    def test_an_apu_loses_the_host_reserve_and_reports_no_total(self, monkeypatch):
+        assert _probe(monkeypatch, "6.2.0", ["gfx1151:xnack-"]) == [
+            (0, _B200_FREE_MIB - 1024, 0)
+        ]
+
+    def test_a_discrete_amd_card_is_untouched(self, monkeypatch):
+        assert _probe(monkeypatch, "6.2.0", ["gfx1100"]) == [
+            (0, _B200_FREE_MIB, _B200_TOTAL_MIB)
+        ]
+
+    def test_nvidia_through_the_torch_fallback_is_untouched(self, monkeypatch):
+        """The real local GPU: no HIP, so nothing here may apply."""
+        assert _probe(monkeypatch, None, ["sm_100"]) == [(0, _B200_FREE_MIB, _B200_TOTAL_MIB)]
+
+    def test_a_mixed_host_only_reserves_on_the_apu(self, monkeypatch):
+        assert _probe(monkeypatch, "6.2.0", ["gfx1100", "gfx1151"]) == [
+            (0, _B200_FREE_MIB, _B200_TOTAL_MIB),
+            (1, _B200_FREE_MIB - 1024, 0),
+        ]
+
+    def test_the_reserve_cannot_go_negative(self, monkeypatch):
+        assert _probe(monkeypatch, "6.2.0", ["gfx1151"], free_mib = 512, total_mib = 512) == [
+            (0, 0, 0)
+        ]
+
+    @pytest.mark.parametrize("arch", ["gfx1150", "gfx1151", "gfx1152"])
+    def test_every_unified_arch_is_covered(self, monkeypatch, arch):
+        assert _probe(monkeypatch, "6.2.0", [arch])[0][1] == _B200_FREE_MIB - 1024
+
+    def test_the_probe_and_the_mlock_gate_agree(self, monkeypatch):
+        """Both read one arch map, so they cannot disagree about a device."""
+        for arch, shared in (("gfx1151", True), ("gfx1100", False)):
+            rows = _probe(monkeypatch, "6.2.0", [arch])
+            assert (rows[0][2] == 0) is shared
+            assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is shared
