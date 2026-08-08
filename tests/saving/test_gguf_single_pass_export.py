@@ -145,6 +145,21 @@ def test_fast_quantized_alias_is_single_pass(monkeypatch, tmp_path):
     assert h.quantize_calls == []
 
 
+def test_explicit_gguf_directory_does_not_reuse_model_sibling(monkeypatch, tmp_path):
+    h = _Harness(monkeypatch, tmp_path)
+    model_sibling = tmp_path / "model_dir_gguf"
+    model_sibling.mkdir()
+    notes = model_sibling / "notes.txt"
+    notes.write_text("keep", encoding = "utf-8")
+    output_dir = tmp_path / "owned_output"
+
+    locations, _, _ = _run(tmp_path, ["q8_0"], gguf_directory = output_dir)
+
+    assert [os.path.dirname(path) for path in locations] == [str(output_dir)]
+    assert notes.read_text(encoding = "utf-8") == "keep"
+    assert list(model_sibling.glob("*.gguf")) == []
+
+
 def test_k_quant_keeps_two_pass(monkeypatch, tmp_path):
     h = _Harness(monkeypatch, tmp_path)
     locations, want_full_precision, _ = _run(tmp_path, ["q4_k_m"])

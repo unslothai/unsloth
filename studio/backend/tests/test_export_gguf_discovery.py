@@ -286,10 +286,7 @@ def test_modelfile_is_relocated_not_deleted(monkeypatch, tmp_path):
 
 
 def test_stale_gguf_alone_does_not_fake_a_successful_export(monkeypatch, tmp_path):
-    """Documents current behaviour: the listing is directory-based, so a leftover
-    GGUF in the destination does count as success. Asserted so a future change is
-    deliberate.
-    """
+    """A leftover destination artifact must not hide a conversion with no output."""
 
     class _Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
@@ -300,8 +297,10 @@ def test_stale_gguf_alone_does_not_fake_a_successful_export(monkeypatch, tmp_pat
     save_dir.mkdir(parents = True, exist_ok = True)
     _gguf(save_dir / "OldRun.Q4_K_M.gguf")
 
-    success, _message, _p = backend.export_gguf(str(save_dir), "q5_k_m")
-    assert success is True
+    success, message, output_path = backend.export_gguf(str(save_dir), "q5_k_m")
+    assert success is False
+    assert "produced no files" in message
+    assert output_path is None
 
 
 def test_cleanup_failure_does_not_lose_reported_files(monkeypatch, tmp_path):
