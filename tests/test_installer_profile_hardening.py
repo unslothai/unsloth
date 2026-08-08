@@ -31,10 +31,8 @@ STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 def _framed(record: str, *, banner: str = "") -> str:
     """What the probe child really prints: the framed record, plus whatever the profile said."""
     from unsloth_cli.commands import studio as studio_cmd
+    return f"{banner}{studio_cmd._PROXY_PROBE_BEGIN}\n{record}\n{studio_cmd._PROXY_PROBE_END}\n"
 
-    return (
-        f"{banner}{studio_cmd._PROXY_PROBE_BEGIN}\n{record}\n{studio_cmd._PROXY_PROBE_END}\n"
-    )
 
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
@@ -936,9 +934,7 @@ def test_a_profile_that_prints_nothing_useful_is_still_no_answer(monkeypatch):
         def __init__(self, stdout):
             self.stdout = stdout
 
-    monkeypatch.setattr(
-        studio_cmd.subprocess, "run", lambda argv, **kw: _Result("just a banner\n")
-    )
+    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result("just a banner\n"))
     assert studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"]) is None
 
 
@@ -949,8 +945,7 @@ def test_the_probe_signature_evaluates_on_the_oldest_supported_python():
 
     tree = ast.parse(STUDIO_COMMAND.read_text(encoding = "utf-8"))
     assert not any(
-        isinstance(node, ast.ImportFrom) and node.module == "__future__"
-        for node in ast.walk(tree)
+        isinstance(node, ast.ImportFrom) and node.module == "__future__" for node in ast.walk(tree)
     ), "this test's premise changed: the module now postpones annotations"
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
@@ -959,9 +954,9 @@ def test_the_probe_signature_evaluates_on_the_oldest_supported_python():
             annotation = arg.annotation
             if annotation is None:
                 continue
-            assert not isinstance(annotation, ast.BinOp), (
-                f"{node.name}({arg.arg}) uses an unquoted PEP 604 union, which raises on 3.9"
-            )
+            assert not isinstance(
+                annotation, ast.BinOp
+            ), f"{node.name}({arg.arg}) uses an unquoted PEP 604 union, which raises on 3.9"
 
 
 def test_the_probe_asks_both_powershell_editions(monkeypatch):
@@ -1051,9 +1046,7 @@ def test_one_profile_that_prints_both_spellings_is_folded_too(monkeypatch):
         ' "invoke-webrequest:PROXY": "http://second.corp:8080",'
         ' "Invoke-RestMethod:Proxy": "http://rest.corp:8080"}'
     )
-    monkeypatch.setattr(
-        studio_cmd.subprocess, "run", lambda argv, **kw: _Result(_framed(payload))
-    )
+    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(_framed(payload)))
     merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"]))
 
     assert merged == {
