@@ -20,7 +20,7 @@ from hub.schemas.downloads import (
 from hub.utils import download_registry
 from hub.utils import download_manifest
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.hf_cache_state import has_active_incomplete_blobs
+from hub.utils.hf_cache_state import has_active_incomplete_blobs, preferred_repo_cache_dirs
 from hub.utils.snapshot_filters import blob_hashes_for_siblings
 from hub.utils.paths import (
     is_valid_gguf_variant as _is_valid_gguf_variant,
@@ -490,6 +490,34 @@ async def get_model_transport_status_response(
     }
 
 
+def _variant_manifest_in_any_cache(
+    repo_id: str, variant: str
+) -> Optional[download_manifest.Manifest]:
+    """The variant's manifest from whichever cache dir on disk holds it.
+
+    snapshot_progress reads manifests per scanned cache entry (``entry.parent``)
+    while this resolver only ever asked the active cache, so the two could
+    disagree about whether a manifest exists at all. When it lost, the expected
+    file set came back empty and the hash filter then dropped every blob in the
+    shared ``blobs/`` dir -- a finished variant reporting 0 bytes against the
+    caller's catalog-hinted total. Active cache first, so the common case is one
+    lookup and the answer matches the entry snapshot_progress prefers.
+    """
+    manifest = download_manifest.read_manifest("model", repo_id, variant)
+    if manifest is not None:
+        return manifest
+    for entry in preferred_repo_cache_dirs("model", repo_id):
+        manifest = download_manifest.read_manifest(
+            "model",
+            repo_id,
+            variant,
+            hub_cache = entry.parent,
+        )
+        if manifest is not None:
+            return manifest
+    return None
+
+
 async def get_gguf_download_progress_response(
     repo_id: str,
     variant: str = "",
@@ -521,11 +549,7 @@ async def get_gguf_download_progress_response(
         )
         if requirement is not None:
             return requirement.download_size_bytes, requirement.required_hashes
-        manifest = download_manifest.read_manifest(
-            "model",
-            resolved_repo_id,
-            progress_variant,
-        )
+        manifest = _variant_manifest_in_any_cache(resolved_repo_id, progress_variant)
         if manifest is not None:
             return (
                 sum(max(0, int(file.size or 0)) for file in manifest.expected_files),

@@ -46,11 +46,12 @@ from loggers import get_logger
 
 from hub.utils.state_dir import (
     RepoType,
-    cache_scope_name,
+    cache_scope_names,
     cancelled_dir,
     manifest_path,
     manifests_dir,
     marker_path,
+    normalize_hub_cache,
     state_filename_is_ambiguous,
     variant_filename_prefix,
     variant_key_fragments,
@@ -68,6 +69,8 @@ _DATASET_COMPLETION_VARIANT_PREFIX = "_studio-dataset-complete-"
 _MANIFEST_MIGRATION_MAX_FILES = 10_000
 _MANIFEST_MIGRATION_MAX_BYTES = 32 * 1024 * 1024
 _MANIFEST_MIGRATION_PREFIX_BYTES = 256
+_CACHE_SCOPE_PREFIX = "cache-"
+_MAX_RESCOPE_PROBE_SCOPES = 64
 _V2_MANIFEST_PREFIX = re.compile(rb'^\s*\{\s*"version"\s*:\s*2\s*,')
 
 # Verbatim phrase the worker emits on a degraded completion; shared so emit and match stay coupled.
@@ -157,18 +160,31 @@ class VerifyResult:
     size_mismatched: tuple[str, ...]
 
 
-def _canonical_hub_cache(hub_cache: Optional[str | Path] = None) -> Optional[str]:
+def _hub_cache_spellings(
+    hub_cache: Optional[str | Path] = None,
+) -> tuple[Optional[str], Optional[str | Path]]:
+    """``(canonical, as supplied)`` for one cache path, defaulting to the active cache.
+
+    The canonical half is what ownership comparisons and the scope digest are
+    built from. The raw half exists only so a reader can also probe the digest
+    of the spelling it was handed: the two differ exactly when ``resolve``
+    changes the path, and state written while ``resolve`` was unavailable sits
+    under the raw one.
+    """
     if hub_cache is None:
         try:
             from utils.hf_cache_settings import get_hf_cache_paths
             hub_cache = get_hf_cache_paths().hub_cache
         except Exception:
-            return None
-    try:
-        resolved = str(Path(hub_cache).expanduser().resolve(strict = False))
-    except (OSError, RuntimeError, ValueError):
-        resolved = str(hub_cache)
-    return os.path.normcase(resolved)
+            return None, None
+    # Shared with state_dir.cache_scope_name so the ownership string recorded in
+    # a payload and the cache-<digest> directory it is filed under can never be
+    # derived from two different normalizations of the same directory.
+    return normalize_hub_cache(hub_cache), hub_cache
+
+
+def _canonical_hub_cache(hub_cache: Optional[str | Path] = None) -> Optional[str]:
+    return _hub_cache_spellings(hub_cache)[0]
 
 
 def _read_state_payload(path: Path) -> Optional[dict]:
@@ -300,8 +316,15 @@ def _state_read_path(
                 return False
         return _state_entry_belongs_to_repo(path, payload, repo_type, repo_id, variant)
 
-    requested = _canonical_hub_cache(hub_cache)
-    scoped = _state_paths(path_factory, repo_type, repo_id, variant, requested)
+    requested, raw = _hub_cache_spellings(hub_cache)
+    scoped = _state_paths(
+        path_factory,
+        repo_type,
+        repo_id,
+        variant,
+        requested,
+        raw_hub_cache = raw,
+    )
     for path in scoped:
         try:
             if path.is_file() and applies(path):
@@ -318,7 +341,79 @@ def _state_read_path(
             continue
         if _legacy_state_applies(path, requested, fail_closed = fail_closed) and applies(path):
             return path
+    for path in _rescoped_state_paths(path_factory, repo_type, repo_id, variant, requested):
+        if path in scoped:
+            continue
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        if _recorded_state_owner_matches(path, requested) and applies(path):
+            return path
     return None
+
+
+def _recorded_state_owner_matches(path: Path, requested: Optional[str]) -> bool:
+    """Whether the ownership recorded *inside* the file names the requested cache.
+
+    The only safe basis for reading or removing state found under a scope
+    directory the caller cannot name: unlike the unscoped legacy files, nothing
+    about its location attributes it, so an absent or unparseable owner has to
+    disqualify it rather than fall back to the active cache.
+    """
+    if requested is None:
+        return False
+    payload = _read_state_payload(path)
+    if payload is None:
+        return False
+    recorded = _payload_cache_path(payload.get("hub_cache"))
+    return bool(recorded) and _canonical_hub_cache(recorded) == requested
+
+
+def _rescoped_state_paths(
+    path_factory,
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str],
+    requested: Optional[str],
+) -> Iterator[Path]:
+    """This entry key under every other ``cache-<digest>`` dir, last-resort only.
+
+    A scope digest can only be reached by rebuilding it from a spelling of the
+    cache path that hashes the same way, so state whose path stopped resolving
+    the way it did at write time -- a junction that went away, a OneDrive
+    placeholder ``resolve`` declined that minute, a build that hashed the
+    unresolved spelling -- sits in a directory the reader can no longer name.
+    The entry key is spelling-independent, so sweep the siblings and let the
+    recorded ownership decide. Reached only after every direct probe missed,
+    and bounded so a state root full of stale scopes cannot turn one miss into
+    an unbounded walk.
+    """
+    if requested is None:
+        return
+    probe = path_factory(repo_type, repo_id, variant, hub_cache = None, create = False)
+    if probe is None:
+        return
+    names = dict.fromkeys(
+        path.name for path in _state_paths(path_factory, repo_type, repo_id, variant, None)
+    )
+    try:
+        scopes = sorted(
+            entry
+            for entry in probe.parent.iterdir()
+            if entry.name.startswith(_CACHE_SCOPE_PREFIX) and not entry.is_symlink()
+        )
+    except OSError:
+        return
+    for scope in scopes[:_MAX_RESCOPE_PROBE_SCOPES]:
+        for name in names:
+            candidate = scope / name
+            try:
+                if candidate.is_file():
+                    yield candidate
+            except OSError:
+                continue
 
 
 def _state_paths(
@@ -327,24 +422,41 @@ def _state_paths(
     repo_id: str,
     variant: Optional[str],
     hub_cache: Optional[str | Path],
+    *,
+    raw_hub_cache: Optional[str | Path] = None,
 ) -> tuple[Path, ...]:
     """Canonical-first read/delete paths across the filename migration.
 
     Writers use only the default state-dir path. Readers and cleanup also probe
-    the prior repository and double-hyphen variant encodings, deduplicating when
-    a repository or variant never needed migration.
+    the prior repository and double-hyphen variant encodings, plus the
+    pre-``resolve`` cache-scope digest, deduplicating when a repository, variant
+    or cache scope never needed migration.
+
+    ``raw_hub_cache`` is the caller's own spelling of ``hub_cache`` before
+    canonicalization, and is what the extra scope digest has to come from: the
+    canonical string resolves to itself, so deriving the fallback from it would
+    reproduce the canonical digest and probe nothing. The scope fan-out
+    collapses to one entry whenever the two spellings agree, which is every path
+    that resolves to itself.
     """
-    kwargs = {"hub_cache": hub_cache, "create": False}
+    scopes = (
+        (None,)
+        if hub_cache is None
+        else cache_scope_names(raw_hub_cache if raw_hub_cache is not None else hub_cache)
+    )
     paths = [
         path_factory(
             repo_type,
             repo_id,
             variant,
+            hub_cache = hub_cache,
+            create = False,
             legacy_variant_key = legacy_variant,
             legacy_repo_key = legacy_repo,
             legacy_hash_key = legacy_hash,
-            **kwargs,
+            cache_scope = scope,
         )
+        for scope in scopes
         for legacy_repo in (False, True)
         for legacy_variant in ((False, True) if variant is not None else (False,))
         for legacy_hash in (False, True)
@@ -902,14 +1014,31 @@ def _owned_state_paths(
     requested: Optional[str],
     *,
     fail_closed: bool,
+    raw_hub_cache: Optional[str | Path] = None,
 ) -> list[Path]:
-    scoped = list(_state_paths(path_factory, repo_type, repo_id, variant, requested))
+    scoped = list(
+        _state_paths(
+            path_factory,
+            repo_type,
+            repo_id,
+            variant,
+            requested,
+            raw_hub_cache = raw_hub_cache,
+        )
+    )
     paths = list(scoped)
     for legacy in _state_paths(path_factory, repo_type, repo_id, variant, None):
         if legacy not in scoped and _legacy_state_applies(
             legacy, requested, fail_closed = fail_closed
         ):
             paths.append(legacy)
+    # Anything _state_read_path can recover out of an unnameable scope has to be
+    # removable too, or a delete leaves state behind that the next read revives.
+    seen = set(paths)
+    for rescoped in _rescoped_state_paths(path_factory, repo_type, repo_id, variant, requested):
+        if rescoped not in seen and _recorded_state_owner_matches(rescoped, requested):
+            seen.add(rescoped)
+            paths.append(rescoped)
     return paths
 
 
@@ -926,7 +1055,7 @@ def clear_cancel_marker(
     download-start (a fresh attempt supersedes prior cancel state) and
     again at successful completion (cleans up if the start clear failed).
     """
-    requested = _canonical_hub_cache(hub_cache)
+    requested, raw = _hub_cache_spellings(hub_cache)
     paths = _owned_state_paths(
         marker_path,
         repo_type,
@@ -934,6 +1063,7 @@ def clear_cancel_marker(
         variant,
         requested,
         fail_closed = True,
+        raw_hub_cache = raw,
     )
     paths = [
         candidate
@@ -976,7 +1106,7 @@ def delete_manifest(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> bool:
-    requested = _canonical_hub_cache(hub_cache)
+    requested, raw = _hub_cache_spellings(hub_cache)
     paths = _owned_state_paths(
         manifest_path,
         repo_type,
@@ -984,6 +1114,7 @@ def delete_manifest(
         variant,
         requested,
         fail_closed = False,
+        raw_hub_cache = raw,
     )
     paths = [
         candidate
@@ -1019,7 +1150,7 @@ def purge_state(
             *_all_matching_state_paths(cancelled_dir(), repo_type, repo_id, variant),
         )
     else:
-        requested = _canonical_hub_cache(hub_cache)
+        requested, raw = _hub_cache_spellings(hub_cache)
         candidates: list[Path] = []
         # Legacy unscoped state is shared: an unowned file belongs to the active
         # cache (per _legacy_state_applies), so only purge it when it belongs to
@@ -1037,6 +1168,7 @@ def purge_state(
                     variant,
                     requested,
                     fail_closed = fail_closed,
+                    raw_hub_cache = raw,
                 )
             )
         paths = tuple(dict.fromkeys(candidates))
@@ -1102,34 +1234,26 @@ def purge_all_state_for_repo(
             if parent is not None
         ]
     else:
-        # This cache's scoped dir plus the legacy unscoped base; glob (not rglob) so other caches are untouched.
+        # This cache's scoped dirs plus the legacy unscoped base; glob (not rglob) so other caches are untouched.
+        # Both scope spellings, else a repo delete leaves the pre-resolve copy
+        # behind for a later read to resurrect as state for a cache that is gone.
         search = []
-        for scoped, base, cancel_markers in (
-            (
-                manifest_path(
-                    repo_type,
-                    repo_id,
-                    None,
-                    hub_cache = hub_cache,
-                    create = False,
-                ),
-                manifests_dir(create = False),
-                False,
-            ),
-            (
-                marker_path(
-                    repo_type,
-                    repo_id,
-                    None,
-                    hub_cache = hub_cache,
-                    create = False,
-                ),
-                cancelled_dir(create = False),
-                True,
-            ),
+        scopes = cache_scope_names(hub_cache)
+        for path_factory, base, cancel_markers in (
+            (manifest_path, manifests_dir(create = False), False),
+            (marker_path, cancelled_dir(create = False), True),
         ):
-            if scoped is not None:
-                search.append((scoped.parent, False, False, cancel_markers))
+            for scope in scopes:
+                scoped = path_factory(
+                    repo_type,
+                    repo_id,
+                    None,
+                    hub_cache = hub_cache,
+                    create = False,
+                    cache_scope = scope,
+                )
+                if scoped is not None:
+                    search.append((scoped.parent, False, False, cancel_markers))
             if base is not None:
                 search.append((base, False, True, cancel_markers))
     for parent, recursive, legacy, cancel_markers in search:
@@ -1351,7 +1475,12 @@ def build_variant_state_index(
                 repo_keys.setdefault(prefix[: -len("--variant--")], set()).add(
                     (repo_type, normalized_repo)
                 )
-        caches_by_scope.setdefault(cache_scope_name(canonical_cache), set()).add(canonical_cache)
+        # Both spellings of the scope dir, so state filed under the pre-resolve
+        # digest is indexed rather than silently read as "no manifest". Derived
+        # from the caller's own spelling, not the canonical one, which resolves
+        # to itself and would yield the canonical digest twice. Normally one key.
+        for scope in cache_scope_names(hub_cache):
+            caches_by_scope.setdefault(scope, set()).add(canonical_cache)
 
     active_cache = _canonical_hub_cache(active_hub_cache)
     mutable: dict[
@@ -1481,16 +1610,25 @@ def _iter_variant_state_files(
     if parent is None:
         return
     path_factory = marker_path if cancel_markers else manifest_path
-    requested = _canonical_hub_cache(hub_cache)
-    scoped_probe = path_factory(
-        repo_type,
-        repo_id,
-        None,
-        hub_cache = requested,
-        create = False,
-    )
-    if scoped_probe is None:
-        return
+    requested, raw = _hub_cache_spellings(hub_cache)
+    # Every scope this cache's state can sit in, so a variant filed under the
+    # pre-resolve digest is enumerated instead of reading as "no variant state".
+    scoped_dirs: list[Path] = []
+    for scope in (
+        cache_scope_names(raw) if raw is not None and requested is not None else (None,)
+    ):
+        scoped_probe = path_factory(
+            repo_type,
+            repo_id,
+            None,
+            hub_cache = requested,
+            create = False,
+            cache_scope = scope,
+        )
+        if scoped_probe is None:
+            return
+        if scoped_probe.parent not in scoped_dirs:
+            scoped_dirs.append(scoped_probe.parent)
     prefixes = tuple(
         dict.fromkeys(
             variant_filename_prefix(
@@ -1504,8 +1642,8 @@ def _iter_variant_state_files(
         )
     )
     selected: dict[str, tuple[tuple[bool, bool], str, Path]] = {}
-    for directory, legacy in ((scoped_probe.parent, False), (parent, True)):
-        if legacy and directory == scoped_probe.parent:
+    for directory, legacy in (*((path, False) for path in scoped_dirs), (parent, True)):
+        if legacy and directory in scoped_dirs:
             continue
         try:
             entries = list(directory.iterdir())
