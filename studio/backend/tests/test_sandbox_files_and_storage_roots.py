@@ -1228,9 +1228,7 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir(session))
     # Only the user's file is left; the executor cleaned up after itself.
     assert sorted(p.name for p in workdir.iterdir()) == ["studio_exec_results.py"]
-    assert json.loads(files) == [
-        {"name": "studio_exec_results.py", "size": 5},
-    ]
+    assert json.loads(files) == [{"name": "studio_exec_results.py", "size": 5}]
 
 
 def test_a_turn_without_a_chat_id_reports_no_files(tmp_path, monkeypatch):
@@ -1244,7 +1242,7 @@ def test_a_turn_without_a_chat_id_reports_no_files(tmp_path, monkeypatch):
     result = tools._python_exec('open("first.csv", "w").write("a")')
     assert "__FILES__" not in result, result
     assert "__IMAGES__" not in result
-    bash_result = tools._bash_exec('printf a > second.csv')
+    bash_result = tools._bash_exec("printf a > second.csv")
     assert "__FILES__" not in bash_result, bash_result
 
 

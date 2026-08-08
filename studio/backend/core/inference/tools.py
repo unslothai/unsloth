@@ -10752,9 +10752,7 @@ def _bash_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
-            return ended + (
-                _created_file_sentinels(workdir, _before) if session_id else ""
-            )
+            return ended + (_created_file_sentinels(workdir, _before) if session_id else "")
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled." + (
