@@ -282,6 +282,39 @@ test("the drop image list matches the composer's file picker", () => {
   assert.deepEqual([...new Set(dropped)], picker);
 });
 
+// A fresh chat persisting remounts the composer, so the instance that queued
+// the batch cannot hand it over itself.
+test("a remounted composer claims the batch its predecessor left behind", () => {
+  const store = useNativeIntentStore.getState();
+  const intent = {
+    id: "i1",
+    kind: "attachment",
+    path: {
+      token: "t1",
+      kind: "attachment",
+      displayLabel: "a.png",
+      allowedOperations: ["attach"],
+      expiresAtMs: Date.now() + 60_000,
+    },
+  } as unknown as NativeIntent;
+
+  store.addImageAttachments("single:new", [intent]);
+  store.noteImageDropOwner("single:new", "composer-1");
+
+  // A different composer must not take it.
+  store.claimImageAttachments("composer-2", "single:other");
+  assert.equal(
+    useNativeIntentStore.getState().pendingImageAttachments["single:new"]?.length,
+    1,
+  );
+
+  store.claimImageAttachments("composer-1", "single:thread-7");
+  const after = useNativeIntentStore.getState();
+  assert.equal(after.pendingImageAttachments["single:new"], undefined);
+  assert.deepEqual(after.pendingImageAttachments["single:thread-7"], [intent]);
+  assert.deepEqual(after.imageDropOwners, {});
+});
+
 test("document and image drop extensions stay disjoint", () => {
   // classifyDropPaths sums the two filters, so an overlap silently turns a
   // perfectly good drop into "unsupported".

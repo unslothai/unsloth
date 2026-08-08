@@ -89,6 +89,7 @@ import {
   DeepResearchWebsiteAccessDialog,
 } from "@/features/chat/components/deep-research-composer-button";
 import {
+  type NativeIntent,
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
 } from "@/features/native-intents";
@@ -2186,6 +2187,9 @@ const Composer: FC<{
     }
     const targetKey = nativeAttachmentTargetKey;
     const identityAtSetup = composerIdentityRef.current;
+    useNativeIntentStore
+      .getState()
+      .claimImageAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
 
@@ -2197,6 +2201,15 @@ const Composer: FC<{
       stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
         : targetKey;
+    // A fresh chat persisting remounts this composer, so the key it moves to is
+    // not visible from here. Leave the batch tagged with the identity instead;
+    // the next instance with that identity claims it on mount.
+    const requeue = (intents: NativeIntent[]) => {
+      const key = requeueKey();
+      const store = useNativeIntentStore.getState();
+      store.addImageAttachments(key, intents);
+      store.noteImageDropOwner(key, identityAtSetup);
+    };
 
     const drainPendingImages = async () => {
       if (disposed || draining) {
@@ -2216,9 +2229,7 @@ const Composer: FC<{
           }
           for (let index = 0; index < intents.length; index += 1) {
             if (disposed) {
-              useNativeIntentStore
-                .getState()
-                .addImageAttachments(requeueKey(), intents.slice(index));
+              requeue(intents.slice(index));
               return;
             }
             const intent = intents[index]!;
@@ -2237,9 +2248,7 @@ const Composer: FC<{
               disposed ||
               nativeAttachmentTargetKeyRef.current !== targetKey
             ) {
-              useNativeIntentStore
-                .getState()
-                .addImageAttachments(requeueKey(), intents.slice(index));
+              requeue(intents.slice(index));
               return;
             }
             try {
@@ -2827,17 +2836,23 @@ const Composer: FC<{
   }, [dismissWaitToast]);
   cancelQueuedSendRef.current = cancelQueuedSend;
 
-  const enqueueSend = useCallback(() => {
-    if (pendingSendRef.current) return;
-    pendingSendRef.current = true;
-    setPendingSend(true);
-    waitToastRef.current = toast("Waiting for documents to finish indexing", {
-      description:
-        "Your message will send automatically once indexing finishes.",
-      duration: Infinity,
-      cancel: { label: "Cancel", onClick: cancelQueuedSend },
-    });
-  }, [cancelQueuedSend]);
+  const enqueueSend = useCallback(
+    (waitingOn: "indexing" | "images" = "indexing") => {
+      if (pendingSendRef.current) return;
+      pendingSendRef.current = true;
+      setPendingSend(true);
+      const title =
+        waitingOn === "images"
+          ? "Waiting for dropped images"
+          : "Waiting for documents to finish indexing";
+      waitToastRef.current = toast(title, {
+        description: "Your message will send automatically once they are ready.",
+        duration: Infinity,
+        cancel: { label: "Cancel", onClick: cancelQueuedSend },
+      });
+    },
+    [cancelQueuedSend],
+  );
 
   const shouldBlockSend = useCallback(
     () =>
@@ -2901,6 +2916,18 @@ const Composer: FC<{
     (event: { preventDefault: () => void }) => {
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
+        // A materializing image is a wait, not a refusal. Park the send the
+        // way indexing does, or the click is silently swallowed.
+        if (
+          !disabled &&
+          !overlay &&
+          hasMaterializingImageAttachments &&
+          hasSendableContent &&
+          !isComposingRef.current &&
+          !hasPendingAttachments
+        ) {
+          enqueueSend("images");
+        }
         return true;
       }
       if (indexingActive && !overlay) {
@@ -2910,7 +2937,17 @@ const Composer: FC<{
       }
       return false;
     },
-    [disabled, shouldBlockSend, indexingActive, overlay, enqueueSend],
+    [
+      disabled,
+      shouldBlockSend,
+      indexingActive,
+      overlay,
+      enqueueSend,
+      hasMaterializingImageAttachments,
+      hasSendableContent,
+      hasPendingAttachments,
+      isComposingRef,
+    ],
   );
 
   // Fire the parked send once indexing clears, unless the user emptied the

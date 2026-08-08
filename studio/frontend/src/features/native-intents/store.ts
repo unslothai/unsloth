@@ -19,6 +19,10 @@ interface NativeIntentState {
   // Bumped, per chat, when a drop fails before it reaches a queue. The composer
   // watches its own key so a failure elsewhere cannot cancel its parked send.
   imageDropFailures: Record<string, number>;
+  // Who a queued image batch belongs to, by composer identity. A fresh chat
+  // persisting remounts the composer, so the outgoing instance cannot hand the
+  // batch over itself: it leaves this note and the new instance claims it.
+  imageDropOwners: Record<string, string>;
   addIntent: (intent: NativeIntent) => void;
   addAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   addImageAttachments: (targetKey: string, intents: NativeIntent[]) => void;
@@ -27,6 +31,8 @@ interface NativeIntentState {
   beginImageDropRegistration: () => void;
   endImageDropRegistration: () => void;
   failImageDropRegistration: (targetKey: string) => void;
+  noteImageDropOwner: (targetKey: string, identity: string) => void;
+  claimImageAttachments: (identity: string, targetKey: string) => void;
   clearModelIntent: (intentId?: string) => void;
 }
 
@@ -36,6 +42,7 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   pendingImageAttachments: {},
   registeringImageDrops: 0,
   imageDropFailures: {},
+  imageDropOwners: {},
   addAttachments: (targetKey, intents) => {
     const current = get().pendingAttachments;
     const pendingAttachments = enqueueNativeAttachments(
@@ -94,6 +101,37 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
         [targetKey]: (current[targetKey] ?? 0) + 1,
       },
     });
+  },
+  noteImageDropOwner: (targetKey, identity) => {
+    if (!identity) return;
+    set({ imageDropOwners: { ...get().imageDropOwners, [targetKey]: identity } });
+  },
+  claimImageAttachments: (identity, targetKey) => {
+    if (!identity) return;
+    const owners = get().imageDropOwners;
+    const stale = Object.keys(owners).filter(
+      (key) => owners[key] === identity && key !== targetKey,
+    );
+    if (stale.length === 0) return;
+    const queues = get().pendingImageAttachments;
+    let pendingImageAttachments = queues;
+    for (const key of stale) {
+      const queued = queues[key] ?? [];
+      if (queued.length > 0) {
+        pendingImageAttachments = enqueueNativeAttachments(
+          pendingImageAttachments,
+          targetKey,
+          queued,
+        );
+      }
+      if (key in pendingImageAttachments) {
+        pendingImageAttachments = { ...pendingImageAttachments };
+        delete pendingImageAttachments[key];
+      }
+    }
+    const nextOwners = { ...owners };
+    for (const key of stale) delete nextOwners[key];
+    set({ pendingImageAttachments, imageDropOwners: nextOwners });
   },
   addIntent: (intent) => {
     if (intent.kind !== "model") {
