@@ -981,6 +981,142 @@ def _infer_required_torchvision(torch_major, torch_minor):
     return None
 
 
+# Unambiguous on their own: only a torchvision/torch mismatch produces these.
+_TORCHVISION_ABI_MARKERS = (
+    "torchvision::",
+    "torchvision.io.video",
+    "torchvision.io._video",
+)
+# A loader failure is a torchvision break only when it names torchvision or the
+# torch libraries it links. The probe below imports torchvision where nothing
+# used to, so a box whose torchvision cannot load for an UNRELATED reason (a
+# missing CUDA library, say) must keep importing unsloth exactly as before
+# instead of being handed a hard "reinstall torchvision".
+_LOADER_FAILURE_MARKERS = ("undefined symbol", "cannot open shared object file")
+_TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
+
+
+def _is_broken_torchvision_error(error) -> bool:
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        message = str(current)
+        if any(marker in message for marker in _TORCHVISION_ABI_MARKERS):
+            return True
+        if any(m in message for m in _LOADER_FAILURE_MARKERS) and any(
+            m in message for m in _TORCH_LIBRARY_MARKERS
+        ):
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
+# PyPI carries exactly one torchvision build per release and it is one CUDA
+# family: its `_C.so` links libcudart, libc10_cuda and libtorch_cuda. Every
+# other build -- CPU, XPU, ROCm, and every CUDA family but PyPI's -- lives only
+# on download.pytorch.org, under an index named after torch's own local tag.
+# `--no-deps` keeps the installed torch, so an unqualified pin swaps a working
+# wheel for PyPI's and raises the very `operator torchvision::nms does not
+# exist` this command is handed out to clear. A tag we cannot turn into an
+# index (a vendor build: this repo's Radeon extras install
+# `torch 2.9.1+rocm7.2.0.lw.git7e1940d4` beside a repo.radeon.com torchvision;
+# or a source build) has no wheel to name at all, and neither does a
+# prerelease, whose stable-looking companion is synthesised from the release
+# numbers alone.
+_TORCH_BACKEND_INDEX = re.compile(r"cpu|xpu|cu\d+|rocm\d+(?:\.\d+)*", re.IGNORECASE)
+
+
+def _torch_local_tag(torch_version_raw):
+    if not torch_version_raw or "+" not in torch_version_raw:
+        return ""
+    return torch_version_raw.split("+", 1)[1]
+
+
+def _has_no_matching_public_wheel(torch_version_raw):
+    try:
+        # `.is_prerelease`, not a substring list: `2.11.0a1` and `2.11.0b2` are
+        # prereleases that no `a0`/`b0` match would catch.
+        if TrueVersion(torch_version_raw).is_prerelease:
+            return True
+    except Exception:
+        return True
+    local = _torch_local_tag(torch_version_raw)
+    return bool(local) and not _TORCH_BACKEND_INDEX.fullmatch(local)
+
+
+def _torchvision_repair_advice(required = None, torch_version_raw = None):
+    """The one sentence telling the user how to repair a broken torchvision."""
+    if _has_no_matching_public_wheel(torch_version_raw):
+        return (
+            f"Reinstall the torchvision built for torch=={torch_version_raw}, "
+            f"from wherever that torch came from."
+        )
+    return f"Reinstall it with `{_torchvision_repair_command(required, torch_version_raw)}`."
+
+
+def _torchvision_repair_command(required = None, torch_version_raw = None):
+    """The pip command to repair a broken torchvision binary in place.
+
+    Pinned and `--no-deps`, both deliberately. Every torchvision wheel requires
+    an exact `torch==X.Y.Z`, so an unpinned `pip install --upgrade
+    --force-reinstall torchvision` resolves the newest torchvision and then
+    replaces the user's torch to satisfy it -- on a Colab/Kaggle image that is
+    the pinned torch every other wheel was built against, vLLM included. The
+    pin also fixes the case where the version gate passed on its lower bound
+    (torch 2.4 accepts torchvision >= 0.19, so an installed 0.20 reaches here):
+    the companion release is what gets reinstalled, not the newest one.
+    """
+    if required is None:
+        spec = "torchvision"
+    elif len(required) >= 3:
+        # Exact, because the pair is exact: torchvision 0.22.0 requires torch
+        # 2.7.0 and 0.22.1 requires torch 2.7.1. A `0.22.*` wildcard on a
+        # torch 2.7.0 host resolves 0.22.1, and `--no-deps` then keeps the torch
+        # that does not match it, rebuilding the mismatch the command repairs.
+        spec = f"torchvision=={required[0]}.{required[1]}.{required[2]}"
+    else:
+        spec = f"torchvision=={required[0]}.{required[1]}.*"
+    local = _torch_local_tag(torch_version_raw)
+    index = ""
+    if local and _TORCH_BACKEND_INDEX.fullmatch(local):
+        index = f" --index-url https://download.pytorch.org/whl/{local.lower()}"
+    return f'pip install --force-reinstall --no-deps --no-cache-dir{index} "{spec}"'
+
+
+def _probe_torchvision_binary(
+    torch_version_raw,
+    torchvision_version_raw,
+    required = None,
+):
+    """Import torchvision, so a broken binary is named here and not six frames
+    deep in transformers.
+
+    The table above compares metadata, which cannot see an ABI break: ops
+    built against a different torch die in `_meta_registrations`, at
+    `register_fake("torchvision::nms")`. Found by running Gemma4_(E2B)_GRPO,
+    whose T4 branch installs vllm==0.9.2 beside Colab's torch and mismatches
+    both; `disable_broken_vllm` already covers the vLLM half.
+
+    Costs no extra import: transformers imports torchvision from `image_utils`
+    the moment anything touches `processing_utils`.
+    """
+    try:
+        import torchvision  # noqa: F401
+        import torchvision.ops  # noqa: F401  where the compiled nms lives
+    except Exception as error:
+        # Anything else is left for whoever actually needs torchvision.
+        if not _is_broken_torchvision_error(error):
+            return
+        raise ImportError(
+            f"Unsloth: torchvision=={torchvision_version_raw} claims to match "
+            f"torch=={torch_version_raw}, but its compiled operators do not "
+            f"load ({type(error).__name__}: {error}). "
+            f"{_torchvision_repair_advice(required, torch_version_raw)} "
+            f"Set UNSLOTH_SKIP_TORCHVISION_CHECK=1 to skip this check."
+        ) from error
+
+
 def torchvision_compatibility_check():
     # Allow skipping via environment variable for custom environments
     if os.environ.get("UNSLOTH_SKIP_TORCHVISION_CHECK", "0").lower() in ("1", "true"):
@@ -1028,6 +1164,12 @@ def torchvision_compatibility_check():
     if required is None:
         return
 
+    # Carry torch's own patch into the companion: the two move together
+    # (2.7.0/0.22.0, 2.7.1/0.22.1), so the repair command can name one wheel
+    # instead of a minor-wide range it cannot then satisfy under `--no-deps`.
+    if len(torch_release) >= 3:
+        required = (required[0], required[1], torch_release[2])
+
     required_tv_str = f"{required[0]}.{required[1]}.0"
 
     if tv_v >= Version(required_tv_str):
@@ -1035,6 +1177,7 @@ def torchvision_compatibility_check():
             f"Unsloth: torch=={torch_version_raw} and "
             f"torchvision=={torchvision_version_raw} are compatible."
         )
+        _probe_torchvision_binary(torch_version_raw, torchvision_version_raw, required)
         return
 
     # Version mismatch detected
