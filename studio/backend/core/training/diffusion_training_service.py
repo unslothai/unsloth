@@ -166,7 +166,12 @@ def _refresh_resume_state(rec: dict) -> dict:
             status = rec.get("status"),
             started_at = rec.get("started_at"),
             ended_at = rec.get("ended_at"),
-            total_steps = rec.get("total_steps"),
+            # Same fallback as the write side: a run that died during model loading never got
+            # a "resumed" event to seed total_steps, and zero here sends the calculation back
+            # to the checkpoint manifest's OLDER target, reporting "nothing left to train" for
+            # a run whose whole point was a raised one.
+            total_steps = rec.get("total_steps")
+            or (config.get("train_steps") if isinstance(config, dict) else None),
             write_error = rec.get("checkpoint_write_error"),
             # What this run itself resumed from, so a resumed run that died before its first
             # save can still offer the bundle it was validated against.
@@ -601,7 +606,17 @@ class DiffusionTrainingService:
                     str(adapter) if adapter else None,
                     status = s.get("status"),
                     started_at = s.get("started_at"),
-                    total_steps = s.get("total_steps") or 0,
+                    # The REQUESTED target, falling back to the config the start preflight
+                    # accepted: total_steps is seeded by the "resumed" event, and a run that
+                    # dies during model loading never gets one. Zero there sent the resume
+                    # calculation back to the checkpoint manifest's older target, which then
+                    # reported "nothing left to train" for a run whose whole point was a
+                    # raised target.
+                    total_steps = int(
+                        s.get("total_steps")
+                        or cfg.get("train_steps")
+                        or 0
+                    ),
                     write_error = s.get("resume_blocked_reason"),
                 ),
                 "config": cfg,

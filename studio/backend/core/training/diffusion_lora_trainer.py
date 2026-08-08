@@ -75,6 +75,7 @@ from core.training.diffusion_checkpoint import (
     resumed_into_this_dir,
     snapshot_checkpoints,
     identity_for_config,
+    with_resolved_revision,
     preflight_resume,
 )
 
@@ -476,6 +477,10 @@ def run_diffusion_lora_training(
         variant_rng = random.Random(cfg.seed + 1)
 
         _emit(on_event, "model_load_completed", compiled = compiled)
+        # The base is on disk now, so its commit can finally be read: the identity above was
+        # built before the load and records "unresolved" on the first run of an uncached repo,
+        # which no later resume could then enforce. Only ever adds the constraint.
+        identity = with_resolved_revision(identity, cfg.base_model)
 
         # Permutation-cycle index sampler: each image is visited once per cycle before any repeat, so a short run does not leave a small dataset partly unseen.
         index_sampler = PermutationBatchSampler(len(pairs), rng)

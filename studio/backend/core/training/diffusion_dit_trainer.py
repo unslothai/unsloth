@@ -67,6 +67,7 @@ from core.training.diffusion_checkpoint import (
     resumed_into_this_dir,
     snapshot_checkpoints,
     identity_for_config,
+    with_resolved_revision,
     preflight_resume,
 )
 from core.training.diffusion_train_extras import (
@@ -1761,6 +1762,11 @@ def _train_dit(
     )
 
     _emit(on_event, "model_load_completed", compiled = compiled, base_precision = base_precision)
+    # See the SDXL trainer: the base is on disk now, so its commit can be read and written into
+    # every bundle this run saves. The identity built before the load says "unresolved" on the
+    # first run of an uncached repo, and an unresolved revision is not comparable, so a later
+    # resume could not tell that the repo had moved underneath it.
+    identity = with_resolved_revision(identity, cfg.base_model)
 
     transformer.train()
     n_images = len(image_paths)

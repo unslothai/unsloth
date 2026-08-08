@@ -319,6 +319,27 @@ def _resolve_lora_targets(cfg: Any) -> tuple[str, ...]:
     return tuple(_select_lora_targets(configured, spec.lora_targets))
 
 
+def with_resolved_revision(identity: "CheckpointIdentity", base_model: Any) -> "CheckpointIdentity":
+    """``identity`` with its base revision re-read now that the base model is on disk.
+
+    The identity is built BEFORE the multi-GB load, deliberately -- a mismatched resume should
+    fail in seconds, not after a download. But on the first run of an uncached Hub repo there is
+    no local ref to read, so the revision records "unresolved" and the bundle it goes into can
+    never enforce which commit it was trained on. Re-read once the loader has populated the
+    cache: an unresolved value is not comparable, so this only ever ADDS the constraint, and a
+    later resume against a repo that has advanced is refused instead of quietly restoring the
+    adapter and the Adam moments onto different frozen base weights.
+    """
+    from core.training.diffusion_train_extras import source_revision
+
+    if _revision_is_comparable(identity.base_revision):
+        return identity
+    resolved = source_revision(base_model)
+    if not _revision_is_comparable(resolved):
+        return identity
+    return replace(identity, base_revision = resolved)
+
+
 def identity_for_config(
     cfg: Any,
     *,
@@ -333,6 +354,7 @@ def identity_for_config(
     resolved here the same way, so the start route and the trainer always agree.
     ``base_precision`` is the REQUESTED mode, not the one ``auto`` resolves to at load time
     -- the start route has to compute the same identity before anything is loaded."""
+    from core.training.diffusion_train_common import effective_mixed_precision
     from core.training.diffusion_train_extras import source_revision
 
     targets = tuple(resolved_targets) if resolved_targets else _resolve_lora_targets(cfg)
@@ -343,7 +365,10 @@ def identity_for_config(
         lora_rank = int(cfg.lora_rank),
         lora_alpha = int(cfg.lora_alpha if cfg.lora_alpha is not None else cfg.lora_rank),
         lora_dropout = round(float(getattr(cfg, "lora_dropout", 0.0) or 0.0), 6),
-        precision = str(cfg.mixed_precision or ""),
+        # The EFFECTIVE precision, not the request: a pre-Ampere card resolves bf16 to fp16, and
+        # recording the request let an fp16 bundle resume in bf16 on a newer card -- restored
+        # moments continuing under different frozen-base numerics, reported as a clean resume.
+        precision = effective_mixed_precision(cfg),
         base_precision = str(getattr(cfg, "base_precision", "") or ""),
         resolution = int(cfg.resolution),
         kind = kind,
@@ -1031,6 +1056,25 @@ _UNRESUMABLE_STATUS = {
 }
 
 
+def _source_checkpoint_bundle(source_checkpoint) -> Optional[tuple[Path, dict[str, Any]]]:
+    """The bundle a run RESUMED FROM, when it is still readable on disk.
+
+    A resume that ends before writing a bundle of its own -- an OOM on the first restored step
+    is the usual way -- has nothing under its own output dir, and if that dir is a new one it
+    may not even exist. The source it was validated against is still there and still correct to
+    continue from, so it is read directly rather than by widening the started_at fence, which
+    exists to keep an unrelated earlier run's bundles out.
+    """
+    if not source_checkpoint:
+        return None
+    try:
+        candidate = Path(str(source_checkpoint)).expanduser()
+        manifest = read_checkpoint(candidate) if candidate.is_dir() else None
+    except OSError:
+        return None
+    return (candidate, manifest) if manifest is not None else None
+
+
 def describe_resume_state(
     output_dir: Optional[str],
     *,
@@ -1061,8 +1105,18 @@ def describe_resume_state(
     try:
         root = Path(str(output_dir)).expanduser()
         if not root.is_dir():
-            return {**blank, "resume_blocked_reason": "This run's output folder no longer exists."}
-        found = latest_valid_checkpoint(root, not_before = started_at, not_after = ended_at)
+            # A resume into a NEW output dir that died before its first save never created it,
+            # and the bundle it was validated against is still sitting in the source dir. The
+            # fallback below is exactly for that, so it has to be reachable from here.
+            recovered = _source_checkpoint_bundle(source_checkpoint)
+            if recovered is None:
+                return {
+                    **blank,
+                    "resume_blocked_reason": "This run's output folder no longer exists.",
+                }
+            found = recovered
+        else:
+            found = latest_valid_checkpoint(root, not_before = started_at, not_after = ended_at)
         if found is None and source_checkpoint:
             # This run RESUMED and then ended before writing a bundle of its own -- an OOM on
             # the first restored step is the usual way. The source it was validated against is
@@ -1070,10 +1124,7 @@ def describe_resume_state(
             # the fence above excludes it and the run reads as unresumable when retrying is the
             # obvious thing to do. Read it directly rather than widening the fence, which exists
             # to stop an unrelated earlier run's bundles being offered.
-            candidate = Path(str(source_checkpoint)).expanduser()
-            manifest = read_checkpoint(candidate) if candidate.is_dir() else None
-            if manifest is not None:
-                found = (candidate, manifest)
+            found = _source_checkpoint_bundle(source_checkpoint)
     except OSError:
         return blank
     if found is None:

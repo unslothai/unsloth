@@ -1666,3 +1666,146 @@ def test_the_resumed_event_seeds_the_live_counters(runs_dir):
     # ...and still not a bundle this run wrote.
     assert snapshot["resumed_from_step"] == 400
     assert snapshot["checkpoint_step"] is None
+
+
+# ── round 6: the resume must not overstate what it can honour ─────────────────
+
+
+def test_a_resume_into_a_new_folder_that_died_first_is_still_resumable(run_dir, tmp_path):
+    """An OOM on the first restored step leaves the new output dir nonexistent.
+
+    The bundle it was validated against is still sitting in the source dir, and continuing from
+    it is the obvious retry -- but the missing-folder refusal returned before the source
+    fallback could be consulted, so the run read as unresumable."""
+    from utils.paths import outputs_root
+
+    source = _Run(run_dir)
+    source.save(10)
+    never_created = outputs_root() / "resumed-run-that-died"
+    assert not never_created.exists()
+
+    state = dc.describe_resume_state(
+        str(never_created),
+        status = "error",
+        source_checkpoint = str(run_dir / "checkpoint-10"),
+    )
+    assert state["can_resume"] is True
+    assert state["checkpoint_step"] == 10
+    assert state["checkpoint_path"].endswith("checkpoint-10")
+
+    # With no source to fall back to, the missing folder is still the answer.
+    blocked = dc.describe_resume_state(str(never_created), status = "error")
+    assert blocked["can_resume"] is False
+    assert "no longer exists" in blocked["resume_blocked_reason"]
+
+
+def test_a_checkpoint_with_no_sampler_state_is_refused(run_dir):
+    """The RNG is restored to a point AFTER the saved permutation was drawn, so a fresh sampler
+    generates a different order: images silently skipped or repeated under a resume that
+    reported success. Every bundle this format writes carries sampler state."""
+    run = _Run(run_dir)
+    run.step_once(0.1)
+    run.save(3)
+    bundle = run_dir / "checkpoint-3"
+    manifest_path = bundle / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    manifest["sampler"] = {"n": 999, "order": [1, 2, 3], "pos": 0}  # not this dataset
+    manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    resumed = _Run(run_dir)
+    resumed.cfg = type(resumed.cfg)(
+        **{**resumed.cfg.__dict__, "resume_from_checkpoint": str(bundle)}
+    )
+    with pytest.raises(dc.ResumeError, match = "sampler"):
+        resumed.restore()
+
+
+def test_the_sampler_reports_whether_it_restored():
+    sampler = PermutationBatchSampler(4, __import__("random").Random(0))
+    saved = sampler.state_dict()
+    assert PermutationBatchSampler(4, __import__("random").Random(1)).load_state_dict(saved) is True
+    for bad in (None, {}, {"n": 4, "order": "nope", "pos": 0}, {"n": 9, "order": [0], "pos": 0}):
+        assert PermutationBatchSampler(4, __import__("random").Random(1)).load_state_dict(bad) is False
+
+
+def test_the_identity_records_the_precision_the_run_will_actually_use(monkeypatch, run_dir):
+    """A pre-Ampere card resolves a bf16 request to fp16. Recording the REQUEST let an fp16
+    bundle resume in bf16 on a newer card, continuing restored moments under different
+    frozen-base numerics and calling it a clean resume."""
+    from core.training import diffusion_train_common as dtc
+
+    cfg = _Run(run_dir).cfg
+    import torch as _torch
+
+    monkeypatch.setattr(_torch.cuda, "is_available", lambda: True)
+
+    monkeypatch.setattr(dtc, "native_bf16_supported", lambda: False)
+    old_card = dc.identity_for_config(cfg)
+    monkeypatch.setattr(dtc, "native_bf16_supported", lambda: True)
+    new_card = dc.identity_for_config(cfg)
+
+    assert old_card.precision == "fp16" and new_card.precision == "bf16"
+    assert old_card.mismatch_reason(new_card) is not None, (
+        "moving the same request between the two cards must not read as the same run"
+    )
+
+
+def test_the_revision_is_pinned_once_the_base_is_on_disk(monkeypatch, run_dir):
+    """The identity is built before the multi-GB load, so the first run of an uncached repo
+    records "unresolved" and the bundle can never enforce which commit it trained on."""
+    from core.training import diffusion_train_extras as dte
+
+    cfg = _Run(run_dir).cfg
+    monkeypatch.setattr(dte, "source_revision", lambda ref: "unresolved")
+    unresolved = dc.identity_for_config(cfg)
+    assert unresolved.base_revision == "unresolved"
+
+    monkeypatch.setattr(dte, "source_revision", lambda ref: "rev-abc123")
+    pinned = dc.with_resolved_revision(unresolved, cfg.base_model)
+    assert pinned.base_revision == "rev-abc123"
+
+    # Already pinned, or still unresolvable: left exactly as it was.
+    monkeypatch.setattr(dte, "source_revision", lambda ref: "rev-def456")
+    assert dc.with_resolved_revision(pinned, cfg.base_model).base_revision == "rev-abc123"
+    monkeypatch.setattr(dte, "source_revision", lambda ref: "unresolved")
+    assert dc.with_resolved_revision(unresolved, cfg.base_model).base_revision == "unresolved"
+
+
+def test_both_trainers_pin_the_revision_after_the_load():
+    """Source-ordered: the loop needs a GPU, so this asserts the call sits after the load event
+    and before the restore that validates against it."""
+    for name in ("diffusion_lora_trainer", "diffusion_dit_trainer"):
+        src = (
+            Path(dc.__file__).resolve().parent / f"{name}.py"
+        ).read_text(encoding = "utf-8")
+        pin = src.index("identity = with_resolved_revision(")
+        load = src.index('"model_load_completed"')
+        restore = src.index("restore_resume_state(")
+        assert load < pin < restore, f"{name}: the revision must be pinned between the two"
+
+
+def test_a_raised_target_survives_a_run_that_died_before_the_resumed_event(run_dir):
+    """Raise the target to continue a checkpoint already at its original one, then die during
+    model loading. total_steps is seeded by the "resumed" event, which never arrived, so zero
+    sent the calculation back to the manifest's older target and the run reported that there
+    was nothing left to train -- for the one request that had something left."""
+    from core.training import diffusion_training_service as svc
+
+    run = _Run(run_dir)
+    run.save(500)
+
+    record = {
+        "status": "error",
+        "output_dir": str(run_dir),
+        "config": {"output_dir": str(run_dir), "train_steps": 800},
+    }
+    refreshed = svc._refresh_resume_state(dict(record))
+    assert refreshed["can_resume"] is True, refreshed["resume_blocked_reason"]
+    assert refreshed["checkpoint_step"] == 500
+
+    # And the original target still stops at the top, so this is not a blanket "always resumable".
+    at_target = svc._refresh_resume_state(
+        {**record, "config": {"output_dir": str(run_dir), "train_steps": 500}}
+    )
+    assert at_target["can_resume"] is False
+    assert "nothing left to train" in at_target["resume_blocked_reason"]

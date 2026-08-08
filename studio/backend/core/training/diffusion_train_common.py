@@ -324,6 +324,25 @@ _DIT_TRAIN_FAMILIES = frozenset(
 )
 
 
+def effective_mixed_precision(cfg: Any) -> str:
+    """The precision the SDXL trainer will actually run in, resolved the same way it resolves it.
+
+    A pre-Ampere card has no native bf16, so a bf16 request silently becomes fp16 there. Recording
+    the REQUEST in a checkpoint's identity let a bundle written in fp16 resume in bf16 on a newer
+    card (and the reverse), continuing restored optimizer moments under different frozen-base
+    numerics while reporting a clean resume. Shared so the start route and the trainer cannot
+    disagree about what a checkpoint was trained as.
+    """
+    import torch  # noqa: PLC0415 -- keep the import list light for the training subprocess
+
+    requested = str(getattr(cfg, "mixed_precision", "") or "")
+    if not torch.cuda.is_available():
+        return "no"
+    if requested == "bf16" and not native_bf16_supported():
+        return "fp16"
+    return requested
+
+
 def native_bf16_supported() -> bool:
     """True only when the live CUDA GPU provides NATIVE bf16 compute, not pre-Ampere emulation.
 
@@ -808,27 +827,34 @@ class PermutationBatchSampler:
         restoring the rng alone would not reproduce a cycle that was already in progress."""
         return {"n": self._n, "order": list(self._order), "pos": int(self._pos)}
 
-    def load_state_dict(self, state: Optional[dict[str, Any]]) -> None:
-        """Restore a cycle saved by ``state_dict``. Ignores a state for a different dataset
-        size (the resume preflight already rejects a changed dataset; this keeps a manually
-        edited checkpoint from indexing out of range) and clamps a bad position."""
+    def load_state_dict(self, state: Optional[dict[str, Any]]) -> bool:
+        """Restore a cycle saved by ``state_dict``. True when it was restored.
+
+        Refuses a state for a different dataset size (the resume preflight already rejects a
+        changed dataset; this keeps a manually edited checkpoint from indexing out of range)
+        and clamps a bad position. The BOOLEAN matters: silently leaving a fresh sampler in
+        place looks like a clean resume while the RNG -- already restored to a point after this
+        permutation was drawn -- generates a different order, so the run quietly reorders and
+        skips images.
+        """
         if not isinstance(state, dict) or int(state.get("n") or 0) != self._n:
-            return
+            return False
         order = state.get("order")
         if not isinstance(order, (list, tuple)):
-            return
+            return False
         try:
             restored = [int(i) for i in order]
         except (TypeError, ValueError):
-            return
+            return False
         if any(not 0 <= i < self._n for i in restored):
-            return
+            return False
         self._order = restored
         try:
             pos = int(state.get("pos") or 0)
         except (TypeError, ValueError):
             pos = 0
         self._pos = max(0, min(pos, len(self._order)))
+        return True
 
 
 def discover_image_caption_pairs(
@@ -1340,8 +1366,16 @@ def restore_resume_state(
             "This checkpoint carries no learning-rate scheduler state, so the schedule would "
             "restart from step 0. Start a new run."
         )
-    if sampler is not None:
-        sampler.load_state_dict(ckpt.sampler_state)
+    if sampler is not None and not sampler.load_state_dict(ckpt.sampler_state):
+        # Every image checkpoint this format writes carries sampler state, so a bundle whose
+        # state is missing or malformed is not one this code wrote. Continuing would leave a
+        # fresh sampler behind an RNG restored to a point AFTER the saved permutation was
+        # drawn, so the next batch is a different order: images silently skipped or repeated,
+        # under a resume that reported success.
+        raise ResumeError(
+            "This checkpoint's dataset sampler state is missing or unreadable, so the image "
+            "order cannot be continued. Start a new run."
+        )
     if ema is not None:
         ema_state = ckpt.tensors("ema")
         if ema_state:
