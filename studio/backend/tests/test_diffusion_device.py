@@ -322,3 +322,72 @@ def test_public_dict_dtype_string(dtype, expected):
     )
     d = t.as_public_dict()
     assert d["dtype"] == expected and "torch." not in d["dtype"]
+
+
+# -- float64 capability + the RoPE demotion it drives -------------------------------------------
+
+
+def test_only_mps_lacks_float64(monkeypatch):
+    torch = _make_torch(mps_available = True, mps_probe = "pass")
+    _install(monkeypatch, torch)
+    assert dd.resolve_diffusion_device_target().supports_float64 is False
+    for device in ("cuda", "xpu", "cpu"):
+        assert dd.diffusion_device_target_from_torch_device(device, FP32).supports_float64 is True
+    assert dd.diffusion_device_target_from_torch_device("mps", FP32).supports_float64 is False
+
+
+class _RopeModule:
+    def __init__(self, double_precision = True):
+        self.double_precision = double_precision
+
+
+class _Component:
+    def __init__(self, *mods):
+        self._mods = mods
+
+    def modules(self):
+        return iter(self._mods)
+
+
+class _Pipe:
+    def __init__(self, **components):
+        self.components = components
+
+
+def _mps_target():
+    return dd.diffusion_device_target_from_torch_device("mps", FP32)
+
+
+def _cuda_target():
+    return dd.diffusion_device_target_from_torch_device("cuda", FP32)
+
+
+def test_force_float32_rope_demotes_every_component_on_mps():
+    # Two components, several modules each: the connectors and the transformer both carry RoPE,
+    # so demoting only the first one found would still crash inside the denoise loop.
+    conn, dit_a, dit_b = _RopeModule(), _RopeModule(), _RopeModule()
+    pipe = _Pipe(connectors = _Component(conn), transformer = _Component(dit_a, dit_b))
+    assert dd.force_float32_rope(pipe, _mps_target()) == 3
+    assert not any(m.double_precision for m in (conn, dit_a, dit_b))
+
+
+def test_force_float32_rope_leaves_float64_devices_untouched():
+    rope = _RopeModule()
+    pipe = _Pipe(transformer = _Component(rope))
+    assert dd.force_float32_rope(pipe, _cuda_target()) == 0
+    assert rope.double_precision is True
+
+
+def test_force_float32_rope_skips_modules_without_the_flag():
+    already_off = _RopeModule(double_precision = False)
+    plain = object()
+    pipe = _Pipe(vae = _Component(already_off, plain))
+    assert dd.force_float32_rope(pipe, _mps_target()) == 0
+
+
+def test_force_float32_rope_tolerates_non_module_components():
+    # Pipelines carry schedulers and tokenizers with no .modules(); they must not abort the walk.
+    rope = _RopeModule()
+    pipe = _Pipe(scheduler = object(), tokenizer = None, transformer = _Component(rope))
+    assert dd.force_float32_rope(pipe, _mps_target()) == 1
+    assert rope.double_precision is False

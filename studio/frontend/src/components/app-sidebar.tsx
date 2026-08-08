@@ -627,15 +627,18 @@ export function AppSidebar() {
           ? "Training needs an NVIDIA or AMD GPU."
           : undefined;
   // Video's hint is derived the same way. It used to be hardcoded to "needs an NVIDIA or AMD
-  // GPU", which is wrong on an Apple Silicon host: video has no Apple path at all, so the row
-  // says so rather than pointing at hardware the user cannot add.
+  // GPU", which is wrong on a Mac, so the row names the reason this host is chat-only instead
+  // of pointing at hardware the user cannot add. Apple Silicon runs video on Metal, so a
+  // healthy Mac is never disabled here and never reaches these strings.
   const videoDisabledHint: string | undefined = !chatOnlyMeasured
     ? undefined
-    : platformDeviceType === "mac"
-      ? "Video generation on macOS is coming soon."
-      : chatOnlyReason === "no_gpu"
-        ? "Video generation needs an NVIDIA or AMD GPU."
-        : undefined;
+    : chatOnlyReason === "intel_mac"
+      ? "Video generation needs Apple Silicon or a GPU. Intel Macs are chat-only."
+      : chatOnlyReason === "mlx_unavailable"
+        ? "This host is chat-only until MLX is repaired. Run `unsloth studio update` to enable Video."
+        : chatOnlyReason === "no_gpu"
+          ? "Video generation needs an NVIDIA or AMD GPU."
+          : undefined;
 
   // Two things can change the verdict after the first /api/health. The backend MLX self-heal
   // (utils/mlx_repair) can reinstall MLX and flip chat_only false without a restart, and

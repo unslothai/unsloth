@@ -426,8 +426,8 @@ test("the Video page gates on the backend's own capability answer", async () => 
   );
 });
 
-// The hardcoded "needs an NVIDIA or AMD GPU" is wrong on Apple Silicon: no GPU the user can
-// add would help, because there is no Apple video path at all.
+// The hardcoded "needs an NVIDIA or AMD GPU" is wrong on a Mac: no GPU the user can add would
+// un-chat-only the host. The hint names the measured chat-only reason instead.
 test("the Video tooltip is derived, not hardcoded", async () => {
   const { readFile } = await import("node:fs/promises");
   const src = await readFile(
@@ -437,8 +437,12 @@ test("the Video tooltip is derived, not hardcoded", async () => {
   assert.match(src, /const videoDisabledHint: string \| undefined/, "no derived video hint");
   assert.match(
     src,
-    /platformDeviceType === "mac"\s*\?\s*"Video generation on macOS is coming soon\."/,
+    /chatOnlyReason === "intel_mac"/,
     "a Mac is still told to fit a GPU",
+  );
+  assert.ok(
+    !/coming soon/.test(src),
+    "the Video row still promises macOS support that has shipped",
   );
   assert.ok(
     !/tooltip: chatOnly\s*\n?\s*\? "Video generation needs an NVIDIA or AMD GPU\."/.test(src),
