@@ -262,6 +262,37 @@ def _has_usable_mlx_stack() -> bool:
         return _has_mlx()
 
 
+def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
+    """True when this settled verdict is one the MLX self-heal is about to overturn.
+
+    Detection gets its answer before utils.mlx_repair gets its turn, so an Apple Silicon
+    host whose MLX stack is missing or unreadable settles chat-only first and flips only
+    once the background reinstall lands. Published as final, that greys Train and Video
+    behind a "run `unsloth studio update`" tooltip the repair makes wrong a minute later,
+    and the rows then enable themselves on the frontend's recovery poll -- the reported
+    "greyed out, then they come out". Callers report it as still-detecting instead.
+
+    The "mlx_unavailable" check is also what lets mlx_repair_in_flight() be cheap: that
+    reason means this pass has just measured the stack as unusable, so the self-heal only
+    has to report whether it has finished, not re-probe whether it is needed.
+
+    Takes the verdict as arguments rather than reading the globals, so a caller that
+    already holds a consistent snapshot does not re-read them mid-pass."""
+    if not chat_only or reason != "mlx_unavailable":
+        return False
+    if not is_apple_silicon():
+        return False
+    try:
+        from utils.mlx_repair import mlx_repair_in_flight
+
+        return mlx_repair_in_flight()
+    except Exception as exc:
+        # A self-heal we cannot even ask about is one that cannot be relied on, so let the
+        # verdict settle rather than hold Train and Video spinning for the whole session.
+        logger.debug("MLX repair progress check failed, treating the verdict as final: %s", exc)
+        return False
+
+
 def _print_cuda_device_list(is_rocm: bool) -> None:
     """List every visible CUDA/ROCm GPU with its index at startup.
 

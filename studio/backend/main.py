@@ -1293,6 +1293,19 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
     return None
 
 
+def _superseded_by_mlx_repair(snapshot: Optional[tuple[bool, Optional[str]]]) -> bool:
+    """True when the MLX self-heal is about to replace this settled verdict.
+
+    Scoped to /api/health rather than folded into ``_hardware_snapshot()``: the launcher's
+    watchdog reads /api/liveness and holds its startup grace open while hardware_detecting
+    is set, so a 15-minute reinstall must not stretch that grace. Only the UI reads
+    chat_only, and only the UI has a row to grey out on it.
+    """
+    if snapshot is None:
+        return False
+    return _hw_module.verdict_pending_mlx_repair(snapshot[0], snapshot[1])
+
+
 def _torch_warm_in_progress() -> bool:
     """True while the coordinated warm thread is still working through its stages.
 
@@ -1367,6 +1380,12 @@ async def health_check(request: Request):
     await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()
+    # A chat-only verdict the MLX self-heal is about to overturn is not an answer yet. Hold
+    # it back and keep replying provisionally, or the Mac gets Train and Video greyed out
+    # under a tooltip the reinstall makes wrong minutes later.
+    mlx_repairing = _superseded_by_mlx_repair(snapshot)
+    if mlx_repairing:
+        snapshot = None
     base = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -1391,7 +1410,9 @@ async def health_check(request: Request):
     if snapshot is None:
         # chat_only above is the pre-detection default, not a measurement; clients should re-read.
         base["hardware_detecting"] = True
-        if os.environ.get(DISABLE_ENV_VAR) == "1":
+        # Not for a held-back verdict: the repair settles it on its own, and "deferred" means
+        # nothing ever will, which env.ts answers by storing the conservative chat_only.
+        if os.environ.get(DISABLE_ENV_VAR) == "1" and not mlx_repairing:
             # Nothing is detecting until a hardware-dependent operation runs; say so instead of making clients poll.
             base["hardware_detection_deferred"] = True
     auth = request.headers.get("authorization", "")
@@ -1413,6 +1434,9 @@ async def health_check(request: Request):
 
     # Re-read: the bearer check awaits, so a forced re-detect can land in between.
     snapshot = _hardware_snapshot()
+    if _superseded_by_mlx_repair(snapshot):
+        mlx_repairing = True
+        snapshot = None
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
@@ -1443,6 +1467,10 @@ async def health_check(request: Request):
         # client reading this as measured would store reason null and stop the sidebar's recovery
         # poll. Mark provisional and omit device_type: env.ts treats it as authoritative.
         authed["hardware_detecting"] = True
+        if mlx_repairing:
+            # base was built before the repair was noticed, so drop a marker that now
+            # contradicts it: the repair will settle this verdict, deferred means nothing will.
+            authed.pop("hardware_detection_deferred", None)
     return authed
 
 

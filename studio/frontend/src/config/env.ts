@@ -7,6 +7,10 @@ import {
   isProvisionalVerdict,
   resolveVerdict,
 } from "@/config/hardware-verdict";
+import {
+  cacheSettledVerdict,
+  readCachedVerdict,
+} from "@/config/hardware-verdict-cache";
 import { create } from "zustand";
 
 export const env = {
@@ -55,17 +59,25 @@ function detectLocalPlatform(): DeviceType {
 }
 
 const localDeviceType = detectLocalPlatform();
+// What the backend last measured on this host. Seeding from it beats the user-agent guess
+// below, which calls every Mac chat-only: on a returning user's first paint that is the
+// difference between the last real answer and one that is wrong on every healthy Mac.
+// Null on a first visit or a corrupt record, which falls back to the guess.
+const cachedVerdict = readCachedVerdict();
 
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
-  deviceType: localDeviceType,
+  deviceType: cachedVerdict?.deviceType ?? localDeviceType,
   // A guess from the user agent, kept only as the pre-measurement fallback for the redirects
   // that must decide something before /api/health answers. Capability gating must read
   // capabilitiesUnknown() first and hold, not gray a tab out on this.
-  chatOnly: localDeviceType === "mac",
-  chatOnlyReason: null,
+  chatOnly: cachedVerdict ? cachedVerdict.chatOnly : localDeviceType === "mac",
+  chatOnlyReason: cachedVerdict?.chatOnlyReason ?? null,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
+  // Stays false with a cached verdict in hand: the cache is a seed, not an answer. Flipping
+  // it would short-circuit the first fetchDeviceType() (see below) and gray the rows out on
+  // a stale record, which is the whole failure mode being fixed.
   fetched: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
@@ -186,6 +198,17 @@ export async function fetchDeviceType(options?: {
         fetched: data.device_type !== undefined || keepPlatform,
         detectionDeferred: isDetectionDeferred(data),
       });
+      // Seed the next page load, but only from a reply the backend actually measured. A
+      // provisional or deferred one carries the pre-detection default (chat_only true), so
+      // persisting it would hand the next load "this machine cannot train" as if it were an
+      // answer. device_type is the same authoritative marker `fetched` keys on.
+      if (
+        data.device_type !== undefined &&
+        !isProvisionalVerdict(data) &&
+        !isDetectionDeferred(data)
+      ) {
+        cacheSettledVerdict({ deviceType, chatOnly, chatOnlyReason });
+      }
       return deviceType;
     }
   } catch {
@@ -196,8 +219,12 @@ export async function fetchDeviceType(options?: {
     if (shouldKeepAuthoritativePlatform(options?.force)) {
       return usePlatformStore.getState().deviceType;
     }
-    const deviceType = detectLocalPlatform();
-    const chatOnly = deviceType === "mac";
+    // Re-read rather than reuse the module-level seed: a settled reply earlier in this
+    // session may have replaced it, and that is the freshest thing a backend which is
+    // merely not up yet has not contradicted. Falls back to the guess when nothing is cached.
+    const cached = readCachedVerdict();
+    const deviceType = cached?.deviceType ?? detectLocalPlatform();
+    const chatOnly = cached ? cached.chatOnly : deviceType === "mac";
     usePlatformStore.setState({ deviceType, chatOnly, fetched: false });
     return deviceType;
   }

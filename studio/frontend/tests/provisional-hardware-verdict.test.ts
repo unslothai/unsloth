@@ -9,12 +9,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { installLocalStorageFake, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
+const { store } = installLocalStorageFake();
 
 const { isDetectionDeferred, isProvisionalVerdict, resolveVerdict } = await import(
   "../src/config/hardware-verdict.ts"
+);
+const { VERDICT_CACHE_KEY, cacheSettledVerdict, readCachedVerdict } = await import(
+  "../src/config/hardware-verdict-cache.ts"
 );
 
 const GPU_HOST = { chatOnly: false, chatOnlyReason: null };
@@ -300,6 +304,132 @@ test("a rejected token does not consume the once-per-load window", async () => {
     src,
     /tokenRejected = true;/,
     "nothing records that the break was caused by a rejected token",
+  );
+});
+
+// ---------------------------------------------------------------- the verdict cache
+//
+// The store is created from a user-agent guess, which calls every Mac chat-only. That is the
+// last first-paint window left: the rows spin rather than gray out, but every redirect that
+// has to decide something before /api/health answers still decides it off the guess. Keeping
+// the last measured verdict removes the window for anyone who has been here before.
+
+test("nothing cached falls back to the behaviour that shipped before the cache", () => {
+  store.clear();
+  assert.equal(readCachedVerdict(), null);
+});
+
+test("a settled verdict round-trips", () => {
+  store.clear();
+  cacheSettledVerdict({ deviceType: "mac", chatOnly: true, chatOnlyReason: "mlx_unavailable" });
+  assert.deepEqual(readCachedVerdict(), {
+    deviceType: "mac",
+    chatOnly: true,
+    chatOnlyReason: "mlx_unavailable",
+  });
+});
+
+test("an unchanged verdict is not rewritten", () => {
+  // The sidebar re-reads /api/health every 15s while a chat-only host waits out its MLX
+  // self-heal, and every identical write fires a `storage` event in each other open tab.
+  store.clear();
+  const verdict = { deviceType: "mac", chatOnly: false, chatOnlyReason: null };
+  cacheSettledVerdict(verdict);
+
+  const fake = globalThis.localStorage as unknown as {
+    setItem: (key: string, value: string) => void;
+  };
+  const real = fake.setItem;
+  let writes = 0;
+  fake.setItem = (key: string, value: string) => {
+    writes += 1;
+    real.call(fake, key, value);
+  };
+  try {
+    cacheSettledVerdict({ ...verdict });
+    assert.equal(writes, 0, "the same verdict was written again");
+    cacheSettledVerdict({ ...verdict, chatOnly: true });
+    assert.equal(writes, 1, "a changed verdict never reached storage");
+  } finally {
+    fake.setItem = real;
+  }
+});
+
+test("the storage key carries a schema version", () => {
+  // A shape change picks a new key, so an old build downgraded onto a new cache reads
+  // nothing rather than a record it would misinterpret.
+  assert.match(VERDICT_CACHE_KEY, /_v\d+$/, `${VERDICT_CACHE_KEY} is not versioned`);
+  store.clear();
+  store.set(VERDICT_CACHE_KEY.replace(/_v\d+$/, ""), JSON.stringify({
+    deviceType: "mac",
+    chatOnly: true,
+    chatOnlyReason: null,
+  }));
+  assert.equal(readCachedVerdict(), null, "a record under an unversioned key was read anyway");
+});
+
+test("a corrupt record is ignored, not thrown on", () => {
+  // A page load must never fail on a cache. Every one of these seeds the guess instead.
+  for (const raw of [
+    "not json at all",
+    "null",
+    "[]",
+    '"mac"',
+    "{}",
+    JSON.stringify({ deviceType: "mac" }),
+    JSON.stringify({ deviceType: "", chatOnly: false, chatOnlyReason: null }),
+    JSON.stringify({ deviceType: "mac", chatOnly: "false", chatOnlyReason: null }),
+    JSON.stringify({ deviceType: "mac", chatOnly: false, chatOnlyReason: 7 }),
+  ]) {
+    store.clear();
+    store.set(VERDICT_CACHE_KEY, raw);
+    assert.equal(readCachedVerdict(), null, `${raw} was accepted as a verdict`);
+  }
+});
+
+test("storage the browser refuses is not a crash either", () => {
+  // Safari with site data blocked throws on the property access, not just the call.
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    get() {
+      throw new Error("The operation is insecure.");
+    },
+  });
+  try {
+    assert.equal(readCachedVerdict(), null);
+    cacheSettledVerdict({ deviceType: "mac", chatOnly: false, chatOnlyReason: null });
+  } finally {
+    if (saved) Object.defineProperty(globalThis, "localStorage", saved);
+  }
+});
+
+// The store reads the cache at creation, and only a measured reply is allowed back into it.
+// Asserted on source: env.ts is not importable outside vite.
+test("the store seeds from the cache and caches only measured replies", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(new URL("../src/config/env.ts", import.meta.url), "utf8");
+  assert.match(
+    src,
+    /const cachedVerdict = readCachedVerdict\(\);/,
+    "nothing reads the cached verdict, so a returning user still paints on the guess",
+  );
+  assert.match(
+    src,
+    /chatOnly: cachedVerdict \? cachedVerdict\.chatOnly : localDeviceType === "mac",/,
+    "the store still seeds chatOnly from the user agent even with a measured verdict on disk",
+  );
+  // `fetched` must stay false: it is what capabilitiesUnknown() reads, and flipping it would
+  // gray the rows on a stale record and short-circuit the first fetchDeviceType() entirely.
+  assert.ok(
+    !/fetched: cachedVerdict/.test(src),
+    "a cached verdict is treated as an answer; the first /api/health read is skipped",
+  );
+  assert.match(
+    src,
+    /data\.device_type !== undefined &&[\s\S]{0,40}?!isProvisionalVerdict\(data\) &&[\s\S]{0,40}?!isDetectionDeferred\(data\)/,
+    "a provisional or deferred reply can reach the cache; the next load would open on " +
+      "the pre-detection default, which is chat_only true",
   );
 });
 

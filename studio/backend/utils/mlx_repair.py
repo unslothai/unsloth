@@ -112,6 +112,10 @@ _REPAIR_TIMEOUT_S = 900
 # guard short-circuits on the next boot).
 _attempted = False
 _attempted_lock = threading.Lock()
+# The worker started by start_mlx_autorepair_if_needed, so callers can tell "still
+# installing" from "done, whichever way it went". Written under _attempted_lock together
+# with the latch above, since mlx_repair_in_flight() reads the pair as one state.
+_repair_thread: Optional[threading.Thread] = None
 
 
 def is_apple_silicon() -> bool:
@@ -162,6 +166,32 @@ def mlx_stack_available() -> bool:
     if not _mlx_versions_satisfy_minimums():
         return False
     return _mlx_runtime_imports_available()
+
+
+def mlx_repair_in_flight() -> bool:
+    """True while the one-time self-heal can still overturn a chat-only verdict.
+
+    Ask only about a host whose MLX stack has just been measured as unusable, which is
+    what detect_hardware's "mlx_unavailable" verdict means. This answers "has the repair
+    finished", not "does this host need one": the not-yet-started branch would otherwise
+    have to re-probe the stack, and on the host that matters that means re-running the
+    failing mlx imports on the event loop for every health poll.
+
+    Detection runs on the warm thread and the repair is scheduled after it, so such a host
+    settles chat-only first and only flips once the reinstall lands. Both halves of that
+    window count, since both publish an answer the repair is about to replace: the stretch
+    before the worker starts, and the worker itself. False the moment it has finished,
+    whichever way it went, so a host that genuinely cannot train still gets a final
+    verdict -- as it does when the self-heal is opted out of, or cannot apply at all."""
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return False
+    if not is_apple_silicon():
+        return False
+    with _attempted_lock:
+        attempted, thread = _attempted, _repair_thread
+    if not attempted:
+        return True
+    return thread is not None and thread.is_alive()
 
 
 def _uv_executable() -> str | None:
@@ -388,31 +418,38 @@ def start_mlx_autorepair_if_needed() -> bool:
     on success. Returns True iff a repair thread was started. No-op (returns False)
     off Apple Silicon, when the stack is already adequate, when already attempted
     this process, or when disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1."""
-    global _attempted
+    global _attempted, _repair_thread
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
     if not is_apple_silicon():
         return False
     if mlx_stack_available():
         return False
+    from utils.hardware import hardware as _hw
+
     with _attempted_lock:
         if _attempted:
             return False
         _attempted = True
+        # Built and started inside the lock that claims the latch, so the pair is never
+        # half-published: a reader landing between the two sees "attempted, nothing alive"
+        # and settles the very verdict this repair is about to overturn. The worker never
+        # takes this lock, so the start() handshake cannot deadlock against it.
+        # The epoch is read here rather than in the thread: it may not run for a while, and
+        # reading it there would bind the pass to a later shutdown.
+        _repair_thread = threading.Thread(
+            target = _run_repair_and_redetect,
+            args = (_hw.current_detection_epoch(),),
+            daemon = True,
+            name = "mlx-autorepair",
+        )
+        _repair_thread.start()
+    # Logged outside the lock: a blocked stdout must not hold up mlx_repair_in_flight(),
+    # which /api/health calls on the event loop.
     logger.warning(
         "Apple Silicon without a usable MLX stack; attempting a one-time background "
         "reinstall of mlx/mlx-lm/mlx-vlm to re-enable Train/Export. "
         "Set %s=1 to disable.",
         DISABLE_ENV_VAR,
     )
-    # Read before start(): the thread may not run for a while, so reading the epoch
-    # inside it would bind the pass to a later shutdown.
-    from utils.hardware import hardware as _hw
-
-    threading.Thread(
-        target = _run_repair_and_redetect,
-        args = (_hw.current_detection_epoch(),),
-        daemon = True,
-        name = "mlx-autorepair",
-    ).start()
     return True

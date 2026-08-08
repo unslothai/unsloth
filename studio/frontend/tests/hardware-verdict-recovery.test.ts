@@ -22,6 +22,12 @@ const { store } = installLocalStorageFake();
 // /api/health reports device_type to authed callers only, and an unauthenticated read never
 // spends the detection window, so the slow-host case only exists for a signed-in caller.
 store.set("unsloth_auth_token", "token");
+// A verdict from a previous session, staged before env.ts is imported so the store is built
+// from it. Deliberately names a platform the user agent below does not, so "seeded from the
+// cache" cannot be confused with "guessed the same thing anyway".
+const { VERDICT_CACHE_KEY } = await import("../src/config/hardware-verdict-cache.ts");
+const CACHED = { deviceType: "windows", chatOnly: false, chatOnlyReason: null };
+store.set(VERDICT_CACHE_KEY, JSON.stringify(CACHED));
 // A non-Mac host whatever the runner is: node's own navigator reports process.platform.
 Object.defineProperty(globalThis, "navigator", {
   configurable: true,
@@ -51,6 +57,23 @@ globalThis.fetch = (async () => {
 }) as unknown as typeof fetch;
 
 const { fetchDeviceType, usePlatformStore } = await import("../src/config/env.ts");
+
+// Must run before anything fetches: this is the first-paint state, the window where the
+// store has only its seed. On a returning Mac the user-agent guess says chat-only, which is
+// what every pre-measurement redirect then acts on.
+test("the store opens on the last measured verdict, not the browser guess", () => {
+  const seeded = usePlatformStore.getState();
+  assert.equal(seeded.deviceType, "windows", "the store was built from the user agent");
+  assert.equal(seeded.chatOnly, false);
+  assert.equal(seeded.chatOnlyReason, null);
+  assert.equal(
+    seeded.fetched,
+    false,
+    "a cached verdict was treated as an answer; the first /api/health read is skipped and " +
+      "the rows gray out on a record that may be stale",
+  );
+  assert.equal(seeded.capabilitiesUnknown(), true);
+});
 
 test("a slow non-Mac host converges out of the pending state", async () => {
   const realDateNow = Date.now;
@@ -96,12 +119,36 @@ test("a slow non-Mac host converges out of the pending state", async () => {
   assert.equal(settled.deviceType, "linux");
 });
 
+// Runs straight after the measured reply above landed.
+test("a measured reply supersedes the cached verdict", () => {
+  const stored = JSON.parse(store.get(VERDICT_CACHE_KEY) ?? "null");
+  assert.deepEqual(
+    stored,
+    { deviceType: "linux", chatOnly: false, chatOnlyReason: null },
+    "the measurement never reached the cache, so the next load reopens on the stale verdict",
+  );
+});
+
 test("a cached authoritative verdict is not re-read without force", async () => {
   // The poll passes force, so it must be force that re-reads: a plain call short-circuits on
   // the cached verdict, which is what keeps navigation instant.
   const before = fetches;
   await fetchDeviceType();
   assert.equal(fetches, before, "the cache no longer short-circuits, so every route refetches");
+});
+
+// A provisional reply carries the backend's pre-detection default, chat_only true with no
+// device_type. Persisting one seeds the next load with "this machine cannot train" as though
+// it were measured, which is the failure this cache exists to remove, not to reintroduce.
+test("a provisional reply is never written to the cache", async () => {
+  store.delete(VERDICT_CACHE_KEY);
+  reply = DETECTING;
+  await fetchDeviceType({ force: true });
+  assert.equal(
+    store.get(VERDICT_CACHE_KEY),
+    undefined,
+    "a reply the backend has not measured was cached as if it had been",
+  );
 });
 
 test("the recovery poll runs while the verdict is unknown, on every platform", async () => {
