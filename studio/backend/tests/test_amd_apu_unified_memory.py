@@ -205,9 +205,7 @@ class TestTheGateStillFailsOpen:
     consulted on the load path, so a bad argument must skip the optimisation,
     not fail the load."""
 
-    @pytest.mark.parametrize(
-        "gpu_indices", [5, [[0]], "0", [None], object()]
-    )
+    @pytest.mark.parametrize("gpu_indices", [5, [[0]], "0", [None], object()])
     def test_a_bad_gpu_indices_answers_false(self, monkeypatch, gpu_indices):
         monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1151"]))
         assert LlamaCppBackend._amd_apu_wants_unified_memory(gpu_indices) is False
