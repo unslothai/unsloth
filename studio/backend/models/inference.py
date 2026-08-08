@@ -18,7 +18,7 @@ from pydantic import (
     model_validator,
 )
 
-from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
+from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
 
@@ -76,6 +76,16 @@ class LoadRequest(BaseModel):
             "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
         ),
     )
+    mlx_kv_bits: Optional[int] = Field(
+        None,
+        description = (
+            "MLX KV cache quantization bit width (8, 6, 5, 4, 3 or 2). MLX takes a bit "
+            "width rather than a llama.cpp dtype name, so this is separate from "
+            "cache_type_kv. Omit for an unquantized cache. Ignored by non-MLX "
+            "backends; a model whose cache layout cannot be quantized reports "
+            "the reason instead of applying it."
+        ),
+    )
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
@@ -94,11 +104,14 @@ class LoadRequest(BaseModel):
         None,
         description = (
             "Speculative decoding mode for GGUF models. Canonical values: "
-            "'auto' (platform-aware: MTP on MTP GGUFs, ngram-mod fallback "
-            "for sub-3B), 'mtp' (force draft-mtp only on both GPU and CPU), "
+            "'auto' (platform-aware: DSpark when the model ships a sidecar, "
+            "else MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "
+            "'mtp' (force draft-mtp only on both GPU and CPU), "
+            "'dspark' (force a draft-dspark sidecar), "
             "'ngram' (force ngram-mod only), 'mtp+ngram' (force "
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
+            "'draft-dspark' (-> dspark), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
             "still accepted. Ignored for non-GGUF models."
         ),
@@ -108,11 +121,11 @@ class LoadRequest(BaseModel):
         ge = 1,
         le = 16,
         description = (
-            "Max draft tokens per step for MTP speculative decoding "
+            "Max draft tokens per step for MTP or DSpark speculative decoding "
             "(--spec-draft-n-max). Defaults to 2 on GPU and 3 on CPU/Mac "
             "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
             "quants). Only applied when speculative_type resolves to "
-            "'mtp' or 'mtp+ngram'."
+            "'mtp', 'mtp+ngram', or 'dspark'."
         ),
     )
     n_parallel: Optional[int] = Field(
@@ -125,6 +138,28 @@ class LoadRequest(BaseModel):
             "default set at launch (the --parallel CLI flag). The VRAM fitter "
             "may launch fewer slots to keep the model fully on GPU. Ignored "
             "for non-GGUF models."
+        ),
+    )
+    n_batch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Logical prompt batch size for llama-server (--batch-size) for "
+            f"this load ({BATCH_MIN}..{BATCH_MAX}). Omit for the llama.cpp "
+            "default (2048). Ignored for non-GGUF models."
+        ),
+    )
+    n_ubatch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Physical prompt micro-batch size for llama-server (--ubatch-size) "
+            f"for this load ({BATCH_MIN}..{BATCH_MAX}). Omit for the llama.cpp "
+            "default (512). llama.cpp caps it at the batch size. Larger values "
+            "speed up prompt processing at the cost of compute-buffer VRAM. "
+            "Ignored for non-GGUF models."
         ),
     )
     tensor_parallel: bool = Field(
@@ -159,6 +194,13 @@ class LoadRequest(BaseModel):
             "llama.cpp's --fit. Ignored unless gpu_memory_mode is 'manual'."
         ),
     )
+    cpu_fallback: bool = Field(
+        False,
+        description = (
+            "Replay a previously recovered automatic Vulkan load in its managed CPU-only "
+            "runtime. Used when restoring that model after a failed switch."
+        ),
+    )
     n_cpu_moe: int = Field(
         0,
         ge = 0,
@@ -179,6 +221,18 @@ class LoadRequest(BaseModel):
             "unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
         ),
     )
+
+    @field_validator("n_batch", "n_ubatch", mode = "before")
+    @classmethod
+    def _no_booleans(cls, value: Any) -> Any:
+        # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1 and
+        # the load launches --batch-size 1, which llama-server aborts on: a 500 rather than
+        # a 422. Mirrors ModelOverrideRequest._no_booleans so /load and /settings agree.
+        # Kept off the annotation: an Annotated BeforeValidator stops the Field constraints
+        # folding into the int core schema, and they leak into OpenAPI as ge/le.
+        if isinstance(value, bool):
+            raise ValueError("Expected a number, got a boolean.")
+        return value
 
     @field_validator("tensor_split")
     @classmethod
@@ -299,6 +353,39 @@ class ValidateModelRequest(BaseModel):
             "server-wide --parallel default."
         ),
     )
+    n_batch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Batch size (--batch-size) intended for the follow-up load, so the "
+            "coexistence estimate sizes the compute buffer like /load."
+        ),
+    )
+    n_ubatch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Micro-batch size (--ubatch-size) intended for the follow-up load, "
+            "so the coexistence estimate sizes the compute buffer like /load."
+        ),
+    )
+    speculative_type: Optional[str] = Field(
+        None,
+        description = (
+            "Speculative mode intended for the follow-up load. The estimate is "
+            "mode-dependent -- the drafter it charges differs by kind, and a "
+            "DSpark sidecar is ~11 GB -- so omitting it makes this preflight "
+            "disagree with /load in both directions."
+        ),
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 16,
+        description = "Draft depth intended for the follow-up load; sizes the draft KV.",
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -310,6 +397,10 @@ class ValidateModelRequest(BaseModel):
         "native (picked / drag-drop) file's default template can be shown before it is loaded. "
         "Opt-in and, like include_context_length, a metadata-only probe that skips the training "
         "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
+    )
+
+    _no_booleans = field_validator("n_batch", "n_ubatch", mode = "before")(
+        LoadRequest._no_booleans.__func__
     )
 
 
@@ -518,6 +609,49 @@ class _InferenceRuntimeFields(BaseModel):
             "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
         ),
     )
+    is_mlx: bool = Field(False, description = "Whether the active model is served by the MLX backend")
+    mlx_kv_bits: Optional[int] = Field(
+        None, description = "MLX KV quantization bit width actually applied, if any"
+    )
+    mlx_kv_bits_requested: Optional[int] = Field(
+        None,
+        description = (
+            "MLX KV quantization bit width the load asked for. Differs from "
+            "mlx_kv_bits when the model could not honor it, which is exactly "
+            "when the reason matters."
+        ),
+    )
+    chat_template_override: Optional[str] = Field(
+        None,
+        description = "Chat template override this model was loaded with. llama.cpp reports what it applied; MLX reports what was requested, since a refusal applies nothing and the reason accompanies it",
+    )
+    chat_template_override_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why a requested chat template override was not applied: the "
+            "runtime supplies the template as code, the model ships a named "
+            "set rather than one template, it renders without a template, or "
+            "the override could not render a conversation."
+        ),
+    )
+    mlx_kv_quant_eligibility: Optional[str] = Field(
+        None,
+        description = (
+            "Whether this model's KV cache could be quantized: full, partial, "
+            "none or refused. Describes eligibility, not the exact set of "
+            "converted layers, which the runtime decides."
+        ),
+    )
+    mlx_kv_quant_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why KV quantization was not applied in full: the model's cache "
+            "layout, or the layers it could not cover when eligibility is partial"
+        ),
+    )
+    mlx_kv_quant_note: Optional[str] = Field(
+        None, description = "Caveat that applies when KV quantization is active"
+    )
     chat_template: Optional[str] = Field(
         None,
         description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
@@ -526,7 +660,7 @@ class _InferenceRuntimeFields(BaseModel):
         None,
         description = (
             "Canonical UI-facing requested speculative decoding mode "
-            "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
+            "('auto' / 'mtp' / 'dspark' / 'ngram' / 'mtp+ngram' / 'off' / "
             "'ngram-simple'), round-tripped from the original LoadRequest "
             "via _canonicalize_spec_mode. None when no model is loaded."
         ),
@@ -534,7 +668,7 @@ class _InferenceRuntimeFields(BaseModel):
     spec_draft_n_max: Optional[int] = Field(
         None,
         description = (
-            "Active --spec-draft-n-max for MTP speculative decoding, or "
+            "Active --spec-draft-n-max for MTP or DSpark speculative decoding, or "
             "None when the platform default is in effect."
         ),
     )
@@ -549,6 +683,14 @@ class _InferenceRuntimeFields(BaseModel):
     gpu_layers: int = Field(
         -1,
         description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
+    )
+    cpu_fallback_reason: Optional[Literal["vulkan_startup_crash"]] = Field(
+        None,
+        description = (
+            "Why an automatic GGUF load was downgraded to CPU. "
+            "'vulkan_startup_crash' means a managed, auto-selected Vulkan launch "
+            "hard-crashed and the same launch became healthy with GPU devices disabled."
+        ),
     )
     n_cpu_moe: int = Field(
         0,
@@ -592,6 +734,20 @@ class _InferenceRuntimeFields(BaseModel):
             "Serving slots the active llama-server actually runs (--parallel "
             "after any fit-time slot reduction). None for non-GGUF loads and "
             "for the diffusion runner, which ignores --parallel."
+        ),
+    )
+    requested_n_batch: Optional[int] = Field(
+        None,
+        description = (
+            "Batch size (--batch-size) the load was invoked with, or None when "
+            "the load left it at the llama.cpp default (or to extra args / env)."
+        ),
+    )
+    requested_n_ubatch: Optional[int] = Field(
+        None,
+        description = (
+            "Micro-batch size (--ubatch-size) the load was invoked with, or None "
+            "when the load left it at the llama.cpp default (or to extra args / env)."
         ),
     )
 
@@ -667,10 +823,6 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )
-    chat_template_override: Optional[str] = Field(
-        None,
-        description = "Active chat template override applied at load time, or None if model is using its default",
-    )
     requested_context_length: Optional[int] = Field(
         None,
         description = (
@@ -686,20 +838,29 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "False -> recommend `unsloth studio update`."
         ),
     )
+    spec_drafter_kind: Optional[str] = Field(
+        None,
+        description = (
+            "Which drafter the resolution was about, 'mtp' or 'dspark'. Needed "
+            "because Auto resolves the kind itself, so speculative_type still "
+            "reads 'auto', and a fallback leaves the engaged type at 'default': "
+            "neither still says which file the UI should tell the user to fix."
+        ),
+    )
     spec_fallback_reason: Optional[str] = Field(
         None,
         description = (
-            "Why MTP was disabled on the loaded model despite being requested "
-            "(auto on an MTP model, or forced mtp / mtp+ngram). "
+            "Why a speculative drafter was disabled despite being requested. "
             "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
             "re-enable it (show the update affordance); 'runtime_error' -> the "
             "current build could not run it; 'drafter_not_found' -> the model's "
-            "separate MTP drafter could not be resolved; 'mla_mtp_disabled' -> "
+            "separate MTP or DSpark drafter could not be resolved; "
+            "'mla_mtp_disabled' -> "
             "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
             "whose llama.cpp MTP path runs slower than no speculation, so Auto "
             "used ngram-mod or spec-off instead -- updating won't help; choose "
             "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
-            "None when MTP engaged or was not requested."
+            "None when the requested strategy engaged or was not requested."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(
@@ -1032,6 +1193,14 @@ class ChatCompletionRequest(BaseModel):
     enable_thinking: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
+    )
+    continue_final_message: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Continue the trailing assistant message instead of starting a new "
+            "turn: the prompt ends mid-response so the model resumes token-exactly from "
+            "where it stopped. Requires the last message to have role 'assistant'."
+        ),
     )
     reasoning_effort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]

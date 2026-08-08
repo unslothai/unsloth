@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 import weakref
@@ -27,20 +28,24 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
 )
 from hub.utils.gguf import (
+    GgufVariantInfo,
     extract_quant_label,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
     list_empty_gguf_variant_dirs,
     list_gguf_variants,
-    list_gguf_variants_from_hf_cache,
     list_local_gguf_variants,
     list_partial_gguf_variants_from_state,
     pick_best_gguf,
+    select_gguf_cache_snapshot,
 )
 from hub.utils.paths import (
     is_local_path,
     is_valid_repo_id as _is_valid_repo_id,
 )
+
+# Loader's normalizer, not the hub's: they disagree on WSL, and only it names what the load opens.
+from utils.paths import normalize_path as _loader_normalize_path
 from hub.services.models.common import (
     _is_mmproj_filename,
     _is_mtp_drafter_path,
@@ -526,8 +531,232 @@ def _mark_empty_dir_cleanables(
             variants[i] = v.model_copy(update = {"partial": True})
     for key, label in sorted(empty_by_key.items()):
         if key not in listed:
-            variants.append(GgufVariantDetail(filename = f"{label}.gguf", quant = label, partial = True))
+            variants.append(
+                GgufVariantDetail(
+                    filename = f"{label}.gguf", quant = label, partial = True, cleanable = True
+                )
+            )
     return response.model_copy(update = {"variants": variants})
+
+
+def _direct_gguf_loads(path: Path) -> bool:
+    """Whether the load path takes *path* itself as the model.
+
+    Mirrors ``detect_gguf_model``: refuses companions (mmproj, MTP/dspark
+    drafter) and big-endian builds by name+parent, same as the load path.
+    """
+    # Load extractor, not the hub one: they disagree on F16-be-checkpoint-Q4_K_M shapes.
+    from utils.models.model_config import _extract_quant_label
+
+    context = f"{path.parent.name}/{path.name}"
+    return not (
+        _is_mmproj_filename(path.name)
+        or _is_mtp_drafter_path(context)
+        or is_big_endian_gguf_path(context, _extract_quant_label(context))
+    )
+
+
+# llama.cpp's split grammar (model_config._GGUF_SPLIT_FILE_RE): five digits exactly, since a
+# shorter name loads as an ordinary file, not the cache scan's looser -\d{3,}- resume form.
+_DIRECT_SPLIT_RE = re.compile(r"^(?P<stem>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})$", re.IGNORECASE)
+
+
+def _direct_gguf_split_is_whole(path: Path) -> bool:
+    """Whether *path*'s split set is entirely beside it (True when it is not a split).
+
+    llama.cpp resolves a split's siblings from the main shard's directory (see
+    llama_cpp._snapshot_has_all_shards), so a lone shard fails after teardown.
+    A symlinked shard follows its target, like _local_gguf_load_path. Unknown
+    (unreadable directory, nonsense total) reports whole to keep the row ready.
+    """
+    match = _DIRECT_SPLIT_RE.match(path.name.rsplit(".", 1)[0])
+    if match is None:
+        return True
+    total = int(match.group("total"))
+    if total < 2:
+        return True
+    sibling = re.compile(
+        re.escape(match.group("stem"))
+        + r"-(\d{"
+        + str(len(match.group("index")))
+        + r"})-of-"
+        + re.escape(match.group("total"))
+        + r"\.gguf$",
+        re.IGNORECASE,
+    )
+
+    def _indexes_beside(target: Path, pattern) -> set:
+        return {
+            int(m.group(1))
+            for p in target.parent.iterdir()
+            if (m := pattern.match(p.name)) and p.is_file() and p.stat().st_size > 0
+        }
+
+    def _target_set_is_whole(target: Path) -> bool:
+        """Whether the symlink target's own declared set is beside it.
+
+        The target names its own grammar/total (need not match the alias); the
+        load launches whatever the target declares.
+        """
+        m = _DIRECT_SPLIT_RE.match(target.name.rsplit(".", 1)[0])
+        if m is None:
+            # Split-named link on an ordinary target: loads as-is, nothing missing.
+            return True
+        target_total = int(m.group("total"))
+        pattern = re.compile(
+            re.escape(m.group("stem"))
+            + r"-(\d{"
+            + str(len(m.group("index")))
+            + r"})-of-"
+            + re.escape(m.group("total"))
+            + r"\.gguf$",
+            re.IGNORECASE,
+        )
+        return _indexes_beside(target, pattern) >= set(range(1, target_total + 1))
+
+    try:
+        found = _indexes_beside(path, sibling)
+        if not found >= set(range(1, total + 1)) and path.is_symlink():
+            # _local_gguf_load_path resolves siblings from the TARGET, so a renamed alias
+            # still loads the target's real set -- and a torn target stays torn.
+            return _target_set_is_whole(path.resolve())
+    except OSError:
+        return True
+    # Declared indexes, not a count: an over-indexed stray must not stand in for a missing
+    # shard, and a zero-byte sibling is an interrupted copy.
+    return found >= set(range(1, total + 1))
+
+
+# Cache scan's looser grammar (hub.utils.inventory_scan._GGUF_SPLIT_RE), not the five digits above.
+_CACHE_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
+
+# Only enumerates candidates for the resolver to adjudicate; drift costs a candidate, not a verdict.
+_KNOWN_QUANT_RE = re.compile(
+    r"(UD-)?"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
+    r"|TQ[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K_[A-Z]+"
+    r"|Q[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K"
+    r"|BF16|F16|F32)"
+    r"(-[0-9]+(?:\.[0-9]+)?bpw)?",
+    re.IGNORECASE,
+)
+
+
+def _will_serve(resolved: Optional[str]) -> bool:
+    """Whether llama-server can actually open what the resolver chose.
+
+    The resolver is extension-authoritative by design (it must answer inside
+    the Windows lock window), so it says yes to an empty copy or a torn split
+    too -- the two ways a resolved path still fails after teardown.
+    """
+    if not resolved:
+        return False
+    try:
+        path = Path(resolved)
+        # The resolver answers for nonexistent paths, so absence is caught here: "no such
+        # file" is definite, a read error (Windows lock window) stays unknown and serves.
+        # stat(), not exists(), which swallows every OSError on 3.14 and would read a
+        # sharing violation as absence.
+        try:
+            size = path.stat().st_size
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        return size > 0 and _direct_gguf_split_is_whole(path)
+    except OSError:
+        return True
+
+
+def _loadable_variants(identifier: str, variants):
+    """The advertised quants a load of *identifier* would actually serve.
+
+    Authoritative by construction: asks the same resolver /api/inference/load
+    uses, then checks the chosen file as llama-server would find it, so a
+    client never has to predict either from filenames. One resolver call per
+    row, local answers only. None when the question does not apply.
+    """
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    # from_identifier only consults the variant for a DIRECTORY; a direct file loads itself
+    # regardless, so leave it unanswered rather than be stricter than the load. stat(), not
+    # is_file(): a locked file must stay unanswered (an empty list is authoritative at the
+    # gate), which is_file() cannot express -- it raises here, and answers False from 3.14.
+    import stat as _stat
+
+    try:
+        if _stat.S_ISREG(Path(identifier).expanduser().stat().st_mode):
+            return None
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
+        return None
+
+    # The resolver walks the tree per call, so spellings are deduped against `seen` first:
+    # ~2 calls per row (36 for 18 quants, 179ms over 144 files), not one per spelling. Each
+    # alias is still confirmed, so a token binding a different file is never advertised.
+    accepted: list = []
+    seen = set()
+    for variant in variants:
+        quant = getattr(variant, "quant", None)
+        if not isinstance(quant, str) or not quant:
+            continue
+        try:
+            bound = _find_local_gguf_by_variant(identifier, quant)
+            if not _will_serve(bound):
+                continue
+        except Exception:
+            continue
+        key = quant.strip().lower()
+        if key not in seen:
+            seen.add(key)
+            accepted.append(quant)
+        # The resolver also takes the snapshot-relative stem (BF16/model) and the basename's
+        # own tokens; derive those and let it confirm each. It returns an absolute path, so a
+        # relative identifier must be resolved the same way or its alias is lost. Unresolved
+        # first: a symlink out of the tree still answers BF16/model there, but not resolved.
+        relative = Path(bound).name
+        for base_raw, bound_path in (
+            (Path(identifier).expanduser(), Path(bound)),
+            (Path(identifier).expanduser().resolve(), Path(bound).resolve()),
+        ):
+            try:
+                base = base_raw.parent if base_raw.is_file() else base_raw
+                relative = bound_path.relative_to(base).as_posix()
+                break
+            except (OSError, ValueError):
+                continue
+        basename = Path(bound).name
+        derived = {
+            re.sub(r"-\d{3,}-of-\d{3,}$", "", relative.rsplit(".", 1)[0]),
+            re.sub(r"-\d{3,}-of-\d{3,}$", "", basename.rsplit(".", 1)[0]),
+        }
+        for match in _KNOWN_QUANT_RE.finditer(basename.rsplit(".", 1)[0]):
+            prefix, core, bpw = match.group(1) or "", match.group(2), match.group(3) or ""
+            derived.add(f"{prefix}{core}")
+            if bpw:
+                derived.add(f"{prefix}{core}{bpw}")
+        for spelling in sorted(derived):
+            key = spelling.strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            try:
+                if _will_serve(_find_local_gguf_by_variant(identifier, spelling)):
+                    accepted.append(spelling)
+            except Exception:
+                continue
+    return accepted
+
+
+def _loads_without_variant(identifier: str) -> bool:
+    """Whether a variantless load of *identifier* would serve GGUF weights."""
+    from utils.models.model_config import detect_gguf_model
+    try:
+        return _will_serve(detect_gguf_model(identifier))
+    except Exception:
+        return False
 
 
 def _complete_quants_under(snapshot: str):
@@ -537,9 +766,36 @@ def _complete_quants_under(snapshot: str):
     working folder unusable.
     """
     try:
-        return hf_cache_scan.complete_snapshot_variants(snapshot)
+        complete = hf_cache_scan.complete_snapshot_variants(snapshot)
     except Exception:
         return None
+    if complete is None:
+        return None
+    return complete
+
+
+def _complete_with_servable(snapshot: str, complete, variants):
+    """*complete* plus the quants whose bound file the load would actually serve.
+
+    The scan's looser -\\d{3,}- grammar can read a name the LOAD treats as an
+    ordinary file (five-digit splits only) as a torn set. Rather than re-judge
+    names here, ask the resolver what it actually chose for the quant.
+    """
+    if complete is None:
+        return None
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    repaired = set(complete)
+    for variant in variants:
+        quant = getattr(variant, "quant", None)
+        if not isinstance(quant, str) or not quant or quant in repaired:
+            continue
+        try:
+            if _will_serve(_find_local_gguf_by_variant(snapshot, quant)):
+                repaired.add(quant)
+        except Exception:
+            continue
+    return repaired
 
 
 # One scan per identical request in flight. Aborting the HTTP request cannot stop the scan
@@ -599,6 +855,10 @@ async def get_gguf_variants_answer(
     # Set by whichever branch answers, and returned with the listing: the HF cache answers
     # before local_path, so a caller cannot infer the copy from the request alone.
     answered_from: list[Optional[str]] = [None]
+    # Set by the existence-first local branch below: a repo-shaped id resolving to a directory
+    # is answered by that directory alone, not the HF cache of the same-named repo -- else a
+    # GGUF-less directory could evict the resident model via a cleanable row from the cache.
+    answered_locally = [False]
 
     def _compute() -> GgufVariantsResponse:
         repo_cache_dir = (
@@ -703,12 +963,67 @@ async def get_gguf_variants_answer(
                 return response
             return response.model_copy(update = {"variants": [*response.variants, *extra]})
 
-        # Local directory path (e.g. LM Studio models) — scan filesystem
-        if is_local_path(repo_id):
-            variants, has_vision = list_local_gguf_variants(repo_id)
+        # Local directory path (e.g. LM Studio models) — scan filesystem. Load-path parity:
+        # from_identifier resolves existence-first, so a marker-less relative name that exists
+        # here is a local model, not a Hub id, and a direct .gguf file loads without the
+        # metadata siblings the directory scan requires. It also normalizes first, so every
+        # question below must ask about the same path: under WSL "C:\\models\\qwen" maps to
+        # /mnt/c/models/qwen, and probing the raw spelling would report a working model
+        # unloadable.
+        local_id = _loader_normalize_path(repo_id) if is_local_path(repo_id) else repo_id
+        local_target = None
+        try:
+            probe = Path(local_id).expanduser()
+            if is_local_path(repo_id) or probe.exists():
+                local_target = probe
+        except OSError:
+            local_target = None
+        if local_target is not None:
+            variants, has_vision = list_local_gguf_variants(local_id)
+            # The load id is this path, so a scan-torn quant is still ready when the file the
+            # resolver binds opens fine.
+            complete = _complete_with_servable(local_id, _complete_quants_under(local_id), variants)
+            if (
+                not variants
+                and local_target.is_file()
+                and local_target.suffix.lower() == ".gguf"
+                and _direct_gguf_loads(local_target)
+            ):
+                # An unmarked-parent .gguf is skipped by the directory scan but detect_gguf_model
+                # still loads it; falling back only here keeps a marked parent's siblings.
+                try:
+                    size = local_target.stat().st_size
+                except OSError:
+                    size = 0
+                # The load resolver's own extractor over the context it reads, so the quant is
+                # what the echoed load resolves (the hub one differs on F16-checkpoint-Q4_K_M).
+                from utils.models.model_config import _extract_quant_label
+
+                variants = [
+                    GgufVariantInfo(
+                        filename = local_target.name,
+                        quant = _extract_quant_label(
+                            f"{local_target.parent.name}/{local_target.name}"
+                        ),
+                        size_bytes = size,
+                    )
+                ]
+                # The shard scan resolves a file to its marked parent, so an unmarked one walks
+                # a bare file and misreports the row. Ask the file itself: whole unless it is a
+                # split missing a sibling or a zero-byte interrupted copy.
+                complete = None if size > 0 and _direct_gguf_split_is_whole(local_target) else set()
             answered_from[0] = repo_id
-            # The load id is this path, so a quant offered here has to resolve here.
-            return _local_response(repo_id, variants, has_vision, _complete_quants_under(repo_id))
+            answered_locally[0] = True
+            # Surface the resolution so the CLI gate matches on the local resolver's exact
+            # labels rather than the id's shape, and answers its real question -- would this
+            # load resolve -- with the loader itself, so no client mirrors its grammar.
+            return _local_response(repo_id, variants, has_vision, complete).model_copy(
+                update = {
+                    "resolved_locally": True,
+                    "loadable_variants": _loadable_variants(local_id, variants),
+                    "loadable": _loads_without_variant(local_id),
+                }
+            )
 
         # Reject invalid remote repo_ids up front (like download/delete) so a
         # malformed id returns 400 instead of a 500 from the HF client.
@@ -734,13 +1049,12 @@ async def get_gguf_variants_answer(
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
-            cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
+            cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision, complete = cached
-                # This listing is scoped to one cache, so name it: a repo-wide walk starts at
-                # the active cache and could read a different copy's context length.
-                if repo_cache_dir is not None and repo_cache_dir.is_dir():
-                    answered_from[0] = str(repo_cache_dir)
+                variants, has_vision, complete, snapshot = cached
+                # Name the answering snapshot: a repo-wide walk could read a different cache's
+                # context length, and a repo-dir walk a sibling revision's.
+                answered_from[0] = str(snapshot)
                 # The lister leaves torn quants in: they stay listed for management, but not ready.
                 return _with_state_partials(
                     _local_response(repo_id, variants, has_vision, complete)
@@ -770,17 +1084,19 @@ async def get_gguf_variants_answer(
                     detail = "No cached GGUF variants available while offline.",
                 )
 
-        try:
-            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
-        except Exception:
+        def _cache_fallback_response():
+            """Cached answer scoped to the cache this request names, or None.
+
+            The lister's own cache read is repo-wide, so redoing it here pins the listing and,
+            through ``answered_from``, its context metadata to the named copy.
+            """
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
-            cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
+            cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision, complete = cached
-                if repo_cache_dir is not None and repo_cache_dir.is_dir():
-                    answered_from[0] = str(repo_cache_dir)
+                variants, has_vision, complete, snapshot = cached
+                answered_from[0] = str(snapshot)
                 # Same reason as the local_only branch above, state partials included:
                 # an unreachable Hub is exactly when a resume has nowhere else to surface.
                 return _with_state_partials(
@@ -790,7 +1106,22 @@ async def get_gguf_variants_answer(
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)
+            return None
+
+        try:
+            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
+        except Exception:
+            fallback = _cache_fallback_response()
+            if fallback is not None:
+                return fallback
             raise
+
+        # siblings is None only when the lister answered from its own repo-wide cache. Falling
+        # through is deliberate: readiness below still counts against this request's own cache.
+        if siblings is None:
+            fallback = _cache_fallback_response()
+            if fallback is not None:
+                return fallback
 
         filenames = [v.filename for v in variants]
         best = pick_best_gguf(filenames)
@@ -1065,7 +1396,7 @@ async def get_gguf_variants_answer(
             if enriched.variants:
                 return enriched
             raise
-        if skip:
+        if skip or answered_locally[0]:
             return response
         return _mark_empty_dir_cleanables(
             repo_id,

@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import json
 import sys
 import threading
 import time
@@ -122,6 +123,8 @@ def test_collect_local_models_scans_previous_cache(monkeypatch, tmp_path):
 
 
 def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_path):
+    from hub.utils import download_manifest
+
     active = tmp_path / "active"
     previous = tmp_path / "previous"
     active_partial = active / "models--Org--Model" / "blobs" / "abc.incomplete"
@@ -130,23 +133,94 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
     snapshot = previous / "models--Org--Model" / "snapshots" / "revision"
     snapshot.mkdir(parents = True)
     (snapshot / "model.safetensors").write_bytes(b"complete")
+    build_calls = []
+    real_build = download_manifest.build_variant_state_index
 
+    def record_build(repositories, **kwargs):
+        repositories = tuple(repositories)
+        build_calls.append(repositories)
+        return real_build(repositories, **kwargs)
+
+    monkeypatch.setattr("hub.utils.download_manifest.build_variant_state_index", record_build)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
     monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.known_hf_hub_caches",
-        lambda: [active, previous],
-    )
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, previous])
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
 
     rows = models_route.collect_local_models(tmp_path / "models")
-
     [row] = [row for row in rows if row.model_id == "Org/Model"]
     assert row.id == str(snapshot.resolve())
     assert row.partial is False
     assert row.active_cache is False
+    assert len(build_calls) == 1
+    assert set(build_calls[0]) == {
+        ("model", "Org/Model", active),
+        ("model", "Org/Model", previous),
+    }
+
+
+def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
+    # Total and stable on hostile input is the whole contract here; the exact
+    # string is platform-dependent. POSIX realpath() rejects an embedded NUL with
+    # ValueError so the raw string is normcased through, while Windows non-strict
+    # realpath falls back to abspath and joins the cwd.
+    for hostile in ("\0", "\ud800"):
+        identity = models_route._compat_inventory_path_identity(hostile)
+        assert identity == models_route._compat_inventory_path_identity(hostile)
+        assert identity.endswith(hostile)
+    sources = models_route._CompatLocalInventorySources(
+        tmp_path / "active",
+        tmp_path / "legacy",
+        tmp_path / "default",
+        (tmp_path / "lm",),
+        (tmp_path / "known",),
+    )
+    folders = [[{"id": 1, "path": "/custom", "created_at": "now"}]]
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: folders[0])
+    started, release, workers = [asyncio.Event(), asyncio.Event()], asyncio.Event(), []
+
+    async def fake_to_thread(function, *args, **kwargs):
+        if function is models_route.collect_local_models:
+            workers.append((args, kwargs))
+            started[len(workers) - 1].set()
+            await release.wait()
+            return []
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(models_route.asyncio, "to_thread", fake_to_thread)
+
+    async def run_requests():
+        request = lambda root = tmp_path: models_route._shared_compat_local_inventory_scan(
+            root, sources
+        )
+        first = asyncio.create_task(request(tmp_path))
+        await asyncio.wait_for(started[0].wait(), 1)
+        second = asyncio.create_task(request(tmp_path / "alias" / ".."))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(workers) == 1
+        key = next(iter(models_route._compat_local_inventory_flights))[1]
+        assert sources in key and isinstance(key[-1], int)
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions = True)
+        second = asyncio.create_task(request())
+        await asyncio.sleep(0)
+        folders[0] = [{"id": 2, "path": "/changed", "created_at": "later"}]
+        changed = asyncio.create_task(request())
+        await asyncio.wait_for(started[1].wait(), 1)
+        assert [worker[1]["custom_folders"] for worker in workers] == [
+            [{"id": 1, "path": "/custom", "created_at": "now"}],
+            folders[0],
+        ]
+        release.set()
+        return await asyncio.gather(second, changed)
+
+    assert (
+        asyncio.run(run_requests()) == [[], []] and not models_route._compat_local_inventory_flights
+    )
 
 
 def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypatch):
@@ -184,14 +258,19 @@ def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypat
         "utils.models.model_config._iter_gguf_files",
         fail_recursive_variant_scan,
     )
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(root)}])
+    monkeypatch.setattr(
+        "storage.studio_db.list_scan_folders",
+        lambda: pytest.fail("captured custom folders were reloaded"),
+    )
     monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
     monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
 
-    rows = models_route.collect_local_models(tmp_path / "models")
+    rows = models_route.collect_local_models(
+        tmp_path / "models", custom_folders = [{"path": str(root)}]
+    )
     paths = {row.path for row in rows}
 
     assert {str(main), str(model_dir), str(snapshot.resolve())} <= paths
@@ -613,7 +692,7 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -673,7 +752,7 @@ def test_the_pins_excuse_covers_only_the_quants_it_holds(monkeypatch, tmp_path):
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -730,7 +809,7 @@ def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkey
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     variant = GgufVariantInfo(
         filename = "Model-Q4_K_M.gguf",
@@ -2515,7 +2594,7 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert models_route._arch_to_task("wan") not in ("text-generation", "text-to-image")
     # With a repo/file name hint the loadable TI2V-5B resolves to Video while the A14B MoE stays unsupported, matching the loader.
     assert (
-        models_route._arch_to_task("wan", ("QuantStack/Wan2.2-TI2V-5B-GGUF",))
+        models_route._arch_to_task("wan", ("unsloth/Wan2.2-TI2V-5B-GGUF",))
         == models_route._VIDEO_GEN_TASK
     )
     assert (
@@ -2684,7 +2763,7 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
             loaded_repo_ids = lambda: (
                 "unsloth/FLUX.1-dev-GGUF",
                 "black-forest-labs/FLUX.1-dev",
-                "comfyanonymous/flux_text_encoders",
+                "unsloth/flux-text-encoders",
             ),
             loading_repo_ids = lambda: (),
         ),
@@ -2692,7 +2771,7 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
     monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
 
     try:
-        asyncio.run(deletion.delete_cached_model_response("comfyanonymous/flux_text_encoders"))
+        asyncio.run(deletion.delete_cached_model_response("unsloth/flux-text-encoders"))
         assert False, "expected HTTPException refusing the in-use companion delete"
     except HTTPException as e:
         assert e.status_code == 400
@@ -2833,8 +2912,20 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
     new_snap = repo_dir / "snapshots" / "new"
     for d in (old_snap / "transformer", new_snap / "vae"):
         d.mkdir(parents = True)
-    (old_snap / "model_index.json").write_text("{}", encoding = "utf-8")
-    (new_snap / "model_index.json").write_text("{}", encoding = "utf-8")
+    # A real manifest, not "{}": the scan reads the denoiser names off it, and one declaring none
+    # has nothing it can prove absent.
+    manifest = json.dumps(
+        {
+            "_class_name": "FluxPipeline",
+            "transformer": ["diffusers", "FluxTransformer2DModel"],
+            "vae": ["diffusers", "AutoencoderKL"],
+        }
+    )
+    (old_snap / "model_index.json").write_text(manifest, encoding = "utf-8")
+    (new_snap / "model_index.json").write_text(manifest, encoding = "utf-8")
+    # Real weights, not just the dirs: an empty transformer/ is a torn denoiser, not a present one.
+    (old_snap / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+    (new_snap / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
     # Make "new" unambiguously newer than "old" for the mtime rule both this and the loader use.
     os.utime(old_snap, (1_000_000, 1_000_000))
     os.utime(new_snap, (2_000_000, 2_000_000))
@@ -2866,6 +2957,71 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
     assert scan.repo_pipeline_missing_denoiser(info) is False
 
 
+@pytest.mark.parametrize(
+    "extra_files, manifest_extra",
+    [
+        # A dual-denoiser pipeline whose second expert never landed.
+        ({}, {"transformer_2": ["diffusers", "WanTransformer3DModel"]}),
+        # A single denoiser whose shard index names two shards and got one.
+        (
+            {
+                "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                    {
+                        "weight_map": {
+                            "a": "diffusion_pytorch_model-00001-of-00002.safetensors",
+                            "b": "diffusion_pytorch_model-00002-of-00002.safetensors",
+                        }
+                    }
+                ).encode(),
+                "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            },
+            {},
+        ),
+    ],
+    ids = ["dual-denoiser", "half-sharded"],
+)
+def test_both_cached_listings_agree_on_a_torn_pipeline(extra_files, manifest_extra, tmp_path):
+    # /api/models/cached-models ORs the repo-wide helper while the hub inventory calls the snapshot
+    # one, so a disagreement leaves a row the hub hides as partial still advertised as runnable.
+    import hub.utils.inventory_scan as scan
+
+    manifest = {
+        "_class_name": "WanPipeline",
+        "transformer": ["diffusers", "WanTransformer3DModel"],
+        "vae": ["diffusers", "AutoencoderKLWan"],
+    }
+    manifest.update(manifest_extra)
+    repo_dir = tmp_path / "models--Org--Repo"
+    snapshot = repo_dir / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    files = {
+        "model_index.json": json.dumps(manifest).encode(),
+        "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+    }
+    if not extra_files:
+        files["transformer/diffusion_pytorch_model.safetensors"] = b"\0" * 256
+    files.update(extra_files)
+    for name, blob in files.items():
+        target = snapshot / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(blob)
+    info = SimpleNamespace(
+        repo_id = "Org/Repo",
+        repo_path = repo_dir,
+        revisions = [
+            SimpleNamespace(
+                snapshot_path = snapshot,
+                last_modified = float(snapshot.stat().st_mtime),
+                files = [
+                    SimpleNamespace(file_name = Path(n).name, file_path = snapshot / n) for n in files
+                ],
+            )
+        ],
+    )
+    assert scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+    assert scan.repo_pipeline_missing_denoiser(info) is True
+
+
 def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_path):
     # A diffusion-tagged repo with NO top-level model_index.json is a single-file checkpoint (single_file=True); a full pipeline or chat repo carries no flag.
     single = _repo(
@@ -2887,7 +3043,7 @@ def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_p
     monkeypatch.setattr(
         models_route,
         "_cached_repo_task",
-        lambda repo_info: ("text-to-image" if "Qwen-Image" in repo_info.repo_id else None),
+        lambda repo_info: "text-to-image" if "Qwen-Image" in repo_info.repo_id else None,
     )
     monkeypatch.setattr(
         models_route,
@@ -2924,6 +3080,89 @@ def test_cached_repo_task_gates_an_image_pipeline_on_the_load_path_trust_rule(tm
     assert (
         models_route._cached_repo_task(_pipeline_repo("someone/their-sdxl-mix", tmp_path)) is None
     )
+
+
+def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_path):
+    """The single-file VAE / text-encoder repos hold no denoiser, so none of them is a pick.
+
+    Their unsloth mirrors clear the trust gate the old third-party ids never did, and the ids
+    resolve to a family, so without the companion check each would list an unloadable Images row.
+    """
+    from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+    for repo_id in (
+        "unsloth/Z-Image-Turbo-ComfyUI",
+        "unsloth/Qwen-Image-ComfyUI",
+        "unsloth/FLUX.2-dev-ComfyUI",
+        "unsloth/FLUX.2-VAE",
+        "unsloth/FLUX.2-klein-9B-ComfyUI",
+        "unsloth/flux-text-encoders",
+    ):
+        assert repo_id.lower() in sd_cpp_companion_only_repo_ids(), repo_id
+        assert models_route._cached_repo_task(_pipeline_repo(repo_id, tmp_path)) is None, repo_id
+
+    # FLUX.1-schnell also serves a companion VAE, but it is a real base and must stay loadable.
+    assert "black-forest-labs/flux.1-schnell" not in sd_cpp_companion_only_repo_ids()
+    assert (
+        models_route._cached_repo_task(_pipeline_repo("black-forest-labs/FLUX.1-schnell", tmp_path))
+        == "text-to-image"
+    )
+
+
+def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeypatch, tmp_path):
+    """A task of None does NOT drop the row: it is exactly what an unclassified CHAT repo carries,
+    so the chat picker showed the companion as loadable. Deleting the row instead would hide tens
+    of GB the user can then never find or remove, so the row stays and carries a flag the pickers
+    filter on."""
+    companion = _repo(
+        "unsloth/Z-Image-Turbo-ComfyUI",
+        [_file("split_files/vae/ae.safetensors", 300_000)],
+        tmp_path / "models--unsloth--Z-Image-Turbo-ComfyUI",
+    )
+    chat = _repo(
+        "unsloth/Qwen3-8B",
+        [_file("model.safetensors", 900_000)],
+        tmp_path / "models--unsloth--Qwen3-8B",
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [companion, chat])]
+    )
+
+    rows = {
+        r["repo_id"]: r
+        for r in asyncio.run(models_route.list_cached_models(current_subject = "test-user"))["cached"]
+    }
+
+    # Listed, so it stays visible and deletable...
+    assert "unsloth/Z-Image-Turbo-ComfyUI" in rows
+    # ...and flagged, which is the part a task of None could never express.
+    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["companion"] is True
+    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["task"] is None
+    # An ordinary chat repo carries the same task of None and must NOT be flagged.
+    assert rows["unsloth/Qwen3-8B"].get("companion") is None
+    assert rows["unsloth/Qwen3-8B"]["task"] is None
+
+
+def test_the_companion_set_never_hides_a_repo_that_is_a_real_chat_model(tmp_path):
+    """sd.cpp borrows unsloth/Qwen2.5-VL-7B-Instruct-GGUF as a text encoder, but it is a genuine
+    chat model. It is in the companion set, so the only thing keeping it safe is that the listing
+    this set feeds never sees a GGUF-only repo. Pin that, or a future caller takes a downloaded
+    model away from the user."""
+    from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+    assert "unsloth/qwen2.5-vl-7b-instruct-gguf" in sd_cpp_companion_only_repo_ids()
+    # A GGUF-only repo has no .safetensors / .bin, so list_cached_models drops it before the flag.
+    gguf_only = _repo(
+        "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+        [_file("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", 4_000_000)],
+        tmp_path / "models--unsloth--Qwen2.5-VL-7B-Instruct-GGUF",
+    )
+    assert not [
+        f
+        for rev in gguf_only.revisions
+        for f in rev.files
+        if f.file_name.endswith((".safetensors", ".bin"))
+    ]
 
 
 def test_cached_repo_task_hides_an_untrusted_video_repo_instead_of_listing_it_under_images(
@@ -3275,7 +3514,7 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     # Disk-only means disk-only: a remote listing here would be the bug this route avoids.
@@ -3318,7 +3557,7 @@ def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_p
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     def _unreachable(*args, **kwargs):
@@ -3357,7 +3596,7 @@ def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     from hub.services.models import cache_inventory
@@ -3492,11 +3731,13 @@ def test_offline_context_follows_the_hf_cache_when_it_answers(monkeypatch, tmp_p
     """The HF cache answers before local_path, so with both present the length must come
     from the cache. Picking local_path on the offline flag alone attached another copy's
     context to the cache's variants. Real service, no stub."""
+    cache_snapshot = tmp_path / "hub" / "models--org--repo" / "snapshots" / "rev"
+    cache_snapshot.mkdir(parents = True)
     context_calls = []
 
     monkeypatch.setattr(
         GV,
-        "list_gguf_variants_from_hf_cache",
+        "select_gguf_cache_snapshot",
         lambda repo_id, root = None: (
             [
                 SimpleNamespace(
@@ -3508,6 +3749,7 @@ def test_offline_context_follows_the_hf_cache_when_it_answers(monkeypatch, tmp_p
             ],
             False,
             {"q4_k_m"},
+            cache_snapshot,
         ),
     )
     monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
@@ -3526,7 +3768,7 @@ def test_offline_context_follows_the_hf_cache_when_it_answers(monkeypatch, tmp_p
             current_subject = "test-user",
         )
     )
-    assert context_calls == [("org/repo", False)]
+    assert context_calls == [(str(cache_snapshot), True)]
 
 
 def test_offline_context_follows_the_cache_the_variants_were_read_from(monkeypatch, tmp_path):
@@ -3534,12 +3776,13 @@ def test_offline_context_follows_the_cache_the_variants_were_read_from(monkeypat
     has to come from there too. Falling back to the repo id walks every cache, active one
     first, and can attach another copy's context to these variants. Real service, no stub."""
     legacy_repo = tmp_path / "legacy" / "hub" / "models--org--repo"
-    (legacy_repo / "snapshots" / "rev").mkdir(parents = True)
+    legacy_snapshot = legacy_repo / "snapshots" / "rev"
+    legacy_snapshot.mkdir(parents = True)
     context_calls = []
 
     monkeypatch.setattr(
         GV,
-        "list_gguf_variants_from_hf_cache",
+        "select_gguf_cache_snapshot",
         lambda repo_id, root = None: (
             [
                 SimpleNamespace(
@@ -3551,6 +3794,7 @@ def test_offline_context_follows_the_cache_the_variants_were_read_from(monkeypat
             ],
             False,
             {"q4_k_m"},
+            legacy_snapshot,
         ),
     )
     monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
@@ -3569,7 +3813,7 @@ def test_offline_context_follows_the_cache_the_variants_were_read_from(monkeypat
             current_subject = "test-user",
         )
     )
-    assert context_calls == [(str(legacy_repo), True)]
+    assert context_calls == [(str(legacy_snapshot), True)]
 
 
 def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkeypatch, tmp_path):
@@ -3577,7 +3821,8 @@ def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkey
     supply their context metadata. Otherwise the route searches by repo id and can read a
     different cache copy first."""
     legacy_repo = tmp_path / "legacy" / "hub" / "models--org--repo"
-    (legacy_repo / "snapshots" / "rev").mkdir(parents = True)
+    legacy_snapshot = legacy_repo / "snapshots" / "rev"
+    legacy_snapshot.mkdir(parents = True)
     context_calls = []
 
     def _unreachable(*args, **kwargs):
@@ -3586,7 +3831,7 @@ def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkey
     monkeypatch.setattr(GV, "list_gguf_variants", _unreachable)
     monkeypatch.setattr(
         GV,
-        "list_gguf_variants_from_hf_cache",
+        "select_gguf_cache_snapshot",
         lambda repo_id, root = None: (
             [
                 SimpleNamespace(
@@ -3598,6 +3843,7 @@ def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkey
             ],
             False,
             {"q4_k_m"},
+            legacy_snapshot,
         ),
     )
     monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
@@ -3615,7 +3861,7 @@ def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkey
             current_subject = "test-user",
         )
     )
-    assert context_calls == [(str(legacy_repo), True)]
+    assert context_calls == [(str(legacy_snapshot), True)]
 
 
 def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_path):
@@ -3644,7 +3890,7 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
             wedged.wait(5)
         return None
 
-    monkeypatch.setattr(GV, "list_gguf_variants_from_hf_cache", scan)
+    monkeypatch.setattr(GV, "select_gguf_cache_snapshot", scan)
     monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
     monkeypatch.setattr(GV, "list_local_gguf_variants", lambda _p: ([], False))
     monkeypatch.setattr(GV, "_snapshot_scope_for_request", lambda *a, **k: None)
@@ -3667,3 +3913,241 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
     assert any("wedgedvol" in root for root in scanned), scanned
     assert answered, "the new request waited on the scan stuck against the old cache"
     assert any("healthyvol" in root for root in scanned), scanned
+
+
+def test_gguf_variants_route_carries_local_resolution(monkeypatch, tmp_path):
+    # The CLI gate reads resolved_locally, so the legacy constructor must carry it.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models" / "qwen").mkdir(parents = True)
+    (tmp_path / "models" / "qwen" / "q-Q4_K_M.gguf").write_bytes(b"GGUF")
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "models/qwen", hf_token = None, current_subject = "test-user"
+        )
+    )
+    assert result.resolved_locally is True
+    assert [v.quant for v in result.variants] == ["Q4_K_M"]
+
+
+def _write_cached_gguf(
+    hub_cache: Path,
+    repo_id: str,
+    filename: str,
+    mtime: float | None = None,
+    revision: str = "rev",
+) -> Path:
+    """One real snapshot under *hub_cache*; *mtime* pins which one a repo-wide walk picks."""
+    import os
+
+    repo_dir = hub_cache / ("models--" + repo_id.replace("/", "--"))
+    snapshot = repo_dir / "snapshots" / revision
+    snapshot.mkdir(parents = True, exist_ok = True)
+    (snapshot / filename).write_bytes(b"GGUF" + b"\0" * 32)
+    if mtime is not None:
+        os.utime(snapshot, (mtime, mtime))
+    return repo_dir
+
+
+def _pin_caches(monkeypatch, active: Path, roots: list[Path]) -> None:
+    import utils.hf_cache_settings as hf_cache_settings
+    from hub.utils import hf_cache_state
+
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "get_hf_cache_paths",
+        lambda: SimpleNamespace(
+            hf_home = active.parent,
+            hub_cache = active,
+            xet_cache = active.parent / "xet",
+            source = "test",
+        ),
+    )
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: list(roots))
+
+
+def _unreachable_hub(monkeypatch) -> None:
+    """Fail only the network call, so the real cache fallback inside the lister runs."""
+    import huggingface_hub
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("hub unreachable")
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", _boom)
+
+
+def test_failed_hub_lists_the_selected_cache_not_another_one(monkeypatch, tmp_path):
+    """A request pinned to one cache must list that cache's quants.
+
+    ``list_gguf_variants`` read the cache repo-wide on an unreachable Hub, so the active
+    copy's quants answered for a request pinned elsewhere.
+    """
+    active = tmp_path / "active" / "hub"
+    selected = tmp_path / "selected" / "hub"
+    active.mkdir(parents = True)
+    selected.mkdir(parents = True)
+    # The active copy is newer, so only a scoped lookup can surface the selected one.
+    _write_cached_gguf(active, "org/repo", "m-Q4_K_M.gguf", mtime = 2_000_000_000)
+    selected_repo = _write_cached_gguf(selected, "org/repo", "m-Q8_0.gguf", mtime = 1_000_000_000)
+
+    _pin_caches(monkeypatch, active, [active, selected])
+    _unreachable_hub(monkeypatch)
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+
+    context_calls = []
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((str(model), is_local)) or 4096,
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            local_path = str(selected_repo),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert sorted(v.quant for v in response.variants) == ["Q8_0"]
+    # The context length has to come off that same copy, down to the snapshot.
+    assert context_calls == [(str(selected_repo / "snapshots" / "rev"), True)]
+
+
+def test_an_unreadable_cache_root_is_skipped_not_fatal(tmp_path):
+    """One unreadable cache must not take down a walk the other roots can answer.
+
+    A bare ``is_dir()`` on ``<repo>/snapshots`` let EACCES escape (up to 3.13) and turned a
+    usable listing into a 500. Asserted on the walk, so it pins the guard, not the fallback.
+    """
+    from hub.utils.gguf import iter_hf_cache_snapshots, list_gguf_variants_from_hf_cache
+
+    blocked_root = tmp_path / "blocked" / "hub"
+    readable_root = tmp_path / "readable" / "hub"
+    blocked_root.mkdir(parents = True)
+    readable_root.mkdir(parents = True)
+    blocked_repo = _write_cached_gguf(blocked_root, "org/repo", "m-Q4_K_M.gguf")
+    _write_cached_gguf(readable_root, "org/repo", "m-Q8_0.gguf")
+
+    blocked_repo.chmod(0o000)
+    try:
+        try:
+            (blocked_repo / "snapshots").is_dir()
+        except OSError:
+            pass
+        else:
+            pytest.skip("filesystem does not enforce the permission (root?)")
+
+        # Scoped at the unreadable root: no snapshots, and no exception.
+        assert list(iter_hf_cache_snapshots("org/repo", root = blocked_root)) == []
+        assert list_gguf_variants_from_hf_cache("org/repo", root = blocked_root) is None
+
+        # A readable root is still walked normally.
+        readable = list(iter_hf_cache_snapshots("org/repo", root = readable_root))
+        assert len(readable) == 1
+        listed = list_gguf_variants_from_hf_cache("org/repo", root = readable_root)
+        assert listed is not None
+        assert [v.quant for v in listed[0]] == ["Q8_0"]
+    finally:
+        blocked_repo.chmod(0o755)
+
+
+def test_another_caches_quant_is_offered_as_a_download_not_as_downloaded(monkeypatch, tmp_path):
+    """Readiness is counted against the cache the request names, never against another one.
+
+    The pinned cache holds the repo but no GGUF, so the lister answers repo-wide. Those
+    variants must stay download targets, or the row offers a load that cannot resolve.
+    """
+    pinned_root = tmp_path / "pinned" / "hub"
+    other_root = tmp_path / "other" / "hub"
+    pinned_root.mkdir(parents = True)
+    other_root.mkdir(parents = True)
+    pinned_repo = pinned_root / "models--org--repo"
+    (pinned_repo / "snapshots" / "rev").mkdir(parents = True)
+    _write_cached_gguf(other_root, "org/repo", "m-Q8_0.gguf")
+
+    _pin_caches(monkeypatch, pinned_root, [pinned_root, other_root])
+    _unreachable_hub(monkeypatch)
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            local_path = str(pinned_repo),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert [v.quant for v in response.variants] == ["Q8_0"]
+    assert [v.downloaded for v in response.variants] == [False]
+
+
+def test_context_follows_the_answering_revision_not_a_sibling(monkeypatch, tmp_path):
+    """The context read is pinned to the snapshot that answered, not the repo dir.
+
+    The read walks the whole dir, so naming the dir let a skipped revision supply the length.
+    """
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir(parents = True)
+    # Only the newer snapshot holds a whole quant, so it is the one that answers.
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+
+    _pin_caches(monkeypatch, hub_cache, [hub_cache])
+    _unreachable_hub(monkeypatch)
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+
+    context_calls = []
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((str(model), is_local)) or 4096,
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert [v.quant for v in response.variants] == ["Q8_0"]
+    assert context_calls == [(str(repo_dir / "snapshots" / "newer"), True)]
+
+
+def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path):
+    """Provenance survives a repo_id whose case differs from the cached dir's.
+
+    The lister folds case, but the repo dir was rebuilt from repo_id, so it failed ``is_dir()``
+    on a case-sensitive filesystem and the length fell back to a repo-wide walk.
+    """
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir(parents = True)
+    repo_dir = _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf")
+
+    _pin_caches(monkeypatch, hub_cache, [hub_cache])
+    _unreachable_hub(monkeypatch)
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+
+    context_calls = []
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((str(model), is_local)) or 4096,
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/Repo",  # on disk as models--org--repo
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert [v.quant for v in response.variants] == ["Q8_0"]
+    assert context_calls == [(str(repo_dir / "snapshots" / "rev"), True)]

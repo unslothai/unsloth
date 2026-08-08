@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
@@ -9,6 +10,8 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   notifyNative,
@@ -63,9 +66,7 @@ import {
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
-import {
-  isMultimodalResponse,
-} from "../types/api";
+import { type CpuFallbackReason, isMultimodalResponse } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import {
   applyPerModelConfigToRuntime,
@@ -233,7 +234,9 @@ export function syncModelCapabilities(
       ...models,
       {
         id: modelId,
-        name: resp.display_name || modelId,
+        // Label like the catalog entry that replaces this on the next /api/models/list;
+        // the fallback keeps a cached GGUF's snapshot path out of the bar.
+        name: modelDisplayName(resp.display_name || modelId),
         isLora: Boolean(resp.is_lora),
         ...synced,
       },
@@ -762,6 +765,7 @@ export function useChatModelRuntime() {
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
       const postLoadRefresh = { needed: false };
+      let cpuFallbackReason: CpuFallbackReason | null = null;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -778,6 +782,19 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nParallel ?? null)
               : useChatRuntimeStore.getState().nParallel;
+          const previousNBatch =
+            typeof selection !== "string" && selection.previousConfig
+              ? (selection.previousConfig.nBatch ?? null)
+              : useChatRuntimeStore.getState().nBatch;
+          const previousNUbatch =
+            typeof selection !== "string" && selection.previousConfig
+              ? (selection.previousConfig.nUbatch ?? null)
+              : useChatRuntimeStore.getState().nUbatch;
+          // Same reason: the rollback echo would overwrite an edit staged against it.
+          const previousMlxKvBits =
+            typeof selection !== "string" && selection.previousConfig
+              ? (selection.previousConfig.mlxKvBits ?? null)
+              : useChatRuntimeStore.getState().mlxKvBits;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do (and as
             // the compare path does): the Hub rejects an invalid Authorization
@@ -850,12 +867,16 @@ export function useChatModelRuntime() {
           // (validation, the trust dialog, unload). When the picker staged a
           // config payload, prefer it over the store: React may not have
           // flushed NumericValueInput's blur commit into state yet.
-          const loadChatTemplateOverride =
+          // Per-model: a template is written against one model's tokens.
+          let loadChatTemplateOverride =
             pendingLoadConfig?.chatTemplateOverride?.trim()
               ? pendingLoadConfig.chatTemplateOverride
               : stateBeforeUnload.chatTemplateOverride;
           const loadKvCacheDtype =
             pendingLoadConfig?.kvCacheDtype ?? stateBeforeUnload.kvCacheDtype;
+          // Per-model, not a standing preference: eligibility is decided per model.
+          let loadMlxKvBits =
+            pendingLoadConfig?.mlxKvBits ?? stateBeforeUnload.mlxKvBits;
           // gpuMemoryMode is a standing preference (kept across a model switch);
           // the rest are per-model knobs the reset below clears, so they are
           // re-baselined there in lock-step with the store.
@@ -907,6 +928,10 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.specDraftNMax ?? stateBeforeUnload.specDraftNMax;
           let loadNParallel =
             pendingLoadConfig?.nParallel ?? stateBeforeUnload.nParallel;
+          let loadNBatch =
+            pendingLoadConfig?.nBatch ?? stateBeforeUnload.nBatch;
+          let loadNUbatch =
+            pendingLoadConfig?.nUbatch ?? stateBeforeUnload.nUbatch;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -942,6 +967,12 @@ export function useChatModelRuntime() {
             const validateNParallel = resetsPerModelSettings
               ? (pendingLoadConfig?.nParallel ?? null)
               : loadNParallel;
+            const validateNBatch = resetsPerModelSettings
+              ? (pendingLoadConfig?.nBatch ?? null)
+              : loadNBatch;
+            const validateNUbatch = resetsPerModelSettings
+              ? (pendingLoadConfig?.nUbatch ?? null)
+              : loadNUbatch;
             const validateMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
               loadGpuMemoryMode,
@@ -977,6 +1008,13 @@ export function useChatModelRuntime() {
                     // split 409s during training even when it fits.
                     gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
+                    // omitted when blank, like the load payload below
+                    ...(validateNBatch != null
+                      ? { n_batch: validateNBatch }
+                      : {}),
+                    ...(validateNUbatch != null
+                      ? { n_ubatch: validateNUbatch }
+                      : {}),
                   }
                 : {}),
             });
@@ -1067,6 +1105,10 @@ export function useChatModelRuntime() {
                 // unless its staged config overrides it.
                 nParallel: null,
                 loadedNParallel: null,
+                nBatch: null,
+                loadedNBatch: null,
+                nUbatch: null,
+                loadedNUbatch: null,
                 // Per-model GPU knobs must not follow onto a different model
                 // (gpuMemoryMode is a standing preference and is kept).
                 selectedGpuIds: null,
@@ -1084,6 +1126,15 @@ export function useChatModelRuntime() {
                   : persistedSpeculativeType;
               loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
               loadNParallel = pendingLoadConfig?.nParallel ?? null;
+              loadNBatch = pendingLoadConfig?.nBatch ?? null;
+              loadNUbatch = pendingLoadConfig?.nUbatch ?? null;
+              // Both payload-only. The store keeps its values: a width is dormant
+              // preset state off MLX, and a completed load rewrites both anyway.
+              loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
+              loadChatTemplateOverride =
+                pendingLoadConfig?.chatTemplateOverride?.trim()
+                  ? pendingLoadConfig.chatTemplateOverride
+                  : null;
               // Keep the click-time snapshot in lock-step with the store reset so
               // the load below sizes against the cleared per-model knobs, not the
               // previous model's (gpuMemoryMode is standing, so left as captured).
@@ -1156,10 +1207,16 @@ export function useChatModelRuntime() {
               approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: loadKvCacheDtype,
+              mlx_kv_bits: loadMlxKvBits ?? null,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
+              // omitted when blank: a null counts as set and strips inherited -b / -ub
+              ...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {}),
+              ...(isGguf && loadNUbatch != null
+                ? { n_ubatch: loadNUbatch }
+                : {}),
               tensor_parallel: loadTensorParallel,
               gpu_memory_mode: loadGpuMemoryMode,
               gpu_layers: loadGpuLayers,
@@ -1168,6 +1225,7 @@ export function useChatModelRuntime() {
               gpu_ids: loadSelectedGpuIds ?? undefined,
               force_cancel_active: forceCancelActive,
             });
+            cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
 
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
@@ -1232,6 +1290,17 @@ export function useChatModelRuntime() {
               (loadResponse.is_gguf ?? false) &&
               !(loadResponse.is_diffusion ?? false)
                 ? (loadNParallel ?? null)
+                : null;
+            // same rule for the batch sizes: gguf-only llama-server flags
+            const committedNBatch =
+              (loadResponse.is_gguf ?? false) &&
+              !(loadResponse.is_diffusion ?? false)
+                ? (loadNBatch ?? null)
+                : null;
+            const committedNUbatch =
+              (loadResponse.is_gguf ?? false) &&
+              !(loadResponse.is_diffusion ?? false)
+                ? (loadNUbatch ?? null)
                 : null;
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
@@ -1303,6 +1372,7 @@ export function useChatModelRuntime() {
                 : resolveToolsEnabledOnLoad(supportsTools)),
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
+              ...mlxRuntimeStateFrom(loadResponse),
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
               ...loadedGpuMemoryFields(loadResponse),
@@ -1314,6 +1384,10 @@ export function useChatModelRuntime() {
               // adopting it would pin a blank "server default" control.
               nParallel: committedSlots,
               loadedNParallel: committedSlots,
+              nBatch: committedNBatch,
+              loadedNBatch: committedNBatch,
+              nUbatch: committedNUbatch,
+              loadedNUbatch: committedNUbatch,
               customContextLength: keepCustomCtx,
               loadedCustomContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
@@ -1367,22 +1441,26 @@ export function useChatModelRuntime() {
               (loadResponse.is_gguf || isGguf || ggufVariant) &&
                 !isExternalModelId(modelId),
             );
+            // Remembered so auto-load re-picks what the user ran, not the
+            // smallest. Native file-picker paths need a signed, expiring lease,
+            // so they stay out.
+            const indexedLocalPick =
+              typeof selection !== "string" && selection.source === "local";
             if (
               !isLora &&
               !(loadResponse.is_lora ?? false) &&
               !nativePathToken &&
-              !isLocalModelPath(modelId) &&
-              !isExternalModelId(modelId)
+              !isExternalModelId(modelId) &&
+              (indexedLocalPick || !isLocalModelPath(modelId))
             ) {
-              if (loadResponse.is_gguf || isGguf || ggufVariant) {
-                recordLastLocalModelLoad({
-                  id: modelId,
-                  kind: "gguf",
-                  ggufVariant: ggufVariant ?? null,
-                });
-              } else {
-                recordLastLocalModelLoad({ id: modelId, kind: "model" });
-              }
+              recordLastLocalModelLoad({
+                id: modelId,
+                kind:
+                  loadResponse.is_gguf || isGguf || ggufVariant
+                    ? "gguf"
+                    : "model",
+                ggufVariant: ggufVariant ?? null,
+              });
             }
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.
@@ -1419,17 +1497,28 @@ export function useChatModelRuntime() {
                   chat_template_override:
                     stateBeforeUnload.loadedChatTemplateOverride,
                   cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,
+                  mlx_kv_bits: stateBeforeUnload.loadedMlxKvBitsRequested,
                   speculative_type:
                     stateBeforeUnload.loadedSpeculativeType,
                   spec_draft_n_max:
                     stateBeforeUnload.loadedSpecDraftNMax,
                   n_parallel: stateBeforeUnload.loadedNParallel,
+                  // omit unset fields: a null counts as set and would strip the previous server's extras
+                  ...(stateBeforeUnload.loadedNBatch != null
+                    ? { n_batch: stateBeforeUnload.loadedNBatch }
+                    : {}),
+                  ...(stateBeforeUnload.loadedNUbatch != null
+                    ? { n_ubatch: stateBeforeUnload.loadedNUbatch }
+                    : {}),
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+                  // A recovered Vulkan model needs its staged CPU-only runtime back
+                  // after the failed target load unloaded the live server.
+                  cpu_fallback: stateBeforeUnload.loadedCpuFallback,
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
@@ -1455,10 +1544,18 @@ export function useChatModelRuntime() {
                   // Control keeps its intent; only the baseline takes the echo.
                   nParallel: previousNParallel,
                   loadedNParallel: stateBeforeUnload.loadedNParallel ?? null,
+                  nBatch: previousNBatch,
+                  loadedNBatch: stateBeforeUnload.loadedNBatch ?? null,
+                  nUbatch: previousNUbatch,
+                  loadedNUbatch: stateBeforeUnload.loadedNUbatch ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
                   loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
+                  ...mlxRuntimeStateFrom(rollbackResponse),
+                  // After the spread, which seeds the control from the echo; the
+                  // control keeps its intent, like nParallel above.
+                  mlxKvBits: previousMlxKvBits,
                   loadedChatTemplateOverride:
                     stateBeforeUnload.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),
@@ -1750,15 +1847,23 @@ export function useChatModelRuntime() {
           await performLoad();
           // User cancelled mid-refresh; cancelLoading handles teardown.
           if (abortCtrl.signal.aborted) return;
+          const loadedTitle = cpuFallbackReason
+            ? `${toastDisplayName} loaded on CPU`
+            : `${toastDisplayName} loaded`;
+          const loadedDescription = cpuFallbackReason
+            ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
+            : undefined;
+          const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
           if (loadToastDismissedRef.current) {
-            toast.success(`${toastDisplayName} loaded`, {
+            showLoadedToast(loadedTitle, {
+              description: loadedDescription,
               closeButton: true,
               duration: 8000,
             });
           } else {
-            toast.success(`${toastDisplayName} loaded`, {
+            showLoadedToast(loadedTitle, {
               id: toastId,
-              description: undefined,
+              description: loadedDescription,
               cancel: undefined,
               closeButton: true,
               duration: 8000,
