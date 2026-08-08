@@ -418,7 +418,8 @@ jobs:
   build:
     strategy:
       fail-fast: false
-      max-parallel: 1
+      # Legs run in parallel: they share no state, only upload per-platform
+      # artifacts, and publish-release does every release mutation once.
       matrix:
         include:
           - platform: macos-latest
@@ -949,9 +950,8 @@ jobs:
         if: matrix.platform == 'macos-latest'
         shell: bash
         # `--timeout` below caps the polling, but not the upload that precedes
-        # it. Without a step-level backstop a stuck Notary service would hold
-        # `max-parallel: 1` for the whole job budget and discard the Linux and
-        # Windows builds with it, so cap it tighter than the job here.
+        # it. Without a step-level backstop a stuck Notary service would burn
+        # the whole job budget, so cap it tighter than the job here.
         timeout-minutes: 45
         env:
           ARTIFACT_PATHS: ${{ steps.build_macos.outputs.artifactPaths }}
