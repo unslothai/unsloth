@@ -212,20 +212,26 @@ def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
         except Exception as exc:  # noqa: BLE001 -- must never break a model load
             return (None, f"the xFormers wheel could not be resolved ({exc})")
         if env is None:
-            # Ambiguous: an unsupported platform (deterministic) or a probe that timed out
-            # on a busy box (transient). Not cached, so the next request can settle it.
+            # Ambiguous: a platform wheel_platform_tag() does not name (macOS, Windows on
+            # ARM) which is deterministic, or a probe that timed out on a busy box which is
+            # transient. Not cached, so the next request can settle it. Linux aarch64 is
+            # NOT here -- it gets a platform_tag and so lands on the branch below.
             return (
                 None,
                 "torch could not be probed, or this platform has no xFormers wheel "
-                "(macOS / Linux aarch64 / Windows on ARM)",
+                "(macOS / Windows on ARM)",
             )
         url = xformers_wheel_url(env)
         if url is None:
+            # Name the platform. Linux aarch64 reaches here with a perfectly ordinary
+            # torch, and reporting only the torch and CUDA would read as "upstream never
+            # built this pair" when the truth is "upstream never built it for this arch".
             target = (
                 None,
                 f"no xFormers wheel is published for torch "
                 f"{env.get('torch_version') or 'unknown'} with CUDA "
-                f"{env.get('cuda_version') or 'none'}",
+                f"{env.get('cuda_version') or 'none'} on "
+                f"{env.get('platform_tag') or 'this platform'}",
             )
         else:
             target = (url, None)
@@ -325,6 +331,14 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
         return "the resident huggingface_hub is too old for the kernels package"
     try:
         if importlib.util.find_spec(module) is not None:
+            # Present is present, including a MISMATCHED xformers: find_spec sees the
+            # package, so nothing below runs and the wrong-CUDA build stays. That is
+            # deliberate here. Repairing means reinstalling a package the user may have
+            # built or pinned on purpose, and this can run under _generate_lock, so a
+            # 100 MB download would block unload and cancel. install.ps1 is where the
+            # repair belongs -- it compares cpp_lib.json against the resident torch and
+            # passes --reinstall-package, outside any request. What this branch prevents
+            # is Studio CREATING the mismatch, which is how it got made in the first place.
             return None
     except Exception:  # noqa: BLE001 — a broken install probes as missing; try the install
         pass

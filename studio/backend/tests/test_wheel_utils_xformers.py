@@ -138,7 +138,8 @@ class TestXformersWheelUrl:
         [
             ("2.8.0+cu130", "13.0", "no cu130 xFormers build exists for torch 2.8"),
             ("2.7.0+cu128", "12.8", "xFormers 0.0.30 predates abi3 and stops at cp312"),
-            ("2.9.0+cu118", "11.8", "cu118 publishes no win_amd64 xFormers wheel at all"),
+            ("2.9.0+cu118", "11.8", "cu118 stops before the abi3 switch, so its wheels "
+                                    "are per-interpreter and unnameable here"),
             ("2.10.0+cu124", "12.4", "cu124 stopped at xFormers 0.0.29"),
             ("2.11.0+cu130", "13.0", "torch 2.11 has no xFormers wheel on any index"),
             ("2.10.0.dev20260101+cu130", "13.0", "a nightly torch has no matching wheel"),

@@ -179,19 +179,25 @@ huggingface = [
 #
 # There is no PEP 508 marker for "which CUDA build of torch is resident", so a
 # single static extra cannot pick the right wheel. The CUDA-matched route on
-# Windows is therefore the same one Linux uses -- the cuXXX-torchYYY extras,
-# every one of which has carried win_amd64 rows since cu124-torch240:
-#     pip install "unsloth[cu130-torch2100]"    # cu130 + torch 2.10.x
-#     pip install "unsloth[cu128-torch2100]"    # cu128 + torch 2.10.x
-# install.ps1 now picks that wheel automatically from the index it installed
-# torch from, so Studio never reaches the PyPI fallback below.
+# Windows is therefore the same one Linux uses -- the cuXXX-torchYYY extras. Not
+# every one of them carries a win_amd64 row (the cu118 and cu121 rows do not, and
+# cu130onlytorch280 is empty), but the cu126 / cu128 / cu130 rows a current torch
+# resolves to all do:
+#     pip install --index-url https://download.pytorch.org/whl/cu130 "unsloth[cu130-torch2100]"
+#     pip install --index-url https://download.pytorch.org/whl/cu128 "unsloth[cu128-torch2100]"
+# The index is not optional. Those extras pin xFormers by direct URL but pin no
+# torch, and PyPI's Windows torch is CPU-only, so without it pip lands a cu130
+# extension beside a '2.10.0+cpu' torch -- the same silent mismatch, inverted.
+# install.ps1 needs none of this: it picks the wheel from the index it installed
+# torch from, so Studio never reaches the extra below.
 #
-# This extra stays the CUDA-agnostic default for a plain PyPI install. The upper
-# bound keeps that install self-consistent: 0.0.34 declares torch==2.10.0, an
-# exact pair, while 0.0.35 declares only torch>=2.10 even though its extension is
-# still built for 2.10.0 -- so unbounded, pip is free to pair 0.0.35 with torch
-# 2.11 and recreate the same silent mismatch. 2.10 is also the top of the
-# torch>=2.4,<2.11 window both installers already enforce.
+# The extra below is what a `pip install "unsloth[windows]"` resolves, and it
+# stays CUDA-agnostic because it has nothing to key off. The upper bound keeps it
+# self-consistent: 0.0.34 declares torch==2.10.0, an exact pair, while 0.0.35
+# declares only torch>=2.10 even though its extension is still built for 2.10.0
+# -- so unbounded, pip is free to pair 0.0.35 with torch 2.11 and recreate the
+# same silent mismatch. 2.10 is also the top of the torch>=2.4,<2.11 window both
+# installers already enforce.
 windows = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",

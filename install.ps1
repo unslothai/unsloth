@@ -4203,7 +4203,13 @@ exit 0
                 # --reinstall-package: cu126 / cu128 / cu130 all publish the SAME xformers
                 #   version string, so a wrong-CUDA wheel is invisible to a version check and
                 #   would otherwise be left in place on an upgrade of a broken install.
-                $_xfExit = Invoke-InstallCommandRetry -Label "install xFormers" { uv pip install --python $VenvPython --no-deps --reinstall-package xformers "xformers==$_xfVersion" --default-index $_xfIndexUrl }
+                # Go through $script:UvExe when something has resolved one, so this call
+                # cannot be captured by a profile alias named uv. That variable is not set
+                # on this branch; Get-Variable rather than a bare read so the lookup is
+                # also safe under a profile's Set-StrictMode.
+                $_xfUv = Get-Variable -Name 'UvExe' -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+                if (-not $_xfUv) { $_xfUv = 'uv' }
+                $_xfExit = Invoke-InstallCommandRetry -Label "install xFormers" { & $_xfUv pip install --python $VenvPython --no-deps --reinstall-package xformers "xformers==$_xfVersion" --default-index $_xfIndexUrl }
                 if ($_xfExit -ne 0) {
                     substep "[WARN] could not install xFormers $_xfVersion (exit $_xfExit); attention falls back to torch SDPA." "Yellow"
                 }

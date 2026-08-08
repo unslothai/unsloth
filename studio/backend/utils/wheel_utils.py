@@ -208,9 +208,15 @@ def direct_wheel_url(
 # cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl reports {"torch": "2.10.0+cu130"}.
 #
 # Rows are exact, never interpolated: xFormers' extension ABI does not survive a torch
-# minor bump (unlike the flash-attn window above, which was measured), no cu130 build
-# exists for torch <= 2.8, and no cu118 / cu121 / cu124 win_amd64 build exists at all.
-# An unlisted pair means "install nothing", which is the safe answer.
+# minor bump (unlike the flash-attn window above, which was measured), and no cu130 build
+# exists for torch <= 2.8. An unlisted pair means "install nothing", the safe answer.
+#
+# cu118 / cu121 / cu124 are absent for a different reason, and not because those families
+# publish nothing on Windows -- they do, e.g. cu124/xformers-0.0.28.post1-cp312-cp312-
+# win_amd64.whl is live. They all stop BEFORE the cp39-abi3 switch at 0.0.31, so their
+# wheels are one file per interpreter and the single filename template below cannot name
+# them; expressing those rows needs a per-interpreter gate here and a second one in
+# install.ps1, for CUDA families no supported torch install pulls any more.
 #
 # Keep in step with $script:XformersWheelVersions in install.ps1 and the matrix in
 # tests/python/test_windows_xformers_wheel_match.py.
