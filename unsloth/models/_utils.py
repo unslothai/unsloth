@@ -3126,8 +3126,30 @@ def patch_gradient_accumulation_fix(Trainer):
         ):
             raise NotImplementedError("Unsloth: Please make a Github issue immediately!!")
         else:
+            original_get_batch_samples = Trainer.get_batch_samples
+
+            def _wrapped_get_batch_samples(
+                self,
+                epoch_iterator,
+                num_batches,
+                device = None,
+                *args,
+                **kwargs,
+            ):
+                model = self.model
+                if hasattr(model, "config") and getattr(model.config, "is_encoder_decoder", False):
+                    return original_get_batch_samples(
+                        self, epoch_iterator, num_batches, device, *args, **kwargs
+                    )
+                else:
+                    return _unsloth_get_batch_samples(
+                        self, epoch_iterator, num_batches, device, *args, **kwargs
+                    )
+
+            _wrapped_get_batch_samples.__name__ = "_unsloth_get_batch_samples"
+
             if Trainer.get_batch_samples.__name__ != "_unsloth_get_batch_samples":
-                Trainer.get_batch_samples = _unsloth_get_batch_samples
+                Trainer.get_batch_samples = _wrapped_get_batch_samples
 
             # Also fix passing in num_items_in_batch
             if not hasattr(Trainer, "_old_compute_loss"):

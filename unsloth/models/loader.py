@@ -1114,6 +1114,7 @@ from .vision import FastBaseModel
 from .diffusion import FastDiffusionModel, is_diffusion_model_type
 from transformers import (
     AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM,
 )
 
 try:
@@ -1893,7 +1894,9 @@ class FastModel(FastBaseModel):
         for _cfg_key, _cfg_val in task_config_attrs.items():
             set_task_config_attr(model_config, _cfg_key, _cfg_val)
         if auto_model is None:
-            if _num_labels is not None:
+            if AutoModelForSeq2SeqLM._model_mapping.get(type(model_config), None) is not None:
+                auto_model = AutoModelForSeq2SeqLM
+            elif _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
                 auto_model = AutoModelForSequenceClassification
             elif is_vlm:
