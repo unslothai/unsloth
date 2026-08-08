@@ -683,7 +683,7 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
             assert token in opening, (page.name, token)
 
         band = band.split("MediaPageLink", 1)[0]
-        groups = re.findall(r'<div className="([^"]*flex items-center gap-[^"]*)"', band)
+        groups = re.findall(r'"([^"]*pointer-events-auto flex[^"]*items-center gap-[^"]*)"', band)
         assert len(groups) >= 2, (page.name, groups)
         for group in groups:
             assert "pointer-events-auto" in group, (page.name, group)
@@ -695,18 +695,20 @@ def test_images_header_clears_collapsed_tauri_titlebar_controls():
     before, marker, after = source.partition("h-[48px] shrink-0 items-start justify-between")
     assert marker
     opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
+    header = opening + after.split("{/* Train mode", 1)[0]
 
     assert "const { isMobile, pinned } = useSidebar();" in source
     assert "isMobile" in opening
     assert "pl-12" in opening
-    assert "!pinned && isTauri" in opening
-    assert opening.index("isMobile") < opening.index("!pinned && isTauri")
-    assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in opening
-    assert "pl-[var(--studio-media-header-left-inset,1.5rem)]" in opening
+    assert "md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in opening
+    assert "!pinned && isTauri" in header
+    assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
+    assert "pl-[var(--studio-media-header-left-inset,1.5rem)]" in header
 
     mode_switch = source.split("Create | Train page-mode switch", 1)[1].split("tabs={[", 1)[0]
-    assert "md:static lg:absolute" in mode_switch
-    assert "md:[&>button]:px-3 lg:[&>button]:px-11" in mode_switch
+    assert "md:static" in mode_switch
+    assert "xl:absolute" not in mode_switch
+    assert "md:[&>button]:px-3 xl:[&>button]:px-11" in mode_switch
 
 
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
