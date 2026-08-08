@@ -199,7 +199,14 @@ _LOOPBACK_HOSTS = frozenset({"::1", "localhost", "localhost.localdomain", "0.0.0
 # the empty string, which mean "every interface" to bind() and nothing to a proxy rule.
 _LOOPBACK_PROXY_BYPASS = ("localhost", "localhost.localdomain", "127.0.0.1", "::1")
 
-_PROXY_ENV_VARS = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+_PROXY_ENV_VARS = (
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+)
 
 
 def no_proxy_with_test_servers(existing) -> str:
@@ -207,6 +214,7 @@ def no_proxy_with_test_servers(existing) -> str:
     bypass = list(_LOOPBACK_PROXY_BYPASS) + sorted(_configured_server_hosts())
     parts = [part.strip() for part in (existing or "").split(",")]
     return ",".join(dict.fromkeys([part for part in parts if part] + bypass))
+
 
 # Server URLs the suite is explicitly configured to talk to. Both documented external-server
 # modes may name a remote host, and neither suite carries the allow_network marker, so
