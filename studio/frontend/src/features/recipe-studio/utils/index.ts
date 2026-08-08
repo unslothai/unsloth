@@ -10,6 +10,7 @@ export {
   makeSamplerConfig,
   makeSeedConfig,
   makeToolProfileConfig,
+  makeTrainConfig,
   makeValidatorConfig,
 } from "./config-factories";
 export {

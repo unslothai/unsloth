@@ -14,6 +14,8 @@ export const RECIPE_STUDIO_NODE_TONES = {
     "bg-violet-50 text-violet-700 border-violet-100 dark:bg-violet-950/30 dark:text-violet-300 dark:border-violet-900/60",
   seed:
     "bg-lime-50 text-lime-700 border-lime-100 dark:bg-lime-950/30 dark:text-lime-300 dark:border-lime-900/60",
+  train:
+    "bg-fuchsia-50 text-fuchsia-700 border-fuchsia-100 dark:bg-fuchsia-950/30 dark:text-fuchsia-300 dark:border-fuchsia-900/60",
   model_provider:
     "bg-amber-50 text-amber-700 border-amber-100 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-900/60",
   model_config:
