@@ -574,6 +574,882 @@ def _wrap_grpo_generate_and_score(trainer_cls):
     trainer_cls._generate_and_score_completions = wrapped
 
 
+_PER_TOKEN = (
+    "input_ids",
+    "attention_mask",
+    "labels",
+    "completion_mask",
+    "assistant_masks",
+    "token_type_ids",
+    "position_ids",
+)
+
+
+def _column_names(dataset):
+    """The split's columns, from metadata AND from a row.
+
+    Both, because either alone is wrong. A `torch.utils.data.Dataset`, a list
+    or any custom map-style split carries no `column_names`, and reading that
+    as "raw text, prep will tokenize it" left a pre-tokenized one uncapped on
+    a path where `args.max_length` is already None. And a `with_transform`
+    dataset reports its BACKING columns (`text`) while yielding `input_ids`,
+    so trusting the metadata alone misses it in the other direction.
+
+    Returns the split to actually USE alongside the names. `iter(gen) is gen`
+    for a bare generator or any other single-pass iterator, so reading a row off
+    it consumes that row for good and the split silently evaluates one example
+    short. Those get the probed row chained back on the front instead.
+    """  # noqa: D208
+    names = set(getattr(dataset, "column_names", None) or ())
+    source = dataset
+    try:
+        iterator = iter(dataset)
+        # `iterator is dataset` catches a bare generator and misses an
+        # `IterableDataset` whose `__iter__` hands back one stored generator:
+        # that is not the dataset, but it is still the only pass there is. Two
+        # `iter()` calls returning the same object covers both, and a
+        # `datasets.IterableDataset` restarts, so it answers False and is
+        # rewound rather than chained. Both calls happen before anything is
+        # read.
+        single_pass = iterator is dataset or iterator is iter(dataset)
+        row = next(iterator, None)
+        if single_pass and row is not None:
+            import itertools
+            source = itertools.chain([row], iterator)
+    except Exception:
+        row = None
+    if isinstance(row, dict):
+        names.update(row.keys())
+    # The row too: it was read either way, and on a one-shot stream it is the
+    # ONLY row anything may look at. Without it `_sliceable_per_token` had no
+    # widths to compare and fell back to `input_ids` alone, leaving `labels`
+    # and `attention_mask` at their overlength size -- rows whose supervision
+    # no longer lines up with the tokens they describe.
+    return tuple(names), source, (row if isinstance(row, dict) else None)
+
+
+class _CappedBase:
+    """A read-side cap for a split that cannot be rewritten in place.
+
+    `map`/`filter` belong to `datasets`; a plain `torch.utils.data.Dataset` or
+    a list has neither, and a `with_transform` dataset has them but rebuilds
+    its rows on every read, so mapping it writes the backing table while the
+    reader keeps handing back the untruncated row. Both reach the collator
+    through iteration, and the map-style subclass below adds indexing.
+    """
+
+    def __init__(self, inner, cut, supervision, per_token):
+        self._inner = inner
+        self._cut = cut
+        self._supervision = tuple(supervision)
+        self._per_token = tuple(per_token)
+
+    def _slice(self, row):
+        # Per value, per row, exactly as the `map` path does it.
+        # `_sliceable_per_token` judges alignment from ONE probed row, and an
+        # optional column that is a list there can be None -- or a different
+        # width -- further in. Slicing that raised inside the dataloader, which
+        # is a failure the caller would not have had without the cap. Only
+        # `input_ids` is cut unconditionally: it is the column the cap exists
+        # for, and the width every other one is measured against.
+        if not isinstance(row, dict):
+            return row
+        try:
+            width = len(row["input_ids"])
+        except Exception:
+            width = None
+        out = {}
+        for key, value in row.items():
+            if key not in self._per_token:
+                out[key] = value
+                continue
+            if key == "input_ids":
+                out[key] = value[self._cut]
+                continue
+            try:
+                aligned = width is not None and len(value) == width
+            except Exception:
+                aligned = False
+            out[key] = value[self._cut] if aligned else value
+        return out
+
+    def _keep(self, row):
+        if not self._supervision or not isinstance(row, dict):
+            return True
+        columns = [c for c in self._supervision if c in row]
+        if not columns:
+            return True
+        return any(
+            all((x != -100) if n == "labels" else x for n, x in zip(columns, values))
+            for values in zip(*[row[c] for c in columns])
+        )
+
+    def __iter__(self):
+        for row in self._inner:
+            cut = self._slice(row)
+            if self._keep(cut):
+                yield cut
+
+    def __getattr__(self, attribute):
+        # Anything else the trainer asks for (column_names, features, ...) is
+        # the wrapped split's own answer. Never a dunder, and never our own
+        # state: a DataLoader worker pickles the split, and `__setstate__`
+        # looked up before `__init__` has run would recurse on `_inner`
+        # forever.
+        inner = self.__dict__.get("_inner")
+        if inner is None or attribute.startswith("__"):
+            raise AttributeError(attribute)
+        return getattr(inner, attribute)
+
+
+class _CappedRows(_CappedBase):
+    """The map-style flavour: a split with a length and an index.
+
+    Rows left with no supervised token are dropped, which changes the length,
+    so the surviving indices are resolved once up front.
+    """
+
+    def __init__(self, inner, cut, supervision, per_token):
+        super().__init__(inner, cut, supervision, per_token)
+        # No supervision columns means `_keep` is True for every row, so the
+        # index would be `range(len(inner))` -- and building it read and
+        # transformed every item, which for a `with_transform` split is a whole
+        # extra tokenization pass before the dataloader can even start, plus an
+        # O(n) list. Stay lazy and let `__getitem__` map straight through.
+        self._index = (
+            None
+            if not self._supervision
+            else [i for i in range(len(inner)) if self._keep(self._slice(inner[i]))]
+        )
+
+    def __len__(self):
+        return len(self._inner) if self._index is None else len(self._index)
+
+    def __getitem__(self, i):
+        return self._slice(self._inner[i if self._index is None else self._index[i]])
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+
+try:
+    from torch.utils.data import IterableDataset as _IterableDatasetBase
+except Exception:  # torch's data stack is optional at import time
+    _IterableDatasetBase = object
+
+
+class _CappedStream(_CappedBase, _IterableDatasetBase):
+    """The iterable-style flavour, and it has to BE one.
+
+    Trainer and DataLoader both split map-style from iterable-style with
+    `isinstance(dataset, IterableDataset)`, not by looking for `__iter__`, so
+    wrapping a stream in a plain object got it a `SequentialSampler` asking for
+    the `len()` a stream never had. Declared here rather than built with `type()`
+    inside a function: a DataLoader worker under `spawn` pickles the split by
+    module and qualified name, and a class with neither is unpicklable.
+    """
+
+
+def _capped_stream(inner, cut, supervision, per_token):
+    return _CappedStream(inner, cut, supervision, per_token)
+
+
+def _is_stream(dataset):
+    """Iterable-style, by the same test the DataLoader applies."""
+    try:
+        from torch.utils.data import IterableDataset
+        if isinstance(dataset, IterableDataset):
+            return True
+    except Exception:
+        pass
+    return not hasattr(dataset, "__len__") or not hasattr(dataset, "__getitem__")
+
+
+_SCAN_ROWS = 1024
+
+
+def pretokenized_within_cap(dataset, cap):
+    """Whether every pre-tokenized row in `dataset` already fits `cap`.
+
+    The generated `__init__` carries its own copy of this, inlined, because that
+    module is standalone and cannot import from here. This one is for callers
+    that need the same answer when the generated block was never inserted -- see
+    `trainer.py`'s padding-free fallback. The two must agree, and a test pins
+    them to the same verdict on the shapes below.
+
+    Unverifiable reads FALSE, never true. A single-pass stream cannot be scanned
+    without consuming it, an unexhausted one is only proof about its prefix, and
+    a split that raises mid-scan has told us nothing: in every one of those cases
+    the caller is about to decide whether anything downstream enforces the cap,
+    and guessing yes is the silently-uncapped run.
+    """
+    if dataset is None:
+        return True
+    try:
+        try:
+            n = len(dataset)
+        except Exception:
+            n = None
+        rows = iter(dataset)
+        if rows is iter(dataset):
+            return False
+        seen = 0
+        for row in rows:
+            if "input_ids" not in row:
+                return True
+            if len(row["input_ids"]) > cap:
+                return False
+            seen += 1
+            if n is None and seen >= _SCAN_ROWS:
+                return False
+    except Exception:
+        return False
+    return True
+
+
+def splits_within_cap(splits, cap):
+    """`pretokenized_within_cap` over a split or a dict of them. Each one counts."""
+    every = splits.values() if isinstance(splits, dict) else [splits]
+    return all(pretokenized_within_cap(s, cap) for s in every)
+
+
+_CAP_SIGNATURE_ATTR = "_unsloth_cap_signature"
+_EVAL_CAP_MEMO_MAX = 8
+
+
+def _cap_signature(dataset):
+    """What this split was already capped to, or None if we did not cap it.
+
+    Read through `__dict__` for our own wrappers: `_CappedBase.__getattr__`
+    forwards anything it does not hold to the split inside, so a plain `getattr`
+    on an unmarked wrapper asks the INNER split, and an inner split we happen to
+    have capped earlier would answer for the outer one.
+    """
+    own = getattr(dataset, "__dict__", None)
+    if isinstance(own, dict) and _CAP_SIGNATURE_ATTR in own:
+        return own[_CAP_SIGNATURE_ATTR]
+    return None
+
+
+def _mutation_token(dataset):
+    """What moves when this split's ROWS move, or None if nothing does.
+
+    `datasets` splits are content-addressed by `_fingerprint`. A `with_transform`
+    split has one too, but it covers the backing table and not the transform, so
+    a transform closing over mutable state yields different rows under an
+    unchanged fingerprint; those answer None. Anything else has no answer either.
+    """
+    try:
+        fmt = getattr(dataset, "format", None)
+        kind = fmt.get("type") if isinstance(fmt, dict) else None
+        if (kind or getattr(dataset, "_format_type", None)) == "custom":
+            return None
+    except Exception:
+        return None
+    return getattr(dataset, "_fingerprint", None)
+
+
+def _mark_capped(dataset, cap, drop_unsupervised):
+    try:
+        setattr(dataset, _CAP_SIGNATURE_ATTR, (cap, drop_unsupervised, _mutation_token(dataset)))
+    except Exception:
+        pass  # a split that refuses attributes just gets scanned twice
+    return dataset
+
+
+def _cap_still_holds(dataset, cap, drop_unsupervised):
+    """Whether an earlier mark of ours still describes this split.
+
+    Three of the four `_cap` outcomes mark the CALLER'S OWN object and hand it
+    back -- no tokens, packed, already short -- and that object can be mutated
+    between two `evaluate()` calls. A `set_transform` that starts yielding
+    longer `input_ids` is enough, and the mark alone then skipped the rescan and
+    let the new rows through uncapped. Our own wrappers hold a fixed slice and
+    cannot drift, so those are trusted outright; anything else has to still
+    fingerprint the way it did when marked. An unfingerprintable split answers
+    None both times and is simply rescanned, which is the same conclusion the
+    memo reaches for the same reason, and is not destructive: the second pass
+    reads through `_column_names`, which chains its probed row back on.
+    """
+    signature = _cap_signature(dataset)
+    if signature is None:
+        return False
+    if isinstance(dataset, _CappedBase):
+        return tuple(signature[:2]) == (cap, drop_unsupervised)
+    token = _mutation_token(dataset)
+    return token is not None and tuple(signature) == (cap, drop_unsupervised, token)
+
+
+def _first_row_without_consuming(dataset):
+    """Row 0, or None when reading one would cost the caller that row."""
+    if not _is_stream(dataset):
+        try:
+            return dataset[0]
+        except Exception:
+            return None
+    # A stream whose `iter` hands back the same exhausting generator cannot
+    # spare a row, and nothing here chains it back.
+    probe = iter(dataset)
+    if probe is dataset or probe is iter(dataset):
+        return None
+    return next(probe, None)
+
+
+def _is_token_vector(value, width):
+    """Whether `value` reads as one number per token, for a row of `width`.
+
+    Only used to decide whether a column NOT on the allow-list rides along with
+    the slice, so it is deliberately narrow: a string is as long as its
+    characters, and a list of messages or of strings can match a row length by
+    coincidence. A flat vector of scalars is what a per-token field actually is.
+    """
+    if isinstance(value, (str, bytes, dict)):
+        return False
+    try:
+        if len(value) != width or width == 0:
+            return False
+    except Exception:
+        return False
+    # By what the entries are NOT, so a numpy or torch scalar still counts.
+    for item in value:
+        return not isinstance(item, (str, bytes, dict, list, tuple, set))
+    return False
+
+
+def _sliceable_per_token(
+    dataset,
+    names,
+    cap,
+    probed = None,
+):
+    """The token columns whose VALUES can be sliced alongside `input_ids`.
+
+    Presence is not enough. An optional column stored as `token_type_ids = None`
+    makes the late cap's `map` raise, and the broad catch around it hands the
+    caller its uncapped split straight back; a 2-D `position_ids` slices on the
+    wrong axis and comes out misaligned with the truncated `input_ids`. Either
+    defeats the cap through one auxiliary column, so judge by a row rather than
+    by a name, the way the construction-time truncation already does.
+
+    A row that cannot be read without costing it leaves `input_ids` alone: the
+    column the cap exists for, and the one every other is measured against.
+    """
+    # `input_ids` first, and the rest in a fixed order: `names` arrives as a set,
+    # and the `map` path reads the width off `input_ids` as it walks this list,
+    # so a run that happened to order `labels` ahead of it sliced the labels
+    # without ever comparing them to anything.
+    known = [c for c in _PER_TOKEN if c in names]
+    # A user-defined per-token field -- `loss_mask`, `token_weights`, a custom
+    # model input -- is not in the allow-list, so it kept its full length while
+    # `input_ids` was cut. A custom collator (the case where padding-free is off
+    # and this wrapper still runs) then gets mismatched lengths and either fails
+    # or supervises the wrong tokens. Judge those the way the row check below
+    # judges everything else, by alignment, but only accept a flat vector of
+    # scalars: that is what a per-token field is, and it keeps `messages` or a
+    # column of strings that happens to be as long as the row out of the slice.
+    custom = sorted(c for c in names if c not in _PER_TOKEN)
+    per_token = known + custom
+    if len(known) < 2 and not custom:
+        return known
+    # `probed` is the row `_column_names` already read. Preferring it is what
+    # lets a one-shot stream align every per-token column: reading another row
+    # would cost the caller that example, so without it this fell back to
+    # `input_ids` alone and left the masks and labels overlength.
+    row = probed if isinstance(probed, dict) else _first_row_without_consuming(dataset)
+    if not isinstance(row, dict):
+        return ["input_ids"] if "input_ids" in names else []
+    try:
+        width = len(row.get("input_ids"))
+    except Exception:
+        # Nothing to measure against, so a custom column has no evidence at all
+        # behind it. Fall back to the named ones only.
+        return known
+    kept = []
+    for name in per_token:
+        value = row.get(name)
+        if name in custom and not _is_token_vector(value, width):
+            continue
+        try:
+            # As long as `input_ids`, which is what makes the FIRST axis the
+            # token axis: a `[seq_len, channels]` field slices correctly there,
+            # and a channel-major one (`position_ids` under mrope is
+            # `[3, seq_len]`) fails this check and is left alone, which is the
+            # shape the nested test used to be aimed at.
+            if len(value) != width:
+                continue
+        except Exception:
+            continue
+        kept.append(name)
+    return kept
+
+
+def _eval_packing_on(args):
+    """TRL's own resolution: `args.packing` unless `eval_packing` overrides it.
+
+    Kept identical to the generated block's `_unsloth_eval_packing`, because the
+    late cap and the construction-time one have to answer this the same way.
+    """
+    eval_packing = getattr(args, "eval_packing", None)
+    if eval_packing is None:
+        return bool(getattr(args, "packing", False))
+    return bool(eval_packing)
+
+
+def _trl_prepares_late_evals(trainer_cls):
+    """Does TRL's own `evaluate` prepare a split handed straight to it?
+
+    False up to TRL 1.6, where `evaluate` was the base Trainer's and
+    `_prepare_dataset` ran only from `__init__`. True from 1.7.0, whose
+    `SFTTrainer.evaluate` calls `_prepare_dataset` with
+    `packing = args.packing if args.eval_packing is None else args.eval_packing`,
+    so on those versions the packer owns a late eval split and cutting its rows
+    at the cap first throws away the overflow packing exists to redistribute.
+
+    Read off the class rather than off a version number, so a TRL that moves the
+    behaviour again is answered correctly. The first class in the MRO that
+    defines `evaluate` is the one that runs; anything unreadable answers False,
+    which is what every TRL did before 1.7.
+    """
+    for klass in getattr(trainer_cls, "__mro__", ()):
+        method = klass.__dict__.get("evaluate")
+        if method is None or getattr(method, "_unsloth_eval_cap_wrapped", False):
+            continue
+        try:
+            return "_prepare_dataset" in inspect.getsource(method)
+        except Exception:
+            return False
+    return False
+
+
+def _wrap_sft_evaluate_cap(trainer_cls):
+    """Cap a pre-tokenized split handed to `evaluate()`/`predict()` later on.
+
+    The padding-free branch caps the init-time splits itself and then clears
+    `args.max_length`, because that is what TRL's guard demands. Only the splits
+    present at construction went through it, so a split supplied afterwards is
+    prepared with `max_length = None`, and Zoo's prep leaves rows that already
+    carry `input_ids` alone: overlength rows reach the collator with nothing
+    enforcing the cap. The cap itself survives on `args.max_seq_length`, so
+    apply it here to exactly the rows nothing else will truncate.
+
+    Both entry points, not just `evaluate`: `predict(test_dataset = ...)` comes
+    from the base Trainer and reaches the same collator by the same route.
+
+    Whether anything TRL owns runs on a late split depends on the TRL. Up to 1.6
+    nothing did: `_prepare_dataset` was called from `__init__` and nowhere else,
+    and SFTTrainer overrode neither `evaluate` nor `predict` nor
+    `get_eval_dataloader`, so a split handed over afterwards was never tokenized,
+    never packed and never truncated. From 1.7.0 `SFTTrainer.evaluate` prepares a
+    split passed straight to it, packing included, so on those versions the packer
+    DOES own a late eval split and `eval_packing` has to be honoured here exactly
+    as it is at construction. `_trl_prepares_late_evals` reads that off the class.
+
+    This has to agree with the construction-time cap on every detail, because it
+    is the same cap arriving late. It honours `truncation_mode`, refuses a packed
+    split, drops rows left with no supervised token, and handles a stream.
+    """
+
+    def _supervision_columns(args, names):
+        """Columns that decide whether a row still has a supervised token.
+
+        `labels` when present, `assistant_masks` on presence alone,
+        `completion_mask` only under `completion_only_loss`. That mode is the
+        trainer's, resolved once from the training sample, so read the collator's
+        effective value rather than guessing from this split's own columns: TRL
+        does the same and the two must agree.
+        """
+        columns = ["labels"] if "labels" in names else []
+        # The TRAINER's resolved value first. It is the one the collator uses,
+        # and it is present whenever TRL resolved it -- including the cases the
+        # generated block never runs in: a TRL whose guard did not match, or
+        # padding-free off from the start. Falling straight through to this
+        # split's own schema then read False off a late pre-tokenized split
+        # carrying only `input_ids` and `completion_mask`, kept the rows whose
+        # completion was cut away entirely, and the collator turned them into
+        # all -100, i.e. a NaN eval loss.
+        only = getattr(args, "_unsloth_resolved_completion_only", None)
+        if only is None:
+            only = getattr(args, "_unsloth_completion_only_loss", None)
+        if only is None:
+            only = getattr(args, "completion_only_loss", None)
+        if only is None:
+            only = "prompt" in names and "completion" in names
+        if only and "completion_mask" in names:
+            columns.append("completion_mask")
+        if "assistant_masks" in names:
+            columns.append("assistant_masks")
+        return columns
+
+    def _cap(
+        dataset,
+        cap,
+        args,
+        drop_unsupervised = True,
+        packs_late = False,
+    ):
+        # `evaluate()` caps the split, stores it on the trainer, and Transformers
+        # then calls `get_eval_dataloader`, which this module also wraps -- so the
+        # paired wrappers reach here twice for one call. Re-capping is a no-op at
+        # best, and over a one-shot stream it is destructive: `_column_names` and
+        # `_sliceable_per_token` each read a row to probe it, and `_CappedStream`
+        # hands out a fresh generator over the SAME exhausted source rather than
+        # rewinding, so the second pass eats the first rows instead of replaying
+        # them. Our own wrapper, capped the same way, is already the answer.
+        if _cap_still_holds(dataset, cap, drop_unsupervised):
+            return dataset
+        names, dataset, probed = _column_names(dataset)
+        if "input_ids" not in names:
+            # No tokens here yet, so there is nothing to cut. TRL does not
+            # tokenize a late split either -- `_prepare_dataset` runs only from
+            # `__init__` -- but that is its own gap and not one a truncation can
+            # close.
+            return _mark_capped(dataset, cap, drop_unsupervised)
+        # `eval_packing` is consulted only where the packer can actually reach the
+        # split, which is why `packs_late` is passed in per entry point rather than
+        # read here. Up to TRL 1.6 nothing packs a late split: `evaluate()` and
+        # `predict()` are the base Trainer's, they call `get_eval_dataloader` /
+        # `get_test_dataloader` straight through, and `_prepare_dataset` never runs
+        # again, so skipping the cap there handed the collator the raw overlength
+        # rows with `max_length` already cleared. From TRL 1.7.0 the opposite is
+        # true for `evaluate` alone: it prepares the split itself under
+        # `eval_packing`, and every strategy owns the overflow -- `wrapped`
+        # concatenates the token stream before chunking, `bfd_split` splits an
+        # overlength example into more chunks -- so cutting rows at the cap first
+        # throws that away. `predict` and the two dataloader builders stay the base
+        # Trainer's on every TRL, so they always cap.
+        if packs_late and _eval_packing_on(args):
+            return _mark_capped(dataset, cap, drop_unsupervised)
+        # A packed split carries document lengths, not tokens. Slicing `input_ids`
+        # under a `seq_lengths` that still describes the longer row makes
+        # padding-free build position ids for tokens the row no longer has, which
+        # is worse than not cutting: the construction-time cap refuses this shape
+        # too.
+        if "seq_lengths" in names:
+            return _mark_capped(dataset, cap, drop_unsupervised)
+        try:
+            # TRL slices [-max_length:] for `keep_end`, and so does the
+            # construction-time cap. Always keeping the prefix evaluates the wrong
+            # half of every long row for callers whose completion sits at the tail.
+            mode = getattr(args, "truncation_mode", "keep_start")
+            # keep_start and keep_end are the only two slices there are, and a
+            # third value silently became keep_start here, cutting every late
+            # row from the side the caller asked us not to. The construction
+            # path already refuses those; this one has to as well, and refusing
+            # means handing the split back untouched so the caller still has it.
+            if mode not in ("keep_start", "keep_end"):
+                print(
+                    f"Unsloth: `truncation_mode = {mode}` is not one of "
+                    "keep_start / keep_end, so this split is left uncapped."
+                )
+                return dataset
+            cut = slice(-cap, None) if mode == "keep_end" else slice(None, cap)
+            per_token = _sliceable_per_token(dataset, names, cap, probed)
+            # Never on the predict path. Dropping rows is right for a loss, which
+            # is meaningless over a row with no supervised token, and wrong for
+            # `predict`, whose contract is one prediction per row IN ORDER: a
+            # caller zipping the output back onto its own dataframe would silently
+            # get a shorter, shifted column.
+            supervision = _supervision_columns(args, names) if drop_unsupervised else []
+            # A stream has no length and cannot be rewound, so there is no prefix
+            # scan to skip the work with, and indexing it does not even fail
+            # loudly: on datasets 4.x `dataset[0]` reads 0 as a COLUMN name and
+            # returns an IterableColumn, whose len() then raised TypeError into
+            # the catch below and handed the eval call its uncapped stream back.
+            # map() is lazy and applies to every row it will ever yield.
+            overlength = True
+            if not _is_stream(dataset):
+                try:
+                    overlength = max(len(r) for r in dataset["input_ids"]) > cap
+                except Exception:
+                    # The scan only exists to skip a pointless map. A split with no
+                    # column access (a custom map-style dataset) cannot answer it, and
+                    # that is not a reason to hand it back uncapped.
+                    pass
+            # A split already under the cap still goes through the supervision
+            # filter below. Being short is not the same as being supervised: a row
+            # whose labels are all -100, or whose active mask is all zeros, is a
+            # NaN loss whether or not anything had to be cut off it, and the
+            # construction-time cap filters those rows unconditionally too.
+            # Returning early on the length alone was the one way the two paths
+            # disagreed.
+            if not overlength and not supervision:
+                return _mark_capped(dataset, cap, drop_unsupervised)
+            # A split we cannot rewrite is capped on read instead. `map` belongs to
+            # `datasets`, and a `with_transform` split has it but recreates its rows
+            # on every read, so mapping writes a table nobody reads.
+            transform = str((getattr(dataset, "format", None) or {}).get("type", "")).lower()
+            if (
+                not hasattr(dataset, "map")
+                or not hasattr(dataset, "filter")
+                or transform == "custom"
+            ):
+                if _is_stream(dataset):
+                    return _mark_capped(
+                        _capped_stream(dataset, cut, supervision, per_token), cap, drop_unsupervised
+                    )
+                return _mark_capped(
+                    _CappedRows(dataset, cut, supervision, per_token), cap, drop_unsupervised
+                )
+
+            def _slice_row(
+                example,
+                _cut = cut,
+                _cols = tuple(per_token),
+            ):
+                # Per value, not per column. `_sliceable_per_token` judges by ONE
+                # row, so an optional column that is a list there and None (or a
+                # different width) three rows later raised inside `map` -- and
+                # the broad catch below then returned the UNCAPPED split, losing
+                # the `input_ids` truncation too. `input_ids` is always cut; an
+                # auxiliary value that cannot take the same slice is left alone.
+                out = {}
+                width = None
+                for name in _cols:
+                    value = example[name]
+                    try:
+                        length = len(value)
+                    except Exception:
+                        continue  # not sliceable: leave it
+                    if name == "input_ids":
+                        width = length
+                    elif width is not None and length != width:
+                        continue  # not aligned: leave it
+                    out[name] = value[_cut]
+                return out
+
+            new = dataset if not overlength else dataset.map(_slice_row)
+            # Truncating can leave a row with every label at -100, or a mask that is
+            # now all zeros, which the collator turns into all -100. A batch of
+            # those has no supervised token and reports a NaN loss. TRL filters them
+            # right after its own truncation; here `args.max_length` is already None
+            # so TRL does not, and the construction-time cap filters them for the
+            # splits it saw. Masks are applied one after another onto the same
+            # labels, so what survives is their intersection.
+            # One intersection over labels AND every active mask, not a filter each:
+            # the collator applies the masks ONTO the labels, so a row whose only
+            # supervised label sits where the mask is zero passes both filters
+            # separately and still goes out all -100.
+            if supervision:
+                kept = new.filter(
+                    lambda e, c = tuple(supervision): any(
+                        all((x != -100) if n == "labels" else x for n, x in zip(c, v))
+                        for v in zip(*[e[n] for n in c])
+                    )
+                )
+                # Hand back the caller's own split when the filter dropped
+                # nothing: a copy of an unchanged dataset is a new object for the
+                # trainer to cache and reload for no reason at all.
+                try:
+                    new = new if len(kept) == len(new) else kept
+                except Exception:
+                    new = kept
+            return _mark_capped(new, cap, drop_unsupervised)
+        except Exception:
+            return dataset  # never turn an eval call into a hard error
+
+    def _memo_token(dataset):
+        """What makes this split's cap reusable, or None if nothing does.
+
+        Identity alone is not enough: the same list or custom map-style split can
+        be appended to or shortened between two `evaluate()` calls, and the memo
+        would hand back a wrapper whose snapshotted indices no longer describe
+        it -- rows silently missing, or an index that raises during loading.
+        `datasets` splits are content-addressed by `_fingerprint`, which moves
+        whenever the rows do, so those are safe to keep. Anything else is
+        recomputed, which is the cheap case anyway: the scan this memo exists to
+        skip needs a materialised `input_ids` column that these do not have.
+
+        A `with_transform` split is excluded even though it has a fingerprint:
+        that covers the backing table, not the transform, so a transform closing
+        over mutable state yields different rows under an unchanged fingerprint
+        and the memo would replay a filter decided against the old ones. That is
+        the same question the cap mark asks, so it is the same helper.
+        """
+        return _mutation_token(dataset)
+
+    def _cap_cached(
+        trainer,
+        dataset,
+        cap,
+        drop_unsupervised = True,
+        packs_late = False,
+    ):
+        """Cap a split once per object.
+
+        `evaluate()` runs at every eval step of a training run, and the scan that
+        decides whether anything needs cutting materialises the whole `input_ids`
+        column each time. Keep the answer, keyed on the split object and holding a
+        reference to it, so a later split cannot inherit its `id()`.
+        """
+        # Carried onto args because `_cap` only ever sees those. `is not None`
+        # rather than truthiness: False is TRL's answer just as much as True.
+        resolved = getattr(trainer, "completion_only_loss", None)
+        if resolved is not None:
+            try:
+                trainer.args._unsloth_resolved_completion_only = resolved
+            except Exception:
+                pass
+        token = _memo_token(dataset)
+        if token is None:
+            return _cap(dataset, cap, trainer.args, drop_unsupervised, packs_late)
+        memo = getattr(trainer, "_unsloth_eval_cap_memo", None)
+        if memo is None:
+            memo = {}
+            try:
+                trainer._unsloth_eval_cap_memo = memo
+            except Exception:
+                return _cap(dataset, cap, trainer.args, drop_unsupervised, packs_late)
+        # `truncation_mode` shapes the SLICE, so it belongs in the key: without
+        # it, evaluating once with keep_start and again with keep_end handed
+        # back the cached prefixes for both.
+        key = (
+            id(dataset),
+            drop_unsupervised,
+            getattr(trainer.args, "truncation_mode", "keep_start"),
+            # `evaluate` and `get_eval_dataloader` share `drop_unsupervised` and
+            # see the same object in one call, but only the first may skip the cut
+            # under `eval_packing`, so without this the second reused the first's
+            # answer.
+            packs_late,
+        )
+        seen = memo.get(key)
+        if seen is not None and seen[0] is dataset and seen[1] == cap and seen[3] == token:
+            memo[key] = memo.pop(key)  # most recently used goes last
+            return seen[2]
+        capped = _cap(dataset, cap, trainer.args, drop_unsupervised, packs_late)
+        memo[key] = (dataset, cap, capped, token)
+        # Bounded, because every entry pins BOTH the original split and the
+        # capped copy for the trainer's whole lifetime -- deliberately, so a
+        # later split cannot inherit a freed `id()`. A caller that builds a
+        # fresh validation subset each epoch therefore accumulated Arrow tables
+        # until the host ran out. Evicting the least recently used costs nothing
+        # real: a run evaluates over a handful of splits, which is what the
+        # bound leaves room for.
+        while len(memo) > _EVAL_CAP_MEMO_MAX:
+            memo.pop(next(iter(memo)))
+        return capped
+
+    def _cap_splits(
+        trainer,
+        given,
+        cap,
+        drop_unsupervised = True,
+        packs_late = False,
+    ):
+        # `evaluate(eval_dataset = "validation")` is the supported way to pick one
+        # split out of a stored dict: `get_eval_dataloader` resolves it as
+        # `self.eval_dataset[eval_dataset]`. Capping the KEY is a no-op, so the
+        # split it names reached the collator uncapped. Cap it where it is stored
+        # and hand the key straight back.
+        if isinstance(given, str):
+            stored = getattr(trainer, "eval_dataset", None)
+            if isinstance(stored, dict) and given in stored:
+                capped = _cap_cached(trainer, stored[given], cap, drop_unsupervised, packs_late)
+                # Staged for the caller to swap in and OUT, never written
+                # through. Overwriting `stored[given]` destroyed the uncapped
+                # original, so a later `truncation_mode = "keep_end"` -- which
+                # the memo key now distinguishes on purpose -- could only re-cap
+                # the saved prefix and never produce the suffix asked for.
+                if capped is not stored[given]:
+                    trainer._unsloth_pending_split_swap = (stored, given, capped)
+            return given
+        if isinstance(given, dict):
+            capped = {
+                k: _cap_cached(trainer, v, cap, drop_unsupervised, packs_late)
+                for k, v in given.items()
+            }
+            if all(capped[k] is v for k, v in given.items()):
+                return given
+            return capped
+        return _cap_cached(trainer, given, cap, drop_unsupervised, packs_late)
+
+    def _make(original, keyword, drop_unsupervised, packs_late):
+        def wrapped(self, *args, **kwargs):
+            cap = getattr(getattr(self, "args", None), "max_seq_length", None)
+            retained = getattr(getattr(self, "args", None), "max_length", None)
+            # A retained `max_length` is NOT proof the cap is enforced
+            # downstream. It is exactly what the construction block leaves
+            # behind when it turns padding-free OFF instead of clearing the
+            # cap, and TRL's collator does not truncate rows that already carry
+            # `input_ids`. `_prepare_dataset` runs only from `__init__`, so a
+            # split handed over later is never prepared either: skipping on a
+            # retained `max_length` let an overlength late split reach the model
+            # with nothing enforcing anything. Cap to whichever value is set.
+            if retained is not None:
+                cap = retained
+            if not cap:
+                return original(self, *args, **kwargs)
+            given = kwargs.get(keyword, args[0] if args else None)
+            if given is not None:
+                self._unsloth_pending_split_swap = None
+                capped = _cap_splits(self, given, cap, drop_unsupervised, packs_late)
+                if keyword in kwargs:
+                    kwargs[keyword] = capped
+                else:
+                    args = (capped,) + tuple(args[1:])
+                swap = getattr(self, "_unsloth_pending_split_swap", None)
+                if swap is None:
+                    return original(self, *args, **kwargs)
+                # A named split: swap the capped copy in for this call only, so
+                # the caller keeps the uncapped original for the next mode.
+                container, key, replacement = swap
+                self._unsloth_pending_split_swap = None
+                previous = container[key]
+                container[key] = replacement
+                try:
+                    return original(self, *args, **kwargs)
+                finally:
+                    container[key] = previous
+            # `evaluate()` with no split passed falls back to the one stored on
+            # the trainer, and a caller can install or replace that after
+            # construction -- which is exactly where the constructor's cap can no
+            # longer see it. Every eval during training comes through here too.
+            stored = getattr(self, keyword, None) if keyword == "eval_dataset" else None
+            if stored is None:
+                return original(self, *args, **kwargs)
+            capped = _cap_splits(self, stored, cap, drop_unsupervised, packs_late)
+            if capped is stored:
+                return original(self, *args, **kwargs)
+            # Swapped onto the trainer rather than passed down as an argument,
+            # because Trainer.evaluate recurses over a dict of splits by NAME when
+            # nothing was passed:
+            #     eval_dataset = _eval_dataset if override else eval_dataset_name
+            # Passing the dict makes that an override, which changes what
+            # `get_eval_dataloader` is handed and what it caches.
+            setattr(self, keyword, capped)
+            try:
+                return original(self, *args, **kwargs)
+            finally:
+                setattr(self, keyword, stored)
+
+        wrapped._unsloth_eval_cap_wrapped = True
+        return wrapped
+
+    # `predict` keeps every row: its contract is one prediction per row in order.
+    #
+    # The two dataloader builders are public API and neither goes through
+    # `evaluate`/`predict`, so a caller doing `get_eval_dataloader(late)` reached
+    # the padding-free collator with `args.max_length` already cleared and
+    # nothing capping the split. Same wrapper, same argument position; the
+    # `drop_unsupervised` split follows the method it serves, since
+    # `get_test_dataloader` feeds `predict`.
+    # Only `evaluate` can hand its split to TRL's own prep, and only from 1.7.0.
+    # Read once, before anything is wrapped, so the probe sees TRL's method rather
+    # than ours.
+    prepares_late = _trl_prepares_late_evals(trainer_cls)
+    for name, keyword, drop_unsupervised, packs_late in (
+        ("evaluate", "eval_dataset", True, prepares_late),
+        ("predict", "test_dataset", False, False),
+        ("get_eval_dataloader", "eval_dataset", True, False),
+        ("get_test_dataloader", "test_dataset", False, False),
+    ):
+        original = getattr(trainer_cls, name, None)
+        if original is None or getattr(original, "_unsloth_eval_cap_wrapped", False):
+            continue
+        setattr(trainer_cls, name, _make(original, keyword, drop_unsupervised, packs_late))
+
+
 _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
 _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_wrapped"
 _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
@@ -1222,6 +2098,547 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "            print('Unsloth: We did not find `max_seq_length` or `max_length` in the model or args. We will set it to 1024.')\n"
                 "            args.max_length = 1024\n"
             )
+            # TRL >= 1.0.0 refuses padding-free without packing while `max_length` is
+            # set, since it cannot truncate a flattened batch. Unsloth auto-enables
+            # padding-free and the block above always writes `args.max_length`, so
+            # essentially every SFT user tripped that guard.
+            #
+            # Keep the length that block resolved (`max_seq_length`, capped by the
+            # model, wins) and move it to wherever it will actually be enforced:
+            #   * Unsloth's dataset prep will tokenize -> park it in `max_seq_length`,
+            #     which prep reads, and hand TRL the None it asks for.
+            #   * it will not (`skip_prepare_dataset`, or rows that already carry
+            #     `input_ids` / `labels`) -> nothing would truncate, so turn
+            #     padding-free off and keep `max_length` for TRL's own collator.
+            #
+            # The copy is unconditional on purpose: no TRL from 0.22.2 to 1.9.2
+            # declares `max_seq_length` on SFTConfig (only UnslothSFTConfig re-adds
+            # it), so a hasattr() gate would skip it for every pristine
+            # `trl.SFTConfig` and the clear below would drop the cap. `args` is a
+            # dataclass instance, so the assignment just adds the attribute and
+            # `to_dict()` never sees it.
+            #
+            # It must be None, not 0: TRL's guard reads `args.max_length is not None`,
+            # and rl_replacements.py normalises the None back to 0 inside the Zoo.
+            # The schema comes off the first yielded row like the Zoo does, falling
+            # back to `column_names` (a `with_transform` dataset reports its backing
+            # columns there while yielding `input_ids`).
+            if "`max_length` is not enforced" in old_RLTrainer_source:
+                max_length_check += (
+                    "if getattr(args, 'padding_free', False) is True and not getattr(args, 'packing', False) "
+                    "and getattr(args, 'max_length', None) is not None:\n"
+                    "    _unsloth_prep_truncates = True\n"
+                    "    _unsloth_skip_prepare = False\n"
+                    "    try:\n"
+                    "        _unsloth_dataset_kwargs = getattr(args, 'dataset_kwargs', None)\n"
+                    "        if _unsloth_dataset_kwargs is not None and _unsloth_dataset_kwargs.get('skip_prepare_dataset', False):\n"
+                    "            _unsloth_prep_truncates = False\n"
+                    "            _unsloth_skip_prepare = True\n"
+                    "    except Exception:\n"
+                    "        pass\n"
+                    # Metadata first and a row only as a fallback, the other way round
+                    # from before: reading a row off a one-shot training stream consumes
+                    # it, and nothing here chains it back, so the run began at row 2.
+                    # `iter(x) is iter(x)` marks the streams that cannot spare one --
+                    # the same signal the cap scan and the schema probe use.
+                    # A `with_transform` split reports its BACKING columns, so a
+                    # transform yielding `input_ids` over a stored `text` answered
+                    # "raw" and the cap was cleared for rows nothing then truncates.
+                    # Its rows are rebuilt on every read, so probing one is free.
+                    # An unprobeable stream cannot be ruled tokenized either, and
+                    # `True` there clears the cap on the same guess: refuse instead
+                    # and keep `max_length` for TRL's collator.
+                    # One rule, read twice: the late `_unsloth_pretokenized` probe asks the
+                    # same question of an eval split and must not trust its columns either.
+                    "    def _unsloth_is_transformed(_ds):\n"
+                    "        _f = getattr(_ds, 'format', None)\n"
+                    "        _f = _f.get('type') if isinstance(_f, dict) else None\n"
+                    "        return (_f or getattr(_ds, '_format_type', None)) == 'custom'\n"
+                    "    try:\n"
+                    "        _unsloth_transformed = _unsloth_is_transformed(train_dataset)\n"
+                    "        _unsloth_columns = None if _unsloth_transformed else getattr(train_dataset, 'column_names', None)\n"
+                    "        if _unsloth_columns is None and train_dataset is not None:\n"
+                    "            _unsloth_probe_cols = iter(train_dataset)\n"
+                    "            if _unsloth_probe_cols is train_dataset or _unsloth_probe_cols is iter(train_dataset):\n"
+                    "                _unsloth_prep_truncates = False\n"
+                    "            else:\n"
+                    "                _unsloth_first_row = next(_unsloth_probe_cols, None)\n"
+                    "                if isinstance(_unsloth_first_row, dict): _unsloth_columns = list(_unsloth_first_row.keys())\n"
+                    "        if _unsloth_columns is None and not _unsloth_transformed:\n"
+                    "            _unsloth_columns = getattr(train_dataset, 'column_names', None)\n"
+                    "            if isinstance(_unsloth_columns, dict):\n"
+                    "                _unsloth_columns = [_c for _v in _unsloth_columns.values() for _c in (_v or [])]\n"
+                    "        if _unsloth_columns is not None and ('input_ids' in _unsloth_columns or 'labels' in _unsloth_columns):\n"
+                    "            _unsloth_prep_truncates = False\n"
+                    "    except Exception:\n"
+                    "        _unsloth_prep_truncates = False\n"
+                    # Already-tokenized rows are not a dead end. TRL's own _prepare_dataset
+                    # truncates them (sft_trainer.py: `elif args.max_length is not None:
+                    # truncate_dataset(...)`), and the LM collator it builds passes no
+                    # max_length, so truncation there is the ONLY thing enforcing the cap. The
+                    # Zoo's replacement returns pre-tokenized rows untouched, so doing it here
+                    # restores TRL's contract rather than inventing one, and padding-free can
+                    # stay on. skip_prepare_dataset is the exception: the user asked for the
+                    # dataset to be left alone, and TRL skips truncation there too.
+                    # Only a MATERIALISED tokenized dataset. A with_transform dataset yields
+                    # input_ids on access while column_names still says ["text"], so mapping it
+                    # would truncate the wrong thing; that case keeps the fallback below.
+                    # One predicate, applied per DATASET, because the train split and each eval
+                    # split can be in different shapes. Truncating is only safe for a materialised
+                    # tokenized table: raw conversational rows (messages: list[dict]) are per-row
+                    # sequences too and would be sliced into corrupted turns, and a with_transform
+                    # dataset recreates its rows on read, so map() writes the backing table while
+                    # the reader keeps handing back overlength input_ids.
+                    "    def _unsloth_truncatable(_ds):\n"
+                    "        if _ds is None or not hasattr(_ds, 'map'): return False\n"
+                    "        try:\n"
+                    "            if str((getattr(_ds, 'format', None) or {}).get('type', '')).lower() == 'custom':\n"
+                    "                return False\n"
+                    "        except Exception:\n"
+                    "            return False\n"
+                    "        try:\n"
+                    "            _cols = getattr(_ds, 'column_names', None)\n"
+                    "            if isinstance(_cols, dict):\n"
+                    "                _cols = [_c for _v in _cols.values() for _c in (_v or [])]\n"
+                    # A packed split is out: TRL skips truncation when packing
+                    # (`if args.max_length is not None and not packing`), and cutting
+                    # `input_ids` under a `seq_lengths` that still describes the old
+                    # row is worse than not cutting at all.
+                    "            if 'seq_lengths' in (_cols or ()): return False\n"
+                    "            return bool(_cols) and 'input_ids' in _cols\n"
+                    "        except Exception:\n"
+                    "            return False\n"
+                    # Read a row BACK. Every predicate above is a guess about what the dataset
+                    # will do; this is the one check that observes it. A split with no
+                    # `input_ids` is raw, so prep tokenizes it with the cap and it is fine.
+                    "    _unsloth_cap = args.max_length\n"
+                    # TRL slices [-max_length:] for `keep_end`, which callers use when
+                    # the completion sits at the tail of a long prompt. Consuming
+                    # `max_length` while always keeping the prefix trained on the wrong
+                    # half of every row.
+                    "    _unsloth_truncation_mode = getattr(args, 'truncation_mode', 'keep_start') or 'keep_start'\n"
+                    # keep_start and keep_end are the only two slices there are. TRL's SFT path
+                    # never reads this attribute at all -- it belongs to the preference trainers --
+                    # so nothing downstream would catch a third value, and mapping it to the
+                    # default would silently cut from the side the caller asked us not to. Refuse
+                    # the enforcement claim instead, the same answer this block gives for any
+                    # split it cannot honour.
+                    "    _unsloth_keep_end = _unsloth_truncation_mode == 'keep_end'\n"
+                    "    _unsloth_known_mode = _unsloth_truncation_mode in ('keep_start', 'keep_end')\n"
+                    "    _unsloth_slice = slice(-_unsloth_cap, None) if _unsloth_keep_end else slice(None, _unsloth_cap)\n"
+                    # Resolved here, one level out from the truncation block, because the fallback
+                    # below reads it even when `skip_prepare_dataset` skips that block entirely.
+                    # `eval_packing` is separate from `packing`:
+                    #     packing = args.packing if args.eval_packing is None else args.eval_packing
+                    # (sft_trainer.py), so packing = False with eval_packing = True reaches this
+                    # branch, which is gated on `not args.packing`. TRL then PACKS the eval split
+                    # rather than truncating it, and every strategy owns the overflow: `wrapped`
+                    # concatenates the stream before chunking, `bfd_split` splits an overlength
+                    # example into more chunks. Cutting rows at the cap first throws that away.
+                    "    _unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')\n"
+                    "    _unsloth_completion_only = getattr(args, 'completion_only_loss', None)\n"
+                    # Column names first, and a row only if reading one is free. On a
+                    # one-shot stream this probe consumed the first TRAINING example --
+                    # nothing chains it back here, so the run started at row 2. The
+                    # same `iter(x) is iter(x)` signal the cap scan uses marks those,
+                    # and an unreadable schema resolves to False, which is what TRL
+                    # itself answers for a split with no `prompt`/`completion`.
+                    # A `with_transform` split answers `column_names` with its BACKING
+                    # table, so a transform storing `text` but yielding `prompt` /
+                    # `completion` resolved to False here while TRL, which reads a
+                    # yielded row, resolved True and applied `completion_mask`. The
+                    # cap filters then kept rows whose completion was cut away
+                    # entirely, and the collator turned those into all -100.
+                    # Same rule as the two schema probes above: transformed columns
+                    # are not evidence, so ignore them and read a row instead.
+                    "    if _unsloth_completion_only is None:\n"
+                    "        try:\n"
+                    # A `set_format(columns = [...], output_all_columns = False)`
+                    # split yields only the named columns while `column_names`
+                    # still answers with the whole backing table. Reading the
+                    # table resolved completion-only True off a `completion` the
+                    # rows never hand over, TRL resolved False from a yielded
+                    # row, and the cap then filtered on a `completion_mask` the
+                    # collator ignores -- dropping valid rows, up to emptying the
+                    # split. The format's own column list is what is yielded.
+                    "            _unsloth_fmt = getattr(train_dataset, 'format', None)\n"
+                    "            _unsloth_fmt = _unsloth_fmt if isinstance(_unsloth_fmt, dict) else {}\n"
+                    "            _unsloth_shown = _unsloth_fmt.get('columns')\n"
+                    "            if _unsloth_fmt.get('output_all_columns') or not _unsloth_shown:\n"
+                    "                _unsloth_shown = getattr(train_dataset, 'column_names', None)\n"
+                    "            _unsloth_train_sample = {} if _unsloth_is_transformed(train_dataset) else dict.fromkeys(\n"
+                    "                _unsloth_shown or [])\n"
+                    "            if not _unsloth_train_sample:\n"
+                    "                _unsloth_probe = iter(train_dataset)\n"
+                    "                if _unsloth_probe is train_dataset or _unsloth_probe is iter(train_dataset):\n"
+                    "                    _unsloth_train_sample = {}\n"
+                    "                else:\n"
+                    "                    _unsloth_train_sample = next(_unsloth_probe, None) or {}\n"
+                    "        except Exception:\n"
+                    "            _unsloth_train_sample = {}\n"
+                    "        _unsloth_completion_only = ('prompt' in _unsloth_train_sample and 'completion' in _unsloth_train_sample)\n"
+                    # Parked on args so the late evaluate()/predict() cap reads the SAME value.
+                    # It resolves from the train schema, which a split handed over later cannot
+                    # see, and disagreeing with the collator is what leaves an all -100 row in.
+                    "    args._unsloth_completion_only_loss = _unsloth_completion_only\n"
+                    # EVERY row, not the first. A short row 0 in front of a long
+                    # row 5000 read as "within the cap", and in the fallback branch
+                    # nothing downstream truncates it. A map-style split is read in
+                    # full; a stream cannot be rewound, so a bounded prefix is all
+                    # there is and the check says so rather than pretending.
+                    "    _UNSLOTH_SCAN_ROWS = 1024\n"
+                    "    def _unsloth_within_cap(_ds):\n"
+                    "        if _ds is None: return True\n"
+                    "        try:\n"
+                    "            try:    _n = len(_ds)\n"
+                    "            except Exception: _n = None\n"
+                    # A single-pass stream cannot be scanned at all: reading it here IS
+                    # consuming it, and the trainer would then get an exhausted split
+                    # (or one short by up to 1024 rows). Two `iter()` calls handing back
+                    # the same object is what says so -- true for a bare generator and
+                    # for a `torch.utils.data.IterableDataset` that returns shared
+                    # iterator state, false for a `datasets.IterableDataset`, which
+                    # restarts. Unverifiable, so answer as the prefix case below does:
+                    # not proven within the cap, which drops the enforcement claim and
+                    # leaves every row where it is.
+                    "            _unsloth_rows = iter(_ds)\n"
+                    "            if _unsloth_rows is iter(_ds): return False\n"
+                    "            _seen = 0\n"
+                    "            for _row in _unsloth_rows:\n"
+                    "                if 'input_ids' not in _row: return True\n"
+                    "                if len(_row['input_ids']) > _unsloth_cap: return False\n"
+                    # An unexhausted stream is UNVERIFIED, not verified. Calling the
+                    # first 1024 fitting rows proof let a later overlength row through,
+                    # and in the fallback branch nothing truncates a pre-tokenized row.
+                    # A stream that can be rewritten is capped by the lazy map above and
+                    # never reaches this; one that cannot is refused.
+                    "                _seen += 1\n"
+                    "                if _n is None and _seen >= _UNSLOTH_SCAN_ROWS: return False\n"
+                    "        except Exception:\n"
+                    "            return False\n"
+                    "        return True\n"
+                    # Each eval split counts. A tokenized eval split in a shape the truncation
+                    # cannot rewrite (with_transform, or an iterable with no column_names) is
+                    # left alone above, and prep will not re-tokenize rows that already carry
+                    # `input_ids`, so consuming `max_length` on the strength of the train split
+                    # alone let evaluation run over the cap.
+                    "    def _unsloth_splits_within_cap(_ev):\n"
+                    "        _splits = list(_ev.values()) if isinstance(_ev, dict) else [_ev]\n"
+                    "        return all(_unsloth_within_cap(_s) for _s in _splits)\n"
+                    # Not train-only. `_unsloth_prep_truncates` is decided from the train
+                    # split, so a raw train beside a pre-tokenized eval set skipped this
+                    # whole block, consumed `max_length`, and left evaluation uncapped:
+                    # prep does not re-tokenize rows that already carry `input_ids`.
+                    "    if not _unsloth_skip_prepare:\n"
+                    # TRL forwards its preparation map_kwargs; honour the same setting so a large
+                    # pre-tokenized dataset is not rewritten single-process. Resolved through the
+                    # same helper as every other map site: the config layer writes "run
+                    # in-process" as `dataset_num_proc = 1`, and datasets >= 4.1 builds a Pool(1)
+                    # for it, forking a tokenizer worker on the host that asked for none.
+                    "        _unsloth_map_kw = {}\n"
+                    "        try:\n"
+                    "            try:\n"
+                    "                from unsloth_zoo.dataset_num_proc import get_dataset_num_proc as _unsloth_get_nproc\n"
+                    "            except ImportError:\n"
+                    "                from unsloth.dataset_num_proc import get_dataset_num_proc as _unsloth_get_nproc\n"
+                    "            _unsloth_nproc = _unsloth_get_nproc(getattr(args, 'dataset_num_proc', None))\n"
+                    "        except Exception:\n"
+                    "            _unsloth_nproc = None\n"
+                    "        if _unsloth_nproc: _unsloth_map_kw['num_proc'] = _unsloth_nproc\n"
+                    # Same rule as TRL's truncate_dataset: slice every per-row list column, so
+                    # input_ids, labels, attention_mask and the masks stay aligned. Written out
+                    # rather than imported, because trl.data_utils drags in the processor stack
+                    # and an ImportError there would silently drop the cap. A torch/numpy format
+                    # hands batched map() tensors, where `if _col` raises on the ambiguous truth
+                    # value, so ask for a per-row sequence and exclude str/bytes.
+                    "        def _unsloth_is_sequence_column(_col):\n"
+                    "            try:\n"
+                    "                if len(_col) == 0: return False\n"
+                    "                _first = _col[0]\n"
+                    "            except Exception:\n"
+                    "                return False\n"
+                    "            if isinstance(_first, (str, bytes)): return False\n"
+                    # len(), not hasattr('__len__'): under set_format('torch') a scalar
+                    # column batches to a 1-D tensor whose element is 0-dim, which HAS
+                    # __len__ and raises on it. The later len(_v) then threw TypeError,
+                    # the outer catch restored the overlength dataset, and a truncatable
+                    # run died on "cannot be enforced".
+                    "            try:    len(_first)\n"
+                    "            except Exception: return False\n"
+                    "            return True\n"
+                    # Per-token columns only, matched by row length against `input_ids`.
+                    # A packed split carries `seq_lengths` -- document lengths, not tokens
+                    # -- and slicing that by the cap left it stale, so padding-free built
+                    # position ids for more tokens than the row now holds.
+                    # Per VALUE, because `_unsloth_is_sequence_column` judges the
+                    # column from its first row. An optional field that is a list
+                    # there and None (or a scalar) further in raised TypeError out
+                    # of `len`, the enclosing handler restored the overlength split,
+                    # and a truncatable run died on "cannot be enforced". The late
+                    # cap validates each row for the same reason.
+                    "        def _unsloth_cut_value(_v, _r):\n"
+                    "            try:\n"
+                    "                if len(_v) != len(_r): return _v\n"
+                    "            except Exception: return _v\n"
+                    "            return _v[_unsloth_slice]\n"
+                    "        def _unsloth_truncate_rows(_batch):\n"
+                    "            _ids = _batch.get('input_ids')\n"
+                    "            _out = {}\n"
+                    "            for _k, _col in _batch.items():\n"
+                    "                if not _unsloth_is_sequence_column(_col):\n"
+                    "                    _out[_k] = _col\n"
+                    "                elif _ids is None:\n"
+                    "                    _out[_k] = [_v[_unsloth_slice] for _v in _col]\n"
+                    "                else:\n"
+                    "                    _out[_k] = [_unsloth_cut_value(_v, _r) for _v, _r in zip(_col, _ids)]\n"
+                    "            return _out\n"
+                    # A stream has no length, and `IterableDataset.map` takes no `num_proc`:
+                    # passing one raised TypeError, the catch below restored the original,
+                    # and the run died on "cannot be enforced" instead of being truncated.
+                    "        def _unsloth_is_stream(_ds):\n"
+                    "            try:    return not hasattr(_ds, '__len__')\n"
+                    "            except Exception: return True\n"
+                    # One split, capped and then checked. A stream's map is lazy and applies
+                    # to EVERY row it will ever yield, which is a stronger guarantee than the
+                    # bounded prefix scan: reading 1024 rows and calling the rest verified let
+                    # a later overlength row through, since nothing else truncates a
+                    # pre-tokenized stream.
+                    # Enforcement, not observation. A `with_transform` split that happens
+                    # to sit under the cap is not enforced -- it rebuilds its rows on every
+                    # read -- so it keeps the old answer: hold `max_length` and turn
+                    # padding-free off. Only a split we rewrote, or a raw one the tokenizer
+                    # pass will cut, counts.
+                    # Schema first, and a row only when one is free. `next(iter(_ds))`
+                    # on a single-pass stream is a row the run then trains without:
+                    # if it reads raw the split is declared safe and training starts
+                    # at row 2, if it reads tokenized construction rejects a stream
+                    # the caller still owns and has already been mutated. The
+                    # `iter(x) is iter(x)` test is the one the cap scan and the
+                    # schema probe already use; an unprobeable stream answers True,
+                    # which holds `max_length` rather than clearing it on a guess.
+                    "        def _unsloth_pretokenized(_ds):\n"
+                    "            try:\n"
+                    # Columns first, EXCEPT for a transform: a `with_transform` split reports
+                    # its backing table, so one storing `text` and yielding overlength
+                    # `input_ids` answered "raw" here. `_unsloth_truncatable` already refuses
+                    # to rewrite it, and this answer then marked it safe anyway and cleared
+                    # `max_length`, leaving padding-free with rows nothing truncates. Its rows
+                    # are rebuilt on every read, so probing one below costs nothing.
+                    "                _cols = None if _unsloth_is_transformed(_ds) else getattr(_ds, 'column_names', None)\n"
+                    "                if isinstance(_cols, dict):\n"
+                    "                    _cols = [_c for _v in _cols.values() for _c in (_v or [])]\n"
+                    "                if _cols is not None: return 'input_ids' in _cols\n"
+                    "                _probe = iter(_ds)\n"
+                    "                if _probe is _ds or _probe is iter(_ds): return True\n"
+                    "                _row = next(_probe, None)\n"
+                    "            except Exception: return True\n"
+                    "            return isinstance(_row, dict) and 'input_ids' in _row\n"
+                    # Every rank reaches this before TRL's `_prepare_dataset`, and
+                    # TRL runs its own preparation maps under `main_process_first`.
+                    # Without the same window, eight ranks each start `num_proc`
+                    # workers against one Arrow cache -- 64 processes doing the same
+                    # work, and writing the same cache files at the same time. One
+                    # rank materialises, the rest read what it wrote. A single
+                    # process gets a no-op context manager, so nothing changes there.
+                    "        def _unsloth_rank_first():\n"
+                    "            try:\n"
+                    "                from accelerate import PartialState\n"
+                    "                return PartialState().main_process_first()\n"
+                    "            except Exception:\n"
+                    "                import contextlib\n"
+                    "                return contextlib.nullcontext()\n"
+                    "        def _unsloth_cap_split(_ds):\n"
+                    "            with _unsloth_rank_first():\n"
+                    "                return _unsloth_cap_one(_ds)\n"
+                    "        def _unsloth_cap_one(_ds):\n"
+                    "            if _ds is None: return _ds, True\n"
+                    "            if not _unsloth_truncatable(_ds): return _ds, not _unsloth_pretokenized(_ds)\n"
+                    "            _kw = {} if _unsloth_is_stream(_ds) else _unsloth_map_kw\n"
+                    "            _new = _ds.map(_unsloth_truncate_rows, batched = True, **_kw)\n"
+                    # TRL filters these immediately after truncating: a row whose
+                    # prompt alone fills the cap has every label at -100 and
+                    # contributes no loss, so leaving them in feeds batches with no
+                    # supervised tokens.
+                    # `labels` is only one of the three ways a row says which tokens
+                    # are supervised. A completion-only or assistant-only row carries
+                    # `completion_mask` / `assistant_masks` instead, and truncating a
+                    # long prompt can leave that mask all zeros; TRL's collator turns
+                    # those into all -100 and a batch made of them has no supervised
+                    # token at all, which is a NaN loss rather than a small one.
+                    # A mask is supervision when TRL will actually apply it, and the
+                    # two masks are not symmetric there. DataCollatorForLanguageModeling
+                    # guards `completion_mask` behind `self.completion_only_loss` but
+                    # applies `assistant_masks` on presence alone:
+                    #     if self.completion_only_loss and "completion_mask" in examples[0]:
+                    #     if "assistant_masks" in examples[0]:
+                    # (trl/trainer/sft_trainer.py, checked on 0.25.1 and v1.9.2). TRL only
+                    # ever BUILDS that column under `assistant_only_loss`, which is why the
+                    # flag looks like the gate, but a pre-tokenized split -- the only kind
+                    # this branch handles -- carries whichever columns the caller put there.
+                    # So gating on the flag left an all-zero assistant mask in place, and
+                    # the collator turned the row into all -100: no supervised token, and a
+                    # batch of them is a NaN loss.
+                    # A None `completion_only_loss` is NOT "on". TRL resolves it from
+                    # the dataset shape:
+                    #     if args.completion_only_loss is None:
+                    #         self.completion_only_loss = "prompt" in dataset_sample and "completion" in dataset_sample
+                    # (sft_trainer.py:736). A pre-tokenized split has neither column, so
+                    # the effective mode is False and the collator ignores the mask
+                    # entirely; treating None as enabled deleted rows that still had
+                    # valid full-sequence supervision, and could empty the split.
+                    "            _unsloth_cols = getattr(_new, 'column_names', None) or ()\n"
+                    # One mode for every split, resolved from the TRAIN sample, because that is
+                    # what the collator uses:
+                    #     dataset_sample = next(iter(train_dataset))
+                    #     if args.completion_only_loss is None:
+                    #         self.completion_only_loss = "prompt" in dataset_sample and "completion" in dataset_sample
+                    # (sft_trainer.py). Resolving it per split disagreed with the collator whenever
+                    # the schemas differ: prompt/completion training data makes the collator apply
+                    # `completion_mask`, while a pre-tokenized eval split carrying only
+                    # `input_ids` and `completion_mask` read here as full-sequence loss, so rows
+                    # whose mask truncated to all zeros survived and went all -100 at eval.
+                    "            _unsloth_masks = []\n"
+                    "            if _unsloth_completion_only and 'completion_mask' in _unsloth_cols:\n"
+                    "                _unsloth_masks.append('completion_mask')\n"
+                    "            if 'assistant_masks' in _unsloth_cols:\n"
+                    "                _unsloth_masks.append('assistant_masks')\n"
+                    "            try:\n"
+                    # `labels` is unconditional: it IS the supervision.
+                    # One intersection over labels AND every active mask, not a filter each.
+                    # The collator applies the masks ONTO the labels, so a row whose only
+                    # supervised label sits where the mask is zero passes both filters
+                    # separately and still goes out all -100.
+                    "                _unsloth_supervision = (['labels'] if 'labels' in _unsloth_cols else []) + _unsloth_masks\n"
+                    # The masks are applied one after another onto the same labels, so
+                    # what survives is their INTERSECTION. Filtering each on its own kept
+                    # rows whose two masks light up in different positions, which TRL then
+                    # labels all -100 -- the very rows this filter exists to drop. zip
+                    # stops at the shorter, which is what an intersection means for a
+                    # ragged pair.
+                    "                if _unsloth_supervision:\n"
+                    "                    _new = _new.filter(lambda _e, _c = tuple(_unsloth_supervision): any(all((_x != -100) if _n == 'labels' else _x for _n, _x in zip(_c, _v)) for _v in zip(*[_e[_n] for _n in _c])), **_kw)\n"
+                    "            except Exception:\n"
+                    "                pass\n"
+                    # Recorded, not raised: the caller wraps these calls in a broad
+                    # `except Exception` that would turn a raise into "could not
+                    # truncate". The raise happens past that handler.
+                    "            try:\n"
+                    "                if _unsloth_supervision and len(_new) == 0: _unsloth_emptied.append(1)\n"
+                    "            except TypeError:\n"
+                    "                pass\n"
+                    "            return _new, (True if _unsloth_is_stream(_new) else _unsloth_within_cap(_new))\n"
+                    # Resolved BEFORE the try, because the fallback below needs it even when
+                    # the try never ran. `eval_packing` is separate from `packing`:
+                    #     packing = args.packing if args.eval_packing is None else args.eval_packing
+                    # (sft_trainer.py), so packing = False with eval_packing = True reaches this
+                    # branch, which is gated on `not args.packing`. TRL then PACKS the eval split
+                    # rather than truncating it, and every strategy owns the overflow: `wrapped`
+                    # concatenates the stream before chunking, `bfd_split` splits an overlength
+                    # example into more chunks. Cutting rows at the cap first throws that away.
+                    # So the packer keeps the split, and the enforcement claim is dropped rather
+                    # than the tokens: `max_length` stays and padding-free turns off. That is
+                    # required anyway, since packing raises on a None `max_length`, and it has to
+                    # hold even with no eval split at construction, because one handed to
+                    # `evaluate()` later would find `max_length` already cleared.
+                    "        _unsloth_emptied = []\n"
+                    "        _unsloth_orig_train = train_dataset\n"
+                    "        _unsloth_orig_eval = eval_dataset if 'eval_dataset' in locals() else None\n"
+                    "        try:\n"
+                    "            _unsloth_capped = _unsloth_known_mode\n"
+                    "            if not _unsloth_known_mode:\n"
+                    "                print('Unsloth: `truncation_mode = ' + str(_unsloth_truncation_mode) + '` is not one of keep_start / keep_end, so `max_length` is not being enforced here.')\n"
+                    # A raw train split is tokenized with the cap by prep, so leave it alone.
+                    # `and`, like the eval splits below. A plain assignment threw away the
+                    # unknown-mode refusal seeded above, so a `truncation_mode` this cannot
+                    # honour was warned about and then silently served as keep_start, with
+                    # `max_length` cleared and padding-free left on.
+                    # `_unsloth_known_mode` too: seeding `_unsloth_capped` false only drops the
+                    # ENFORCEMENT claim. The slice still ran, with `_unsloth_keep_end` false for
+                    # any unknown value, so the fallback scanned an already-trimmed split, found
+                    # it within the cap and merely turned padding-free off -- every row silently
+                    # cut from the start right after warning that the mode could not be honoured.
+                    # Leaving the split alone lets that scan see the real lengths and say so.
+                    "            if _unsloth_known_mode and not _unsloth_prep_truncates:\n"
+                    "                train_dataset, _unsloth_split_ok = _unsloth_cap_split(train_dataset)\n"
+                    "                _unsloth_capped = _unsloth_capped and _unsloth_split_ok\n"
+                    # An eval split TRL will PACK must not be truncated first. The branch
+                    # is gated on `not args.packing`, but `eval_packing` is resolved
+                    # separately:
+                    #     packing = args.packing if args.eval_packing is None else args.eval_packing
+                    # (sft_trainer.py), so packing = False with eval_packing = True reaches
+                    # here. TRL then packs the eval split instead of truncating it
+                    # (`if packing: ... elif args.max_length is not None: truncate_dataset`),
+                    # and the wrapped strategy concatenates the whole token stream before
+                    # chunking it, so cutting each row at the cap first throws away every
+                    # token past it and evaluates on a truncated corpus.
+                    # Leaving it uncut also means the cap is not enforced for that split, and
+                    # packing needs `max_length` anyway ("When packing is enabled,
+                    # `max_length` can't be `None`"), so this drops the enforcement claim
+                    # rather than the split: `max_length` stays and padding-free turns off,
+                    # which is the same answer this block already gives for a split it
+                    # cannot rewrite.
+                    # Each eval split on its own: a raw one stays raw for the tokenizer pass
+                    # that follows, and only a materialised tokenized one is cut.
+                    "            if _unsloth_eval_packing or not _unsloth_known_mode:\n"
+                    "                _unsloth_capped = False\n"
+                    "            elif 'eval_dataset' in locals() and eval_dataset is not None:\n"
+                    "                if isinstance(eval_dataset, dict):\n"
+                    "                    _unsloth_new_eval = {}\n"
+                    "                    for _k, _v in eval_dataset.items():\n"
+                    "                        _unsloth_new_eval[_k], _unsloth_split_ok = _unsloth_cap_split(_v)\n"
+                    "                        _unsloth_capped = _unsloth_capped and _unsloth_split_ok\n"
+                    "                    eval_dataset = _unsloth_new_eval\n"
+                    "                else:\n"
+                    "                    eval_dataset, _unsloth_split_ok = _unsloth_cap_split(eval_dataset)\n"
+                    "                    _unsloth_capped = _unsloth_capped and _unsloth_split_ok\n"
+                    "            _unsloth_prep_truncates = _unsloth_capped\n"
+                    # The splits that WERE rewritten keep their truncation: it is the cap
+                    # the caller asked for, applied exactly as TRL's own truncate_dataset
+                    # would. Rolling them back because a different split cannot be
+                    # rewritten put an overlength train set back and turned a healthy run
+                    # into "cannot be enforced". Only the claim of enforcement is dropped.
+                    "            if not _unsloth_capped:\n"
+                    "                print('Unsloth: `max_length` cannot be enforced for every split here, so padding-free batching is being turned off instead.')\n"
+                    "        except Exception as _unsloth_truncate_error:\n"
+                    "            train_dataset = _unsloth_orig_train\n"
+                    "            if 'eval_dataset' in locals(): eval_dataset = _unsloth_orig_eval\n"
+                    # The flag is decided from the train split, so a failure while capping
+                    # an eval split would otherwise leave it reading "cap enforced".
+                    "            _unsloth_prep_truncates = False\n"
+                    # Never silent: a swallowed failure here reads as the cap being enforced.
+                    "            print('Unsloth: could not truncate the pre-tokenized dataset to `max_length` (' + str(_unsloth_truncate_error) + ').')\n"
+                    # Outside the handler on purpose. Every row losing its supervised
+                    # tokens means the cap sits below where the supervision starts, and
+                    # an empty split is not something to hand onwards: every TRL 1.x
+                    # reads `next(iter(train_dataset))` in `__init__` to resolve
+                    # `completion_only_loss` and `_is_vision_dataset`, so it comes out
+                    # as a bare `StopIteration` naming nothing at all.
+                    "        if _unsloth_emptied:\n"
+                    "            raise ValueError('Unsloth: truncating to `max_length = ' + str(args.max_length) + '` left every row with no supervised token, so there is nothing to train on. The supervised part of your rows starts past that length: raise `max_length`, or set `truncation_mode = \"keep_end\"` if the completion sits at the end of each row.')\n"
+                    "    if _unsloth_prep_truncates:\n"
+                    "        args.max_seq_length = args.max_length\n"
+                    "        args.max_length = None\n"
+                    "        max_length = None\n"
+                    "    else:\n"
+                    # Turning padding-free off keeps `max_length` for TRL's collator, and that
+                    # collator does not truncate: for rows that already carry `input_ids`
+                    # nothing downstream enforces the cap. Before this block existed TRL's own
+                    # guard made the same configuration a hard error, so an observed overlength
+                    # row must stay one rather than become a silently uncapped run.
+                    # `skip_prepare_dataset` used to exempt this, which made it the one
+                    # way to get a silently uncapped run: TRL then neither truncates nor
+                    # builds its collator with a truncation length, so the oversized rows
+                    # reach the model. The check is what decides, not the flag.
+                    # An eval split left for the packer is overlength ON PURPOSE, so scanning it
+                    # here turned a working eval-packing run into a hard error and denied
+                    # `wrapped` / `bfd_split` the overflow they exist to handle. The train split
+                    # is still scanned: nothing packs that one.
+                    "        _unsloth_scan_eval = None if _unsloth_eval_packing else (eval_dataset if 'eval_dataset' in locals() else None)\n"
+                    "        if not (_unsloth_within_cap(train_dataset) and _unsloth_splits_within_cap(_unsloth_scan_eval)):\n"
+                    "            raise ValueError('Unsloth: `max_length = ' + str(args.max_length) + '` cannot be enforced. Your dataset already carries `input_ids` and holds rows longer than that, and nothing downstream truncates pre-tokenized rows. Truncate it yourself before passing it in, or drop `max_length`.')\n"
+                    "        print('Unsloth: Turning padding-free batching off, since your dataset is already tokenized and cannot be truncated here. Padding-free batching cannot enforce a `max_length` of ' + str(args.max_length) + '.')\n"
+                    "        args.padding_free = False\n"
+                )
             extra_args += max_length_check
 
     # Enable for training and move padding side of tokenizer to right
@@ -1937,6 +3354,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             )
     except Exception:
         pass
+
+    if trainer_file == "sft_trainer":
+        try:
+            _wrap_sft_evaluate_cap(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap evaluate for {RLTrainer_name}: {e}")
 
     if trainer_file == "grpo_trainer":
         try:
