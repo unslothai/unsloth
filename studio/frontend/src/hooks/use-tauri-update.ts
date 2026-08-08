@@ -291,6 +291,20 @@ export function useTauriUpdate(isExternalServer = false) {
     updatingRef.current = true;
 
     const cleanups: (() => void)[] = [];
+    // Re-arming is what makes a later crash or End Task reap the backend, so on
+    // Windows a failure here has to stop the restart, not disappear into a catch.
+    let cleanupRearmed = true;
+    async function resumeCleanup(): Promise<boolean> {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("resume_desktop_update_cleanup");
+        cleanupRearmed = true;
+      } catch (e) {
+        console.error("Could not re-arm crash cleanup after a failed update:", e);
+        cleanupRearmed = false;
+      }
+      return cleanupRearmed;
+    }
 
     try {
       const { policy } = await resolveUpdatePolicy();
@@ -384,7 +398,7 @@ export function useTauriUpdate(isExternalServer = false) {
       } catch (installError) {
         // Failed or cancelled: we keep running, so the cleanup the pre-exit hook
         // stood down has to come back.
-        await invoke("resume_desktop_update_cleanup").catch(() => {});
+        await resumeCleanup();
         throw installError;
       } finally {
         publishShellUpdateActive(false);
@@ -406,7 +420,7 @@ export function useTauriUpdate(isExternalServer = false) {
         // No replacement process, so the marker would outlive it and unhide a later login start.
         await invoke("clear_in_app_relaunch").catch(() => {});
         // Still this process, so the cleanup has to come back after all.
-        await invoke("resume_desktop_update_cleanup").catch(() => {});
+        await resumeCleanup();
         throw relaunchError;
       }
     } catch (e) {
@@ -415,6 +429,17 @@ export function useTauriUpdate(isExternalServer = false) {
 
       // Shell update failed, so restart the backend on the updated code.
       if (phaseRef.current === "shell_download" || phaseRef.current === "shell_install") {
+        // A backend started under a job that still has kill-on-close disabled is
+        // the orphan this PR exists to prevent, so retry the re-arm and stop here
+        // if it will not take.
+        if (!cleanupRearmed && !(await resumeCleanup())) {
+          retainFailure(msg, phaseRef.current ?? "shell_install");
+          setError(
+            "Update failed and crash cleanup could not be re-armed. Restart Unsloth Studio before continuing.",
+          );
+          setStatus("error");
+          return;
+        }
         try {
           const { invoke } = await import("@tauri-apps/api/core");
           await invoke("start_server", { port: 8888 });

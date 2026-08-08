@@ -7303,6 +7303,13 @@ class LlamaCppBackend:
             **_windows_hidden_subprocess_kwargs(),
             **_child_popen_kwargs(),
         )
+        # macOS has no parent-death signal, so the kwargs above are empty there and
+        # only this record lets the next startup reap a runner holding the GPU.
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(self._process.pid)
+        except Exception as e:
+            logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
         )

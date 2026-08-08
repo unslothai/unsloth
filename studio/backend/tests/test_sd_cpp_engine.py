@@ -247,6 +247,7 @@ class _FakePopen:
     ):
         type(self).captured_cmd = list(cmd)
         type(self).captured_env = dict(env or {})
+        self.pid = 424242  # a real Popen has one, and the lifetime record needs it
         self._lines = list(lines)
         self.returncode = returncode
         self._out_file = out_file
@@ -372,6 +373,7 @@ class _HangingPopen:
 
     def __init__(self, cmd, **_kw):
         self._alive = True
+        self.pid = 424243
 
     class _Blocking:
         def __init__(self, owner):

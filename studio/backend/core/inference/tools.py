@@ -9951,15 +9951,83 @@ def _capture_process_group(proc):
     there left a payload that outlived its wrapper unsignalled.
     """
     if os.name == "nt":
-        # Carry the creation-time identity: a posix group id cannot be recycled
-        # while a member lives, but this bare pid can be, and the timeout path
-        # may fire long after the wrapper exited.
+        job = _windows_job_capture(proc)
+        if job is not None:
+            return ("windows-job", job)
+        # No job available, so fall back to the pid, carrying its creation-time
+        # identity: a posix group id cannot be recycled while a member lives,
+        # but this bare pid can, and the timeout path may fire much later.
         return ("windows-tree", proc.pid, _windows_pid_identity(proc.pid))
     if os.name != "posix" or not hasattr(os, "getpgid"):
         return None
     try:
         return os.getpgid(proc.pid)
     except (AttributeError, ProcessLookupError, PermissionError, OSError):
+        return None
+
+
+class _WindowsToolJob:
+    """A job object holding one tool call's process tree.
+
+    Windows has no process groups, and ``taskkill`` cannot reach a tree whose
+    root has already exited, which is exactly the case this capture exists for.
+    The job stays a valid handle on every descendant either way. Created without
+    kill-on-close, so releasing it never kills a process that outlived the call.
+    """
+
+    def __init__(self, handle, kernel32):
+        self._handle = handle
+        self._kernel32 = kernel32
+
+    def terminate(self) -> bool:
+        if not self._handle:
+            return False
+        return bool(self._kernel32.TerminateJobObject(self._handle, 1))
+
+    def close(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle:
+            try:
+                self._kernel32.CloseHandle(handle)
+            except Exception:  # noqa: BLE001 - interpreter teardown
+                pass
+
+    def __del__(self) -> None:
+        self.close()
+
+
+def _windows_job_capture(proc) -> "_WindowsToolJob | None":
+    """Put ``proc`` in its own job. ``None`` when that is not possible, leaving
+    the pid-based fallback."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        H, BOOL, UINT = wintypes.HANDLE, wintypes.BOOL, wintypes.UINT
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        # Explicit widths: without them ctypes truncates a 64-bit handle to
+        # c_int and every call silently works on a bogus one.
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        kernel32.CreateJobObjectW.restype = H
+        kernel32.AssignProcessToJobObject.argtypes = [H, H]
+        kernel32.AssignProcessToJobObject.restype = BOOL
+        kernel32.TerminateJobObject.argtypes = [H, UINT]
+        kernel32.TerminateJobObject.restype = BOOL
+        kernel32.CloseHandle.argtypes = [H]
+        kernel32.CloseHandle.restype = BOOL
+
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        # The Popen handle, not a fresh OpenProcess: it already refers to this
+        # child, so there is no window for the pid to be recycled first.
+        if not kernel32.AssignProcessToJobObject(job, int(proc._handle)):
+            kernel32.CloseHandle(job)
+            return None
+        return _WindowsToolJob(job, kernel32)
+    except Exception:  # noqa: BLE001 - falls back to the pid-based kill
         return None
 
 
@@ -10042,6 +10110,9 @@ def _killpg_captured(pgid) -> None:
     if pgid is None:
         return
     if isinstance(pgid, tuple):
+        if pgid[0] == "windows-job":
+            pgid[1].terminate()
+            return
         _tag, pid, identity = pgid
         # Fail closed: this runs long after the capture, so without a verified
         # identity the pid may be someone else's now. The job object still takes

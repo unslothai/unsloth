@@ -125,16 +125,21 @@ def initialize_parent_lifetime() -> None:
 
 
 def _pdeathsig_available() -> bool:
-    """Whether prctl is reachable at all, so the status is not a claim we cannot
-    keep. PR_GET_PDEATHSIG is read-only, so probing changes nothing; a seccomp or
-    container policy that blocks prctl fails it."""
-    _PR_GET_PDEATHSIG = 2
+    """Whether PR_SET_PDEATHSIG itself works, so the status is not a claim we
+    cannot keep.
+
+    seccomp can filter prctl on its first argument, so a successful read-only
+    GET proves nothing about SET. SET is therefore exercised for real, with the
+    value it already holds: a no-op that still goes through the same filter."""
+    _PR_GET_PDEATHSIG, _PR_SET_PDEATHSIG = 2, 1
     try:
         import ctypes
 
         libc = ctypes.CDLL("libc.so.6", use_errno = True)
         current = ctypes.c_int(0)
-        return libc.prctl(_PR_GET_PDEATHSIG, ctypes.byref(current), 0, 0, 0) == 0
+        if libc.prctl(_PR_GET_PDEATHSIG, ctypes.byref(current), 0, 0, 0) != 0:
+            return False
+        return libc.prctl(_PR_SET_PDEATHSIG, current.value, 0, 0, 0) == 0
     except Exception:
         return False
 
@@ -744,17 +749,15 @@ def _reap_one_record(path, timeout: float) -> "list[int]":
         current = _identity_or_none(pid)
         if identity is None or current is None:
             # Unverifiable: never signal a pid that might now be something else.
-            # Windows has no identity source here, and the Job Object already
-            # covers that case.
             unresolved = True
             continue
         if identity != current:
             continue  # recycled by an unrelated process
         if _is_windows():
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
+            # The tree, not the leader: this fallback runs when the Job Object
+            # is unavailable, and killing a leader alone strands its workers
+            # while the record that named them is deleted.
+            _windows_terminate_tree(pid)
         else:
             _posix_terminate(pid, timeout = timeout)
         killed.append(pid)
@@ -777,6 +780,27 @@ def _reap_one_record(path, timeout: float) -> "list[int]":
         except Exception:
             pass
     return killed
+
+
+def _windows_terminate_tree(pid: int) -> None:
+    """``taskkill /T /F``, falling back to the leader alone. Caller has already
+    verified the pid's identity."""
+    import subprocess
+
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output = True,
+            timeout = 15,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
 
 
 def _unlink(path) -> None:

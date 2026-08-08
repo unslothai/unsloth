@@ -495,5 +495,116 @@ def test_the_sweep_snapshot_is_taken_under_the_lock():
     assert "for pid, identity in list(_tracked_pids.items())" not in source
 
 
+def test_the_probe_fails_when_only_the_read_is_permitted(monkeypatch):
+    """seccomp filters prctl on its first argument, so a working GET says
+    nothing about SET."""
+    import ctypes
+
+    from utils import process_lifetime as pl
+
+    class _Libc:
+        def prctl(self, op, *rest):
+            return 0 if op == 2 else -1  # GET ok, SET rejected
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: _Libc())
+    assert pl._pdeathsig_available() is False
+
+
+def test_sd_cli_is_recorded_while_it_runs(tmp_path, monkeypatch):
+    """It holds VRAM for the length of a generation and macOS has no
+    parent-death signal, so a crash mid-run must leave something to reap."""
+    from core.inference import sd_cpp_engine
+
+    adopted, forgotten = [], []
+    monkeypatch.setattr(sd_cpp_engine, "adopt_pid", adopted.append)
+    monkeypatch.setattr(sd_cpp_engine, "forget_pid", forgotten.append)
+    monkeypatch.setattr(sd_cpp_engine, "runtime_env", lambda binary, base = None: dict(os.environ))
+
+    engine = sd_cpp_engine.SdCppEngine.__new__(sd_cpp_engine.SdCppEngine)
+    engine.binary = sys.executable
+    out = tmp_path / "image.png"
+    engine._run(
+        [sys.executable, "-c", f"open({str(out)!r}, 'wb').write(b'x')"],
+        str(out),
+        timeout = 60,
+        env = None,
+        on_log = None,
+    )
+    assert len(adopted) == 1 and adopted[0] > 0
+    assert forgotten == adopted, "a finished run must not stay on the record"
+
+
+def test_the_diffusion_runner_is_recorded_too():
+    """The llama-server path adopts through _record_server_pid; this one spawns
+    directly and was invisible to the sweep."""
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp
+
+    source = inspect.getsource(llama_cpp)
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        body = ast.dump(node)
+        if "diffusion-stdout" not in body:
+            continue
+        assert "adopt_pid" in body, f"{node.name} spawns a runner it never records"
+        break
+    else:
+        raise AssertionError("could not find the diffusion runner spawn")
+
+
+def test_a_windows_tool_tree_dies_with_its_job(monkeypatch):
+    """taskkill cannot reach a tree whose root already exited, which is the
+    case this capture exists for; the job handle still can."""
+    from core.inference import tools
+
+    class _Job:
+        def __init__(self):
+            self.terminated = 0
+
+        def terminate(self):
+            self.terminated += 1
+            return True
+
+    taskkilled = []
+    monkeypatch.setattr(
+        tools, "_windows_taskkill_tree", lambda pid, identity = None: taskkilled.append(pid) or True
+    )
+    job = _Job()
+    tools._killpg_captured(("windows-job", job))
+    assert job.terminated == 1
+    assert taskkilled == [], "the job is the whole reach; no pid revalidation needed"
+
+
+def test_the_windows_breadcrumb_fallback_takes_the_whole_tree(tmp_path, monkeypatch):
+    """Killing the leader alone strands its workers, and the record naming them
+    is deleted straight after."""
+    import json
+
+    from utils import process_lifetime as pl
+
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr(pl, "_identity_or_none", lambda pid: "same" if pid == 4242 else None)
+    trees = []
+    monkeypatch.setattr(pl, "_windows_terminate_tree", trees.append)
+
+    record = tmp_path / "999.json"
+    record.write_text(
+        json.dumps({
+            "owner_pid": 999,
+            "owner_identity": None,
+            "children": [{"pid": 4242, "identity": "same"}],
+        }),
+        encoding = "utf-8",
+    )
+    killed = pl._reap_one_record(record, timeout = 1.0)
+    assert killed == [4242]
+    assert trees == [4242], "only the leader was signalled"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
