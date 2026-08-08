@@ -27,8 +27,7 @@ def _read(rel: str) -> str:
 
 
 def _split_args(captured: str) -> list[str]:
-    """A call's argument list, split on its own commas only. Splitting on every
-    comma would cut nested calls such as `loadSpecFor(wanted, CATALOG)` in two."""
+    """Split on top-level commas only, so `loadSpecFor(wanted, CATALOG)` survives."""
     args, depth, current = [], 0, ""
     for char in captured:
         if char in "([{":
@@ -1089,16 +1088,14 @@ def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
         ("features/video/video-page.tsx", "VIDEO_CATALOG"),
     ):
         src = _read(rel)
-        # The middle argument is the routed filename and has been respelled more than
-        # once; the load-bearing part is the third, so do not pin the second.
+        # The middle argument, the routed filename, has been respelled more than once;
+        # only the third is load-bearing, so do not pin the second.
         call = re.search(r"diffusionRoutePick\(\s*wanted,\s*(.*?),?\s*\);", src, re.S)
         assert call, f"{rel}: the routed pick does not go through diffusionRoutePick"
-        # By position, not by presence: the capture is every argument after `wanted`,
-        # and the helper reads `quant` before `spec`. `diffusionRoutePick(wanted,
-        # routedFilename ?? loadSpecFor(wanted, IMAGE_CATALOG)?.filename)` type-checks,
-        # passes the catalog filename as the quant, drops the spec entirely, and would
-        # otherwise satisfy a plain substring check while curated single-file artifacts
-        # load as GGUF.
+        # By position, not by presence: `diffusionRoutePick(wanted, routedFilename ??
+        # loadSpecFor(wanted, IMAGE_CATALOG)?.filename)` type-checks, passes the spec's
+        # filename as the quant, drops the spec, and would pass a substring check while
+        # curated single-file artifacts load as GGUF.
         args = _split_args(call.group(1))
         assert len(args) >= 2, f"{rel}: the routed pick passes no spec argument"
         assert (
@@ -1125,10 +1122,9 @@ def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
 
 
 def test_diffusion_pages_never_drop_a_gguf_pick_silently():
-    """The fallback branch splits a local path; a repo pick reaching it has no
-    filename. It used to error out there. It now resolves the repo's own .gguf
-    instead, which is the better answer, but either way the branch must do
-    something: returning with no request and no toast drops the pick in silence."""
+    """The fallback branch splits a local path, so a repo pick reaching it has no
+    filename. It used to error; it now resolves the repo's own .gguf. Either way the
+    branch must act: returning with no request and no toast drops the pick."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         branch = re.search(
@@ -1170,12 +1166,11 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         assert "if (!active)" in ready.group(0), f"{rel}: a hidden page still takes the GPU"
         # Deferred, not dropped: something has to fire the held pick when the page returns.
         assert "stagedLoadDeferred" in ready.group(0), f"{rel}: the pick is discarded"
-        # The dependency array grew when the load body moved into runStagedLoad, so match
-        # the effect by its guard and let the deps be whatever they need to be. Stop at the
-        # first effect boundary and check the deps separately: keying the boundary on
+        # The deps array grew when the load body moved into runStagedLoad, so match the
+        # effect by its guard and check the deps separately. Keying the boundary on
         # `[active` instead lets a reordered array run the match on into the next hook,
-        # where loadOrStage's own handleLoadRef call would satisfy the loader assertion
-        # below for a flush that loads nothing.
+        # where loadOrStage's own handleLoadRef call satisfies the loader assertion below
+        # for a flush that loads nothing.
         flush = re.search(
             r"if \(!active \|\| !stagedLoadDeferred\.current\) return;(.*?)\n  \}, \[([^\]]*)\]\);",
             src,
@@ -1185,8 +1180,8 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         deps = [dep.strip() for dep in flush.group(2).split(",")]
         assert "active" in deps, f"{rel}: the flush does not re-run when the page is shown"
         body = flush.group(1)
-        # Either the flush calls the loader itself or it calls the same helper the visible
-        # path uses. What it may not do is clear the flag and stop there.
+        # Loading directly or through the visible path's helper is fine; clearing the
+        # flag and stopping is not.
         assert (
             "runStagedLoad()" in body or "handleLoadRef.current(" in body
         ), f"{rel}: deferred load never runs"

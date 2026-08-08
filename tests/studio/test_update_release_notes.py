@@ -1113,20 +1113,15 @@ def test_code_span_closers_ignore_backslashes():
 
 
 def test_the_overlay_stack_fits_the_viewport():
-    """The update card's own cap does not account for a long download list
-    stacked beneath it.
-
-    The cap used to be the literal class `max-h-[calc(100dvh_-_2rem)]`. It is now
-    computed by `stackGeometry`, which subtracts the same 2rem when nothing is in
-    the way and subtracts more when the Live monitor is. The arithmetic is checked
-    numerically in studio/frontend/tests/monitor-stack-inset.test.ts, including
-    `stackGeometry(null, W, H).maxHeight === H - 32`; what has to hold here is that
+    """The update card's own cap does not account for a long download list stacked
+    beneath it. The cap is no longer the literal class `max-h-[calc(100dvh_-_2rem)]`
+    but `stackGeometry`, whose arithmetic is checked numerically in
+    studio/frontend/tests/monitor-stack-inset.test.ts; what has to hold here is that
     the stack reads it rather than growing unbounded."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     stacks = provider.count("z-[9998] flex flex-col items-end gap-2")
     assert stacks, "the bottom-right overlay stack is gone"
-    # Counted, not merely present: there is more than one stack element and capping
-    # only one of them is exactly the bug this guards.
+    # Counted, not merely present: capping only one of the stacks is the bug here.
     assert provider.count("maxHeight: stack.maxHeight") == stacks, "every stack is capped"
     panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
         encoding = "utf-8"
@@ -1137,9 +1132,8 @@ def test_the_overlay_stack_fits_the_viewport():
 
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():
-    """The download panel shares the desktop stack, so the update card's own
-    cap is not enough there either. Two stacks, two caps: the desktop branch is a
-    separate element and has been left uncapped before."""
+    """The download panel shares the desktop stack, so the update card's own cap is
+    not enough there either, and the desktop branch has been left uncapped before."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     assert provider.count("useStackGeometry()") == 2, "both stacks measure themselves"
     assert provider.count("maxHeight: stack.maxHeight") == 2, "both stacks are capped"
@@ -1147,8 +1141,8 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
 
 
 def test_the_stack_geometry_is_checked_numerically():
-    """The cap is arithmetic now, not a class name, so the test that owns it is the
-    node one. Named here so deleting it does not quietly leave the cap unchecked."""
+    """The cap is arithmetic now, not a class name, so the node test owns it. Named
+    here so deleting it does not quietly leave the cap unchecked."""
     geometry = REPO / "studio/frontend/tests/monitor-stack-inset.test.ts"
     src = geometry.read_text(encoding = "utf-8")
     assert (
