@@ -1861,5 +1861,70 @@ def test_both_case_variants_are_removed_when_their_calls_end(tmp_path, monkeypat
     assert tools._pending_removals == {}
 
 
+def test_a_foreign_fallback_link_is_left_where_it_stands(tmp_path, monkeypatch):
+    """At a root the user pointed us at, _default is their entry: it must not be
+    followed, and it is not ours to unlink either."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("TOPSECRET", encoding = "utf-8")
+    (root / "_default").symlink_to(outside, target_is_directory = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    resolved = Path(tools.resolve_sandbox_workdir(None))
+    assert not (resolved / "secret.txt").exists(), resolved
+    assert (root / "_default").is_symlink(), "an entry we do not own was unlinked"
+
+    workdir = Path(tools.get_sandbox_workdir(None))
+    assert not (workdir / "secret.txt").exists(), workdir
+    assert (root / "_default").is_symlink()
+
+
+def test_our_own_fallback_link_is_still_dropped(tmp_path, monkeypatch):
+    """At our own root nothing else put it there, so the link goes and the
+    fallback keeps its name."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    root = Path(tools.sandbox_root())
+    root.mkdir(parents = True, exist_ok = True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (root / "_default").symlink_to(outside, target_is_directory = True)
+
+    workdir = Path(tools.get_sandbox_workdir(None))
+    assert workdir == root / "_default"
+    assert workdir.is_dir() and not workdir.is_symlink()
+
+
+def test_a_pre_existing_folder_keeps_its_permissions(tmp_path, monkeypatch):
+    """Running a tool in a shared root must not re-permission someone's folder."""
+    if os.name == "nt":
+        pytest.skip("POSIX permission bits")
+    root = tmp_path / "shared"
+    root.mkdir()
+    theirs = root / "team"
+    theirs.mkdir()
+    os.chmod(theirs, 0o755)
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    assert Path(tools.get_sandbox_workdir("team")) == theirs
+    assert oct(theirs.stat().st_mode)[-3:] == "755", "an unowned folder was locked down"
+
+    # Ours is still tightened.
+    mine = Path(tools.get_sandbox_workdir("__LOCALID_mine33"))
+    assert oct(mine.stat().st_mode)[-3:] == "700"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

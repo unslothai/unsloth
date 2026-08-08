@@ -7203,9 +7203,14 @@ def _mark_sandbox(workdir: str) -> None:
         pass
 
 
+def _root_is_ours() -> bool:
+    """True unless the root is a directory the user pointed us at."""
+    return not (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
+
+
 def _sandbox_is_ours(target: str) -> bool:
     """Ours by construction at our own root, otherwise only with the marker."""
-    if not (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip():
+    if _root_is_ours():
         return True
     return os.path.isfile(os.path.join(target, _SANDBOX_MARKER))
 
@@ -7299,14 +7304,22 @@ def _sandbox_fallback(root: str, name: str) -> str:
 
     They are ordinary directories in a writable sandbox, so one replaced by a
     symlink would otherwise become the root every unchecked request reads from.
+    Dropping that link is only ours to do at our own root; in a directory the
+    user pointed us at, the entry is theirs and a fresh one is used instead.
     """
     path = os.path.join(root, name)
-    if os.path.islink(path):
+    if not os.path.islink(path):
+        return path
+    if _root_is_ours():
         try:
             os.unlink(path)
+            return path
         except OSError:
-            return os.path.join(root, "_invalid_unusable")
-    return path
+            pass
+    try:
+        return tempfile.mkdtemp(prefix = f"{name}_", dir = root)
+    except OSError:
+        return os.path.join(root, f"{name}_unusable")
 
 
 def _contained_in_root(workdir: str, root: str) -> bool:
@@ -7368,10 +7381,13 @@ def _get_workdir(session_id: str | None = None) -> str:
                 os.chmod(sandbox_root_path, 0o700)
             except OSError:
                 pass
-        try:
-            os.chmod(workdir, 0o700)
-        except OSError:
-            pass
+        # Only ours: a shared root can already hold a directory with this name,
+        # and tightening it would cut off whoever else uses it.
+        if created or _sandbox_is_ours(workdir):
+            try:
+                os.chmod(workdir, 0o700)
+            except OSError:
+                pass
         _workdirs[key] = workdir
     return _workdirs[key]
 
