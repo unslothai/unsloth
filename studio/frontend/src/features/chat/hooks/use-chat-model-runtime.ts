@@ -352,15 +352,8 @@ async function syncInferenceStatusToStore(options?: {
       // allows a single owner), and nothing else here would say so: the picker
       // keeps the selection, so the header would go on claiming it is loaded
       // and the next prompt would come back a bare 400.
-      const wasResident = useChatRuntimeStore.getState().residentCheckpoint;
-      if (wasResident && selectedCheckpoint) {
-        // Already the clean id the header shows: resolveInferenceCheckpointId
-        // put it there, not a load path.
-        toast.info(`${wasResident} is no longer loaded`, {
-          description:
-            "The server released it, which loading an image or video model does. Load it again to keep chatting.",
-        });
-      }
+      const { residentCheckpoint: wasResident, modelLoading } =
+        useChatRuntimeStore.getState();
       // specFallbackReason survives here, so clearing activeModelIsLocal
       // alone would flip a local model's warning to "download failed". Every
       // load path and clearCheckpoint set it, so leave it consistent.
@@ -370,6 +363,21 @@ async function syncInferenceStatusToStore(options?: {
         loadedIsMultimodal: false,
         loadedIsDiffusion: false,
       });
+      // Known resident a moment ago, and nothing loading now. Both matter: a
+      // load in flight has no active model yet either, and clearing there would
+      // wipe the pick the user just made.
+      if (wasResident && selectedCheckpoint && !modelLoading) {
+        // Already the clean id the header shows: resolveInferenceCheckpointId
+        // put it there, not a load path.
+        toast.info(`${wasResident} is no longer loaded`, {
+          description:
+            "The server released it, which loading an image or video model does. Pick it again to keep chatting.",
+        });
+        // Drop the pick too, which is what a server-side unload already does.
+        // Dimming the tick was not enough: the name alone reads as "this is my
+        // model" whatever the tick does, and sending to it returns a bare 400.
+        useChatRuntimeStore.getState().clearCheckpoint();
+      }
     }
   } catch (error) {
     if (signal?.aborted) return;

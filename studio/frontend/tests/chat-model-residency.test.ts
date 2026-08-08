@@ -88,12 +88,19 @@ test("the selector's tick asks the caller, and defaults to the old rule", () => 
     ),
     "utf8",
   );
-  assert.match(source, /const isLoaded = selected !== "" && \(loaded \?\? true\)/);
+  assert.match(
+    source,
+    /const isLoaded = selected !== "" && \(loaded \?\? true\)/,
+  );
   const page = readFileSync(
     new URL("../src/features/chat/chat-page.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(page, /loaded=\{chatModelLoaded\(\{/, "the chat header must pass it");
+  assert.match(
+    page,
+    /loaded=\{chatModelLoaded\(\{/,
+    "the chat header must pass it",
+  );
   assert.match(page, /residentCheckpoint,/);
 });
 
@@ -149,9 +156,49 @@ test("another runtime finishing a load re-reads the chat status", () => {
     ),
     "utf8",
   );
-  assert.match(hook, /subscribeModelLifecycle\(\(\{ runtime, loading \}\) => \{/);
+  assert.match(
+    hook,
+    /subscribeModelLifecycle\(\(\{ runtime, loading \}\) => \{/,
+  );
   assert.match(hook, /if \(loading \|\| runtime === "chat"\) return;/);
   assert.match(hook, /void refresh\(\{ includeLoras: false \}\)/);
   // And the branch it feeds still clears residency.
   assert.match(hook, /residentCheckpoint: null,/);
+});
+
+// Dimming the tick and the badges was not enough: the model's name on its own
+// reads as "this is my model", and sending to it returns a bare 400. An
+// eviction now drops the pick, exactly as a server-side unload already did.
+test("an eviction drops the pick, not just the loaded marks", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/chat/hooks/use-chat-model-runtime.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const branch = hook.slice(
+    hook.indexOf("} else if (!statusRes.active_model"),
+    hook.indexOf("} catch (error) {"),
+  );
+  assert.match(branch, /clearCheckpoint\(\)/);
+  // Guarded twice: a model that was never confirmed resident has nothing to
+  // lose, and a load in flight reports no active model either.
+  assert.match(
+    branch,
+    /if \(wasResident && selectedCheckpoint && !modelLoading\)/,
+  );
+});
+
+// The pick survives a load, which also reports no active model while it runs.
+test("the eviction clear reads the store's loading flag", () => {
+  const store = readFileSync(
+    new URL(
+      "../src/features/chat/stores/chat-runtime-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(store, /modelLoading: boolean;/);
+  assert.match(store, /set\(\{ modelLoading: true \}\)/);
 });
