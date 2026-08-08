@@ -7300,6 +7300,10 @@ class LlamaCppBackend:
             encoding = "utf-8",
             errors = "replace",
             env = utf8_child_env(env),
+            # Its own group: the shim spawns the visual server, and the startup
+            # sweep can only killpg a recorded pid that leads one. Without this
+            # the runner dies alone and its child keeps the GPU.
+            start_new_session = (os.name == "posix"),
             **_windows_hidden_subprocess_kwargs(),
             **_child_popen_kwargs(),
         )

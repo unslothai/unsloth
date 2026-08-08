@@ -608,5 +608,79 @@ def test_the_windows_breadcrumb_fallback_takes_the_whole_tree(tmp_path, monkeypa
     assert trees == [4242], "only the leader was signalled"
 
 
+def test_the_diffusion_runner_leads_its_own_group():
+    """The shim spawns the visual server, and _posix_terminate only reaches a
+    tree through killpg, which needs the recorded pid to be a group leader."""
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp
+
+    tree = ast.parse(inspect.getsource(llama_cpp))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or "diffusion-stdout" not in ast.dump(node):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            if getattr(call.func, "attr", None) != "Popen":
+                continue
+            assert any(kw.arg == "start_new_session" for kw in call.keywords), (
+                "the runner shares Studio's process group, so its child is unreachable"
+            )
+            return
+    raise AssertionError("could not find the diffusion runner spawn")
+
+
+def test_a_group_leader_is_reaped_with_its_children(tmp_path, monkeypatch):
+    """What start_new_session buys: killpg takes the grandchild too."""
+    from utils import process_lifetime as pl
+
+    if pl._is_windows():
+        pytest.skip("POSIX only")
+
+    marker = tmp_path / "grandchild.pid"
+    leader = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys, time, pathlib\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            f"pathlib.Path({str(marker)!r}).write_text(str(child.pid))\n"
+            "time.sleep(60)\n",
+        ],
+        start_new_session = True,
+    )
+    try:
+        for _ in range(100):
+            if marker.is_file():
+                break
+            time.sleep(0.1)
+        grandchild = int(marker.read_text())
+        pl._posix_terminate(leader.pid, timeout = 5.0)
+        time.sleep(0.5)
+        assert not _alive(grandchild), "the visual server survived its runner"
+    finally:
+        _kill(leader.pid)
+
+
+def test_every_restart_path_checks_the_rearm():
+    """Skip & Restart is offered on every error, so gating only the recovery
+    path still lets a user start a backend under a disarmed job."""
+    hook = (
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "hooks" / "use-tauri-update.ts"
+    )
+    source = hook.read_text(encoding = "utf-8")
+    starts = [
+        block
+        for block in source.split("async function ")[1:]
+        if 'invoke("start_server"' in block
+    ]
+    assert starts, "no restart path found"
+    for block in starts:
+        name = block.split("(")[0]
+        assert "cleanupRearmedRef.current" in block, f"{name} restarts without checking the re-arm"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
