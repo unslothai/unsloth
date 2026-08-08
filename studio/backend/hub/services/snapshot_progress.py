@@ -37,7 +37,7 @@ SnapshotMetadataResolver = Callable[[str, Optional[str]], "tuple[int, frozenset[
 # (repo_id, hf_token) -> the files HF says this target should contain. Optional,
 # and the only thing that lets a materialized snapshot with no manifest settle.
 SnapshotExpectedFilesResolver = Callable[
-    [str, Optional[str]], "Sequence[download_manifest.ExpectedFile]"
+    [str, Optional[str]], Sequence["download_manifest.ExpectedFile"]
 ]
 # repo-relative snapshot path -> whether it belongs to the variant being polled.
 # Supplied per repo kind, so this module keeps knowing nothing about quant labels.
