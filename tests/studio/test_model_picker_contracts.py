@@ -1335,20 +1335,19 @@ def test_every_pick_route_invalidates_the_staged_intent():
             "stagedQuantRevert.current = null;",
         ):
             assert cleared in body, f"{rel}: beginPick does not release {cleared}"
-        select = re.search(
-            r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S
-        )
+        select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S)
         assert select, f"{rel}: handleModelSelect not found"
         pick = select.group(1)
         assert "beginPick();" in pick, f"{rel}: a pick can run without invalidating the last one"
         # Before every branch, or the branch that returns first keeps the old intent armed.
         first_branch = min(
-            pick.index(tok) for tok in ("const spec = loadSpecFor(", "if (meta.ggufVariant")
+            pick.index(tok)
+            for tok in ("const spec = loadSpecFor(", "if (meta.ggufVariant")
             if tok in pick
         )
-        assert pick.index("beginPick();") < first_branch, (
-            f"{rel}: the invalidation runs after a branch that can already have returned"
-        )
+        assert (
+            pick.index("beginPick();") < first_branch
+        ), f"{rel}: the invalidation runs after a branch that can already have returned"
 
 
 def test_a_new_pick_drops_the_previous_staged_intent():
@@ -1366,18 +1365,18 @@ def test_a_new_pick_drops_the_previous_staged_intent():
         assert body, f"{rel}: loadOrStage not found"
         text = body.group(1)
         cleared = text.index("pendingStagedLoad.current = null;")
-        assert cleared < text.index('if (source !== "hub")'), (
-            f"{rel}: a non-hub pick returns while the previous staged intent is still armed"
-        )
+        assert cleared < text.index(
+            'if (source !== "hub")'
+        ), f"{rel}: a non-hub pick returns while the previous staged intent is still armed"
         assert cleared < text.index("await "), f"{rel}: the intent survives until the plan resolves"
         # The deferred re-fire and the rollback owner belong to that dead intent too.
         head = text[: text.index('if (source !== "hub")')]
-        assert "stagedLoadDeferred.current = false;" in head, (
-            f"{rel}: a deferred staged load can still fire for the abandoned pick"
-        )
-        assert "stagedQuantRevert.current = null;" in head, (
-            f"{rel}: the dead intent keeps ownership of the rollback"
-        )
+        assert (
+            "stagedLoadDeferred.current = false;" in head
+        ), f"{rel}: a deferred staged load can still fire for the abandoned pick"
+        assert (
+            "stagedQuantRevert.current = null;" in head
+        ), f"{rel}: the dead intent keeps ownership of the rollback"
 
 
 def test_staged_downloads_always_scope_their_files():
@@ -3245,12 +3244,13 @@ def test_the_gguf_footprint_is_resolved_per_dependency_group_not_per_repo():
     different text encoder than klein-4B in the same repo. Sampling ONE
     representative and pasting its companionBytes onto every row therefore
     advertised a GB-wrong "Full required size" on the rows it did not sample."""
-    src = _read(
-        "features/model-picker/components/model-selector/pickers.tsx"
-    )
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
     # The old shape: one scalar for the whole listing.
     assert "const [companionBytes, setCompanionBytes] = useState" not in src
-    assert "const [companionBytesByKey, setCompanionBytesByKey] = useState<\n    Map<string, number>\n  >" in src
+    assert (
+        "const [companionBytesByKey, setCompanionBytesByKey] = useState<\n    Map<string, number>\n  >"
+        in src
+    )
     # Representatives are derived per key, not once for the listing.
     group = src.split("const footprintVariants = useMemo(", 1)[1]
     group = group.split("}, [displayVariants, effectiveRecommended]);", 1)[0]
@@ -3265,9 +3265,7 @@ def test_every_footprint_group_gets_its_own_resolve_call():
     """One request per distinct key. The ordinary repo has exactly one key, so the
     common case stays exactly one request, which is what the representative scheme
     exists to protect."""
-    src = _read(
-        "features/model-picker/components/model-selector/pickers.tsx"
-    )
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
     effect = src.split("const [companionBytesByKey, setCompanionBytesByKey]", 1)[1]
     effect = effect.split("const variantOptionKeys = useMemo(", 1)[0]
     assert "for (const footprintVariant of footprintVariants) {" in effect
@@ -3283,23 +3281,22 @@ def test_every_footprint_group_gets_its_own_resolve_call():
 def test_each_quant_row_reads_its_own_dependency_key():
     """A row must look up its own group, and keep the plain formatBytes fallback
     when that group has no answer yet (or the backend sends no key at all)."""
-    src = _read(
-        "features/model-picker/components/model-selector/pickers.tsx"
-    )
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
     row = src.split("{displayVariants.map((v) => {", 1)[1]
     row = row.split("</TooltipContent>", 1)[0]
     assert 'companionBytesByKey.get(v.dependency_key ?? "") ?? null' in row
     # The fallback and the tooltip gate still hang off this row's own value.
-    assert "companionBytes === null ? (\n                  <SizeText value={formatBytes(v.size_bytes)} />" in row
+    assert (
+        "companionBytes === null ? (\n                  <SizeText value={formatBytes(v.size_bytes)} />"
+        in row
+    )
     assert "companionBytes={companionBytes}" in row
 
 
 def test_the_dependency_key_survives_the_variant_validator():
     """isValidGgufVariant filters the listing, so a field it rejects never reaches a
     row. An older backend sends none, which must stay valid."""
-    src = _read(
-        "features/model-picker/components/model-selector/pickers.tsx"
-    )
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
     guard = src.split("function isValidGgufVariant(", 1)[1].split("\n}", 1)[0]
     assert "candidate.dependency_key === undefined" in guard
     assert "candidate.dependency_key === null" in guard

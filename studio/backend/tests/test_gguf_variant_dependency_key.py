@@ -47,9 +47,12 @@ def test_different_families_in_one_neutral_repo_get_different_keys():
 def test_a_text_model_has_no_key():
     """No family resolves, so there is nothing to group by. Null, not a made-up key:
     the client treats an unkeyed listing as one group, which is the old behavior."""
-    assert _variant_dependency_key(
-        "unsloth/Llama-3.2-1B-Instruct-GGUF", "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
-    ) is None
+    assert (
+        _variant_dependency_key(
+            "unsloth/Llama-3.2-1B-Instruct-GGUF", "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+        )
+        is None
+    )
 
 
 def test_the_key_never_raises_and_makes_no_network_call(monkeypatch):
@@ -60,9 +63,7 @@ def test_the_key_never_raises_and_makes_no_network_call(monkeypatch):
     def _boom(*args, **kwargs):
         raise RuntimeError("family registry unavailable")
 
-    monkeypatch.setattr(
-        "core.inference.diffusion_families.detect_family_for_pick", _boom
-    )
+    monkeypatch.setattr("core.inference.diffusion_families.detect_family_for_pick", _boom)
     assert gv._variant_dependency_key(KLEIN_REPO, "flux.2-klein-4b-Q4_K_M.gguf") is None
 
 
