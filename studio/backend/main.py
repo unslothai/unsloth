@@ -608,6 +608,13 @@ async def lifespan(app: FastAPI):
     _lifespan_log = _structlog.get_logger(__name__)
     clear_unsloth_compiled_cache()
 
+    # Finish any sandbox delete a previous run was killed in the middle of.
+    try:
+        from core.inference.tools import sweep_detached_sandboxes
+        sweep_detached_sandboxes()
+    except Exception:  # noqa: BLE001
+        pass
+
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():

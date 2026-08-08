@@ -7373,6 +7373,35 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
 _DETACHED_SUFFIX = ".deleting-"
 
 
+_detached_swept = False
+
+
+def sweep_detached_sandboxes(root: "str | None" = None) -> None:
+    """Finish deletes a previous run was killed in the middle of.
+
+    Once per process, off the caller's thread: the worker doing the delete is a
+    daemon, so an exit leaves the renamed directory with nothing else to
+    reclaim it until someone happens to delete another chat.
+    """
+    global _detached_swept
+    if _detached_swept:
+        return
+    _detached_swept = True
+    target = root or sandbox_root()
+
+    def _run() -> None:
+        try:
+            names = [n for n in os.listdir(target) if _DETACHED_SUFFIX in n]
+        except OSError:
+            return
+        for name in names:
+            candidate = os.path.join(target, name)
+            if os.path.isdir(candidate) and not os.path.islink(candidate):
+                shutil.rmtree(candidate, ignore_errors = True)
+
+    threading.Thread(target = _run, name = "sandbox-sweep", daemon = True).start()
+
+
 def _delete_detached(path: str, root: str) -> None:
     """Remove a detached sandbox, and any a previous run left behind.
 
@@ -7400,7 +7429,10 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     """
     if not session_id or not _usable_session_id(session_id):
         return False
-    if session_id.startswith(_PROJECT_SESSION_PREFIX):
+    # Only a session that really resolves to a project workspace: an imported
+    # chat whose id merely starts with the prefix gets an ordinary directory
+    # from _get_workdir, and would otherwise never be cleaned up.
+    if session_id.startswith(_PROJECT_SESSION_PREFIX) and _get_project_workdir(session_id):
         return False
     # The folder may still be at the legacy root right after an upgrade.
     # Outside the lock below: it moves a tree and takes a lock of its own.

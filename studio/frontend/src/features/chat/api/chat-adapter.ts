@@ -978,8 +978,15 @@ export function isSandboxToolResult(
   val: unknown,
 ): val is { text: string; sessionId: string } {
   if (typeof val !== "object" || val === null) return false;
-  const v = val as { text?: unknown; sessionId?: unknown };
-  return typeof v.text === "string" && typeof v.sessionId === "string";
+  const v = val as { text?: unknown; sessionId?: unknown; images?: unknown };
+  // images too: it is always in Studio's own wrapper, and a tool result that
+  // merely has text and sessionId is someone else's, whose other fields would
+  // be dropped on export.
+  return (
+    typeof v.text === "string" &&
+    typeof v.sessionId === "string" &&
+    Array.isArray(v.images)
+  );
 }
 
 /**

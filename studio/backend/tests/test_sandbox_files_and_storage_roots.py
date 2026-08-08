@@ -1635,5 +1635,74 @@ def test_a_delete_interrupted_by_a_restart_is_finished_later(tmp_path, monkeypat
     assert not stranded.exists(), "a previous run's leftover was never cleaned up"
 
 
+def test_a_startup_sweep_finishes_an_interrupted_delete(tmp_path, monkeypatch):
+    """The delete worker is a daemon, so an exit leaves the renamed directory
+    with nothing to reclaim it until someone deletes another chat."""
+    import time
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    root = Path(tools.sandbox_root())
+    root.mkdir(parents = True, exist_ok = True)
+    stranded = root / f"__LOCALID_gone111{tools._DETACHED_SUFFIX}deadbeef"
+    stranded.mkdir()
+    (stranded / "leftover.bin").write_bytes(b"x")
+
+    tools._detached_swept = False
+    tools.sweep_detached_sandboxes()
+    for _ in range(50):
+        if not stranded.exists():
+            break
+        time.sleep(0.1)
+    assert not stranded.exists(), "a delete interrupted by a restart was never finished"
+    # Once per process.
+    assert tools._detached_swept is True
+
+
+def test_a_chat_whose_id_looks_like_a_project_is_still_cleaned(tmp_path, monkeypatch):
+    """An imported chat can carry that prefix without a project behind it, and
+    _get_workdir gives it an ordinary directory."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    monkeypatch.setattr(tools, "_get_project_workdir", lambda session_id: None)
+    session = f"{tools._PROJECT_SESSION_PREFIX}notreal123"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    assert workdir.is_dir()
+
+    assert tools.remove_session_sandbox(session) is True
+    assert not workdir.exists()
+
+
+def test_a_real_project_workspace_is_still_left_alone(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    shared = tmp_path / "project_workspace"
+    shared.mkdir()
+    monkeypatch.setattr(tools, "_get_project_workdir", lambda session_id: str(shared))
+    session = f"{tools._PROJECT_SESSION_PREFIX}real123"
+    assert tools.remove_session_sandbox(session, delete_files = True) is False
+    assert shared.is_dir(), "a shared project workspace was removed"
+
+
+def test_a_foreign_tool_result_keeps_its_own_fields():
+    """Studio's wrapper always carries images; anything else with text and
+    sessionId is someone else's result and must not be reduced to its text."""
+    adapter = (
+        Path(__file__).resolve().parents[2]
+        / "frontend" / "src" / "features" / "chat" / "api" / "chat-adapter.ts"
+    ).read_text(encoding = "utf-8")
+    predicate = adapter.split("export function isSandboxToolResult(", 1)[1].split("\n}", 1)[0]
+    assert "Array.isArray(v.images)" in predicate, predicate
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
