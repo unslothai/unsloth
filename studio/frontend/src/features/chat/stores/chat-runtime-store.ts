@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
+import { loadedContextFields } from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
   reconcileCachedGpuSelection,
@@ -912,9 +913,12 @@ type ChatRuntimeStore = {
   activeGgufVariant: string | null;
   /** Whether the backend loaded the active model from a filesystem path. */
   activeModelIsLocal: boolean;
-  ggufContextLength: number | null;
-  ggufMaxContextLength: number | null;
-  ggufNativeContextLength: number | null;
+  loadedContextLength: number | null;
+  maxContextLength: number | null;
+  nativeContextLength: number | null;
+  /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
+   *  loadedContextLength is, so a context never arrives unattributed. */
+  loadedIsGguf: boolean | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -1558,9 +1562,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   lastModelLoadError: null,
   activeGgufVariant: null,
   activeModelIsLocal: false,
-  ggufContextLength: null,
-  ggufMaxContextLength: null,
-  ggufNativeContextLength: null,
+  loadedContextLength: null,
+  maxContextLength: null,
+  nativeContextLength: null,
+  loadedIsGguf: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
@@ -2056,9 +2061,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       activeLoadId: null,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
-      ggufContextLength: null,
-      ggufMaxContextLength: null,
-      ggufNativeContextLength: null,
+      ...loadedContextFields(null),
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       contextUsageByThreadId: {},

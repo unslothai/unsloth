@@ -3,13 +3,17 @@
 
 // Barrel import (lint rule); the model-picker cycle is fine because the call
 // happens at runtime, not module eval.
-import { resolveResidentInitialConfig } from "@/features/model-picker";
+import {
+  loadedContextFields,
+  resolveResidentInitialConfig,
+  savedContextPin,
+} from "@/features/model-picker";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import {
   mergeBackendRecommendedInference,
-  resolveManualAutoCtxPin,
+  refreshedContextPin,
 } from "../presets/preset-policy";
 import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
@@ -154,6 +158,7 @@ export function applyActiveModelStatusToStore(
         response: status,
         modelId: checkpointId,
         presetSource: store.activePresetSource,
+        loadedContextLength: loadedContextFields(status).loadedContextLength,
       }),
     );
   }
@@ -177,15 +182,6 @@ export function applyActiveModelStatusToStore(
   const supportsPreserveThinking = status.supports_preserve_thinking ?? false;
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
-  const currentGgufContextLength = status.is_gguf
-    ? (status.context_length ?? null)
-    : null;
-  const ggufMaxContextLength = status.is_gguf
-    ? (status.max_context_length ?? null)
-    : null;
-  const ggufNativeContextLength = status.is_gguf
-    ? (status.native_context_length ?? null)
-    : null;
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const prevState = useChatRuntimeStore.getState();
   const clampedReasoningEffort =
@@ -208,8 +204,9 @@ export function applyActiveModelStatusToStore(
   // checkpoint. The echo cannot stand in: a new model can report the old count.
   const slotsModelChanged =
     hydratingExistingModel && !options.readoptingSameModel;
-  // This model's remembered override, read only on a fresh store or a model
-  // change, so a steady poll cannot re-pin a control the user just blanked.
+  // Read only on a fresh store or a model change, so a steady poll cannot re-pin a
+  // control the user just blanked. A self-sizing backend has no slot fields, so an
+  // unseeded store says nothing about it and it goes by the checkpoint alone.
   // Through the resident resolver, not the raw id: an API-driven load reports the
   // snapshot path a cached repo loaded from, while its settings are keyed by the
   // repo id, and the plain lookup misses that record.
@@ -222,18 +219,23 @@ export function applyActiveModelStatusToStore(
     prevState.loadedNUbatch === null &&
     prevState.nUbatch === null;
   const remembered =
-    status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged)
+    (status.is_gguf
+      ? slotsUnseeded || batchesUnseeded || slotsModelChanged
+      : hydratingExistingModel)
       ? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)
       : null;
-  const rememberedNParallel = remembered?.remembered
-    ? (remembered.config.nParallel ?? null)
-    : null;
-  const rememberedNBatch = remembered?.remembered
-    ? (remembered.config.nBatch ?? null)
-    : null;
-  const rememberedNUbatch = remembered?.remembered
-    ? (remembered.config.nUbatch ?? null)
-    : null;
+  const rememberedNParallel =
+    status.is_gguf && remembered?.remembered
+      ? (remembered.config.nParallel ?? null)
+      : null;
+  const rememberedNBatch =
+    status.is_gguf && remembered?.remembered
+      ? (remembered.config.nBatch ?? null)
+      : null;
+  const rememberedNUbatch =
+    status.is_gguf && remembered?.remembered
+      ? (remembered.config.nUbatch ?? null)
+      : null;
   const nBatchSeed = resolveBatchSizeSeed({
     incoming: status.requested_n_batch,
     isGguf: status.is_gguf ?? true,
@@ -249,17 +251,24 @@ export function applyActiveModelStatusToStore(
     modelChanged: slotsModelChanged,
   });
   // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
-  // and status only exposes the RESOLVED context; re-seed the pin from the
-  // requested value (parity with the load paths' keepCustomCtx). Baselines
-  // unconditionally: anything but an applicable pin is null, so a previous
-  // model's pin can't survive a model change underneath and reload at the old length.
-  const gpuPin = status.is_gguf
-    ? resolveManualAutoCtxPin(
-        status.gpu_memory_mode ?? "auto",
-        status.gpu_layers ?? -1,
-        status.requested_context_length ?? null,
-      )
-    : null;
+  // and status only exposes the RESOLVED context, so llama.cpp's pin is re-seeded from
+  // the requested value (parity with the load paths' keepCustomCtx).
+  const { pin: contextPin, baseline: contextBaseline } = refreshedContextPin({
+    isGguf: status.is_gguf ?? false,
+    isMlx: status.is_mlx ?? false,
+    gpuMemoryMode: status.gpu_memory_mode ?? "auto",
+    gpuLayers: status.gpu_layers ?? -1,
+    requestedContextLength: status.requested_context_length ?? null,
+    // Whether or not the tab picked this model itself, the pin in the store came from
+    // whatever was there before -- including a resident model re-adopted after an
+    // external pick.
+    modelChanged: hydratingExistingModel,
+    storePin: store.customContextLength,
+    loadedBaseline: prevState.loadedCustomContextLength,
+    // A model adopted into a fresh tab -- a refresh, or an API-driven load becoming
+    // visible -- has no pin in the store to keep.
+    rememberedPin: remembered?.remembered ? savedContextPin(remembered.config) : null,
+  });
   const incomingGpuMode = status.is_gguf
     ? (status.gpu_memory_mode ?? "auto")
     : null;
@@ -272,7 +281,7 @@ export function applyActiveModelStatusToStore(
   const incomingGpuFields = loadedGpuMemoryFields(status);
   const incomingGpuIds = incomingGpuFields.loadedGpuIds;
   const incomingGpuIndexKind = incomingGpuFields.loadedGpuIndexKind;
-  const gpuStatusChanged =
+  const placementOrContextChanged =
     prevState.loadedGpuMemoryMode !== incomingGpuMode ||
     prevState.loadedGpuLayers !== incomingGpuLayers ||
     prevState.loadedNCpuMoe !== incomingNCpuMoe ||
@@ -284,7 +293,7 @@ export function applyActiveModelStatusToStore(
       },
       { ids: incomingGpuIds, indexKind: incomingGpuIndexKind },
     ) ||
-    prevState.loadedCustomContextLength !== gpuPin;
+    prevState.loadedCustomContextLength !== contextBaseline;
   const gpuMemoryEditsPending =
     (prevState.loadedGpuMemoryMode !== null &&
       prevState.gpuMemoryMode !== prevState.loadedGpuMemoryMode) ||
@@ -305,11 +314,11 @@ export function applyActiveModelStatusToStore(
   );
   // A same-model reload from another client advances every loaded baseline.
   // Preserve each editable group only when this tab has an unapplied change.
-  const preserveSameModelEdits = gpuStatusChanged && !hydratingExistingModel;
-  const gpuStatusFields = {
+  const preserveSameModelEdits = placementOrContextChanged && !hydratingExistingModel;
+  const placementAndContextFields = {
     ...incomingGpuFields,
-    customContextLength: gpuPin,
-    loadedCustomContextLength: gpuPin,
+    customContextLength: contextPin,
+    loadedCustomContextLength: contextBaseline,
     ...(preserveSameModelEdits &&
       gpuMemoryEditsPending && {
         gpuMemoryMode: prevState.gpuMemoryMode,
@@ -340,9 +349,7 @@ export function applyActiveModelStatusToStore(
         ? true
         : useChatRuntimeStore.getState().reasoningEnabled
       : true,
-    ggufContextLength: currentGgufContextLength,
-    ggufMaxContextLength,
-    ggufNativeContextLength,
+    ...loadedContextFields(status),
     ...(status.is_gguf
       ? {}
       : { activeNativePathToken: null, activeNativePathExpiresAtMs: null }),
@@ -477,13 +484,13 @@ export function applyActiveModelStatusToStore(
         nUbatch: rememberedNUbatch,
       }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
-    // placement change. gpuStatusFields preserves dirty local edits in the last
+    // placement change. placementAndContextFields preserves dirty local edits in the last
     // case while advancing their loaded baselines.
     ...(seedLoadParams &&
       (prevState.loadedGpuMemoryMode === null ||
         hydratingExistingModel ||
-        gpuStatusChanged) &&
-      gpuStatusFields),
+        placementOrContextChanged) &&
+      placementAndContextFields),
     // The one load param that only ever seeded from null, so a switch left the previous model's
     // template in the store, which the Hub settings page reads as the new model's loaded config:
     // Apply then saves A's template under B. A same-model reload from another client moves it

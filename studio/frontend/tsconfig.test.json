@@ -26,5 +26,7 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["tests"]
+  // The ambient declarations too: `include` here is the test tree, so a test that
+  // transitively reaches a src module relying on one fails to typecheck here only.
+  "include": ["tests", "src/**/*.d.ts"]
 }

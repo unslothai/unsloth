@@ -69,7 +69,9 @@ import {
   deletePerModelConfig,
   floorMaxSeqLength,
   isDefaultConfig,
+  contextPinPatch,
   isServedByMlx,
+  savedContextPin,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
   readAdvancedSettingsOpen,
@@ -234,20 +236,32 @@ function MaxSeqLengthSetting({
   inputMax,
   onChange,
   inputRef,
+  isMlx,
+  pinned,
+  windowUnknown,
 }: {
   value: number;
   max: number;
   inputMax: number;
   onChange: (value: number) => void;
   inputRef?: Ref<NumericValueInputHandle>;
+  isMlx?: boolean;
+  pinned?: boolean;
+  windowUnknown?: boolean;
 }) {
+  // MLX sizes its own window when nothing is pinned, so the control is the same Context
+  // Length the GGUF path offers, showing the length that will actually be served rather
+  // than the word "Auto". A dash only while that length is genuinely unknown.
+  const label = isMlx ? "Context Length" : "Max Seq Length";
   return (
     <div className="space-y-3">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Max Seq Length</span>
+          <span className={LABEL_CLASS}>{label}</span>
           <InfoHint>
-            Maximum context window size in tokens. Applies when the model loads.
+            {isMlx
+              ? "Tokens of context to allocate. Higher uses more memory."
+              : "Maximum context window size in tokens. Applies when the model loads."}
           </InfoHint>
         </div>
         <NumericValueInput
@@ -257,7 +271,9 @@ function MaxSeqLengthSetting({
           max={inputMax}
           step={MAX_SEQ_LENGTH_STEP}
           onChange={onChange}
-          ariaLabel="Max Seq Length"
+          displayValue={isMlx && windowUnknown ? "—" : undefined}
+          derived={isMlx && !pinned}
+          ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
           size={8}
         />
@@ -266,10 +282,12 @@ function MaxSeqLengthSetting({
         min={MAX_SEQ_LENGTH_MIN}
         max={max}
         step={MAX_SEQ_LENGTH_STEP}
-        value={[value]}
+        // A served window outside the control's own range sits at the nearer edge: left
+        // outside it, the first nudge steps from the shown number onto the bound.
+        value={[Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max)]}
         onValueChange={([next]) => onChange(next)}
         className="panel-slider"
-        aria-label="Max Seq Length"
+        aria-label={label}
       />
     </div>
   );
@@ -983,7 +1001,7 @@ export function ModelConfigPage({
     (s) => s.defaultChatTemplate,
   );
   const loadedMaxContextLength = useChatRuntimeStore(
-    (s) => s.ggufMaxContextLength,
+    (s) => s.maxContextLength,
   );
   // What settings are stored under, which is not always what loads; the probes keep target.id.
   const configId = target.configId ?? target.id;
@@ -1196,13 +1214,20 @@ export function ModelConfigPage({
   const baseline = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
     : rawBaseline;
+  const platform = usePlatformStore();
+  const targetIsMlx = isServedByMlx(
+    target.isGguf,
+    platform.deviceType,
+    platform.chatOnlyReason,
+  );
   const atBaseline = perModelConfigsEqual(config, baseline);
   // An explicit customContextLength equal to the native ceiling is still an override (Reset stays
   // enabled). "At default" means no override at all AND the shown context matches native.
   const contextAtDefault =
-    !target.isGguf ||
-    (config.customContextLength == null &&
-      (nativeContextLength == null || contextValue === nativeContextLength));
+    !target.isGguf
+      ? savedContextPin(config) == null
+      : config.customContextLength == null &&
+        (nativeContextLength == null || contextValue === nativeContextLength);
   const atDefault =
     contextAtDefault &&
     perModelConfigsEqual(
@@ -1212,15 +1237,38 @@ export function ModelConfigPage({
   const nativeMaxSeqLength =
     floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
     MAX_SEQ_LENGTH_MAX;
-  // A non-GGUF active model seeds maxSeqLength from its loaded value. Once cleared, fall back to
-  // the app default, not the loaded runtime value, else the override can never be cleared.
+  // The pin if there is one; else, for a self-sizing backend, the length a load would
+  // actually serve, so the control states the context rather than declining to. Only a
+  // target whose window has not been read falls back to the app default. Reset clears the
+  // pin to null, so no fallback may reconstruct one from a runtime value.
+  //
+  // Reported as it stands, not through the bounds a request is held to: a window nobody
+  // requested is subject to neither, and 2,056 would read 2,048 while 10,485,760 would
+  // read 1,048,576, each naming a limit the model does not have.
+  const servedWindow = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value > 0
+      ? Math.floor(value)
+      : null;
+  const mlxNativeWindow = targetIsMlx
+    ? servedWindow(modelMaxPosition.maxPositionEmbeddings)
+    : null;
+  const mlxServedWindow =
+    (targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null) ??
+    mlxNativeWindow;
   const maxSeqLengthValue =
-    normalizeMaxSeqLength(config.maxSeqLength) ??
+    servedWindow(savedContextPin(config)) ??
+    mlxServedWindow ??
     clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
-  const maxSeqLengthMax = Math.max(nativeMaxSeqLength, maxSeqLengthValue);
-  // An auto-fit-below-native GGUF shows activeLoadedContext while customContextLength stays null.
-  // If the user fixes GPU Layers (Manual) and remembers, pin that shown context so a later fresh
-  // load keeps the fitted placement instead of sending native/0 and recreating the OOM.
+  // The slider picks a request, so it stops at the widest one a load may make; a wider
+  // window shows in the field but cannot be dragged to.
+  const maxSeqLengthMax = Math.min(
+    MAX_SEQ_LENGTH_MAX,
+    Math.max(nativeMaxSeqLength, maxSeqLengthValue),
+  );
+  // An auto-fit-below-native GGUF shows activeLoadedContext while
+  // customContextLength stays null. If the user fixes GPU Layers (Manual) and
+  // remembers, pin that shown context so a later fresh load keeps the fitted
+  // placement instead of sending native/0 for fixed layers and recreating the OOM.
   const loadableConfig = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(config, gpuIndexKind)
     : config;
@@ -1231,8 +1279,9 @@ export function ModelConfigPage({
     loadableConfig.gpuLayers >= 0 &&
     loadableConfig.customContextLength == null &&
     activeLoadedContext != null;
-  // Persisted record: keep config as-is (non-GGUF keeps maxSeqLength null) so isDefaultConfig
-  // recognises it and clears a remembered override instead of pinning the app default.
+  // Persisted record: keep config as-is, so isDefaultConfig recognises it and clears a
+  // remembered override instead of pinning the app default. Whichever field this
+  // target's pin lives in is already settled by the write rule.
   const runtimeConfig = target.isGguf
     ? pinFixedLayerContext
       ? { ...loadableConfig, customContextLength: activeLoadedContext }
@@ -1270,10 +1319,7 @@ export function ModelConfigPage({
       pendingPatch.customContextLength = committedContext;
     }
     if (committedMaxSeqLength != null) {
-      pendingPatch.maxSeqLength = clampMaxSeqLength(
-        committedMaxSeqLength,
-        MAX_SEQ_LENGTH_MAX,
-      );
+      Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));
     }
     if (committedGpuLayers != null) {
       pendingPatch.gpuLayers = committedGpuLayers;
@@ -1376,9 +1422,13 @@ export function ModelConfigPage({
     if (saveFailed) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
+    // An MLX target carries its pin in customContextLength, as a GGUF one does, so an
+    // unpinned target sends nothing and the backend sizes the window.
     const effectiveLoadConfig = target.isGguf
       ? effectiveRuntimeConfig
-      : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
+      : targetIsMlx
+        ? effectiveRuntimeConfig
+        : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
     onRun(effectiveLoadConfig, classifiedIsDiffusion);
   };
 
@@ -1499,11 +1549,12 @@ export function ModelConfigPage({
               max={maxSeqLengthMax}
               inputMax={MAX_SEQ_LENGTH_MAX}
               inputRef={maxSeqLengthInputRef}
-              onChange={(value) =>
-                update({
-                  maxSeqLength: clampMaxSeqLength(value, MAX_SEQ_LENGTH_MAX),
-                })
+              isMlx={targetIsMlx}
+              pinned={savedContextPin(config) != null}
+              windowUnknown={
+                savedContextPin(config) == null && mlxServedWindow == null
               }
+              onChange={(value) => update(contextPinPatch(value, targetIsMlx))}
             />
             {showAdvanced && (
               <MlxAdvancedSettings

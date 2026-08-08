@@ -313,8 +313,8 @@ export interface InferenceStatusResponse {
   cpu_fallback_reason?: CpuFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
-  /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
-   * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
+  /** The context the active load was invoked with (0 = let the backend choose); re-seeds
+   * the pin on hydration. Null where the serving backend records no request. */
   requested_context_length?: number | null;
   /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;

@@ -34,7 +34,10 @@ class LoadRequest(BaseModel):
         0,
         ge = 0,
         le = 1048576,
-        description = "Maximum sequence length (0 = model default for GGUF)",
+        description = (
+            "Maximum sequence length. Send 0 to let a backend that sizes its own window "
+            "(llama.cpp or MLX) choose the context itself."
+        ),
     )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
@@ -570,11 +573,16 @@ class _InferenceRuntimeFields(BaseModel):
         None, description = "Runtime context length in tokens for the loaded model"
     )
     max_context_length: Optional[int] = Field(
-        None, description = "Maximum context length currently available on this hardware"
+        None,
+        description = (
+            "The ceiling to show for this model: llama.cpp estimates what the machine can "
+            "hold, while MLX reports the model's own window. Neither reserves memory, and "
+            "an explicit request above it is still honored."
+        ),
     )
     native_context_length: Optional[int] = Field(
         None,
-        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+        description = "Model's native context length, from GGUF metadata or the MLX model config",
     )
     supports_reasoning: bool = Field(
         False,
@@ -826,9 +834,11 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     requested_context_length: Optional[int] = Field(
         None,
         description = (
-            "The n_ctx the active GGUF load was invoked with (0 = Auto). Lets the "
-            "UI re-seed a Manual + Auto-layers context pin on hydration, where "
-            "context_length only exposes the resolved value. None for non-GGUF."
+            "The context length the active load was invoked with: 0 means the load asked "
+            "the backend to choose, and null means the serving backend records no request "
+            "at all. Both local backends size their own window, so context_length reports "
+            "only what was resolved and cannot say whether anyone chose it; this is what "
+            "lets a client restore the user's choice after a reload."
         ),
     )
     llama_cpp_supports_mtp: bool = Field(
@@ -1072,6 +1082,50 @@ class ThinkingConfig(BaseModel):
     """
 
     type: Literal["disabled", "enabled"] = "disabled"
+
+
+def resolve_thinking_onto_enable_thinking(request):
+    """Map Anthropic-style ``thinking`` onto the internal ``enable_thinking``.
+
+    ``enable_thinking`` wins when both are given. Shared with counting, which must resolve
+    the reasoning preamble exactly as the completion does.
+    """
+    if request.thinking is not None and request.enable_thinking is None:
+        request.enable_thinking = request.thinking.type == "enabled"
+    return request
+
+
+class ReasoningControlsRequest(BaseModel):
+    """The reasoning controls a request may carry, resolved the way a completion does.
+
+    ChatCompletionRequest shares the resolution above rather than inheriting: pydantic
+    orders inherited fields ahead of a subclass's own, reordering its OpenAPI properties
+    and validation errors.
+    """
+
+    enable_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
+    )
+    reasoning_effort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = Field(
+        None,
+        description = "[x-unsloth] Reasoning effort level ('none'|'minimal'|'low'|'medium'|'high'|'max'|'xhigh'). OpenAI `/v1/responses` accepts model-dependent subsets; Anthropic adaptive thinking uses `max` as the top tier on Claude 4.6 Opus/Sonnet (inbound `xhigh` is mapped to `max`) and `xhigh` on Claude 4.7 Opus; local Harmony/gpt-oss templates support low|medium|high.",
+    )
+    preserve_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
+    )
+    thinking: Optional[ThinkingConfig] = Field(
+        None,
+        description = "[Anthropic-compatible] Thinking configuration. "
+        "Use {type: 'disabled'} to disable thinking, {type: 'enabled'} to enable.",
+    )
+
+    @model_validator(mode = "after")
+    def _map_thinking_to_enable_thinking(self):
+        return resolve_thinking_onto_enable_thinking(self)
 
 
 # Recognized permission_mode values. The field accepts a plain string rather than
@@ -1510,17 +1564,7 @@ class ChatCompletionRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _map_thinking_to_enable_thinking(self) -> "ChatCompletionRequest":
-        """Map Anthropic-style ``thinking`` parameter to internal ``enable_thinking``.
-
-        ``thinking: {type: 'enabled'}`` sets ``enable_thinking = True`` and
-        ``thinking: {type: 'disabled'}`` sets ``enable_thinking = False``.
-        ``enable_thinking`` takes precedence when both are provided so that
-        callers who already use the internal field are unaffected. Invalid
-        ``thinking`` shapes are rejected at validation time (422).
-        """
-        if self.thinking is not None and self.enable_thinking is None:
-            self.enable_thinking = self.thinking.type == "enabled"
-        return self
+        return resolve_thinking_onto_enable_thinking(self)
 
     @field_validator("permission_mode", mode = "before")
     @classmethod
@@ -1584,8 +1628,8 @@ class ChatCompletionRequest(BaseModel):
         return self
 
 
-class ChatCountTokensRequest(BaseModel):
-    """Count prompt tokens for a local GGUF chat without generating."""
+class ChatCountTokensRequest(ReasoningControlsRequest):
+    """Count prompt tokens for a local chat without generating."""
 
     model_config = {"extra": "allow"}
 
@@ -1600,18 +1644,6 @@ class ChatCountTokensRequest(BaseModel):
     tools: Optional[list[dict]] = Field(
         None,
         description = "Optional OpenAI tool definitions included in the prompt",
-    )
-    enable_thinking: Optional[bool] = Field(
-        None,
-        description = "[x-unsloth] Render the template in thinking mode, as a completion would",
-    )
-    reasoning_effort: Optional[str] = Field(
-        None,
-        description = "[x-unsloth] Reasoning effort level the completion would request",
-    )
-    preserve_thinking: Optional[bool] = Field(
-        None,
-        description = "[x-unsloth] Keep historical <think> blocks in the rendered prompt",
     )
     enable_tools: Optional[bool] = Field(
         None,

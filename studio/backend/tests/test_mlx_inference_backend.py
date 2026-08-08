@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import asyncio
 import contextlib
+import copy
 import json
 import subprocess
 import sys
@@ -2557,3 +2559,268 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     assert backend._template_override["applied"] is None
     assert backend._template_override["reason"] == mlx_inference.MLX_TEMPLATE_DROPS_IMAGE
     assert backend._processor.chat_template == "{{ native }}"
+
+
+# Spellings nobody enumerated: Llama 3.1 carries the second beside its scaled window, and
+# mlx-lm's Kimi Linear the third.
+@pytest.mark.parametrize("name", ["n_ctx", "original_max_position_embeddings", "model_max_length"])
+def test_mlx_native_context_length_reads_every_spelling_and_every_config(name):
+    from core.inference.mlx_inference import mlx_native_context_length
+
+    # One term per family, matched by shape rather than by an enumerated name.
+    args = SimpleNamespace(**{name: 40960})
+    assert mlx_native_context_length(SimpleNamespace(args = args)) == 40960
+    # The metadata read before a load answers by this rule too, so no dash-then-number.
+    from routes.models import _get_max_position_embeddings
+
+    assert _get_max_position_embeddings(SimpleNamespace(**{name: 40960})) == 40960
+    # The wrapper counts too, not just the most specific config: mlx-vlm's Phi-3-V keeps a
+    # 4096 text config beside the 131072 its blocks are built with.
+    stub = SimpleNamespace(args = SimpleNamespace(**{name: 4096}))
+    text = SimpleNamespace(**{name: 4096})
+    cfg = SimpleNamespace(model_type = "x", text_config = text, **{name: 131072})
+    vlm = SimpleNamespace(language_model = stub, config = cfg)
+    assert mlx_native_context_length(vlm) == 131072
+
+
+class _CountTokensBackend:
+    active_model_name = "mlx/model"
+    models = {"mlx/model": {"is_mlx": True, "is_vision": False, "is_audio": False}}
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        return 11, "mlx/model"
+
+
+def test_count_tokens_serves_an_mlx_count_with_llama_cpp_unloaded(monkeypatch):
+    """llama.cpp not being loaded used to be the whole answer, leaving the usage bar empty
+    until a completion reported its own usage."""
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from routes import inference as route
+
+    monkeypatch.setattr(route, "get_inference_backend", _CountTokensBackend)
+    monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False))
+    monkeypatch.setattr(route.active_generations, "count", lambda: 0)
+    payload = route.ChatCountTokensRequest(messages = [{"role": "user", "content": "hello"}])
+
+    response = asyncio.run(route.chat_count_tokens(payload, current_subject = "tester"))
+
+    assert json.loads(response.body) == {"input_tokens": 11, "model": "mlx/model"}
+
+
+def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
+    """A request wins verbatim; asking for nothing takes the trained window, and a model
+    whose dims are unreadable resolves to nothing rather than to a number of its own."""
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    resolve = MLXInferenceBackend._resolve_context_lengths
+    wide = SimpleNamespace(args = SimpleNamespace(max_position_embeddings = 262144))
+    blank = SimpleNamespace(args = SimpleNamespace())
+    assert resolve(None, wide, 0) == (262144, 262144, 262144)
+    assert resolve(None, wide, 8192) == (8192, 262144, 262144)
+    assert resolve(None, wide, 1048576) == (1048576, 262144, 262144)  # above native, still verbatim
+    held = SimpleNamespace(args = wide.args, max_seq_length = 4096)
+    assert resolve(None, held, 0) == (4096, 262144, 262144)  # what the load attached wins
+    assert resolve(None, blank, 0) == (None, None, None)
+    assert resolve(None, blank, 8192) == (8192, None, None)
+
+
+def test_the_resident_context_gate_compares_requests_not_served_windows():
+    """Reuse on model identity alone leaves a context change with no reload to carry it, on
+    the path that skips the preliminary unload while a chat generates. Served windows cannot
+    answer it: auto-sized to 32768 and pinned at 32768 are the same number."""
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from routes.inference import _resident_context_satisfies as gate
+
+    # Records nothing, absent or null: the parent's mirror always writes the key, so
+    # reading its presence would reload every transformers model on its own reuse path.
+    assert gate({}, 8192) is True
+    assert gate({"requested_context_length": None}, 8192) is True
+
+    # Same request, whichever spelling of "size it yourself" either side used.
+    assert gate({"requested_context_length": 8192}, 8192) is True
+    assert gate({"requested_context_length": 0}, 0) is True
+    assert gate({"requested_context_length": 0}, None) is True
+
+    # Different request: pinning and unpinning both reload.
+    assert gate({"requested_context_length": 0}, 8192) is False
+    assert gate({"requested_context_length": 8192}, 0) is False
+
+    # The served window is not the request and cannot stand in for it.
+    assert gate({"requested_context_length": 0, "context_length": 32768}, 32768) is False
+
+
+def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monkeypatch):
+    """mlx-lm cannot quantize a rotating cache -- to_quantized raises, and conversion is
+    attempted from the first token -- so exactly one of the two applies. A pin is an
+    explicit instruction about memory; a window the backend chose for itself is not.
+
+    A pin that cannot be enforced buys nothing, so it does not spend the quantization
+    either: mlx-lm ignores max_kv_size for a model that builds its own cache."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+    from mlx_lm.models.cache import KVCache
+
+    # This is about the pin/enforceability combination, not the eligibility probe.
+    monkeypatch.setattr(
+        mlx_inference, "_kv_quant_eligibility", lambda *_a, **_k: ("full", "", True)
+    )
+    honours = SimpleNamespace(layers = [object(), object()])
+    # llama's shape once the sliding layers are gone: quantizable, but never bounded.
+    owns = SimpleNamespace(layers = [object(), object()], make_cache = lambda: [KVCache(), KVCache()])
+
+    unset = object()
+
+    def policy(
+        model,
+        kv_bits,
+        requested,
+        served = unset,
+    ):
+        backend = MLXInferenceBackend()
+        backend._model = model
+        backend._is_vlm = False
+        quant, window = backend._resolve_kv_policy(
+            False, kv_bits, requested, requested if served is unset else served
+        )
+        return quant["kv_bits"], window
+
+    assert policy(honours, 4, 8192) == (None, 8192)  # enforceable pin outranks quantization
+    assert policy(honours, 4, 0, 262144) == (4, None)  # auto yields to quantization
+    assert policy(honours, None, 8192) == (None, 8192)
+    assert policy(honours, None, 0, 262144) == (None, 262144)  # nothing to yield to
+
+    # An unenforceable pin spends nothing: neither bounded nor stripped of quantization.
+    assert policy(owns, 4, 8192) == (4, None)
+    assert policy(owns, None, 8192) == (None, None)
+
+    # A window nobody could read bounds nothing rather than bounding at zero.
+    assert policy(honours, None, 0, None) == (None, None)  # unreadable
+    assert policy(honours, None, 0, 0) == (None, None)  # non-positive
+
+
+def test_quantization_is_refused_for_a_pinned_context_rather_than_raising_mid_stream():
+    """Left to mlx-lm this surfaces as NotImplementedError on the first generated token."""
+    from core.inference.mlx_inference import _kv_quant_status
+
+    status = _kv_quant_status(4, None, False, context_pinned = True)
+
+    assert status["kv_bits"] is None
+    assert status["eligibility"] == "refused"
+    assert "quantize a limited cache" in status["reason"]
+
+
+def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
+    """A model with its own make_cache ignores max_kv_size, and those caches range from
+    constant-state to fully unbounded, so the argument does not say whether it applied.
+    A cap the architecture chose does not serve a narrower request either."""
+    from core.inference.mlx_inference import _kv_window_enforced
+    from mlx_lm.models.cache import ArraysCache, ChunkedKVCache, KVCache, RotatingKVCache
+
+    honours = SimpleNamespace(layers = [object(), object()])
+    hybrid = SimpleNamespace(
+        layers = [object(), object()],
+        make_cache = lambda: [RotatingKVCache(1024), KVCache()],
+    )
+    undeclared = SimpleNamespace(layers = [object()], make_cache = lambda: [ArraysCache(2)])
+    chunked = SimpleNamespace(layers = [object()], make_cache = lambda: [ChunkedKVCache(512)])
+    native = SimpleNamespace(layers = [object()], make_cache = lambda: [RotatingKVCache(2048)])
+    # mlx-vlm's Florence2 shape: tuples of a class that concatenates forever.
+    nested = SimpleNamespace(
+        layers = [object()],
+        make_cache = lambda: [(SimpleNamespace(keys = None), SimpleNamespace(keys = None))],
+    )
+
+    assert _kv_window_enforced(honours, False, 4096) is True
+    assert _kv_window_enforced(hybrid, False, 4096) is False  # a full-attention layer survives
+    assert _kv_window_enforced(chunked, False, 4096) is True
+    # Nothing that declares no cap is taken on trust, however it is packaged.
+    assert _kv_window_enforced(undeclared, False, 4096) is False
+    assert _kv_window_enforced(nested, False, 4096) is False
+    # Recurrent Gemma's shape: its own window outlives a narrower pin.
+    assert _kv_window_enforced(native, False, 128) is False
+    assert _kv_window_enforced(native, False, 4096) is True
+    # A window a rotating cache cannot rotate within retains everything instead.
+    assert _kv_window_enforced(honours, False, 4) is False
+    assert _kv_window_enforced(SimpleNamespace(), False, 4096) is None  # unreadable
+    # The VLM branch reaches mlx-vlm's factory and unwraps the language tower.
+    assert _kv_window_enforced(SimpleNamespace(language_model = honours), True, 4096) is True
+
+
+def test_the_window_reaches_the_runtime_on_every_generation_route(monkeypatch):
+    """The runtimes read max_kv_size only when no prompt_cache is passed, so each route
+    that builds its own cache is what carries the bound there. Asserted on the real calls:
+    the audio route reached mlx-vlm without it while text and vision did not."""
+    import types as _types
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    kwargs = MLXInferenceBackend._kv_window_generate_kwargs
+    assert kwargs(SimpleNamespace(_kv_cache_window = None)) == {}
+    assert kwargs(SimpleNamespace()) == {}
+    assert kwargs(SimpleNamespace(_kv_cache_window = 8192)) == {"max_kv_size": 8192}
+
+    # The prompt-cache history builds its own cache; it has to carry the window too.
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    model = SimpleNamespace(layers = [object(), object()])
+    bounded = _MLXPromptCacheHistory(4, 1 << 20, 512).fetch(model, "k", [1, 2])[0]
+    unbounded = _MLXPromptCacheHistory(4, 1 << 20, None).fetch(model, "k", [1, 2])[0]
+    assert {getattr(e, "max_size", None) for e in bounded} == {512}
+    assert {getattr(e, "max_size", None) for e in unbounded} == {None}
+
+    captured: list = []
+    backend = _install_fake_text_stack(monkeypatch, {"P1": [1], "generated": [1]}, captured)
+    backend._kv_cache_window = 8192
+    _run_turn(backend, "P1")
+    assert captured[0]["max_kv_size"] == 8192
+
+    seen: list = []
+
+    def _vlm_stream(*_args, **kw):
+        seen.append(kw)
+        yield SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)
+
+    mlx_vlm = _types.ModuleType("mlx_vlm")
+    mlx_vlm.stream_generate = _vlm_stream
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"m": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> p",
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.mlx_inference._temporary_mlx_adapter_state",
+        lambda _m, _s: contextlib.nullcontext(),
+    )
+    vlm = MLXInferenceBackend()
+    vlm._kv_cache_window = 4096
+    vlm._model = SimpleNamespace(config = {"model_type": "m"})
+    vlm._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    next(
+        vlm._generate_vlm(
+            [{"role": "user", "content": [{"type": "image"}]}],
+            object(),
+            0,
+            1,
+            0,
+            0,
+            1,
+            1,
+            None,
+            _adapter_state = False,
+        )
+    )
+    assert seen[-1]["max_kv_size"] == 4096
+
+    vlm.active_model_name = "m"
+    vlm.models["m"] = {"audio_type": "audio_vlm"}
+    next(vlm.generate_audio_input_response([{"role": "user", "content": "x"}], "", object()))
+    assert seen[-1]["max_kv_size"] == 4096, "the audio route must carry the bound too"
