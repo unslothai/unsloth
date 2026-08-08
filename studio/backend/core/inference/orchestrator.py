@@ -1249,6 +1249,7 @@ class InferenceOrchestrator:
         mlx_distributed: bool = False,
         mlx_kv_bits: Optional[int] = None,
         chat_template_override: Optional[str] = None,
+        load_cancel_event: Optional[threading.Event] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -1262,6 +1263,10 @@ class InferenceOrchestrator:
 
         model_name = config.identifier
         self.loading_models.add(model_name)
+        if load_cancel_event is not None and load_cancel_event.is_set():
+            self.loading_models.discard(model_name)
+            logger.info("Load cancelled before worker start: %s", model_name)
+            return False
 
         try:
             needed_major = "5" if needs_transformers_5(model_name) else "4"

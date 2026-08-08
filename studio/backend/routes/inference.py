@@ -6715,6 +6715,146 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
     ) == (request.chat_template_override or None)
 
 
+class _ScopedLoadAttempt(NamedTuple):
+    token: str
+    request_id: Optional[str]
+    model_path: str
+    subject: str
+    cancel_event: threading.Event
+    cancel_complete: threading.Event
+
+
+_scoped_load_attempts_lock = threading.Lock()
+_scoped_load_attempts: dict[tuple[str, str], _ScopedLoadAttempt] = {}
+_scoped_load_cancel_tombstones: dict[tuple[str, str], tuple[str, float]] = {}
+_running_load_attempt: Optional[_ScopedLoadAttempt] = None
+_SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S = 60.0
+_SCOPED_LOAD_CANCEL_TOMBSTONE_LIMIT_PER_SUBJECT = 256
+
+
+def _prune_scoped_load_cancel_tombstones(now: float) -> None:
+    expired = [
+        key for key, (_, expires_at) in _scoped_load_cancel_tombstones.items() if expires_at <= now
+    ]
+    for key in expired:
+        _scoped_load_cancel_tombstones.pop(key, None)
+
+
+def _begin_load_attempt(request: LoadRequest, current_subject: str) -> _ScopedLoadAttempt:
+    attempt = _ScopedLoadAttempt(
+        token = uuid.uuid4().hex,
+        request_id = request.load_request_id,
+        model_path = request.model_path,
+        subject = current_subject,
+        cancel_event = threading.Event(),
+        cancel_complete = threading.Event(),
+    )
+    if attempt.request_id is None:
+        return attempt
+    key = (current_subject, attempt.request_id)
+    with _scoped_load_attempts_lock:
+        now = time.monotonic()
+        _prune_scoped_load_cancel_tombstones(now)
+        if key in _scoped_load_attempts:
+            raise HTTPException(
+                status_code = 409,
+                detail = "A load with this request ID is already in progress",
+            )
+        tombstone = _scoped_load_cancel_tombstones.pop(key, None)
+        if (
+            tombstone is not None
+            and tombstone[0].strip().casefold() == attempt.model_path.strip().casefold()
+        ):
+            attempt.cancel_event.set()
+            attempt.cancel_complete.set()
+        _scoped_load_attempts[key] = attempt
+    return attempt
+
+
+def _finish_load_attempt(attempt: _ScopedLoadAttempt) -> None:
+    if attempt.request_id is None:
+        return
+    key = (attempt.subject, attempt.request_id)
+    with _scoped_load_attempts_lock:
+        if _scoped_load_attempts.get(key) is attempt:
+            _scoped_load_attempts.pop(key, None)
+
+
+def _cancel_scoped_load_attempt(
+    request: UnloadRequest, current_subject: str
+) -> tuple[Optional[_ScopedLoadAttempt], bool]:
+    request_id = request.cancel_load_request_id
+    if request_id is None:
+        return None, False
+    key = (current_subject, request_id)
+    with _scoped_load_attempts_lock:
+        now = time.monotonic()
+        _prune_scoped_load_cancel_tombstones(now)
+        attempt = _scoped_load_attempts.get(key)
+        if attempt is None:
+            subject_tombstones = [
+                tombstone_key
+                for tombstone_key in _scoped_load_cancel_tombstones
+                if tombstone_key[0] == current_subject
+            ]
+            if len(subject_tombstones) >= _SCOPED_LOAD_CANCEL_TOMBSTONE_LIMIT_PER_SUBJECT:
+                oldest = min(
+                    subject_tombstones,
+                    key = lambda item: _scoped_load_cancel_tombstones[item][1],
+                )
+                _scoped_load_cancel_tombstones.pop(oldest, None)
+            _scoped_load_cancel_tombstones[key] = (
+                request.model_path,
+                now + _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S,
+            )
+            return None, False
+        if attempt.model_path.strip().casefold() != request.model_path.strip().casefold():
+            return None, False
+        attempt.cancel_event.set()
+        is_running = _running_load_attempt is attempt
+        if not is_running:
+            # Queued/completed attempts have no backend teardown handler to signal
+            # completion. Let a queued attempt fail immediately once it gets the gate.
+            attempt.cancel_complete.set()
+        return attempt, is_running
+
+
+async def _run_tracked_load_model_impl(
+    request: LoadRequest,
+    fastapi_request: Request,
+    current_subject: str,
+    *,
+    attempt: Optional[_ScopedLoadAttempt] = None,
+    current_request_counted: bool = False,
+    on_reload_confirmed = None,
+):
+    global _running_load_attempt
+
+    owned_attempt = attempt is None
+    attempt = attempt or _begin_load_attempt(request, current_subject)
+    with _scoped_load_attempts_lock:
+        _running_load_attempt = attempt
+    try:
+        if attempt.cancel_event.is_set():
+            raise HTTPException(status_code = 409, detail = "Model load cancelled")
+        return await _load_model_impl(
+            request,
+            fastapi_request,
+            current_subject,
+            current_request_counted = current_request_counted,
+            on_reload_confirmed = on_reload_confirmed,
+            load_cancel_event = attempt.cancel_event,
+        )
+    finally:
+        if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
+            await asyncio.to_thread(attempt.cancel_complete.wait)
+        with _scoped_load_attempts_lock:
+            if _running_load_attempt is attempt:
+                _running_load_attempt = None
+        if owned_attempt:
+            _finish_load_attempt(attempt)
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -6749,24 +6889,29 @@ async def load_model_gated(request: LoadRequest, fastapi_request: Request, curre
     # check alone is only a fast path.
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
-    _raise_if_sidecar_swap_in_progress()
-    # Hold the lifecycle gate across the load so idle auto-unload can't unload the
-    # model mid-load. Auto-switch calls _load_model_impl directly since it already
-    # holds this gate.
-    async with inference_lifecycle_gate():
+    attempt = _begin_load_attempt(request, current_subject)
+    try:
         _raise_if_sidecar_swap_in_progress()
-        # The active-generation gate runs inside _load_model_impl, once it knows this is a real
-        # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
-        return await _load_model_impl(
-            request,
-            fastapi_request,
-            current_subject,
-            on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
-                force = request.force_cancel_active,
-                action = "Loading a model",
-                cancel = cancel,
-            ),
-        )
+        # Hold the lifecycle gate across the load so idle auto-unload can't unload the
+        # model mid-load. Auto-switch calls the tracked impl directly since it already
+        # holds this gate.
+        async with inference_lifecycle_gate():
+            _raise_if_sidecar_swap_in_progress()
+            # The active-generation gate runs inside _load_model_impl, once it knows this is a real
+            # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
+            return await _run_tracked_load_model_impl(
+                request,
+                fastapi_request,
+                current_subject,
+                attempt = attempt,
+                on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
+                    force = request.force_cancel_active,
+                    action = "Loading a model",
+                    cancel = cancel,
+                ),
+            )
+    finally:
+        _finish_load_attempt(attempt)
 
 
 async def _load_model_impl(
@@ -6776,8 +6921,13 @@ async def _load_model_impl(
     *,
     current_request_counted: bool = False,
     on_reload_confirmed = None,
+    load_cancel_event: Optional[threading.Event] = None,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
+
+    def _raise_if_scoped_load_cancelled() -> None:
+        if load_cancel_event is not None and load_cancel_event.is_set():
+            raise HTTPException(status_code = 409, detail = "Model load cancelled")
 
     # A new load starts here; arm the progress throttle so this load's first
     # sampled step logs even if it reports 100% immediately (cached/small load).
@@ -7179,6 +7329,7 @@ async def _load_model_impl(
 
             # Point of no return for the GGUF path: nothing left can reject this load, so stop the
             # chats the swap interrupts (or refuse, if the caller never opted in).
+            _raise_if_scoped_load_cancelled()
             if on_reload_confirmed is not None:
                 on_reload_confirmed(cancel = True)
 
@@ -7224,6 +7375,7 @@ async def _load_model_impl(
                 return await asyncio.to_thread(
                     llama_backend.load_model,
                     intent = attempt,
+                    load_cancel_event = load_cancel_event,
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
@@ -7236,7 +7388,10 @@ async def _load_model_impl(
                 requested_tensor = request.tensor_parallel,
                 extra_args = extra_llama_args,
                 label = config.identifier,
-                cancelled = llama_backend.load_cancelled,
+                cancelled = lambda: (
+                    llama_backend.load_cancelled()
+                    or bool(load_cancel_event and load_cancel_event.is_set())
+                ),
             )
 
             if not success:
@@ -7314,6 +7469,7 @@ async def _load_model_impl(
         _raise_if_sidecar_swap_in_progress()
 
         # Point of no return for the Unsloth path: cancel only once nothing can still reject the load.
+        _raise_if_scoped_load_cancelled()
         if on_reload_confirmed is not None:
             on_reload_confirmed(cancel = True)
 
@@ -7359,6 +7515,7 @@ async def _load_model_impl(
             subject = current_subject,
             mlx_kv_bits = request.mlx_kv_bits,
             chat_template_override = request.chat_template_override,
+            load_cancel_event = load_cancel_event,
         )
 
         if not success:
@@ -8213,6 +8370,47 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
     try:
+        # Hidden Audio cleanup is cancellation, not a manual eject. Bind it to the
+        # exact client load attempt so a delayed request can never stop a newer
+        # same-model load or unload a model that has already become resident.
+        if request.cancel_load_request_id is not None:
+            attempt, is_running = _cancel_scoped_load_attempt(request, current_subject)
+            if attempt is None or not is_running:
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+            try:
+                backend = await asyncio.to_thread(get_inference_backend)
+                loading = getattr(backend, "get_loading_model", lambda: None)()
+                if (
+                    loading is not None
+                    and hasattr(backend, "cancel_load")
+                    and _names_the_loading_model(loading, attempt.model_path)
+                    and await asyncio.to_thread(backend.cancel_load, loading)
+                ):
+                    note_model_unloaded()
+                    logger.info("Cancelled scoped in-flight load: %s", request.model_path)
+                    return UnloadResponse(status = "unloaded", model = request.model_path)
+
+                llama_backend = get_llama_cpp_backend()
+                if (
+                    llama_backend.is_active
+                    and not llama_backend.is_loaded
+                    and (
+                        llama_backend.model_identifier == attempt.model_path
+                        or is_registered_native_path_label(
+                            llama_backend.model_identifier, attempt.model_path
+                        )
+                        or _names_the_resident_model(
+                            llama_backend.model_identifier, attempt.model_path
+                        )
+                    )
+                ):
+                    await asyncio.to_thread(llama_backend.unload_model)
+                    note_model_unloaded()
+                    logger.info("Cancelled scoped in-flight GGUF load: %s", request.model_path)
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+            finally:
+                attempt.cancel_complete.set()
+
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
         # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load only
         # tears the loading subprocess down, so it is safe off-gate -- and ahead of the

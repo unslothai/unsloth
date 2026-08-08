@@ -765,6 +765,319 @@ def test_unload_route_cancels_in_flight_load_without_waiting_on_gate(monkeypatch
     asyncio.run(scenario())
 
 
+def test_scoped_unload_cancels_only_its_running_standard_load(monkeypatch):
+    import asyncio
+
+    import routes.inference as inference_route
+    from models.inference import LoadRequest, UnloadRequest
+
+    cancelled = []
+
+    class _Backend:
+        def get_loading_model(self):
+            return "m"
+
+        def cancel_load(self, name):
+            cancelled.append(name)
+            return True
+
+    class _Llama:
+        is_active = False
+        is_loaded = False
+        model_identifier = None
+
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
+    attempt = inference_route._begin_load_attempt(
+        LoadRequest(model_path = "m", load_request_id = "audio-load-1"), "tester"
+    )
+    with inference_route._scoped_load_attempts_lock:
+        inference_route._running_load_attempt = attempt
+    try:
+        response = asyncio.run(
+            inference_route._unload_model_impl(
+                UnloadRequest(model_path = "m", cancel_load_request_id = "audio-load-1"),
+                "tester",
+            )
+        )
+        assert response.status == "unloaded"
+        assert cancelled == ["m"]
+        assert attempt.cancel_event.is_set()
+    finally:
+        with inference_route._scoped_load_attempts_lock:
+            inference_route._running_load_attempt = None
+        inference_route._finish_load_attempt(attempt)
+
+
+def test_scoped_unload_cannot_cancel_a_newer_same_model_load(monkeypatch):
+    import asyncio
+
+    import routes.inference as inference_route
+    from models.inference import LoadRequest, UnloadRequest
+
+    def _unexpected_backend():
+        pytest.fail("a stale scoped cancel must not inspect or mutate any backend")
+
+    monkeypatch.setattr(inference_route, "get_inference_backend", _unexpected_backend)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", _unexpected_backend)
+    newer = inference_route._begin_load_attempt(
+        LoadRequest(model_path = "m", load_request_id = "audio-load-new"), "tester"
+    )
+    with inference_route._scoped_load_attempts_lock:
+        inference_route._running_load_attempt = newer
+    try:
+        response = asyncio.run(
+            inference_route._unload_model_impl(
+                UnloadRequest(model_path = "m", cancel_load_request_id = "audio-load-old"),
+                "tester",
+            )
+        )
+        assert response.status == "unloaded"
+        assert not newer.cancel_event.is_set()
+    finally:
+        with inference_route._scoped_load_attempts_lock:
+            inference_route._running_load_attempt = None
+        inference_route._finish_load_attempt(newer)
+
+
+def test_scoped_cancel_before_load_registration_is_consumed(monkeypatch):
+    import asyncio
+
+    import routes.inference as inference_route
+    from fastapi import HTTPException
+    from models.inference import LoadRequest, UnloadRequest
+
+    def _unexpected_backend():
+        pytest.fail("cancel-first cleanup must not inspect a backend")
+
+    async def _unexpected_load(*_args, **_kwargs):
+        pytest.fail("a tombstoned load must not reach the load implementation")
+
+    monkeypatch.setattr(inference_route, "get_inference_backend", _unexpected_backend)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", _unexpected_backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", _unexpected_load)
+    response = asyncio.run(
+        inference_route._unload_model_impl(
+            UnloadRequest(model_path = "m", cancel_load_request_id = "audio-cancel-first"),
+            "tester",
+        )
+    )
+    assert response.status == "unloaded"
+
+    request = LoadRequest(model_path = "m", load_request_id = "audio-cancel-first")
+    attempt = inference_route._begin_load_attempt(request, "tester")
+    try:
+        assert attempt.cancel_event.is_set()
+        assert attempt.cancel_complete.is_set()
+        with pytest.raises(HTTPException, match = "cancelled"):
+            asyncio.run(
+                inference_route._run_tracked_load_model_impl(
+                    request, object(), "tester", attempt = attempt
+                )
+            )
+    finally:
+        inference_route._finish_load_attempt(attempt)
+
+
+def test_scoped_cancel_holds_load_ownership_until_backend_cancel_finishes(monkeypatch):
+    import asyncio
+
+    import routes.inference as inference_route
+    from core.inference import llama_keepwarm
+    from fastapi import HTTPException
+    from models.inference import LoadRequest, UnloadRequest
+
+    backend_cancel_entered = threading.Event()
+    release_backend_cancel = threading.Event()
+
+    class _Backend:
+        def get_loading_model(self):
+            return None
+
+    class _Llama:
+        is_active = False
+        is_loaded = False
+        model_identifier = None
+
+    def _get_backend():
+        backend_cancel_entered.set()
+        assert release_backend_cancel.wait(timeout = 5)
+        return _Backend()
+
+    monkeypatch.setattr(inference_route, "get_inference_backend", _get_backend)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(inference_route, "_raise_if_sidecar_swap_in_progress", lambda: None)
+
+    async def scenario():
+        gate = asyncio.Lock()
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+
+        class _Gate:
+            async def __aenter__(self):
+                await gate.acquire()
+
+            async def __aexit__(self, *_args):
+                gate.release()
+
+        monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
+
+        async def _fake_load(
+            request,
+            *_args,
+            load_cancel_event = None,
+            **_kwargs,
+        ):
+            if request.load_request_id == "audio-race-a":
+                first_started.set()
+                await asyncio.to_thread(load_cancel_event.wait)
+                raise HTTPException(status_code = 409, detail = "Model load cancelled")
+            second_started.set()
+            return {"status": "loaded", "model": request.model_path}
+
+        monkeypatch.setattr(inference_route, "_load_model_impl", _fake_load)
+        first = asyncio.create_task(
+            inference_route.load_model_gated(
+                LoadRequest(model_path = "m", load_request_id = "audio-race-a"),
+                object(),
+                "tester",
+            )
+        )
+        await first_started.wait()
+        cancel = asyncio.create_task(
+            inference_route._unload_model_impl(
+                UnloadRequest(model_path = "m", cancel_load_request_id = "audio-race-a"),
+                "tester",
+            )
+        )
+        await asyncio.to_thread(backend_cancel_entered.wait, 5)
+
+        second = asyncio.create_task(
+            inference_route.load_model_gated(
+                LoadRequest(model_path = "m", load_request_id = "audio-race-b"),
+                object(),
+                "tester",
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not second_started.is_set(), "newer load entered before A's cancel completed"
+
+        release_backend_cancel.set()
+        assert (await cancel).status == "unloaded"
+        with pytest.raises(HTTPException, match = "cancelled"):
+            await first
+        assert (await second)["status"] == "loaded"
+
+    asyncio.run(scenario())
+
+
+def test_scoped_unload_of_queued_attempt_never_unloads_or_deadlocks(monkeypatch):
+    import asyncio
+
+    import routes.inference as inference_route
+    from fastapi import HTTPException
+    from models.inference import LoadRequest, UnloadRequest
+
+    def _unexpected_backend():
+        pytest.fail("cancel-only cleanup must never unload a resident model")
+
+    monkeypatch.setattr(inference_route, "get_inference_backend", _unexpected_backend)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", _unexpected_backend)
+
+    async def _unexpected_load(*_args, **_kwargs):
+        pytest.fail("a cancelled queued attempt must not reach backend load work")
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _unexpected_load)
+    attempt = inference_route._begin_load_attempt(
+        LoadRequest(model_path = "m", load_request_id = "audio-load-done"), "tester"
+    )
+    try:
+        response = asyncio.run(
+            inference_route._unload_model_impl(
+                UnloadRequest(model_path = "m", cancel_load_request_id = "audio-load-done"),
+                "tester",
+            )
+        )
+        assert response.status == "unloaded"
+        assert attempt.cancel_event.is_set()
+        assert attempt.cancel_complete.is_set()
+        with pytest.raises(HTTPException, match = "cancelled"):
+            asyncio.run(
+                asyncio.wait_for(
+                    inference_route._run_tracked_load_model_impl(
+                        LoadRequest(model_path = "m", load_request_id = "audio-load-done"),
+                        object(),
+                        "tester",
+                        attempt = attempt,
+                    ),
+                    timeout = 1,
+                )
+            )
+    finally:
+        inference_route._finish_load_attempt(attempt)
+
+
+def test_scoped_unload_cancels_only_its_running_gguf_load(monkeypatch):
+    import asyncio
+
+    import routes.inference as inference_route
+    from models.inference import LoadRequest, UnloadRequest
+
+    class _Backend:
+        def get_loading_model(self):
+            return None
+
+    class _Llama:
+        is_active = True
+        is_loaded = False
+        model_identifier = "m"
+
+        def __init__(self):
+            self.unloaded = False
+
+        def unload_model(self):
+            self.unloaded = True
+
+    llama = _Llama()
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inference_route, "is_registered_native_path_label", lambda *a: False)
+    attempt = inference_route._begin_load_attempt(
+        LoadRequest(model_path = "m", load_request_id = "audio-gguf-1"), "tester"
+    )
+    with inference_route._scoped_load_attempts_lock:
+        inference_route._running_load_attempt = attempt
+    try:
+        response = asyncio.run(
+            inference_route._unload_model_impl(
+                UnloadRequest(model_path = "m", cancel_load_request_id = "audio-gguf-1"),
+                "tester",
+            )
+        )
+        assert response.status == "unloaded"
+        assert llama.unloaded is True
+    finally:
+        with inference_route._scoped_load_attempts_lock:
+            inference_route._running_load_attempt = None
+        inference_route._finish_load_attempt(attempt)
+
+
+def test_standard_load_honors_scoped_cancel_before_worker_start():
+    from types import SimpleNamespace
+
+    attempt_cancelled = threading.Event()
+    attempt_cancelled.set()
+    orchestrator = _bare_orchestrator()
+
+    assert (
+        orchestrator.load_model(
+            SimpleNamespace(identifier = "m"), load_cancel_event = attempt_cancelled
+        )
+        is False
+    )
+    assert orchestrator.loading_models == set()
+
+
 # ----------------------------------------------------------------------------
 # A dispatched (compare-mode) request that races an unload must not orphan its
 # mailbox after _wait_dispatcher_idle stops the dispatcher.
@@ -1650,9 +1963,9 @@ def test_start_dispatcher_resumes_after_unload_clears():
     o._unload_pending = False
 
     try:
-        assert (
-            o._start_dispatcher() is True
-        ), "a fresh dispatcher must start once no unload is pending"
+        assert o._start_dispatcher() is True, (
+            "a fresh dispatcher must start once no unload is pending"
+        )
         assert o._dispatcher_thread is not None and o._dispatcher_thread.is_alive()
     finally:
         o._stop_dispatcher()

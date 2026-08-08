@@ -1691,7 +1691,11 @@ def _with_gguf_load_marker(load: Callable):
     """Keep an HF repo marked for the full synchronous load call."""
 
     @functools.wraps(load)
-    def wrapped(self, intent: GgufLoadIntent):
+    def wrapped(
+        self,
+        intent: GgufLoadIntent,
+        load_cancel_event: Optional[threading.Event] = None,
+    ):
         hf_repo = intent.hf_repo
         with gguf_load_in_flight(hf_repo):
             if hf_repo and _hub_download_blocks_gguf_load(
@@ -1705,7 +1709,7 @@ def _with_gguf_load_marker(load: Callable):
                 raise RuntimeError(
                     f"'{hf_repo}' is currently being downloaded by the download manager"
                 )
-            return load(self, intent)
+            return load(self, intent, load_cancel_event = load_cancel_event)
 
     return wrapped
 
@@ -9253,8 +9257,18 @@ class LlamaCppBackend:
         self._stdout_thread.start()
 
     @_with_gguf_load_marker
-    def load_model(self, intent: GgufLoadIntent) -> bool:
+    def load_model(
+        self,
+        intent: GgufLoadIntent,
+        load_cancel_event: Optional[threading.Event] = None,
+    ) -> bool:
         """Start llama-server from one immutable load intent."""
+
+        def _load_cancelled() -> bool:
+            return self._cancel_event.is_set() or bool(
+                load_cancel_event is not None and load_cancel_event.is_set()
+            )
+
         gguf_path = intent.gguf_path
         mmproj_path = intent.mmproj_path
         mtp_draft_path = intent.mtp_draft_path
@@ -9384,6 +9398,9 @@ class LlamaCppBackend:
                 return True
 
             self._cancel_event.clear()
+            if _load_cancelled():
+                logger.info("Load cancelled before GGUF resolution")
+                return False
 
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
@@ -9634,7 +9651,7 @@ class LlamaCppBackend:
             # Read GGUF metadata (context_length, chat_template); header-only.
             self._read_gguf_metadata(model_path)
 
-            if self._cancel_event.is_set():
+            if _load_cancelled():
                 logger.info("Load cancelled after download phase")
                 return False
 
@@ -9655,7 +9672,7 @@ class LlamaCppBackend:
                 self._mtp_draft_path = None
                 self._mtp_draft_suppressed_path = None
                 with self._lock:
-                    if self._cancel_event.is_set():
+                    if _load_cancelled():
                         logger.info("Load cancelled before diffusion server start")
                         return False
                     return self._start_diffusion_server(
@@ -9698,7 +9715,7 @@ class LlamaCppBackend:
             # ── Phase 3: start llama-server (under lock) ──────────────
             with self._lock:
                 # Re-check cancel inside lock
-                if self._cancel_event.is_set():
+                if _load_cancelled():
                     logger.info("Load cancelled before server start")
                     return False
 
@@ -12080,7 +12097,7 @@ class LlamaCppBackend:
                     _crashed = self._is_signal_crash(failed_rc) or (
                         sys.platform == "win32" and self._is_abort_exit(failed_rc)
                     )
-                    if not _crashed or not _cpu_fallback_eligible or self._cancel_event.is_set():
+                    if not _crashed or not _cpu_fallback_eligible or _load_cancelled():
                         return False
                     fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
                     prepared = self._prepare_cpu_fallback_launch(
@@ -12092,7 +12109,7 @@ class LlamaCppBackend:
                     )
                     if prepared is None:
                         return False
-                    if self._cancel_event.is_set():
+                    if _load_cancelled():
                         # Staging copies a whole runtime, so an /unload can land after
                         # the gate above with no runtime yet for unload_model() to
                         # remove; take it back here.
@@ -12233,7 +12250,7 @@ class LlamaCppBackend:
                 # so its output drops the marker and recording later would miss it,
                 # looping every load. Record and raise to the route's layer fallback,
                 # skipping the futile flash-attn/MTP retries.
-                if not healthy and self._tensor_parallel and not self._cancel_event.is_set():
+                if not healthy and self._tensor_parallel and not _load_cancelled():
                     _ts_out = "\n".join(self._stdout_lines[-50:])
                     _ts_rc = self._process.poll() if self._process is not None else None
                     if self._should_record_tensor_split_abort(_ts_rc, _ts_out):
@@ -12247,7 +12264,7 @@ class LlamaCppBackend:
                 # builds (frequently inside the vision tower). Disabling FA keeps
                 # both vision and MTP, so retry that way before dropping either.
                 # Only on a hard fault with FA on; a cancel/unload stops respawn.
-                if not healthy and not self._cancel_event.is_set():
+                if not healthy and not _load_cancelled():
                     _fa_rc = self._process.poll() if self._process is not None else None
                     _fa_cmd = (
                         self._with_flash_attn_off(_last_spawn_cmd)
@@ -12295,7 +12312,7 @@ class LlamaCppBackend:
                     healthy
                     and self._tensor_parallel
                     and _spec_requested_mtp
-                    and not self._cancel_event.is_set()
+                    and not _load_cancelled()
                     and not self._probe_mtp_decode()
                 ):
                     # A first-decode hard fault is usually the FA kernel: retry
@@ -12347,7 +12364,7 @@ class LlamaCppBackend:
                 if (
                     not healthy
                     and (_spec_requested_mtp or _spec_requested_dspark)
-                    and not self._cancel_event.is_set()
+                    and not _load_cancelled()
                 ):
                     _spec_cpu_replay_cmd = list(_last_spawn_cmd)
                     # Blame the binary only when the output shows MTP itself
@@ -12469,7 +12486,7 @@ class LlamaCppBackend:
                     ) and not self._output_has_nonprojector_diagnostic(out)
                     if (
                         launched_with_mmproj
-                        and not self._cancel_event.is_set()
+                        and not _load_cancelled()
                         and (_projector_msg or _signal_mmproj_guess)
                     ):
                         _vision_cpu_replay_cmd = list(_last_spawn_cmd)

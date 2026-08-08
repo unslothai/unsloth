@@ -257,6 +257,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const pendingTtsLoad = useRef<{
     generation: number;
     repoId: string;
+    loadRequestId: string;
     controller: AbortController;
     requestStarted: boolean;
   } | null>(null);
@@ -545,9 +546,11 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       if (ttsLoadInFlight.current) return;
       const generation = ++ttsLoadGeneration.current;
       const controller = new AbortController();
+      const loadRequestId = crypto.randomUUID();
       const pending = {
         generation,
         repoId,
+        loadRequestId,
         controller,
         requestStarted: false,
       };
@@ -562,6 +565,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         const res = await loadModel(
           {
             model_path: repoId,
+            load_request_id: loadRequestId,
             hf_token: hfApiToken(getHfToken()) ?? null,
             max_seq_length: TTS_MAX_TOKENS,
             load_in_4bit: false,
@@ -822,7 +826,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         pendingTtsLoad.current = null;
         pending.controller.abort();
         if (pending.requestStarted)
-          void unloadModel({ model_path: pending.repoId }).catch(() => {});
+          void unloadModel({
+            model_path: pending.repoId,
+            cancel_load_request_id: pending.loadRequestId,
+          }).catch(() => {});
       }
       if (ttsInspectionGeneration.current !== null) {
         ttsInspectionGeneration.current = null;

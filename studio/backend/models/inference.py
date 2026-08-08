@@ -27,6 +27,13 @@ class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    load_request_id: Optional[str] = Field(
+        None,
+        min_length = 1,
+        max_length = 128,
+        pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description = "Opaque client attempt ID for scoped in-flight cancellation",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -273,6 +280,13 @@ class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
     model_path: str = Field(..., description = "Model identifier to unload")
+    cancel_load_request_id: Optional[str] = Field(
+        None,
+        min_length = 1,
+        max_length = 128,
+        pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description = ("Cancel only this in-flight load attempt; never unload a resident model"),
+    )
     force_cancel_active: bool = Field(
         False,
         description = (

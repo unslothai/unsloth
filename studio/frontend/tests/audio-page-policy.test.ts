@@ -313,7 +313,11 @@ test("older TTS status requests cannot overwrite newer residency", () => {
 test("leaving Audio cancels an owned TTS load without touching a pre-request prompt", () => {
   assert.match(
     audioPageSource,
-    /const pending = pendingTtsLoad\.current;[\s\S]*pending\.controller\.abort\(\);[\s\S]*if \(pending\.requestStarted\)[\s\S]*unloadModel\(\{ model_path: pending\.repoId \}\)/,
+    /const loadRequestId = crypto\.randomUUID\(\);[\s\S]*load_request_id: loadRequestId/,
+  );
+  assert.match(
+    audioPageSource,
+    /const pending = pendingTtsLoad\.current;[\s\S]*pending\.controller\.abort\(\);[\s\S]*if \(pending\.requestStarted\)[\s\S]*unloadModel\(\{[\s\S]*model_path: pending\.repoId,[\s\S]*cancel_load_request_id: pending\.loadRequestId/,
   );
   assert.match(
     chatApiSource,
