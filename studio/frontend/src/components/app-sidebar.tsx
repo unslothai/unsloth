@@ -1395,17 +1395,17 @@ export function AppSidebar() {
     | { kind: "run"; run: TrainingRunSummary };
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
-  const [deleteProjectFiles, setDeleteProjectFiles] = useState(false);
+  const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
 
   async function commitDelete() {
     const target = confirmingDelete;
     if (!target) return;
     const shouldDeleteProjectFiles =
-      target.kind === "project" && deleteProjectFiles;
-    const shouldDeleteChatFiles = target.kind === "chat" && deleteProjectFiles;
+      target.kind === "project" && deleteFilesOnDelete;
+    const shouldDeleteChatFiles = target.kind === "chat" && deleteFilesOnDelete;
     setConfirmingDelete(null);
     // Reset so the next delete never inherits this switch.
-    setDeleteProjectFiles(false);
+    setDeleteFilesOnDelete(false);
     if (target.kind === "chat") {
       await deleteChatWithCleanup(target.item, {
         deleteFiles: shouldDeleteChatFiles,
@@ -2320,7 +2320,7 @@ export function AppSidebar() {
                                 onSelect={() => {
                                   // Start each delete with the file toggle off: Cancel closes programmatically and skips the
                                   // dialog onOpenChange reset.
-                                  setDeleteProjectFiles(false);
+                                  setDeleteFilesOnDelete(false);
                                   setConfirmingDelete({ kind: "project", project });
                                 }}
                               >
@@ -2755,7 +2755,7 @@ export function AppSidebar() {
       onOpenChange={(open) => {
         if (!open) {
           setConfirmingDelete(null);
-          setDeleteProjectFiles(false);
+          setDeleteFilesOnDelete(false);
         }
       }}
     >
@@ -2794,7 +2794,7 @@ export function AppSidebar() {
         </DialogHeader>
         {confirmingDelete ? (
           <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
-            <label htmlFor="delete-project-files" className="min-w-0 space-y-1">
+            <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 Delete files and sandbox folder
               </span>
@@ -2806,9 +2806,9 @@ export function AppSidebar() {
               </span>
             </label>
             <Switch
-              id="delete-project-files"
-              checked={deleteProjectFiles}
-              onCheckedChange={setDeleteProjectFiles}
+              id="delete-files-on-delete"
+              checked={deleteFilesOnDelete}
+              onCheckedChange={setDeleteFilesOnDelete}
               aria-label="Delete files and sandbox folder"
             />
           </div>
@@ -2826,7 +2826,7 @@ export function AppSidebar() {
             variant="destructive"
             onClick={() => void commitDelete()}
           >
-            {deleteProjectFiles ? "Delete all" : t("common.delete")}
+            {deleteFilesOnDelete ? "Delete all" : t("common.delete")}
           </Button>
         </DialogFooter>
       </DialogContent>
