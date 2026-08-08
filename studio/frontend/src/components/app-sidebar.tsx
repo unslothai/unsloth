@@ -164,7 +164,6 @@ import {
   Fragment,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -703,10 +702,10 @@ export function AppSidebar() {
   // Bottom fade hides at the very bottom / for short lists so the last row isn't washed out.
   const [canScrollDown, setCanScrollDown] = useState(false);
   // Rail width: 0 where scrollbars overlay (macOS default) or the list does not
-  // overflow, 8px where they are classic (Show scroll bars: Always, Windows,
-  // Linux). Only rows inside the scroller lose it, so the rows outside pad by it
-  // to keep one edge. Written straight to the DOM, and only on a change: state
-  // here would loop (React #185).
+  // overflow, the platform's thin rail where they are classic (Show scroll bars:
+  // Always, Windows, Linux). Only rows inside the scroller lose it, so the rows
+  // outside pad by it to keep one edge. Written straight to the DOM, and only on
+  // a change: state here would loop (React #185).
   const railWidthRef = useRef<number | null>(null);
   const measureScrollRail = useCallback((el: HTMLDivElement) => {
     const rail = el.offsetWidth - el.clientWidth;
@@ -714,6 +713,33 @@ export function AppSidebar() {
     railWidthRef.current = rail;
     el.parentElement?.style.setProperty("--sidebar-rail", `${rail}px`);
   }, []);
+
+  // A callback ref, not an effect: the mobile Sheet unmounts its subtree on
+  // close and the 768px breakpoint swaps it for the desktop one, so the
+  // scroller is a new node each time while an effect keyed on a stable callback
+  // never re-runs. Runs before paint, as the effect did.
+  const railObserverRef = useRef<ResizeObserver | null>(null);
+  const attachScroller = useCallback(
+    (el: HTMLDivElement | null) => {
+      railObserverRef.current?.disconnect();
+      railObserverRef.current = null;
+      scrollRef.current = el;
+      // Per node: a new parent has no variable yet even when it measures the
+      // same rail, and the cache would otherwise skip the write.
+      railWidthRef.current = null;
+      if (!el) return;
+      measureScrollRail(el);
+      // Watch the box, not renders: the Images disclosure and the project
+      // toggles change the row count without rendering this component, and a
+      // scrollbar appearing shrinks the content box by its own width. Safe
+      // where the earlier observer was not: it writes a CSS variable, never
+      // state, so there is no render to feed back (React #185).
+      const observer = new ResizeObserver(() => measureScrollRail(el));
+      observer.observe(el);
+      railObserverRef.current = observer;
+    },
+    [measureScrollRail],
+  );
 
   // Driven only from onScroll + a content-change effect below. No
   // ResizeObserver: its callback-driven setState caused a render loop (React
@@ -940,27 +966,6 @@ export function AppSidebar() {
     (trainingInProgress || exportInProgress || anyChatRunning || storeThreadId != null);
   // The Train-page status poll doesn't run off-route; keep state fresh so the spinner clears.
   useTrainingCompletionWatch();
-
-  // The rail comes and goes as the list crosses the overflow threshold, and
-  // plenty of controls move it without rendering this component at all: the
-  // Images disclosure reads its own store, the project toggles rebuild rows
-  // below. Listing those is how this was wrong twice, so watch the box instead.
-  // A scrollbar appearing shrinks the scroller's content box by its own width,
-  // which is exactly what this reports.
-  //
-  // Safe where the earlier observer was not: it writes a CSS variable, never
-  // state, so there is no render to feed back (React #185). That variable only
-  // pads rows outside the scroller, and the write is guarded, so it cannot
-  // re-trigger this. Measured once first, before paint, since a frame on the
-  // 0px fallback is a frame of the misalignment the width exists to cancel.
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    measureScrollRail(el);
-    const observer = new ResizeObserver(() => measureScrollRail(el));
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [measureScrollRail]);
 
   // Recompute bottom-fade on mount and whenever list height can change: onScroll never fires
   // for short, non-scrolling lists. Guarded setState below can't loop.
@@ -2006,7 +2011,7 @@ export function AppSidebar() {
       </SidebarGroup>
 
       <SidebarContent
-        ref={scrollRef}
+        ref={attachScroller}
         onScroll={(e) => syncScrollState(e.currentTarget)}
         // Collapsible groups animate their height; re-measure the fade once the animation settles.
         onAnimationEnd={(e) => {
@@ -2482,7 +2487,8 @@ export function AppSidebar() {
       >
         {/* Fade above the profile box, shown only when there's more list below
             the fold; at the bottom (or short lists) it fades so the last row
-            shows fully (Gemini-style). No scroll rail to clear, so full width. */}
+            shows fully (Gemini-style). It stops at the rail: the thumb ends its
+            travel in this band, and a full-width gradient washed it out. */}
         <div
           aria-hidden="true"
           className={cn(
@@ -2490,7 +2496,7 @@ export function AppSidebar() {
             // ramp is still part-transparent there and slices the last row
             // mid-glyph. from-[8px] holds it opaque just across the clip, and
             // matches the list's pb-2 so the gap is the same once it hides.
-            "pointer-events-none absolute inset-x-0 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            "pointer-events-none absolute left-0 right-[var(--sidebar-rail,0px)] bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             // Shorter fade with the update card so the list reads closer to
             // it, but still tall enough to clear a row.
             showUpdateCard ? "h-7" : "h-10",

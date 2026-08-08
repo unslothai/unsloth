@@ -95,25 +95,35 @@ test("every sidebar row pill sits in one shared box", async () => {
 });
 
 test("the sidebar list measures its scroll rail", async () => {
-  // 0 where scrollbars overlay, 8px where they are classic. Read off the
-  // scroller and written to the DOM: state here loops (React #185).
+  // 0 where scrollbars overlay, the platform's thin rail where they are
+  // classic. Read off the scroller and written to the DOM: state loops (#185).
   const source = await sidebarSource();
   assert.match(
     source,
     /const rail = el\.offsetWidth - el\.clientWidth;[\s\S]*el\.parentElement\?\.style\.setProperty\(\s*"--sidebar-rail",\s*`\$\{rail\}px`,?\s*\)/,
   );
-  // Measured before paint, or a list that overflows on arrival stays
-  // misaligned until something happens to fire a scroll.
+  // Attached by a callback ref, not an effect. The mobile Sheet unmounts its
+  // subtree on close and the breakpoint swaps it for the desktop one, so the
+  // scroller is a new node that an effect keyed on a stable callback misses.
+  assert.match(source, /ref=\{attachScroller\}/);
   assert.match(
     source,
-    /useLayoutEffect\(\(\) => \{\s*const el = scrollRef\.current;\s*if \(!el\) return;\s*measureScrollRail\(el\);/,
+    /const attachScroller = useCallback\(\s*\(el: HTMLDivElement \| null\) => \{/,
   );
+  assert.equal(/useLayoutEffect/.test(source), false);
+  // Old observer goes first, or a detached node keeps one.
+  assert.match(source, /railObserverRef\.current\?\.disconnect\(\);/);
+  // Cache is per node: a new parent has no variable even at the same width.
+  assert.match(source, /railWidthRef\.current = null;/);
+  // Measured on attach, or a list that overflows on arrival stays misaligned
+  // until something happens to fire a scroll.
+  assert.match(source, /if \(!el\) return;\s*measureScrollRail\(el\);/);
   // Then off the box, not off renders: the Images disclosure and the project
   // toggles change the row count without rendering AppSidebar or firing a
   // collapsible animation, and a scrollbar appearing shrinks the content box.
   assert.match(
     source,
-    /const observer = new ResizeObserver\(\(\) => measureScrollRail\(el\)\);\s*observer\.observe\(el\);\s*return \(\) => observer\.disconnect\(\);/,
+    /const observer = new ResizeObserver\(\(\) => measureScrollRail\(el\)\);\s*observer\.observe\(el\);\s*railObserverRef\.current = observer;/,
   );
   // Writes a variable, never state: that pairing is what looped.
   assert.equal(
@@ -125,11 +135,16 @@ test("the sidebar list measures its scroll rail", async () => {
     source,
     /if \(rail === railWidthRef\.current\) return;/,
   );
+  // The footer fade stops at the rail: the thumb ends its travel in that band.
+  assert.match(
+    source,
+    /absolute left-0 right-\[var\(--sidebar-rail,0px\)\] bottom-full/,
+  );
   const css = await readFile(
     new URL("../src/index.css", import.meta.url),
     "utf8",
   );
-  // No width override: the rail keeps the 8px the rest of the app uses, and
+  // No width override: the rail keeps the width the rest of the app uses, and
   // hiding it outright is what took the scrollbar away.
   assert.equal(/\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width/.test(css), false);
   assert.equal(
