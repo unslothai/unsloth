@@ -1731,7 +1731,6 @@ def test_a_bundle_with_no_sampler_or_rng_state_is_refused_before_teardown(run_di
     sampler by restore_resume_state, the RNG not at all (restore_rng_state silently leaves
     the generator at its fresh seed, and every latent, noise and timestep comes from it)."""
     from core.training.diffusion_checkpoint import ResumeError
-
     for drop, expected in (
         ("sampler", "dataset sampler position"),
         ("rng", "random-number generator state"),
@@ -1781,9 +1780,7 @@ def test_the_identity_covers_cfg_dropout(run_dir):
     assert reason is not None and "caption dropout" in reason
     # The same value still resumes.
     same = _Run(run_dir, cfg_dropout = 0.1)
-    assert (
-        dc.identity_for_config(run.cfg).mismatch_reason(dc.identity_for_config(same.cfg)) is None
-    )
+    assert dc.identity_for_config(run.cfg).mismatch_reason(dc.identity_for_config(same.cfg)) is None
     # An identity from before the field existed reads as unknown, not as a mismatch.
     older = dc.CheckpointIdentity.from_dict(
         {**dc.identity_for_config(run.cfg).as_dict(), "cfg_dropout": None}
