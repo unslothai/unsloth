@@ -1052,11 +1052,10 @@ public static class UnslothStudioFinalPathV2
                 $_idBytes = New-Object byte[] 32
                 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($_idBytes)
                 $_studioRootId = -join ($_idBytes | ForEach-Object { $_.ToString('x2') })
-                # Atomic write to a temp sibling, then publish no-clobber: the
-                # desktop app mints this same id, so -Force could replace one a
-                # running backend already reported. Two-arg File.Move throws when
-                # the destination exists (the 3-arg overwrite overload is .NET
-                # Core only), so the loser adopts the winner's id.
+                # Publish no-clobber: the desktop app mints this same id, so
+                # -Force could replace one a running backend already reported.
+                # Two-arg File.Move throws when the destination exists (the
+                # 3-arg overwrite overload is .NET Core only), so we adopt it.
                 $_idTmp = $_studioIdFile + ".$PID.tmp"
                 [System.IO.File]::WriteAllText($_idTmp, $_studioRootId)
                 try {
