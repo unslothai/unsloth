@@ -10,12 +10,93 @@ import pytest
 from fastapi import HTTPException
 
 import routes.inference as inference_route
+from core.inference import stt_ggml_sidecar as ggml_module
+from core.inference import stt_mtmd_sidecar as mtmd_module
+from core.inference import stt_sidecar as stt_module
 from core.inference.stt_ggml_sidecar import GgmlSttSidecar
+from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
 from core.inference.stt_sidecar import (
     SttLoadCancelledError,
     SttTranscriptionCancelledError,
     WhisperSttSidecar,
 )
+
+
+def test_transformers_load_inherits_disconnect_before_registration(monkeypatch):
+    owner = threading.Event()
+    sidecar = WhisperSttSidecar()
+    resident = object()
+    sidecar._engine = resident
+    sidecar._model_id = "tiny"
+    sidecar._device = "cpu"
+    monkeypatch.setattr(
+        stt_module,
+        "ensure_stt_available",
+        lambda: sidecar.cancel_transcription(owner),
+    )
+    monkeypatch.setattr(
+        sidecar,
+        "_ensure_model_downloaded",
+        lambda _model: pytest.fail("cancelled load reached its cached checkpoint"),
+    )
+
+    with pytest.raises(SttLoadCancelledError):
+        sidecar.load("small", owner)
+    assert sidecar.is_loading() is False
+    assert sidecar._engine is resident
+    assert sidecar.loaded_model == "tiny"
+
+
+def test_ggml_load_inherits_disconnect_before_registration(monkeypatch):
+    class _Reservation:
+        def close(self):
+            pass
+
+    owner = threading.Event()
+    sidecar = GgmlSttSidecar()
+    sidecar._model_id = "base"
+
+    def disconnect_during_engine_probe():
+        sidecar.cancel_transcription(owner)
+        return "whisper-server"
+
+    monkeypatch.setattr(ggml_module, "ensure_engine_available", disconnect_during_engine_probe)
+    monkeypatch.setattr(sidecar, "_process_alive", lambda: True)
+    monkeypatch.setattr(sidecar, "_ensure_model_downloaded", lambda _model: "model.gguf")
+    monkeypatch.setattr(
+        sidecar,
+        "_release_locked",
+        lambda: pytest.fail("cancelled load evicted the resident GGUF model"),
+    )
+    monkeypatch.setattr(sidecar, "_reserve_free_port", lambda: (_Reservation(), 12345))
+    monkeypatch.setattr(ggml_module, "_whisper_install_marker", lambda _binary: None)
+    monkeypatch.setattr(ggml_module.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("cancelled load spawned whisper-server"))
+
+    with pytest.raises(SttLoadCancelledError):
+        sidecar.load("tiny", owner)
+    assert sidecar.is_loading() is False
+
+
+def test_mtmd_load_inherits_disconnect_before_registration(monkeypatch):
+    owner = threading.Event()
+    sidecar = MtmdSttSidecar()
+
+    def disconnect_during_training_check():
+        sidecar.cancel_transcription(owner)
+        return False
+
+    monkeypatch.setattr(mtmd_module, "ensure_engine_available", lambda: "llama-server")
+    monkeypatch.setattr(mtmd_module, "_training_active", disconnect_during_training_check)
+    monkeypatch.setattr(sidecar, "_process_alive", lambda: False)
+    monkeypatch.setattr(
+        sidecar,
+        "_ensure_model_downloaded",
+        lambda _model: pytest.fail("cancelled load reached its cached checkpoint"),
+    )
+
+    with pytest.raises(SttLoadCancelledError):
+        sidecar.load("qwen3-asr-0.6b", owner)
+    assert sidecar.is_loading() is False
 
 
 def test_disconnected_load_cancels_only_its_request_event(monkeypatch):

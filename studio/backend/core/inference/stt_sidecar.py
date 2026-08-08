@@ -1085,7 +1085,7 @@ class WhisperSttSidecar:
             pass
 
     def _begin_load(self, owner: Optional[threading.Event] = None) -> threading.Event:
-        event = threading.Event()
+        event = owner if owner is not None else threading.Event()
         with self._load_state_lock:
             self._load_cancel_event = event
             self._load_owner_cancel_event = owner
@@ -1241,7 +1241,9 @@ class WhisperSttSidecar:
             cancel_event = self._begin_load(request_cancel_event)
             candidate = None
             device: Optional[str] = None
+            resident_released = False
             try:
+                self._raise_if_load_cancelled(cancel_event)
                 cached = self._ensure_model_downloaded(model_id)
                 snapshot_path = cached.path
                 if snapshot_path is None:
@@ -1252,6 +1254,7 @@ class WhisperSttSidecar:
                 self._raise_if_load_cancelled(cancel_event)
                 device, dtype = _pick_device()
                 self._release_engine_locked()
+                resident_released = True
                 logger.info("Loading STT model %s (%s) on %s", model_id, snapshot_path, device)
 
                 def not_downloaded(cause: BaseException) -> SttModelNotDownloadedError:
@@ -1306,7 +1309,8 @@ class WhisperSttSidecar:
                 return self._engine
             except SttLoadCancelledError:
                 candidate = None
-                self._release_engine_locked()
+                if resident_released:
+                    self._release_engine_locked()
                 _clear_device_cache(device)
                 raise
             finally:

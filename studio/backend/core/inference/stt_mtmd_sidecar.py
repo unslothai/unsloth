@@ -753,12 +753,18 @@ class MtmdSttSidecar:
             # Announced before the slow probe and reap: is_loading() is read lock-free,
             # so a training start would otherwise see False and wait out the startup in
             # unload() instead of cancelling this load.
-            cancel_event = threading.Event()
+            cancel_event = (
+                request_cancel_event
+                if request_cancel_event is not None
+                else threading.Event()
+            )
             self._load_cancel_event = cancel_event
             self._load_owner_cancel_event = request_cancel_event
             self._loading = True
             released = False
             try:
+                if cancel_event.is_set():
+                    raise SttLoadCancelledError("Dictation model loading was cancelled.")
                 # Before the release: a 409 for a model that is not downloaded
                 # must not cost the user the server they were already using.
                 model_path, mmproj_path = self._ensure_model_downloaded(model_id)

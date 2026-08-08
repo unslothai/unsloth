@@ -872,7 +872,6 @@ class GgmlSttSidecar:
                 self._schedule_idle_unload_locked()
                 return
             model_path = self._ensure_model_downloaded(model_id)
-            self._release_locked()
             reservation, port = self._reserve_free_port()
             command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
             marker = _whisper_install_marker(binary)
@@ -891,12 +890,19 @@ class GgmlSttSidecar:
                 model_id,
                 port,
             )
-            cancel_event = threading.Event()
+            cancel_event = (
+                request_cancel_event
+                if request_cancel_event is not None
+                else threading.Event()
+            )
             with self._load_state_lock:
                 self._load_cancel_event = cancel_event
                 self._load_owner_cancel_event = request_cancel_event
                 self._loading = True
             try:
+                if cancel_event.is_set():
+                    raise SttLoadCancelledError("GGUF STT model loading was cancelled.")
+                self._release_locked()
                 # Release the reservation as late as possible: whisper-server
                 # binds the port moments after this close.
                 reservation.close()
