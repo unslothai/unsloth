@@ -3,6 +3,8 @@
 
 """Regression tests for Deep Research query/prompt/citation/config hardening."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import sys

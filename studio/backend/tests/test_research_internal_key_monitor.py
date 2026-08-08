@@ -7,6 +7,8 @@ The supervisor reaches the local chat-completions endpoint with a minted sk-unsl
 so without the internal-key check every research step opened the API monitor overlay.
 """
 
+from __future__ import annotations
+
 import pytest
 
 from auth import storage as auth_storage
