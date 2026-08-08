@@ -54,6 +54,7 @@ from core.inference.stt_sidecar import (
     _claim_stt_repository,
     _decode_audio_bounded,
     _downloaded_file_bytes,
+    _fallback_revisions,
     _HF_COMMIT_SHA,
     _known_whisper_languages,
     _prepare_stt_cache_for_http,
@@ -383,20 +384,12 @@ def _cached_model_path(
         if cached is not None:
             return cached
 
-    try:
-        main_revision = (
-            (_repo_cache_dir(repo_id, hub_cache = root) / "refs" / "main")
-            .read_text(encoding = "utf-8")
-            .strip()
-        )
-    except OSError:
-        return None
-    if not _HF_COMMIT_SHA.fullmatch(main_revision):
-        return None
-    cached = cached_at(main_revision)
-    if cached is not None:
-        _write_revision_record(repo_id, main_revision)
-    return cached
+    for candidate in _fallback_revisions(repo_id, hub_cache = root):
+        cached = cached_at(candidate)
+        if cached is not None:
+            _write_revision_record(repo_id, candidate)
+            return cached
+    return None
 
 
 class _GgmlDownloadState:
@@ -417,14 +410,16 @@ class _GgmlDownloadState:
     def status(self) -> dict:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
-            return {
+            snapshot = {
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if downloading else None,
-                "bytes_done": self._downloaded_bytes() if downloading else None,
             }
+        # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
+        snapshot["bytes_done"] = self._downloaded_bytes() if downloading else None
+        return snapshot
 
     def cancel(self) -> bool:
         """Stop an in-flight download. False when none was running.
@@ -437,7 +432,9 @@ class _GgmlDownloadState:
             self._cancelled = True
             process = self._process
         if process is not None and process.poll() is None:
-            process.terminate()
+            from core.inference.stt_download_worker import terminate_download
+
+            terminate_download(process)
         return True
 
     def _downloaded_bytes(self) -> Optional[int]:
@@ -470,7 +467,13 @@ class _GgmlDownloadState:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    return
+                    # A cancelled run keeps _cancelled set, so joining it would
+                    # silently download nothing. Ask for a retry instead.
+                    if not self._cancelled:
+                        return
+                    raise SttModelIdError(
+                        f"'{model_id}' is still cancelling; try again in a moment."
+                    )
                 raise SttModelIdError(
                     f"Another GGUF dictation model ('{self._model_id}') is still "
                     "downloading; wait for it to finish."
@@ -520,7 +523,16 @@ class _GgmlDownloadState:
                 raise RuntimeError("could not resolve the GGML blob identity")
             if total_bytes <= 0:
                 raise RuntimeError("could not resolve the GGML file size")
+            # A cancel during metadata has no child to stop, so check it here:
+            # claiming and preparing the cache would mutate it after the user
+            # was told the download stopped.
+            with self._lock:
+                if self._cancelled:
+                    return
             registry, owner = _claim_stt_repository(repo_id)
+            with self._lock:
+                if self._cancelled:
+                    return
             _prepare_stt_cache_for_http(repo_id, hub_cache)
             with self._lock:
                 self._total_bytes = total_bytes
@@ -528,7 +540,11 @@ class _GgmlDownloadState:
                 self._revision = revision
             # Out of process so cancel() can terminate it; a thread blocked in
             # hf_hub_download could not be interrupted.
-            from core.inference.stt_download_worker import reap_download, spawn_download
+            from core.inference.stt_download_worker import (
+                reap_download,
+                spawn_download,
+                terminate_download,
+            )
 
             args = [
                 "--repo-id",
@@ -546,7 +562,7 @@ class _GgmlDownloadState:
             with self._lock:
                 if self._cancelled:
                     # cancel() landed between start() and the spawn.
-                    process.terminate()
+                    terminate_download(process)
                 self._process = process
             # reap_download(), not communicate(): only it drops the adopted PID,
             # which could otherwise be reused and then signalled by terminate_all.
@@ -576,9 +592,9 @@ class _GgmlDownloadState:
             with self._lock:
                 self._error = f"Download failed for '{model_id}'."
         except Exception as exc:
-            logger.warning("GGUF STT download failed for %s: %s", model_id, exc)
             with self._lock:
                 if not self._cancelled:
+                    logger.warning("GGUF STT download failed for %s: %s", model_id, exc)
                     self._error = f"Download failed for '{model_id}'."
         finally:
             if registry is not None and owner is not None:

@@ -46,7 +46,11 @@ export interface DownloadJobStatus {
   generation?: number;
 }
 
-export type DownloadStartState = DownloadJobState | "deleting";
+// "repository_owned": a dictation model download holds this repository's cache.
+export type DownloadStartState =
+  | DownloadJobState
+  | "deleting"
+  | "repository_owned";
 
 export interface DownloadStartResult {
   state: DownloadStartState;

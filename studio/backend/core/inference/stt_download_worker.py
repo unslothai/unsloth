@@ -16,8 +16,14 @@ import argparse
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Optional, Sequence
+
+
+# How long a cancelled worker gets to exit on SIGTERM before it is killed.
+TERMINATE_GRACE_SECONDS = 15.0
 
 
 def backend_dir() -> Path:
@@ -77,6 +83,29 @@ def spawn_download(
     )
     adopt_pid(process.pid)  # terminate_all backstop for graceful exits
     return process
+
+
+def terminate_download(process: subprocess.Popen) -> None:
+    """SIGTERM now, SIGKILL after a grace, so cancel() still returns at once.
+
+    The canceller holds the repository reservation until the reap returns, so a
+    worker that ignores SIGTERM would lock every Model Hub write on that repo
+    until Studio restarts.
+    """
+    try:
+        process.terminate()
+    except Exception:  # noqa: BLE001
+        return
+
+    def escalate() -> None:
+        time.sleep(TERMINATE_GRACE_SECONDS)
+        try:
+            if process.poll() is None:
+                process.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+    threading.Thread(target = escalate, daemon = True).start()
 
 
 def reap_download(process: subprocess.Popen) -> bytes:

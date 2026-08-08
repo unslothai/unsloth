@@ -43,10 +43,10 @@ from core.inference.stt_sidecar import (
     _claim_stt_repository,
     _decode_audio_bounded,
     _downloaded_file_bytes,
+    _fallback_revisions,
     _HF_COMMIT_SHA,
     _prepare_stt_cache_for_http,
     _read_revision_record,
-    _repo_cache_dir,
     _TARGET_SAMPLE_RATE,
     _training_active,
     _write_revision_record,
@@ -246,20 +246,12 @@ def _cached_model_paths(
         if cached is not None:
             return cached
 
-    try:
-        main_revision = (
-            (_repo_cache_dir(spec.repo, hub_cache = root) / "refs" / "main")
-            .read_text(encoding = "utf-8")
-            .strip()
-        )
-    except OSError:
-        return None
-    if not _HF_COMMIT_SHA.fullmatch(main_revision):
-        return None
-    cached = cached_at(main_revision)
-    if cached is not None:
-        _write_revision_record(spec.repo, main_revision)
-    return cached
+    for candidate in _fallback_revisions(spec.repo, hub_cache = root):
+        cached = cached_at(candidate)
+        if cached is not None:
+            _write_revision_record(spec.repo, candidate)
+            return cached
+    return None
 
 
 # The panel polls every model every 750ms, and each answer is two hf_hub_download()
@@ -336,7 +328,9 @@ class _MtmdDownloadState:
             self._cancelled = True
             process = self._process
         if process is not None and process.poll() is None:
-            process.terminate()
+            from core.inference.stt_download_worker import terminate_download
+
+            terminate_download(process)
         return True
 
     def _downloaded_bytes(self, model_id: Optional[str] = None) -> Optional[int]:
@@ -377,7 +371,13 @@ class _MtmdDownloadState:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    return
+                    # A cancelled run keeps _cancelled set, so joining it would
+                    # silently download nothing. Ask for a retry instead.
+                    if not self._cancelled:
+                        return
+                    raise SttModelIdError(
+                        f"'{model_id}' is still cancelling; try again in a moment."
+                    )
                 raise SttModelIdError(
                     f"Another dictation model ('{self._model_id}') is still "
                     "downloading; wait for it to finish."
@@ -422,7 +422,9 @@ class _MtmdDownloadState:
                 )
                 if revision is None:
                     revision = meta.commit_hash
-                if not revision or meta.commit_hash != revision:
+                    if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):
+                        raise RuntimeError("could not resolve an immutable mtmd revision")
+                if meta.commit_hash != revision:
                     raise RuntimeError("could not pin both mtmd files to one revision")
                 selected.append(
                     _SelectedHubFile(
@@ -431,14 +433,27 @@ class _MtmdDownloadState:
                         blob_key = meta.etag,
                     )
                 )
+            # A cancel during metadata has no child to stop, so check it here:
+            # claiming and preparing the cache would mutate it after the user
+            # was told the download stopped.
+            with self._lock:
+                if self._cancelled:
+                    return
             registry, owner = _claim_stt_repository(spec.repo)
+            with self._lock:
+                if self._cancelled:
+                    return
             _prepare_stt_cache_for_http(spec.repo, hub_cache)
             with self._lock:
                 self._total_bytes = sum(item.size for item in selected) or None
                 self._selected_files = tuple(selected)
                 self._revision = revision
 
-            from core.inference.stt_download_worker import reap_download, spawn_download
+            from core.inference.stt_download_worker import (
+                reap_download,
+                spawn_download,
+                terminate_download,
+            )
 
             args = ["--repo-id", spec.repo, "--revision", revision]
             for item in selected:
@@ -446,7 +461,7 @@ class _MtmdDownloadState:
             process = spawn_download(args, hf_token = hf_token or None, hub_cache = hub_cache)
             with self._lock:
                 if self._cancelled:
-                    process.terminate()
+                    terminate_download(process)
                 self._process = process
             stderr = reap_download(process)
             with self._lock:
@@ -474,15 +489,16 @@ class _MtmdDownloadState:
             with self._lock:
                 self._error = f"Download failed for '{model_id}'."
         except Exception as exc:
-            logger.warning("mtmd STT download failed for %s: %s", model_id, exc)
             with self._lock:
                 if not self._cancelled:
+                    logger.warning("mtmd STT download failed for %s: %s", model_id, exc)
                     self._error = f"Download failed for '{model_id}'."
         finally:
-            # The memo is stale however this ended; dropping it now lets the next poll settle.
-            _forget_downloaded_probe(model_id)
+            # Release first: it is the half that would wedge the repository.
             if registry is not None and owner is not None:
                 registry.release_repository_owner(spec.repo, owner)
+            # The memo is stale however this ended; dropping it now lets the next poll settle.
+            _forget_downloaded_probe(model_id)
 
 
 _download_state = _MtmdDownloadState()

@@ -381,6 +381,32 @@ def _read_revision_record(repo: str) -> Optional[str]:
     return revision if isinstance(revision, str) and _HF_COMMIT_SHA.fullmatch(revision) else None
 
 
+def _fallback_revisions(repo: str, *, hub_cache: Optional[Path] = None) -> list[str]:
+    """Cached commits to try when no revision record survives, newest first.
+
+    Pinned downloads never write refs/main, so without this a lost record would
+    hide an already downloaded model and re-download it on every launch.
+    """
+    repo_cache = _repo_cache_dir(repo, hub_cache = hub_cache)
+    candidates: list[str] = []
+    try:
+        main_revision = (repo_cache / "refs" / "main").read_text(encoding = "utf-8").strip()
+        if _HF_COMMIT_SHA.fullmatch(main_revision):
+            candidates.append(main_revision)
+    except OSError:
+        pass
+    try:
+        snapshots = sorted(
+            (p for p in (repo_cache / "snapshots").iterdir() if _HF_COMMIT_SHA.fullmatch(p.name)),
+            key = lambda p: p.stat().st_mtime,
+            reverse = True,
+        )
+    except OSError:
+        snapshots = []
+    candidates.extend(p.name for p in snapshots if p.name not in candidates)
+    return candidates
+
+
 def _safe_snapshot_for_revision(repo: str, revision: str) -> Optional[Path]:
     """Resolve a canonical SHA below this repository's active snapshots dir."""
     if not _HF_COMMIT_SHA.fullmatch(revision):
@@ -620,14 +646,16 @@ class _SnapshotDownloadState:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
             show_progress = downloading or self._complete
-            return {
+            snapshot = {
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if show_progress else None,
-                "bytes_done": self._downloaded_bytes() if show_progress else None,
             }
+        # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
+        snapshot["bytes_done"] = self._downloaded_bytes() if show_progress else None
+        return snapshot
 
     def cancel(self) -> bool:
         """Stop an in-flight download. False when none was running.
@@ -640,7 +668,9 @@ class _SnapshotDownloadState:
             self._cancelled = True
             process = self._process
         if process is not None and process.poll() is None:
-            process.terminate()
+            from core.inference.stt_download_worker import terminate_download
+
+            terminate_download(process)
         return True
 
     def _downloaded_bytes(self) -> Optional[int]:
@@ -672,12 +702,16 @@ class _SnapshotDownloadState:
     def _run_worker(
         self, args: list[str], hf_token: Optional[str], hub_cache: Path
     ) -> tuple[bool, bytes]:
-        from core.inference.stt_download_worker import reap_download, spawn_download
+        from core.inference.stt_download_worker import (
+            reap_download,
+            spawn_download,
+            terminate_download,
+        )
 
         process = spawn_download(args, hf_token = hf_token or None, hub_cache = hub_cache)
         with self._lock:
             if self._cancelled:
-                process.terminate()
+                terminate_download(process)
             self._process = process
         stderr = reap_download(process)
         with self._lock:
@@ -704,7 +738,13 @@ class _SnapshotDownloadState:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    return
+                    # A cancelled run keeps _cancelled set, so joining it would
+                    # silently download nothing. Ask for a retry instead.
+                    if not self._cancelled:
+                        return
+                    raise SttModelIdError(
+                        f"'{model_id}' is still cancelling; try again in a moment."
+                    )
                 raise SttModelIdError(
                     f"Another dictation model ('{self._model_id}') is still "
                     "downloading; wait for it to finish."
@@ -753,7 +793,16 @@ class _SnapshotDownloadState:
                     f"Could not resolve an immutable revision for STT model '{repo}'."
                 )
 
+            # A cancel during metadata has no child to stop, so check it here:
+            # claiming and preparing the cache would mutate it after the user
+            # was told the download stopped.
+            with self._lock:
+                if self._cancelled:
+                    return
             registry, owner = _claim_stt_repository(repo)
+            with self._lock:
+                if self._cancelled:
+                    return
             _prepare_stt_cache_for_http(repo, hub_cache)
             with self._lock:
                 self._revision = revision
