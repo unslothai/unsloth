@@ -56,38 +56,6 @@ export function installProgressMessage(
   };
 }
 
-export interface InstallProgressMessage {
-  title: string;
-  subtitle: string;
-}
-
-const GETTING_READY_MESSAGE: InstallProgressMessage = {
-  title: "Getting things ready...",
-  subtitle: "This won’t take long.",
-};
-
-export function installProgressMessage(
-  currentStepIndex: number,
-): InstallProgressMessage {
-  if (currentStepIndex < 2) return GETTING_READY_MESSAGE;
-  if (currentStepIndex < 4) {
-    return {
-      title: "Preparing your workspace...",
-      subtitle: "Setting up everything Unsloth needs.",
-    };
-  }
-  if (currentStepIndex < 6) {
-    return {
-      title: "Installing Unsloth...",
-      subtitle: "Your private AI workspace is taking shape.",
-    };
-  }
-  return {
-    title: "Nearly done...",
-    subtitle: "Finishing setup.",
-  };
-}
-
 export type StartupMessage =
   | typeof INITIAL_STARTUP_MESSAGE
   | typeof MODELS_STARTUP_MESSAGE
