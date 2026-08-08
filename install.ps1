@@ -69,11 +69,37 @@ function Install-UnslothStudio {
     $env:PYTHONUTF8 = '1'
     $env:PYTHONIOENCODING = 'utf-8'
 
+    # Resolved once: it picks the output sink in Write-StudioLine and must not
+    # change mid-run. Same probe as studio/setup.ps1.
+    $script:StudioStdoutRedirected = $false
+    try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
+
+    # Write-Host is written by 5.1's console host with its own writer on the OEM
+    # code page, not the UTF-8 [Console]::Out rebound above. The desktop app
+    # spawns this script with CREATE_NO_WINDOW and decodes the pipe as UTF-8
+    # (from_utf8_lossy, studio/src-tauri/src/install.rs), so the banner emoji,
+    # the U+2500 rule and every warning arrived as U+FFFD. One sink instead: the
+    # console handle when redirected, Write-Host when interactive, since it is
+    # the only one that colorizes. Defined above the first write, for the same
+    # ordering reason as the encoding block.
+    function Write-StudioLine {
+        param([string]$Message = "", [string]$ForegroundColor)
+        if ($script:StudioStdoutRedirected) {
+            try { [Console]::Out.WriteLine($Message); [Console]::Out.Flush() } catch {}
+            return
+        }
+        if ($PSBoundParameters.ContainsKey('ForegroundColor')) {
+            Write-Host $Message -ForegroundColor $ForegroundColor
+        } else {
+            Write-Host $Message
+        }
+    }
+
     # ── Tauri structured output ──
     function Write-TauriLog {
         param([string]$Tag, [string]$Message)
         if ($TauriMode) {
-            Write-Host "[TAURI:$Tag] $Message"
+            Write-StudioLine "[TAURI:$Tag] $Message"
         }
     }
 
@@ -195,7 +221,7 @@ function Install-UnslothStudio {
             "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
-                    Write-Host "[ERROR] --package requires an argument." -ForegroundColor Red
+                    Write-StudioLine "[ERROR] --package requires an argument." -ForegroundColor Red
                     return (Exit-InstallFailure "--package requires an argument.")
                 }
                 $PackageName = $argList[$i]
@@ -203,7 +229,7 @@ function Install-UnslothStudio {
             "--with-llama-cpp-dir" {
                 $i++
                 if ($i -ge $argList.Count) {
-                    Write-Host "[ERROR] --with-llama-cpp-dir requires a path argument." -ForegroundColor Red
+                    Write-StudioLine "[ERROR] --with-llama-cpp-dir requires a path argument." -ForegroundColor Red
                     return (Exit-InstallFailure "--with-llama-cpp-dir requires a path argument.")
                 }
                 $WithLlamaCppDir = $argList[$i]
@@ -224,14 +250,14 @@ function Install-UnslothStudio {
     if ($StudioLocalInstall) {
         $RepoRoot = (Resolve-Path (Split-Path -Parent $PSCommandPath)).Path
         if (-not (Test-Path (Join-Path $RepoRoot "pyproject.toml"))) {
-            Write-Host "[ERROR] --local must be run from the unsloth repo root (pyproject.toml not found at $RepoRoot)" -ForegroundColor Red
+            Write-StudioLine "[ERROR] --local must be run from the unsloth repo root (pyproject.toml not found at $RepoRoot)" -ForegroundColor Red
             return (Exit-InstallFailure "--local must be run from the unsloth repo root")
         }
     }
 
     # Validate --package to prevent injection into shell/Python commands
     if ($PackageName -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]*$') {
-        Write-Host "[ERROR] --package name contains invalid characters (allowed: a-z A-Z 0-9 . _ -)" -ForegroundColor Red
+        Write-StudioLine "[ERROR] --package name contains invalid characters (allowed: a-z A-Z 0-9 . _ -)" -ForegroundColor Red
         return (Exit-InstallFailure "--package name contains invalid characters")
     }
 
@@ -431,10 +457,10 @@ public static class UnslothStudioFinalPathV2
         $_tauriOverride = $_tauriOverride.TrimEnd($_trimSeps)
         $_legacyTauriRoot = $_legacyTauriRoot.TrimEnd($_trimSeps)
         if ($_tauriOverride -ne $_legacyTauriRoot) {
-            Write-Host "ERROR: $envOverrideVar is not supported with --tauri." -ForegroundColor Red
-            Write-Host "       The desktop app uses the Windows profile .unsloth\studio root." -ForegroundColor Red
-            Write-Host "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
-            Write-Host "       or unset the env var for default desktop installs." -ForegroundColor Yellow
+            Write-StudioLine "ERROR: $envOverrideVar is not supported with --tauri." -ForegroundColor Red
+            Write-StudioLine "       The desktop app uses the Windows profile .unsloth\studio root." -ForegroundColor Red
+            Write-StudioLine "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
+            Write-StudioLine "       or unset the env var for default desktop installs." -ForegroundColor Yellow
             throw "$envOverrideVar is not supported with --tauri."
         }
     }
@@ -457,7 +483,7 @@ public static class UnslothStudioFinalPathV2
             [System.IO.Directory]::CreateDirectory($envOverride) | Out-Null
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
         } catch {
-            Write-Host "ERROR: $envOverrideVar=$envOverride cannot be created or accessed." -ForegroundColor Red
+            Write-StudioLine "ERROR: $envOverrideVar=$envOverride cannot be created or accessed." -ForegroundColor Red
             throw "$envOverrideVar=$envOverride cannot be created or accessed."
         }
         $probe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
@@ -466,7 +492,7 @@ public static class UnslothStudioFinalPathV2
             [System.IO.File]::WriteAllText($probe, "")
             Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
         } catch {
-            Write-Host "ERROR: $envOverrideVar=$StudioHome is not writable." -ForegroundColor Red
+            Write-StudioLine "ERROR: $envOverrideVar=$StudioHome is not writable." -ForegroundColor Red
             throw "$envOverrideVar=$StudioHome is not writable."
         }
         $StudioDataDir = Join-Path $StudioHome "share"
@@ -523,15 +549,15 @@ public static class UnslothStudioFinalPathV2
         }
     }
 
-    Write-Host ""
+    Write-StudioLine ""
     if ($script:StudioVtOk -and -not $env:NO_COLOR) {
-        Write-Host ("  " + (Get-StudioAnsi Title) + $Sloth + " Unsloth Studio Installer (Windows)" + (Get-StudioAnsi Reset))
-        Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
+        Write-StudioLine ("  " + (Get-StudioAnsi Title) + $Sloth + " Unsloth Studio Installer (Windows)" + (Get-StudioAnsi Reset))
+        Write-StudioLine ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
     } else {
-        Write-Host ("  {0} Unsloth Studio Installer (Windows)" -f $Sloth) -ForegroundColor DarkGreen
-        Write-Host "  $Rule" -ForegroundColor DarkGray
+        Write-StudioLine ("  {0} Unsloth Studio Installer (Windows)" -f $Sloth) -ForegroundColor DarkGreen
+        Write-StudioLine "  $Rule" -ForegroundColor DarkGray
     }
-    Write-Host ""
+    Write-StudioLine ""
 
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
     # Merge order: venv Scripts (if active) > Machine > User > current $env:Path.
@@ -611,7 +637,7 @@ public static class UnslothStudioFinalPathV2
                     } catch { }
                 }
                 if (-not $rawPath) {
-                    Write-Host "[WARN] User PATH is empty - initializing with $Directory" -ForegroundColor Yellow
+                    Write-StudioLine "[WARN] User PATH is empty - initializing with $Directory" -ForegroundColor Yellow
                 }
                 $newPath = if ($rawPath) {
                     if ($Position -eq 'Prepend') {
@@ -638,7 +664,7 @@ public static class UnslothStudioFinalPathV2
                 $regKey.Close()
             }
         } catch {
-            Write-Host "[WARN] Could not update User PATH: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Could not update User PATH: $($_.Exception.Message)" -ForegroundColor Yellow
             return $false
         }
     }
@@ -660,7 +686,7 @@ public static class UnslothStudioFinalPathV2
                 default { Get-StudioAnsi Ok }
             }
             $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
-            Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
+            Write-StudioLine ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
         } else {
             $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
             $fc = switch ($Color) {
@@ -670,10 +696,11 @@ public static class UnslothStudioFinalPathV2
                 'DarkGray' { 'DarkGray' }
                 default { 'DarkGreen' }
             }
-            # One composed record: two Write-Host calls are two Information
-            # records, and a redirected consumer splits the label from the value
-            # at the boundary. No mirror here, so this is the only sink.
-            Write-Host ("  {0}{1}" -f $padded, $Value) -ForegroundColor $fc
+            # One composed record: two calls are two records, and a redirected
+            # consumer splits the label from the value at the boundary.
+            # Write-StudioLine picks the sink, so this stays a single line on
+            # both of them.
+            Write-StudioLine ("  {0}{1}" -f $padded, $Value) -ForegroundColor $fc
         }
     }
 
@@ -689,16 +716,190 @@ public static class UnslothStudioFinalPathV2
                 default { (Get-StudioAnsi Dim) }
             }
             $pad = "".PadRight(15)
-            Write-Host ("  {0}{1}{2}{3}" -f $msgCol, $pad, $Message, (Get-StudioAnsi Reset))
+            Write-StudioLine ("  {0}{1}{2}{3}" -f $msgCol, $pad, $Message, (Get-StudioAnsi Reset))
         } else {
             $fc = switch ($Color) {
                 'Yellow' { 'Yellow' }
                 'Red' { 'Red' }
                 default { 'DarkGray' }
             }
-            Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
+            Write-StudioLine ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
         }
     }
+
+    # Managed llama.cpp access check. This script cannot dot-source setup.ps1, so
+    # it holds byte-identical copies; test_denied_llama_cpp_preflight.py enforces that.
+    # ── BEGIN SHARED WITH studio/setup.ps1 ──
+
+    # Recognize ERROR_ACCESS_DENIED through PowerShell's wrapper exceptions.
+    function Test-AccessDeniedError {
+        param($ErrorRecord)
+
+        $ex = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
+        while ($ex) {
+            if ($ex -is [System.UnauthorizedAccessException]) { return $true }
+            # IOException uses HRESULT; Win32Exception uses NativeErrorCode.
+            if ($ex.HResult -eq -2147024891) { return $true }
+            if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -eq 5) { return $true }
+            $ex = $ex.InnerException
+        }
+        if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) {
+            return ($ErrorRecord.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::PermissionDenied)
+        }
+        return $false
+    }
+
+    # Keep denied ACLs distinct from absent paths instead of letting Test-Path throw.
+    function Get-PathState {
+        param(
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+            [ValidateSet("Any", "Leaf", "Container")][string]$PathType = "Any"
+        )
+
+        if ([string]::IsNullOrWhiteSpace($Path)) { return "Absent" }
+        try {
+            if (Test-Path -LiteralPath $Path -PathType $PathType -ErrorAction Stop) { return "Present" }
+            return "Absent"
+        } catch {
+            if (Test-AccessDeniedError $_) { return "Denied" }
+            # Malformed path, offline drive, dangling link: nothing usable there.
+            return "Absent"
+        }
+    }
+
+    # Dir, marker and listing: no single probe separates readable/absent/denied.
+    function Get-LlamaCppInstallReadState {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+
+        $dirState = Get-PathState -Path $Path -PathType Container
+        if ($dirState -eq "Denied") { return "Denied" }
+        if ($dirState -ne "Present") { return "Absent" }
+        switch (Get-PathState -Path (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) {
+            "Denied"  { return "Denied" }
+        }
+        try { $null = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1) }
+        catch {
+            if (Test-AccessDeniedError $_) { return "Denied" }
+            # Nonfatal here: nothing has been installed yet.
+        }
+        return "Readable"
+    }
+
+    # Describe a denied link target without risking another reporting failure.
+    function Get-PathDenialDetail {
+        param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path)
+
+        if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        if (-not $item) { return "" }
+        # Non-filesystem providers do not expose FileSystemInfo attributes.
+        if ($item -isnot [System.IO.FileSystemInfo]) { return "" }
+        if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
+        $target = $null
+        try { $target = $item.Target } catch { $target = $null }
+        # PS 5.1 exposes .Target as a collection; PS 7 as a string.
+        if ($target) { return " (it is a link to $(@($target) -join ', '))" }
+        return " (it is a link)"
+    }
+
+    # Print guidance; returns the failure reason as its only pipeline output.
+    function Write-PathAccessDenied {
+        param(
+            [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path,
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Label,
+            # Never tell users to delete a build they supplied.
+            [switch]$UserSupplied,
+            # Unreadable custom homes cannot be identified as managed caches.
+            [switch]$OwnershipUnverified
+        )
+
+        step "permissions" "$Label at $Path cannot be read: access is denied$(Get-PathDenialDetail -Path $Path)" "Red"
+        if ($UserSupplied) {
+            substep "Unsloth will not touch a directory you pointed it at, so this has to be fixed at the source" "Yellow"
+            substep "Restore access with these two in an elevated PowerShell, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build:" "Yellow"
+        } elseif ($OwnershipUnverified) {
+            substep "Unsloth cannot confirm this folder is its own install while it is unreadable, so it will not tell you to remove it" "Yellow"
+            substep "Restore access with these two in an elevated PowerShell, or move the folder aside and re-run setup:" "Yellow"
+        } else {
+            substep "This folder lives outside the app, so reinstalling Unsloth Studio, to any drive, reuses it and fails the same way" "Yellow"
+            substep "Simplest fix: close Unsloth, delete or rename $Path, then re-run setup (it is a managed cache and gets reinstalled)" "Yellow"
+            substep "If deleting is also denied, run these two in an elevated PowerShell, then re-run setup:" "Yellow"
+        }
+        substep "takeown /F `"$Path`" /R /D Y" "Yellow"
+        substep "icacls `"$Path`" /reset /T" "Yellow"
+        substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
+        if ($UserSupplied) {
+            return "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
+        }
+        if ($OwnershipUnverified) {
+            return "Access denied reading $Label at $Path. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access with takeown/icacls, or move it aside, then re-run setup."
+        }
+        return "Access denied reading the existing $Label at $Path. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
+    }
+
+    # Canonicalize a directory for comparison; unresolvable ones are only normalized.
+    function Get-CanonicalDir {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+
+        $trimmedPath = $Path.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmedPath)) { return $trimmedPath }
+        $resolvedPath = $null
+        if ((Get-PathState -Path $trimmedPath -PathType Container) -eq "Present") {
+            try { $resolvedPath = (Resolve-Path -LiteralPath $trimmedPath).Path } catch {}
+        }
+        if (-not $resolvedPath) {
+            try {
+                $resolvedPath =
+                    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($trimmedPath)
+            } catch {
+                $resolvedPath = [System.Environment]::ExpandEnvironmentVariables($trimmedPath)
+            }
+            try { $resolvedPath = [System.IO.Path]::GetFullPath($resolvedPath) } catch {}
+        }
+        # Resolve-Path keeps a trailing separator, so trim after both branches (never a root).
+        try {
+            $root = [System.IO.Path]::GetPathRoot($resolvedPath)
+            if ($root -and $resolvedPath.Length -gt $root.Length) { return $resolvedPath.TrimEnd('\', '/') }
+        } catch {}
+        return $resolvedPath
+    }
+
+    # Compare canonical homes so path spelling does not change ownership policy.
+    function Test-StudioHomeIsCustom {
+        return ((Get-CanonicalDir -Path $StudioHome) -ne
+            (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
+    }
+
+    # Shared default cache, or the custom Studio home's llama.cpp tree.
+    function Get-ManagedLlamaCppDir {
+        if (-not (Test-StudioHomeIsCustom)) {
+            return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
+        }
+        return (Join-Path (Get-CanonicalDir -Path $StudioHome) "llama.cpp")
+    }
+
+    # Failure reason when the managed tree is denied; never touches its ACLs.
+    function Invoke-ManagedLlamaCppPreflight {
+        # Let the existing profile validation handle a missing USERPROFILE later.
+        if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
+        $dir = Get-ManagedLlamaCppDir
+        if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
+        Write-StudioLine ""
+        # A denied custom home cannot be claimed as an Unsloth-managed cache.
+        $homeIsCustom = Test-StudioHomeIsCustom
+        # Preserve user-supplied wording when either override names this tree.
+        $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
+        $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
+            ((Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir))
+        $reason = Write-PathAccessDenied -Path $dir -Label "llama.cpp install" `
+            -UserSupplied:$userSupplied -OwnershipUnverified:$homeIsCustom
+        substep "Stopping here, before phase 1: nothing has been downloaded or installed" "Yellow"
+        substep "Fix access, then run the same install, setup, or update command again" "Yellow"
+        Write-StudioLine ""
+        return "$reason Nothing was installed."
+    }
+
+    # ── END SHARED WITH studio/setup.ps1 ──
 
     # Redact index-URL credentials (userinfo + ?query= + #fragment) from captured installer
     # output before printing on failure; uv/pip errors echo the failing --index-url verbatim.
@@ -748,7 +949,7 @@ public static class UnslothStudioFinalPathV2
             } else {
                 $output = & $Command 2>&1 | Out-String
                 if ($LASTEXITCODE -ne 0) {
-                    Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
+                    Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
                 }
             }
             $exitCode = [int]$LASTEXITCODE
@@ -878,11 +1079,29 @@ public static class UnslothStudioFinalPathV2
                 $_idBytes = New-Object byte[] 32
                 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($_idBytes)
                 $_studioRootId = -join ($_idBytes | ForEach-Object { $_.ToString('x2') })
-                # Atomic write: write to a temp sibling then rename, so a partial
-                # install cannot leave a half-written id.
+                # Publish no-clobber: the desktop app mints this same id, so
+                # -Force could replace one a running backend already reported.
+                # Two-arg File.Move throws when the destination exists (the
+                # 3-arg overwrite overload is .NET Core only), so we adopt it.
                 $_idTmp = $_studioIdFile + ".$PID.tmp"
                 [System.IO.File]::WriteAllText($_idTmp, $_studioRootId)
-                Move-Item -LiteralPath $_idTmp -Destination $_studioIdFile -Force
+                try {
+                    [System.IO.File]::Move($_idTmp, $_studioIdFile)
+                } catch [System.IO.IOException] {
+                    $_adoptedRootId = ""
+                    try {
+                        $_adoptedRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()
+                    } catch { }
+                    if ($_adoptedRootId) {
+                        $_studioRootId = $_adoptedRootId
+                    } else {
+                        # Zero-length incumbent is an interrupted write, not an
+                        # id. Replace it with one atomic rename, no unlink.
+                        Move-Item -LiteralPath $_idTmp -Destination $_studioIdFile -Force
+                    }
+                } finally {
+                    Remove-Item -LiteralPath $_idTmp -Force -ErrorAction SilentlyContinue
+                }
             }
 
             # Env-mode: persist UNSLOTH_STUDIO_HOME (and llama path) so fresh
@@ -891,18 +1110,8 @@ public static class UnslothStudioFinalPathV2
             # through one global mutex on 8888..8908. Default installs get an
             # empty prefix to match pre-PR behavior.
             $studioHomeExport = if ($StudioRedirectMode -eq 'env') {
-                # When override == legacy default, llama.cpp stays at
-                # ~/.unsloth/llama.cpp (one shared build). Canonicalize the
-                # legacy side so the comparison survives path normalization.
-                $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
-                if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
-                    $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
-                }
-                $_llamaPath = if ($StudioHome -eq $_legacyStudio) {
-                    Join-Path $env:USERPROFILE ".unsloth\llama.cpp"
-                } else {
-                    Join-Path $StudioHome "llama.cpp"
-                }
+                # Reuse the preflight's managed path for legacy-home overrides.
+                $_llamaPath = Get-ManagedLlamaCppDir
                 $_sq = $StudioHome -replace "'", "''"
                 $_llama = $_llamaPath -replace "'", "''"
                 $_appDirSq = $appDir -replace "'", "''"
@@ -1143,13 +1352,13 @@ exit 0
                 try {
                     Copy-Item -LiteralPath $bundledIcon -Destination $iconPath -Force
                 } catch {
-                    Write-Host "[DEBUG] Error copying bundled icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+                    Write-StudioLine "[DEBUG] Error copying bundled icon: $($_.Exception.Message)" -ForegroundColor DarkGray
                 }
             } elseif (-not (Test-Path -LiteralPath $iconPath)) {
                 try {
                     Invoke-WebRequest -Uri $iconUrl -OutFile $iconPath -UseBasicParsing
                 } catch {
-                    Write-Host "[DEBUG] Error downloading icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+                    Write-StudioLine "[DEBUG] Error downloading icon: $($_.Exception.Message)" -ForegroundColor DarkGray
                 }
             }
 
@@ -1168,7 +1377,7 @@ exit 0
                         Remove-Item -LiteralPath $iconPath -Force -ErrorAction SilentlyContinue
                     }
                 } catch {
-                    Write-Host "[DEBUG] Error validating or removing icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+                    Write-StudioLine "[DEBUG] Error validating or removing icon: $($_.Exception.Message)" -ForegroundColor DarkGray
                     Remove-Item -LiteralPath $iconPath -Force -ErrorAction SilentlyContinue
                 }
             }
@@ -1298,7 +1507,7 @@ exit 0
         if ($TauriMode) { return }
         $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
         if (-not (Test-Path -LiteralPath $UnslothExe)) {
-            Write-Host "[ERROR] unsloth.exe missing at $UnslothExe; run install.ps1 first." -ForegroundColor Red
+            Write-StudioLine "[ERROR] unsloth.exe missing at $UnslothExe; run install.ps1 first." -ForegroundColor Red
             # throw (not Exit-InstallFailure) so non-Tauri callers see rc != 0.
             throw "unsloth.exe missing"
         }
@@ -1372,14 +1581,14 @@ exit 0
         $StudioHomeFull = ""
         try { $StudioHomeFull = [System.IO.Path]::GetFullPath($StudioHome).TrimEnd('\') } catch {}
         if ($SafeDir -and (Test-UnderSystemRoot $StudioHomeFull)) {
-            Write-Host ""
-            Write-Host "[ERROR] Unsloth would install into $StudioHomeFull," -ForegroundColor Red
-            Write-Host "        which is inside $SystemRootDir." -ForegroundColor Yellow
-            Write-Host "        That is where a service or the SYSTEM account keeps its profile." -ForegroundColor Yellow
-            Write-Host "        Sign in as a normal user, open PowerShell there, and run the" -ForegroundColor Yellow
-            Write-Host "        installer again:" -ForegroundColor Yellow
-            Write-Host "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
-            Write-Host ""
+            Write-StudioLine ""
+            Write-StudioLine "[ERROR] Unsloth would install into $StudioHomeFull," -ForegroundColor Red
+            Write-StudioLine "        which is inside $SystemRootDir." -ForegroundColor Yellow
+            Write-StudioLine "        That is where a service or the SYSTEM account keeps its profile." -ForegroundColor Yellow
+            Write-StudioLine "        Sign in as a normal user, open PowerShell there, and run the" -ForegroundColor Yellow
+            Write-StudioLine "        installer again:" -ForegroundColor Yellow
+            Write-StudioLine "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
+            Write-StudioLine ""
             return (Exit-InstallFailure "Refusing to install into $StudioHomeFull, which is inside $SystemRootDir. Run the installer from a normal user account.")
         }
         if ($SafeDir) {
@@ -1389,23 +1598,30 @@ exit 0
             substep "  $SafeDir" "Yellow"
             substep "This is normal: 'Run as administrator' opens PowerShell in System32." "Yellow"
         } else {
-            Write-Host ""
-            Write-Host "[ERROR] Unsloth cannot be installed from $CurrentDir." -ForegroundColor Red
-            Write-Host "        That is a Windows system folder, and Unsloth writes its virtual" -ForegroundColor Yellow
-            Write-Host "        environment caches, model downloads and build files into the" -ForegroundColor Yellow
-            Write-Host "        working directory, which Windows blocks there." -ForegroundColor Yellow
-            Write-Host "        'Run as administrator' opens PowerShell in System32, which is how" -ForegroundColor Yellow
-            Write-Host "        most people land here." -ForegroundColor Yellow
+            Write-StudioLine ""
+            Write-StudioLine "[ERROR] Unsloth cannot be installed from $CurrentDir." -ForegroundColor Red
+            Write-StudioLine "        That is a Windows system folder, and Unsloth writes its virtual" -ForegroundColor Yellow
+            Write-StudioLine "        environment caches, model downloads and build files into the" -ForegroundColor Yellow
+            Write-StudioLine "        working directory, which Windows blocks there." -ForegroundColor Yellow
+            Write-StudioLine "        'Run as administrator' opens PowerShell in System32, which is how" -ForegroundColor Yellow
+            Write-StudioLine "        most people land here." -ForegroundColor Yellow
             # USERPROFILE was just rejected as a candidate, so naming it here would send
             # the user back into the same tree.
-            Write-Host "        Nothing outside $SystemRootDir was usable either (USERPROFILE," -ForegroundColor Yellow
-            Write-Host "        HOME, PUBLIC, TEMP), which normally means a service or the SYSTEM" -ForegroundColor Yellow
-            Write-Host "        account. Sign in as a normal user, open PowerShell there, and run" -ForegroundColor Yellow
-            Write-Host "        the installer again:" -ForegroundColor Yellow
-            Write-Host "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
-            Write-Host ""
+            Write-StudioLine "        Nothing outside $SystemRootDir was usable either (USERPROFILE," -ForegroundColor Yellow
+            Write-StudioLine "        HOME, PUBLIC, TEMP), which normally means a service or the SYSTEM" -ForegroundColor Yellow
+            Write-StudioLine "        account. Sign in as a normal user, open PowerShell there, and run" -ForegroundColor Yellow
+            Write-StudioLine "        the installer again:" -ForegroundColor Yellow
+            Write-StudioLine "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
+            Write-StudioLine ""
             return (Exit-InstallFailure "Refusing to install from the Windows system directory $CurrentDir, and no folder outside $SystemRootDir was usable. Run the installer from a normal user account.")
         }
+    }
+
+    # ── Preflight the managed llama.cpp cache ──
+    # After System32 relocation (it picks the profile), before any download.
+    $llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight
+    if ($llamaPreflightFailure) {
+        return (Exit-InstallFailure $llamaPreflightFailure)
     }
 
     # ── Check winget ──
@@ -1454,7 +1670,7 @@ exit 0
             $leftFull = Get-StudioFinalPath -Path $Left
             $rightFull = Get-StudioFinalPath -Path $Right
         } catch {
-            Write-Host "[WARN] Could not resolve Studio path identity; using the runtime lock." -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Could not resolve Studio path identity; using the runtime lock." -ForegroundColor Yellow
             return $null
         }
         return [string]::Equals(
@@ -1616,12 +1832,12 @@ exit 0
     try {
         $studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome
     } catch {
-        Write-Host "[ERROR] Could not create the Studio install lock: $($_.Exception.Message)" -ForegroundColor Red
+        Write-StudioLine "[ERROR] Could not create the Studio install lock: $($_.Exception.Message)" -ForegroundColor Red
         return (Exit-InstallFailure "Could not create the Studio install lock")
     }
     if ($null -eq $studioInstallMutex) {
-        Write-Host "[ERROR] Another Unsloth Studio install or repair is already running." -ForegroundColor Red
-        Write-Host "        Wait for it to finish, then re-run install.ps1." -ForegroundColor Yellow
+        Write-StudioLine "[ERROR] Another Unsloth Studio install or repair is already running." -ForegroundColor Red
+        Write-StudioLine "        Wait for it to finish, then re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Another Unsloth Studio install or repair is already running")
     }
 
@@ -1645,14 +1861,14 @@ exit 0
                 foreach ($studioRuntimeMutexName in $studioRuntimeMutexNames) {
                     $mutex = Enter-StudioNamedMutex -Name $studioRuntimeMutexName
                     if ($null -eq $mutex) {
-                        Write-Host "[ERROR] Unsloth Studio is starting or installation is already running." -ForegroundColor Red
-                        Write-Host "        Close Unsloth Studio completely, wait for the other operation, then re-run install.ps1." -ForegroundColor Yellow
+                        Write-StudioLine "[ERROR] Unsloth Studio is starting or installation is already running." -ForegroundColor Red
+                        Write-StudioLine "        Close Unsloth Studio completely, wait for the other operation, then re-run install.ps1." -ForegroundColor Yellow
                         return (Exit-InstallFailure "The managed Studio environment is busy")
                     }
                     $studioRuntimeMutexes += $mutex
                 }
             } catch {
-                Write-Host "[ERROR] Could not create the Studio runtime lock: $($_.Exception.Message)" -ForegroundColor Red
+                Write-StudioLine "[ERROR] Could not create the Studio runtime lock: $($_.Exception.Message)" -ForegroundColor Red
                 return (Exit-InstallFailure "Could not create the Studio runtime lock")
             }
         }
@@ -1685,9 +1901,9 @@ exit 0
         $runningVenvProcesses = @($runningVenvProcessesById.Values)
         if ($runningVenvProcesses.Count -gt 0) {
             $runningSummary = ($runningVenvProcesses | ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" }) -join ", "
-            Write-Host "[ERROR] Unsloth Studio is using the managed Python environment." -ForegroundColor Red
-            Write-Host "        Active processes: $runningSummary" -ForegroundColor Yellow
-            Write-Host "        Close Unsloth Studio completely, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
+            Write-StudioLine "[ERROR] Unsloth Studio is using the managed Python environment." -ForegroundColor Red
+            Write-StudioLine "        Active processes: $runningSummary" -ForegroundColor Yellow
+            Write-StudioLine "        Close Unsloth Studio completely, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
             return (Exit-InstallFailure "The managed Python environment is still in use")
         }
 
@@ -1695,8 +1911,8 @@ exit 0
             $runningDesktopApps = @(Get-StudioDesktopProcessesForCurrentUser)
             if ($runningDesktopApps.Count -gt 0) {
                 $desktopSummary = ($runningDesktopApps | ForEach-Object { "PID $($_.Id)" }) -join ", "
-                Write-Host "[ERROR] The Unsloth Studio desktop app is still running ($desktopSummary)." -ForegroundColor Red
-                Write-Host "        Close the app completely, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
+                Write-StudioLine "[ERROR] The Unsloth Studio desktop app is still running ($desktopSummary)." -ForegroundColor Red
+                Write-StudioLine "        Close the app completely, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
                 return (Exit-InstallFailure "The Unsloth Studio desktop app is still running")
             }
         }
@@ -2048,10 +2264,10 @@ exit 0
 
         if (-not $DetectedPython) {
             $exitNote = if ($null -ne $wingetExit) { " (winget exit code $wingetExit)" } else { "" }
-            Write-Host "[ERROR] Python installation failed$exitNote" -ForegroundColor Red
-            Write-Host "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
-            Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
-            Write-Host "        Then re-run this installer." -ForegroundColor Yellow
+            Write-StudioLine "[ERROR] Python installation failed$exitNote" -ForegroundColor Red
+            Write-StudioLine "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
+            Write-StudioLine "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
+            Write-StudioLine "        Then re-run this installer." -ForegroundColor Yellow
             return (Exit-InstallFailure "Python installation failed")
         }
     }
@@ -2066,12 +2282,12 @@ exit 0
             $DetectedPython = $X64Python
             step "python" "using x64 Python $($DetectedPython.Version) under emulation"
         } else {
-            Write-Host "[WARN] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Yellow
-            Write-Host "       Continuing with ARM64 Python $($DetectedPython.Version), but the install is likely to fail:" -ForegroundColor Yellow
-            Write-Host "       pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels and will be" -ForegroundColor Yellow
-            Write-Host "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
-            Write-Host "       Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
-            Write-Host "       (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Yellow
+            Write-StudioLine "       Continuing with ARM64 Python $($DetectedPython.Version), but the install is likely to fail:" -ForegroundColor Yellow
+            Write-StudioLine "       pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels and will be" -ForegroundColor Yellow
+            Write-StudioLine "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
+            Write-StudioLine "       Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
+            Write-StudioLine "       (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
         }
     }
 
@@ -2350,11 +2566,11 @@ exit 0
                 # environment, so restoration must merge them rather than clear the
                 # destination first the way the committed-replacement path does.
                 $script:StudioVenvRollbackPartial = $true
-                Write-Host "[WARN] Moving the existing environment aside stopped partway -- files are in both places." -ForegroundColor Yellow
-                Write-Host "       still in place: $ExistingDir" -ForegroundColor Yellow
-                Write-Host "       moved aside:    $candidate" -ForegroundColor Yellow
-                Write-Host "       A running 'unsloth studio' process usually holds a file open here." -ForegroundColor Yellow
-                Write-Host "       Close Unsloth Studio and re-run the installer to reverse the move." -ForegroundColor Yellow
+                Write-StudioLine "[WARN] Moving the existing environment aside stopped partway -- files are in both places." -ForegroundColor Yellow
+                Write-StudioLine "       still in place: $ExistingDir" -ForegroundColor Yellow
+                Write-StudioLine "       moved aside:    $candidate" -ForegroundColor Yellow
+                Write-StudioLine "       A running 'unsloth studio' process usually holds a file open here." -ForegroundColor Yellow
+                Write-StudioLine "       Close Unsloth Studio and re-run the installer to reverse the move." -ForegroundColor Yellow
             }
             throw
         }
@@ -2376,8 +2592,8 @@ exit 0
             if (-not (Test-Path -LiteralPath $Path)) { return $true }
             if ($attempt -lt 3) { Start-Sleep -Milliseconds (250 * $attempt) }
         }
-        Write-Host "[WARN] Could not remove $Label at $Path" -ForegroundColor Yellow
-        if ($lastError) { Write-Host "       $lastError" -ForegroundColor Yellow }
+        Write-StudioLine "[WARN] Could not remove $Label at $Path" -ForegroundColor Yellow
+        if ($lastError) { Write-StudioLine "       $lastError" -ForegroundColor Yellow }
         return $false
     }
 
@@ -2400,13 +2616,13 @@ exit 0
                     Where-Object { $_.Name -like 'unsloth_studio.rollback.*' }
             )
         } catch {
-            Write-Host "[WARN] Could not inspect stale environment rollbacks in $StudioHome" -ForegroundColor Yellow
-            Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Could not inspect stale environment rollbacks in $StudioHome" -ForegroundColor Yellow
+            Write-StudioLine "       $($_.Exception.Message)" -ForegroundColor Yellow
             return
         }
         foreach ($rollback in $rollbacks) {
             if (($rollback.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-                Write-Host "[WARN] Refusing to remove rollback reparse point $($rollback.FullName)" -ForegroundColor Yellow
+                Write-StudioLine "[WARN] Refusing to remove rollback reparse point $($rollback.FullName)" -ForegroundColor Yellow
                 continue
             }
             # A concurrent installer may have moved its live venv aside. The PID
@@ -2455,9 +2671,9 @@ exit 0
                 }
                 continue
             }
-            Write-Host "[WARN] Kept both copies of $($entry.Name)" -ForegroundColor Yellow
-            Write-Host "       $($entry.FullName)" -ForegroundColor Yellow
-            Write-Host "       $entryTarget" -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Kept both copies of $($entry.Name)" -ForegroundColor Yellow
+            Write-StudioLine "       $($entry.FullName)" -ForegroundColor Yellow
+            Write-StudioLine "       $entryTarget" -ForegroundColor Yellow
             $complete = $false
         }
         if ($complete) {
@@ -2486,8 +2702,8 @@ exit 0
             try {
                 $merged = Merge-StudioVenvRollbackTree -Source $backup -Destination $target
             } catch {
-                Write-Host "[WARN] Could not merge $backup back into $target" -ForegroundColor Yellow
-                Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-StudioLine "[WARN] Could not merge $backup back into $target" -ForegroundColor Yellow
+                Write-StudioLine "       $($_.Exception.Message)" -ForegroundColor Yellow
             }
             if ($merged) {
                 substep "restored previous environment"
@@ -2495,10 +2711,10 @@ exit 0
                 $script:StudioVenvRollbackDir = $null
                 $script:StudioVenvRollbackPartial = $false
             } else {
-                Write-Host "[WARN] The previous environment is still split in two." -ForegroundColor Yellow
-                Write-Host "       still in place: $target" -ForegroundColor Yellow
-                Write-Host "       moved aside:    $backup" -ForegroundColor Yellow
-                Write-Host "       Close Unsloth Studio and re-run the installer to finish reversing the move." -ForegroundColor Yellow
+                Write-StudioLine "[WARN] The previous environment is still split in two." -ForegroundColor Yellow
+                Write-StudioLine "       still in place: $target" -ForegroundColor Yellow
+                Write-StudioLine "       moved aside:    $backup" -ForegroundColor Yellow
+                Write-StudioLine "       Close Unsloth Studio and re-run the installer to finish reversing the move." -ForegroundColor Yellow
             }
             return
         }
@@ -2513,8 +2729,8 @@ exit 0
             $script:StudioVenvRollbackActive = $false
             $script:StudioVenvRollbackDir = $null
         } catch {
-            Write-Host "[WARN] Could not restore previous environment from $backup to $target" -ForegroundColor Yellow
-            Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Could not restore previous environment from $backup to $target" -ForegroundColor Yellow
+            Write-StudioLine "       $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
 
@@ -2545,8 +2761,8 @@ exit 0
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
         ) {
-            Write-Host "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
-            Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
+            Write-StudioLine "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
+            Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
             throw "Refusing to delete non-Unsloth venv at $VenvDir"
         }
         # New layout already exists -- replace only after preserving rollback copy.
@@ -2554,7 +2770,7 @@ exit 0
         try {
             Start-StudioVenvRollback -ExistingDir $VenvDir
         } catch {
-            Write-Host "[ERROR] Could not prepare existing environment for reinstall: $($_.Exception.Message)" -ForegroundColor Red
+            Write-StudioLine "[ERROR] Could not prepare existing environment for reinstall: $($_.Exception.Message)" -ForegroundColor Red
             return (Exit-InstallFailure "Could not prepare existing environment for reinstall")
         }
     } elseif (
@@ -2606,7 +2822,7 @@ exit 0
         substep "$VenvDir"
         $venvExit = Invoke-InstallCommand -Label "create virtual environment" { uv venv $VenvDir --python "$($DetectedPython.Path)" }
         if ($venvExit -ne 0) {
-            Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
+            Write-StudioLine "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
         }
     } else {
@@ -2621,12 +2837,12 @@ exit 0
 
     if (-not (Test-VenvPythonReady -PythonExe $VenvPython)) {
         $recordedBaseHome = Get-VenvBaseHome -VenvRoot $VenvDir
-        Write-Host "[ERROR] The managed Python interpreter is missing or cannot be launched." -ForegroundColor Red
-        Write-Host "        Managed Python: $VenvPython" -ForegroundColor Yellow
+        Write-StudioLine "[ERROR] The managed Python interpreter is missing or cannot be launched." -ForegroundColor Red
+        Write-StudioLine "        Managed Python: $VenvPython" -ForegroundColor Yellow
         if (-not $recordedBaseHome) { $recordedBaseHome = "unavailable" }
-        Write-Host "        Recorded base Python home: $recordedBaseHome" -ForegroundColor Yellow
+        Write-StudioLine "        Recorded base Python home: $recordedBaseHome" -ForegroundColor Yellow
         # The ownership marker is written above, so a plain re-run replaces this venv.
-        Write-Host "        Restore that Python installation, or just re-run install.ps1." -ForegroundColor Yellow
+        Write-StudioLine "        Restore that Python installation, or just re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Managed Python is unavailable at $VenvPython (recorded base home: $recordedBaseHome)")
     }
 
@@ -2820,16 +3036,16 @@ exit 0
                     continue
                 }
                 if (Test-HipinfoIsVenvInternal $hipinfoCandidate) { continue }   # venv copy (AMD wheel): not a HIP SDK
-                Write-Host "  [WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" -ForegroundColor Yellow
-                Write-Host "         Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" -ForegroundColor Yellow
-                Write-Host "         Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" -ForegroundColor Yellow
+                Write-StudioLine "  [WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" -ForegroundColor Yellow
+                Write-StudioLine "         Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" -ForegroundColor Yellow
+                Write-StudioLine "         Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" -ForegroundColor Yellow
                 $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
                 break
             }
             if ((-not $hipinfoExe) -and $hipMissingLabel) {
-                Write-Host "  [WARN] ${hipMissingLabel}=$hipMissingRoot is set but hipinfo.exe not found at $hipMissingCandidate" -ForegroundColor Yellow
-                Write-Host "         HIP SDK install may be incomplete -- re-install from:" -ForegroundColor Yellow
-                Write-Host "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
+                Write-StudioLine "  [WARN] ${hipMissingLabel}=$hipMissingRoot is set but hipinfo.exe not found at $hipMissingCandidate" -ForegroundColor Yellow
+                Write-StudioLine "         HIP SDK install may be incomplete -- re-install from:" -ForegroundColor Yellow
+                Write-StudioLine "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
             }
         }
         if ($hipinfoExe) {
@@ -2849,16 +3065,16 @@ exit 0
                         $ROCmGpuLabel = "AMD ROCm"
                     }
                     if ($LASTEXITCODE -ne 0) {
-                        Write-Host "  [INFO] hipinfo exited with code $LASTEXITCODE but reported gcnArchName -- treating as ROCm-capable (see #6043)" -ForegroundColor Cyan
+                        Write-StudioLine "  [INFO] hipinfo exited with code $LASTEXITCODE but reported gcnArchName -- treating as ROCm-capable (see #6043)" -ForegroundColor Cyan
                     }
                 } elseif ($LASTEXITCODE -ne 0) {
                     # hipinfo ran but returned a HIP runtime error without any gcnArchName
                     # output (e.g. "no ROCm-capable device detected"), or crashed before
                     # printing device info.
                     $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
-                    Write-Host "  [WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" -ForegroundColor Yellow
-                    Write-Host "         $firstLine" -ForegroundColor Yellow
-                    Write-Host "         Ensure ROCm drivers are installed: https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
+                    Write-StudioLine "  [WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" -ForegroundColor Yellow
+                    Write-StudioLine "         $firstLine" -ForegroundColor Yellow
+                    Write-StudioLine "         Ensure ROCm drivers are installed: https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
                 }
             } catch {}
         }
@@ -2966,7 +3182,7 @@ exit 0
                     $hipConfigCandidate = Join-Path $hipRoot "bin\hipconfig.exe"
                     if (Test-Path $hipConfigCandidate) {
                         $hipConfigEnvLabel = if ($env:HIP_PATH) { "HIP_PATH" } else { "ROCM_PATH" }
-                        Write-Host "  [WARN] hipconfig not on PATH -- located via ${hipConfigEnvLabel}: $hipConfigCandidate" -ForegroundColor Yellow
+                        Write-StudioLine "  [WARN] hipconfig not on PATH -- located via ${hipConfigEnvLabel}: $hipConfigCandidate" -ForegroundColor Yellow
                         $hipConfigExe = [PSCustomObject]@{ Source = $hipConfigCandidate }
                     }
                 }
@@ -3569,7 +3785,7 @@ exit 0
 
     # ── Print CPU-only hint when no GPU detected ──
     if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
-        Write-Host ""
+        Write-StudioLine ""
         if ($ROCmGfxArch) {
             # Only an unmapped arch reaches here (a mapped one set $ROCmIndexUrl
             # above). No ROCm torch wheels for this arch (e.g. RDNA2 gfx103X) -> CPU.
@@ -3592,7 +3808,7 @@ exit 0
             substep "re-run with --no-torch for a faster, lighter install:" "Yellow"
             substep ".\install.ps1 --no-torch" "Yellow"
         }
-        Write-Host ""
+        Write-StudioLine ""
     }
 
     # ── Install PyTorch first, then unsloth separately ──
@@ -3649,20 +3865,20 @@ exit 0
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.8" "unsloth-zoo>=2026.8.5" }
         }
         if ($baseInstallExit -ne 0) {
-            Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
+            Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
         }
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
             $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
-                Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
+                Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
             $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
-                Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
+                Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         }
@@ -3690,7 +3906,7 @@ exit 0
                 # the companions -- a mismatched venv the flavor-repair block won't fix.
                 $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
-                    Write-Host "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
+                    Write-StudioLine "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
                 }
                 # CPU base is in; drop the ROCm expectation so the flavor-repair
@@ -3727,7 +3943,7 @@ exit 0
                 substep "XPU PyTorch install failed (exit $torchInstallExit); using a CPU base." "Yellow"
                 $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall @_xpuCpuSpecs --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
-                    Write-Host "[ERROR] Failed to install PyTorch (XPU and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
+                    Write-StudioLine "[ERROR] Failed to install PyTorch (XPU and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
                 }
                 # Drop the XPU expectation so flavor-repair below skips the failed index (as ROCm does).
@@ -3763,7 +3979,7 @@ exit 0
             }
             $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
-                Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
+                Write-StudioLine "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
             }
         }
@@ -3790,7 +4006,7 @@ exit 0
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
         if ($baseInstallExit -ne 0) {
-            Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
+            Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
         }
 
@@ -3798,13 +4014,13 @@ exit 0
             substep "overlaying local repo (editable)..."
             $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
-                Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
+                Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
             $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
-                Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
+                Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         }
@@ -3815,25 +4031,25 @@ exit 0
         if ($StudioLocalInstall) {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.8.5" "unsloth>=2026.8.8" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
-                Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
+                Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
             substep "overlaying local repo (editable)..."
             $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
-                Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
+                Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
             $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
-                Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
+                Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
             if ($baseInstallExit -ne 0) {
-                Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
+                Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
         }
@@ -3889,7 +4105,7 @@ exit 0
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
                     $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
                     if ($torchFixExit -ne 0) {
-                        Write-Host "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
+                        Write-StudioLine "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
                     }
                     $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
@@ -3903,7 +4119,7 @@ exit 0
                                  else { @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0") }
                     $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { uv pip install --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     if ($torchFixExit -ne 0) {
-                        Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
+                        Write-StudioLine "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
                     }
                     $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
@@ -3911,10 +4127,10 @@ exit 0
             }
             # Safety net (incl. AMD): GPU build expected but still CPU -> warn loudly.
             if ($installedTorchTag -eq 'cpu') {
-                Write-Host ""
-                Write-Host "  [WARN] PyTorch is CPU-only but a $expectedTorchTag GPU build was expected for this machine." -ForegroundColor Yellow
-                Write-Host "  [WARN] Training and GPU inference will run on CPU until this is fixed." -ForegroundColor Yellow
-                Write-Host "  [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU." -ForegroundColor Yellow
+                Write-StudioLine ""
+                Write-StudioLine "  [WARN] PyTorch is CPU-only but a $expectedTorchTag GPU build was expected for this machine." -ForegroundColor Yellow
+                Write-StudioLine "  [WARN] Training and GPU inference will run on CPU until this is fixed." -ForegroundColor Yellow
+                Write-StudioLine "  [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU." -ForegroundColor Yellow
             }
         }
     }
@@ -3936,7 +4152,7 @@ exit 0
     if ($env:UNSLOTH_CI_SOURCE_OVERLAY) {
         $CiOverlayRoot = $env:UNSLOTH_CI_SOURCE_OVERLAY
         if (-not (Test-Path -LiteralPath (Join-Path $CiOverlayRoot "pyproject.toml"))) {
-            Write-Host "[ERROR] UNSLOTH_CI_SOURCE_OVERLAY is set to '$CiOverlayRoot' but there is no pyproject.toml there." -ForegroundColor Red
+            Write-StudioLine "[ERROR] UNSLOTH_CI_SOURCE_OVERLAY is set to '$CiOverlayRoot' but there is no pyproject.toml there." -ForegroundColor Red
             return (Exit-InstallFailure "UNSLOTH_CI_SOURCE_OVERLAY has no pyproject.toml: $CiOverlayRoot")
         }
         substep "CI: overlaying source checkout (editable, no deps): $CiOverlayRoot"
@@ -3957,10 +4173,10 @@ exit 0
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path -LiteralPath $UnslothExe)) {
         Write-TauriLog "ERROR" "unsloth CLI was not installed correctly"
-        Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
-        Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
-        Write-Host "        This usually means an older unsloth version was installed that does not include the Unsloth CLI." -ForegroundColor Yellow
-        Write-Host "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
+        Write-StudioLine "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
+        Write-StudioLine "        Expected: $UnslothExe" -ForegroundColor Yellow
+        Write-StudioLine "        This usually means an older unsloth version was installed that does not include the Unsloth CLI." -ForegroundColor Yellow
+        Write-StudioLine "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
         return (Exit-InstallFailure "unsloth CLI was not installed correctly")
     }
     # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
@@ -3997,7 +4213,7 @@ exit 0
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
     if ($WithLlamaCppDir) {
         if (-not (Test-Path -LiteralPath $WithLlamaCppDir -PathType Container)) {
-            Write-Host "[ERROR] --with-llama-cpp-dir path does not exist: $WithLlamaCppDir" -ForegroundColor Red
+            Write-StudioLine "[ERROR] --with-llama-cpp-dir path does not exist: $WithLlamaCppDir" -ForegroundColor Red
             return (Exit-InstallFailure "--with-llama-cpp-dir path does not exist.")
         }
         $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = (Resolve-Path -LiteralPath $WithLlamaCppDir).Path
@@ -4038,7 +4254,7 @@ exit 0
     }
     if ($setupExit -ne 0) {
         if (-not $TauriMode) {
-            Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
+            Write-StudioLine "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
         }
         return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)" $setupExit)
     }
@@ -4087,8 +4303,8 @@ exit 0
     # the shim path must not be downgraded to "Continuing with the existing
     # launcher", or the install finishes with no usable shim.
     if (Test-Path -LiteralPath $ShimExe -PathType Container) {
-        Write-Host "[ERROR] Cannot create unsloth launcher: $ShimExe is a directory." -ForegroundColor Red
-        Write-Host "        Move or remove it manually, then re-run the installer." -ForegroundColor Yellow
+        Write-StudioLine "[ERROR] Cannot create unsloth launcher: $ShimExe is a directory." -ForegroundColor Red
+        Write-StudioLine "        Move or remove it manually, then re-run the installer." -ForegroundColor Yellow
         throw "Cannot create unsloth launcher: $ShimExe is a directory."
     }
     # try/catch: if unsloth.exe is locked (Unsloth running), keep the old shim.
@@ -4107,14 +4323,14 @@ exit 0
         $shimUpdated = $true
     } catch {
         if (Test-Path -LiteralPath $ShimExe) {
-            Write-Host "[WARN] Could not refresh unsloth launcher at $ShimExe." -ForegroundColor Yellow
-            Write-Host "       This usually means a running 'unsloth studio' process still holds the file open." -ForegroundColor Yellow
-            Write-Host "       Close Unsloth and re-run the installer to pick up the latest launcher." -ForegroundColor Yellow
-            Write-Host "       Continuing with the existing launcher." -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Could not refresh unsloth launcher at $ShimExe." -ForegroundColor Yellow
+            Write-StudioLine "       This usually means a running 'unsloth studio' process still holds the file open." -ForegroundColor Yellow
+            Write-StudioLine "       Close Unsloth and re-run the installer to pick up the latest launcher." -ForegroundColor Yellow
+            Write-StudioLine "       Continuing with the existing launcher." -ForegroundColor Yellow
         } else {
-            Write-Host "[WARN] Could not create unsloth launcher at $ShimExe" -ForegroundColor Yellow
-            Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
-            Write-Host "       Launch unsloth studio directly via '$UnslothExe' until the next successful install." -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Could not create unsloth launcher at $ShimExe" -ForegroundColor Yellow
+            Write-StudioLine "       $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-StudioLine "       Launch unsloth studio directly via '$UnslothExe' until the next successful install." -ForegroundColor Yellow
         }
     }
     # Add to PATH only when launcher exists. Env-mode: session-only export,
@@ -4167,14 +4383,14 @@ exit 0
             $_installedHash = (Get-FileHash -LiteralPath $UnslothExe -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
             $_pathHash      = (Get-FileHash -LiteralPath $_pathExe   -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
             if ($_installedHash -and $_pathHash -and ($_installedHash -ne $_pathHash)) {
-                Write-Host ""
+                Write-StudioLine ""
                 step "warning" "another 'unsloth' wins on PATH:" "Yellow"
                 substep $_pathExe
                 substep "this installer's binary is at:"
                 substep $UnslothExe
                 substep "to use this install, call the absolute path above,"
                 substep "or put its dir earlier on PATH."
-                Write-Host ""
+                Write-StudioLine ""
             }
         }
     } catch {
@@ -4186,7 +4402,7 @@ exit 0
     # In non-interactive environments (CI, Docker) just print instructions.
     $IsInteractive = (-not $SkipAutostart) -and [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
     if ($IsInteractive) {
-        Write-Host ""
+        Write-StudioLine ""
         $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
         if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^[Yy]') {
             # Keep both locks until the process exists: a second installer can
@@ -4209,7 +4425,7 @@ exit 0
             substep "unsloth studio -p 8888"
             substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
             substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
-            Write-Host ""
+            Write-StudioLine ""
         }
     } else {
         step "launch" "manual commands:"
@@ -4230,7 +4446,7 @@ exit 0
         }
         substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
         substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
-        Write-Host ""
+        Write-StudioLine ""
     }
     } finally {
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {

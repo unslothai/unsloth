@@ -60,6 +60,8 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
+
+  preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
   useToolOutputFor,
@@ -164,6 +166,10 @@ export {
   readComposerDraft,
   writeComposerDraft,
 } from "./utils/composer-draft";
+export {
+  CONVERSATION_MARKDOWN_FORMAT,
+  CONVERSATION_MARKDOWN_LABEL,
+} from "./utils/conversation-markdown";
 export {
   EXPORT_FORMATS_LIST,
   buildFineTuneJsonl,
