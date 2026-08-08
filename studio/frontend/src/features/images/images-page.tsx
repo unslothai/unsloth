@@ -2469,40 +2469,42 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       >
         <div
           className={cn(
-            "pointer-events-auto flex min-w-0 items-center gap-2",
+            "pointer-events-none flex min-w-0 items-center",
             !isMobile &&
               (!pinned && isTauri
                 ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
                 : "pl-[var(--studio-media-header-left-inset,1.5rem)]"),
           )}
         >
-          {pageMode === "train" ? (
-            <TrainBaseSelector
-              families={trainFamilies}
-              familyName={trainFamilyName}
-              base={trainBaseChoice}
-              onSelect={(family, repo) => {
-                // Set both together: the panel reseed effect keeps a base valid for the new family.
-                setTrainFamilyName(family);
-                setTrainBaseChoice(repo);
-              }}
-            />
-          ) : (
-            <ModelSelector
-              models={MODELS}
-              value={status?.loaded ? status.repo_id ?? undefined : undefined}
-              activeGgufVariant={quant}
-              onValueChange={handleModelSelect}
-              onEject={status?.loaded ? handleUnload : undefined}
-              variant="ghost"
-              className="!h-[34px] max-w-full"
-              task={IMAGE_GEN_TASKS}
-              catalog={IMAGE_CATALOG}
-              placeholder="Select image model"
-              open={active && selectorOpen}
-              onOpenChange={(o) => setSelectorOpen(active && o)}
-            />
-          )}
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2">
+            {pageMode === "train" ? (
+              <TrainBaseSelector
+                families={trainFamilies}
+                familyName={trainFamilyName}
+                base={trainBaseChoice}
+                onSelect={(family, repo) => {
+                  // Set both together: the panel reseed effect keeps a base valid for the new family.
+                  setTrainFamilyName(family);
+                  setTrainBaseChoice(repo);
+                }}
+              />
+            ) : (
+              <ModelSelector
+                models={MODELS}
+                value={status?.loaded ? status.repo_id ?? undefined : undefined}
+                activeGgufVariant={quant}
+                onValueChange={handleModelSelect}
+                onEject={status?.loaded ? handleUnload : undefined}
+                variant="ghost"
+                className="!h-[34px] max-w-full"
+                task={IMAGE_GEN_TASKS}
+                catalog={IMAGE_CATALOG}
+                placeholder="Select image model"
+                open={active && selectorOpen}
+                onOpenChange={(o) => setSelectorOpen(active && o)}
+              />
+            )}
+          </div>
         </div>
         {/* Create | Train page-mode switch: desktop grid keeps this centered while the side controls shrink in their columns. */}
         <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center md:static">

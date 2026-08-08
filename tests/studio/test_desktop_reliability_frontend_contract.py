@@ -704,6 +704,12 @@ def test_images_header_clears_collapsed_tauri_titlebar_controls():
     assert "!pinned && isTauri" in header
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
     assert "pl-[var(--studio-media-header-left-inset,1.5rem)]" in header
+    left_controls = header.split("Create | Train page-mode switch", 1)[0]
+    assert '"pointer-events-none flex min-w-0 items-center"' in left_controls
+    assert (
+        '"pointer-events-auto flex min-w-0 max-w-full items-center gap-2"'
+        in left_controls
+    )
 
     mode_switch = source.split("Create | Train page-mode switch", 1)[1].split("tabs={[", 1)[0]
     assert "md:static" in mode_switch
