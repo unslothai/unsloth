@@ -478,7 +478,9 @@ def _outbound_network_guard():
     if any(os.environ.get(name) for name in _PROXY_ENV_VARS):
         # Both spellings merged once and written back identically, so neither variable
         # loses what the other one carried.
-        combined = no_proxy_with_test_servers(os.environ.get("NO_PROXY"), os.environ.get("no_proxy"))
+        combined = no_proxy_with_test_servers(
+            os.environ.get("NO_PROXY"), os.environ.get("no_proxy")
+        )
         for name in ("NO_PROXY", "no_proxy"):
             patch.setenv(name, combined)
 
