@@ -287,7 +287,7 @@ def compute_snapshot_progress(
         else ()
     )
 
-    readings: list[tuple[int, int, Optional[str], bool]] = []
+    readings: list[tuple[int, int, Optional[str], bool, Optional[bool]]] = []
     # The enumeration suppresses OSError per root, so an unreadable cache root came back as
     # "no dirs" -- indistinguishable from a wiped cache, and hydration retires the job on
     # that. Collected so the empty answer below can say unknown instead of absent.
@@ -360,6 +360,18 @@ def compute_snapshot_progress(
             if expected_total > 0:
                 on_disk = min(on_disk, expected_total)
             completed_bytes = max(completed_bytes, on_disk)
+        # Does THIS target have anything here, as opposed to the repo dir existing at all?
+        # Sibling quants share one repo cache dir, so deleting a variant's files leaves the
+        # dir standing and the reading came back "zero bytes, cache_path names a directory"
+        # -- which hydration reads as resumable and adopts as a phantom, blocking a fresh
+        # download of that same variant until the idle grace expires. False only on positive
+        # evidence of absence: a named variant, a file set we could resolve, no manifest of
+        # its own and nothing counted. Anything less certain stays None.
+        target_present: Optional[bool] = None
+        if variant is not None and not variant_file_set_unknown:
+            target_present = bool(
+                completed_bytes or in_progress_bytes or entry_manifest.get() is not None
+            )
         readings.append(
             (
                 completed_bytes,
@@ -377,6 +389,7 @@ def compute_snapshot_progress(
                     completed_bytes = completed_bytes,
                     in_progress_bytes = in_progress_bytes,
                 ),
+                target_present,
             )
         )
 
@@ -392,7 +405,7 @@ def compute_snapshot_progress(
             return _empty_progress(expected_bytes, measured = False)
         return empty
 
-    completed_bytes, in_progress_bytes, cache_path, complete_on_disk = selected
+    completed_bytes, in_progress_bytes, cache_path, complete_on_disk, target_present = selected
     downloaded_bytes = completed_bytes + in_progress_bytes
     # Subtract the companion baseline only while still counted in completed_bytes
     # and the variant is not yet verified complete, else genuine progress reads as
@@ -423,6 +436,7 @@ def compute_snapshot_progress(
             "expected_bytes": 0,
             "progress": 0,
             "cache_path": cache_path,
+            "target_present": target_present,
         }
 
     display_expected_total = max(0, expected_total - effective_baseline_bytes)
@@ -431,6 +445,7 @@ def compute_snapshot_progress(
             **empty,
             "expected_bytes": display_expected_total,
             "cache_path": cache_path,
+            "target_present": target_present,
         }
 
     # Cap at 0.99 until the manifest-backed disk check verifies completion: on
@@ -453,6 +468,7 @@ def compute_snapshot_progress(
         "expected_bytes": display_expected_total,
         "progress": round(progress, 3),
         "cache_path": cache_path,
+        "target_present": target_present,
     }
 
 

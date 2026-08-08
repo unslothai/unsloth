@@ -202,7 +202,11 @@ async function probeHydratedIdleProgress(
     // null when no cache dir for this repo exists at all, and a dir it scanned and measured at
     // zero still names itself. So the cache being absent is what retires the card, not the
     // counter being zero.
-    return idleProbeVerdict(progressResp.downloaded_bytes, progressResp.cache_path);
+    return idleProbeVerdict(
+      progressResp.downloaded_bytes,
+      progressResp.cache_path,
+      progressResp.target_present,
+    );
   } catch {
     return "active";
   }

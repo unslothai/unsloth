@@ -127,6 +127,12 @@ export interface DownloadProgressResponse {
   expected_bytes: number;
   progress: number;
   cache_path: string | null;
+  /**
+   * Whether the backend found anything for THIS target (variant), as opposed to the shared
+   * repo cache directory existing. Null where it cannot say, and absent from an older
+   * backend -- both of which leave the repo-level rule in charge.
+   */
+  target_present?: boolean | null;
 }
 
 export type DownloadProgressOptions = {

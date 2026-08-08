@@ -756,3 +756,47 @@ def test_a_scope_whose_payload_is_lost_reads_back_as_a_digest(monkeypatch, tmp_p
     # A real quant label is never mistaken for one.
     for quant in ("Q4_K_M", "UD-Q4_K_XL", "sha256-short"):
         assert not state_dir.variant_is_hashed_fragment(quant)
+
+
+def test_a_variant_with_nothing_of_its_own_says_so(monkeypatch, tmp_path):
+    """Sibling quants share one repo cache directory, so "the directory exists" is the wrong
+    granularity for a variant. With Q4_K_M's files deleted and Q8_0 keeping the dir alive, the
+    reading was zero bytes with a non-null cache_path -- which hydration adopts as resumable,
+    leaving a phantom card that blocks a fresh download of that same variant."""
+    from hub.services import snapshot_progress
+
+    entry = tmp_path / "hub" / "models--unsloth--Model-GGUF"
+    (entry / "blobs").mkdir(parents = True)
+    (entry / "blobs" / "sibling").write_bytes(b"x" * 32)  # Q8_0's, not ours
+
+    monkeypatch.setattr(
+        snapshot_progress, "preferred_repo_cache_dirs", lambda *a, **k: [entry]
+    )
+
+    class _Registry:
+        def get_job(self, key):
+            return SimpleNamespace(state = "idle")
+
+    def _reading(variant, expected_hashes):
+        return snapshot_progress.compute_snapshot_progress(
+            repo_type = "model",
+            repo_id = "unsloth/Model-GGUF",
+            job_key = "model:unsloth/Model-GGUF",
+            expected_bytes = 33_000_000_000,
+            hf_token = None,
+            registry = _Registry(),
+            metadata_resolver = lambda *a, **k: (33_000_000_000, expected_hashes),
+            variant = variant,
+        )
+
+    ours = _reading("Q4_K_M", frozenset({"ours"}))
+    assert ours["downloaded_bytes"] == 0
+    assert ours["cache_path"] is not None, "the sibling keeps the directory alive"
+    assert ours["target_present"] is False
+
+    # Unresolvable file set: nothing was established, so nothing is claimed either.
+    unknown = _reading("Q4_K_M", frozenset())
+    assert unknown["target_present"] is None
+
+    # And a whole-repo job owns the directory, so the repo-level answer already covers it.
+    assert _reading(None, frozenset())["target_present"] is None

@@ -45,3 +45,22 @@ test("an older backend that omits cache_path leaves the job adoptable", () => {
   // every install that has not restarted its backend yet.
   assert.equal(idleProbeVerdict(0, undefined), "active");
 });
+
+test("a variant whose own files are gone does not survive on a sibling's cache dir", () => {
+  // Sibling quants share one repo cache directory. Delete Q4_K_M's files while Q8_0 keeps the
+  // dir alive and the reading is "zero bytes, and a directory exists" -- which read as
+  // resumable, adopted a phantom, and blocked a fresh download of that same variant until the
+  // idle grace expired sixty seconds later.
+  assert.equal(
+    idleProbeVerdict(0, "/hub/models--unsloth--x", false),
+    "gone",
+    "the repo dir is the wrong granularity for a variant",
+  );
+  // Positive evidence only in that one direction: unknown, and an older backend that never
+  // sends the field, both leave the repo-level rule in charge.
+  assert.equal(idleProbeVerdict(0, "/hub/models--unsloth--x", null), "active");
+  assert.equal(idleProbeVerdict(0, "/hub/models--unsloth--x", undefined), "active");
+  // And bytes still outrank everything: something is on disk for this target.
+  assert.equal(idleProbeVerdict(4096, "/hub/models--unsloth--x", false), "active");
+  assert.equal(idleProbeVerdict(0, null, true), "gone", "no cache at all is still gone");
+});
