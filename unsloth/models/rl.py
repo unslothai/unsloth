@@ -984,6 +984,44 @@ def _sliceable_per_token(
     return kept
 
 
+def _eval_packing_on(args):
+    """TRL's own resolution: `args.packing` unless `eval_packing` overrides it.
+
+    Kept identical to the generated block's `_unsloth_eval_packing`, because the
+    late cap and the construction-time one have to answer this the same way.
+    """
+    eval_packing = getattr(args, "eval_packing", None)
+    if eval_packing is None:
+        return bool(getattr(args, "packing", False))
+    return bool(eval_packing)
+
+
+def _trl_prepares_late_evals(trainer_cls):
+    """Does TRL's own `evaluate` prepare a split handed straight to it?
+
+    False up to TRL 1.6, where `evaluate` was the base Trainer's and
+    `_prepare_dataset` ran only from `__init__`. True from 1.7.0, whose
+    `SFTTrainer.evaluate` calls `_prepare_dataset` with
+    `packing = args.packing if args.eval_packing is None else args.eval_packing`,
+    so on those versions the packer owns a late eval split and cutting its rows
+    at the cap first throws away the overflow packing exists to redistribute.
+
+    Read off the class rather than off a version number, so a TRL that moves the
+    behaviour again is answered correctly. The first class in the MRO that
+    defines `evaluate` is the one that runs; anything unreadable answers False,
+    which is what every TRL did before 1.7.
+    """
+    for klass in getattr(trainer_cls, "__mro__", ()):
+        method = klass.__dict__.get("evaluate")
+        if method is None or getattr(method, "_unsloth_eval_cap_wrapped", False):
+            continue
+        try:
+            return "_prepare_dataset" in inspect.getsource(method)
+        except Exception:
+            return False
+    return False
+
+
 def _wrap_sft_evaluate_cap(trainer_cls):
     """Cap a pre-tokenized split handed to `evaluate()`/`predict()` later on.
 
@@ -998,11 +1036,14 @@ def _wrap_sft_evaluate_cap(trainer_cls):
     Both entry points, not just `evaluate`: `predict(test_dataset = ...)` comes
     from the base Trainer and reaches the same collator by the same route.
 
-    Nothing TRL owns runs on a late split. `_prepare_dataset` is called from
-    `__init__` and nowhere else, and SFTTrainer overrides neither `evaluate` nor
-    `predict` nor `get_eval_dataloader`, so a split handed over afterwards is
-    never tokenized, never packed and never truncated. Whatever this wrapper
-    does not do to it, nothing else will.
+    Whether anything TRL owns runs on a late split depends on the TRL. Up to 1.6
+    nothing did: `_prepare_dataset` was called from `__init__` and nowhere else,
+    and SFTTrainer overrode neither `evaluate` nor `predict` nor
+    `get_eval_dataloader`, so a split handed over afterwards was never tokenized,
+    never packed and never truncated. From 1.7.0 `SFTTrainer.evaluate` prepares a
+    split passed straight to it, packing included, so on those versions the packer
+    DOES own a late eval split and `eval_packing` has to be honoured here exactly
+    as it is at construction. `_trl_prepares_late_evals` reads that off the class.
 
     This has to agree with the construction-time cap on every detail, because it
     is the same cap arriving late. It honours `truncation_mode`, refuses a packed
@@ -1045,6 +1086,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         cap,
         args,
         drop_unsupervised = True,
+        packs_late = False,
     ):
         # `evaluate()` caps the split, stores it on the trainer, and Transformers
         # then calls `get_eval_dataloader`, which this module also wraps -- so the
@@ -1063,15 +1105,21 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # `__init__` -- but that is its own gap and not one a truncation can
             # close.
             return _mark_capped(dataset, cap, drop_unsupervised)
-        # `eval_packing` is deliberately NOT consulted here, unlike at
-        # construction time. There the packer really does own the split, and
-        # every strategy owns the overflow with it. Here nothing packs anything:
-        # `evaluate()` and `predict()` are the base Trainer's, they call
-        # `get_eval_dataloader` / `get_test_dataloader` straight through, and
-        # `_prepare_dataset` never runs again. Skipping the cap under
-        # `eval_packing` therefore handed the collator the raw overlength rows
-        # with `max_length` already cleared, which is the exact failure this
-        # wrapper exists to prevent.
+        # `eval_packing` is consulted only where the packer can actually reach the
+        # split, which is why `packs_late` is passed in per entry point rather than
+        # read here. Up to TRL 1.6 nothing packs a late split: `evaluate()` and
+        # `predict()` are the base Trainer's, they call `get_eval_dataloader` /
+        # `get_test_dataloader` straight through, and `_prepare_dataset` never runs
+        # again, so skipping the cap there handed the collator the raw overlength
+        # rows with `max_length` already cleared. From TRL 1.7.0 the opposite is
+        # true for `evaluate` alone: it prepares the split itself under
+        # `eval_packing`, and every strategy owns the overflow -- `wrapped`
+        # concatenates the token stream before chunking, `bfd_split` splits an
+        # overlength example into more chunks -- so cutting rows at the cap first
+        # throws that away. `predict` and the two dataloader builders stay the base
+        # Trainer's on every TRL, so they always cap.
+        if packs_late and _eval_packing_on(args):
+            return _mark_capped(dataset, cap, drop_unsupervised)
         # A packed split carries document lengths, not tokens. Slicing `input_ids`
         # under a `seq_lengths` that still describes the longer row makes
         # padding-free build position ids for tokens the row no longer has, which
@@ -1225,6 +1273,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         dataset,
         cap,
         drop_unsupervised = True,
+        packs_late = False,
     ):
         """Cap a split once per object.
 
@@ -1243,14 +1292,14 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 pass
         token = _memo_token(dataset)
         if token is None:
-            return _cap(dataset, cap, trainer.args, drop_unsupervised)
+            return _cap(dataset, cap, trainer.args, drop_unsupervised, packs_late)
         memo = getattr(trainer, "_unsloth_eval_cap_memo", None)
         if memo is None:
             memo = {}
             try:
                 trainer._unsloth_eval_cap_memo = memo
             except Exception:
-                return _cap(dataset, cap, trainer.args, drop_unsupervised)
+                return _cap(dataset, cap, trainer.args, drop_unsupervised, packs_late)
         # `truncation_mode` shapes the SLICE, so it belongs in the key: without
         # it, evaluating once with keep_start and again with keep_end handed
         # back the cached prefixes for both.
@@ -1258,12 +1307,17 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             id(dataset),
             drop_unsupervised,
             getattr(trainer.args, "truncation_mode", "keep_start"),
+            # `evaluate` and `get_eval_dataloader` share `drop_unsupervised` and
+            # see the same object in one call, but only the first may skip the cut
+            # under `eval_packing`, so without this the second reused the first's
+            # answer.
+            packs_late,
         )
         seen = memo.get(key)
         if seen is not None and seen[0] is dataset and seen[1] == cap and seen[3] == token:
             memo[key] = memo.pop(key)  # most recently used goes last
             return seen[2]
-        capped = _cap(dataset, cap, trainer.args, drop_unsupervised)
+        capped = _cap(dataset, cap, trainer.args, drop_unsupervised, packs_late)
         memo[key] = (dataset, cap, capped, token)
         # Bounded, because every entry pins BOTH the original split and the
         # capped copy for the trainer's whole lifetime -- deliberately, so a
@@ -1281,6 +1335,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         given,
         cap,
         drop_unsupervised = True,
+        packs_late = False,
     ):
         # `evaluate(eval_dataset = "validation")` is the supported way to pick one
         # split out of a stored dict: `get_eval_dataloader` resolves it as
@@ -1290,7 +1345,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         if isinstance(given, str):
             stored = getattr(trainer, "eval_dataset", None)
             if isinstance(stored, dict) and given in stored:
-                capped = _cap_cached(trainer, stored[given], cap, drop_unsupervised)
+                capped = _cap_cached(trainer, stored[given], cap, drop_unsupervised, packs_late)
                 # Staged for the caller to swap in and OUT, never written
                 # through. Overwriting `stored[given]` destroyed the uncapped
                 # original, so a later `truncation_mode = "keep_end"` -- which
@@ -1300,13 +1355,16 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                     trainer._unsloth_pending_split_swap = (stored, given, capped)
             return given
         if isinstance(given, dict):
-            capped = {k: _cap_cached(trainer, v, cap, drop_unsupervised) for k, v in given.items()}
+            capped = {
+                k: _cap_cached(trainer, v, cap, drop_unsupervised, packs_late)
+                for k, v in given.items()
+            }
             if all(capped[k] is v for k, v in given.items()):
                 return given
             return capped
-        return _cap_cached(trainer, given, cap, drop_unsupervised)
+        return _cap_cached(trainer, given, cap, drop_unsupervised, packs_late)
 
-    def _make(original, keyword, drop_unsupervised):
+    def _make(original, keyword, drop_unsupervised, packs_late):
         def wrapped(self, *args, **kwargs):
             cap = getattr(getattr(self, "args", None), "max_seq_length", None)
             retained = getattr(getattr(self, "args", None), "max_length", None)
@@ -1325,7 +1383,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             given = kwargs.get(keyword, args[0] if args else None)
             if given is not None:
                 self._unsloth_pending_split_swap = None
-                capped = _cap_splits(self, given, cap, drop_unsupervised)
+                capped = _cap_splits(self, given, cap, drop_unsupervised, packs_late)
                 if keyword in kwargs:
                     kwargs[keyword] = capped
                 else:
@@ -1350,7 +1408,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             stored = getattr(self, keyword, None) if keyword == "eval_dataset" else None
             if stored is None:
                 return original(self, *args, **kwargs)
-            capped = _cap_splits(self, stored, cap, drop_unsupervised)
+            capped = _cap_splits(self, stored, cap, drop_unsupervised, packs_late)
             if capped is stored:
                 return original(self, *args, **kwargs)
             # Swapped onto the trainer rather than passed down as an argument,
@@ -1376,16 +1434,20 @@ def _wrap_sft_evaluate_cap(trainer_cls):
     # nothing capping the split. Same wrapper, same argument position; the
     # `drop_unsupervised` split follows the method it serves, since
     # `get_test_dataloader` feeds `predict`.
-    for name, keyword, drop_unsupervised in (
-        ("evaluate", "eval_dataset", True),
-        ("predict", "test_dataset", False),
-        ("get_eval_dataloader", "eval_dataset", True),
-        ("get_test_dataloader", "test_dataset", False),
+    # Only `evaluate` can hand its split to TRL's own prep, and only from 1.7.0.
+    # Read once, before anything is wrapped, so the probe sees TRL's method rather
+    # than ours.
+    prepares_late = _trl_prepares_late_evals(trainer_cls)
+    for name, keyword, drop_unsupervised, packs_late in (
+        ("evaluate", "eval_dataset", True, prepares_late),
+        ("predict", "test_dataset", False, False),
+        ("get_eval_dataloader", "eval_dataset", True, False),
+        ("get_test_dataloader", "test_dataset", False, False),
     ):
         original = getattr(trainer_cls, name, None)
         if original is None or getattr(original, "_unsloth_eval_cap_wrapped", False):
             continue
-        setattr(trainer_cls, name, _make(original, keyword, drop_unsupervised))
+        setattr(trainer_cls, name, _make(original, keyword, drop_unsupervised, packs_late))
 
 
 _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
@@ -2457,6 +2519,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "                    _new = _new.filter(lambda _e, _c = tuple(_unsloth_supervision): any(all((_x != -100) if _n == 'labels' else _x for _n, _x in zip(_c, _v)) for _v in zip(*[_e[_n] for _n in _c])), **_kw)\n"
                     "            except Exception:\n"
                     "                pass\n"
+                    # Recorded, not raised: the caller wraps these calls in a broad
+                    # `except Exception` that would turn a raise into "could not
+                    # truncate". The raise happens past that handler.
+                    "            try:\n"
+                    "                if _unsloth_supervision and len(_new) == 0: _unsloth_emptied.append(1)\n"
+                    "            except TypeError:\n"
+                    "                pass\n"
                     "            return _new, (True if _unsloth_is_stream(_new) else _unsloth_within_cap(_new))\n"
                     # Resolved BEFORE the try, because the fallback below needs it even when
                     # the try never ran. `eval_packing` is separate from `packing`:
@@ -2471,6 +2540,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # required anyway, since packing raises on a None `max_length`, and it has to
                     # hold even with no eval split at construction, because one handed to
                     # `evaluate()` later would find `max_length` already cleared.
+                    "        _unsloth_emptied = []\n"
                     "        _unsloth_orig_train = train_dataset\n"
                     "        _unsloth_orig_eval = eval_dataset if 'eval_dataset' in locals() else None\n"
                     "        try:\n"
@@ -2537,6 +2607,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _unsloth_prep_truncates = False\n"
                     # Never silent: a swallowed failure here reads as the cap being enforced.
                     "            print('Unsloth: could not truncate the pre-tokenized dataset to `max_length` (' + str(_unsloth_truncate_error) + ').')\n"
+                    # Outside the handler on purpose. Every row losing its supervised
+                    # tokens means the cap sits below where the supervision starts, and
+                    # an empty split is not something to hand onwards: every TRL 1.x
+                    # reads `next(iter(train_dataset))` in `__init__` to resolve
+                    # `completion_only_loss` and `_is_vision_dataset`, so it comes out
+                    # as a bare `StopIteration` naming nothing at all.
+                    "        if _unsloth_emptied:\n"
+                    "            raise ValueError('Unsloth: truncating to `max_length = ' + str(args.max_length) + '` left every row with no supervised token, so there is nothing to train on. The supervised part of your rows starts past that length: raise `max_length`, or set `truncation_mode = \"keep_end\"` if the completion sits at the end of each row.')\n"
                     "    if _unsloth_prep_truncates:\n"
                     "        args.max_seq_length = args.max_length\n"
                     "        args.max_length = None\n"
