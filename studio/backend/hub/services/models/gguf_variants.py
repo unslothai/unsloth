@@ -316,6 +316,26 @@ def _is_scope_key(variant: str) -> bool:
     return variant.startswith("@")
 
 
+def _quants_from_state(
+    repo_id: str, hub_cache: Optional[Path]
+) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+    """``list_partial_gguf_variants_from_state`` with download scopes dropped.
+
+    None for scopes alone as much as for nothing at all: that is a listing of no
+    quants, so the caller must fall through rather than serve one. A scope whose
+    manifest names no .gguf reconstructs as ``f"{variant}.gguf"``, a file that
+    never existed.
+    """
+    partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
+    if partial is None:
+        return None
+    variants, has_vision = partial
+    variants = [v for v in variants if not (v.quant and _is_scope_key(v.quant))]
+    if not variants:
+        return None
+    return variants, has_vision
+
+
 def _partial_transport_for_variant(
     repo_id: str,
     variant: str,
@@ -953,7 +973,7 @@ async def get_gguf_variants_answer(
             before any file landed has no snapshot entry, so a listing built
             from the cache alone reads as if it were never asked for, and the
             row loses its resume."""
-            state = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
+            state = _quants_from_state(repo_id, hub_cache)
             if state is None:
                 return response
             listed = {v.quant.lower() for v in response.variants if v.quant}
@@ -971,7 +991,7 @@ async def get_gguf_variants_answer(
                     ),
                 )
                 for v in state[0]
-                if v.quant and v.quant.lower() not in listed and not _is_scope_key(v.quant)
+                if v.quant and v.quant.lower() not in listed
             ]
             if not extra:
                 return response
@@ -1081,7 +1101,7 @@ async def get_gguf_variants_answer(
                     return _local_response(
                         repo_id, variants, has_vision, _complete_quants_under(local_path)
                     )
-            partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
+            partial = _quants_from_state(repo_id, hub_cache)
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)
@@ -1116,7 +1136,7 @@ async def get_gguf_variants_answer(
                 return _with_state_partials(
                     _local_response(repo_id, variants, has_vision, complete)
                 )
-            partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
+            partial = _quants_from_state(repo_id, hub_cache)
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)

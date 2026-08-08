@@ -4223,3 +4223,90 @@ def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
     # The scope named the quant's own file, so keeping it would list that file twice.
     filenames = [v.filename for v in response.variants]
     assert len(filenames) == len(set(filenames))
+
+
+def test_a_scope_alone_in_state_is_not_an_answer(monkeypatch, tmp_path):
+    """The state-only fallbacks reconstruct from the same manifests, so a scope reaching
+    them is worse than a duplicate row: naming no .gguf, it reconstructs as
+    "@diffusion.gguf", a file never on disk. Scopes alone mean no quants, so the fallback
+    has to decline and let the next answer through."""
+    repo_dir = tmp_path / "models--org--repo"
+    (repo_dir / "snapshots" / "rev").mkdir(parents = True)
+
+    monkeypatch.setattr(GV, "select_gguf_cache_snapshot", lambda repo_id, root = None: None)
+    monkeypatch.setattr(
+        GV,
+        "list_partial_gguf_variants_from_state",
+        lambda *a, **k: (
+            [
+                SimpleNamespace(
+                    filename = "@diffusion.gguf",
+                    quant = "@diffusion",
+                    display_label = None,
+                    size_bytes = 0,
+                    download_size_bytes = 0,
+                )
+            ],
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            offline = True,
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert response.variants == []
+
+
+def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, tmp_path):
+    """Dropping scopes must not cost the fallback its reason to exist: a cancelled quant
+    with no snapshot keeps its row, and its resume."""
+    repo_dir = tmp_path / "models--org--repo"
+    (repo_dir / "snapshots" / "rev").mkdir(parents = True)
+
+    monkeypatch.setattr(GV, "select_gguf_cache_snapshot", lambda repo_id, root = None: None)
+    monkeypatch.setattr(
+        GV,
+        "list_partial_gguf_variants_from_state",
+        lambda *a, **k: (
+            [
+                SimpleNamespace(
+                    filename = "m-Q6_K.gguf",
+                    quant = "Q6_K",
+                    display_label = None,
+                    size_bytes = 20,
+                    download_size_bytes = 20,
+                ),
+                SimpleNamespace(
+                    filename = "@diffusion.gguf",
+                    quant = "@diffusion",
+                    display_label = None,
+                    size_bytes = 0,
+                    download_size_bytes = 0,
+                ),
+            ],
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            offline = True,
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert [(v.quant, v.partial) for v in response.variants] == [("Q6_K", True)]
