@@ -43,7 +43,6 @@ from hub.utils.paths import (
     is_local_path,
     is_valid_repo_id as _is_valid_repo_id,
 )
-from hub.utils.state_dir import variant_is_hashed_fragment
 
 # Loader's normalizer, not the hub's: they disagree on WSL, and only it names what the load opens.
 from utils.paths import normalize_path as _loader_normalize_path
@@ -322,25 +321,21 @@ def _quants_from_state(
 ) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     """``list_partial_gguf_variants_from_state`` with download scopes dropped.
 
-    Digest fragments go with them: a state file whose payload is unreadable
-    falls back to its filename, which for a scope is the hash of one. The "@"
-    alone cannot decide it, since the older tag spells that hash without one and
-    a repo written then still has state on disk.
+    A scope whose payload is gone is dropped by the lister already, which is the
+    only place that can tell a recovered digest from a variant truly named like
+    one (see _is_state_filename_fallback). Left here is the readable case, where
+    the key really is "@diffusion".
 
-    None for those alone as much as for nothing at all: that is a listing of no
-    quants, so the caller must fall through rather than serve one. Either kind
-    names no .gguf, so it reconstructs as ``f"{variant}.gguf"``, a file that
+    None for scopes alone as much as for nothing at all: that is a listing of no
+    quants, so the caller must fall through rather than serve one. A scope whose
+    manifest names no .gguf reconstructs as ``f"{variant}.gguf"``, a file that
     never existed.
     """
     partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
     if partial is None:
         return None
     variants, has_vision = partial
-    variants = [
-        v
-        for v in variants
-        if not (v.quant and (_is_scope_key(v.quant) or variant_is_hashed_fragment(v.quant)))
-    ]
+    variants = [v for v in variants if not (v.quant and _is_scope_key(v.quant))]
     if not variants:
         return None
     return variants, has_vision
