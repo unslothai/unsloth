@@ -21,6 +21,7 @@ def _write_cached_model(
     sharded = False,
     complete = True,
     tokenizer = True,
+    tokenizer_format = "tokenizer.json",
     vision = False,
     processor = True,
 ):
@@ -36,7 +37,7 @@ def _write_cached_model(
     if vision and processor:
         open(os.path.join(snapshot, "preprocessor_config.json"), "w").close()
     if tokenizer:
-        open(os.path.join(snapshot, "tokenizer.json"), "w").close()
+        open(os.path.join(snapshot, tokenizer_format), "w").close()
     if not sharded:
         open(os.path.join(snapshot, "model.safetensors"), "w").close()
         return snapshot
@@ -325,6 +326,62 @@ class TestGetModelName(unittest.TestCase):
             self.assertEqual(get_model_name("Qwen/Qwen2.5-VL-3B-Instruct", **kwargs), legacy)
             open(os.path.join(canonical_snapshot, "preprocessor_config.json"), "w").close()
             self.assertEqual(get_model_name("Qwen/Qwen2.5-VL-3B-Instruct", **kwargs), canonical)
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_external_tokenizer_allows_weight_only_model_cache(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            _write_cached_model(legacy_cache, "legacy-main", tokenizer = False)
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    require_tokenizer = False,
+                    require_processor = False,
+                ),
+                legacy,
+            )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_legacy_cache_accepts_all_supported_tokenizer_formats(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        for tokenizer_format in ("vocab.txt", "spiece.model"):
+            with self.subTest(tokenizer_format = tokenizer_format), tempfile.TemporaryDirectory() as cache_dir:
+                legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+                _write_cached_model(
+                    legacy_cache,
+                    "legacy-main",
+                    tokenizer_format = tokenizer_format,
+                )
+                self.assertEqual(
+                    get_model_name(
+                        "unsloth/Meta-Llama-3.1-8B-Instruct",
+                        cache_dir = cache_dir,
+                        local_files_only = True,
+                    ),
+                    legacy,
+                )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_text_only_vlm_cache_does_not_require_processor(self):
+        canonical = "unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            _write_cached_model(legacy_cache, "legacy-main", vision = True, processor = False)
+            self.assertEqual(
+                get_model_name(
+                    "Qwen/Qwen2.5-VL-3B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    require_processor = False,
+                ),
+                legacy,
+            )
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_offline_legacy_cache_uses_transformers_default(self):

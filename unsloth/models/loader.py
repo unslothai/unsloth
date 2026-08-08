@@ -596,6 +596,8 @@ class FastLanguageModel(FastLlamaModel):
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = kwargs.get("local_files_only", False),
                 revision = revision,
+                require_tokenizer = kwargs.get("tokenizer_name") is None,
+                require_processor = kwargs.get("tokenizer_name") is None and not text_only,
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -804,6 +806,8 @@ class FastLanguageModel(FastLlamaModel):
                     trust_remote_code = trust_remote_code,
                     cache_dir = kwargs.get("cache_dir"),
                     local_files_only = kwargs.get("local_files_only", False),
+                    require_tokenizer = kwargs.get("tokenizer_name") is None,
+                    require_processor = kwargs.get("tokenizer_name") is None and not text_only,
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
@@ -1361,6 +1365,8 @@ class FastModel(FastBaseModel):
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = kwargs.get("local_files_only", False),
                 revision = revision,
+                require_tokenizer = kwargs.get("tokenizer_name") is None,
+                require_processor = kwargs.get("tokenizer_name") is None and not text_only,
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -1770,6 +1776,8 @@ class FastModel(FastBaseModel):
                     load_in_4bit,
                     cache_dir = kwargs.get("cache_dir"),
                     local_files_only = kwargs.get("local_files_only", False),
+                    require_tokenizer = kwargs.get("tokenizer_name") is None,
+                    require_processor = kwargs.get("tokenizer_name") is None and not text_only,
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)

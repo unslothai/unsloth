@@ -264,6 +264,18 @@ def test_primary_mapper_resolution_receives_the_requested_revision():
         assert getattr(revision_kwarg.value, "id", None) == "revision"
 
 
+def test_all_mapper_calls_receive_downstream_artifact_requirements():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        mapper_calls = _calls(function, "get_model_name")
+        assert len(mapper_calls) == 2
+        for call in mapper_calls:
+            keywords = {keyword.arg for keyword in call.keywords}
+            assert "require_tokenizer" in keywords
+            assert "require_processor" in keywords
+
+
 def test_all_config_probes_receive_the_explicit_cache_dir():
     tree = _tree(LOADER)
     for class_name in ("FastLanguageModel", "FastModel"):

@@ -246,6 +246,8 @@ def _prefer_legacy_lowercase_cache(
     cache_dir = None,
     local_files_only = False,
     revision = None,
+    require_tokenizer = True,
+    require_processor = True,
 ):
     """Use a pre-fix lowercase cache only when offline and no canonical cache exists."""
     if (
@@ -285,6 +287,8 @@ def _prefer_legacy_lowercase_cache(
                 os.path.isfile(os.path.join(snapshot, "vocab.json"))
                 and os.path.isfile(os.path.join(snapshot, "merges.txt"))
             )
+            or os.path.isfile(os.path.join(snapshot, "vocab.txt"))
+            or os.path.isfile(os.path.join(snapshot, "spiece.model"))
         )
 
     def _snapshot_has_complete_model(snapshot):
@@ -298,7 +302,7 @@ def _prefer_legacy_lowercase_cache(
                 return False
         except (OSError, ValueError, TypeError):
             return False
-        if not _snapshot_has_tokenizer(snapshot):
+        if require_tokenizer and not _snapshot_has_tokenizer(snapshot):
             return False
         architectures = config.get("architectures") or []
         is_vlm = "vision_config" in config or any(
@@ -306,7 +310,7 @@ def _prefer_legacy_lowercase_cache(
             for architecture in architectures
             if isinstance(architecture, str)
         )
-        if is_vlm and not any(
+        if is_vlm and require_processor and not any(
             os.path.isfile(os.path.join(snapshot, filename))
             for filename in ("processor_config.json", "preprocessor_config.json")
         ):
@@ -375,6 +379,8 @@ def get_model_name(
     cache_dir = None,
     local_files_only = False,
     revision = None,
+    require_tokenizer = True,
+    require_processor = True,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -408,6 +414,8 @@ def get_model_name(
             cache_dir,
             local_files_only,
             cache_revision,
+            require_tokenizer,
+            require_processor,
         )
 
     if (
