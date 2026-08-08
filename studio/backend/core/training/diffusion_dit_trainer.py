@@ -36,6 +36,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core._torchao_stub import is_stubbed
 from core.training.diffusion_train_common import (
     DEFAULT_LORA_FILENAME,
     DEFAULT_LORA_TARGETS,
@@ -482,6 +483,14 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 "base_precision='int8' needs a functional torchao install; this host's "
                 "torchao is missing or the non-functional Windows-ROCm stub. Use "
                 "base_precision='nf4', 'bf16', or 'auto'."
+            )
+        # fp8 / mxfp8 reach torchao.float8 and torchao.prototype.mx_formats, which the stub also answers with a no-op that reports success, so the run
+        # would report fp8 while training bf16. Rejected on the stub alone, not on has_functional_torchao(): that probes int8's symbols specifically,
+        # and a real-but-partial torchao must keep reaching the arch checks below rather than being refused here.
+        if mode in ("fp8", "mxfp8") and is_stubbed("torchao"):
+            raise ValueError(
+                f"base_precision={mode!r} is not available on this host: torchao is the "
+                "non-functional Windows-ROCm stub. Use base_precision='nf4', 'bf16', or 'auto'."
             )
         # mxfp8 needs Blackwell (sm100+): its MX GEMM raises at the first training step, after a full dense load. Re-check here to fail fast for a stale client.
         if mode == "mxfp8" and device == "cuda":

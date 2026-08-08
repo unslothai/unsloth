@@ -125,8 +125,8 @@ backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
-# First, because the stub probe below imports torch on Windows and these vars are read when
-# torch initializes its OpenMP/BLAS pools. utils.cpu_threads imports os and typing only.
+# First, so these vars are in place before anything below can initialize an OpenMP/BLAS pool.
+# utils.cpu_threads imports os and typing only.
 from utils.cpu_threads import configure_cpu_threads
 
 try:

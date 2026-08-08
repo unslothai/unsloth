@@ -202,15 +202,68 @@ def test_no_stub_survives_this_module():
         assert not _torchao_stub.is_stubbed(name), name
 
 
+def _cuda_bf16_target():
+    import torch
+
+    return type("T", (), {"device": "cuda", "dtype": torch.bfloat16})()
+
+
 def test_dense_quant_declines_a_stubbed_torchao(on_windows_rocm):
     """The stub's quantize_ is a no-op, so the smoke probe passes on a still-dense Linear and
     the transformer gets MARKED quantised without being quantised. Decline before that."""
     from core.inference.diffusion_transformer_quant import dense_transformer_supported
 
-    import torch
     # The fixture cleared torchao out of sys.modules, so nothing is stubbed yet.
-    target = type("T", (), {"device": "cuda", "dtype": torch.bfloat16})()
+    target = _cuda_bf16_target()
     assert dense_transformer_supported(target) is True
 
     install_torchao_windows_rocm_stub()
     assert dense_transformer_supported(target) is False
+
+
+@pytest.mark.parametrize("mode", ["int8", "fp8_dynamic", "nvfp4"])
+def test_te_quant_declines_a_stubbed_torchao(on_windows_rocm, mode):
+    """Same no-op, same false report, on the text encoders. ROCm answers device "cuda" and a
+    capability pair, so nothing else in te_quant_supported catches it."""
+    from core.inference.diffusion_precision import te_quant_supported
+
+    target = _cuda_bf16_target()
+    install_torchao_windows_rocm_stub()
+    assert te_quant_supported(target, mode) is False
+
+
+def test_layerwise_fp8_te_still_works_under_the_stub(on_windows_rocm):
+    """Plain fp8 is a torch cast with no torchao in it, so the guard must not take it away."""
+    from core.inference.diffusion_precision import te_quant_supported
+
+    target = _cuda_bf16_target()
+    install_torchao_windows_rocm_stub()
+    import torch
+    assert te_quant_supported(target, "fp8") is hasattr(torch, "float8_e4m3fn")
+
+
+@pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
+def test_dit_training_refuses_dense_precision_under_the_stub(on_windows_rocm, mode):
+    """_apply_fp8_training / _apply_mxfp8_training call the stub, get None, raise nothing and
+    return True, so the run would report fp8 while training bf16. Fail fast instead."""
+    from core.training.diffusion_dit_trainer import _resolve_base_precision
+
+    install_torchao_windows_rocm_stub()
+    cfg = type("C", (), {"base_precision": mode, "mixed_precision": "bf16"})()
+    with pytest.raises(ValueError, match = "Windows-ROCm stub"):
+        _resolve_base_precision(cfg, None, "cuda")
+
+
+def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch):
+    """The one check standing between an API-supplied attention_backend="xformers" and a stub
+    that returns None mid-denoise. diffusers' own probe is metadata-based, so with xformers
+    installed it believes the stub is usable and will not refuse the backend itself."""
+    import torch
+
+    from core.inference.diffusion_attention import select_attention_backend
+
+    monkeypatch.setattr(torch.version, "hip", "7.2.1", raising = False)  # ROCm build
+    rocm = type("T", (), {"device": "cuda"})()
+    for speed in (True, False):
+        assert select_attention_backend(rocm, "xformers", speed_active = speed) is None
+        assert select_attention_backend(rocm, "auto", speed_active = speed) != "xformers"

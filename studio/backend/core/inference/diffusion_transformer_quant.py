@@ -25,6 +25,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+# stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
+from core._torchao_stub import is_stubbed
+
 TQ_INT8 = "int8"
 TQ_FP8 = "fp8"
 TQ_NVFP4 = "nvfp4"
@@ -223,8 +226,6 @@ def dense_transformer_supported(target: Any) -> bool:
     # the smoke probe passes on a still-dense Linear and the transformer would be MARKED
     # quantised without being quantised -- wrong VRAM budget and compile policy. Same guard as
     # the trainer's has_functional_torchao(); the GGUF/native fallback is the real path there.
-    from core._torchao_stub import is_stubbed
-
     if is_stubbed("torchao"):
         return False
     try:

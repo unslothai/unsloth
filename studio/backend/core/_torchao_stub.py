@@ -103,21 +103,39 @@ class _StubSubpackageFinder(importlib.abc.MetaPathFinder):
         )
 
 
+def _module_is_rocm(mod) -> bool:
+    """Whether an already-imported torch module is a ROCm build."""
+    # Some ROCm wheels lack torch.version.hip but still encode "rocm" in __version__.
+    return bool(
+        getattr(getattr(mod, "version", None), "hip", None)
+        or "rocm" in getattr(mod, "__version__", "").lower()
+    )
+
+
 def _is_windows_rocm() -> bool:
     """True on a Windows host whose active torch is a ROCm build."""
     # Gate on the active torch runtime, not env-var presence -- HIP_PATH/ROCM_PATH
-    # persist after reverting to a CUDA wheel. Some ROCm wheels lack
-    # torch.version.hip but still encode "rocm" in __version__, so accept either.
+    # persist after reverting to a CUDA wheel.
     if sys.platform != "win32":
         return False
+    mod = sys.modules.get("torch")
+    if mod is not None:
+        return _module_is_rocm(mod)
+    # Not imported yet: read the wheel version off dist-info rather than importing torch.
+    # The earliest caller is run.py, at import time, where importing torch costs seconds and
+    # sizes the OpenMP/BLAS pools before configure_cpu_threads() can set them. Every ROCm
+    # build spells rocm in its local version: +rocm7.2.1, +rocmsdk20251116, +rocm7.10.0aN.
     try:
-        import torch as _torch_probe
-        return bool(
-            getattr(getattr(_torch_probe, "version", None), "hip", None)
-            or "rocm" in getattr(_torch_probe, "__version__", "").lower()
-        )
+        from importlib.metadata import version
+        return "rocm" in version("torch").lower()
+    except Exception:
+        pass
+    # No dist-info (source checkout, vendored copy): importing is the only way left to know.
+    try:
+        import torch
     except Exception:
         return False
+    return _module_is_rocm(torch)
 
 
 def _ensure_finder() -> None:

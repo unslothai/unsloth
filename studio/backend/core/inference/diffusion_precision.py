@@ -27,11 +27,16 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+# stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
+from core._torchao_stub import is_stubbed
+
 TE_QUANT_FP8 = "fp8"
 TE_QUANT_NVFP4 = "nvfp4"
 TE_QUANT_INT8 = "int8"
 TE_QUANT_FP8_DYNAMIC = "fp8_dynamic"
 TE_QUANT_MODES = (TE_QUANT_FP8, TE_QUANT_NVFP4, TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC)
+# The modes that go through torchao; plain fp8 is a layerwise torch cast and needs none.
+_TE_TORCHAO_MODES = frozenset({TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVFP4})
 
 # Pipeline attributes that hold a text encoder, in order.
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
@@ -67,6 +72,12 @@ def te_quant_supported(target: Any, mode: str) -> bool:
     each backend needs -- fp8 dtype (fp8), fp8 GEMM sm_89+ (fp8_dynamic), int8 sm_80+ (int8),
     Blackwell sm_100+ (nvfp4)."""
     if getattr(target, "device", None) != "cuda":
+        return False
+    # Windows ROCm stubs torchao, and the stub's quantize_ is a no-op that leaves the encoder
+    # bf16 while quantize_text_encoders still reports the mode as applied. Same guard as
+    # dense_transformer_supported(); ROCm reports device "cuda" and a capability pair, so
+    # nothing below would catch it.
+    if mode in _TE_TORCHAO_MODES and is_stubbed("torchao"):
         return False
     try:
         import torch
