@@ -86,3 +86,65 @@ export async function withModelLoadNotice<T>(
     notifyModelLifecycle({ runtime, loading: false, model });
   }
 }
+
+/** What a `load-progress` endpoint reports; `null` before the first byte moves. */
+export type LoadPhase = "downloading" | "finalizing" | "ready" | "error" | null;
+
+/** How often the settle poll asks; overridable so a test need not sleep. */
+export const BACKGROUND_LOAD_POLL_MS = 2000;
+/** A backend that stops answering must not leave the row loading forever. */
+export const BACKGROUND_LOAD_DEADLINE_MS = 60 * 60 * 1000;
+
+/**
+ * The same announcement for the two loads that only *start* the work: images
+ * and video hand off to a background thread and return at once, while /status
+ * keeps reporting `loaded: false` for the whole load. Settling on the POST would
+ * flash the row for one round trip and then drop it, leaving the toast saying
+ * "loading" alone for minutes -- the very gap this notice exists to close.
+ *
+ * So settle from the same `load-progress` endpoint the page toast watches. The
+ * poll belongs to the load call rather than to a page, so the row still settles
+ * when the user navigates away mid-load.
+ */
+export async function withBackgroundLoadNotice<T>(
+  runtime: ModelRuntime,
+  model: string | null,
+  start: () => Promise<T>,
+  readPhase: () => Promise<LoadPhase>,
+  pollMs: number = BACKGROUND_LOAD_POLL_MS,
+): Promise<T> {
+  notifyModelLifecycle({ runtime, loading: true, model });
+  let started = false;
+  try {
+    const result = await start();
+    started = true;
+    void settleWhenLoadEnds(runtime, model, readPhase, pollMs);
+    return result;
+  } finally {
+    // A load that never started settles here; one that did settles from the
+    // poll, so exactly one of the two paths ends the notice.
+    if (!started) notifyModelLifecycle({ runtime, loading: false, model });
+  }
+}
+
+async function settleWhenLoadEnds(
+  runtime: ModelRuntime,
+  model: string | null,
+  readPhase: () => Promise<LoadPhase>,
+  pollMs: number,
+): Promise<void> {
+  const deadline = Date.now() + BACKGROUND_LOAD_DEADLINE_MS;
+  try {
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      // An unreadable read is not proof the load ended: a restarting backend or
+      // one dropped request would end the row early and hide a live load. Only
+      // a terminal phase settles it, and the deadline covers a backend that
+      // never answers again.
+      const phase = await readPhase().catch(() => undefined);
+      if (phase === "ready" || phase === "error") return;
+    }
+  } finally {
+    notifyModelLifecycle({ runtime, loading: false, model });
+  }
+}
