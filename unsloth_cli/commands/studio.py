@@ -2909,8 +2909,13 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
 
     if is_windows:
         ps_argv: list[str] = ["powershell.exe"]
+        # -NoProfile unconditionally, for the same reason as _run_setup_script above:
+        # this runs install.ps1, and gating it on the hidden branch means the visible
+        # path -- a console, where a profile is exactly what IS loaded -- was the one
+        # that did not get it.
+        ps_argv.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            ps_argv.extend(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"])
+            ps_argv.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
 
         for script in candidates:
             try:

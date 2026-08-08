@@ -46,10 +46,19 @@ function Install-UnslothStudio {
     # corporate host it may be the sole route to python.org and the uv release, and
     # the people this fix is for are exactly the ones who never ran -NoProfile and so
     # never found out they needed it.
+    #
+    # This does not carry across to studio/setup.ps1, which unsloth_cli launches with
+    # -NoProfile and which downloads on its own. A host whose ONLY proxy configuration
+    # is a $PSDefaultParameterValues entry -- no HTTP(S)_PROXY, no system proxy --
+    # therefore keeps its proxy here and loses it there. Accepted: aliases and strict
+    # mode break setup.ps1 far more often than that configuration exists, and the env
+    # vars it is normally set alongside are inherited by the child regardless.
+    # IsMatch, not -match, so the filter does not leave $Matches behind in this scope
+    # for the rest of the install to trip over.
     $_UnslothKeptDefaults = @{}
     foreach ($_UnslothDefaultKey in @($PSDefaultParameterValues.Keys)) {
         if ($_UnslothDefaultKey -is [string] -and
-            $_UnslothDefaultKey -match ':Proxy(Credential|UseDefaultCredentials)?$') {
+            [regex]::IsMatch($_UnslothDefaultKey, ':Proxy(Credential|UseDefaultCredentials)?$')) {
             $_UnslothKeptDefaults[$_UnslothDefaultKey] = $PSDefaultParameterValues[$_UnslothDefaultKey]
         }
     }
@@ -63,6 +72,16 @@ function Install-UnslothStudio {
     # native calls, so this covers the ones outside it. Harmless on Windows
     # PowerShell 5.1, where the variable simply does not exist.
     $PSNativeCommandUseErrorActionPreference = $false
+
+    # 'All' is the default. A profile that sets 'None' -- the tweak people copy to
+    # shave startup time -- is fatal here on PowerShell 7, which loads NO modules at
+    # startup: Test-Path, Write-Host, Select-Object, ConvertFrom-Json, Get-FileHash,
+    # Invoke-WebRequest, Expand-Archive, Start-Process and Get-Content all stop
+    # resolving, and the script dies on its first step with a CommandNotFoundException
+    # naming a cmdlet the reader assumes is always there. Windows PowerShell 5.1
+    # preloads Utility and Management so it survives, which is exactly the kind of
+    # difference that makes this reproduce on one machine and not another.
+    $PSModuleAutoLoadingPreference = 'All'
 
     # Reset per invocation, for the reason spelled out at $script:IsIntelXpu further
     # down: under "irm ... | iex" $script: is the caller's session scope, so a second
@@ -1929,7 +1948,16 @@ exit 0
         }
 
     Write-TauriLog "STEP" "Checking system dependencies"
-    $script:WingetAvailable = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+    # -CommandType Application, for the same reason as Resolve-UvExecutable below:
+    # winget is what installs Python AND uv, so a profile "function winget {...}" or
+    # "Set-Alias winget ..." -- the wrappers people write to inject --accept-* or pin
+    # a source -- would otherwise receive both installs. Pin the resolved path so the
+    # five call sites cannot be re-resolved onto it later either.
+    $script:WingetExe = (
+        Get-Command winget -CommandType Application -All -ErrorAction SilentlyContinue |
+            Where-Object { $_.Source } | Select-Object -First 1 -ExpandProperty Source
+    )
+    $script:WingetAvailable = [bool]$script:WingetExe
     if ($script:WingetAvailable) {
         step "winget" "available"
     } else {
@@ -2196,7 +2224,7 @@ exit 0
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
-                winget install -e --id "Python.Python.$PythonVersion" --source winget --architecture x64 --accept-package-agreements --accept-source-agreements
+                & $script:WingetExe install -e --id "Python.Python.$PythonVersion" --source winget --architecture x64 --accept-package-agreements --accept-source-agreements
             } catch { }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
@@ -2235,7 +2263,7 @@ exit 0
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
-                winget install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements
+                & $script:WingetExe install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements
                 $wingetExit = $LASTEXITCODE
             } catch { $wingetExit = 1 }
             $ErrorActionPreference = $prevEAP
@@ -2252,7 +2280,7 @@ exit 0
                 substep "Python not found on PATH after winget. Retrying with --force..." "Yellow"
                 $ErrorActionPreference = "Continue"
                 try {
-                    winget install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements --force
+                    & $script:WingetExe install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements --force
                     $wingetExit = $LASTEXITCODE
                 } catch { $wingetExit = 1 }
                 $ErrorActionPreference = $prevEAP
@@ -2318,7 +2346,7 @@ exit 0
     # people write to pin uv at a project venv -- captures every uv call here. The
     # version probe then reads a perfectly good uv as broken and the install ends at
     # "uv could not be installed" on a machine that already has one.
-    # Returns $null only when nothing named uv resolves at all, so the caller's
+    # Returns $null when nothing named uv resolves to an executable, so the caller's
     # "not installed yet" branch keeps its current meaning.
     function Resolve-UvExecutable {
         # -All: without it Get-Command's ordering across several matches is incidental
@@ -2331,10 +2359,23 @@ exit 0
         # Applications come back in PATH order (PATHEXT deciding within a directory), so
         # on a console with no profile overrides this is the uv the bare token would run.
         if ($apps.Count -gt 0) { return $apps[0].Source }
-        # Nothing on PATH under that name: fall back to the bare token, which keeps
-        # an install that works today through some other command type working and
-        # still hands the caller something invokable.
-        if (Get-Command uv -ErrorAction SilentlyContinue) { return 'uv' }
+        # Nothing on PATH under that name. An ALIAS pointing at a real executable is
+        # still a legitimate way to have uv, so follow it -- but only as far as an
+        # Application, and return the resolved path rather than the alias name so the
+        # rest of the script is not going back through command discovery.
+        $alias = Get-Command uv -CommandType Alias -ErrorAction SilentlyContinue
+        while ($alias -and $alias.ResolvedCommand) {
+            $target = $alias.ResolvedCommand
+            if ($target.CommandType -eq 'Application' -and $target.Source) { return $target.Source }
+            if ($target.CommandType -ne 'Alias') { break }
+            $alias = $target
+        }
+        # Anything else named uv is a function, a cmdlet, or an alias to one. Do NOT
+        # hand back the bare token here: a wrapper that answers `--version` with a
+        # plausible number would pass the version gate and then receive every install
+        # command this script runs, which is the hijack this function exists to stop.
+        # $null keeps the caller's "not installed yet" meaning, so uv gets installed
+        # for real and the gate re-probes against that.
         return $null
     }
 
@@ -2479,9 +2520,9 @@ exit 0
         if ($script:WingetAvailable) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
-            try { winget upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
             if (-not (Test-UvVersionOk)) {
-                try { winget install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+                try { & $script:WingetExe install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
             }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath

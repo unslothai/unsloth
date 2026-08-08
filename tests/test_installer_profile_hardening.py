@@ -163,9 +163,15 @@ def test_uv_is_resolved_as_an_application():
         "Application-only lookup is what skips an alias or function, and ordering across "
         "several matches is only documented for -All"
     )
-    assert (
-        "return 'uv'" in body
-    ), "with nothing on PATH the bare token must come back, so resolution stays exactly today's"
+    assert "return 'uv'" not in body, (
+        "the bare token must NOT come back as a fallback: a profile `function uv` that answers "
+        "--version with a plausible number would clear the version gate and then receive every "
+        "install command, which is the hijack this function exists to stop"
+    )
+    assert "-CommandType Alias" in body and "ResolvedCommand" in body, (
+        "an alias pointing at a real executable is still a legitimate way to have uv, so follow "
+        "it -- but only as far as an Application, and hand back the resolved path"
+    )
     probe = _extract_function("Test-UvVersionOk")
     assert (
         "Resolve-UvExecutable" in probe and "$script:UvExe = $exe" in probe
@@ -294,6 +300,7 @@ def _run_with_profile(
     body: str,
     path_prepend: Path | None = None,
     path_override: Path | None = None,
+    profile: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run `body` with the hostile profile dot-sourced into the scope that encloses it.
 
@@ -304,10 +311,10 @@ def _run_with_profile(
     variable can redirect $PROFILE at a fixture. test_a_real_profile_reproduces_the_same_state
     anchors this against a genuinely loaded profile wherever that is possible.
     """
-    profile = tmp_path / "hostile_profile.ps1"
-    profile.write_text(_HOSTILE_PROFILE, encoding = "utf-8")
+    profile_path = tmp_path / "hostile_profile.ps1"
+    profile_path.write_text(_HOSTILE_PROFILE if profile is None else profile, encoding = "utf-8")
     script = tmp_path / "body.ps1"
-    script.write_text(f". {_ps_literal(profile)}\n{body}\n", encoding = "utf-8")
+    script.write_text(f". {_ps_literal(profile_path)}\n{body}\n", encoding = "utf-8")
     # Absolute path: PATH is replaced in some cases, so pwsh could not be found by name.
     return subprocess.run(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
@@ -563,6 +570,77 @@ def test_uv_probe_reports_missing_when_only_the_alias_exists(tmp_path):
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
     assert "OK:False" in res.stdout
     assert "PINNED:uv" in res.stdout
+
+
+@requires_pwsh
+def test_a_convincing_uv_function_is_not_accepted_as_uv(tmp_path):
+    """The dangerous shape is a wrapper that ANSWERS the version probe.
+
+    An alias to a missing file fails loudly, so the earlier tests catch it. A profile
+    `function uv` that prints a modern version number does not: it clears the version gate,
+    gets pinned, and then receives every install command the script runs -- with the user's
+    torch, index URL and venv path as arguments. Nothing on PATH, so only the wrapper exists.
+    """
+    profile = 'function uv { Write-Output "uv 99.0.0" }\n'
+    body = _uv_probe_body('    "RESOLVED:$(Resolve-UvExecutable)"')
+    res = _run_with_profile(
+        tmp_path, body, path_override = tmp_path / "emptybin", profile = profile
+    )
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert "RESOLVED:" in res.stdout and "RESOLVED:uv" not in res.stdout, (
+        "a function named uv must not resolve to the bare token; it would then be pinned and "
+        f"handed every install command. got {res.stdout!r}"
+    )
+    assert "OK:False" in res.stdout, "the version gate must not be satisfied by a wrapper"
+    assert "PINNED:uv" in res.stdout, "the reset value must survive, so uv is installed for real"
+
+
+@requires_pwsh
+def test_an_alias_to_a_real_uv_is_followed_to_the_executable(tmp_path):
+    """The legitimate wrapper shape still has to work, and resolve to a PATH, not the alias.
+
+    People do alias uv at a specific build. Refusing that outright would install a second uv
+    over a working machine, which is the failure this whole function was written to avoid.
+    """
+    fake = _fake_uv(tmp_path / "aliased", version = "0.12.4")
+    profile = f"Set-Alias uv {_ps_literal(fake)}\n"
+    body = _uv_probe_body('    "RESOLVED:$(Resolve-UvExecutable)"')
+    res = _run_with_profile(
+        tmp_path, body, path_override = tmp_path / "emptybin", profile = profile
+    )
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert f"RESOLVED:{fake}" in res.stdout, (
+        f"an alias to a real executable must resolve to {str(fake)!r}, not to the alias name; "
+        f"got {res.stdout!r}"
+    )
+    assert "OK:True" in res.stdout
+    assert f"PINNED:{fake}" in res.stdout
+
+
+def test_no_bare_winget_token_survives_at_a_call_site():
+    """winget installs both Python and uv, so an alias on it owns the same ground.
+
+    Detection used a bare Get-Command, and all five invocations were bare tokens, so the fix
+    applied to uv left the other half of the bootstrap exposed to the identical wrapper.
+    """
+    src = _install_ps1()
+    assert (
+        "Get-Command winget -CommandType Application -All" in src
+    ), "winget detection must skip aliases and functions, exactly as uv detection does"
+    for bare in ("\n                winget ", "\n                    winget ", "{ winget "):
+        assert bare not in src, f"winget must be invoked through the resolved path, found {bare!r}"
+    assert (
+        src.count("& $script:WingetExe ") >= 5
+    ), "every winget invocation must route through the resolved path"
+
+
+def test_module_autoloading_is_restored():
+    """A profile setting 'None' removes Test-Path, Write-Host and Invoke-WebRequest on pwsh 7,
+    which loads no modules at startup. Windows PowerShell 5.1 preloads them and survives, which
+    is what makes this reproduce on one machine and not another."""
+    src = _install_ps1()
+    idx = _locate(src, "$PSModuleAutoLoadingPreference = 'All'", "the autoloading reset")
+    assert idx < _locate(src, "Write-TauriLog", "the first cmdlet that needs a module")
 
 
 @requires_pwsh
