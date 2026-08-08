@@ -1759,3 +1759,76 @@ def test_snapshot_options_let_a_later_dataset_info_entry_win(tmp_path):
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_declared_files_under_an_unsafe_data_dir(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: /missing\n  data_files: train.jsonl\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # The loader looks for /missing/train.jsonl, not the one at the root.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_resolve_a_nested_wildcard_data_dir(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: 'root/a*'\n")
+    (snapshot / "root" / "a1").mkdir(parents = True)
+    (snapshot / "root" / "a1" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_double_star_inside_a_component(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: 'a**b.jsonl'\n")
+    (snapshot / "axxb.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # fsspec refuses a ** that is not a path component of its own.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("params", ["123", "\n    - RGB"])
+def test_snapshot_options_reject_feature_class_parameters_that_are_not_a_mapping(tmp_path, params):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype:\n      image: {params}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize(
+    "field", ["splits:\n  - 123", "splits:\n    train: 123", "features:\n  - 123"]
+)
+def test_snapshot_options_reject_a_dataset_info_child_of_the_wrong_shape(tmp_path, field):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"dataset_info:\n  {field}\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_resolve_a_declared_path_through_a_blob_directory(tmp_path):
+    repo = tmp_path / "datasets--org--data"
+    snapshot = repo / "snapshots" / "commit"
+    blobs = repo / "blobs" / "dir"
+    blobs.mkdir(parents = True)
+    (blobs / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: data/train.jsonl\n")
+    (snapshot / "data").symlink_to(os.path.relpath(blobs, snapshot))
+
+    # An explicit pattern resolves through the link even though default inference does not.
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_do_not_walk_a_directory_link_out_of_the_cache(tmp_path):
+    repo = tmp_path / "datasets--org--data"
+    snapshot = repo / "snapshots" / "commit"
+    outside = tmp_path / "outside"
+    outside.mkdir(parents = True)
+    (outside / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: data/train.jsonl\n")
+    (snapshot / "data").symlink_to(os.path.relpath(outside, snapshot))
+
+    assert local_options._snapshot_options(snapshot) == set()

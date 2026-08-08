@@ -283,8 +283,9 @@ def _valid_feature_node(node: Any) -> bool:
         return _valid_feature_node(node[role])
     if role == "class_label":
         return isinstance(node["class_label"], dict)
-    # A feature class, with the mapping under it being its keyword arguments.
-    return role.replace("_", "").lower() in _FEATURE_TYPE_NAMES
+    # A feature class, with the mapping under it being its keyword arguments. datasets
+    # expands that value with **, so anything but a mapping raises there.
+    return role.replace("_", "").lower() in _FEATURE_TYPE_NAMES and isinstance(node[role], dict)
 
 
 def _valid_features(features: Any) -> bool:
@@ -445,11 +446,17 @@ def _add_dataset_info_options(options: set[tuple[str, str]], payload: Any) -> No
 def _valid_dataset_info(payload: Any) -> bool:
     """datasets walks this while it builds DatasetInfosDict, so a field of the wrong shape
     raises there rather than when a split is chosen."""
+    def children(value: Any) -> list[Any]:
+        return list(value.values()) if isinstance(value, dict) else value
+
     entries = payload if isinstance(payload, list) else [payload]
     return all(
         isinstance(entry, dict)
         and isinstance(entry.get("features", []), (list, dict))
         and isinstance(entry.get("splits", []), (list, dict))
+        # datasets walks each child with .get or .pop, so a scalar in there raises too.
+        and all(isinstance(child, dict) for child in children(entry.get("features", [])))
+        and all(isinstance(child, dict) for child in children(entry.get("splits", [])))
         for entry in entries
     )
 
@@ -764,22 +771,48 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
 
 
 def _snapshot_all_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
-    """Every file in the snapshot, hidden and __ ones included. Default inference skips
-    those, but a declared pattern is allowed to name them, so resolution needs them all."""
+    """Every file a declared pattern could name, hidden and __ ones included.
+
+    Default inference does not see these: fsspec's ** does not descend a directory link, so
+    _snapshot_data_files leaves them alone. An explicit pattern does resolve through one, so
+    this walk follows a link whose target stays inside the repository, blobs included, and
+    still refuses one that points outside it.
+    """
     found: list[PurePosixPath] = []
     try:
         root = snapshot.resolve(strict = True)
+        # <cache>/datasets--org--name/snapshots/<sha>
+        repo = snapshot.parent.parent.resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
         return found
 
-    for directory, dirnames, filenames in os.walk(root, followlinks = False):
+    def inside(path: Path) -> bool:
+        try:
+            return path.resolve(strict = True).is_relative_to(repo)
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    seen: set[str] = set()
+    for directory, dirnames, filenames in os.walk(root, followlinks = True):
         base = Path(directory)
         try:
             relative = base.relative_to(root)
         except ValueError:
             dirnames[:] = []
             continue
-        dirnames[:] = [name for name in dirnames if not (base / name).is_symlink()]
+        try:
+            real = str(base.resolve(strict = True))
+        except (OSError, RuntimeError, ValueError):
+            dirnames[:] = []
+            continue
+        if real in seen:
+            # A link back into somewhere already walked; nothing new below it.
+            dirnames[:] = []
+            continue
+        seen.add(real)
+        dirnames[:] = [
+            name for name in dirnames if not (base / name).is_symlink() or inside(base / name)
+        ]
         for filename in filenames:
             if len(found) >= _MAX_SNAPSHOT_DATA_FILES:
                 # Past the cap this is a traversal-order prefix, and deciding a declaration is
@@ -919,6 +952,8 @@ def _paths_module(item: dict[str, Any], files: _DeclaredFiles) -> Optional[str]:
     """The module a config's declaration votes for, counting the files it resolves to the
     way datasets does rather than counting the pattern strings."""
     root = _config_root(item)
+    if root is None:
+        return None
     named = [
         (path, _file_module(path.name))
         for pattern in _declared_paths(item)
@@ -952,6 +987,11 @@ def _glob_matcher(pattern: str) -> "Optional[re.Pattern[str]]":
         character = pattern[index]
         if character == "*":
             if pattern[index + 1 : index + 2] == "*":
+                before = pattern[index - 1 : index]
+                after = pattern[index + 2 : index + 3]
+                if (before and before != "/") or (after and after != "/"):
+                    # fsspec raises on a ** that is not a path component of its own.
+                    return None
                 # A leading **/ stands for any number of directories, including none.
                 if pattern[index + 2 : index + 3] == "/":
                     parts.append("(?:.*/)?")
@@ -1072,9 +1112,11 @@ class _DeclaredFiles:
         return [path for path in self.paths if matcher.match(path.as_posix()) and keep(path)]
 
 
-def _config_root(item: dict[str, Any]) -> str:
-    """The directory a config's declared patterns are resolved under."""
-    return _normalized_dir(_safe_data_dir(item.get("data_dir") or "") or "") or ""
+def _config_root(item: dict[str, Any]) -> Optional[str]:
+    """The directory a config's declared patterns are resolved under, or None when it is one
+    we will not follow. Falling back to the root would validate a different file."""
+    safe = _safe_data_dir(item.get("data_dir") or "")
+    return None if safe is None else _normalized_dir(safe)
 
 
 def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _DeclaredFiles) -> set[str]:
@@ -1082,6 +1124,9 @@ def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _Declared
     that is missing raises on its own; a whole group matching nothing raises either way."""
     dead = set()
     for name, item in collapsed.items():
+        if _config_root(item) is None:
+            dead.add(name)
+            continue
         version = item.get("version")
         if version is not None and (
             not isinstance(version, str) or _VERSION_RE.fullmatch(version) is None
@@ -1091,7 +1136,7 @@ def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _Declared
         entries = item.get("data_files")
         if entries is not None and not entries:
             dead.add(name)
-        root = _config_root(item)
+        root = _config_root(item) or ""
         for group in _declared_path_groups(item):
             matched = False
             for pattern in group:
@@ -1123,6 +1168,8 @@ def _mismatched_configs(
     mismatched = set()
     for name, item in collapsed.items():
         root = _config_root(item)
+        if root is None:
+            continue
         resolved = [
             path for pattern in _declared_paths(item) for path in files.resolve(pattern, root)
         ]
@@ -1181,9 +1228,10 @@ def _resolved_data_dir(snapshot: Path, raw: str) -> Optional[str]:
         if matcher is None:
             return None
         matched = sorted(
-            path.relative_to(snapshot).as_posix()
-            for path in snapshot.glob("*/")
-            if path.is_dir() and matcher.match(path.relative_to(snapshot).as_posix())
+            relative
+            for path in snapshot.rglob("*")
+            if path.is_dir()
+            and matcher.match(relative := path.relative_to(snapshot).as_posix())
         )
         return matched[0] if len(matched) == 1 else None
     if not (snapshot / raw).is_dir():
