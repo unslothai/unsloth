@@ -22,6 +22,8 @@ from types import SimpleNamespace
 import pytest
 
 from core.training.worker import (
+    _DISCRETE_MEM_FRACTION,
+    _UNIFIED_MAX_RESERVE_FRACTION,
     _UNIFIED_OS_RESERVE_BYTES,
     _parse_mem_fraction_env,
     _rocm_classify_unified_memory,
@@ -29,6 +31,22 @@ from core.training.worker import (
 )
 
 GIB = 1024**3
+
+# Derived so that tuning the reserve retunes the tests with it: below this pool size the
+# percentage arm wins, above it the byte arm does, and the two are equal exactly here.
+_CROSSOVER_BYTES = int(_UNIFIED_OS_RESERVE_BYTES / _UNIFIED_MAX_RESERVE_FRACTION)
+_HISTORICAL_CAP = 1.0 - _UNIFIED_MAX_RESERVE_FRACTION
+
+
+# Past this the byte reserve is a smaller share than the discrete cap allows, so the
+# clamp takes over and the reserve stops being the flat constant.
+_CLAMP_BYTES = int(_UNIFIED_OS_RESERVE_BYTES / (1.0 - _DISCRETE_MEM_FRACTION))
+
+
+def _expected_unified_fraction(total_bytes: int) -> float:
+    """The reserve policy, restated independently of the implementation."""
+    reserve = min(_UNIFIED_MAX_RESERVE_FRACTION, _UNIFIED_OS_RESERVE_BYTES / total_bytes)
+    return min(1.0 - reserve, _DISCRETE_MEM_FRACTION)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -251,15 +269,25 @@ class TestMemFractionSelection:
     def test_unified_win32_uses_budget_exact_fraction(self) -> None:
         assert _rocm_memory_fraction(128 * GIB, True, "win32") == 1.0
 
-    def test_discrete_keeps_090(self) -> None:
-        assert _rocm_memory_fraction(24 * GIB, False, "linux") == 0.90
-        assert _rocm_memory_fraction(128 * GIB, False, "linux") == 0.90
+    def test_discrete_keeps_its_cap_at_every_size(self) -> None:
+        assert _rocm_memory_fraction(24 * GIB, False, "linux") == _DISCRETE_MEM_FRACTION
+        assert _rocm_memory_fraction(128 * GIB, False, "linux") == _DISCRETE_MEM_FRACTION
 
     def test_win32_unified_logs_vgm_hint(self) -> None:
         """Users must learn the WDDM budget is raisable (BIOS UMA / AMD
         Software Variable Graphics Memory) instead of assuming a bug."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
         assert "Variable Graphics Memory" in source
+
+    def test_guard_delegates_to_the_fraction_helper(self) -> None:
+        """Section 1g only runs behind _hw.IS_ROCM, which no CI machine satisfies, so its
+        wiring has no other coverage. Pins the three things this PR's review turned on:
+        the guard calls the helper, sizes against the allocator's own total, and tags the
+        log off the parsed override rather than the raw string."""
+        source = _WORKER_PY.read_text(encoding = "utf-8")
+        assert "_mem_fraction = _rocm_memory_fraction(" in source
+        assert "_torch_mem.cuda.mem_get_info(0)[1]" in source
+        assert "if _env_fraction is not None" in source
 
 
 class TestUnifiedLinuxReserve:
@@ -269,33 +297,48 @@ class TestUnifiedLinuxReserve:
     min(20% of total, 16 GiB), so the 20% arm still wins below the 80 GiB
     crossover and those hosts keep exactly the historical cap."""
 
-    @pytest.mark.parametrize("pool_gib", [8, 16, 32, 64, 80])
-    def test_at_or_below_crossover_is_unchanged(self, pool_gib: int) -> None:
-        # 20% * total <= 16 GiB here, so the percentage arm wins and the cap
-        # is bit-identical to the historical flat 0.80.
-        assert _rocm_memory_fraction(pool_gib * GIB, True, "linux") == pytest.approx(0.80)
+    @pytest.mark.parametrize("share_of_crossover", [0.1, 0.2, 0.4, 0.8, 1.0])
+    def test_at_or_below_crossover_is_unchanged(self, share_of_crossover: float) -> None:
+        # Exact, not approx: the helper is solved in fraction space precisely so this
+        # stays bit-identical to the historical cap, and approx(0.80) would accept the
+        # 0.7999999999999999 that the bytes-space arithmetic would have produced.
+        total = int(_CROSSOVER_BYTES * share_of_crossover)
+        assert _rocm_memory_fraction(total, True, "linux") == _HISTORICAL_CAP
 
-    def test_large_pool_reserves_the_constant_not_a_percentage(self) -> None:
-        total = 128 * GIB
+    @pytest.mark.parametrize("multiple_of_crossover", [1.2, 1.6, 2.0])
+    def test_large_pool_reserves_the_constant_not_a_percentage(
+        self, multiple_of_crossover: float
+    ) -> None:
+        # Between the crossover and the clamp the reserve is the flat byte constant.
+        total = int(_CROSSOVER_BYTES * multiple_of_crossover)
+        assert total <= _CLAMP_BYTES, "sized past the clamp; the flat reserve no longer holds"
         fraction = _rocm_memory_fraction(total, True, "linux")
         assert total - fraction * total == pytest.approx(_UNIFIED_OS_RESERVE_BYTES)
-        assert fraction == pytest.approx(0.875)
+        assert fraction == pytest.approx(_expected_unified_fraction(total))
 
-    def test_never_reaches_the_090_recorded_as_starving(self) -> None:
-        # 0.90 on a 128 GiB pool was measured as OS-starving; a 16 GiB
-        # reserve stays under it for every pool a shipping APU can have.
-        for pool_gib in (96, 128, 156):
-            assert _rocm_memory_fraction(pool_gib * GIB, True, "linux") < 0.90
+    @pytest.mark.parametrize("pool_gib", [96, 128, 156, 160, 161, 256, 1024])
+    def test_never_exceeds_the_090_recorded_as_starving(self, pool_gib: int) -> None:
+        # 0.90 stays a literal on purpose: it is a field measurement of where a 128 GiB
+        # pool starved the OS, not a policy constant. Deriving it from the reserve would
+        # make this pass by construction and stop it catching an over-tuned reserve.
+        # Sizes past 160 GiB are the clamp's job: without it the byte reserve falls under
+        # 10% of the pool and a unified host would outrank a discrete card.
+        assert _rocm_memory_fraction(pool_gib * GIB, True, "linux") <= 0.90
 
-    def test_fraction_is_monotonic_and_floored_at_080(self) -> None:
+    def test_huge_pools_clamp_to_the_discrete_cap(self) -> None:
+        # Above the clamp the reserve is no longer the flat constant, by design.
+        assert _rocm_memory_fraction(1024 * GIB, True, "linux") == _DISCRETE_MEM_FRACTION
+
+    def test_fraction_is_monotonic_and_floored_at_the_historical_cap(self) -> None:
         seen = [_rocm_memory_fraction(g * GIB, True, "linux") for g in range(4, 260, 4)]
-        assert all(f >= 0.80 for f in seen)
+        assert all(f >= _HISTORICAL_CAP for f in seen)
         assert seen == sorted(seen)
 
     def test_missing_total_falls_back_to_historical_cap(self) -> None:
-        # Some AMD SDK wheels report no total; must not divide by zero.
-        assert _rocm_memory_fraction(0, True, "linux") == pytest.approx(0.80)
-        assert _rocm_memory_fraction(-1, True, "linux") == pytest.approx(0.80)
+        # The guard defaults an absent total to 0; must not divide by zero. Exact for the
+        # same reason as the crossover assertions.
+        assert _rocm_memory_fraction(0, True, "linux") == _HISTORICAL_CAP
+        assert _rocm_memory_fraction(-1, True, "linux") == _HISTORICAL_CAP
 
 
 class TestMemFractionEnvOverride:
@@ -310,9 +353,12 @@ class TestMemFractionEnvOverride:
         assert _rocm_memory_fraction(24 * GIB, False, "linux", "0.5") == 0.5
         assert _rocm_memory_fraction(128 * GIB, True, "win32", "0.75") == 0.75
 
-    @pytest.mark.parametrize("bad", ["", "abc", "0", "0.0", "-0.5", "1.5", "  "])
+    @pytest.mark.parametrize("bad", ["", "abc", "0", "0.0", "-0.5", "1.5", "  ", "nan", "inf"])
     def test_unusable_values_fall_through(self, bad: str) -> None:
-        assert _rocm_memory_fraction(128 * GIB, True, "linux", bad) == pytest.approx(0.875)
+        total = 8 * _CROSSOVER_BYTES
+        assert _rocm_memory_fraction(total, True, "linux", bad) == pytest.approx(
+            _expected_unified_fraction(total)
+        )
 
     def test_one_is_accepted(self) -> None:
         assert _rocm_memory_fraction(128 * GIB, True, "linux", "1.0") == 1.0
@@ -330,6 +376,14 @@ class TestParseMemFractionEnv:
     @pytest.mark.parametrize("raw", [None, "", "  ", "abc", "O.95", "0", "0.0", "-0.5", "1.5"])
     def test_unusable_values_are_none(self, raw: str | None) -> None:
         # None is what makes the log say "computed" instead of naming the env var.
+        assert _parse_mem_fraction_env(raw) is None
+
+    @pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "Infinity"])
+    def test_non_finite_values_are_rejected(self, raw: str) -> None:
+        # float() accepts all of these. They are rejected only because every comparison
+        # against NaN is False and inf falls outside the range -- rewriting the bound as
+        # `if override <= 0.0 or override > 1.0` would let NaN through into
+        # set_per_process_memory_fraction(), so pin it.
         assert _parse_mem_fraction_env(raw) is None
 
     @pytest.mark.parametrize("raw", ["abc", "1.5", "0"])
