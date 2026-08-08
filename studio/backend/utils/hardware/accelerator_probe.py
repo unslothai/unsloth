@@ -180,7 +180,9 @@ def _device_compute_capabilities():
                 return None
             # Every row: with no mask in the environment the whole box is visible, and one
             # uncovered card in it is still an install this report has to call degraded.
-            text = ",".join(line.strip() for line in (result.stdout or "").splitlines() if line.strip())
+            text = ",".join(
+                line.strip() for line in (result.stdout or "").splitlines() if line.strip()
+            )
         except BaseException:
             return ()
     capabilities = []

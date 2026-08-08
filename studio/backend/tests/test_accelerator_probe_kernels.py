@@ -138,9 +138,7 @@ def test_flash_attn_on_a_card_no_prebuilt_wheel_covers_is_unknown(monkeypatch):
     sm_100+, so one that got there another way is not something to call Working -- and this
     child must not launch a kernel to find out."""
     monkeypatch.setitem(sys.modules, "flash_attn", types.ModuleType("flash_attn"))
-    monkeypatch.setitem(
-        sys.modules, "flash_attn.flash_attn_interface", types.ModuleType("iface")
-    )
+    monkeypatch.setitem(sys.modules, "flash_attn.flash_attn_interface", types.ModuleType("iface"))
     monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((12, 0),))
 
     entry = probe.probe_flash_attn()
@@ -151,9 +149,7 @@ def test_flash_attn_on_a_card_no_prebuilt_wheel_covers_is_unknown(monkeypatch):
 
 def test_flash_attn_on_a_supported_card_still_reports_working(monkeypatch):
     monkeypatch.setitem(sys.modules, "flash_attn", types.ModuleType("flash_attn"))
-    monkeypatch.setitem(
-        sys.modules, "flash_attn.flash_attn_interface", types.ModuleType("iface")
-    )
+    monkeypatch.setitem(sys.modules, "flash_attn.flash_attn_interface", types.ModuleType("iface"))
     monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((9, 0),))
     assert probe.probe_flash_attn()["runs"] is True
 
