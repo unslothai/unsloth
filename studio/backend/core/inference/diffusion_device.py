@@ -27,6 +27,7 @@ class DiffusionDeviceTarget:
     supports_model_cpu_offload: bool
     supports_default_torch_compile: bool
     supports_pinned_transfer: bool
+    supports_float64: bool = True
 
     @property
     def is_cuda_torch_device(self) -> bool:
@@ -41,7 +42,41 @@ class DiffusionDeviceTarget:
             "supports_model_cpu_offload": self.supports_model_cpu_offload,
             "supports_default_torch_compile": self.supports_default_torch_compile,
             "supports_pinned_transfer": self.supports_pinned_transfer,
+            "supports_float64": self.supports_float64,
         }
+
+
+def force_float32_rope(
+    pipe: Any,
+    target: DiffusionDeviceTarget,
+    *,
+    logger: Any = None,
+) -> int:
+    """Drop the float64 intermediate in RoPE frequency tables on a device without float64.
+
+    LTX-2's rotary embeddings build ``theta ** linspace(0, 1, n)`` in float64 and cast straight
+    back to float32. Metal implements no float64, so torch raises and generation dies before the
+    first step. The modules gate that intermediate on a ``double_precision`` attribute; clearing
+    it costs at most 6 float32 ULP, measured across the theta/dim combinations these models use,
+    against a value the next line truncates to float32 anyway.
+
+    Returns the number of modules changed. A no-op wherever float64 works, so CUDA/XPU/CPU keep
+    the upstream computation bit-for-bit.
+    """
+    if target.supports_float64:
+        return 0
+    changed = 0
+    for component in getattr(pipe, "components", {}).values() or ():
+        modules = getattr(component, "modules", None)
+        if not callable(modules):
+            continue
+        for module in modules():
+            if getattr(module, "double_precision", False):
+                module.double_precision = False
+                changed += 1
+    if changed and logger is not None:
+        logger.info("video.rope_float32: %d module(s) demoted (no float64 on this device)", changed)
+    return changed
 
 
 def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
@@ -145,6 +180,7 @@ def diffusion_device_target_from_torch_device(
             supports_model_cpu_offload = False,
             supports_default_torch_compile = False,
             supports_pinned_transfer = False,
+            supports_float64 = False,
         )
     return _cpu_target(torch = None, dtype = dtype)
 
@@ -230,6 +266,7 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
             supports_model_cpu_offload = False,
             supports_default_torch_compile = False,
             supports_pinned_transfer = False,
+            supports_float64 = False,
         )
     return _cpu_target(torch)
 

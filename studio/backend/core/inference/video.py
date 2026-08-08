@@ -55,7 +55,7 @@ from .diffusion_cache import (
     maybe_toggle_step_cache,
     normalize_transformer_cache,
 )
-from .diffusion_device import resolve_diffusion_device_target
+from .diffusion_device import force_float32_rope, resolve_diffusion_device_target
 from .diffusion_memory import (
     apply_memory_plan,
     estimate_gguf_resident_mib,
@@ -1445,6 +1445,9 @@ class VideoBackend:
             if effective_speed not in (SPEED_OFF, SPEED_MAX)
             else False
         )
+        # Sets a flag the pipelines read when they first build their frequency tables, so it only
+        # has to happen before generation, not before placement.
+        force_float32_rope(pipe, target, logger = logger)
         speed_optims: tuple = ()
         for view in views:
             # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first). is_gguf needs kind==gguf AND no quant engaged.
