@@ -515,6 +515,32 @@ def run(page, state: Runtime) -> None:
     page.wait_for_timeout(SETTLE_MS // 2)
     check("the collapsed state survives a reload", page.locator(pill).count() > 0)
 
+    # The expanded grip and the collapsed pill share one drag sentinel, but only
+    # the pill has a click to consume it. Drag by the grip, collapse, then click
+    # the pill ONCE: without the sentinel being dropped when a click-less handle
+    # finishes its drag, that first click reads someone else's drag and refuses
+    # to expand, so the user has to click twice. No reload in between, since a
+    # reload would clear the in-memory flag and hide the bug.
+    boot(page, state)
+    page.wait_for_selector(CARD, timeout = 30_000)
+    grip = page.locator(HANDLE).first.bounding_box()
+    page.mouse.move(grip["x"] + grip["width"] / 2, grip["y"] + grip["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(grip["x"] - 120, grip["y"] - 80, steps = 12)
+    page.mouse.up()
+    page.wait_for_timeout(SETTLE_MS // 2)
+    page.locator('[aria-label="Collapse loaded models"]').first.click()
+    page.wait_for_timeout(SETTLE_MS // 2)
+    collapsed_ok = page.locator(CARD).count() == 0 and page.locator(pill).count() > 0
+    check("the grip drag still collapses to a pill", collapsed_ok)
+    page.locator(pill).first.click()
+    page.wait_for_timeout(SETTLE_MS // 2)
+    check(
+        "one click reopens the pill after dragging by the grip",
+        collapsed_ok and page.locator(CARD).count() > 0,
+        "the grip's drag was still held against the pill's first click",
+    )
+
     # ── Eject ───────────────────────────────────────────────────────────
     state.chat = chat(active_model = "unsloth/Qwen3-4B-GGUF", is_gguf = True, gguf_variant = "Q4_K_M")
     state.diffusion = dict(
