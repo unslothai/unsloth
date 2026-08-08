@@ -120,10 +120,17 @@ else
     ok "a denied UNSLOTH_LOCAL_LLAMA_CPP_DIR reports instead of tripping errexit"
 fi
 if grep -qE '^\s*_CANON_LLAMA_CPP_DIR="\$\(CDPATH= cd' "$SETUP_SH"; then
-    bad "an unsearchable install parent keeps the textual path instead of aborting"
+    bad "an unsearchable install parent is reported instead of aborting"
 else
-    ok "an unsearchable install parent keeps the textual path instead of aborting"
+    ok "an unsearchable install parent is reported instead of aborting"
 fi
+# Carrying on past a denied parent only moves the abort to the ln a few lines down.
+assert_contains "a denied install parent stops rather than continuing" \
+    "$SETUP_SH" '_path_access_denied "$_LLAMA_CPP_PARENT" "Unsloth install directory" owner-unverified'
+# An unsearchable ancestor makes a real path unstattable, so [ ! -d ] reads it as
+# missing and would send the user to fix a path that is already correct.
+assert_contains "a denied ancestor is reported before the missing-path guard" \
+    "$SETUP_SH" '_report_denied_ancestor "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" "UNSLOTH_LOCAL_LLAMA_CPP_DIR"'
 
 echo ""
 echo "=== behaviour against a genuinely unsearchable tree ==="
@@ -137,7 +144,7 @@ import sys, pathlib
 src = pathlib.Path(sys.argv[1]).read_text()
 out = []
 for name in ("_studio_owned_adoptable", "_studio_dir_unsearchable",
-             "_studio_dir_unreadable",
+             "_studio_dir_unreadable", "_report_denied_ancestor",
              "_path_access_denied", "_assert_studio_owned_or_absent"):
     i = src.index(name + "() {")
     out.append(src[i:src.index("\n}\n", i) + 3])
@@ -238,6 +245,41 @@ else
     esac
 fi
 chmod 755 "$NOLIST"
+
+# A real build under an unsearchable ancestor must report permissions, not "missing".
+ANC="$WORK/anc"; mkdir -p "$ANC/denied/llama.cpp"
+chmod 000 "$ANC/denied"
+if [ -d "$ANC/denied/llama.cpp" ]; then
+    echo "  SKIP: this host cannot make an ancestor unsearchable (running as root?)"
+else
+    ok "the ancestor is really unsearchable (negative control)"
+    out=$(bash -c '. "$1"
+        C_ERR= C_WARN= C_DIM= C_OK= C_RST=
+        step() { printf "STEP|%s|%s\n" "$1" "$2"; }; substep() { :; }
+        setup_fail() { printf "FAIL|%s\n" "$2"; exit "$1"; }
+        _report_denied_ancestor "$2" "UNSLOTH_LOCAL_LLAMA_CPP_DIR"
+        echo "NOT_REPORTED"' _ "$WORK/helpers.sh" "$ANC/denied/llama.cpp" 2>&1)
+    case "$out" in
+        *"cannot be read: permission denied"*) ok "a build under a denied ancestor reports permissions" ;;
+        *) bad "a build under a denied ancestor reports permissions (got: $out)" ;;
+    esac
+    case "$out" in
+        *"$ANC/denied"*) ok "the message names the denied ancestor, not the leaf" ;;
+        *) bad "the message names the denied ancestor, not the leaf (got: $out)" ;;
+    esac
+fi
+chmod 755 "$ANC/denied"
+# A genuinely missing path must still be reported as missing, not as denied.
+out=$(bash -c '. "$1"
+    C_ERR= C_WARN= C_DIM= C_OK= C_RST=
+    step() { :; }; substep() { :; }
+    setup_fail() { printf "FAIL|%s\n" "$2"; exit "$1"; }
+    _report_denied_ancestor "$2" "UNSLOTH_LOCAL_LLAMA_CPP_DIR"
+    echo "NOT_REPORTED"' _ "$WORK/helpers.sh" "$WORK/definitely-absent" 2>&1)
+case "$out" in
+    *NOT_REPORTED*) ok "a genuinely missing path is not reported as denied" ;;
+    *) bad "a genuinely missing path is not reported as denied (got: $out)" ;;
+esac
 
 echo ""
 echo "=== Results ==="

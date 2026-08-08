@@ -1018,6 +1018,19 @@ _path_access_denied() {
     setup_fail 1 "Permission denied reading the existing $_pad_label at $_pad_dir. Delete or rename that folder (Unsloth reinstalls it) or restore access, then re-run setup. Reinstalling the app does not reset it."
 }
 
+# An unsearchable ancestor makes everything under it unstattable, so a real path
+# reads as missing. Walk up to the deepest ancestor we can stat and report if it
+# is the blocker. Returns without reporting when the path is simply absent.
+_report_denied_ancestor() {
+    _rda_probe="$1"
+    while [ ! -e "$_rda_probe" ] && [ "$_rda_probe" != "/" ] && [ "$_rda_probe" != "." ]; do
+        _rda_probe="$(dirname "$_rda_probe")"
+    done
+    if _studio_dir_unsearchable "$_rda_probe"; then
+        _path_access_denied "$_rda_probe" "$2" owner-unverified
+    fi
+}
+
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
@@ -1948,6 +1961,9 @@ _has_local_llama_server() {
 _LOCAL_LLAMA_CPP_LINKED=false
 if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
+        # A build under an unsearchable ancestor cannot be stat'd either, so report
+        # permissions first rather than sending the user to fix a correct path.
+        _report_denied_ancestor "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" "UNSLOTH_LOCAL_LLAMA_CPP_DIR"
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
         setup_fail 1 "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR"
     fi
@@ -1964,11 +1980,14 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     # this works whether or not the leaf currently exists.
     _CANON_LLAMA_CPP_DIR="$LLAMA_CPP_DIR"
     _LLAMA_CPP_PARENT="$(dirname "$LLAMA_CPP_DIR")"
-    # Also an if condition: an unsearchable parent keeps the textual path rather
-    # than aborting, which is what an absent parent already does.
-    if [ -d "$_LLAMA_CPP_PARENT" ] &&
-       _canon_parent="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" 2>/dev/null && pwd -P)"; then
-        _CANON_LLAMA_CPP_DIR="$_canon_parent/$(basename "$LLAMA_CPP_DIR")"
+    if [ -d "$_LLAMA_CPP_PARENT" ]; then
+        # Report rather than carry on: nothing can be written under a parent we
+        # cannot search, so the link below would abort raw a few lines later.
+        if _canon_parent="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" 2>/dev/null && pwd -P)"; then
+            _CANON_LLAMA_CPP_DIR="$_canon_parent/$(basename "$LLAMA_CPP_DIR")"
+        else
+            _path_access_denied "$_LLAMA_CPP_PARENT" "Unsloth install directory" owner-unverified
+        fi
     fi
     if [ "$_RESOLVED_LOCAL" = "$_CANON_LLAMA_CPP_DIR" ]; then
         # Points at the canonical install location itself: never delete-then-link
