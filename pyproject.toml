@@ -1,5 +1,9 @@
 [build-system]
-requires = ["setuptools==80.9.0", "setuptools-scm==9.2.0"]
+requires = [
+    "setuptools==80.9.0 ; python_version < '3.10'",
+    "setuptools==83.0.0 ; python_version >= '3.10'",
+    "setuptools-scm==9.2.0",
+]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -105,7 +109,7 @@ studio = [
     "gguf",
     "av>=12.0.0",
     "sqlite-vec==0.1.9",
-    "pymupdf==1.27.2.3",
+    "pymupdf==1.28.0",
     "pymupdf4llm==0.3.4",
     "python-docx==1.2.0",
 ]
