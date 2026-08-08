@@ -1,5 +1,9 @@
 [build-system]
-requires = ["setuptools==83.0.0", "setuptools-scm==10.2.1"]
+requires = [
+    "setuptools==80.9.0 ; python_version < '3.10'",
+    "setuptools==83.0.0 ; python_version >= '3.10'",
+    "setuptools-scm==9.2.0",
+]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -92,9 +96,9 @@ studio = [
     "matplotlib==3.10.9",
     "pandas",
     "nest_asyncio",
-    "datasets==5.0.1",
+    "datasets==4.3.0",
     "pyjwt",
-    "huggingface-hub==1.26.0",
+    "huggingface-hub==0.36.2",
     "structlog>=24.1.0",
     "diceware",
     "ddgs",
@@ -106,7 +110,7 @@ studio = [
     "av>=12.0.0",
     "sqlite-vec==0.1.9",
     "pymupdf==1.28.0",
-    "pymupdf4llm==1.28.0",
+    "pymupdf4llm==0.3.4",
     "python-docx==1.2.0",
 ]
 
@@ -125,7 +129,7 @@ huggingfacenotorch = [
     "tyro",
     "protobuf",
     "sentencepiece>=0.2.0",
-    "datasets>=4.0,<5.1",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "accelerate>=0.34.1",
     "peft>=0.18.0,!=0.11.0",
     "huggingface_hub>=0.34.0",
@@ -139,8 +143,8 @@ huggingfacenotorch = [
     # on 3.9 and the whole extra becomes unresolvable.
     "diffusers>=0.39.0 ; python_version >= '3.10'",
     "diffusers ; python_version < '3.10'",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.14.1",
-    "trl>=0.18.2,!=0.19.0,<=1.9.2",
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
+    "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
 ]
 # torchcodec backend for Gemma audio / datasets>=4 (#7225).
@@ -151,13 +155,13 @@ huggingfacenotorch = [
 # Gate on the platforms that have a wheel, matching
 # PLATFORM_LACKS_TORCHCODEC_WHEEL in studio/install_python_stack.py.
 audio-torch210 = [
-    "torchcodec>=0.10.0,<0.16.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
+    "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 audio-torch290 = [
-    "torchcodec>=0.8.0,<0.16.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
+    "torchcodec>=0.8.0,<0.10.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 audio-torch280 = [
-    "torchcodec>=0.6.0,<0.16.0 ; python_version >= '3.9' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
+    "torchcodec>=0.6.0,<0.8.0 ; python_version >= '3.9' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
@@ -416,22 +420,22 @@ cu121 = [
 ]
 cu118-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.50.0",
+    "bitsandbytes==0.45.5",
     "unsloth[cu118onlytorch211]",
 ]
 cu121-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.50.0",
+    "bitsandbytes==0.45.5",
     "unsloth[cu121onlytorch211]",
 ]
 cu118-torch212 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.50.0",
+    "bitsandbytes==0.45.5",
     "unsloth[cu118onlytorch212]",
 ]
 cu121-torch212 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.50.0",
+    "bitsandbytes==0.45.5",
     "unsloth[cu121onlytorch212]",
 ]
 cu118-torch220 = [
@@ -624,12 +628,12 @@ conda = [
 ]
 colab-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.50.0",
+    "bitsandbytes==0.45.5",
     "unsloth[cu121onlytorch211]",
 ]
 colab-ampere-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.50.0",
+    "bitsandbytes==0.45.5",
     "unsloth[cu121onlytorch211]",
     "packaging",
     "ninja",
@@ -652,8 +656,8 @@ colab-new = [
     "unsloth_zoo>=2026.8.5",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.14.1",
-    "datasets>=4.0,<5.1",
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "sentencepiece>=0.2.0",
     "tqdm",
     "psutil",
@@ -668,7 +672,7 @@ colab-new = [
 ]
 colab-no-deps = [
     "accelerate>=0.34.1",
-    "trl>=0.18.2,!=0.19.0,<=1.9.2",
+    "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "peft>=0.18.0",
     "xformers ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
@@ -700,13 +704,13 @@ cu121-ampere = [
 ]
 cu118-ampere-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.50.0",
+    "bitsandbytes==0.45.5",
     "unsloth[cu118onlytorch211]",
     "unsloth[flashattention]",
 ]
 cu121-ampere-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.50.0",
+    "bitsandbytes==0.45.5",
     "unsloth[cu121onlytorch211]",
     "unsloth[flashattention]",
 ]

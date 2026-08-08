@@ -17,6 +17,7 @@ BNB_TAGS = [
     "0.45.5",
     "0.47.0",  # skip 0.46.0 (broken)
     "0.49.2",  # skip 0.48.0 (broken)
+    "0.50.0",  # current PyPI release
     "main",
 ]
 
