@@ -447,9 +447,12 @@ def scope_retired(scope: str) -> bool:
     with _scope_lock(scope):
         conn = rag_db.get_connection()
         try:
-            return conn.execute(
-                "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
-            ).fetchone() is not None
+            return (
+                conn.execute(
+                    "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
+                ).fetchone()
+                is not None
+            )
         finally:
             conn.close()
 
