@@ -55,8 +55,18 @@ const AUDIO_DATA_URI_PATTERN = /<audio-player\s+src="data:[^"]*"\s*\/>/g;
 // element would otherwise keep its opener, hand its closer to the entity, and
 // leave this block's own closer to the inner element, hiding every later turn.
 const DETAILS_TAG_PATTERN = /<(\/?)(details)((?:\s[^>]*)?)>/gi;
+// details is a condition 6 tag, so its markdown block ends at the blank line
+// between two turns, but the element the browser opened does not: an unmatched
+// opener collapses every later turn inside it. Counted rather than escaped,
+// because a matched details element is a disclosure widget the chat itself
+// renders and the transcript has to keep it. Ends the way the html tokenizer
+// ends a tag name, not the way DETAILS_TAG_PATTERN does: <details/> and a bare
+// <details at the end of a line both still open an element.
+const DETAILS_TAG_SCAN_PATTERN = /<(\/?)details(?=[\s/>]|$)/gi;
 // A code span is literal text, so a <!-- inside one opens nothing.
 const CODE_SPAN_PATTERN = /(`+)[^`]*\1/g;
+// Same for a comment: <!-- <details> --> opens nothing either.
+const CLOSED_COMMENT_PATTERN = /<!--[\s\S]*?-->/g;
 // Four spaces of indentation is an indented code block, so a fence or a raw
 // html block only starts within the first three columns. Splitting the
 // indentation off once keeps the opener's container context, which the
@@ -103,10 +113,11 @@ function openedHtmlBlock(
   return null;
 }
 
-// A message that ends mid-fence, mid-comment or inside a raw html block
-// swallows everything after it, including the next role heading, so each turn
-// closes what it opened. The three are tracked as one state: inside any of
-// them, the other two are literal.
+// A message that ends mid-fence, mid-comment, inside a raw html block or
+// inside a details element swallows everything after it, including the next
+// role heading, so each turn closes what it opened. The first three are
+// tracked as one state: inside any of them, the other two are literal, and so
+// is a details tag.
 function closeOpenBlocks(text: string): string {
   let open: string | null = null;
   let openIndent = "";
@@ -114,6 +125,7 @@ function closeOpenBlocks(text: string): string {
   let html: HtmlBlockRule | null = null;
   let htmlClose = "";
   let htmlIndent = "";
+  let details = 0;
   // Split the way a parser does. Splitting on \n alone hides a fence opened in
   // a body that uses bare carriage returns.
   for (const line of text.split(EOL_PATTERN)) {
@@ -154,7 +166,19 @@ function closeOpenBlocks(text: string): string {
     // Deliberately not limited to a line-initial <!--: a mid-line one inside a
     // raw html block still opens a comment in the browser.
     const prose = line.replace(CODE_SPAN_PATTERN, "");
-    comment = prose.lastIndexOf("<!--") > prose.lastIndexOf("-->");
+    const commentStart = prose.lastIndexOf("<!--");
+    comment = commentStart > prose.lastIndexOf("-->");
+    // Mid-line too, and for the same reason: `hello <details>` opens the
+    // element even though no line here begins a raw html block.
+    const tags = (comment ? prose.slice(0, commentStart) : prose).replace(
+      CLOSED_COMMENT_PATTERN,
+      "",
+    );
+    for (const [, slash] of tags.matchAll(DETAILS_TAG_SCAN_PATTERN)) {
+      // Clamped, not signed: a stray closer is inert in every html parser, so
+      // it must not license an opener later in the message.
+      details = slash ? Math.max(0, details - 1) : details + 1;
+    }
   }
   let out = text;
   if (comment) out += "-->";
@@ -165,6 +189,10 @@ function closeOpenBlocks(text: string): string {
   // the list the opener sits in, and then opens a block of its own instead.
   if (open !== null) out += `${eol}${openIndent}${open}`;
   if (html) out += `${eol}${htmlIndent}${htmlClose}`;
+  // Last, and after a blank line: the closer has to sit outside every other
+  // construct repaired above, and at column zero as its own html block rather
+  // than as a lazy continuation of the paragraph it follows.
+  out += `${eol}${eol}</details>`.repeat(details);
   return out;
 }
 
@@ -202,6 +230,28 @@ function escapeMarkdownLabel(value: string): string {
   return value.replace(/[\r\n]+/g, " ").replace(/([\\[\]*`<])/g, "\\$1");
 }
 
+// A destination is parsed, not copied: CommonMark 6.2 resolves entity
+// references inside it and 2.4 consumes a backslash before ASCII punctuation.
+// Search results are attacker-controllable, and both rules move where the link
+// goes: `https://docs.unsloth.ai&commat;evil.test/` is a url whose host is
+// docs.unsloth.ai until a viewer decodes it into `docs.unsloth.ai@evil.test`,
+// which is credentials on evil.test. Only the ampersand that opens an entity
+// reference is escaped, so an ordinary query separator stays readable, and the
+// escape is &amp; rather than %26 because percent-encoding one would fold the
+// separator into the preceding value.
+const ENTITY_REFERENCE_PATTERN =
+  /&(?=(?:[A-Za-z][A-Za-z0-9]{1,31}|#\d{1,7}|#[Xx][0-9A-Fa-f]{1,6});)/g;
+
+function escapeMarkdownDestination(url: string): string {
+  // Percent-encoded rather than doubled: %5C is what a renderer writes for a
+  // surviving backslash anyway, so the destination stays a plain url.
+  return url
+    .replaceAll("<", "%3C")
+    .replaceAll(">", "%3E")
+    .replaceAll("\\", "%5C")
+    .replace(ENTITY_REFERENCE_PATTERN, "&amp;");
+}
+
 function safeSourceUrl(raw: string): string {
   const value = raw.trim();
   if (!value || LINE_BREAK_PATTERN.test(value)) {
@@ -210,11 +260,11 @@ function safeSourceUrl(raw: string): string {
   try {
     // encodeURI throws on a lone surrogate, so it stays inside the guard.
     if (value.startsWith("#")) {
-      return encodeURI(value).replaceAll("<", "%3C").replaceAll(">", "%3E");
+      return escapeMarkdownDestination(encodeURI(value));
     }
     const parsed = new URL(value);
     return parsed.protocol === "http:" || parsed.protocol === "https:"
-      ? parsed.href.replaceAll("<", "%3C").replaceAll(">", "%3E")
+      ? escapeMarkdownDestination(parsed.href)
       : "";
   } catch {
     return "";

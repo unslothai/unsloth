@@ -695,3 +695,105 @@ test("still closes a comment opened mid-line outside a code span", () => {
     "see <div><!-- note-->",
   );
 });
+
+test("closes an unmatched details element a later turn would fall inside", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "<details>\n<summary>Steps</summary>\n\nfirst" },
+    ]),
+    "<details>\n<summary>Steps</summary>\n\nfirst\n\n</details>",
+  );
+  // Mid-line, and in the case shape the html tokenizer accepts but a
+  // <details ...> pattern does not.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "hello <DETAILS/>" }]),
+    "hello <DETAILS/>\n\n</details>",
+  );
+});
+
+test("leaves a details element the message already matched alone", () => {
+  const matched = "<details>\n<summary>FAQ</summary>\n\nbody\n\n</details>";
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: matched }]),
+    matched,
+  );
+  const nested = `<details>\n<summary>outer</summary>\n\n${matched}\n\n</details>`;
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: nested }]),
+    nested,
+  );
+});
+
+test("counts details tags in order so a stray closer licenses no opener", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "</details>\n\n<details>" },
+    ]),
+    "</details>\n\n<details>\n\n</details>",
+  );
+});
+
+test("keeps a details tag inside a fence, a code span or a comment literal", () => {
+  const fenced = "```html\n<details>\n```";
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: fenced }]),
+    fenced,
+  );
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "use `<details>` for this" },
+    ]),
+    "use `<details>` for this",
+  );
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<!-- <details> -->" }]),
+    "<!-- <details> -->",
+  );
+});
+
+test("keeps a citation destination from decoding into another host", () => {
+  // &commat; is an entity reference inside a markdown destination, so a viewer
+  // resolves this to docs.unsloth.ai@evil.test: credentials on evil.test.
+  assert.equal(
+    renderConversationBlocks([
+      {
+        kind: "source",
+        title: "Docs",
+        url: "https://docs.unsloth.ai&commat;evil.test/",
+      },
+    ]),
+    "**source:** [Docs](<https://docs.unsloth.ai&amp;commat;evil.test/>)",
+  );
+  assert.equal(
+    renderConversationBlocks([
+      {
+        kind: "source",
+        title: "Numeric",
+        url: "https://x.test/?a=&#64;evil.test/",
+      },
+    ]),
+    "**source:** [Numeric](<https://x.test/?a=&amp;#64;evil.test/>)",
+  );
+});
+
+test("keeps a backslash in a citation destination from being eaten", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "source", title: "Query", url: "https://x.test/?q=\\*" },
+    ]),
+    "**source:** [Query](<https://x.test/?q=%5C*>)",
+  );
+});
+
+test("leaves an ordinary query separator in a citation readable", () => {
+  assert.equal(
+    renderConversationBlocks([
+      {
+        kind: "source",
+        title: "Search",
+        url: "https://x.test/search?q=lora&page=2&sort=new",
+      },
+    ]),
+    "**source:** [Search](<https://x.test/search?q=lora&page=2&sort=new>)",
+  );
+});
