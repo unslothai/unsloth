@@ -527,7 +527,6 @@ def test_the_stub_runtime_does_not_outlive_its_own_test(stub_runtime):
     but not those, and every later test in the process would then run against module bodies
     bound to a fake torch. The fixture has to evict them."""
     import core.inference.diffusion_eager_patches  # noqa: F401 — imported under the stubs
-
     assert sys.modules["torch"] is stub_runtime
     # The eviction itself is asserted by the sibling test below, which runs after teardown.
 
@@ -543,9 +542,9 @@ def test_the_patch_modules_are_not_left_cached_against_the_fakes():
             continue
         # Present only because something imported it under the REAL runtime.
         torch_global = getattr(module, "torch", None)
-        assert torch_global is None or torch_global is sys.modules.get("torch"), (
-            f"{cached} is cached with a torch that is not the live one"
-        )
+        assert torch_global is None or torch_global is sys.modules.get(
+            "torch"
+        ), f"{cached} is cached with a torch that is not the live one"
 
 
 # ── gallery: the build keys stay additive ─────────────────────────────────────
