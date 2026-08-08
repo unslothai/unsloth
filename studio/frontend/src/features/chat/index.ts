@@ -60,6 +60,8 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
+
+  preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
   useToolOutputFor,

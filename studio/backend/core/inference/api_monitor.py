@@ -19,6 +19,7 @@ _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
+_MAX_DECODE_MS = 24 * 60 * 60 * 1000
 # Far above any real context window; larger means a broken upstream payload.
 _MAX_TOKEN_COUNT = 1 << 40
 
@@ -102,6 +103,8 @@ class ApiMonitorEntry:
     first_decode_monotonic: Optional[float] = None
     prompt_ms: Optional[float] = None
     tok_per_sec: Optional[float] = None
+    # timings.predicted_ms; set only from engine timings, so its presence marks a rateable row.
+    decode_ms: Optional[float] = None
     stop_reason: Optional[str] = None
     # Every finish reason seen so far. An n > 1 stream reports each choice in its own
     # chunk, so agreement can only be judged across the whole request. Not serialized.
@@ -173,6 +176,9 @@ class ApiMonitorEntry:
             "progress": self.progress,
             "ttft_ms": ttft_ms,
             "tok_per_sec": round(tok_per_sec, 2) if tok_per_sec is not None else None,
+            # The engine's decode span, not the streamed window: an unknowable first-chunk token
+            # count and reasoning tokens both inflate a streamed rate. Absent rather than guessed.
+            "decode_ms": int(self.decode_ms) if self.decode_ms is not None else None,
             "stop_reason": self.stop_reason,
         }
         if include_details:
@@ -387,6 +393,7 @@ class ApiMonitor:
         *,
         tok_per_sec: Optional[float] = None,
         prompt_ms: Optional[float] = None,
+        decode_ms: Optional[float] = None,
         stop_reason: Optional[str] = None,
     ) -> None:
         if not entry_id:
@@ -395,6 +402,7 @@ class ApiMonitor:
         # streaming generators) would truncate the user's response.
         tok_per_sec = _finite_float_or_none(tok_per_sec)
         prompt_ms = _finite_float_or_none(prompt_ms)
+        decode_ms = _finite_float_or_none(decode_ms)
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
@@ -403,6 +411,9 @@ class ApiMonitor:
                 entry.tok_per_sec = tok_per_sec
             if prompt_ms is not None:
                 entry.prompt_ms = prompt_ms
+            # Past a day of decode it is a bad reading, not a slow model.
+            if decode_ms is not None and 0 <= decode_ms <= _MAX_DECODE_MS:
+                entry.decode_ms = decode_ms
             if stop_reason is not None:
                 entry.stop_reason = str(stop_reason)
             entry.updated_at = time.time()

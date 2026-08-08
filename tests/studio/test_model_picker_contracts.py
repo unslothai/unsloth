@@ -1870,7 +1870,8 @@ def test_backfill_compares_server_keys_by_normalized_identity():
 
 def test_monitor_stats_exclude_model_lifecycle_rows():
     """A load, unload or download is recorded as a monitor entry but is not an HTTP call."""
-    src = " ".join(_read("features/api-monitor/use-api-monitor.ts").split())
+    # computeStats lives in stats.ts so it runs under `node --test`; the hook re-exports it.
+    src = " ".join(_read("features/api-monitor/stats.ts").split())
     assert 'if (entry.kind === "lifecycle") { continue; }' in src
     # "Requests" is a request count too, so it cannot stay entries.length.
     assert "total: requests," in src
