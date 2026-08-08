@@ -1003,6 +1003,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const routeSearch = useSearch({ strict: false }) as {
     model?: string;
     quant?: string;
+    ggufQuant?: string;
     task?: string;
   };
   const handledRouteModel = useRef<string | null>(null);
@@ -1013,7 +1014,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       handledRouteModel.current = null;
       return;
     }
-    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.task ?? ""}`;
+    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}`;
     if (handledRouteModel.current === key) return;
     // The persistent Audio page may still be finishing hidden work. Keep the
     // handoff in the URL and retry it when that work releases the lifecycle.
@@ -1023,6 +1024,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       source: "hub",
       isLora: false,
       ggufFilename: routeSearch.quant ?? undefined,
+      ggufVariant: routeSearch.ggufQuant ?? undefined,
       // Chat-to-Audio routing cannot preserve the inventory flag, so stage the
       // exact forwarded GGUF. An already-cached job completes immediately.
       isDownloaded: routeSearch.quant ? false : undefined,
@@ -1034,6 +1036,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     busy,
     routeSearch.model,
     routeSearch.quant,
+    routeSearch.ggufQuant,
     routeSearch.task,
     handleModelSelect,
     navigateSelf,

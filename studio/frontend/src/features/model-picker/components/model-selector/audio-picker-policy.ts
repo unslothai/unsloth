@@ -196,7 +196,11 @@ export function taskForMediaPick(
   pipelineTag: string | null | undefined,
   inventoryTask: string | null | undefined,
 ): string | null {
-  return pipelineTag ?? inventoryTask ?? null;
+  // Cache inventory commonly reports Audio GGUFs as generic text-generation;
+  // an exact catalog task is the stronger runtime contract in that case.
+  return pipelineTag && pipelineTag !== "text-generation"
+    ? pipelineTag
+    : (inventoryTask ?? pipelineTag ?? null);
 }
 
 /** Filesystem checkpoints cannot be served by the STT sidecars yet. Keep

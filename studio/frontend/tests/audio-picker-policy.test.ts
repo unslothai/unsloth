@@ -129,6 +129,17 @@ test("fresh Hub pipeline metadata routes media picks before stale inventory", ()
   assert.equal(taskForMediaPick(null, "text-to-speech"), "text-to-speech");
 });
 
+test("generic cached GGUF metadata yields to the curated Audio task", () => {
+  assert.equal(
+    taskForMediaPick("text-generation", "automatic-speech-recognition"),
+    "automatic-speech-recognition",
+  );
+  assert.equal(
+    taskForMediaPick("text-generation", "text-to-speech"),
+    "text-to-speech",
+  );
+});
+
 test("exact cached Audio artifacts route from generic inventory to their Audio task", () => {
   const orpheus = artifactForRepoId(
     "unsloth/orpheus-3b-0.1-ft-GGUF",
@@ -321,6 +332,14 @@ test("Chat-to-Audio handoff preserves the live Hub task", () => {
   assert.match(
     pickerSource,
     /page === "audio"[\s\S]*task:\s*meta\.pipelineTag \?\? undefined/,
+  );
+  assert.match(
+    pickerSource,
+    /page === "audio"[\s\S]*ggufQuant:\s*meta\.ggufFilename[\s\S]*meta\.ggufVariant/,
+  );
+  assert.match(
+    pickerSource,
+    /const alreadyListed = new Set\([\s\S]*visibleCachedGguf[\s\S]*visibleCachedModels/,
   );
 });
 

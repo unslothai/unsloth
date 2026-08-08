@@ -3073,6 +3073,9 @@ export function HubModelPicker({
                 ? {
                     model: id,
                     quant: meta.ggufFilename ?? undefined,
+                    ggufQuant: meta.ggufFilename
+                      ? undefined
+                      : (meta.ggufVariant ?? undefined),
                     task: meta.pipelineTag ?? undefined,
                   }
                 : diffusionRouteSearch(id, meta),
@@ -3141,7 +3144,7 @@ export function HubModelPicker({
 
   const visibleAdditionalOnDeviceModels = useMemo(() => {
     const alreadyListed = new Set(
-      [...cachedGguf, ...cachedModels].map((model) =>
+      [...visibleCachedGguf, ...visibleCachedModels].map((model) =>
         model.repo_id.trim().toLowerCase(),
       ),
     );
@@ -3170,8 +3173,8 @@ export function HubModelPicker({
     ).map(({ model }) => model);
   }, [
     additionalOnDeviceModels,
-    cachedGguf,
-    cachedModels,
+    visibleCachedGguf,
+    visibleCachedModels,
     debouncedQuery,
     downloadedSort,
     formatFilter,

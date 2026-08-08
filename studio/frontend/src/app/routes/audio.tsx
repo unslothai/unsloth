@@ -10,12 +10,15 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/audio",
   staticData: { title: "Audio" },
-  // An audio pick made from the chat picker arrives here as ?model= (+ ?quant= and task), which the page loads and then clears.
+  // An audio pick made from the chat picker arrives here as ?model= (+ ?quant=, ?ggufQuant=, and task), which the page loads and then clears.
   validateSearch: (
     search: Record<string, unknown>,
-  ): { model?: string; quant?: string; task?: string } => ({
+  ): { model?: string; quant?: string; ggufQuant?: string; task?: string } => ({
     ...(typeof search.model === "string" ? { model: search.model } : {}),
     ...(typeof search.quant === "string" ? { quant: search.quant } : {}),
+    ...(typeof search.ggufQuant === "string"
+      ? { ggufQuant: search.ggufQuant }
+      : {}),
     ...(search.task === "automatic-speech-recognition" ||
     search.task === "text-to-speech"
       ? { task: search.task }
