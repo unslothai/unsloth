@@ -236,13 +236,39 @@ def dataset_fingerprint(pairs: Any) -> str:
             path, caption = entry[0], entry[1]
         except (IndexError, KeyError, TypeError):
             continue
-        try:
-            size: Any = os.path.getsize(path)
-        except OSError:
-            size = "?"
-        parts.append(f"{Path(str(path)).name}:{size}:{caption}")
+        parts.append(f"{Path(str(path)).name}:{_content_probe(path)}:{caption}")
     digest = hashlib.sha256("|".join(sorted(parts)).encode("utf-8", "replace")).hexdigest()
     return f"ds-{len(parts)}-{digest[:24]}"
+
+
+# Enough of each file to tell two images apart, without reading a multi-gigabyte dataset on a
+# preflight that runs before the resident GPU model is evicted.
+_PROBE_BYTES = 65536
+
+
+def _content_probe(path: Any) -> str:
+    """``size-digest`` for one dataset file, or ``?`` when it cannot be read.
+
+    Size alone let an image be overwritten IN PLACE with different content of exactly the same
+    length -- same filename, same caption -- and the preflight accepted the dataset, so the
+    restored optimizer and scheduler carried on an old experiment against different images.
+
+    The head and tail rather than the whole file: hashing every image would make this scale with
+    the dataset, and two different images agreeing on their first and last 64 KiB as well as
+    their exact byte length is not a case that arises from editing a dataset. It is not a
+    tamper-proof digest and does not need to be."""
+    try:
+        size = os.path.getsize(path)
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            digest.update(handle.read(_PROBE_BYTES))
+            if size > _PROBE_BYTES * 2:
+                handle.seek(-_PROBE_BYTES, os.SEEK_END)
+                digest.update(handle.read(_PROBE_BYTES))
+    # ValueError: open() rejects an embedded NUL rather than raising OSError.
+    except (OSError, ValueError):
+        return "?"
+    return f"{size}-{digest.hexdigest()[:16]}"
 
 
 def _resolve_lora_targets(cfg: Any) -> tuple[str, ...]:

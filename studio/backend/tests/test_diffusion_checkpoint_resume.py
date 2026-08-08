@@ -1315,3 +1315,55 @@ def test_an_output_directory_named_like_a_checkpoint_is_still_scanned(tmp_path, 
 
     assert Path(path).name == "checkpoint-11"
     assert step == 11
+
+
+def test_an_image_replaced_in_place_changes_the_dataset_fingerprint(tmp_path):
+    """Same filename, same caption, same byte length, different picture. On size alone the
+    preflight accepted the dataset and the restored optimizer and scheduler carried an old
+    experiment on against different training images, which is exactly what the fingerprint
+    exists to refuse."""
+    image = tmp_path / "cat.png"
+    image.write_bytes(b"A" * 4096)
+    entries = [(str(image), "a cat")]
+    before = dc.dataset_fingerprint(entries)
+
+    replaced = b"B" * 4096
+    image.write_bytes(replaced)
+    assert image.stat().st_size == 4096, "the fixture must keep the length identical"
+
+    assert dc.dataset_fingerprint(entries) != before
+
+    # ...and it is stable when nothing changed, or a resume would never be offered at all.
+    assert dc.dataset_fingerprint(entries) == dc.dataset_fingerprint(entries)
+
+
+def test_the_fingerprint_probe_does_not_read_whole_images(tmp_path):
+    """It runs on the route thread before the resident model is evicted, so it must not scale
+    with the dataset. Head and tail only, whatever the file size."""
+    import time
+
+    small = tmp_path / "small.png"
+    small.write_bytes(b"\0" * (2 * dc._PROBE_BYTES))
+    big = tmp_path / "big.png"
+    # Distinct bytes throughout, so a whole-file read could not be optimised away.
+    big.write_bytes(bytes(range(256)) * (64 * 1024 // 256) * 128)
+    assert big.stat().st_size >= 64 * 1024 * 128
+
+    def _elapsed(path):
+        started = time.perf_counter()
+        for _ in range(20):
+            dc.dataset_fingerprint([(str(path), "caption")])
+        return time.perf_counter() - started
+
+    # A whole-file hash would scale with the 128x size difference; head+tail does not.
+    assert _elapsed(big) < 8 * max(_elapsed(small), 1e-4), (
+        "the probe appears to scale with file size, so it is reading more than head and tail"
+    )
+
+    # The direct statement of the same thing: two files that differ only in the middle, past
+    # the probe window on both ends, are indistinguishable -- which is the documented tradeoff.
+    a, b = tmp_path / "a.bin", tmp_path / "b.bin"
+    body = b"\0" * (4 * dc._PROBE_BYTES)
+    a.write_bytes(body)
+    b.write_bytes(body[: 2 * dc._PROBE_BYTES] + b"X" + body[2 * dc._PROBE_BYTES + 1 :])
+    assert dc._content_probe(a) == dc._content_probe(b)
