@@ -1429,7 +1429,7 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
             for value in float8_values:
                 if value is not None:
                     FLOAT_TO_INT_MAPPER[value] = key
-                    FLOAT_TO_INT_MAPPER[value.lower()] = key.lower()
+                    FLOAT_TO_INT_MAPPER[value.lower()] = key
         values = float16_values
     INT_TO_FLOAT_MAPPER[key] = values[0]
 
@@ -1451,12 +1451,15 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
             _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
         pass
 
-    # Get lowercased
-    lowered_key = key.lower()
-    INT_TO_FLOAT_MAPPER[lowered_key] = values[0].lower()
+    # Lowercased keys make the lookup case-insensitive; the value stays exactly
+    # as the repo is named upstream. huggingface.co resolves repo ids
+    # case-insensitively so a lowercased value works there, but an HF_ENDPOINT
+    # mirror, an offline snapshot or a case-sensitive filesystem does not.
+    # Same convention as _add_with_lower above.
+    INT_TO_FLOAT_MAPPER[key.lower()] = values[0]
 
     for value in values:
-        FLOAT_TO_INT_MAPPER[value.lower()] = lowered_key
+        FLOAT_TO_INT_MAPPER[value.lower()] = key
 
 _add_with_lower(MAP_TO_UNSLOTH_16bit, "google/gemma-4-26B-A4B", "unsloth/gemma-4-26B-A4B")
 _add_with_lower(MAP_TO_UNSLOTH_16bit, "LiquidAI/LFM2.5-1.2B-Instruct", "unsloth/LFM2.5-1.2B-Instruct")
