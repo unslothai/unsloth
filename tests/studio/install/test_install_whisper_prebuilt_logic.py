@@ -829,6 +829,9 @@ def test_llama_runtime_pairs_falls_back_to_mix_suffix(installed, required, pairs
 
 
 LLAMA_REPO = "unslothai/llama.cpp"
+# A publisher that is NOT the default, so a lookup that dropped installed_repo
+# and fell back to unslothai/llama.cpp builds a different URL and gets caught.
+FORK_REPO = "acme-fork/llama.cpp"
 
 
 @pytest.fixture(autouse = True)
@@ -909,9 +912,13 @@ def test_llama_runtime_pairs_reads_the_published_tree_when_the_marker_has_none(m
 
     monkeypatch.setattr(M, "_download_host_json_once", fake)
     assert (
-        M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = LLAMA_REPO) is False
+        M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = FORK_REPO) is False
     )
     assert len(fetched) == 2
+    # The installed tag is read from the repo that published it. FORK_REPO is
+    # not the default publisher, so a lookup ignoring installed_repo would
+    # build a unslothai/llama.cpp URL here and this would catch it.
+    assert any(f"/{FORK_REPO}/releases/download/{SUFFIX_SHARED_A}/" in url for url in fetched)
 
 
 def test_published_ggml_tree_is_fetched_once_per_tag(monkeypatch):
@@ -1021,11 +1028,20 @@ def test_installed_llama_tree_repo_follows_the_marker(monkeypatch, tmp_path, mar
 def test_pairing_does_not_infer_a_tree_for_non_fork_binaries(monkeypatch):
     # Without a repo the installed tag's tree is never fetched, so an upstream
     # built runtime cannot be paired by a tree that does not describe it.
-    def boom(url):
-        raise AssertionError(f"should not fetch {url}")
+    # A raising stub cannot police this: published_llama_ggml_tree() catches
+    # every exception, so the raise would be swallowed and the test would pass
+    # either way. Record the URLs instead, and give the two tags different
+    # trees so an inferred installed tree also flips the verdict.
+    trees = {SUFFIX_SHARED_A: TREE_A, SUFFIX_SHARED_B: TREE_B}
+    fetched = []
 
-    monkeypatch.setattr(M, "_download_host_json_once", boom)
+    def record(url):
+        fetched.append(url)
+        return {"ggml_tree": trees[next(t for t in trees if t in url)]}
+
+    monkeypatch.setattr(M, "_download_host_json_once", record)
     assert M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = None) is True
+    assert not any(SUFFIX_SHARED_A in url for url in fetched)
 
 
 def test_installed_llama_ggml_tree_reads_marker(tmp_path):
