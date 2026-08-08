@@ -70,11 +70,12 @@ jobs:
           all="$RUNNER_TEMP/caches.tsv"
           grouped="$RUNNER_TEMP/grouped.tsv"
 
-          # A non-numeric keep makes `[ n -le KEEP ]` exit 2, and since that test
-          # is the left operand of `&&` set -e does not fire: the `continue` is
-          # skipped and every generation gets deleted, exit 0. Clamp instead.
-          case "$KEEP" in ""|*[!0-9]*) echo "::warning::invalid keep=$KEEP, using 2"; KEEP=2 ;; esac
-          [ "$KEEP" -lt 1 ] && KEEP=1
+          # Whitelist 1..99. Anything `[ n -le KEEP ]` cannot compare exits 2,
+          # and since that test is the left operand of `&&` set -e does not
+          # fire: the `continue` is skipped and every generation gets deleted,
+          # exit 0. All-digit is not enough, since a value past bash's integer
+          # range fails the same way.
+          case "$KEEP" in [1-9]|[1-9][0-9]) ;; *) echo "::warning::invalid keep=$KEEP, using 2"; KEEP=2 ;; esac
 
           # Report a failed inventory. Deleting nothing is the safe direction,
           # but silence means a broken janitor looks identical to a clean repo
