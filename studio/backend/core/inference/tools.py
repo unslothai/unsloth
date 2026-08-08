@@ -9940,6 +9940,36 @@ def _check_code_safety(code: str) -> str | None:
     return None
 
 
+def _adopt_tool_pid(pid: "int | None") -> None:
+    """Record a tool subprocess for the startup sweep.
+
+    macOS has no parent-death signal, so a force quit mid-call would otherwise
+    leave a session-leading tool (and whatever it spawned) with nothing able to
+    find it. Best-effort: a failure here must never break a tool call.
+    """
+    if not pid:
+        return
+    try:
+        from utils.process_lifetime import adopt_pid
+        adopt_pid(pid)
+    except Exception:
+        pass
+
+
+def _forget_tool_pid(proc) -> None:
+    """Drop the record once the process has actually exited."""
+    pid = getattr(proc, "pid", None)
+    if not pid:
+        return
+    try:
+        if getattr(proc, "poll", lambda: None)() is None:
+            return
+        from utils.process_lifetime import forget_pid
+        forget_pid(pid)
+    except Exception:
+        pass
+
+
 def _capture_process_group(proc):
     """Return the setsid process-group id, or ``None`` when unavailable.
 
@@ -10428,6 +10458,7 @@ def _python_exec(
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
         pgid = _capture_process_group(proc)
+        _adopt_tool_pid(proc.pid)
 
         if cancel_event is not None:
             watcher = threading.Thread(
@@ -10485,6 +10516,7 @@ def _python_exec(
     except Exception as e:
         return f"Execution error: {e}"
     finally:
+        _forget_tool_pid(locals().get("proc"))
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
@@ -10553,6 +10585,7 @@ def _bash_exec(
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.
         pgid = _capture_process_group(proc)
+        _adopt_tool_pid(proc.pid)
 
         if cancel_event is not None:
             watcher = threading.Thread(
@@ -10584,3 +10617,5 @@ def _bash_exec(
 
     except Exception as e:
         return f"Execution error: {e}"
+    finally:
+        _forget_tool_pid(locals().get("proc"))

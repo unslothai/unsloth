@@ -465,9 +465,11 @@ class CloudflareTunnel:
             except Exception:
                 _set_studio_tunnel_runtime_active(self, False)
                 raise
+            # Adopted before the lock drops: a stop() that got in first would
+            # otherwise reap and forget it while nothing was tracked, and this
+            # would then record whatever inherited the pid.
+            _adopt_pid(proc.pid)
             self._proc = proc
-        # macOS has no pdeathsig, so record it for the next startup's sweep.
-        _adopt_pid(proc.pid)
         threading.Thread(
             target = self._reader, args = (proc,), name = "cloudflared-reader", daemon = True
         ).start()

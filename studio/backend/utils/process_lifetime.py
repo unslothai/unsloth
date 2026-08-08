@@ -510,13 +510,60 @@ def forget_pid(pid: Optional[int]) -> None:
 
 
 def _group_has_members(pgid: object) -> bool:
+    """Whether the group still holds a process that is actually running.
+
+    ``killpg(pgid, 0)`` alone is not enough: a leader that has exited but has
+    not been waited on is still a member, so a group whose every member is a
+    zombie would read as alive and keep its record forever.
+    """
     if not isinstance(pgid, int) or _is_windows() or not hasattr(os, "killpg"):
         return False
     try:
         os.killpg(pgid, 0)
-        return True
     except Exception:
         return False
+    members = _group_member_pids(pgid)
+    if members is None:
+        return True  # cannot enumerate, so keep the record rather than lose it
+    return any(not _pid_is_zombie(pid) for pid in members)
+
+
+def _group_member_pids(pgid: int) -> "Optional[list[int]]":
+    """Pids in a process group, or None when they cannot be enumerated."""
+    if _is_linux():
+        try:
+            found = []
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{entry}/stat", encoding = "utf-8") as fh:
+                        stat = fh.read()
+                except OSError:
+                    continue
+                # After the comm field: state, ppid, pgrp, ...
+                tail = stat[stat.rfind(")") + 2 :].split()
+                if len(tail) > 2 and tail[2] == str(pgid):
+                    found.append(int(entry))
+            return found
+        except Exception:
+            return None
+    if sys.platform == "darwin":
+        try:
+            import subprocess
+
+            out = subprocess.run(
+                ["ps", "-o", "pid=", "-g", str(pgid)],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 5,
+            )
+            return [int(x) for x in (out.stdout or "").split()]
+        except Exception:
+            return None
+    return None
 
 
 # ── Crash-survivable child record ──
@@ -745,12 +792,14 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
         except Exception:
             pass
         current_now = _identity_or_none(pid)
-        if (
+        still_ours = (
             _pid_alive(pid)
             and not _pid_is_zombie(pid)
             and current_now is not None
             and _same_identity(identity, current_now)
-        ):
+        )
+        # Or the leader went and its group did not: same loss of the only handle.
+        if still_ours or _group_has_members(pgid):
             survivors.append(pid)
             with _record_lock:
                 _tracked_pids[pid] = identity
@@ -866,6 +915,10 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
         # one still running means the kill did not take, and the record is the
         # only handle the next launch would have on it.
         if _pid_alive(pid) and not _pid_is_zombie(pid):
+            unresolved = True
+        elif _group_has_members(entry.get("pgid")):
+            # The leader died but its group did not, which is the same loss of
+            # the only handle, just one step later.
             unresolved = True
 
     if not unresolved:

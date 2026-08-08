@@ -1078,5 +1078,100 @@ def test_every_child_starting_path_checks_the_rearm():
             assert "crashCleanupReady()" in block, f"{name} starts a child without the check"
 
 
+def test_a_tool_subprocess_is_recorded_while_it_runs(tmp_path, monkeypatch):
+    """A force quit mid-call on macOS would otherwise leave a session-leading
+    tool with nothing able to find it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    from utils import process_lifetime as pl
+
+    pl._tracked_pids.clear()
+    pl._tracked_pgids.clear()
+    tools._workdirs.clear()
+
+    seen = []
+    real_adopt = pl.adopt_pid
+
+    def watching_adopt(pid):
+        seen.append(pid)
+        return real_adopt(pid)
+
+    monkeypatch.setattr(pl, "adopt_pid", watching_adopt)
+    tools._python_exec("print('hi')", session_id = "__LOCALID_adopt01")
+    assert seen, "the tool subprocess was never recorded"
+    # And it is not left on the record once it has exited.
+    assert all(pid not in pl._tracked_pids for pid in seen), pl._tracked_pids
+
+
+def test_a_terminated_leader_leaving_a_group_keeps_its_record(tmp_path, monkeypatch):
+    """The dead-leader branch covered only a leader that was already gone."""
+    import json
+
+    from utils import process_lifetime as pl
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    directory = tmp_path / "children"
+    directory.mkdir(parents = True)
+
+    monkeypatch.setattr(pl, "_is_windows", lambda: False)
+    # Alive on the way in, gone after the terminate, but its group lives on.
+    states = iter([True, True, False, False, False])
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: next(states, False))
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_identity_or_none", lambda pid: "same")
+    monkeypatch.setattr(pl, "_posix_terminate", lambda pid, timeout = 5.0: None)
+    monkeypatch.setattr(pl, "_group_has_members", lambda pgid: pgid == 9801)
+
+    record = directory / "9800.json"
+    record.write_text(json.dumps({
+        "owner_pid": 9800, "owner_identity": "gone",
+        "children": [{"pid": 9801, "identity": "same", "pgid": 9801}],
+    }), encoding = "utf-8")
+
+    pl._reap_one_record(record, timeout = 1.0)
+    assert record.is_file(), "the group outlived its leader and lost its record"
+
+
+def test_cloudflared_is_adopted_before_stop_can_reach_it():
+    """Publishing _proc first lets a concurrent stop reap and forget it, and the
+    adoption would then record whatever inherited the pid."""
+    import inspect
+
+    from cloudflare_tunnel import CloudflareTunnel
+
+    source = inspect.getsource(CloudflareTunnel)
+    start = source.index("_adopt_pid(proc.pid)")
+    publish = source.index("self._proc = proc")
+    assert start < publish, "_proc is published before the adoption"
+    # Both inside the same `with self._lock:` block.
+    lock = source.rindex("with self._lock:", 0, start)
+    assert source.index("self._proc = proc", lock) < source.index("threading.Thread(", lock)
+
+
+def test_a_group_of_only_zombies_is_not_alive():
+    """killpg(pgid, 0) succeeds for a zombie leader, so the plain probe would
+    keep a finished group's record forever."""
+    from utils import process_lifetime as pl
+
+    if pl._is_windows():
+        pytest.skip("POSIX only")
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session = True
+    )
+    try:
+        assert pl._group_member_pids(child.pid) == [child.pid]
+        assert pl._group_has_members(child.pid) is True
+        child.kill()
+        time.sleep(0.3)
+        assert pl._pid_is_zombie(child.pid) is True
+        assert pl._group_has_members(child.pid) is False
+    finally:
+        _kill(child.pid)
+        child.wait(timeout = 10)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
