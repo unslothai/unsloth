@@ -213,6 +213,48 @@ test("no box in the column is ever overlapped, on either branch", () => {
   }
 });
 
+// The lift one box asks for comes out of the room left under another, so a box
+// that was high enough to sit under on its own may not be once the stack has
+// moved up. Capping it there falls through to the stack's floor and lands the
+// stack back on top of it. Both of these need no dragging beyond opening the
+// monitor where it opens by default.
+test("a box is not capped under using room another box's lift took", () => {
+  const monitorCorner = corner(300);
+  const both = stackGeometry([welcomeComposer, monitorCorner], W, H);
+  const stackTop = H - both.bottom - both.maxHeight;
+  for (const frame of [welcomeComposer, monitorCorner]) {
+    assert.ok(
+      H - both.bottom <= frame.top || stackTop >= frame.bottom,
+      `stack ${stackTop}..${H - both.bottom} overlaps ${frame.top}..${frame.bottom}`,
+    );
+  }
+});
+
+test("the monitor dragged up the column is not overlapped either", () => {
+  const docked: MonitorFrame = {
+    left: 300,
+    top: H - 141,
+    right: W - 340,
+    bottom: H - 29,
+  };
+  for (let bottom = 0; bottom <= H; bottom += 1) {
+    const monitor: MonitorFrame = {
+      left: W - 272,
+      top: Math.max(0, bottom - 300),
+      right: W - 16,
+      bottom,
+    };
+    const { bottom: inset, maxHeight } = stackGeometry([monitor, docked], W, H);
+    const stackTop = H - inset - maxHeight;
+    for (const frame of [monitor, docked]) {
+      assert.ok(
+        H - inset <= frame.top || stackTop >= frame.bottom,
+        `monitor at bottom=${bottom}: stack ${stackTop}..${H - inset} overlaps ${frame.top}..${frame.bottom}`,
+      );
+    }
+  }
+});
+
 test("an empty list behaves exactly like nothing published", () => {
   assert.deepEqual(stackGeometry([], W, H), stackGeometry(null, W, H));
 });
