@@ -36,7 +36,7 @@ def test_create_and_list_provider_models(isolated_providers_db: Path):
     assert row is not None
     assert row["models"] == ["llama3.2", "qwen2.5"]
     assert row["available_models"] == ["llama3.2", "qwen2.5", "mistral"]
-
+    assert row["studio_tool_execution"] == 0
     listed = providers_db.list_providers()
     assert len(listed) == 1
     assert listed[0]["models"] == ["llama3.2", "qwen2.5"]
@@ -50,6 +50,7 @@ def test_update_provider_models(isolated_providers_db: Path):
         base_url = "http://studio-host:8000/v1",
         models = ["meta-llama/Llama-3.2-1B-Instruct"],
         available_models = ["meta-llama/Llama-3.2-1B-Instruct"],
+        studio_tool_execution = True,
     )
 
     assert providers_db.update_provider(
@@ -59,6 +60,7 @@ def test_update_provider_models(isolated_providers_db: Path):
             "meta-llama/Llama-3.2-1B-Instruct",
             "meta-llama/Llama-3.2-3B-Instruct",
         ],
+        studio_tool_execution = False,
     )
 
     row = providers_db.get_provider("vllm1")
@@ -68,3 +70,4 @@ def test_update_provider_models(isolated_providers_db: Path):
         "meta-llama/Llama-3.2-1B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
     ]
+    assert row["studio_tool_execution"] == 0

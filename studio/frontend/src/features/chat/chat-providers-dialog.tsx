@@ -174,6 +174,7 @@ export function ChatProvidersSettings({
     CUSTOM_PROVIDER_DISPLAY_NAME,
   );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
+  const [studioToolExecution, setStudioToolExecution] = useState(false);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -367,6 +368,7 @@ export function ChatProvidersSettings({
     setModelSearchQuery("");
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
+    setStudioToolExecution(false);
   }
 
   function openAddProvider() {
@@ -586,6 +588,7 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+        studioToolExecution,
       });
       const createdAt = Number.isFinite(Date.parse(created.created_at))
         ? Date.parse(created.created_at)
@@ -605,6 +608,7 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+        studioToolExecution: created.studio_tool_execution === true,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? isReasoningModel
           : undefined,
@@ -705,6 +709,7 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(existing.providerType, availableModels),
+        studioToolExecution,
       });
       if (apiKey.trim()) {
         setExternalProviderApiKey(editingProviderId, apiKey.trim());
@@ -725,6 +730,7 @@ export function ChatProvidersSettings({
                 availableModels: manualOnly
                   ? []
                   : pruneProviderModelIds(existing.providerType, availableModels),
+                studioToolExecution: updated.studio_tool_execution === true,
                 isReasoningModel: supportsProviderReasoningToggle(
                   existing.providerType,
                 )
@@ -762,6 +768,7 @@ export function ChatProvidersSettings({
         ? provider.isReasoningModel === true
         : false,
     );
+    setStudioToolExecution(provider.studioToolExecution === true);
     if (
       isCustomProviderType(provider.providerType) &&
       !supportsRemoteModelCatalog(provider.providerType)
@@ -1110,6 +1117,38 @@ export function ChatProvidersSettings({
                   </label>
                 </div>
               ) : null}
+
+              <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <Label
+                    htmlFor="provider-studio-tool-execution"
+                    className="text-sm font-medium"
+                  >
+                    Studio tools
+                  </Label>
+                  <p className="text-xs leading-snug text-muted-foreground">
+                    Disabled by default for every connection.
+                  </p>
+                </div>
+                <div className="flex min-w-0 flex-col gap-1">
+                  <label
+                    htmlFor="provider-studio-tool-execution"
+                    className="flex cursor-pointer items-center gap-2 text-sm"
+                  >
+                    <Checkbox
+                      id="provider-studio-tool-execution"
+                      checked={studioToolExecution}
+                      onCheckedChange={(checked) =>
+                        setStudioToolExecution(checked === true)
+                      }
+                    />
+                    Allow Studio to run tools for this connection
+                  </label>
+                  <p className="text-xs leading-snug text-muted-foreground">
+                    Requires model function calling. Tool results are sent to this provider.
+                  </p>
+                </div>
+              </div>
             </div>
           </section>
 

@@ -19,12 +19,7 @@ from urllib.parse import urlparse
 import httpx
 import structlog
 
-# Local servers, not hosted APIs: each applies the model's own chat template on the way
-# in, so a prompt built here is templated just like an in-process one (#7066). "custom" is
-# a user-supplied OpenAI-compatible base_url (routes/providers.py:207-213), i.e. how a
-# self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume
-# a template applies: sweeping a hosted API costs a space in delimiter-like text, not
-# sweeping a local one costs a forged turn.
+# Local and custom endpoints apply their own chat template (#7066).
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
 
 # The subset documenting "continue_final_message" + "add_generation_prompt" on
@@ -45,10 +40,6 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 logger = structlog.get_logger(__name__)
 
 
-# Claude 4.7 (Opus/Sonnet/Haiku) removed temperature/top_p/top_k — the API
-# 400s "<param> is deprecated for this model" on a non-default value. 3.x and
-# 4.5/4.6 still accept them, so match the 4-7 line strictly. Ref:
-#   https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
 
@@ -70,6 +61,7 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     return host == "api.openai.com" or host.endswith(".openai.azure.com")
 
 
+# Claude 4.7 rejects temperature, top_p, and top_k.
 _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 _OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
@@ -115,12 +107,7 @@ def _sanitize_openai_reasoning_replay_item(item: Any) -> Optional[dict[str, Any]
     return replay_item
 
 
-# OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
-# using private-use codepoints (see
-# https://developers.openai.com/api/docs/guides/citation-formatting).
-# Group 1 holds delim-separated tokens; each resolvable token expands to
-# `[[N]](URL)`, unresolved tokens (locators, unknown ids) drop silently so
-# no garbled glyph reaches the renderer.
+# OpenAI Responses inline citation marker, encoded with private-use codepoints.
 _OPENAI_CITE_OPEN = "cite"
 _OPENAI_CITE_STOP = ""
 _OPENAI_CITE_DELIM = ""
@@ -163,9 +150,6 @@ def _replace_openai_citation_markers(text: str, url_citations: list[dict[str, An
     by_source = _build_citation_lookup(url_citations)
 
     def _sub(match: re.Match[str]) -> str:
-        # Try every delim-split token; unresolved tokens drop. Handles
-        # multi-source (all resolve) and source+locator (only id resolves,
-        # locator drops). Empty result strips the marker.
         rendered: list[str] = []
         for tok in match.group(1).split(_OPENAI_CITE_DELIM):
             if not tok:
@@ -208,9 +192,7 @@ def _rewrite_citation_markers_partial(
                 continue
             idx, url = hit
             rendered.append(f"[[{idx}]]({url})")
-        # Leave the whole marker verbatim if any token is unresolved so the
-        # caller can re-run once the late annotation lands; partial emission
-        # would lose unresolved ids once the source text is dropped.
+        # Preserve incomplete markers for a later annotation.
         if any_unresolved:
             has_unresolved = True
             return match.group(0)
@@ -272,12 +254,6 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
     return None
 
 
-# Anthropic ships date-pinned tool versions per model family: the newer
-# `_20260209`/`_20260120` variants only run on recent models (400 "tool not
-# supported" elsewhere), and old versions on a new model miss dynamic
-# filtering and free-with-search pricing. Pick the newest combo the model
-# accepts, else the GA `_20250305`/`_20250910`/`_20250825` defaults. Ref:
-# https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-reference
 _ANTHROPIC_NEW_WEB_PREFIXES = (
     "claude-opus-4-7",
     "claude-opus-4-6",
@@ -316,16 +292,9 @@ def _anthropic_code_execution_version(model: str) -> str:
     )
 
 
-# Anthropic's beta-header flag for code execution does NOT change with the
-# tool version -- both `_20250825` and `_20260120` are unlocked by the same
-# `code-execution-2025-08-25` header per the upstream docs.
 _ANTHROPIC_CODE_EXECUTION_BETA = "code-execution-2025-08-25"
 
 
-# Anthropic server-side context compaction (beta compact-2026-01-12), supported
-# on Opus 4.6/4.7, Sonnet 4.6 and Mythos Preview. Same beta header for all; the
-# dated `compact_20260112` type lives in body `context_management.edits`. Models
-# outside the prefix list are silently ignored so we don't 400 upstream.
 _ANTHROPIC_COMPACTION_PREFIXES = (
     "claude-opus-4-7",
     "claude-opus-4-6",
@@ -334,14 +303,11 @@ _ANTHROPIC_COMPACTION_PREFIXES = (
 )
 _ANTHROPIC_COMPACTION_BETA = "compact-2026-01-12"
 _ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
-# The threshold must be >= 50K tokens; lower 400s. Clamp on the way out so
-# a UI slider can't underflow.
+# Anthropic requires a context-compaction threshold of at least 50K.
 _ANTHROPIC_COMPACTION_MIN = 50_000
 
 
-# Anthropic fast-mode beta (Opus 4.6 / 4.7 only, per
-# https://platform.claude.com/docs/en/build-with-claude/fast-mode).
-# Mutually exclusive with the Priority service tier.
+# Anthropic fast mode is incompatible with Priority tier.
 _ANTHROPIC_FAST_MODE_BETA = "fast-mode-2026-02-01"
 _ANTHROPIC_FAST_MODE_PREFIXES = (
     "claude-opus-4-7",
@@ -359,8 +325,6 @@ def _anthropic_supports_fast_mode(model: str) -> bool:
     return any(model == p or model.startswith(f"{p}-") for p in _ANTHROPIC_FAST_MODE_PREFIXES)
 
 
-# Cap on ``cited_text`` forwarded in document_citations tool_events; bounds
-# SSE bytes on multi-KB cited spans (frontend trims to 240 chars anyway).
 _CITED_TEXT_MAX_LEN = 512
 
 
@@ -488,12 +452,9 @@ def _apply_mistral_reasoning_controls(
             body["reasoning_effort"] = "high"
 
 
-# Shared client reused across all requests for HTTP connection pooling.
-# Auth headers and timeouts are passed per-request, so a single client
-# handles every provider without storing credentials.
+# Reuse one client for connection pooling; pass credentials per request.
 def _create_shared_http_client() -> httpx.AsyncClient:
-    # Unsupported env proxy schemes (socks:// etc) raise at construction and
-    # would crash Unsloth startup (#6090); retry ignoring env proxies instead.
+    # Ignore invalid environment proxies to avoid startup failure (#6090).
     try:
         return httpx.AsyncClient()
     except (ImportError, ValueError) as exc:
@@ -710,9 +671,6 @@ async def _safe_fetch_image_for_gemini(
     return await asyncio.to_thread(_safe_fetch_image_for_gemini_sync, url, fallback_mime, max_bytes)
 
 
-# Synthetic-tool names stamped onto outbound _toolEvent.arguments so the
-# frontend can tell provider-side cards from real user-declared tools of the
-# same name. Mirrored on the TS side.
 _SERVER_SIDE_BUILTIN_TOOL_NAMES = frozenset(
     {"web_search", "web_fetch", "code_execution", "image_generation"}
 )
@@ -855,6 +813,7 @@ class ExternalProviderClient:
         fast_mode: Optional[bool] = None,
         continue_final_message: Optional[bool] = None,
         stream: bool = True,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Yield OpenAI-format SSE lines from the external provider.
@@ -913,7 +872,9 @@ class ExternalProviderClient:
                 anthropic_code_exec_container_id,
                 prompt_cache_ttl,
                 compaction_threshold,
+                tools,
                 tool_choice,
+                parallel_tool_calls,
                 fast_mode = fast_mode,
             ):
                 yield line
@@ -939,6 +900,7 @@ class ExternalProviderClient:
                 compaction_threshold,
                 tools,
                 tool_choice,
+                parallel_tool_calls,
             ):
                 yield line
             return
@@ -1094,6 +1056,8 @@ class ExternalProviderClient:
             body["tools"] = tools
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
+        if parallel_tool_calls is not None and tools:
+            body["parallel_tool_calls"] = parallel_tool_calls
 
         url = f"{self.base_url}/chat/completions"
         logger.info(
@@ -1695,7 +1659,9 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        parallel_tool_calls: Optional[bool] = None,
         *,
         fast_mode: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
@@ -1710,9 +1676,141 @@ class ExternalProviderClient:
         """
         import json as _json
 
+        def _native_thinking_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+            """Return opaque Anthropic thinking blocks saved by the tool loop."""
+
+            extra = message.get("extra_content")
+            anthropic = extra.get("anthropic") if isinstance(extra, dict) else None
+            blocks = anthropic.get("thinking_blocks") if isinstance(anthropic, dict) else None
+            return [
+                dict(block)
+                for block in (blocks if isinstance(blocks, list) else [])
+                if isinstance(block, dict)
+                and block.get("type") in ("thinking", "redacted_thinking")
+            ]
+
+        def _native_hosted_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+            """Return provider-hosted blocks that preceded managed calls."""
+
+            hosted_types = {
+                "server_tool_use",
+                "web_search_tool_result",
+                "web_fetch_tool_result",
+                "bash_code_execution_tool_result",
+                "text_editor_code_execution_tool_result",
+                "code_execution_tool_result",
+            }
+            native_blocks: list[dict[str, Any]] = []
+            seen_hosted: set[tuple[Any, Any, Any]] = set()
+            for tool_call in message.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                tool_extra = tool_call.get("extra_content")
+                tool_anthropic = (
+                    tool_extra.get("anthropic") if isinstance(tool_extra, dict) else None
+                )
+                hosted_blocks = (
+                    tool_anthropic.get("hosted_blocks")
+                    if isinstance(tool_anthropic, dict)
+                    else None
+                )
+                for block in hosted_blocks if isinstance(hosted_blocks, list) else []:
+                    if not isinstance(block, dict) or block.get("type") not in hosted_types:
+                        continue
+                    key = (block.get("type"), block.get("id"), block.get("tool_use_id"))
+                    if key in seen_hosted:
+                        continue
+                    seen_hosted.add(key)
+                    native_blocks.append(dict(block))
+            return native_blocks
+
+        def _native_content_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+            """Return the longest ordered Anthropic block snapshot saved by the tool loop."""
+
+            managed_ids = {
+                tool_call.get("id")
+                for tool_call in message.get("tool_calls") or []
+                if isinstance(tool_call, dict) and tool_call.get("id")
+            }
+            allowed_types = {
+                "thinking",
+                "redacted_thinking",
+                "text",
+                "compaction",
+                "tool_use",
+                "server_tool_use",
+                "web_search_tool_result",
+                "web_fetch_tool_result",
+                "bash_code_execution_tool_result",
+                "text_editor_code_execution_tool_result",
+                "code_execution_tool_result",
+            }
+            ordered: list[dict[str, Any]] = []
+            for tool_call in message.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                extra = tool_call.get("extra_content")
+                anthropic = extra.get("anthropic") if isinstance(extra, dict) else None
+                blocks = anthropic.get("content_blocks") if isinstance(anthropic, dict) else None
+                candidate = [
+                    dict(block)
+                    for block in (blocks if isinstance(blocks, list) else [])
+                    if isinstance(block, dict)
+                    and block.get("type") in allowed_types
+                    and (block.get("type") != "tool_use" or block.get("id") in managed_ids)
+                    and (block.get("type") != "text" or bool(block.get("text")))
+                    and (block.get("type") != "compaction" or bool(block.get("content")))
+                ]
+                if len(candidate) > len(ordered):
+                    ordered = candidate
+            return ordered
+
+        def _append_tool_use_blocks(blocks: list[dict[str, Any]], tool_calls: list[Any]) -> None:
+            saved_ids = {block.get("id") for block in blocks if block.get("type") == "tool_use"}
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function") or {}
+                if not isinstance(function, dict) or not function.get("name"):
+                    continue
+                raw_input = function.get("arguments") or "{}"
+                try:
+                    parsed_input = (
+                        _json.loads(raw_input) if isinstance(raw_input, str) else raw_input
+                    )
+                except Exception:
+                    parsed_input = {"_raw": raw_input}
+                if not isinstance(parsed_input, dict):
+                    parsed_input = {"value": parsed_input}
+                if tool_call.get("id") in saved_ids:
+                    continue
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tool_call.get("id") or f"toolu_{time.time_ns()}",
+                        "name": function["name"],
+                        "input": parsed_input,
+                    }
+                )
+
         # Extract system prompt; translate image_url parts to Anthropic format
         system: Optional[str] = None
         filtered: list[dict[str, Any]] = []
+
+        def _append_tool_result(tool_use_id: str, content: str) -> None:
+            block = {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
+            previous_content = filtered[-1].get("content") if filtered else None
+            if (
+                filtered
+                and filtered[-1].get("role") == "user"
+                and isinstance(previous_content, list)
+                and previous_content
+                and all(part.get("type") == "tool_result" for part in previous_content)
+            ):
+                previous_content.append(block)
+            else:
+                filtered.append({"role": "user", "content": [block]})
+
         for msg in messages:
             if msg.get("role") == "system":
                 content = msg.get("content", "")
@@ -1747,19 +1845,18 @@ class ExternalProviderClient:
                     _flat_result = content
                 else:
                     _flat_result = _json.dumps(content)
-                filtered.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": _tr_id,
-                                "content": _flat_result,
-                            }
-                        ],
-                    }
-                )
+                _append_tool_result(_tr_id, _flat_result)
                 continue
+            if (
+                msg.get("role") == "assistant"
+                and isinstance(msg.get("tool_calls"), list)
+                and msg["tool_calls"]
+            ):
+                ordered_blocks = _native_content_blocks(msg)
+                if ordered_blocks:
+                    _append_tool_use_blocks(ordered_blocks, msg["tool_calls"])
+                    filtered.append({"role": "assistant", "content": ordered_blocks})
+                    continue
             if isinstance(content, list):
                 # Translate OpenAI multimodal parts -> Anthropic native shapes.
                 # - `image_url`     -> `{type:"image", source:...}`
@@ -1767,7 +1864,7 @@ class ExternalProviderClient:
                 #   (Unsloth extension; mirrors Anthropic's document block,
                 #   which supports PDFs as base64 or URL per
                 #   https://platform.claude.com/docs/en/build-with-claude/vision)
-                anthropic_parts: list[dict[str, Any]] = []
+                anthropic_parts: list[dict[str, Any]] = _native_thinking_blocks(msg)
                 for part in content:
                     if part.get("type") == "text":
                         anthropic_parts.append({"type": "text", "text": part["text"]})
@@ -1854,32 +1951,15 @@ class ExternalProviderClient:
                             if title:
                                 doc_block["title"] = title
                             anthropic_parts.append(doc_block)
+                # Restore hosted blocks before managed client calls.
+                if msg.get("role") == "assistant":
+                    anthropic_parts.extend(_native_hosted_blocks(msg))
                 # Assistant tool_calls -> Anthropic tool_use blocks appended to
                 # the same message. The native Messages API doesn't accept
                 # OpenAI's top-level `tool_calls` field; the call lives inside a
                 # content block `{type:"tool_use", id, name, input}`.
                 if msg.get("role") == "assistant" and isinstance(msg.get("tool_calls"), list):
-                    for _tc in msg["tool_calls"]:
-                        if not isinstance(_tc, dict):
-                            continue
-                        _fn = _tc.get("function") or {}
-                        if not isinstance(_fn, dict) or not _fn.get("name"):
-                            continue
-                        _raw = _fn.get("arguments") or "{}"
-                        try:
-                            _input = _json.loads(_raw) if isinstance(_raw, str) else _raw
-                        except Exception:
-                            _input = {"_raw": _raw}
-                        if not isinstance(_input, dict):
-                            _input = {"value": _input}
-                        anthropic_parts.append(
-                            {
-                                "type": "tool_use",
-                                "id": _tc.get("id") or f"toolu_{time.time_ns()}",
-                                "name": _fn["name"],
-                                "input": _input,
-                            }
-                        )
+                    _append_tool_use_blocks(anthropic_parts, msg["tool_calls"])
                 # Skip whole-message append when nothing usable survived. An
                 # empty content array (e.g. user dropped only an unparseable
                 # `input_document`) would 400 with "messages.N.content: at
@@ -1887,31 +1967,6 @@ class ExternalProviderClient:
                 if anthropic_parts:
                     filtered.append({"role": msg["role"], "content": anthropic_parts})
             else:
-                # role="tool" follow-up -> Anthropic native tool_result block
-                # on a `user` message. The OpenAI shape (role=tool,
-                # content=string, tool_call_id) is not a valid Anthropic role.
-                if msg.get("role") == "tool":
-                    _tr_id = msg.get("tool_call_id") or ""
-                    _tr_content = msg.get("content")
-                    if _tr_content is None:
-                        _tr_content = ""
-                    filtered.append(
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": _tr_id,
-                                    "content": (
-                                        _tr_content
-                                        if isinstance(_tr_content, str)
-                                        else _json.dumps(_tr_content)
-                                    ),
-                                }
-                            ],
-                        }
-                    )
-                    continue
                 # Assistant turn whose content is a plain string but also
                 # carries OpenAI `tool_calls`: convert into a content-array
                 # message with a text block + tool_use blocks. Without this,
@@ -1922,30 +1977,11 @@ class ExternalProviderClient:
                     and msg["tool_calls"]
                 ):
                     _text_content = msg.get("content")
-                    _blocks: list[dict[str, Any]] = []
+                    _blocks = _native_thinking_blocks(msg)
                     if isinstance(_text_content, str) and _text_content:
                         _blocks.append({"type": "text", "text": _text_content})
-                    for _tc in msg["tool_calls"]:
-                        if not isinstance(_tc, dict):
-                            continue
-                        _fn = _tc.get("function") or {}
-                        if not isinstance(_fn, dict) or not _fn.get("name"):
-                            continue
-                        _raw = _fn.get("arguments") or "{}"
-                        try:
-                            _input = _json.loads(_raw) if isinstance(_raw, str) else _raw
-                        except Exception:
-                            _input = {"_raw": _raw}
-                        if not isinstance(_input, dict):
-                            _input = {"value": _input}
-                        _blocks.append(
-                            {
-                                "type": "tool_use",
-                                "id": _tc.get("id") or f"toolu_{time.time_ns()}",
-                                "name": _fn["name"],
-                                "input": _input,
-                            }
-                        )
+                    _blocks.extend(_native_hosted_blocks(msg))
+                    _append_tool_use_blocks(_blocks, msg["tool_calls"])
                     if _blocks:
                         filtered.append({"role": "assistant", "content": _blocks})
                     continue
@@ -2074,6 +2110,27 @@ class ExternalProviderClient:
             not _anthropic_tool_choice_disabled and not _anthropic_tool_choice_forced_function
         )
 
+        anthropic_function_tools: list[dict[str, Any]] = []
+        for tool in tools or []:
+            if not isinstance(tool, dict) or tool.get("type") != "function":
+                continue
+            function = tool.get("function")
+            if not isinstance(function, dict) or not function.get("name"):
+                continue
+            input_schema = function.get("parameters")
+            if not isinstance(input_schema, dict):
+                input_schema = {"type": "object", "properties": {}}
+            translated = {
+                "name": function["name"],
+                "input_schema": input_schema,
+            }
+            description = function.get("description")
+            if isinstance(description, str) and description:
+                translated["description"] = description
+            anthropic_function_tools.append(translated)
+        if anthropic_function_tools:
+            body["tools"] = anthropic_function_tools
+
         # Anthropic web_search (date-pinned per model family).
         # https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
         if _anthropic_hosted_builtins_allowed and enabled_tools and "web_search" in enabled_tools:
@@ -2124,6 +2181,24 @@ class ExternalProviderClient:
             # Stale ids 4xx and clear via container_invalidated.
             if anthropic_code_exec_container_id:
                 body["container"] = anthropic_code_exec_container_id
+
+        # Anthropic rejects tool_choice without a tool catalog.
+        if body.get("tools"):
+            if isinstance(tool_choice, str):
+                choice = tool_choice.strip().lower()
+                if choice == "required":
+                    body["tool_choice"] = {"type": "any"}
+                elif choice in ("auto", "none"):
+                    body["tool_choice"] = {"type": choice}
+            elif _anthropic_tool_choice_forced_function:
+                body["tool_choice"] = {
+                    "type": "tool",
+                    "name": tool_choice["function"]["name"],
+                }
+            if parallel_tool_calls is False:
+                native_tool_choice = body.setdefault("tool_choice", {"type": "auto"})
+                if native_tool_choice.get("type") in ("auto", "any", "tool"):
+                    native_tool_choice["disable_parallel_tool_use"] = True
 
         # Server-side compaction (beta `compact-2026-01-12`). Clamps below-min
         # thresholds to 50K so the request doesn't 400.
@@ -2278,6 +2353,11 @@ class ExternalProviderClient:
                 # and emit on content_block_stop so the chat-adapter can persist
                 # it onto the assistant message for next-turn round-tripping.
                 current_compaction: Optional[dict[str, Any]] = None
+                client_tool_uses: dict[int, dict[str, Any]] = {}
+                thinking_blocks: dict[int, dict[str, Any]] = {}
+                hosted_blocks: dict[int, dict[str, Any]] = {}
+                native_content_blocks: dict[int, dict[str, Any]] = {}
+                next_client_tool_index = 0
                 compaction_blocks_seen = 0
                 # Document citations from ``citations_delta`` events. Deduped by
                 # type-specific anchor key; inline [N] is injected after each
@@ -2301,14 +2381,18 @@ class ExternalProviderClient:
                 # caching is verifiable per-request without the dashboard.
                 last_usage: dict[str, Any] = {}
 
-                def _content_chunk(text: str) -> str:
+                def _content_chunk(text: str, *, thinking_display: bool = False) -> str:
+                    delta: dict[str, Any] = {"content": text}
+                    if thinking_display:
+                        # Exclude display-only thinking from provider history.
+                        delta["extra_content"] = {"anthropic": {"thinking_display": True}}
                     chunk = {
                         "id": completion_id,
                         "object": "chat.completion.chunk",
                         "choices": [
                             {
                                 "index": 0,
-                                "delta": {"content": text},
+                                "delta": delta,
                                 "finish_reason": None,
                             }
                         ],
@@ -2470,7 +2554,46 @@ class ExternalProviderClient:
                             content_block = event.get("content_block") or {}
                             block_type = content_block.get("type")
                             block_name = content_block.get("name")
-                            if block_type == "server_tool_use" and block_name == "web_search":
+                            block_index = event.get("index")
+                            if isinstance(block_index, int) and (
+                                block_type == "server_tool_use"
+                                or block_type
+                                in {
+                                    "web_search_tool_result",
+                                    "web_fetch_tool_result",
+                                    "bash_code_execution_tool_result",
+                                    "text_editor_code_execution_tool_result",
+                                    "code_execution_tool_result",
+                                }
+                            ):
+                                native_block = dict(content_block)
+                                hosted_blocks[block_index] = native_block
+                                native_content_blocks[block_index] = native_block
+                            if block_type in ("thinking", "redacted_thinking") and isinstance(
+                                block_index, int
+                            ):
+                                native_block = dict(content_block)
+                                thinking_blocks[block_index] = native_block
+                                native_content_blocks[block_index] = native_block
+                                if block_type == "thinking":
+                                    thinking_blocks[block_index].setdefault("thinking", "")
+                            elif block_type == "text" and isinstance(block_index, int):
+                                native_content_blocks[block_index] = {
+                                    "type": "text",
+                                    "text": str(content_block.get("text") or ""),
+                                }
+                            elif block_type == "tool_use" and isinstance(block_index, int):
+                                seed_input = content_block.get("input")
+                                client_tool_uses[block_index] = {
+                                    "index": next_client_tool_index,
+                                    "id": content_block.get("id")
+                                    or f"call_anthropic_{next_client_tool_index}",
+                                    "name": block_name or "",
+                                    "buffer": "",
+                                    "input": seed_input if isinstance(seed_input, dict) else {},
+                                }
+                                next_client_tool_index += 1
+                            elif block_type == "server_tool_use" and block_name == "web_search":
                                 tool_use_id = content_block.get("id", "") or (
                                     f"ws_{len(web_search_calls)}"
                                 )
@@ -2550,8 +2673,11 @@ class ExternalProviderClient:
                                 # text_delta. Capture both; emit on stop.
                                 seed = content_block.get("content") or ""
                                 current_compaction = {
+                                    "type": "compaction",
                                     "content": seed if isinstance(seed, str) else "",
                                 }
+                                if isinstance(block_index, int):
+                                    native_content_blocks[block_index] = current_compaction
 
                         elif event_type == "content_block_delta":
                             delta = event.get("delta", {})
@@ -2563,7 +2689,18 @@ class ExternalProviderClient:
                                     if not thinking_open:
                                         thinking_text = f"<think>{thinking_text}"
                                         thinking_open = True
-                                    yield _content_chunk(thinking_text)
+                                    block_index = event.get("index")
+                                    if (
+                                        isinstance(block_index, int)
+                                        and block_index in thinking_blocks
+                                    ):
+                                        thinking_blocks[block_index]["thinking"] = str(
+                                            thinking_blocks[block_index].get("thinking") or ""
+                                        ) + str(delta.get("thinking") or "")
+                                    yield _content_chunk(
+                                        thinking_text,
+                                        thinking_display = True,
+                                    )
                             elif delta_type == "text_delta":
                                 text = delta.get("text", "")
                                 # text_deltas inside a compaction block carry
@@ -2581,9 +2718,22 @@ class ExternalProviderClient:
                                     # closing on the text_delta transition is more
                                     # forgiving if events arrive out of order.
                                     if thinking_open:
-                                        yield _content_chunk("</think>")
+                                        yield _content_chunk(
+                                            "</think>",
+                                            thinking_display = True,
+                                        )
                                         thinking_open = False
                                     if text:
+                                        block_index = event.get("index")
+                                        native_text = (
+                                            native_content_blocks.get(block_index)
+                                            if isinstance(block_index, int)
+                                            else None
+                                        )
+                                        if isinstance(native_text, dict):
+                                            native_text["text"] = str(
+                                                native_text.get("text") or ""
+                                            ) + str(text)
                                         yield _content_chunk(text)
                                     # web_search citations: web_search_tool_result.
                                     # User-doc citations: citations_delta below.
@@ -2608,18 +2758,101 @@ class ExternalProviderClient:
                                 # query, code-exec command, etc.); route to
                                 # whichever buffer is open.
                                 partial = delta.get("partial_json", "")
-                                if current_server_tool_use is not None:
+                                block_index = event.get("index")
+                                if isinstance(block_index, int) and block_index in client_tool_uses:
+                                    client_tool_uses[block_index]["buffer"] += partial
+                                elif current_server_tool_use is not None:
                                     current_server_tool_use["buffer"] += partial
                                 elif current_code_exec_use is not None:
                                     current_code_exec_use["buffer"] += partial
                                 elif current_web_fetch_use is not None:
                                     current_web_fetch_use["buffer"] += partial
-                            # signature_delta and other delta types are skipped
-                            # — they carry trust / verification metadata, not
-                            # user-visible content.
-
+                            elif delta_type == "signature_delta":
+                                block_index = event.get("index")
+                                signature = delta.get("signature")
+                                if (
+                                    isinstance(block_index, int)
+                                    and block_index in thinking_blocks
+                                    and isinstance(signature, str)
+                                    and signature
+                                ):
+                                    thinking_blocks[block_index]["signature"] = signature
                         elif event_type == "content_block_stop":
-                            if current_server_tool_use is not None:
+                            block_index = event.get("index")
+                            if isinstance(block_index, int) and block_index in client_tool_uses:
+                                client_call = client_tool_uses.pop(block_index)
+                                arguments = client_call["buffer"]
+                                if not arguments:
+                                    arguments = _json.dumps(
+                                        client_call["input"], separators = (",", ":")
+                                    )
+                                native_input = client_call["input"]
+                                if arguments:
+                                    try:
+                                        parsed_input = _json.loads(arguments)
+                                        if isinstance(parsed_input, dict):
+                                            native_input = parsed_input
+                                    except Exception:
+                                        pass
+                                native_content_blocks[block_index] = {
+                                    "type": "tool_use",
+                                    "id": client_call["id"],
+                                    "name": client_call["name"],
+                                    "input": native_input,
+                                }
+                                tool_call: dict[str, Any] = {
+                                    "index": client_call["index"],
+                                    "id": client_call["id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": client_call["name"],
+                                        "arguments": arguments,
+                                    },
+                                }
+                                if thinking_blocks:
+                                    # Attach native blocks for the managed loop.
+                                    tool_call["extra_content"] = {
+                                        "anthropic": {
+                                            "thinking_blocks": [
+                                                dict(thinking_blocks[index])
+                                                for index in sorted(thinking_blocks)
+                                            ]
+                                        }
+                                    }
+                                if hosted_blocks:
+                                    anthropic_extra = tool_call.setdefault(
+                                        "extra_content", {}
+                                    ).setdefault("anthropic", {})
+                                    anthropic_extra["hosted_blocks"] = [
+                                        dict(hosted_blocks[index])
+                                        for index in sorted(hosted_blocks)
+                                    ]
+                                ordered_blocks = [
+                                    dict(native_content_blocks[index])
+                                    for index in sorted(native_content_blocks)
+                                    if native_content_blocks[index].get("type") != "text"
+                                    or native_content_blocks[index].get("text")
+                                    if native_content_blocks[index].get("type") != "compaction"
+                                    or native_content_blocks[index].get("content")
+                                ]
+                                if ordered_blocks:
+                                    anthropic_extra = tool_call.setdefault(
+                                        "extra_content", {}
+                                    ).setdefault("anthropic", {})
+                                    anthropic_extra["content_blocks"] = ordered_blocks
+                                chunk = {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {"tool_calls": [tool_call]},
+                                            "finish_reason": None,
+                                        }
+                                    ],
+                                }
+                                yield f"data: {_json.dumps(chunk)}"
+                            elif current_server_tool_use is not None:
                                 # End of the server_tool_use block — parse the
                                 # accumulated input_json into a query and emit
                                 # tool_start. The matching tool_end fires later
@@ -2639,6 +2872,10 @@ class ExternalProviderClient:
                                 tool_use_id = current_server_tool_use["id"]
                                 if tool_use_id in web_search_calls:
                                     web_search_calls[tool_use_id]["query"] = query
+                                if isinstance(block_index, int) and block_index in hosted_blocks:
+                                    hosted_blocks[block_index]["input"] = (
+                                        {"query": query} if query else {}
+                                    )
                                 yield _emit_tool_event(
                                     {
                                         "type": "tool_start",
@@ -2686,6 +2923,8 @@ class ExternalProviderClient:
                                 emit_args = {"kind": kind, **parsed_args}
                                 if tool_use_id in code_execution_calls:
                                     code_execution_calls[tool_use_id]["arguments"] = emit_args
+                                if isinstance(block_index, int) and block_index in hosted_blocks:
+                                    hosted_blocks[block_index]["input"] = parsed_args
                                 yield _emit_tool_event(
                                     {
                                         "type": "tool_start",
@@ -2758,6 +2997,10 @@ class ExternalProviderClient:
                                 tool_use_id = current_web_fetch_use["id"]
                                 if tool_use_id in web_fetch_calls:
                                     web_fetch_calls[tool_use_id]["url"] = url
+                                if isinstance(block_index, int) and block_index in hosted_blocks:
+                                    hosted_blocks[block_index]["input"] = (
+                                        {"url": url} if url else {}
+                                    )
                                 yield _emit_tool_event(
                                     {
                                         "type": "tool_start",
@@ -2789,7 +3032,10 @@ class ExternalProviderClient:
                                 # ends, in case no text_delta follows (e.g.
                                 # display=omitted on Claude 4.7, or
                                 # thinking-only turns).
-                                yield _content_chunk("</think>")
+                                yield _content_chunk(
+                                    "</think>",
+                                    thinking_display = True,
+                                )
                                 thinking_open = False
 
                         elif event_type == "message_delta":
@@ -2835,7 +3081,10 @@ class ExternalProviderClient:
                             stop_reason = event.get("delta", {}).get("stop_reason")
                             if stop_reason:
                                 if thinking_open:
-                                    yield _content_chunk("</think>")
+                                    yield _content_chunk(
+                                        "</think>",
+                                        thinking_display = True,
+                                    )
                                     thinking_open = False
                                 # `pause_turn` is in-progress, not terminal: the
                                 # SSE stream still ends with [DONE] via
@@ -2879,7 +3128,10 @@ class ExternalProviderClient:
 
                         elif event_type == "message_stop":
                             if thinking_open:
-                                yield _content_chunk("</think>")
+                                yield _content_chunk(
+                                    "</think>",
+                                    thinking_display = True,
+                                )
                                 thinking_open = False
                             # Forward document_citations so the Sources panel
                             # can render the inline [N] footnotes. ``cited_text``
@@ -3261,20 +3513,39 @@ class ExternalProviderClient:
             # thoughtSignatures to be replayed on history; the frontend stows
             # the latest one as extra_content.google.thought_signature on the
             # assistant message and we pin it onto the last text part here.
-            if role == "assistant" and parts:
+            if role == "assistant":
                 _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
                 if isinstance(_msg_extra, dict):
                     _msg_g = _msg_extra.get("google") or {}
                     if isinstance(_msg_g, dict):
                         _msg_sig = _msg_g.get("thought_signature") or _msg_g.get("thoughtSignature")
                         if isinstance(_msg_sig, str) and _msg_sig:
+                            signature_attached = False
                             for _idx in range(len(parts) - 1, -1, -1):
                                 if "text" in parts[_idx]:
                                     parts[_idx] = {
                                         **parts[_idx],
                                         "thoughtSignature": _msg_sig,
                                     }
+                                    signature_attached = True
                                     break
+                            if not signature_attached:
+                                parts.append({"text": "", "thoughtSignature": _msg_sig})
+            if role == "assistant":
+                _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
+                _msg_google = _msg_extra.get("google") if isinstance(_msg_extra, dict) else None
+                _hosted_parts = (
+                    _msg_google.get("hosted_parts") if isinstance(_msg_google, dict) else None
+                )
+                for _hosted_part in _hosted_parts if isinstance(_hosted_parts, list) else []:
+                    if not isinstance(_hosted_part, dict):
+                        continue
+                    if not any(
+                        key in _hosted_part
+                        for key in ("executableCode", "codeExecutionResult", "inlineData")
+                    ):
+                        continue
+                    parts.append(dict(_hosted_part))
             # Translate OpenAI tool_calls into Gemini functionCall parts.
             # code_execution / image_generation replay their native parts
             # (executableCode / codeExecutionResult / inlineData) stowed on
@@ -4570,6 +4841,7 @@ class ExternalProviderClient:
         compaction_threshold: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -4646,6 +4918,47 @@ class ExternalProviderClient:
             # server-side builtin cards (builtin name + `_server_tool` marker).
             _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if role == "assistant" and isinstance(_tool_calls, list):
+                continuation_response_id: Optional[str] = None
+                for _tc in _tool_calls:
+                    if not isinstance(_tc, dict):
+                        continue
+                    _extra = _tc.get("extra_content")
+                    _openai_extra = _extra.get("openai") if isinstance(_extra, dict) else None
+                    candidate = (
+                        _openai_extra.get("previous_response_id")
+                        if isinstance(_openai_extra, dict)
+                        else None
+                    )
+                    if isinstance(candidate, str) and candidate:
+                        continuation_response_id = candidate
+                        break
+                if continuation_response_id:
+                    # Link the prior response and send only new function outputs.
+                    previous_response_id = continuation_response_id
+                    input_items = []
+                    openai_replay_items = []
+                    continue
+                # Replay native reasoning before managed function calls.
+                replayed_reasoning_ids: set[str] = set()
+                for _tc in _tool_calls:
+                    if not isinstance(_tc, dict):
+                        continue
+                    _extra = _tc.get("extra_content")
+                    _openai_extra = _extra.get("openai") if isinstance(_extra, dict) else None
+                    _reasoning_items = (
+                        _openai_extra.get("reasoning_items")
+                        if isinstance(_openai_extra, dict)
+                        else None
+                    )
+                    if not isinstance(_reasoning_items, list):
+                        continue
+                    for _reasoning_item in _reasoning_items:
+                        _replay_item = _sanitize_openai_reasoning_replay_item(_reasoning_item)
+                        if not _replay_item or _replay_item["id"] in replayed_reasoning_ids:
+                            continue
+                        replayed_reasoning_ids.add(_replay_item["id"])
+                        input_items.append(_replay_item)
+
                 # Emit assistant text before its function_call items to preserve
                 # the original response.output ordering.
                 if isinstance(content, str) and content:
@@ -4994,6 +5307,8 @@ class ExternalProviderClient:
                 body["tools"] = tools_array
         if responses_tool_choice is not None:
             body["tool_choice"] = responses_tool_choice
+        if parallel_tool_calls is not None and responses_user_function_tools:
+            body["parallel_tool_calls"] = parallel_tool_calls
 
         url = f"{self.base_url}/responses"
         completion_id = f"chatcmpl-openai-{model.replace('/', '-')}"
@@ -5352,14 +5667,17 @@ class ExternalProviderClient:
                                 return _extract_reasoning_text(payload.get("text"))
                         return ""
 
-                    def _chunk_with_text(text: str) -> str:
+                    def _chunk_with_text(text: str, *, reasoning_display: bool = False) -> str:
+                        delta: dict[str, Any] = {"content": text}
+                        if reasoning_display:
+                            delta["extra_content"] = {"openai": {"reasoning_display": True}}
                         chunk = {
                             "id": completion_id,
                             "object": "chat.completion.chunk",
                             "choices": [
                                 {
                                     "index": 0,
-                                    "delta": {"content": text},
+                                    "delta": delta,
                                     "finish_reason": None,
                                 }
                             ],
@@ -5388,7 +5706,9 @@ class ExternalProviderClient:
                                     pending_marker_tail = ""
                                     if flushed:
                                         if reasoning_open:
-                                            yield _chunk_with_text("</think>")
+                                            yield _chunk_with_text(
+                                                "</think>", reasoning_display = True
+                                            )
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
                                 # Force-drain any segment still awaiting an
@@ -5398,7 +5718,7 @@ class ExternalProviderClient:
                                 )
                                 if tail_flushed:
                                     if reasoning_open:
-                                        yield _chunk_with_text("</think>")
+                                        yield _chunk_with_text("</think>", reasoning_display = True)
                                         reasoning_open = False
                                     yield _chunk_with_text(tail_flushed)
                                 if not done_emitted:
@@ -5432,7 +5752,9 @@ class ExternalProviderClient:
                                     )
                                     if head:
                                         if reasoning_open:
-                                            yield _chunk_with_text("</think>")
+                                            yield _chunk_with_text(
+                                                "</think>", reasoning_display = True
+                                            )
                                             reasoning_open = False
                                         # Re-attempt earlier deferred segments
                                         # first so output stays in order; the
@@ -5463,7 +5785,7 @@ class ExternalProviderClient:
                                 )
                                 if flushed:
                                     if reasoning_open:
-                                        yield _chunk_with_text("</think>")
+                                        yield _chunk_with_text("</think>", reasoning_display = True)
                                         reasoning_open = False
                                     yield _chunk_with_text(flushed)
 
@@ -5523,7 +5845,10 @@ class ExternalProviderClient:
                                         if not reasoning_open:
                                             summary_text = f"<think>{summary_text}"
                                             reasoning_open = True
-                                        yield _chunk_with_text(summary_text)
+                                        yield _chunk_with_text(
+                                            summary_text,
+                                            reasoning_display = True,
+                                        )
                                         reasoning_emitted = True
                                 elif item.get("type") == "web_search_call":
                                     # done carries the query; emit tool_start +
@@ -5681,6 +6006,32 @@ class ExternalProviderClient:
                                             fn_args = ""
                                     _tc_index = function_call_index
                                     function_call_index += 1
+                                    tool_call: dict[str, Any] = {
+                                        "index": _tc_index,
+                                        "id": fn_call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": fn_name,
+                                            "arguments": fn_args,
+                                        },
+                                    }
+                                    reasoning_items = [
+                                        replay_item
+                                        for replay_item in (
+                                            _sanitize_openai_reasoning_replay_item(raw_item)
+                                            for raw_item in openai_reasoning_replay_items.values()
+                                        )
+                                        if replay_item is not None
+                                    ]
+                                    openai_continuation: dict[str, Any] = {}
+                                    if reasoning_items:
+                                        openai_continuation["reasoning_items"] = reasoning_items
+                                    if current_openai_response_id:
+                                        openai_continuation["previous_response_id"] = (
+                                            current_openai_response_id
+                                        )
+                                    if openai_continuation:
+                                        tool_call["extra_content"] = {"openai": openai_continuation}
                                     yield (
                                         "data: "
                                         + _json.dumps(
@@ -5691,17 +6042,7 @@ class ExternalProviderClient:
                                                     {
                                                         "index": 0,
                                                         "delta": {
-                                                            "tool_calls": [
-                                                                {
-                                                                    "index": _tc_index,
-                                                                    "id": fn_call_id,
-                                                                    "type": "function",
-                                                                    "function": {
-                                                                        "name": fn_name,
-                                                                        "arguments": (fn_args),
-                                                                    },
-                                                                }
-                                                            ],
+                                                            "tool_calls": [tool_call],
                                                         },
                                                         "finish_reason": None,
                                                     }
@@ -5720,7 +6061,10 @@ class ExternalProviderClient:
                                     if not reasoning_open:
                                         reasoning_delta = f"<think>{reasoning_delta}"
                                         reasoning_open = True
-                                    yield _chunk_with_text(reasoning_delta)
+                                    yield _chunk_with_text(
+                                        reasoning_delta,
+                                        reasoning_display = True,
+                                    )
                                     reasoning_emitted = True
 
                             elif event_type == "response.completed":
@@ -5735,7 +6079,9 @@ class ExternalProviderClient:
                                     pending_marker_tail = ""
                                     if flushed:
                                         if reasoning_open:
-                                            yield _chunk_with_text("</think>")
+                                            yield _chunk_with_text(
+                                                "</think>", reasoning_display = True
+                                            )
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
                                 # Force-drain segments still awaiting an annotation.
@@ -5744,11 +6090,11 @@ class ExternalProviderClient:
                                 )
                                 if tail_flushed:
                                     if reasoning_open:
-                                        yield _chunk_with_text("</think>")
+                                        yield _chunk_with_text("</think>", reasoning_display = True)
                                         reasoning_open = False
                                     yield _chunk_with_text(tail_flushed)
                                 if reasoning_open:
-                                    yield _chunk_with_text("</think>")
+                                    yield _chunk_with_text("</think>", reasoning_display = True)
                                     reasoning_open = False
                                 # Scan response.container_id and response.container.id
                                 # (docs don't pin the field); emit container_ready
@@ -5846,7 +6192,9 @@ class ExternalProviderClient:
                                     pending_marker_tail = ""
                                     if flushed:
                                         if reasoning_open:
-                                            yield _chunk_with_text("</think>")
+                                            yield _chunk_with_text(
+                                                "</think>", reasoning_display = True
+                                            )
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
                                 # Force-drain any segment still awaiting an
@@ -5856,11 +6204,11 @@ class ExternalProviderClient:
                                 )
                                 if tail_flushed:
                                     if reasoning_open:
-                                        yield _chunk_with_text("</think>")
+                                        yield _chunk_with_text("</think>", reasoning_display = True)
                                         reasoning_open = False
                                     yield _chunk_with_text(tail_flushed)
                                 if reasoning_open:
-                                    yield _chunk_with_text("</think>")
+                                    yield _chunk_with_text("</think>", reasoning_display = True)
                                     reasoning_open = False
                                 # Same citation backfill as response.completed.
                                 if web_search_calls and all_url_citations:

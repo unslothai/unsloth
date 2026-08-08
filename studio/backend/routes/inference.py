@@ -2140,6 +2140,9 @@ from core.inference.passthrough_healing import (
 )
 from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_tool_loop import (
+    stream_external_chat_with_tools,
+)
 from core.inference.chat_templates import resolve_effective_chat_template_override
 from storage import providers_db
 from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_http_error
@@ -2598,12 +2601,7 @@ def _prune_pending(now: float) -> None:
 
 
 class _TrackedCancel:
-    """Register cancel_event in _CANCEL_REGISTRY for the block's duration.
-
-    Also records the run in state.active_generations so /load and /unload can
-    see which chats a reload would interrupt. Both registries share this event,
-    so either one cancels down the same per-request path.
-    """
+    """Track cancellation and, optionally, active local generations."""
 
     def __init__(
         self,
@@ -2612,23 +2610,33 @@ class _TrackedCancel:
         thread_id = None,
         model = None,
         kind = "chat",
+        track_active_generation = True,
     ):
         self.event = event
         self.keys = tuple(k for k in keys if k)
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
-        self._active = active_generations.ActiveGeneration(
-            event, thread_id = thread_id, model = model, kind = kind
+        self._active = (
+            active_generations.ActiveGeneration(event, thread_id = thread_id, model = model, kind = kind)
+            if track_active_generation
+            else None
         )
 
     @classmethod
-    def for_payload(cls, event: threading.Event, payload, *keys):
+    def for_payload(
+        cls,
+        event: threading.Event,
+        payload,
+        *keys,
+        track_active_generation = True,
+    ):
         """Track the run against the conversation its request names."""
         return cls(
             event,
             *keys,
             thread_id = getattr(payload, "thread_id", None),
             model = getattr(payload, "model", None),
+            track_active_generation = track_active_generation,
         )
 
     def __enter__(self):
@@ -2643,7 +2651,8 @@ class _TrackedCancel:
             for k in self.keys:
                 if k and _PENDING_CANCELS.pop(k, None) is not None:
                     should_cancel = True
-        self._active.__enter__()
+        if self._active is not None:
+            self._active.__enter__()
         if should_cancel:
             self.event.set()
         return self.event
@@ -2657,7 +2666,8 @@ class _TrackedCancel:
                 bucket.discard(self.event)
                 if not bucket:
                     _CANCEL_REGISTRY.pop(k, None)
-        self._active.__exit__(*exc)
+        if self._active is not None:
+            self._active.__exit__(*exc)
         return False
 
 
@@ -9603,6 +9613,16 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
 _INPUT_DOCUMENT_PROVIDERS = frozenset({"anthropic", "openai"})
 
 
+def _is_native_gemini_base(provider_type: str, base_url: Optional[str]) -> bool:
+    if provider_type != "gemini" or not base_url:
+        return False
+    try:
+        from urllib.parse import urlparse
+        return (urlparse(base_url).hostname or "").lower() == "generativelanguage.googleapis.com"
+    except Exception:
+        return False
+
+
 def _build_external_messages(
     messages: list,
     supports_vision: bool,
@@ -9633,20 +9653,32 @@ def _build_external_messages(
     document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
     anthropic = provider_type == "anthropic"
     openai = provider_type == "openai"
+    provider_extra_namespace = "openai" if openai else "anthropic" if anthropic else None
     # `extra_content` carries the assistant's text-part `thoughtSignature`
     # round-trip on Gemini's native streamGenerateContent endpoint. Custom
     # Gemini OpenAI-compat gateways (LiteLLM etc.) route through
     # /chat/completions where the field is unknown and can be rejected -- gate
     # strictly on the Google-hosted Gemini base.
-    _native_gemini = False
-    if provider_type == "gemini" and base_url:
-        try:
-            from urllib.parse import urlparse as _urlparse
-            _host = (_urlparse(base_url).hostname or "").lower()
-            _native_gemini = _host == "generativelanguage.googleapis.com"
-        except Exception:
-            _native_gemini = False
+    _native_gemini = _is_native_gemini_base(provider_type, base_url)
     emit_extra_content = _native_gemini
+
+    def _provider_extra_content(extra_content: Any) -> Optional[dict]:
+        if not isinstance(extra_content, dict):
+            return None
+        if emit_extra_content:
+            return extra_content
+        if provider_extra_namespace:
+            provider_extra = extra_content.get(provider_extra_namespace)
+            if isinstance(provider_extra, dict):
+                return {provider_extra_namespace: provider_extra}
+        return None
+
+    def _attach_provider_extra_content(entry: dict, message: Any) -> None:
+        if message.role != "assistant":
+            return
+        extra_content = _provider_extra_content(message.extra_content)
+        if extra_content:
+            entry["extra_content"] = extra_content
 
     _SERVER_BUILTIN_TOOL_NAMES = frozenset(
         {"web_search", "web_fetch", "code_execution", "image_generation"}
@@ -9693,8 +9725,9 @@ def _build_external_messages(
         """Sanitize assistant `tool_calls` for non-native-Gemini providers.
 
         Two concerns:
-          1. `tool_calls[i].extra_content` carries Gemini-only thoughtSignature
-             metadata; strip it for providers that can't parse the unknown key.
+          1. `tool_calls[i].extra_content` carries opaque provider continuation
+             metadata. Keep only the active provider's namespace for translators
+             that consume it; strip it before generic compatibility endpoints.
           2. Marked server-side builtin cards (`_server_tool: true` on a
              canonical builtin name, or a Gemini `native_part` payload) are
              Unsloth-internal tool cards from a prior native Gemini turn;
@@ -9722,10 +9755,13 @@ def _build_external_messages(
             if not isinstance(_tc, dict):
                 cleaned.append(_tc)
                 continue
+            provider_extra = _provider_extra_content(_tc.get("extra_content"))
             if "extra_content" not in _tc:
                 cleaned.append(_tc)
                 continue
             _stripped = {k: v for k, v in _tc.items() if k != "extra_content"}
+            if provider_extra:
+                _stripped["extra_content"] = provider_extra
             cleaned.append(_stripped)
         return cleaned
 
@@ -9782,8 +9818,7 @@ def _build_external_messages(
                     out["tool_call_id"] = msg.tool_call_id
                 if msg.name:
                     out["name"] = msg.name
-            if emit_extra_content and msg.role == "assistant" and msg.extra_content:
-                out["extra_content"] = msg.extra_content
+            _attach_provider_extra_content(out, msg)
             result.append(out)
             continue
         # Assistant messages with content=None but populated tool_calls are
@@ -9800,8 +9835,7 @@ def _build_external_messages(
                 "content": "",
                 "tool_calls": _filtered_tcs,
             }
-            if emit_extra_content and msg.extra_content:
-                _assistant_only["extra_content"] = msg.extra_content
+            _attach_provider_extra_content(_assistant_only, msg)
             result.append(_assistant_only)
             continue
         if isinstance(msg.content, list):
@@ -9863,8 +9897,7 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
-                if emit_extra_content and msg.role == "assistant" and msg.extra_content:
-                    entry["extra_content"] = msg.extra_content
+                _attach_provider_extra_content(entry, msg)
                 result.append(entry)
             else:
                 # Non-vision provider: strip images / documents, keep text,
@@ -9909,8 +9942,7 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
-                if emit_extra_content and msg.role == "assistant" and msg.extra_content:
-                    entry["extra_content"] = msg.extra_content
+                _attach_provider_extra_content(entry, msg)
                 result.append(entry)
     return result
 
@@ -9929,6 +9961,7 @@ async def _proxy_to_external_provider(
     # Resolve provider type and base URL
     provider_type = payload.provider_type
     base_url = payload.provider_base_url
+    studio_tool_execution = False
 
     if payload.provider_id:
         config = providers_db.get_provider(payload.provider_id)
@@ -9942,8 +9975,10 @@ async def _proxy_to_external_provider(
                 status_code = 400,
                 detail = f"Provider '{config['display_name']}' is disabled.",
             )
-        provider_type = provider_type or config["provider_type"]
-        base_url = base_url or config["base_url"]
+        # Trust saved routing, not request-supplied overrides.
+        provider_type = config["provider_type"]
+        base_url = config["base_url"]
+        studio_tool_execution = bool(config.get("studio_tool_execution", 0))
 
     if not provider_type:
         raise HTTPException(
@@ -9989,6 +10024,122 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
     )
+    _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
+    # Only saved connections may enable Studio execution.
+    from state.tool_policy import get_tool_policy as _get_external_tool_policy
+
+    _external_tool_policy = _get_external_tool_policy()
+    _external_tools_on = _effective_enable_tools(payload) is True
+    _external_mcp_allowed = bool(payload.mcp_enabled) and _external_tool_policy is not False
+    _external_tool_choice_disabled = (
+        isinstance(payload.tool_choice, str) and payload.tool_choice.strip().lower() == "none"
+    )
+    _external_studio_capable = studio_tool_execution and not (
+        _is_native_gemini_base(provider_type, base_url)
+        and ("-image" in model.lower() or "nano-banana" in model.lower())
+    )
+    _external_studio_tool_intent = (
+        _external_studio_capable
+        and not _external_tool_choice_disabled
+        and (_external_tools_on or _external_mcp_allowed)
+    )
+    _external_studio_tool_requested = payload.enable_tools is True or bool(payload.mcp_enabled)
+    _external_studio_tools = (
+        await _select_request_tools(
+            payload,
+            tools_on = _external_tools_on,
+            mcp_allowed = _external_mcp_allowed,
+        )
+        if _external_studio_tool_intent
+        else []
+    )
+    _external_tool_budget = (
+        payload.max_tool_calls_per_message if payload.max_tool_calls_per_message is not None else 25
+    )
+    _use_external_studio_tools = bool(_external_studio_tools) and _external_tool_budget > 0
+    _external_studio_tool_names = {
+        tool["function"]["name"]
+        for tool in _external_studio_tools
+        if isinstance(tool, dict)
+        and isinstance(tool.get("function"), dict)
+        and isinstance(tool["function"].get("name"), str)
+    }
+    if (
+        _external_studio_capable
+        and payload.enabled_tools
+        and (
+            _external_studio_tool_intent
+            or (_external_studio_tool_requested and _external_tool_policy is False)
+        )
+    ):
+        _external_studio_tool_names.update(
+            tool["function"]["name"]
+            for tool in await _select_request_tools(
+                payload,
+                tools_on = True,
+                mcp_allowed = False,
+            )
+        )
+    _external_provider_enabled_tools = [
+        name for name in (payload.enabled_tools or []) if name not in _external_studio_tool_names
+    ]
+
+    if _use_external_studio_tools and payload.tools:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "Caller-defined functions cannot be combined with managed Studio tool execution.",
+                status = 400,
+                code = "invalid_request_error",
+                param = "tools",
+            ),
+        )
+
+    if (
+        payload.confirm_tool_calls
+        and not _use_external_studio_tools
+        and not payload.bypass_permissions
+        and (
+            bool(_external_provider_enabled_tools)
+            or bool(payload.tools)
+            or bool(payload.openai_code_exec_container_id)
+            or bool(payload.anthropic_code_exec_container_id)
+        )
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "confirm_tool_calls is only supported for local streaming tools.",
+                status = 400,
+                code = "invalid_request_error",
+                param = "confirm_tool_calls",
+            ),
+        )
+
+    if _use_external_studio_tools and not payload.stream:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "Studio tool execution requires stream=true.",
+                status = 400,
+                code = "invalid_request_error",
+                param = "stream",
+            ),
+        )
+
+    if _use_external_studio_tools and payload.nudge_tool_calls is not False:
+        _external_nudge = _build_tool_action_nudge(
+            tools = _external_studio_tools,
+            model_name = model,
+        )
+        _external_nudge = _apply_rag_nudge(
+            _external_nudge,
+            _external_studio_tools,
+            rag_scope = payload.rag_scope,
+        )
+        if _external_nudge:
+            chat_messages = _append_to_system_message(chat_messages, _external_nudge)
+
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -10007,13 +10158,6 @@ async def _proxy_to_external_provider(
         api_key = api_key,
     )
 
-    # `top_k` defaults to 20 in ChatCompletionRequest because the local path
-    # expects an int, but the external-provider path treats "field omitted from
-    # JSON" as "use provider default" so callers sending only model/messages
-    # don't silently get different sampling than before this PR. Pydantic's
-    # `model_fields_set` tracks explicit-vs-default per request.
-    _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
-
     async def _stream():
         gen = client.stream_chat_completion(
             messages = chat_messages,
@@ -10028,7 +10172,7 @@ async def _proxy_to_external_provider(
             top_k = _top_k_explicit,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
-            enabled_tools = payload.enabled_tools,
+            enabled_tools = _external_provider_enabled_tools,
             enable_prompt_caching = payload.enable_prompt_caching,
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
@@ -10036,10 +10180,66 @@ async def _proxy_to_external_provider(
             compaction_threshold = payload.compaction_threshold,
             tools = payload.tools,
             tool_choice = payload.tool_choice,
+            parallel_tool_calls = payload.parallel_tool_calls,
             fast_mode = payload.fast_mode,
             continue_final_message = _continue_final_message(payload),
             stream = payload.stream,
         )
+        cancel_event = threading.Event()
+        _external_tracker = None
+        if _use_external_studio_tools:
+            gen = stream_external_chat_with_tools(
+                client = client,
+                messages = chat_messages,
+                model = model,
+                tools = _external_studio_tools,
+                request_kwargs = {
+                    "temperature": payload.temperature,
+                    "top_p": payload.top_p,
+                    "max_tokens": _effective_max_tokens(payload),
+                    "presence_penalty": payload.presence_penalty,
+                    "top_k": _top_k_explicit,
+                    "enable_thinking": payload.enable_thinking,
+                    "reasoning_effort": payload.reasoning_effort,
+                    "enable_prompt_caching": payload.enable_prompt_caching,
+                    "openai_code_exec_container_id": payload.openai_code_exec_container_id,
+                    "anthropic_code_exec_container_id": payload.anthropic_code_exec_container_id,
+                    "prompt_cache_ttl": payload.prompt_cache_ttl,
+                    "compaction_threshold": payload.compaction_threshold,
+                    "fast_mode": payload.fast_mode,
+                    "continue_final_message": _continue_final_message(payload),
+                },
+                provider_enabled_tools = _external_provider_enabled_tools,
+                tool_choice = payload.tool_choice,
+                max_tool_iterations = _external_tool_budget,
+                tool_call_timeout = payload.tool_call_timeout
+                if payload.tool_call_timeout is not None
+                else 300,
+                session_id = payload.session_id,
+                thread_id = payload.thread_id,
+                rag_scope = payload.rag_scope,
+                cancel_event = cancel_event,
+                confirm_tool_calls = _permission_mode_confirm(payload),
+                bypass_permissions = bool(payload.bypass_permissions),
+                permission_mode = payload.permission_mode,
+                auto_heal_tool_calls = payload.auto_heal_tool_calls
+                if payload.auto_heal_tool_calls is not None
+                else True,
+                parallel_tool_calls = (
+                    None
+                    if _is_native_gemini_base(provider_type, base_url)
+                    else payload.parallel_tool_calls
+                ),
+                require_complete_tool_batch = _is_native_gemini_base(provider_type, base_url),
+            )
+            _external_tracker = _TrackedCancel.for_payload(
+                cancel_event,
+                payload,
+                payload.cancel_id,
+                payload.session_id,
+                track_active_generation = False,
+            )
+            _external_tracker.__enter__()
         try:
             sent_done = False
             stream_failed = False
@@ -10068,6 +10268,9 @@ async def _proxy_to_external_provider(
                 # trusting it would append a second [DONE] after the provider's.
                 if _is_openai_sse_done(line):
                     sent_done = True
+            if cancel_event.is_set():
+                api_monitor.finish(monitor_id, "cancelled")
+                return
             if not sent_done:
                 if not stream_failed:
                     api_monitor.finish(monitor_id)
@@ -10087,6 +10290,9 @@ async def _proxy_to_external_provider(
             )
             yield "data: [DONE]\n\n"
         finally:
+            cancel_event.set()
+            if _external_tracker is not None:
+                _external_tracker.__exit__(None, None, None)
             try:
                 await gen.aclose()
             except RuntimeError:
@@ -10372,28 +10578,6 @@ async def openai_chat_completions(
         from core.inference.llama_keepwarm import untrack_current_request
 
         untrack_current_request(request.scope)
-        # Bypass Permissions suppresses the confirm gate, so do not reject a
-        # request that sets both flags (effective confirm is then False).
-        if (
-            payload.confirm_tool_calls
-            and not payload.bypass_permissions
-            and (
-                payload.enable_tools is True
-                or bool(payload.enabled_tools)
-                or bool(payload.tools)
-                or bool(payload.openai_code_exec_container_id)
-                or bool(payload.anthropic_code_exec_container_id)
-            )
-        ):
-            raise HTTPException(
-                status_code = 400,
-                detail = openai_error_body(
-                    "confirm_tool_calls is only supported for local streaming tools.",
-                    status = 400,
-                    code = "invalid_request_error",
-                    param = "confirm_tool_calls",
-                ),
-            )
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
         return await _proxy_to_external_provider(payload, request, current_subject)

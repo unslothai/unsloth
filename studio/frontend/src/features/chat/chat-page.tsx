@@ -160,6 +160,7 @@ import {
   getProviderCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
+  providerSupportsStudioTools,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
@@ -2169,6 +2170,12 @@ export function ChatPage({
       selection.modelId,
       provider?.baseUrl,
     );
+    const supportsStudioTools = providerSupportsStudioTools(
+      provider?.providerType,
+      selection.modelId,
+      provider?.baseUrl,
+      provider?.studioToolExecution === true,
+    );
     const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
       provider?.providerType,
       selection.modelId,
@@ -2206,8 +2213,8 @@ export function ChatPage({
     const storedWebFetchToolsEnabled = loadOptionalBool(
       CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
     );
-    const nextToolsEnabled = supportsBuiltinWebSearch
-      ? isKimi
+    const nextToolsEnabled = (supportsBuiltinWebSearch || supportsStudioTools)
+      ? isKimi && !supportsStudioTools
         ? false
         : (storedToolsEnabled ?? searchOnByDefault)
       : false;
@@ -2226,18 +2233,13 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // External models have no local tool runtime, so `supportsTools` is
-      // false. The `supportsBuiltin*` flags cover providers that run tools
-      // server-side: WebSearch lights the Search pill (OpenAI/Anthropic/
-      // OpenRouter/Kimi), CodeExecution the Code pill (Claude 4.x, gpt-5.5),
-      // ImageGeneration the Images pill (OpenAI cloud Responses-API only).
-      supportsTools: false,
+      supportsTools: supportsStudioTools,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
       supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
-      codeToolsEnabled: supportsBuiltinCodeExecution
+      codeToolsEnabled: (supportsBuiltinCodeExecution || supportsStudioTools)
         ? (storedCodeToolsEnabled ?? false)
         : false,
       imageToolsEnabled: supportsBuiltinImageGeneration
@@ -2708,6 +2710,12 @@ export function ChatPage({
           selectedExternal?.modelId,
           selectedProvider?.baseUrl,
         );
+        const supportsStudioTools = providerSupportsStudioTools(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+          selectedProvider?.baseUrl,
+          selectedProvider?.studioToolExecution === true,
+        );
         const supportsBuiltinCodeExecution =
           providerSupportsBuiltinCodeExecution(
             selectedProvider?.providerType,
@@ -2743,8 +2751,8 @@ export function ChatPage({
         const storedWebFetchToolsEnabled = loadOptionalBool(
           CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
         );
-        const nextToolsEnabled = supportsBuiltinWebSearch
-          ? isKimi
+        const nextToolsEnabled = (supportsBuiltinWebSearch || supportsStudioTools)
+          ? isKimi && !supportsStudioTools
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
           : false;
@@ -2773,17 +2781,13 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // External models have no local tool runtime → supportsTools false.
-          // The supportsBuiltin* flags carry server-side capability per pill:
-          // Search, Code (Claude 4.x + gpt-5.5), Images (OpenAI cloud
-          // Responses-API).
-          supportsTools: false,
+          supportsTools: supportsStudioTools,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,
           supportsBuiltinWebFetch,
           toolsEnabled: nextToolsEnabled,
-          codeToolsEnabled: supportsBuiltinCodeExecution
+          codeToolsEnabled: (supportsBuiltinCodeExecution || supportsStudioTools)
             ? (storedCodeToolsEnabled ?? false)
             : false,
           imageToolsEnabled: supportsBuiltinImageGeneration

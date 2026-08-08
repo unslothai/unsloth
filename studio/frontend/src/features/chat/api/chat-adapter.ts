@@ -71,6 +71,7 @@ import {
   isGeminiCustomOpenAICompatBase,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
+  providerSupportsStudioTools,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
@@ -164,6 +165,7 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+import { buildExternalEnabledTools } from "./external-tool-payload";
 import {
   beginExternalResearchFollow,
   ingestResearchUpdate,
@@ -3796,6 +3798,12 @@ export function createOpenAIStreamAdapter(
             (provider) => provider.id === externalSelection.providerId,
           )
         : null;
+      const externalUsesStudioTools = providerSupportsStudioTools(
+        externalProvider?.providerType,
+        externalSelection?.modelId,
+        externalProvider?.baseUrl,
+        externalProvider?.studioToolExecution === true,
+      );
       const selectedModelSummary = runtime.models.find(
         (model) => model.id === params.checkpoint,
       );
@@ -3853,22 +3861,24 @@ export function createOpenAIStreamAdapter(
         externalProvider &&
           externalSelection &&
           toolsEnabled &&
-          providerSupportsBuiltinWebSearch(
-            externalProvider.providerType,
-            externalSelection.modelId,
-            externalProvider.baseUrl,
-          ),
+          (externalUsesStudioTools ||
+            providerSupportsBuiltinWebSearch(
+              externalProvider.providerType,
+              externalSelection.modelId,
+              externalProvider.baseUrl,
+            )),
       );
       const codeExecEnabledForThisTurn = Boolean(
         externalProvider &&
           externalSelection &&
           codeToolsEnabled &&
           !geminiImageModeForThisTurn &&
-          providerSupportsBuiltinCodeExecution(
-            externalProvider.providerType,
-            externalSelection.modelId,
-            externalProvider.baseUrl,
-          ),
+          (externalUsesStudioTools ||
+            providerSupportsBuiltinCodeExecution(
+              externalProvider.providerType,
+              externalSelection.modelId,
+              externalProvider.baseUrl,
+            )),
       );
       // Fetch pill is independent of Search (Anthropic bills web_fetch
       // separately). Sourced from `webFetchToolsEnabled`; on providers
@@ -4578,7 +4588,10 @@ export function createOpenAIStreamAdapter(
               codeExecEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
-            mcp: !isExternalRequest && supportsTools && mcpEnabledForChat,
+            mcp:
+              (!isExternalRequest || externalUsesStudioTools) &&
+              supportsTools &&
+              mcpEnabledForChat,
             docs:
               !isExternalRequest &&
               supportsTools &&
@@ -4642,7 +4655,11 @@ export function createOpenAIStreamAdapter(
             // container_auto. Anthropic uses anthropicCodeExecContainerId.
             let openaiCodeExecContainerId: string | null = null;
             let anthropicCodeExecContainerId: string | null = null;
-            if (codeExecEnabledForThisTurn && resolvedThreadId) {
+            if (
+              codeExecEnabledForThisTurn &&
+              !externalUsesStudioTools &&
+              resolvedThreadId
+            ) {
               try {
                 const thread = await getStoredChatThread(resolvedThreadId);
                 openaiCodeExecContainerId =
@@ -4779,26 +4796,53 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // enabled_tools from active pills; backend maps each name
-              // to the provider's tool schema.
               ...(webSearchEnabledForThisTurn ||
               webFetchEnabledForThisTurn ||
               codeExecEnabledForThisTurn ||
-              imageGenerationEnabledForThisTurn
+              imageGenerationEnabledForThisTurn ||
+              (externalUsesStudioTools && mcpEnabledForChat)
                 ? {
                     enable_tools: true,
-                    enabled_tools: [
-                      ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
-                      ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
-                      ...(imageGenerationEnabledForThisTurn
-                        ? ["image_generation"]
-                        : []),
-                    ],
+                    enabled_tools: buildExternalEnabledTools({
+                      studioToolExecution: externalUsesStudioTools,
+                      webSearch: webSearchEnabledForThisTurn,
+                      webFetch: webFetchEnabledForThisTurn,
+                      codeExecution: codeExecEnabledForThisTurn,
+                      imageGeneration: imageGenerationEnabledForThisTurn,
+                    }),
                   }
                 : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
+              ...(externalUsesStudioTools &&
+                (toolsEnabled || codeToolsEnabled || mcpEnabledForChat)
+                ? {
+                    enable_tools: true,
+                    mcp_enabled: mcpEnabledForChat,
+                    permission_mode: permissionMode,
+                    ...(permissionMode === "auto"
+                      ? {}
+                      : { confirm_tool_calls: permissionMode === "ask" }),
+                    bypass_permissions: bypassPermissions,
+                    auto_heal_tool_calls:
+                      useChatRuntimeStore.getState().autoHealToolCalls,
+                    nudge_tool_calls:
+                      useChatRuntimeStore.getState().nudgeToolCalls,
+                    max_tool_calls_per_message:
+                      useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                    tool_call_timeout: (() => {
+                      const mins = useChatRuntimeStore.getState().toolCallTimeout;
+                      return mins >= 9999 ? 9999 : mins * 60;
+                    })(),
+                  }
+                : {}),
+              ...(externalUsesStudioTools
+                ? {
+                    cancel_id: cancelId,
+                    ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+                    ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+                  }
+                : {}),
               external_model: externalSelection.modelId,
               ...(externalApiKey
                 ? {

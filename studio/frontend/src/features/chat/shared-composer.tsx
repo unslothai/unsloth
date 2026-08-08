@@ -709,7 +709,8 @@ export function SharedComposer({
   // (https://platform.kimi.ai/docs/guide/use-web-search). Both pills stay
   // clickable, but turning one on flips the other off; the click handlers
   // below enforce this so the visible state matches what the backend sends.
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const usesKimiHostedSearch =
+    selectedExternalProvider?.providerType === "kimi" && !supportsTools;
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && reasoningEffort !== "none";
@@ -2105,7 +2106,7 @@ export function SharedComposer({
                   const next = !toolsEnabled;
                   setToolsEnabled(next);
                   // Mirror the Search pill: Kimi forbids search + thinking together.
-                  if (isKimiExternal) {
+                  if (usesKimiHostedSearch) {
                     setReasoningEnabled(!next, { persist: false });
                     applyQwenThinkingParams(!next);
                   }
@@ -2213,7 +2214,7 @@ export function SharedComposer({
               // Kimi's $web_search builtin requires thinking=disabled
               // (https://platform.kimi.ai/docs/guide/use-web-search): toggle
               // the Think pill off when Search is on, mirroring the backend.
-              if (isKimiExternal) {
+              if (usesKimiHostedSearch) {
                 setReasoningEnabled(!next, { persist: false });
                 applyQwenThinkingParams(!next);
               }
@@ -2398,7 +2399,7 @@ export function SharedComposer({
                               applyQwenThinkingParams(true);
                               // Mutual exclusion: turning thinking on for a
                               // Kimi model forces the web_search builtin off.
-                              if (isKimiExternal && toolsEnabled) {
+                              if (usesKimiHostedSearch && toolsEnabled) {
                                 setToolsEnabled(false, { persist: false });
                               }
                             }}
@@ -2431,7 +2432,7 @@ export function SharedComposer({
                           applyQwenThinkingParams(next);
                           // Preserve thinking cannot run without thinking.
                           if (!next) setPreserveThinking(false);
-                          if (isKimiExternal && next && toolsEnabled) {
+                          if (usesKimiHostedSearch && next && toolsEnabled) {
                             setToolsEnabled(false, { persist: false });
                           }
                         }}
@@ -2492,7 +2493,7 @@ export function SharedComposer({
                   applyQwenThinkingParams(next);
                   // Mutual exclusion: Kimi's $web_search builtin requires
                   // thinking off, so turning thinking on flips Search off.
-                  if (isKimiExternal && next && toolsEnabled) {
+                  if (usesKimiHostedSearch && next && toolsEnabled) {
                     setToolsEnabled(false, { persist: false });
                   }
                 }}

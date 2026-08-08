@@ -55,6 +55,10 @@ class ProviderCreate(BaseModel):
         default_factory = list,
         description = "Discovered catalog model IDs last fetched for this connection",
     )
+    studio_tool_execution: bool = Field(
+        False,
+        description = "Allow this connection to request Studio-managed local and MCP tools",
+    )
 
 
 class ProviderUpdate(BaseModel):
@@ -67,6 +71,10 @@ class ProviderUpdate(BaseModel):
     available_models: Optional[list[str]] = Field(
         None,
         description = "Discovered catalog model IDs last fetched for this connection",
+    )
+    studio_tool_execution: Optional[bool] = Field(
+        None,
+        description = "Allow this connection to request Studio-managed local and MCP tools",
     )
 
 
@@ -85,6 +93,10 @@ class ProviderResponse(BaseModel):
     available_models: list[str] = Field(
         default_factory = list,
         description = "Discovered catalog model IDs last fetched for this connection",
+    )
+    studio_tool_execution: bool = Field(
+        False,
+        description = "Whether Studio-managed local and MCP tools are enabled for this connection",
     )
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")

@@ -76,6 +76,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE llm_providers ADD COLUMN available_models_json TEXT NOT NULL DEFAULT '[]'"
         )
+    if "studio_tool_execution" not in existing_cols:
+        conn.execute(
+            "ALTER TABLE llm_providers ADD COLUMN studio_tool_execution INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def get_connection() -> sqlite3.Connection:
@@ -104,6 +108,7 @@ def create_provider(
     base_url: str,
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
+    studio_tool_execution: bool = False,
 ) -> None:
     """Insert a new provider configuration."""
     now = datetime.now(timezone.utc).isoformat()
@@ -114,9 +119,9 @@ def create_provider(
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json,
-                created_at, updated_at
+                studio_tool_execution, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -125,6 +130,7 @@ def create_provider(
                 base_url,
                 _encode_models_json(models),
                 _encode_models_json(available_models),
+                1 if studio_tool_execution else 0,
                 now,
                 now,
             ),
@@ -141,6 +147,7 @@ def update_provider(
     is_enabled: Optional[bool] = None,
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
+    studio_tool_execution: Optional[bool] = None,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -160,6 +167,9 @@ def update_provider(
     if available_models is not None:
         updates.append("available_models_json = ?")
         params.append(_encode_models_json(available_models))
+    if studio_tool_execution is not None:
+        updates.append("studio_tool_execution = ?")
+        params.append(1 if studio_tool_execution else 0)
     if not updates:
         return False
     updates.append("updated_at = ?")

@@ -56,6 +56,7 @@ def _provider_response(row: dict) -> ProviderResponse:
         is_enabled = bool(row["is_enabled"]),
         models = row.get("models") or [],
         available_models = row.get("available_models") or [],
+        studio_tool_execution = bool(row.get("studio_tool_execution", 0)),
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
@@ -129,6 +130,7 @@ async def create_provider_config(
         base_url = base_url,
         models = payload.models,
         available_models = payload.available_models,
+        studio_tool_execution = payload.studio_tool_execution,
     )
 
     row = providers_db.get_provider(provider_id)
@@ -153,6 +155,7 @@ async def update_provider_config(
         is_enabled = payload.is_enabled,
         models = payload.models,
         available_models = payload.available_models,
+        studio_tool_execution = payload.studio_tool_execution,
     )
     if not updated:
         raise HTTPException(status_code = 400, detail = "No fields to update")

@@ -1,0 +1,766 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Execute normalized external-provider tool calls through Studio."""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+import json
+import threading
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from typing import Any, Optional
+
+from loggers import get_logger
+from core.inference.tool_call_parser import RAG_MAX_SEARCHES_PER_TURN, RAG_SEARCH_CAP_NUDGE
+from core.inference.tool_loop_controller import (
+    ToolLoopController,
+    append_deferred_nudges,
+    awaiting_approval_status,
+)
+from core.inference.tool_stream_exec import accepts_output_callback, stream_tool_execution
+from core.inference.tools import execute_tool, is_high_risk_tool_call
+from state.tool_approvals import (
+    TOOL_REJECTED_MESSAGE,
+    abort_tool_decision,
+    begin_tool_decision,
+    new_approval_id,
+    wait_tool_decision,
+)
+
+
+logger = get_logger(__name__)
+_KEEPALIVE_LINE = ": keep-alive"
+_MAX_TOOL_CALLS_PER_TURN = 8
+
+
+def _sse_data(line: str) -> object:
+    if not isinstance(line, str) or not line.startswith("data:"):
+        return None
+    raw = line[len("data:") :].strip()
+    if raw == "[DONE]":
+        return _DONE
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, RecursionError):
+        return None
+
+
+_DONE = object()
+
+
+def _merge_tool_call_delta(
+    accumulators: dict[int, dict[str, Any]], raw_call: Mapping[str, Any]
+) -> None:
+    """Merge one OpenAI ``delta.tool_calls`` fragment by its stable index."""
+
+    raw_index = raw_call.get("index", 0)
+    index = raw_index if isinstance(raw_index, int) and raw_index >= 0 else 0
+    entry = accumulators.setdefault(
+        index,
+        {
+            "id": "",
+            "type": "function",
+            "function": {"name": "", "arguments": ""},
+        },
+    )
+    call_id = raw_call.get("id")
+    if isinstance(call_id, str) and call_id:
+        if not entry["id"]:
+            entry["id"] = call_id
+    call_type = raw_call.get("type")
+    if isinstance(call_type, str) and call_type:
+        entry["type"] = call_type
+    extra_content = raw_call.get("extra_content")
+    if isinstance(extra_content, Mapping):
+        entry["extra_content"] = copy.deepcopy(dict(extra_content))
+    raw_function = raw_call.get("function")
+    if not isinstance(raw_function, Mapping):
+        return
+    name = raw_function.get("name")
+    if isinstance(name, str) and name:
+        entry["function"]["name"] += name
+    arguments = raw_function.get("arguments")
+    if isinstance(arguments, str):
+        entry["function"]["arguments"] += arguments
+    elif isinstance(arguments, Mapping):
+        entry["function"]["arguments"] = json.dumps(arguments, ensure_ascii = False)
+
+
+def _collect_round_delta(
+    payload: object,
+    tool_calls: dict[int, dict[str, Any]],
+    assistant_text: list[str],
+    assistant_extra_content: dict[str, Any] | None = None,
+    assistant_compaction_blocks: list[dict[str, Any]] | None = None,
+    assistant_reasoning_details: list[dict[str, Any]] | None = None,
+    assistant_reasoning_content: list[str] | None = None,
+) -> None:
+    if not isinstance(payload, Mapping):
+        return
+    tool_event = payload.get("_toolEvent")
+    if isinstance(tool_event, Mapping) and assistant_extra_content is not None:
+        compaction_content = tool_event.get("content")
+        if (
+            tool_event.get("type") == "compaction_block"
+            and isinstance(compaction_content, str)
+            and compaction_content
+            and assistant_compaction_blocks is not None
+        ):
+            assistant_compaction_blocks.append(
+                {"type": "compaction", "content": compaction_content}
+            )
+        event_google = tool_event.get("google")
+        event_arguments = tool_event.get("arguments")
+        argument_google = (
+            event_arguments.get("google") if isinstance(event_arguments, Mapping) else None
+        )
+        google_metadata = event_google if isinstance(event_google, Mapping) else argument_google
+        native_part = (
+            google_metadata.get("native_part") if isinstance(google_metadata, Mapping) else None
+        )
+        native_parts = native_part.get("parts") if isinstance(native_part, Mapping) else None
+        if isinstance(native_parts, list):
+            google_extra = assistant_extra_content.setdefault("google", {})
+            hosted_parts = google_extra.setdefault("hosted_parts", [])
+            hosted_parts.extend(
+                copy.deepcopy(part) for part in native_parts if isinstance(part, Mapping)
+            )
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        return
+    for choice in choices:
+        if not isinstance(choice, Mapping):
+            continue
+        delta = choice.get("delta")
+        if not isinstance(delta, Mapping):
+            continue
+        reasoning_details = delta.get("reasoning_details")
+        if isinstance(reasoning_details, list) and assistant_reasoning_details is not None:
+            assistant_reasoning_details.extend(
+                copy.deepcopy(dict(part)) for part in reasoning_details if isinstance(part, Mapping)
+            )
+        reasoning_content = delta.get("reasoning_content")
+        if isinstance(reasoning_content, str) and assistant_reasoning_content is not None:
+            assistant_reasoning_content.append(reasoning_content)
+        content = delta.get("content")
+        extra_content = delta.get("extra_content")
+        anthropic_extra = (
+            extra_content.get("anthropic") if isinstance(extra_content, Mapping) else None
+        )
+        openai_extra = extra_content.get("openai") if isinstance(extra_content, Mapping) else None
+        is_provider_reasoning_display = (
+            isinstance(anthropic_extra, Mapping) and bool(anthropic_extra.get("thinking_display"))
+        ) or (isinstance(openai_extra, Mapping) and bool(openai_extra.get("reasoning_display")))
+        if isinstance(content, str) and not is_provider_reasoning_display:
+            assistant_text.append(content)
+            google_extra = (
+                extra_content.get("google") if isinstance(extra_content, Mapping) else None
+            )
+            thought_signature = (
+                google_extra.get("thought_signature") if isinstance(google_extra, Mapping) else None
+            )
+            if (
+                isinstance(thought_signature, str)
+                and thought_signature
+                and assistant_extra_content is not None
+            ):
+                assistant_extra_content.setdefault("google", {})["thought_signature"] = (
+                    thought_signature
+                )
+        raw_calls = delta.get("tool_calls")
+        if isinstance(raw_calls, list):
+            for raw_call in raw_calls:
+                if isinstance(raw_call, Mapping):
+                    _merge_tool_call_delta(tool_calls, raw_call)
+        legacy_call = delta.get("function_call")
+        if isinstance(legacy_call, Mapping):
+            _merge_tool_call_delta(
+                tool_calls,
+                {"index": 0, "type": "function", "function": legacy_call},
+            )
+
+
+def _without_tool_transport(
+    payload: object,
+    *,
+    has_tool_calls: bool,
+    strip_usage: bool = False,
+) -> Optional[str]:
+    """Strip upstream tool-call deltas from a forwardable SSE line."""
+
+    if not isinstance(payload, Mapping):
+        return None
+    cloned = copy.deepcopy(dict(payload))
+    if strip_usage:
+        cloned.pop("usage", None)
+    choices = cloned.get("choices")
+    if not isinstance(choices, list):
+        return "data: " + json.dumps(cloned, ensure_ascii = False)
+    kept_choices: list[dict[str, Any]] = []
+    for raw_choice in choices:
+        if not isinstance(raw_choice, dict):
+            continue
+        choice = raw_choice
+        delta = choice.get("delta")
+        if isinstance(delta, dict):
+            delta.pop("tool_calls", None)
+            delta.pop("function_call", None)
+        if has_tool_calls and choice.get("finish_reason") is not None:
+            choice["finish_reason"] = None
+        meaningful_delta = isinstance(delta, dict) and bool(delta)
+        if meaningful_delta or choice.get("finish_reason") is not None:
+            kept_choices.append(choice)
+    cloned["choices"] = kept_choices
+    # Drop intermediate usage; keep errors and final usage-only chunks.
+    if has_tool_calls and not kept_choices and "error" not in cloned and "_toolEvent" not in cloned:
+        return None
+    if (
+        not kept_choices
+        and "usage" not in cloned
+        and "error" not in cloned
+        and "_toolEvent" not in cloned
+    ):
+        return None
+    return "data: " + json.dumps(cloned, ensure_ascii = False)
+
+
+def _accumulate_usage(total: dict[str, Any], usage: Mapping[str, Any]) -> None:
+    """Add normalized usage counters from one billed provider request."""
+
+    for key, value in usage.items():
+        if isinstance(value, bool):
+            total.setdefault(key, value)
+        elif isinstance(value, (int, float)):
+            current = total.get(key)
+            total[key] = (current if isinstance(current, (int, float)) else 0) + value
+        elif isinstance(value, Mapping):
+            nested = total.get(key)
+            if not isinstance(nested, dict):
+                nested = {}
+                total[key] = nested
+            _accumulate_usage(nested, value)
+        else:
+            total.setdefault(key, copy.deepcopy(value))
+
+
+def _combined_usage_line(template: Mapping[str, Any], usage: Mapping[str, Any]) -> str:
+    payload = copy.deepcopy(dict(template))
+    payload["choices"] = []
+    payload["usage"] = copy.deepcopy(dict(usage))
+    return "data: " + json.dumps(payload, ensure_ascii = False)
+
+
+def _next_sync(generator) -> tuple[bool, Any]:
+    try:
+        return False, next(generator)
+    except StopIteration as stop:
+        return True, stop.value
+
+
+def _event_line(event: Mapping[str, Any]) -> str:
+    if event.get("type") == "heartbeat":
+        return _KEEPALIVE_LINE
+    if event.get("type") == "status":
+        return "data: " + json.dumps(
+            {"type": "tool_status", "content": event.get("text", "")},
+            ensure_ascii = False,
+        )
+    return "data: " + json.dumps(dict(event), ensure_ascii = False)
+
+
+async def _wait_for_cancel(cancel: threading.Event) -> None:
+    """Wait without occupying a worker thread for the lifetime of a request."""
+    while not cancel.is_set():
+        await asyncio.sleep(0.025)
+
+
+async def stream_external_chat_with_tools(
+    *,
+    client,
+    messages: Sequence[Mapping[str, Any]],
+    model: str,
+    tools: Sequence[Mapping[str, Any]],
+    request_kwargs: Mapping[str, Any],
+    provider_enabled_tools: Sequence[str] | None = None,
+    tool_choice: Any = None,
+    max_tool_iterations: int = 25,
+    tool_call_timeout: int = 300,
+    session_id: str | None = None,
+    thread_id: str | None = None,
+    rag_scope: dict | None = None,
+    cancel_event: threading.Event | None = None,
+    confirm_tool_calls: bool = False,
+    bypass_permissions: bool = False,
+    permission_mode: str | None = None,
+    auto_heal_tool_calls: bool = True,
+    parallel_tool_calls: bool | None = None,
+    require_complete_tool_batch: bool = False,
+) -> AsyncGenerator[str, None]:
+    """Stream an external chat while executing Studio tools server-side."""
+
+    if permission_mode == "full":
+        bypass_permissions = True
+    elif bypass_permissions:
+        permission_mode = "full"
+    elif permission_mode is None:
+        permission_mode = "ask" if confirm_tool_calls else "auto"
+    elif permission_mode not in ("ask", "auto", "off"):
+        permission_mode = "ask"
+
+    conversation = [copy.deepcopy(dict(message)) for message in messages]
+    max_calls = max(0, int(max_tool_iterations))
+    final_pass = max_calls == 0
+    tool_controller = ToolLoopController(
+        tools = [] if final_pass else tools,
+        auto_heal_tool_calls = auto_heal_tool_calls,
+    )
+    timeout = None if tool_call_timeout >= 9999 else max(1, int(tool_call_timeout))
+    cancel = cancel_event or threading.Event()
+    executed_calls = 0
+    denied_rounds = 0
+    kb_search_count = 0
+    observed_call_rounds = 0
+    aggregate_usage: dict[str, Any] = {}
+    usage_template: dict[str, Any] | None = None
+    usage_emitted = False
+    next_tool_choice = tool_choice
+
+    while True:
+        if cancel.is_set():
+            return
+        active_tools = tool_controller.active_tools()
+        round_calls: dict[int, dict[str, Any]] = {}
+        assistant_text: list[str] = []
+        assistant_extra_content: dict[str, Any] = {}
+        assistant_compaction_blocks: list[dict[str, Any]] = []
+        assistant_reasoning_details: list[dict[str, Any]] = []
+        assistant_reasoning_content: list[str] = []
+        round_finished = False
+        round_failed = False
+        round_terminal_error: str | None = None
+        if final_pass:
+            round_tool_choice = "none"
+        elif active_tools or provider_enabled_tools:
+            round_tool_choice = next_tool_choice
+        else:
+            round_tool_choice = None
+        round_request_kwargs = dict(request_kwargs)
+        if observed_call_rounds:
+            round_request_kwargs.pop("continue_final_message", None)
+        round_request_kwargs["parallel_tool_calls"] = parallel_tool_calls
+        upstream = client.stream_chat_completion(
+            messages = conversation,
+            model = model,
+            tools = active_tools or None,
+            tool_choice = round_tool_choice,
+            stream = True,
+            enabled_tools = list(provider_enabled_tools) if provider_enabled_tools else None,
+            **round_request_kwargs,
+        )
+        cancel_task = asyncio.create_task(_wait_for_cancel(cancel))
+        next_task: asyncio.Task | None = None
+        try:
+            while True:
+                next_task = asyncio.create_task(upstream.__anext__())
+                done, _pending = await asyncio.wait(
+                    {next_task, cancel_task},
+                    return_when = asyncio.FIRST_COMPLETED,
+                )
+                if cancel_task in done:
+                    next_task.cancel()
+                    await asyncio.gather(next_task, return_exceptions = True)
+                    return
+                try:
+                    line = next_task.result()
+                except StopAsyncIteration:
+                    break
+                finally:
+                    next_task = None
+                payload = _sse_data(line)
+                if payload is None:
+                    if isinstance(line, str) and line.lstrip().startswith(":"):
+                        yield line
+                    continue
+                if payload is _DONE:
+                    if not round_calls:
+                        round_finished = True
+                        if aggregate_usage and usage_template is not None and not usage_emitted:
+                            yield _combined_usage_line(usage_template, aggregate_usage)
+                            usage_emitted = True
+                        yield line
+                    continue
+                has_usage = False
+                if isinstance(payload, Mapping):
+                    if "error" in payload:
+                        round_failed = True
+                    _collect_round_delta(
+                        payload,
+                        round_calls,
+                        assistant_text,
+                        assistant_extra_content,
+                        assistant_compaction_blocks,
+                        assistant_reasoning_details,
+                        assistant_reasoning_content,
+                    )
+                    choices = payload.get("choices")
+                    if isinstance(choices, list):
+                        for choice in choices:
+                            if not isinstance(choice, Mapping):
+                                continue
+                            finish_reason = choice.get("finish_reason")
+                            if finish_reason is None:
+                                continue
+                            if finish_reason in ("tool_calls", "function_call") or (
+                                finish_reason == "stop" and round_calls
+                            ):
+                                round_finished = True
+                            elif round_calls:
+                                round_terminal_error = (
+                                    "External provider ended a tool-call response with "
+                                    f"finish_reason={finish_reason!r}."
+                                )
+                            else:
+                                round_finished = True
+                    usage = payload.get("usage")
+                    if isinstance(usage, Mapping):
+                        _accumulate_usage(aggregate_usage, usage)
+                        usage_template = copy.deepcopy(dict(payload))
+                        has_usage = True
+                else:
+                    _collect_round_delta(
+                        payload,
+                        round_calls,
+                        assistant_text,
+                        assistant_extra_content,
+                        assistant_compaction_blocks,
+                        assistant_reasoning_details,
+                        assistant_reasoning_content,
+                    )
+                if (
+                    round_failed
+                    and aggregate_usage
+                    and usage_template is not None
+                    and not usage_emitted
+                ):
+                    yield _combined_usage_line(usage_template, aggregate_usage)
+                    usage_emitted = True
+                forward = _without_tool_transport(
+                    payload,
+                    has_tool_calls = bool(round_calls),
+                    strip_usage = has_usage,
+                )
+                if forward is not None:
+                    yield forward
+        finally:
+            if next_task is not None:
+                next_task.cancel()
+                await asyncio.gather(next_task, return_exceptions = True)
+            cancel_task.cancel()
+            await asyncio.gather(cancel_task, return_exceptions = True)
+            try:
+                await upstream.aclose()
+            except RuntimeError:
+                pass
+
+        if round_terminal_error is not None:
+            raise RuntimeError(round_terminal_error)
+        if round_failed:
+            return
+        if round_calls and not round_finished:
+            raise RuntimeError(
+                "External provider stream ended before completing its tool-call response."
+            )
+        if not round_calls:
+            if aggregate_usage and usage_template is not None and not usage_emitted:
+                yield _combined_usage_line(usage_template, aggregate_usage)
+                usage_emitted = True
+            return
+        if final_pass:
+            if aggregate_usage and usage_template is not None and not usage_emitted:
+                yield _combined_usage_line(usage_template, aggregate_usage)
+                usage_emitted = True
+            return
+
+        observed_call_rounds += 1
+        normalized_calls: list[dict[str, Any]] = []
+        seen_call_keys: set[tuple[str, str]] = set()
+        for index in sorted(round_calls):
+            call = round_calls[index]
+            if not call.get("id"):
+                call["id"] = f"call_external_{observed_call_rounds}_{index}"
+            key = (
+                (call.get("function") or {}).get("name", ""),
+                (call.get("function") or {}).get("arguments", ""),
+            )
+            if key in seen_call_keys and not require_complete_tool_batch:
+                continue
+            seen_call_keys.add(key)
+            normalized_calls.append(call)
+            if (
+                len(normalized_calls) >= _MAX_TOOL_CALLS_PER_TURN
+                and not require_complete_tool_batch
+            ):
+                break
+
+        if parallel_tool_calls is False and not require_complete_tool_batch:
+            normalized_calls = normalized_calls[:1]
+
+        prepared_pairs = list(
+            zip(tool_controller.prepare_batch(normalized_calls), normalized_calls)
+        )
+        remaining_calls = max(0, max_calls - executed_calls)
+        executable_keys = {
+            decision.key for decision, _call in prepared_pairs if decision.should_execute
+        }
+        complete_batch_rejected = require_complete_tool_batch and (
+            len(prepared_pairs) > _MAX_TOOL_CALLS_PER_TURN
+            or any(
+                not decision.should_execute
+                and not (decision.action == "duplicate" and decision.key in executable_keys)
+                for decision, _call in prepared_pairs
+            )
+            or sum(decision.should_execute for decision, _call in prepared_pairs) > remaining_calls
+        )
+        decision_pairs: list[tuple[Any, dict[str, Any]]] = []
+        retained_executable = 0
+        for decision, call in prepared_pairs:
+            if decision.should_execute:
+                if complete_batch_rejected or retained_executable >= remaining_calls:
+                    continue
+                retained_executable += 1
+            decision_pairs.append((decision, call))
+        if complete_batch_rejected:
+            executed_calls = max_calls
+        decisions = [decision for decision, _call in decision_pairs]
+        executable_pairs = [
+            (decision, call) for decision, call in decision_pairs if decision.should_execute
+        ]
+        executable = [decision for decision, _call in executable_pairs]
+        all_provider_calls_retained = len(decision_pairs) == len(round_calls) and all(
+            decision.should_execute for decision in decisions
+        )
+        if not all_provider_calls_retained:
+            for _decision, raw_call in decision_pairs:
+                extra_content = raw_call.get("extra_content")
+                openai_extra = (
+                    extra_content.get("openai") if isinstance(extra_content, Mapping) else None
+                )
+                if not isinstance(openai_extra, dict):
+                    continue
+                openai_extra.pop("previous_response_id", None)
+                if not openai_extra:
+                    extra_content.pop("openai", None)
+                if not extra_content:
+                    raw_call.pop("extra_content", None)
+        turn_had_denial = False
+        assistant_content: Any = "".join(assistant_text)
+        if assistant_compaction_blocks:
+            assistant_content = copy.deepcopy(assistant_compaction_blocks)
+            if assistant_text:
+                assistant_content.append({"type": "text", "text": "".join(assistant_text)})
+        assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": assistant_content,
+        }
+        if assistant_extra_content:
+            assistant_message["extra_content"] = copy.deepcopy(assistant_extra_content)
+        if assistant_reasoning_details:
+            assistant_message["reasoning_details"] = assistant_reasoning_details
+        if assistant_reasoning_content:
+            assistant_message["reasoning_content"] = "".join(assistant_reasoning_content)
+        if executable:
+            assistant_calls: list[dict[str, Any]] = []
+            assistant_call_pairs = (
+                decision_pairs if require_complete_tool_batch else executable_pairs
+            )
+            for decision, raw_call in assistant_call_pairs:
+                assistant_call = decision.as_assistant_tool_call()
+                extra_content = raw_call.get("extra_content")
+                if isinstance(extra_content, Mapping):
+                    assistant_call["extra_content"] = copy.deepcopy(dict(extra_content))
+                assistant_calls.append(assistant_call)
+            assistant_message["tool_calls"] = assistant_calls
+
+            preserved_thinking_blocks: list[dict[str, Any]] = []
+            for _decision, raw_call in decision_pairs:
+                extra_content = raw_call.get("extra_content")
+                anthropic_extra = (
+                    extra_content.get("anthropic") if isinstance(extra_content, Mapping) else None
+                )
+                thinking_blocks = (
+                    anthropic_extra.get("thinking_blocks")
+                    if isinstance(anthropic_extra, Mapping)
+                    else None
+                )
+                if isinstance(thinking_blocks, list) and len(thinking_blocks) > len(
+                    preserved_thinking_blocks
+                ):
+                    preserved_thinking_blocks = copy.deepcopy(thinking_blocks)
+            if preserved_thinking_blocks:
+                assistant_message.setdefault("extra_content", {})["anthropic"] = {
+                    "thinking_blocks": preserved_thinking_blocks,
+                }
+        if executable or assistant_content:
+            conversation.append(assistant_message)
+
+        deferred_noops: list[dict[str, Any]] = []
+        batch_tool_messages: dict[str, dict[str, Any]] = {}
+        for decision, _raw_call in decision_pairs:
+            if not decision.should_execute:
+                completion = tool_controller.record_noop(decision)
+                aliased_message = batch_tool_messages.get(decision.key)
+                if require_complete_tool_batch and aliased_message is not None:
+                    aliased_message = copy.deepcopy(aliased_message)
+                    if decision.tool_call_id:
+                        aliased_message["tool_call_id"] = decision.tool_call_id
+                    else:
+                        aliased_message.pop("tool_call_id", None)
+                    conversation.append(aliased_message)
+                    continue
+                deferred_noops.append(completion.model_message())
+                continue
+
+            needs_confirm = (
+                bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
+            )
+            if needs_confirm and permission_mode == "auto":
+                needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
+            approval_id = new_approval_id() if needs_confirm else ""
+            decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            start_event = decision.tool_start_event()
+            start_event["approval_id"] = approval_id
+            start_event["awaiting_confirmation"] = needs_confirm
+            try:
+                yield _event_line(
+                    {
+                        "type": "status",
+                        "text": (
+                            awaiting_approval_status(decision.tool_name)
+                            if needs_confirm
+                            else decision.status_text
+                        ),
+                    }
+                )
+                yield _event_line(start_event)
+                approval = (
+                    await asyncio.to_thread(
+                        wait_tool_decision,
+                        decision_slot,
+                        approval_id,
+                        cancel,
+                    )
+                    if decision_slot is not None
+                    else None
+                )
+                if approval is not None and approval != "deny":
+                    yield _event_line({"type": "status", "text": decision.status_text})
+                if approval == "deny":
+                    decision_slot = None
+                    yield _event_line(
+                        {
+                            "type": "tool_end",
+                            "tool_name": decision.tool_name,
+                            "tool_call_id": decision.tool_call_id,
+                            "result": TOOL_REJECTED_MESSAGE,
+                            "provenance": decision.provenance,
+                        }
+                    )
+                    denied: dict[str, Any] = {
+                        "role": "tool",
+                        "name": decision.tool_name,
+                        "content": TOOL_REJECTED_MESSAGE,
+                    }
+                    if decision.tool_call_id:
+                        denied["tool_call_id"] = decision.tool_call_id
+                    conversation.append(denied)
+                    batch_tool_messages[decision.key] = denied
+                    tool_controller.record_denial(decision)
+                    turn_had_denial = True
+                    continue
+                decision_slot = None
+            finally:
+                if decision_slot is not None:
+                    abort_tool_decision(decision_slot, approval_id)
+
+            if (
+                decision.tool_name == "search_knowledge_base"
+                and kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
+            ):
+                result = RAG_SEARCH_CAP_NUDGE
+            else:
+
+                def _invoke_tool(output_callback, _decision = decision):
+                    kwargs = dict(
+                        cancel_event = cancel,
+                        timeout = timeout,
+                        session_id = session_id,
+                        thread_id = thread_id,
+                        rag_scope = rag_scope,
+                        disable_sandbox = bypass_permissions,
+                    )
+                    if accepts_output_callback(execute_tool):
+                        kwargs["output_callback"] = output_callback
+                    return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
+
+                tool_stream = stream_tool_execution(
+                    _invoke_tool,
+                    tool_name = decision.tool_name,
+                    tool_call_id = decision.tool_call_id,
+                    cancel_event = cancel,
+                )
+                try:
+                    while True:
+                        next_task = asyncio.create_task(asyncio.to_thread(_next_sync, tool_stream))
+                        try:
+                            finished, event_or_result = await asyncio.shield(next_task)
+                        except asyncio.CancelledError:
+                            # Do not close a generator while another thread advances it.
+                            cancel.set()
+                            await next_task
+                            raise
+                        if finished:
+                            result = event_or_result
+                            break
+                        yield _event_line(event_or_result)
+                except Exception as exc:
+                    logger.exception("External tool %s raised: %s", decision.tool_name, exc)
+                    result = f"Error: tool raised an exception: {exc}"
+                finally:
+                    tool_stream.close()
+                if decision.tool_name == "search_knowledge_base":
+                    kb_search_count += 1
+            completion = tool_controller.record_result(decision, result)
+            executed_calls += 1
+            yield _event_line(completion.tool_end_event())
+            tool_message = completion.tool_message()
+            conversation.append(tool_message)
+            batch_tool_messages[decision.key] = tool_message
+
+        append_deferred_nudges(conversation, deferred_noops)
+        yield _event_line({"type": "status", "text": ""})
+
+        if turn_had_denial:
+            denied_rounds += 1
+
+        if (
+            executed_calls >= max_calls
+            # Denials do not consume the execution budget, but remain bounded.
+            or denied_rounds >= max(2, max_calls)
+            or tool_controller.force_final_answer
+        ):
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "You have used all available tool calls. Based on the tool results "
+                        "above, provide the final answer now without calling more tools."
+                    ),
+                }
+            )
+            tool_controller = ToolLoopController(tools = [])
+            final_pass = True
+        next_tool_choice = "auto"
