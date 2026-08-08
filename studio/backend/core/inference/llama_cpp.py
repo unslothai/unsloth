@@ -10232,9 +10232,9 @@ class LlamaCppBackend:
                         slots: Optional[int] = None,
                         ubatch: Optional[int] = None,
                     ) -> int:
-                        # slots/ubatch override the closure's requested pair: the reserve is
-                        # slot-scaled for compact SWA and MLA+recurrent, and compact SWA also
-                        # adds a micro-batch, so the slot fit re-prices both per candidate.
+                        # slots/ubatch override the closure's requested pair: the reserve
+                        # scales with both for compact SWA and MLA+recurrent, so the slot
+                        # fit re-prices it per candidate.
                         if mtp_overhead_fn is None:
                             return 0
                         if slots is None:

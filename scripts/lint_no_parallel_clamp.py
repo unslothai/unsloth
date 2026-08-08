@@ -77,11 +77,9 @@ def _forces_one(value: ast.AST) -> bool:
 
 
 def _target_value_pairs(node: ast.AST) -> list[tuple[ast.AST, ast.AST]]:
-    """(target, value) per assignment. AnnAssign because `n_parallel: int = 1` is the
-    same clamp Python spells differently, and tuple unpacking because load_model already
-    writes `gpu_indices, use_fit, n_parallel = ..., ..., _slots`; testing only the outer
-    ast.Tuple would never see the slot target. Unpaired shapes (a call on the right, a
-    starred target) say nothing about the value, so they are skipped."""
+    """(target, value) per assignment, flattening the two spellings a clamp can hide in:
+    AnnAssign, and tuple unpacking, which load_model already uses for the VRAM fit.
+    An unpairable right-hand side says nothing about the value, so it is skipped."""
     if isinstance(node, ast.AnnAssign):
         return [(node.target, node.value)] if node.value is not None else []
     if not isinstance(node, ast.Assign):

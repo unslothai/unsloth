@@ -243,8 +243,7 @@ class TestMtpReserveIsRepricedPerCandidate:
         # base 24000: no candidate fits, so every one is priced and observed.
         self._fit(lambda s, ub: seen.append((s, ub)) or 0, base_mib = 24000)
         assert seen, "the reserve callback was never consulted"
-        # Default ubatch_for_slots is None here, so the helper passes n_ubatch through;
-        # what matters is that the ubatch travels with the slot count rather than being
-        # dropped, so the caller can re-derive it per candidate.
+        # ubatch_for_slots is None here, so n_ubatch passes through; what matters is that
+        # it travels with the slot count instead of being dropped.
         assert all(ub == 512 for _s, ub in seen), seen
         assert [s for s, _ub in seen] == [3, 2, 1]
