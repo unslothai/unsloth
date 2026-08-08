@@ -100,6 +100,8 @@ export type SelectedModelInput = {
   /** Direct local .gguf file (no HF variant / native token) — still a GGUF
    *  source, so the staging flow treats it as one. */
   isGguf?: boolean;
+  /** Known model vision capability. Undefined means unknown, not text-only. */
+  isVision?: boolean;
   /** Staged metadata confirmed the separate DiffusionGemma runner. */
   isDiffusion?: boolean;
   throwOnError?: boolean;
