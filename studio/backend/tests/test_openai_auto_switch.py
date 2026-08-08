@@ -5207,9 +5207,7 @@ def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
 
     assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
-    enabled, idle, keep_kv, auto_dl, api_only = settings.set_openai_auto_switch(
-        False, None, False
-    )
+    enabled, idle, keep_kv, auto_dl, api_only = settings.set_openai_auto_switch(False, None, False)
     assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
     assert settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY not in store  # nor auto-download
     assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
@@ -7051,9 +7049,7 @@ def test_the_load_route_pins_and_other_load_surfaces_do_not(monkeypatch):
     request = LoadRequest(model_path = "unsloth/A-GGUF")
 
     # An explicit UI load pins, including when it deduped onto the resident model.
-    asyncio.run(
-        inference_route.load_model_gated(request, object(), "tester", user_initiated = True)
-    )
+    asyncio.run(inference_route.load_model_gated(request, object(), "tester", user_initiated = True))
     assert backend._loaded_by_user_action is True
 
     # Preview shares this helper and must not pin, so it keeps the default.
