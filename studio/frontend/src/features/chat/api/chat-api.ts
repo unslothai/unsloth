@@ -200,6 +200,10 @@ export async function getActiveGenerations(): Promise<ActiveGenerationsResponse>
 
 export async function loadModel(
   payload: LoadModelRequest,
+  options?: {
+    signal?: AbortSignal;
+    onRequestStart?: () => void;
+  },
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
   // Tagged so auto-load can tell a user cancellation from a backend rejection.
@@ -207,6 +211,9 @@ export async function loadModel(
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
     });
+  if (options?.signal?.aborted)
+    throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+  options?.onRequestStart?.();
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -216,6 +223,7 @@ export async function loadModel(
       native_path_lease: payload.nativePathLease ?? null,
       nativePathLease: undefined,
     }),
+    signal: options?.signal,
   });
   return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
 }

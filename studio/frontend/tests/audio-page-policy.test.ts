@@ -25,6 +25,10 @@ const audioPageSource = readFileSync(
   new URL("../src/features/audio/audio-page.tsx", import.meta.url),
   "utf8",
 );
+const chatApiSource = readFileSync(
+  new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
+  "utf8",
+);
 
 test("mode transitions cancel generation but wait for non-cancellable work", () => {
   assert.equal(canTransitionAudioMode(null), true);
@@ -286,6 +290,24 @@ test("older STT status requests cannot overwrite newer residency", () => {
   assert.match(
     audioPageSource,
     /const generation = \+\+sttStatusRefreshGeneration\.current;[\s\S]*await fetchSttStatus[\s\S]*generation !== sttStatusRefreshGeneration\.current\) return;[\s\S]*catch \{[\s\S]*generation !== sttStatusRefreshGeneration\.current\) return;/,
+  );
+});
+
+test("older TTS status requests cannot overwrite newer residency", () => {
+  assert.match(
+    audioPageSource,
+    /const generation = \+\+ttsStatusRefreshGeneration\.current;[\s\S]*await getInferenceStatus\(\)[\s\S]*generation !== ttsStatusRefreshGeneration\.current\) return;[\s\S]*catch \{[\s\S]*generation !== ttsStatusRefreshGeneration\.current\) return;/,
+  );
+});
+
+test("leaving Audio cancels an owned TTS load without touching a pre-request prompt", () => {
+  assert.match(
+    audioPageSource,
+    /const pending = pendingTtsLoad\.current;[\s\S]*pending\.controller\.abort\(\);[\s\S]*if \(pending\.requestStarted\)[\s\S]*unloadModel\(\{ model_path: pending\.repoId \}\)/,
+  );
+  assert.match(
+    chatApiSource,
+    /if \(options\?\.signal\?\.aborted\)[\s\S]*options\?\.onRequestStart\?\.\(\);[\s\S]*authFetch\("\/api\/inference\/load", \{[\s\S]*signal: options\?\.signal/,
   );
 });
 

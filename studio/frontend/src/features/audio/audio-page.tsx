@@ -252,6 +252,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const [maxTokens, setMaxTokens] = useState(2048);
   const generateAbort = useRef<AbortController | null>(null);
   const ttsLoadInFlight = useRef(false);
+  const ttsStatusRefreshGeneration = useRef(0);
+  const ttsLoadGeneration = useRef(0);
+  const pendingTtsLoad = useRef<{
+    generation: number;
+    repoId: string;
+    controller: AbortController;
+    requestStarted: boolean;
+  } | null>(null);
 
   // --- STT (dictation sidecar) -------------------------------------------
   const [selectedSttRepo, setSelectedSttRepo] = useState<string | null>(null);
@@ -346,9 +354,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   );
 
   const refreshStatus = useCallback(async () => {
+    const generation = ++ttsStatusRefreshGeneration.current;
     try {
-      setStatus(await getInferenceStatus());
+      const next = await getInferenceStatus();
+      if (generation !== ttsStatusRefreshGeneration.current) return;
+      setStatus(next);
     } catch {
+      if (generation !== ttsStatusRefreshGeneration.current) return;
       // Do not leave Generate enabled against residency the backend can no
       // longer confirm. A later refresh adopts the recovered runtime.
       setStatus(null);
@@ -514,19 +526,39 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const loadTtsModel = useCallback(
     async (repoId: string, ggufFilename?: string | null) => {
       if (ttsLoadInFlight.current) return;
+      const generation = ++ttsLoadGeneration.current;
+      const controller = new AbortController();
+      const pending = {
+        generation,
+        repoId,
+        controller,
+        requestStarted: false,
+      };
+      pendingTtsLoad.current = pending;
+      const isCurrent = () =>
+        generation === ttsLoadGeneration.current && activeRef.current;
       ttsLoadInFlight.current = true;
       busyRef.current = "loading";
       setBusy("loading");
       const toastId = toast.loading(`Loading ${repoId}…`);
       try {
-        const res = await loadModel({
-          model_path: repoId,
-          hf_token: hfApiToken(getHfToken()) ?? null,
-          max_seq_length: 2048,
-          load_in_4bit: false,
-          is_lora: false,
-          gguf_variant: ggufFilename ?? null,
-        });
+        const res = await loadModel(
+          {
+            model_path: repoId,
+            hf_token: hfApiToken(getHfToken()) ?? null,
+            max_seq_length: 2048,
+            load_in_4bit: false,
+            is_lora: false,
+            gguf_variant: ggufFilename ?? null,
+          },
+          {
+            signal: controller.signal,
+            onRequestStart: () => {
+              pending.requestStarted = true;
+            },
+          },
+        );
+        if (!isCurrent()) return;
         if (res.is_audio && isTtsAudioType(res.audio_type)) {
           toast.success(`Model loaded (${res.audio_type ?? "audio"})`, {
             id: toastId,
@@ -537,15 +569,21 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           });
         }
       } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : "Model load failed.",
-          { id: toastId },
-        );
+        if (isCurrent()) {
+          toast.error(
+            error instanceof Error ? error.message : "Model load failed.",
+            { id: toastId },
+          );
+        } else {
+          toast.dismiss(toastId);
+        }
       } finally {
+        if (pendingTtsLoad.current?.generation === generation)
+          pendingTtsLoad.current = null;
         ttsLoadInFlight.current = false;
         busyRef.current = null;
         setBusy(null);
-        void refreshStatus();
+        if (activeRef.current) void refreshStatus();
       }
     },
     [refreshStatus],
@@ -753,6 +791,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (!active) {
       ttsPickGeneration.current += 1;
+      const pending = pendingTtsLoad.current;
+      if (pending) {
+        ttsLoadGeneration.current += 1;
+        pendingTtsLoad.current = null;
+        pending.controller.abort();
+        if (pending.requestStarted)
+          void unloadModel({ model_path: pending.repoId }).catch(() => {});
+      }
       if (ttsInspectionGeneration.current !== null) {
         ttsInspectionGeneration.current = null;
         busyRef.current = null;
