@@ -50,8 +50,7 @@ import {
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
-// Deep imports on purpose: the Images index re-exports ImagesPage, so going through it would pull
-// the page into the shell bundle and undo its code split.
+// Deep imports on purpose: the Images index re-exports ImagesPage, which would undo its code split.
 /* eslint-disable no-restricted-imports */
 import {
   isWorkflowEnabled,
@@ -143,6 +142,7 @@ import {
 } from "@/features/settings";
 import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
+import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
@@ -151,6 +151,7 @@ import {
   emitTrainingRunDeleted,
   emitTrainingRunUpdated,
   getTrainingRunDisplayTitle,
+  isTrainingStartPending,
   removeTrainingUnloadGuard,
   renameTrainingRun,
   useTrainingCompletionWatch,
@@ -203,8 +204,7 @@ function getTourId(pathname: string): string | null {
   return null;
 }
 
-// Optional user-menu shortcuts that jump straight to a settings tab; the id
-// doubles as the settings dialog tab id.
+// Optional user-menu shortcuts that jump to a settings tab; the id is the tab id.
 const SETTINGS_TAB_MENU_ITEMS: Record<
   "profile" | "appearance" | "resources" | "chat" | "connections",
   { icon: typeof ZapIcon; labelKey: TranslationKey }
@@ -224,6 +224,9 @@ type NavRowDef = {
   disabled?: boolean;
   tooltip?: string;
   spinner?: boolean;
+  // The capability that decides `disabled` has not been measured yet. A row in this state is
+  // neither enabled-looking nor blacked out: resolveNavRowState renders it with the spinner.
+  pending?: boolean;
   badge?: string;
   onClick: () => void;
   onIntent?: () => void;
@@ -331,6 +334,7 @@ function NavItem({
   onIntent,
   badge,
   overlay,
+  testId,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -342,8 +346,10 @@ function NavItem({
   className?: string;
   spinner?: boolean;
   onIntent?: () => void;
-  // Overrides the hover tooltip (defaults to `label`). Used to explain why a
-  // disabled item (e.g. Train/Export on a chat-only host) is greyed out.
+  // Stable hook for the UI smokes, which assert a row spins rather than greys out
+  // while its capability verdict is still unmeasured.
+  testId?: string;
+  // Overrides the hover tooltip; explains why a disabled item is greyed out.
   tooltip?: string;
   // Trailing "New" pill text.
   badge?: string;
@@ -361,6 +367,8 @@ function NavItem({
           onFocus={disabled ? undefined : onIntent}
           isActive={active}
           data-tour={dataTour}
+          data-testid={testId}
+          data-spinner={spinner ? "true" : undefined}
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-hover/menu-button:animate-icon-pop" />
@@ -372,8 +380,7 @@ function NavItem({
             />
           )}
           {spinner && (
-            // mr-1.5 over the row's pr-2.5 = 16px, matching the chat rows'
-            // pr-4 so nav and Recents spinners share one column.
+            // mr-1.5 over the row's pr-2.5 = 16px, matching the chat rows' pr-4: one spinner column.
             <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
           )}
         </SidebarMenuButton>
@@ -393,6 +400,15 @@ function getSidebarItemThreadIds(item: SidebarItem) {
 }
 
 const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
+
+// Re-read cadences for the hardware verdict below. An unmeasured verdict holds Train and Video
+// on a spinner, so it is re-read sooner than the background MLX self-heal check, which only
+// pays off after the user has repaired an install. A re-read outstanding longer than the stall
+// window is given up on rather than latching the poll off: the backend it is waiting on is the
+// one case this has to recover from.
+const VERDICT_UNKNOWN_POLL_MS = 3000;
+const SELF_HEAL_POLL_MS = 15000;
+const VERDICT_POLL_STALL_MS = 30000;
 
 /** One workflow in the list under the Images row. */
 function WorkflowChoice({
@@ -463,10 +479,9 @@ function ImagesNavDisclosure() {
 }
 
 /**
- * The Images workflows, listed under their nav row. Open by default on the Images page, since
- * they are that page's switcher; elsewhere they stay folded until the row's chevron asks for
- * them. The collapsed rail has no room either way, and the page's Train tab has none to list.
- */
+* The Images workflows, listed under their nav row. Open by default on the Images page, since
+* they are that page's switcher; elsewhere they stay folded until the row's chevron asks.
+*/
 function ImagesWorkflowList({
   active,
   collapsed,
@@ -568,14 +583,11 @@ export function AppSidebar() {
   const router = useRouter();
   const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);
 
-  // Web update detection: `webUpdate` is non-null only when the installed
-  // (PyPI) version is behind the latest release, so the card is hidden by
-  // default.
+  // `webUpdate` is non-null only when the installed (PyPI) version is behind the latest release.
   const { status: webUpdate } = useWebUpdateCheck();
   const showUpdateCard = Boolean(webUpdate);
   const updateVersion = webUpdate?.latestVersion ?? null;
 
-  // Auto-close mobile Sheet after navigation
   const closeMobileIfOpen = () => {
     if (isMobile) setOpenMobile(false);
   };
@@ -583,9 +595,15 @@ export function AppSidebar() {
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
-  // Explain a greyed-out Train (chat-only host) on hover instead of disabling silently. Export is
-  // no longer disabled here: it stays navigable so its page can show a precise grayed-out reason.
-  const trainDisabledHint: string | undefined = !chatOnly
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
+  // Train and Video blacked out on load and only recovered once the backend reported. Gate the
+  // rows on a measured verdict and let them spin until it lands.
+  const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
+  const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
+  // Explain a greyed-out Train (chat-only host) on hover. Export stays navigable so its page
+  // can show a precise reason.
+  const trainDisabledHint: string | undefined = !chatOnlyMeasured
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
       ? "Training needs MLX. Run `unsloth studio update` to enable Train."
@@ -594,21 +612,53 @@ export function AppSidebar() {
         : chatOnlyReason === "no_gpu"
           ? "Training needs an NVIDIA or AMD GPU."
           : undefined;
+  // Video's hint is derived the same way. It used to be hardcoded to "needs an NVIDIA or AMD
+  // GPU", which is wrong on an Apple Silicon host: video has no Apple path at all, so the row
+  // says so rather than pointing at hardware the user cannot add.
+  const videoDisabledHint: string | undefined = !chatOnlyMeasured
+    ? undefined
+    : platformDeviceType === "mac"
+      ? "Video generation on macOS is coming soon."
+      : chatOnlyReason === "no_gpu"
+        ? "Video generation needs an NVIDIA or AMD GPU."
+        : undefined;
 
-  // The backend MLX self-heal (utils/mlx_repair) can reinstall MLX in the
-  // background and flip chat_only false without a restart. The platform store
-  // cached the initial /api/health, so re-poll while we are chat-only for the
-  // recoverable mlx_unavailable case; the effect stops once Train/Export become
-  // available (chatOnly flips false and this effect's guard returns early).
+  // Two things can change the verdict after the first /api/health. The backend MLX self-heal
+  // (utils/mlx_repair) can reinstall MLX and flip chat_only false without a restart, and
+  // detection can land after fetchDeviceType gave up waiting for it. The platform store cached
+  // that first reply, so re-poll for both; the guard below stops it once neither applies.
   useEffect(() => {
-    // Also while deferred: under the kill switch health settles nothing, so only a
-    // first-use operation detects and a GPU host would stay chat-only until a refresh.
-    if (!chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred)) return;
+    // Also while deferred: under the kill switch health settles nothing, so a GPU host would stay chat-only.
+    const selfHealSettled =
+      !chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred);
+    // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded
+    // wait at most once per page load, so a host that detects slower than that keeps the
+    // provisional reply, and nothing else is scheduled to re-read it: the rows above would spin
+    // and /studio would hold its loading panel for the rest of the session. This is the only
+    // recovery poll in the app, and the sidebar is mounted on every route that gates on the
+    // verdict (studio-page and video-page read the same store, so they recover with it).
+    if (selfHealSettled && !capabilitiesUnknown) return;
+    let pollingSince = 0;
+    // Which read currently owns the guard. A read that outlived the stall window is replaced,
+    // and the replacement takes the guard with it; without an owner the abandoned read's
+    // `finally` would clear a guard it no longer holds and let the next tick stack another
+    // forced read onto the slow backend, every interval, which is the pile-up this prevents.
+    let pollOwner = 0;
     const id = window.setInterval(() => {
-      void fetchDeviceType({ force: true }).catch(() => undefined);
-    }, 15000);
+      // A backend still importing torch answers slowly, so skip while a re-read is outstanding
+      // rather than stacking them against it. Bounded, or a request that never settles would
+      // hold the poll off for good.
+      if (pollingSince && Date.now() - pollingSince < VERDICT_POLL_STALL_MS) return;
+      const owned = ++pollOwner;
+      pollingSince = Date.now();
+      void fetchDeviceType({ force: true })
+        .catch(() => undefined)
+        .finally(() => {
+          if (owned === pollOwner) pollingSince = 0;
+        });
+    }, capabilitiesUnknown ? VERDICT_UNKNOWN_POLL_MS : SELF_HEAL_POLL_MS);
     return () => window.clearInterval(id);
-  }, [chatOnly, chatOnlyReason, detectionDeferred]);
+  }, [capabilitiesUnknown, chatOnly, chatOnlyReason, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
@@ -649,13 +699,12 @@ export function AppSidebar() {
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
-  // Bottom fade hides at the very bottom / for short lists so the last row
-  // isn't washed out (Gemini-style).
+  // Bottom fade hides at the very bottom / for short lists so the last row isn't washed out.
   const [canScrollDown, setCanScrollDown] = useState(false);
   // Driven only from onScroll + a content-change effect below. No
   // ResizeObserver: its callback-driven setState caused a render loop (React
   // #185). Both setters bail out when unchanged, so neither path can loop.
-  const syncScrollState = (el: HTMLDivElement) => {
+  const syncScrollState = useCallback((el: HTMLDivElement) => {
     const nextScrolled = el.scrollTop > 0;
     setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
     const nextCanScrollDown =
@@ -663,7 +712,7 @@ export function AppSidebar() {
     setCanScrollDown((prev) =>
       prev === nextCanScrollDown ? prev : nextCanScrollDown,
     );
-  };
+  }, []);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
@@ -696,8 +745,7 @@ export function AppSidebar() {
     [allChatItems, pinnedIdSet],
   );
   const [pinnedOpen, setPinnedOpen] = useState(true);
-  // "Projects" section: projects the user pinned, in pin order (most recent
-  // first). The section only appears once at least one project is pinned.
+  // Projects the user pinned, in pin order; the section appears once at least one is pinned.
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const unpinProject = usePinnedProjectsStore((s) => s.unpin);
   const pinnedProjectRecords = useMemo(() => {
@@ -706,17 +754,15 @@ export function AppSidebar() {
       .map((id) => byId.get(id))
       .filter((p): p is ProjectRecord => Boolean(p));
   }, [projects, pinnedProjectIds]);
-  // Pinned chats, in pin order (most recent first). Includes chats that live
-  // inside a project: pinning promotes a chat into this list, and it is removed
-  // from the project's nested list below so it never shows twice.
+  // Pinned chats, in pin order. Includes chats inside a project: pinning promotes a chat here
+  // and removes it from the project's nested list, so it never shows twice.
   const pinnedChatItems = useMemo(() => {
     const byId = new Map(allChatItems.map((item) => [item.id, item]));
     return pinnedIds
       .map((id) => byId.get(id))
       .filter((item): item is SidebarItem => Boolean(item));
   }, [allChatItems, pinnedIds]);
-  // A pinned project reveals its recent chats (most recent first) nested below.
-  // Pinned chats are excluded here since they render in the pinned-chats list.
+  // A pinned project nests its recent chats; pinned chats are excluded (they render above).
   const chatsByProjectId = useMemo(() => {
     const map = new Map<string, SidebarItem[]>();
     for (const item of allChatItems) {
@@ -730,8 +776,7 @@ export function AppSidebar() {
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     return map;
   }, [allChatItems, pinnedIdSet]);
-  // Default expanded (not collapsed); the row toggles this. Show-more reveals
-  // chats past the first PINNED_PROJECT_CHAT_LIMIT.
+  // Default expanded; the row toggles this. Show-more reveals chats past the limit.
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -756,8 +801,7 @@ export function AppSidebar() {
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
-  // Rows, not raw thread ids: a compare conversation runs two pane threads but is one chat
-  // in the sidebar, so counting the map said "2 Chats" for a single compare row.
+  // Rows, not raw thread ids: a compare conversation runs two pane threads but is one row.
   const runningChatCount = useMemo(() => {
     const running = new Set(
       Object.entries(runningByThreadId)
@@ -778,9 +822,8 @@ export function AppSidebar() {
     return rows + running.size;
   }, [runningByThreadId, allChatItems]);
   const anyChatRunning = runningChatCount > 0;
-  // Where "Return to Chat" lands: the newest running chat, not the empty draft New Chat left
-  // active (map insertion order is start order). A compare row runs pane threads that /chat
-  // cannot address, so resolve those back to the pair id the route expects.
+  // Where "Return to Chat" lands: the newest running chat, not an empty New Chat draft (map
+  // insertion order is start order). Compare rows resolve back to the pair id /chat expects.
   const runningTarget = useMemo(() => {
     const ids = Object.entries(runningByThreadId)
       .filter(([, on]) => on)
@@ -861,8 +904,7 @@ export function AppSidebar() {
     previousRunningByThreadIdRef.current = runningByThreadId;
   }, [activeVisibleThreadIdKey, runningByThreadId]);
 
-  // Training runs: surfaced as sidebar "Recents" on Train, Recipes, and Export,
-  // falling back to chat recents when there are no runs yet.
+  // Training runs surface as sidebar "Recents" on Train/Recipes/Export, else chat recents.
   const trainingRecentsRoute = isStudioRoute || isRecipesRoute || isExportRoute;
   const { items: runItems } = useTrainingHistorySidebarItems(
     !chatOnly && trainingRecentsRoute,
@@ -874,23 +916,19 @@ export function AppSidebar() {
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
   // Running or starting up. Drives the Train spinner + New Chat / Return to Chat swap.
-  const trainingInProgress = useTrainingRuntimeStore((s) => s.isTrainingRunning || s.isStarting);
-  // Export runs in the background (parallel with training/inference); reflect it
-  // on the Export nav item so it is visible from any tab.
+  const trainingInProgress = useTrainingRuntimeStore(isTrainingStartPending);
+  // Export runs in the background; reflect it on the Export nav item from any tab.
   const exportInProgress = useExportRuntimeStore((s) => s.isExporting);
-  // On any non-chat tab (Train, Export, Recipes, Projects, Hub, ...) offer a way
-  // back to the live chat instead of starting a new one, whenever a chat is
-  // running or its thread is still active, or a training / export is in progress.
+  // On any non-chat tab, offer a way back to the live chat instead of starting a new one
+  // whenever a chat is running or its thread is active, or a training / export is in progress.
   const showReturnToChat =
     !isChatRoute &&
     (trainingInProgress || exportInProgress || anyChatRunning || storeThreadId != null);
-  // The Train-page status poll doesn't run off-route; keep state fresh so the spinner
-  // clears even if a run finishes while the user is on another tab.
+  // The Train-page status poll doesn't run off-route; keep state fresh so the spinner clears.
   useTrainingCompletionWatch();
 
-  // Recompute bottom-fade on mount and whenever list height can change
-  // (items load, sections toggle, route switch) - onScroll never fires for
-  // short, non-scrolling lists. Guarded setState below can't loop.
+  // Recompute bottom-fade on mount and whenever list height can change: onScroll never fires
+  // for short, non-scrolling lists. Guarded setState below can't loop.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -904,10 +942,30 @@ export function AppSidebar() {
     runsOpen,
     pinnedOpen,
     isStudioRoute,
+    // The update card grows the footer, so the scroll area shrinks under it.
+    showUpdateCard,
   ]);
+
+  // Resizing changes clientHeight without firing onScroll, so the fade would
+  // stay hidden while rows are still clipped. Window events only: no element
+  // observer, so this can't feed back into the loop that caused React #185.
+  useEffect(() => {
+    const onResize = () => {
+      const el = scrollRef.current;
+      if (el) syncScrollState(el);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [syncScrollState]);
 
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
+
+  // One box for every row pill, so a hover pill has the same edges wherever it
+  // lands. The list scroller hides its rail (index.css) instead of eating width.
+  const rowPadding = usesDesktopTitlebar
+    ? "pl-[5px] pr-2"
+    : "pl-1.5 pr-1.75";
 
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
@@ -976,11 +1034,12 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnly,
+      disabled: chatOnlyMeasured,
       tooltip: trainDisabledHint,
       spinner: trainingInProgress,
+      pending: capabilitiesUnknown,
       onClick: () => {
-        if (chatOnly) return;
+        if (chatOnlyMeasured) return;
         navigate({ to: "/studio" });
         closeMobileIfOpen();
       },
@@ -993,10 +1052,9 @@ export function AppSidebar() {
       icon: FlimSlateIcon,
       label: t("shell.navigation.video"),
       active: pathname === "/video" || pathname.startsWith("/video/"),
-      disabled: chatOnly,
-      tooltip: chatOnly
-        ? "Video generation needs an NVIDIA or AMD GPU."
-        : undefined,
+      disabled: chatOnlyMeasured,
+      tooltip: videoDisabledHint,
+      pending: capabilitiesUnknown,
       onClick: () => {
         navigate({ to: "/video" });
         closeMobileIfOpen();
@@ -1082,8 +1140,7 @@ export function AppSidebar() {
     clearNewChatDraft();
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
-    // The normal new-chat affordance is always a regular, saved chat --
-    // only the toolbar toggle starts a temporary one.
+    // The normal new-chat affordance is always a saved chat; only the toolbar toggle is temporary.
     useChatRuntimeStore.getState().setIncognito(false);
     navigate({ to: "/chat", search: chatSearchForProject(projectId) });
     closeMobileIfOpen();
@@ -1107,8 +1164,7 @@ export function AppSidebar() {
     });
   }
 
-  // Shared chat delete: same error toast and pin cleanup whether or not the
-  // confirm dialog is used.
+  // Shared chat delete: same error toast and pin cleanup with or without the confirm dialog.
   async function deleteChatWithCleanup(item: SidebarItem) {
     try {
       await handleDeleteThread(item);
@@ -1160,8 +1216,7 @@ export function AppSidebar() {
   const [renameDraft, setRenameDraft] = useState("");
   // Skips the inline rename input's blur-commit when Enter/Escape already handled it.
   const skipRenameBlurRef = useRef(false);
-  // Optimistic title shown while the debounced sidebar refresh catches up after
-  // a rename, so the old name does not flash back in.
+  // Optimistic title while the debounced sidebar refresh catches up, so the old name doesn't flash.
   const [pendingRename, setPendingRename] = useState<{
     id: string;
     title: string;
@@ -1245,8 +1300,7 @@ export function AppSidebar() {
     if (event.key === "Enter") {
       event.preventDefault();
       skipRenameBlurRef.current = true;
-      // Commit when changed; otherwise just close, so a no-op Enter does not
-      // leave the row stuck as an input with its blur suppressed.
+      // Commit when changed, else just close, so a no-op Enter doesn't leave the row an input.
       if (renameDirty) void commitRename();
       else setRenamingTarget(null);
     } else if (event.key === "Escape") {
@@ -1290,13 +1344,11 @@ export function AppSidebar() {
         await deleteChatProject(target.project.id, {
           deleteFiles: shouldDeleteProjectFiles,
         });
-        // Refresh chat history so the project's reparented chats don't linger
-        // as stale top-level rows.
+        // Refresh chat history so the project's reparented chats don't linger as stale rows.
         notifyChatHistoryUpdated();
-        // activeProjectId is only the ?project= param; on a thread-only URL the
-        // project is resolved from the thread into the runtime store, so check
-        // that too or we strand the user on a now-deleted thread. Only redirect
-        // from a chat route: the runtime store value can be stale elsewhere.
+        // activeProjectId is only the ?project= param; on a thread-only URL the project comes from
+        // the runtime store, so check that too or the user is stranded on a deleted thread. Only
+        // redirect from a chat route: the runtime store value can be stale elsewhere.
         const runtimeProjectId =
           useChatRuntimeStore.getState().activeProjectId;
         if (
@@ -1331,9 +1383,8 @@ export function AppSidebar() {
     }
   }
 
-  // "New project" from a chat's menu moves that chat in and stays put;
-  // otherwise open the project, unless a slow upload outlasted the route the
-  // user was on when they hit create.
+  // "New project" from a chat's menu moves that chat in and stays put; otherwise open the
+  // project, unless a slow upload outlasted the route the user was on.
   async function afterCreateProject(
     project: ProjectRecord,
     { stayedOnRoute }: { stayedOnRoute: boolean },
@@ -1390,8 +1441,7 @@ export function AppSidebar() {
   ) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
-    // A compare row's id is the pair id while runningByThreadId is keyed per pane thread,
-    // so aggregate its member threads instead.
+    // A compare row's id is the pair id while runningByThreadId is per pane thread; aggregate.
     const isGenerating =
       item.type === "compare"
         ? (item.threadIds ?? []).some((id) => Boolean(runningByThreadId[id]))
@@ -1399,8 +1449,7 @@ export function AppSidebar() {
     const hasQueuedActivity = threadIds.some((threadId) =>
       Boolean(queueByThreadId[threadId]),
     );
-    // Active generation and queued work share the established in-row spinner
-    // slot so their size and position cannot drift apart.
+    // Active generation and queued work share the in-row spinner slot so they cannot drift.
     const showQueuedActivity = hasQueuedActivity && !isGenerating;
     const showWorkSpinner = isGenerating || showQueuedActivity;
     const hasUnreadActivity =
@@ -1419,8 +1468,7 @@ export function AppSidebar() {
         : "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[30px] cursor-pointer rounded-full py-0 pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
-      // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
-      // title with the nav items above.
+      // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
       // Pinned chats carry a chat icon, so add the nav-item icon gap.
       isPinned && variant !== "project" && "gap-[8.5px]",
@@ -1704,8 +1752,7 @@ export function AppSidebar() {
       collapseToZero={isTauri}
       variant="sidebar"
       className={cn(
-        // Rail background comes from --sidebar-surface (index.css) so the
-        // footer fade below can match it in every theme.
+        // Rail background comes from --sidebar-surface (index.css) so the footer fade can match it.
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
         usesNativeMacTitlebar &&
           "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
@@ -1749,8 +1796,7 @@ export function AppSidebar() {
                     openNewChat(null);
                   }}
                   className={cn(
-                    // min-w-0 so a narrow sidebar truncates the wordmark
-                    // instead of pushing the search icon over the logo.
+                    // min-w-0 so a narrow sidebar truncates the wordmark instead of pushing the search icon over.
                     "flex min-w-0 items-center gap-[6px] select-none transition-opacity",
                     chatDisabled && "pointer-events-none opacity-50",
                   )}
@@ -1849,11 +1895,10 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      {/* Paired padding shifts Tauri's primary pills left without changing width. */}
       <SidebarGroup
         className={cn(
           "group-data-[collapsible=icon]:px-0 shrink-0 transition-[padding]",
-          usesDesktopTitlebar ? "pl-[5px] pr-2" : "pl-1.5 pr-1.75",
+          rowPadding,
           usesDesktopTitlebar ? "pt-[11px]" : "pt-[9px]",
           // Scrolled: New Chat is pinned, give a little gap below it.
           scrolled ? "pb-[5px]" : "pb-px",
@@ -1875,15 +1920,12 @@ export function AppSidebar() {
               }
               // Off-route this row is the only sign chats are still running.
               spinner={anyChatRunning && !isChatRoute}
-              // An action, not a destination, so it never marks itself active:
-              // the active pill is the hover pill, and on a blank new chat it
-              // left the row looking permanently hovered. Search below is the
-              // same kind of row and has always passed false.
+              // An action, not a destination, so it never marks itself active: the active pill is the
+              // hover pill, and on a blank new chat it left the row looking permanently hovered.
               active={false}
               onClick={() => {
                 if (showReturnToChat) {
-                  // Prefer the running thread so we return to the live generation,
-                  // not the empty new chat that became active after New Chat.
+                  // Prefer the running thread so we return to the live generation, not the empty new chat.
                   if (runningTarget && runningTarget.id !== storeThreadId) {
                     navigate({
                       to: "/chat",
@@ -1924,8 +1966,7 @@ export function AppSidebar() {
       <SidebarContent
         ref={scrollRef}
         onScroll={(e) => syncScrollState(e.currentTarget)}
-        // Collapsible groups animate their height; re-measure the fade once the
-        // open/close animation settles, not on the (still-animating) state flip.
+        // Collapsible groups animate their height; re-measure the fade once the animation settles.
         onAnimationEnd={(e) => {
           if (
             e.animationName === "collapsible-down" ||
@@ -1935,8 +1976,7 @@ export function AppSidebar() {
           }
         }}
         className={cn(
-          // pb-2 keeps the last row's rounded highlight clear of the
-          // overflow clip edge so its bottom corners aren't shaved off.
+          // pb-2 keeps the last row's rounded highlight clear of the overflow clip edge.
           "sidebar-scroll-fade gap-0 overflow-y-auto overscroll-contain min-h-0 pb-2",
           scrolled && "is-scrolled",
         )}
@@ -1945,7 +1985,7 @@ export function AppSidebar() {
           data-tour="navbar"
           className={cn(
             "group-data-[collapsible=icon]:px-0 py-0 shrink-0",
-            usesDesktopTitlebar ? "pl-[5px] pr-2" : "pl-1.5 pr-1.75",
+            rowPadding,
           )}
         >
 
@@ -1955,20 +1995,22 @@ export function AppSidebar() {
                   Sidebar navigation. */}
               {inlineNavIds.map((id) => {
                 const row = navRows[id];
+                // A row whose capability is still unmeasured spins instead of blacking out.
+                const rowState = resolveNavRowState(row);
                 return (
                   <NavItem
                     key={id}
                     icon={row.icon}
                     label={row.label}
                     badge={row.badge}
-                    // While the workflows are listed, the current one carries the highlight,
-                    // so the Images row above them gives it up.
+                    // While the workflows are listed, the current one carries the highlight, not the Images row.
                     active={
                       id === "images" && imagesWorkflowsListed ? false : row.active
                     }
-                    disabled={row.disabled}
-                    tooltip={row.tooltip}
-                    spinner={row.spinner}
+                    disabled={rowState.disabled}
+                    tooltip={rowState.tooltip}
+                    spinner={rowState.spinner}
+                    testId={`nav-row-${id}`}
                     onClick={row.onClick}
                     onIntent={row.onIntent}
                     className={cn(
@@ -2019,9 +2061,9 @@ export function AppSidebar() {
                       <TooltipPrimitive.Trigger asChild>
                         <DropdownMenuTrigger asChild>
                           <SidebarMenuButton
-                            // More is a container, not a destination: no active style just
-                            // because the current page lives inside it.
-                            // Keeps the row highlighted while the panel is open, after the pointer has left it. Not data-state: the tooltip and menu triggers both write that one.
+                            // More is a container, not a destination: no active style just because the current page
+                            // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
+                            // has left. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
                             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
                           >
@@ -2056,6 +2098,8 @@ export function AppSidebar() {
                     >
                       {overflowNavIds.map((id) => {
                         const row = navRows[id];
+                        // Same pending handling as the inline rows above.
+                        const rowState = resolveNavRowState(row);
                         return (
                           <MoreMenuItem
                             key={id}
@@ -2063,9 +2107,9 @@ export function AppSidebar() {
                             label={row.label}
                             badge={row.badge}
                             active={row.active}
-                            disabled={row.disabled}
-                            tooltip={row.tooltip}
-                            spinner={row.spinner}
+                            disabled={rowState.disabled}
+                            tooltip={rowState.tooltip}
+                            spinner={rowState.spinner}
                             onSelect={row.onClick}
                             onIntent={row.onIntent}
                           />
@@ -2112,7 +2156,7 @@ export function AppSidebar() {
                   </CollapsibleTrigger>
                 </SidebarGroupLabel>
                 <CollapsibleContent>
-                  <SidebarGroupContent className="pl-1.5 pr-1.75">
+                  <SidebarGroupContent className={rowPadding}>
                     <SidebarMenu>
                       {pinnedProjectRecords.map((project) => {
                         const projectChats =
@@ -2129,8 +2173,7 @@ export function AppSidebar() {
                           className="group/recent-item relative"
                         >
                           <SidebarMenuButton
-                            // Highlight the folder only on the project home; when
-                            // a chat inside it is open, only that chat row is active.
+                            // Highlight the folder only on the project home; with a chat open, only that row is active.
                             isActive={activeProjectId === project.id && !activeThreadId}
                             onClick={() => toggleProjectCollapsed(project.id)}
                             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
@@ -2182,8 +2225,7 @@ export function AppSidebar() {
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 onSelect={() => {
-                                  // Seed the shared draft so the dialog opens
-                                  // with the current name, not stale text.
+                                  // Seed the shared draft so the dialog opens with the current name, not stale text.
                                   setRenameDraft(project.name);
                                   setRenamingTarget({
                                     kind: "project",
@@ -2203,8 +2245,7 @@ export function AppSidebar() {
                               <DropdownMenuItem
                                 variant="destructive"
                                 onSelect={() => {
-                                  // Start each delete with the file toggle off:
-                                  // Cancel closes programmatically and skips the
+                                  // Start each delete with the file toggle off: Cancel closes programmatically and skips the
                                   // dialog onOpenChange reset.
                                   setDeleteProjectFiles(false);
                                   setConfirmingDelete({ kind: "project", project });
@@ -2225,9 +2266,8 @@ export function AppSidebar() {
                             <SidebarMenuItem>
                               <SidebarMenuButton
                                 onClick={() => toggleProjectShowAll(project.id)}
-                                // Force the muted token: .sidebar-nav-btn's own
-                                // color rule outweighs a plain text utility, so
-                                // Show more would otherwise match the chat rows.
+                                // Force the muted token: .sidebar-nav-btn's own color rule outweighs a plain text utility,
+                                // so Show more would otherwise match the chat rows.
                                 className="sidebar-nav-btn h-[30px] rounded-full pl-9 pr-4 font-medium text-nav-fg-muted!"
                               >
                                 <span className="text-ui-13 leading-ui-18 tracking-nav">
@@ -2266,13 +2306,7 @@ export function AppSidebar() {
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent
-                  className={
-                    usesDesktopTitlebar
-                      ? "pl-2 pr-[5px]"
-                      : "pl-1.5 pr-1.75"
-                  }
-                >
+                <SidebarGroupContent className={rowPadding}>
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -2304,13 +2338,11 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="pl-1.5 pr-1.75">
+              <SidebarGroupContent className={rowPadding}>
                 <SidebarMenu>
                   {runItems.map((run) => {
-                    // Explicit selection wins. Otherwise highlight the active
-                    // job only while the "Current Run" tab is the view, keeping
-                    // the Configure tab unhighlighted even though activeJobId
-                    // stays pinned to the last job.
+                    // Explicit selection wins. Otherwise highlight the active job only while the "Current Run"
+                    // tab is the view, keeping Configure unhighlighted even though activeJobId stays pinned.
                     const isActiveRun =
                       selectedHistoryRunId != null
                         ? run.id === selectedHistoryRunId
@@ -2325,8 +2357,7 @@ export function AppSidebar() {
                           className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[14px] pl-3 pr-7 text-ui-14p5 tracking-nav font-medium"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
-                            // From Recipes/Export, jump to Train so the run's
-                            // history opens (studio reacts to selectedHistoryRunId).
+                            // From Recipes/Export, jump to Train so the run's history opens.
                             if (!isStudioRoute) navigate({ to: "/studio" });
                             closeMobileIfOpen();
                           }}
@@ -2399,24 +2430,28 @@ export function AppSidebar() {
       <SidebarFooter
         className={cn(
           "relative pb-[11px] group-data-[collapsible=icon]:px-0",
-          // Tighter top with the update card so the fade hugs it; fuller top
-          // for the profile on its own.
-          showUpdateCard ? "pt-1.5" : "pt-2.5",
+          // Same box as the rows above.
+          rowPadding,
+          // pt-[3px] cancels the profile button's -3px margin, so the 8px
+          // above it is whatever sits over the footer edge (the fade plateau,
+          // or the list's pb-2 once the fade is hidden) and 8px sits below.
+          showUpdateCard ? "pt-1" : "pt-[3px]",
         )}
       >
         {/* Fade above the profile box, shown only when there's more list below
             the fold; at the bottom (or short lists) it fades so the last row
-            shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
+            shows fully (Gemini-style). No scroll rail to clear, so full width. */}
         <div
           aria-hidden="true"
           className={cn(
             // The scroll area hard-clips at the fade's bottom edge, so a plain
             // ramp is still part-transparent there and slices the last row
-            // mid-glyph. from-[16px] holds it opaque across the clip.
-            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[16px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            // mid-glyph. from-[8px] holds it opaque just across the clip, and
+            // matches the list's pb-2 so the gap is the same once it hides.
+            "pointer-events-none absolute inset-x-0 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             // Shorter fade with the update card so the list reads closer to
             // it, but still tall enough to clear a row.
-            showUpdateCard ? "h-9" : "h-14",
+            showUpdateCard ? "h-7" : "h-10",
             canScrollDown ? "opacity-100" : "opacity-0",
           )}
         />
@@ -2594,8 +2629,7 @@ export function AppSidebar() {
                 {!isTauri && (
                   <DropdownMenuItem
                     onSelect={async () => {
-                      // Best-effort server revocation; ignore network errors so
-                      // the local clear still runs and the user lands on /login.
+                      // Best-effort server revocation; ignore network errors so the local clear still runs.
                       try {
                         await logout();
                       } catch {

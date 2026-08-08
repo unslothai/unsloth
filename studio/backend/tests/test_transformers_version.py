@@ -1884,6 +1884,32 @@ class TestVenvDirFileIntegrity:
         )
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
+    def test_shared_non_runtime_rows_are_ignored(self, tmp_path: Path):
+        """A top-level test/ tree is shared, so one wheel's uninstall deletes
+        another's files. Nothing imports it: the stdlib shadows `test`, and
+        `tests`/`scripts` ship no __init__.py."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = ["test/conftest.py,sha256=deadbeef,20650"],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_an_installer_rewritten_file_keeps_its_existence_check(self, tmp_path: Path):
+        """setup.ps1 runs npm install in the installed tree, so the lockfile's
+        recorded size drifts. npm never deletes it, so only the size is dropped."""
+        rel = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = [f"{rel},sha256=deadbeef,28473"],
+        )
+        lock = venv_dir / rel
+        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock.write_text("x" * 27225)  # shrunk by npm, not damage
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+        lock.unlink()  # gone entirely, which npm never does
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
     def test_in_target_script_rows_are_ignored(self, tmp_path: Path):
         """uv records bin/hf, which does resolve -- but pip --upgrade rmtree's a
         colliding directory in the target, so a later install into the same

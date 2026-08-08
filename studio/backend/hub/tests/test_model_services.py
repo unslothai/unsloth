@@ -3,7 +3,10 @@
 
 import asyncio
 import json
+import os
 import sys
+import threading
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,15 +42,11 @@ from hub.workers import hf_download
 
 @pytest.fixture(autouse = True)
 def _denylist_inert(monkeypatch):
-    # The browse tests here exercise allowlist containment, symlink safety and
-    # the sensitive-name filter, not the system-directory denylist (which has
-    # its own suite in tests/test_browse_denylist.py). On macOS tmp_path
-    # resolves under /private/var, a denied prefix, so _resolve_browse_target
-    # would 403 the fixture dirs before that logic runs. Keep the denylist inert
-    # so these assertions hold on every platform. folder_browser binds
-    # is_denied_system_path at import, so patch it on that module, not on
-    # scan_folders. The "rejects" cases still 403 via the allowlist/sensitive
-    # checks, and the non-browse tests never call it.
+    # These browse tests exercise allowlist containment, symlink safety and the sensitive-name
+    # filter, not the system-directory denylist (its own suite is tests/test_browse_denylist.py).
+    # On macOS tmp_path resolves under /private/var, a denied prefix, so keep the denylist inert
+    # for cross-platform parity. folder_browser binds is_denied_system_path at import, so patch it
+    # there. The "rejects" cases still 403 via the allowlist/sensitive checks.
     monkeypatch.setattr(folder_browser, "is_denied_system_path", lambda _p: False)
 
 
@@ -154,8 +153,7 @@ def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, mo
 
 
 def test_custom_inventory_filters_dspark_companions_at_registered_root(tmp_path):
-    # Registering dspark/ as the scan root strips it from every relative path,
-    # so the dspark- basename prefix has to carry the exclusion.
+    # Registering dspark/ as the scan root strips it from every relative path, so the basename prefix carries the exclusion.
     root = tmp_path / "dspark"
     root.mkdir()
     for name in (
@@ -408,6 +406,564 @@ def test_inventory_scopes_cancel_markers_to_their_owning_cache(monkeypatch, tmp_
     assert inventory_scan.is_variant_partial(repo_id, "Q4_K_M", repo_cache_dir = repo_b) is False
 
 
+def test_read_only_download_state_lookup_does_not_create_directories(monkeypatch, tmp_path):
+    studio_cache, hub_cache = tmp_path / "studio-cache", tmp_path / "hub-cache"
+    monkeypatch.setattr(state_dir, "cache_root", lambda: studio_cache)
+    state_key = ("model", "Org/Model", "Q4_K_M")
+    assert download_manifest.read_manifest(*state_key, hub_cache = hub_cache) is None
+    assert not download_manifest.has_cancel_marker(*state_key, hub_cache = hub_cache)
+    assert not studio_cache.exists()
+
+    state_root = studio_cache / "hub-state"
+    for dirname in ("manifests", "cancelled"):
+        (state_root / dirname).mkdir(parents = True)
+    download_manifest.build_variant_state_index(
+        [("model", "Org/Model", hub_cache)], active_hub_cache = hub_cache
+    )
+    scope = state_dir.cache_scope_name(hub_cache)
+    assert all(
+        not (state_root / dirname / scope).exists() for dirname in ("manifests", "cancelled")
+    )
+
+
+def test_cached_gguf_inventory_indexes_and_owns_polluted_state_once(monkeypatch, tmp_path):
+    studio_cache = tmp_path / "studio-cache"
+    hub_caches = [tmp_path / "cache-a", tmp_path / "cache-b"]
+    hub_cache = hub_caches[0]
+    monkeypatch.setattr(state_dir, "cache_root", lambda: studio_cache)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    repo_groups = [[], []]
+    repo_ids = ["variant/Model-0", "owner", "owner/variant"]
+    for index, repo_id in enumerate(repo_ids):
+        repo_cache = hub_caches[min(index, 1)]
+        repo_path = repo_cache / f"models--{repo_id.replace('/', '--')}"
+        repo_groups[min(index, 1)].append(
+            SimpleNamespace(repo_id = repo_id, repo_type = "model", repo_path = repo_path)
+        )
+        assert download_manifest.write_manifest(
+            "model",
+            repo_id,
+            "Q4_K_M",
+            [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = index + 1)],
+            "http",
+            hub_cache = repo_cache,
+        )
+        if index != 1:
+            assert download_manifest.write_cancel_marker(
+                "model", repo_id, "Q4_K_M", "http", hub_cache = repo_cache
+            )
+
+    def marker_variants(repo_id):
+        return [
+            variant
+            for variant, _path in download_manifest.iter_variant_markers(
+                "model", repo_id, hub_cache = hub_caches[1]
+            )
+        ]
+
+    def state_marker(repo_id, variant, **kwargs):
+        return state_dir.marker_path("model", repo_id, variant, hub_cache = hub_caches[1], **kwargs)
+
+    def indexed_state(index, repo_id):
+        return index.for_repo("model", repo_id, hub_cache = hub_caches[1])
+
+    ambiguous = state_marker(repo_ids[2], "Q4_K_M", legacy_repo_key = True)
+    long_marker = state_marker("owner/variant", "Q4_K_M")
+    old_long_marker = state_marker("owner/variant", "Q4_K_M", legacy_hash_key = True)
+    literal_hash_repo = old_long_marker.stem.split("--variant--", 1)[0].removeprefix("models--")
+    assert len({long_marker, old_long_marker, state_marker(literal_hash_repo, "Q4_K_M")}) == 3
+    long_marker.unlink()
+    old_long_marker.write_text(json.dumps({"repo_id": "owner/variant", "variant": "Q4_K_M"}))
+    for order in (("owner/variant", literal_hash_repo), (literal_hash_repo, "owner/variant")):
+        state_index = download_manifest.build_variant_state_index(
+            [("model", repo_id, hub_caches[1]) for repo_id in order],
+            active_hub_cache = hub_caches[1],
+        )
+        assert indexed_state(state_index, "owner/variant").has_marker("Q4_K_M")
+        assert indexed_state(state_index, literal_hash_repo).summary() == (False, 0)
+    old_long_marker.unlink()
+    old_snapshot = state_marker("owner/variant", None, legacy_hash_key = True)
+    old_snapshot.write_text(json.dumps({"repo_id": literal_hash_repo}))
+    assert not download_manifest.purge_state("model", "owner/variant", hub_cache = hub_caches[1])
+    assert download_manifest.purge_state("model", literal_hash_repo, hub_cache = hub_caches[1])
+    old_snapshot.write_text("[")
+    for repo_id in ("owner/variant", literal_hash_repo):
+        assert not download_manifest.purge_state("model", repo_id, hub_cache = hub_caches[1])
+    old_snapshot.unlink()
+    owner_marker = state_marker("owner", "variant--Q4_K_M")
+    old_owner_marker = state_marker("owner", "variant--Q4_K_M", legacy_hash_key = True)
+    literal_hash_variant = old_owner_marker.stem.rsplit("--variant--", 1)[-1]
+    assert len({owner_marker, old_owner_marker, state_marker("owner", literal_hash_variant)}) == 3
+    old_owner_marker.write_text(json.dumps({"repo_id": "owner", "variant": literal_hash_variant}))
+    for variant, remains in (("variant--Q4_K_M", True), (literal_hash_variant, False)):
+        download_manifest.clear_cancel_marker("model", "owner", variant, hub_cache = hub_caches[1])
+        assert old_owner_marker.exists() is remains
+    old_owner_marker.write_text("[")
+    for variant in ("variant--Q4_K_M", literal_hash_variant):
+        download_manifest.clear_cancel_marker("model", "owner", variant, hub_cache = hub_caches[1])
+        assert old_owner_marker.is_file()
+    old_owner_marker.unlink()
+    ambiguous.write_text(json.dumps({"repo_id": "owner", "variant": "variant--Q4_K_M"}))
+    assert download_manifest.write_cancel_marker(
+        "model", "owner/variant", "Q4_K_M", "http", hub_cache = hub_caches[1]
+    )
+    assert download_manifest.has_cancel_marker(
+        "model", "owner", "variant--Q4_K_M", hub_cache = hub_caches[1]
+    )
+    download_manifest.clear_cancel_marker(
+        "model", "owner", "variant--Q4_K_M", hub_cache = hub_caches[1]
+    )
+    assert not ambiguous.exists()
+    old_manifest = state_dir.manifest_path(
+        "model",
+        "migration/model",
+        "legacy--Q4",
+        hub_cache = hub_caches[1],
+        legacy_hash_key = True,
+    )
+    old_manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "repo_id": "migration/model",
+                "variant": "legacy--Q4",
+                "expected_files": [{"path": "old.gguf", "size": 1}],
+            }
+        )
+    )
+    migrated = download_manifest.read_manifest(
+        "model", "migration/model", "legacy--Q4", hub_cache = hub_caches[1]
+    )
+    assert migrated is not None and migrated.expected_files[0].size == 1
+    literal_hash_variant = old_manifest.stem.rsplit("--variant--", 1)[-1]
+    literal_manifest = download_manifest.read_manifest(
+        "model", "migration/model", literal_hash_variant, hub_cache = hub_caches[1]
+    )
+    assert literal_manifest is None
+    assert download_manifest.write_manifest(
+        "model",
+        "migration/model",
+        "legacy--Q4",
+        [download_manifest.ExpectedFile("new.gguf", 2)],
+        hub_cache = hub_caches[1],
+    )
+    unscoped_manifest = state_dir.manifest_path("model", "migration/model", "legacy--Q4")
+    assert unscoped_manifest is not None
+    stale_payload = json.loads(old_manifest.read_text())
+    stale_payload["expected_files"] = [{"path": "stale.gguf", "size": 3}]
+    unscoped_manifest.write_text(json.dumps(stale_payload))
+    migration = download_manifest.build_variant_state_index(
+        [("model", "migration/model", hub_caches[1])], active_hub_cache = hub_caches[0]
+    ).for_repo("model", "migration/model", hub_cache = hub_caches[1])
+    assert migration.manifest_for("legacy--q4").expected_files[0].size == 2
+    current_manifest = state_dir.manifest_path(
+        "model", "migration/model", "legacy--Q4", hub_cache = hub_caches[1]
+    )
+    current_manifest.unlink()
+    migration = download_manifest.build_variant_state_index(
+        [("model", "migration/model", hub_caches[1])], active_hub_cache = hub_caches[1]
+    ).for_repo("model", "migration/model", hub_cache = hub_caches[1])
+    assert migration.manifest_for("legacy--q4").expected_files[0].size == 1
+    unscoped_manifest.unlink()
+    assert download_manifest.purge_state(
+        "model", "migration/model", "legacy--Q4", hub_cache = hub_caches[1]
+    )
+    assert not old_manifest.exists()
+    ambiguous.write_text(
+        json.dumps({"repo_type": "model", "repo_id": "other/repo", "variant": "Q4_K_M"}),
+        encoding = "utf-8",
+    )
+    assert download_manifest.has_cancel_marker(
+        "model", "owner/variant", "Q4_K_M", hub_cache = hub_caches[1]
+    )
+    assert marker_variants("owner") == ["variant--q4_k_m"]
+    assert marker_variants("owner/variant") == ["Q4_K_M"]
+    partial = gguf.list_partial_gguf_variants_from_state("owner", hub_cache = hub_caches[1])
+    offline = {variant.quant: variant.filename for variant in partial[0]}
+    assert offline["variant--q4_k_m"] == "variant--q4_k_m.gguf"
+    ambiguous.write_text(
+        json.dumps({"repo_type": "model", "repo_id": "owner/variant", "variant": "Q8_0"})
+    )
+    assert marker_variants("owner/variant") == ["Q4_K_M"]
+    mismatched = download_manifest.build_variant_state_index(
+        [("model", repo_id, hub_caches[min(index, 1)]) for index, repo_id in enumerate(repo_ids)],
+        active_hub_cache = hub_caches[0],
+    ).for_repo("model", "owner/variant", hub_cache = hub_caches[1])
+    assert mismatched.has_marker("q4_k_m") and not mismatched.has_marker("q8_0")
+    ambiguous.write_text("[" * 10_000 + "0" + "]" * 10_000)
+    manifest_root = studio_cache / "hub-state" / "manifests"
+    marker_root = studio_cache / "hub-state" / "cancelled"
+    watched = {manifest_root, marker_root, *manifest_root.iterdir(), *marker_root.iterdir()}
+    calls, real_iterdir = Counter(), Path.iterdir
+
+    def counting_iterdir(path):
+        if path in watched:
+            calls[path] += 1
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", counting_iterdir)
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = repos) for repos in repo_groups],
+    )
+    monkeypatch.setattr(cache_inventory, "_cached_model_snapshot_path", lambda _path: None)
+    monkeypatch.setattr(cache_inventory, "_repo_gguf_size_bytes", lambda _repo: 1)
+    monkeypatch.setattr(cache_inventory, "_repo_gguf_last_modified", lambda _repo: 0)
+    monkeypatch.setattr(cache_inventory, "_is_hidden_infra_repo", lambda *_args: False)
+    monkeypatch.setattr(cache_inventory, "_repo_gguf_payload_snapshots", lambda _repo: (None, ()))
+    monkeypatch.setattr(cache_inventory, "_cache_inventory_fields", lambda *_args, **_kw: {})
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda repo_id, _path, *, variant_state, **_kw: variant_state.has_marker(
+            "variant--q4_k_m" if repo_id == "owner" else "q4_k_m"
+        ),
+    )
+    rows = cache_inventory._scan_cached_gguf()
+    assert {(row["repo_id"], row["size_bytes"], row["partial"]) for row in rows} == {
+        (repo_id, index + 1, True) for index, repo_id in enumerate(repo_ids)
+    }
+    assert calls == Counter({path: 1 for path in watched})
+    assert download_manifest.write_manifest(
+        "model", "owner", "variant--Q4_K_M", [], "http", hub_cache = hub_caches[1]
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", "owner/variant", "Q4_K_M", "http", hub_cache = hub_caches[1]
+    )
+    purge = download_manifest.purge_all_state_for_repo
+    assert purge("model", "owner", hub_cache = hub_caches[1]) == 2
+    assert ambiguous.is_file()
+    assert download_manifest.write_cancel_marker(
+        "model", "owner", "variant--Q4_K_M", "http", hub_cache = hub_caches[1]
+    )
+    owner_marker = state_marker("owner", "variant--Q4_K_M")
+    assert owner_marker is not None and owner_marker.is_file()
+    assert download_manifest.has_cancel_marker(
+        "model", "owner/variant", "Q4_K_M", hub_cache = hub_caches[1]
+    )
+    download_manifest.clear_cancel_marker(
+        "model", "owner/variant", "Q4_K_M", hub_cache = hub_caches[1]
+    )
+    assert download_manifest.purge_state(
+        "model", "owner/variant", "Q4_K_M", hub_cache = hub_caches[1]
+    )
+    assert owner_marker.is_file()
+    ambiguous.write_text("[" * 10_000 + "0" + "]" * 10_000)
+    assert download_manifest.has_cancel_marker(
+        "model", "owner/variant", "Q4_K_M", hub_cache = hub_caches[1]
+    )
+    assert not purge("model", "owner/variant", hub_cache = hub_caches[1])
+    assert ambiguous.is_file()
+
+
+@pytest.mark.parametrize("invalid_variant", [False, 0, [], {}])
+def test_manifest_parser_rejects_non_text_v2_variant(invalid_variant):
+    payload = {"version": 2, "repo_type": "model", "repo_id": "x"}
+    payload.update(variant = invalid_variant, expected_files = [])
+    assert download_manifest._manifest_from_payload(payload, "model", "x") is None
+
+
+@pytest.mark.parametrize(
+    ("inventory_request", "scanner_name"),
+    [
+        (cache_inventory.list_cached_gguf_response, "_scan_cached_gguf"),
+        (cache_inventory.list_cached_models_response, "_scan_cached_models"),
+    ],
+)
+def test_cached_inventory_requests_share_scan(monkeypatch, inventory_request, scanner_name):
+    scans = submissions = 0
+    started, releases = [asyncio.Event(), asyncio.Event()], [asyncio.Event(), asyncio.Event()]
+    cached, epoch = [{"repo_id": "Org/Model"}], [0]
+
+    async def fake_to_thread(function, *args):
+        nonlocal submissions
+        index = submissions
+        submissions += 1
+        started[index].set()
+        await releases[index].wait()
+        return function(*args)
+
+    def scan(**_kwargs):
+        nonlocal scans
+        scans += 1
+        return cached
+
+    monkeypatch.setattr(cache_inventory.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(cache_inventory, scanner_name, scan)
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = Path("/cache")),
+    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    async def run_requests():
+        first = asyncio.create_task(inventory_request())
+        await asyncio.wait_for(started[0].wait(), 1)
+        second = asyncio.create_task(inventory_request())
+        for _ in range(2):
+            await asyncio.sleep(0)
+        assert submissions == 1
+        first.cancel()
+        await asyncio.gather(first, return_exceptions = True)
+        epoch[0] += 1
+        changed = asyncio.create_task(inventory_request())
+        await asyncio.wait_for(started[1].wait(), 1)
+        releases[0].set()
+        for _ in range(2):
+            await asyncio.sleep(0)
+        releases[1].set()
+        return await asyncio.gather(second, changed)
+
+    assert asyncio.run(run_requests()) == [{"cached": cached}] * 2
+    assert scans == 1 and cache_inventory._cached_inventory_flights == {}
+
+
+@pytest.mark.parametrize(
+    "scanner_name, inventory_call",
+    [
+        ("_scan_cached_gguf", "gguf"),
+        ("_scan_cached_models", "models"),
+    ],
+)
+def test_cached_inventory_discards_a_scan_that_raced_an_invalidation(
+    monkeypatch, scanner_name, inventory_call
+):
+    """A delete landing mid-scan must supersede the rows that scan produced.
+
+    The pre-scan epoch check only covers the source read; the walk itself takes
+    seconds, which is exactly when a download or deletion completes.
+    """
+    epoch, scans = [0], []
+
+    def scan(**_kwargs):
+        scans.append(1)
+        if len(scans) == 1:
+            epoch[0] += 1  # a deletion completes while this walk runs
+            return [{"repo_id": "Org/Deleted"}]
+        return [{"repo_id": "Org/Kept"}]
+
+    monkeypatch.setattr(cache_inventory, scanner_name, scan)
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = Path("/cache")),
+    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+    monkeypatch.setattr(cache_inventory, "_last_confirmed_inventory", {})
+
+    rows = asyncio.run(cache_inventory._shared_cached_inventory_scan(inventory_call, scan))
+    assert rows == [{"repo_id": "Org/Kept"}], "rows from the superseded walk were served"
+    assert len(scans) == 2, "the superseded walk was not retried"
+    assert cache_inventory._cached_inventory_flights == {}
+
+
+def test_cached_inventory_scan_stops_retrying_under_constant_invalidation(monkeypatch):
+    """Bounded retries: an invalidation rate above the scan rate must still answer."""
+    epoch, scans = [0], []
+
+    def scan(**_kwargs):
+        scans.append(1)
+        epoch[0] += 1  # every walk is superseded before it returns
+        return [{"repo_id": "Org/Model"}]
+
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = Path("/cache")),
+    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+    monkeypatch.setattr(cache_inventory, "_last_confirmed_inventory", {})
+
+    async def run():
+        return await asyncio.wait_for(
+            cache_inventory._shared_cached_inventory_scan("gguf", scan), timeout = 5
+        )
+
+    assert asyncio.run(run()) == []
+    assert len(scans) == cache_inventory._INVENTORY_SCAN_MAX_ATTEMPTS
+    assert cache_inventory._cached_inventory_flights == {}
+
+
+def test_shared_scan_scopes_tasks_to_event_loop():
+    flights, results = {}, []
+    barrier = threading.Barrier(3)
+
+    async def factory():
+        await asyncio.to_thread(barrier.wait)
+        return "ok"
+
+    def run():
+        results.append(asyncio.run(inventory_scan.shared_scan(flights, "same", factory)))
+
+    threads = [threading.Thread(target = run) for _ in range(2)]
+    [thread.start() for thread in threads]
+    barrier.wait(timeout = 1)
+    [thread.join() for thread in threads]
+    assert results == ["ok", "ok"] and flights == {}
+
+
+def test_local_inventory_scan_stops_retrying_under_constant_invalidation(monkeypatch):
+    """A churn rate above the scan rate must still answer, not walk the disk forever."""
+    from hub.services.models import local_inventory
+
+    epoch, scans = [0], []
+
+    async def fake_scan(models_dir, custom_folders, sources):
+        scans.append(1)
+        epoch[0] += 1  # every walk is superseded before it returns
+        return SimpleNamespace(models = [], model_copy = lambda update = None: SimpleNamespace(models = []))
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", fake_scan)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    async def run():
+        return await asyncio.wait_for(
+            local_inventory.list_local_models_response("./models"), timeout = 5
+        )
+
+    response = asyncio.run(run())
+    assert response is not None, "the capped loop must still answer"
+    assert len(scans) == local_inventory._LOCAL_INVENTORY_MAX_ATTEMPTS
+    assert local_inventory._local_inventory_flights == {}
+
+
+@pytest.mark.parametrize("change_kind", ["folders", "epoch"])
+def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
+    # What the flight key needs from the helper is that it is total and stable on
+    # hostile input, not that it echoes it back. POSIX realpath() rejects an
+    # embedded NUL with ValueError so the raw string is normcased through; Windows
+    # non-strict realpath falls back to abspath and joins the cwd instead. Assert
+    # the property, not one platform's spelling of it.
+    for hostile in ("\0", "\ud800"):
+        identity = local_inventory._inventory_path_identity(hostile)
+        assert identity == local_inventory._inventory_path_identity(hostile)
+        assert identity.endswith(hostile)
+    event = asyncio.Event
+    calls, started, releases = 0, [event(), event()], [event(), event()]
+    loaded, both_loaded, task_calls, epoch = 0, event(), [], [0]
+    epoch_reads, retried = [0], event()
+    model = SimpleNamespace(id = "model")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
+    response = SimpleNamespace(models = [model])
+    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+    sources = local_inventory._local_inventory_sources()
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setitem(
+        sys.modules,
+        "routes.models",
+        SimpleNamespace(_local_model_task = lambda row: task_calls.append(row.id) or "task"),
+    )
+
+    async def scan(*_args):
+        nonlocal calls
+        index = calls
+        calls += 1
+        started[index].set()
+        await releases[index].wait()
+        return response
+
+    async def load_folders():
+        nonlocal loaded
+        loaded += 1
+        if loaded == 2:
+            both_loaded.set()
+        return [] if loaded < 4 or change_kind == "epoch" else [{"path": "/changed"}]
+
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", load_folders)
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
+
+    def current_epoch():
+        epoch_reads[0] += bool(epoch[0])
+        if epoch_reads[0] == 3:
+            retried.set()
+        return epoch[0]
+
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", current_epoch)
+
+    async def run_requests():
+        first = asyncio.create_task(local_inventory.list_local_models_response("./models"))
+        await asyncio.wait_for(started[0].wait(), 1)
+        second = asyncio.create_task(
+            local_inventory.list_local_models_response(str(Path("models").resolve()))
+        )
+        await asyncio.wait_for(both_loaded.wait(), 1)
+        await asyncio.sleep(0)
+        assert calls == 1 and sources in next(iter(local_inventory._local_inventory_flights))[1]
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions = True)
+        second = asyncio.create_task(local_inventory.list_local_models_response())
+        await asyncio.sleep(0)
+        epoch[0] += change_kind == "epoch"
+        changed = asyncio.create_task(local_inventory.list_local_models_response())
+        await asyncio.wait_for(started[1].wait(), 1)
+        assert calls == 2
+        releases[0].set()
+        if change_kind == "epoch":
+            await asyncio.wait_for(retried.wait(), 1)
+        releases[1].set()
+        return await asyncio.gather(second, changed)
+
+    assert [response.models[0].task for response in asyncio.run(run_requests())] == ["task"] * 2
+    expected_calls = ["model"] * (1 if change_kind == "epoch" else 2)
+    assert task_calls == expected_calls and not local_inventory._local_inventory_flights
+
+
+def test_local_inventory_indexes_registered_hf_state_once(monkeypatch, tmp_path):
+    active, custom = tmp_path / "active", tmp_path / "custom"
+    discoveries = {
+        active: [(active / "models--Org--Active", "Org/Active", None)],
+        custom: [(custom / "models--Org--Custom", "Org/Custom", None)],
+    }
+    monkeypatch.setattr(
+        local_inventory, "_discover_hf_cache", lambda path, **_kw: discoveries[path]
+    )
+    monkeypatch.setattr(local_inventory, "_scan_models_dir", lambda *_args, **_kw: [])
+    indexed = SimpleNamespace()
+    builds, propagated = [], []
+    monkeypatch.setattr(
+        download_manifest,
+        "build_variant_state_index",
+        lambda repositories, **_kw: builds.append(tuple(repositories)) or indexed,
+    )
+
+    def record_state(
+        *_args,
+        variant_states = None,
+        **_kwargs,
+    ):
+        propagated.append(variant_states)
+        return []
+
+    for name in ("_scan_hf_cache", "_scan_custom_folder"):
+        monkeypatch.setattr(local_inventory, name, record_state)
+
+    asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            active,
+            tmp_path / "missing-legacy",
+            tmp_path / "missing-default",
+            (),
+            (),
+            (),
+            [{"path": str(custom)}],
+        )
+    )
+    assert builds == [(("model", "Org/Active", active), ("model", "Org/Custom", custom))]
+    assert propagated == [indexed, indexed]
+
+
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 100)
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"y" * 10)
@@ -420,7 +976,10 @@ def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     ]
 
 
-@pytest.mark.parametrize("repo_id", ["bert-base-uncased", "owner/repo"])
+@pytest.mark.parametrize(
+    "repo_id",
+    ["bert-base-uncased", "owner/repo", "_owner/_repo_", "repo_"],
+)
 def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
     assert paths.is_valid_repo_id(repo_id)
 
@@ -454,7 +1013,7 @@ def test_download_state_preserves_readable_keys_when_safe(monkeypatch, tmp_path)
     assert path.name == "models--owner--repo--variant--q4_k_m.json"
 
 
-@pytest.mark.parametrize("variant", ["bad variant with spaces", "q" * 64])
+@pytest.mark.parametrize("variant", ["bad variant with spaces", "q" * 64, "q" * 65])
 def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path, variant):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
     repo_id = f"{'a' * 96}/{'b' * 96}"
@@ -483,9 +1042,9 @@ def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path
         hub_cache = hub_cache,
     )
 
-    assert marker_path is not None
-    assert manifest_path is not None
-    assert "--sha256-" in marker_path.name
+    assert "--@sha256-" in marker_path.name
+    assert not state_dir.state_filename_is_ambiguous("models--sha256-model.json")
+    assert not state_dir.state_filename_is_ambiguous("models--owner--variant--sha256-q4.json")
     assert len(marker_path.name.encode("utf-8")) <= 255
     assert len(f".{marker_path.name}.tmp-00000000".encode("utf-8")) <= 255
     assert download_manifest.has_cancel_marker("model", repo_id, variant)
@@ -496,6 +1055,12 @@ def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path
     assert list(download_manifest.iter_variant_manifests("model", repo_id)) == [
         (variant, manifest_path)
     ]
+    marker_path.write_text("[")
+    download_manifest.clear_cancel_marker("model", repo_id, variant)
+    assert not marker_path.exists()
+    assert download_manifest.purge_all_state_for_repo("model", repo_id) == 1
+    assert not download_manifest.has_cancel_marker("model", repo_id, variant)
+    assert download_manifest.read_manifest("model", repo_id, variant) is None
 
 
 def test_download_state_isolated_across_hub_cache_switches(monkeypatch, tmp_path):
@@ -509,12 +1074,21 @@ def test_download_state_isolated_across_hub_cache_switches(monkeypatch, tmp_path
     monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: selected)
     expected_a = [download_manifest.ExpectedFile(path = "a.gguf", size = 1)]
     expected_b = [download_manifest.ExpectedFile(path = "b.gguf", size = 2)]
-
     assert download_manifest.write_manifest("model", "Owner/Repo", "Q4_K_M", expected_a)
     assert download_manifest.write_cancel_marker("model", "Owner/Repo", "Q4_K_M", "http")
 
     selected.hub_cache = cache_b
     assert download_manifest.write_manifest("model", "Owner/Repo", "Q4_K_M", expected_b)
+    index = download_manifest.build_variant_state_index(
+        [("model", "Owner/Repo", cache_a), ("model", "Owner/Repo", cache_b)],
+        active_hub_cache = cache_b,
+    )
+    indexed_a = index.for_repo("model", "Owner/Repo", hub_cache = cache_a)
+    indexed_b = index.for_repo("model", "Owner/Repo", hub_cache = cache_b)
+    assert indexed_a.manifest_for("Q4_K_M").expected_files == tuple(expected_a)
+    assert indexed_b.manifest_for("Q4_K_M").expected_files == tuple(expected_b)
+    assert indexed_a.has_marker("Q4_K_M")
+    assert not indexed_b.has_marker("Q4_K_M")
 
     manifest_b = download_manifest.read_manifest("model", "Owner/Repo", "Q4_K_M")
     manifest_a = download_manifest.read_manifest(
@@ -546,7 +1120,8 @@ def test_legacy_unscoped_download_state_falls_back_only_for_selected_cache(monke
     )
     manifest = state_dir.manifest_path("model", "Owner/Repo", "Q4_K_M")
     marker = state_dir.marker_path("model", "Owner/Repo", "Q4_K_M")
-    assert manifest is not None and marker is not None
+    manifest.parent.mkdir(parents = True)
+    marker.parent.mkdir(parents = True)
     manifest.write_text(
         json.dumps(
             {
@@ -563,6 +1138,14 @@ def test_legacy_unscoped_download_state_falls_back_only_for_selected_cache(monke
         json.dumps({"version": 1, "repo_id": "Owner/Repo", "variant": "Q4_K_M"}),
         encoding = "utf-8",
     )
+    index = download_manifest.build_variant_state_index(
+        [("model", "Owner/Repo", cache_a), ("model", "Owner/Repo", cache_b)],
+        active_hub_cache = cache_a,
+    )
+    legacy_a = index.for_repo("model", "Owner/Repo", hub_cache = cache_a)
+    legacy_b = index.for_repo("model", "Owner/Repo", hub_cache = cache_b)
+    assert legacy_a.manifest_for("Q4_K_M") is not None and legacy_a.has_marker("Q4_K_M")
+    assert legacy_b.summary() == (False, 0)
 
     assert download_manifest.read_manifest("model", "Owner/Repo", "Q4_K_M") is not None
     assert download_manifest.has_cancel_marker("model", "Owner/Repo", "Q4_K_M")
@@ -587,6 +1170,194 @@ def test_legacy_unscoped_download_state_falls_back_only_for_selected_cache(monke
         "Q4_K_M",
         hub_cache = cache_b,
     )
+    assert download_manifest.purge_all_state_for_repo("model", "Owner/Repo", hub_cache = cache_b) == 0
+    assert manifest.is_file() and marker.is_file()
+    for invalid_cache in ("\ud800", "\0", "relative-cache", []):
+        marker.write_text(json.dumps({"repo_id": "\ud800", "hub_cache": invalid_cache}))
+        assert download_manifest.has_cancel_marker("model", "Owner/Repo", "Q4_K_M")
+        corrupt_index = download_manifest.build_variant_state_index(
+            [("model", "Owner/Repo", cache_a)], active_hub_cache = cache_a
+        )
+        assert corrupt_index.for_repo("model", "Owner/Repo", hub_cache = cache_a).has_marker("q4_k_m")
+    manifest_payload = json.loads(manifest.read_text(encoding = "utf-8"))
+    manifest_payload["hub_cache"] = 0
+    manifest.write_text(json.dumps(manifest_payload), encoding = "utf-8")
+    assert download_manifest.read_manifest("model", "Owner/Repo", "Q4_K_M") is None
+    manifest_payload.pop("hub_cache")
+    manifest_payload["repo_id"] = "\ud800"
+    manifest_payload["variant"] = "Q8_0"
+    manifest.write_text(json.dumps(manifest_payload), encoding = "utf-8")
+    assert download_manifest.read_manifest("model", "Owner/Repo", "Q4_K_M") is None
+    manifest_payload["repo_id"] = "Owner/Repo"
+    manifest_payload["variant"] = "Q4_K_M"
+    manifest.write_text(json.dumps(manifest_payload), encoding = "utf-8")
+    assert list(download_manifest.iter_variant_markers("model", "Owner/Repo")) == [
+        ("q4_k_m", marker)
+    ]
+    download_manifest.clear_cancel_marker("model", "Owner/Repo", "Q4_K_M")
+    assert not marker.exists()
+    marker.write_text(json.dumps({"repo_id": "Owner/Repo", "variant": "\ud800"}))
+    assert list(download_manifest.iter_variant_markers("model", "Owner/Repo"))[0][0] == "q4_k_m"
+    unsafe_manifest = json.loads(manifest.read_text(encoding = "utf-8"))
+    for unsafe_path in (
+        "\ud800",
+        "\0",
+        "",
+        "/outside",
+        "../outside",
+        "C:\\outside",
+        "\\outside",
+    ):
+        unsafe_manifest["expected_files"][0]["path"] = unsafe_path
+        manifest.write_text(json.dumps(unsafe_manifest), encoding = "utf-8")
+        assert download_manifest.read_manifest("model", "Owner/Repo", "Q4_K_M") is None
+    marker.write_text("[" * 10_000 + "0" + "]" * 10_000)
+    assert download_manifest.purge_state("model", "Owner/Repo", "Q4_K_M", hub_cache = cache_a)
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "unknown/variant with spaces",  # unsafe characters force the hashed filename
+        "double--hyphen",  # aliases the --variant-- delimiter, also hashed
+        "Q4_K_M",  # spelled literally, the control
+    ],
+)
+def test_index_finds_an_unreadable_marker_stored_under_a_hashed_filename(
+    monkeypatch, tmp_path, variant
+):
+    """The index must agree with has_cancel_marker about a corrupt marker.
+
+    A marker whose payload will not parse stays fail-closed but loses its declared
+    variant, so the only identity left is the filename. When the variant is stored
+    hashed, that identity is the digest, and looking it up by variant name missed
+    it -- so a cancelled variant came back advertised as complete, while the
+    per-variant lookup still found the file by rebuilding the same digest.
+    """
+    hub_cache = tmp_path / "cache-a"
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "studio-cache")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", "Owner/Repo", variant, "http", hub_cache = hub_cache
+    )
+    marker = state_dir.marker_path("model", "Owner/Repo", variant, hub_cache = hub_cache)
+
+    def indexed():
+        index = download_manifest.build_variant_state_index(
+            [("model", "Owner/Repo", hub_cache)], active_hub_cache = hub_cache
+        )
+        return index.for_repo("model", "Owner/Repo", hub_cache = hub_cache).has_marker(variant)
+
+    assert indexed() and download_manifest.has_cancel_marker(
+        "model", "Owner/Repo", variant, hub_cache = hub_cache
+    )
+    marker.write_text("[")
+    assert download_manifest.has_cancel_marker(
+        "model", "Owner/Repo", variant, hub_cache = hub_cache
+    ), "per-variant lookup should stay fail-closed"
+    assert indexed(), "the index disagreed with has_cancel_marker about a corrupt marker"
+
+
+def test_cached_gguf_scan_degrades_when_the_shared_index_cannot_be_built(monkeypatch, tmp_path):
+    """A malformed repo identity must not take every valid row down with it.
+
+    The index is built once per scan and outside the per-repository ``try``, so an
+    exception there reaches the endpoint as a 500 and hides the whole inventory.
+    ``_scan_cached_models`` already degraded to per-repo reads; the GGUF path did
+    not, which is the asymmetry this covers.
+    """
+    hub_cache = tmp_path / "cache-a"
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "studio-cache")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    # An undecodable byte in a cache directory name reaches us as a lone surrogate,
+    # and the repo key cannot be hashed from it. Spelled directly rather than via
+    # os.fsdecode(b"...\xff...") because Windows decodes filenames as UTF-8 with
+    # surrogatepass, where a bare 0xff raises instead of producing a surrogate.
+    # Nothing here touches the filesystem, so the string alone is the whole case.
+    bad_repo = "Org/Re\udcffpo"
+    repos = [
+        SimpleNamespace(
+            repo_id = repo_id,
+            repo_type = "model",
+            repo_path = hub_cache / f"models--{repo_id.replace('/', '--')}",
+        )
+        for repo_id in ("Org/Good", bad_repo)
+    ]
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = repos)]
+    )
+    monkeypatch.setattr(cache_inventory, "_cached_model_snapshot_path", lambda _path: None)
+    monkeypatch.setattr(cache_inventory, "_repo_gguf_size_bytes", lambda _repo: 1)
+    monkeypatch.setattr(cache_inventory, "_repo_gguf_last_modified", lambda _repo: 0)
+    monkeypatch.setattr(cache_inventory, "_is_hidden_infra_repo", lambda *_args: False)
+    monkeypatch.setattr(cache_inventory, "_repo_gguf_payload_snapshots", lambda _repo: (None, ()))
+    monkeypatch.setattr(cache_inventory, "_cache_inventory_fields", lambda *_a, **_kw: {})
+
+    with pytest.raises(UnicodeEncodeError):
+        download_manifest.build_variant_state_index(
+            [("model", bad_repo, hub_cache)], active_hub_cache = hub_cache
+        )
+
+    rows = cache_inventory._scan_cached_gguf()
+    assert "Org/Good" in {
+        row["repo_id"] for row in rows
+    }, "one unhashable repo identity emptied the whole GGUF inventory"
+
+
+def test_state_scan_survives_a_state_filename_with_an_undecodable_byte(monkeypatch, tmp_path):
+    """One corrupt filename must not take the whole inventory down with it.
+
+    A byte the filesystem encoding cannot decode comes back from iterdir() as a
+    lone surrogate, and hashing that for the canonical spelling raises
+    UnicodeEncodeError. Per-repo reads used to contain the damage to the repo
+    that owned the file. The index is built once per scan and outside the
+    per-repo try, so an escaping hash would 500 the endpoint and hide every
+    cached model, not just this one.
+    """
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
+    cache = tmp_path / "cache-a"
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = cache),
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", "Owner/Repo", "Q4_K_M", "http", hub_cache = cache
+    )
+    marker = state_dir.marker_path("model", "Owner/Repo", "Q4_K_M", hub_cache = cache)
+    corrupt = os.path.join(
+        os.fsencode(str(marker.parent)), b"models--Owner--Repo--variant--q\xff.json"
+    )
+    try:
+        with open(corrupt, "wb") as handle:
+            handle.write(json.dumps({"version": 2, "repo_type": "model"}).encode("utf-8"))
+    except (OSError, UnicodeError) as e:
+        # Only POSIX filesystems that accept arbitrary bytes can hold this name, so
+        # only there is the bug reachable. macOS rejects it with EILSEQ and Windows
+        # has no byte-level filename API at all.
+        pytest.skip(f"filesystem will not hold an undecodable filename: {e}")
+
+    index = download_manifest.build_variant_state_index(
+        [("model", "Owner/Repo", cache)], active_hub_cache = cache
+    )
+    state = index.for_repo("model", "Owner/Repo", hub_cache = cache)
+    assert state.has_marker("q4_k_m"), "the readable marker was lost to its corrupt neighbour"
+    assert state.summary()[0] is True
+
+    # The per-repo iterators keep enumerating past it too, surrogate name and all.
+    variants = [
+        variant
+        for variant, _path in download_manifest.iter_variant_markers(
+            "model", "Owner/Repo", hub_cache = cache
+        )
+    ]
+    assert "Q4_K_M" in variants and any("\udcff" in v for v in variants), variants
 
 
 class _RecordingLogger:
@@ -679,8 +1450,7 @@ def test_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path)
 
 
 def test_get_models_folder_response_creates_and_returns_dir(monkeypatch, tmp_path):
-    # The endpoint creates the cache dir on demand so the desktop "Open folder"
-    # action works even before the first download.
+    # The endpoint creates the cache dir on demand so "Open folder" works before the first download.
     target = tmp_path / "hub"
     monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: target)
 
@@ -943,7 +1713,6 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
         "is_snapshot_partial",
         lambda _kind, _repo_id, _path, **_kw: False,
     )
-
     result = {"cached": cache_inventory._scan_cached_models()}
 
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
@@ -979,7 +1748,7 @@ def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: s
         cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     # The real signature takes snapshot_dir; a double that omits it raises TypeError, which the
-    # per-repo except swallows into an empty row list and every assertion below stops running.
+    # per-repo except swallows into an empty row list, silently skipping every assertion below.
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
@@ -1050,6 +1819,74 @@ def test_cached_models_scan_flags_a_single_file_diffusion_checkpoint(monkeypatch
 
     assert row["single_file"] is True
     assert row["partial"] is False
+
+
+def test_a_companion_mirror_carries_the_flag_on_the_hub_row(monkeypatch, tmp_path):
+    """The chat picker is backed by /api/hub/cached-models, NOT the legacy /api/models one, so a
+    flag set only on the legacy route arrives as undefined here -- the same trap single_file fell
+    into. A mirror that reaches this scan must carry it.
+
+    Given a config.json, because the real mirrors have none: see the test below for what that
+    means today.
+    """
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "unsloth/Z-Image-Turbo-ComfyUI",
+        [_file("config.json", 12), _file("model.safetensors", 300_000_000)],
+        task = None,
+    )
+
+    assert row["companion"] is True
+    # Startup auto-load filters on capabilities.can_chat (isChattableCachedRepo), never on the
+    # flag, so a row carrying only the flag was still auto-loadable as a chat model.
+    assert row["capabilities"]["can_chat"] is False
+
+
+def test_an_ordinary_repo_is_not_flagged_as_a_companion(monkeypatch, tmp_path):
+    """The flag names an exact set of mirrors, so a repo of the same shape is untouched."""
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "unsloth/Qwen3-8B",
+        [_file("config.json", 12), _file("model.safetensors", 100)],
+        task = None,
+    )
+
+    assert row["companion"] is False
+    # ...and an ordinary chat repo keeps its chat capability.
+    assert row["capabilities"]["can_chat"] is True
+
+
+def test_the_real_companion_shape_never_reaches_a_row_at_all(monkeypatch, tmp_path):
+    """Why the flag above is a latch, not a live fix.
+
+    The published mirrors are ComfyUI-style: weights under split_files/ and no config.json or
+    model_index.json. _repo_non_gguf_model_payload classifies that as ``unknown``, so
+    has_runnable_weights is False and _scan_cached_models drops the repo before any row exists.
+    Pinned because the flag's whole value is covering the day that classifier learns to admit
+    these -- if this test starts failing, the flag is what stops a denoiser-less repo becoming a
+    chat pick.
+    """
+    from types import SimpleNamespace
+
+    snapshot = tmp_path / "snapshots" / _SNAPSHOT_SHA
+    snapshot.mkdir(parents = True)
+    files = [_file("split_files/vae/ae.safetensors", 300_000_000), _file("README.md", 100)]
+    for f in files:
+        target = snapshot / f.file_name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"\0" * 16)
+    repo = SimpleNamespace(
+        repo_id = "unsloth/Z-Image-Turbo-ComfyUI",
+        repo_type = "model",
+        repo_path = tmp_path,
+        revisions = [SimpleNamespace(files = files, snapshot_path = snapshot, commit_hash = _SNAPSHOT_SHA)],
+    )
+    payload = cache_inventory._repo_non_gguf_model_payload(repo)
+
+    assert payload.model_format == "unknown"
+    assert payload.has_runnable_weights is False
 
 
 def test_cached_models_scan_leaves_chat_repos_unflagged(monkeypatch, tmp_path):
@@ -1179,10 +2016,8 @@ def test_cached_scans_hide_embedders_configured_by_snapshot_path(monkeypatch, tm
 def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
     monkeypatch, tmp_path
 ):
-    # A custom embedder with a generic basename ("org/model") must be hidden by
-    # EXACT repo-id match only. An unrelated cached chat model whose id merely
-    # contains "model" (e.g. "user/model-chat") must stay on device: substring
-    # basename matching used to drop real chat models from the inventory.
+    # A custom embedder with a generic basename ("org/model") must be hidden by EXACT repo-id
+    # match only: substring basename matching used to drop real chat models from the inventory.
     from core.rag import config as rag_config
 
     monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/model")
@@ -1589,6 +2424,237 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
     assert verified == [("dataset", "Org/Data", None, str(tmp_path))]
 
 
+def test_download_dataset_recovers_commit_completion_after_transient_metadata_failure(
+    monkeypatch, tmp_path
+):
+    hub_cache = tmp_path / "hub"
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+    metadata_calls = []
+
+    def _metadata(*_args, **_kwargs):
+        metadata_calls.append(True)
+        if len(metadata_calls) == 1:
+            raise RuntimeError("metadata down")
+        return SimpleNamespace(
+            sha = snapshot.name,
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 4)],
+        )
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    completion = download_manifest.read_dataset_completion(
+        "Org/Data",
+        snapshot.name,
+        hub_cache = hub_cache,
+    )
+    assert len(metadata_calls) == 2
+    assert manifest is not None
+    assert manifest.commit_hash == snapshot.name
+    assert manifest.metadata_derived is True
+    assert completion is not None
+    assert completion.expected_files[0].path == "data.parquet"
+
+
+def test_download_dataset_promotes_existing_disk_manifest_after_metadata_recovers(
+    monkeypatch, tmp_path
+):
+    hub_cache = tmp_path / "hub"
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+    metadata_calls = []
+
+    def _metadata(*_args, **_kwargs):
+        metadata_calls.append(True)
+        if len(metadata_calls) == 1:
+            raise RuntimeError("metadata down")
+        return SimpleNamespace(
+            sha = snapshot.name,
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 4)],
+        )
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    assert download_manifest.write_manifest(
+        "dataset",
+        "Org/Data",
+        None,
+        [download_manifest.ExpectedFile("data.parquet", 4)],
+        "http",
+        hub_cache = hub_cache,
+    )
+    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    completion = download_manifest.read_dataset_completion(
+        "Org/Data",
+        snapshot.name,
+        hub_cache = hub_cache,
+    )
+    assert len(metadata_calls) == 2
+    assert manifest is not None
+    assert manifest.metadata_derived is True
+    assert manifest.commit_hash == snapshot.name
+    assert completion is not None
+
+
+def test_download_dataset_recovery_commit_mismatch_is_not_attested(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "downloaded-commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+    metadata_calls = []
+
+    def _metadata(*_args, **_kwargs):
+        metadata_calls.append(True)
+        if len(metadata_calls) == 1:
+            raise RuntimeError("metadata down")
+        return SimpleNamespace(
+            sha = "different-commit",
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 4)],
+        )
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    assert len(metadata_calls) == 2
+    assert manifest is not None
+    assert manifest.commit_hash is None
+    assert manifest.metadata_derived is False
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            snapshot.name,
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            "different-commit",
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+
+
+def test_download_dataset_disk_fallback_is_not_attested(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    monkeypatch.setattr(
+        hf_download,
+        "_dataset_info_with_retry",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("metadata down")),
+    )
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        hf_cache_state,
+        "has_active_incomplete_blobs",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    assert manifest is not None
+    assert manifest.commit_hash is None
+    assert manifest.metadata_derived is False
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            snapshot.name,
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+
+
 def test_download_snapshot_fails_when_metadata_unavailable_and_partial_remains(
     monkeypatch, tmp_path
 ):
@@ -1894,8 +2960,7 @@ def test_gguf_progress_subtracts_new_job_completed_baseline(monkeypatch, tmp_pat
 
 
 def test_gguf_progress_shows_main_when_companion_left_the_count(monkeypatch, tmp_path):
-    # The mmproj companion that seeded the baseline is gone, so completed_bytes
-    # is main-only and below the baseline; it must not be subtracted to 0.
+    # The mmproj companion that seeded the baseline is gone, so completed_bytes is main-only and below it.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -1966,10 +3031,8 @@ def test_gguf_progress_shows_main_when_companion_left_the_count(monkeypatch, tmp
 
 
 def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_path):
-    # A variant already complete on disk carries a baseline equal to its full
-    # size; subtracting it would report 0/0 for a finished variant (frontend
-    # evicts it as gone). Once complete_on_disk is verified, the full figures
-    # must survive.
+    # A variant already complete on disk carries a baseline equal to its full size; subtracting it
+    # would report 0/0 for a finished variant, which the frontend evicts as gone.
     entry = tmp_path / "models--Org--Model-GGUF"
     snap = entry / "snapshots" / "rev0"
     blobs = entry / "blobs"
@@ -2065,10 +3128,8 @@ def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_p
 
 
 def test_gguf_progress_scoped_hashes_exclude_sibling_quant(monkeypatch, tmp_path):
-    # The "instant ~900 MB" bug: a sibling quant is fully cached when a different
-    # variant starts. With this variant's hashes resolved, progress counts ONLY
-    # its in-progress blob, never the sibling's finalized bytes in the shared
-    # blobs/ dir.
+    # The "instant ~900 MB" bug: with this variant's hashes resolved, progress counts ONLY its
+    # in-progress blob, never a sibling quant's finalized bytes in the shared blobs/ dir.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -2323,12 +3384,12 @@ def test_download_state_lookup_is_repo_case_insensitive(monkeypatch, tmp_path):
     assert download_manifest.write_manifest(
         "model",
         "Owner/Repo",
-        None,
+        "Q4_K_M",
         [download_manifest.ExpectedFile(path = "config.json", size = 12)],
     )
-    assert download_manifest.write_cancel_marker("model", "Owner/Repo", "Q4_K_M", "http")
+    assert download_manifest.write_cancel_marker("model", "Owner/Repo", "q4_k_m", "http")
 
-    manifest = download_manifest.read_manifest("model", "owner/repo", None)
+    manifest = download_manifest.read_manifest("model", "owner/repo", "q4_k_m")
 
     assert manifest is not None
     assert manifest.repo_id == "Owner/Repo"
@@ -2348,9 +3409,9 @@ def test_download_state_lookup_is_repo_case_insensitive(monkeypatch, tmp_path):
             "model",
             "owner/repo",
         )
-    ] == ["Q4_K_M"]
-    assert download_manifest.purge_all_state_for_repo("model", "owner/repo") == 2
-    assert download_manifest.read_manifest("model", "owner/repo", None) is None
+    ] == ["q4_k_m"]
+    assert download_manifest.purge_all_state_for_repo("model", "owner/repo") == 1
+    assert download_manifest.read_manifest("model", "owner/repo", "Q4_K_M") is None
 
 
 def test_hf_cache_scan_fallback_row_uses_local_model_info_alias(monkeypatch, tmp_path):
@@ -2583,6 +3644,21 @@ def test_completed_gguf_split_variant_requires_all_shards(tmp_path):
 
     second.write_bytes(b"second")
     assert "Q8_0" in inventory_scan._completed_gguf_variants(snapshot)
+
+
+def test_completed_gguf_variants_ignores_big_endian_by_the_loader_label(tmp_path):
+    # The scan reads Q4_K_M here, the loader reads F16 and refuses the file as big-endian. By
+    # the scan's label it would vouch for Q4_K_M, and _complete_with_servable skips complete
+    # quants, so the torn split below would be reported downloaded.
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "0-F16-be-checkpoint-Q4_K_M.gguf").write_bytes(b"GGUF")
+    (snapshot / "z-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
+
+    assert "Q4_K_M" not in inventory_scan._completed_gguf_variants(snapshot)
+
+    (snapshot / "z-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF")
+    assert "Q4_K_M" in inventory_scan._completed_gguf_variants(snapshot)
 
 
 def test_variant_partial_accepts_variant_filtered_legacy_hashes(monkeypatch, tmp_path):
@@ -4106,12 +5182,14 @@ def test_download_gguf_variant_writes_manifest_for_xet(monkeypatch, tmp_path):
 def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
     written = []
     verified = []
+    snapshot_calls = []
 
     monkeypatch.setattr(
         hf_download,
         "_dataset_info_with_retry",
         lambda *_args, **_kwargs: SimpleNamespace(
-            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 30)]
+            sha = "dataset-commit",
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 30)],
         ),
     )
     monkeypatch.setattr(
@@ -4122,19 +5200,33 @@ def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(download_manifest, "clear_cancel_marker", lambda *_args: None)
     monkeypatch.setattr(
-        download_manifest, "write_manifest", lambda *args: written.append(args) or True
+        download_manifest,
+        "write_manifest",
+        lambda *args, **kwargs: written.append((args, kwargs)) or True,
     )
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
-        SimpleNamespace(snapshot_download = lambda **_kwargs: str(tmp_path)),
+        SimpleNamespace(
+            snapshot_download = (lambda **kwargs: snapshot_calls.append(kwargs) or str(tmp_path))
+        ),
     )
 
     hf_download._download_dataset("Org/Data", None, "xet")
 
     assert written, "XET dataset download must still record a manifest"
-    assert written[0][0:3] == ("dataset", "Org/Data", None)
-    assert written[0][3][0].path == "data.parquet"
+    assert written[0][0][0:3] == ("dataset", "Org/Data", None)
+    assert written[0][0][3][0].path == "data.parquet"
+    assert written[0][1] == {"commit_hash": "dataset-commit", "metadata_derived": True}
+    assert snapshot_calls == [
+        {
+            "repo_id": "Org/Data",
+            "token": False,
+            "repo_type": "dataset",
+            "max_workers": 1,
+            "revision": "dataset-commit",
+        }
+    ]
     assert verified == [("dataset", "Org/Data", None, str(tmp_path))]
 
 
@@ -4157,3 +5249,348 @@ def test_dataset_status_includes_generation(monkeypatch):
 
     assert result.state == "running"
     assert result.generation == 4
+
+
+def _write_local_model(
+    root: Path,
+    name: str,
+    config: dict,
+    *,
+    modules: bool = False,
+) -> Path:
+    path = root / name
+    path.mkdir(parents = True)
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (path / "model.safetensors").write_bytes(b"\0" * 16)
+    if modules:
+        (path / "modules.json").write_text("[]", encoding = "utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    "config, modules, expected",
+    [
+        ({"architectures": ["LlamaForCausalLM"], "model_type": "llama"}, False, True),
+        ({"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"}, False, True),
+        ({"auto_map": {"AutoModelForCausalLM": "m.C"}, "model_type": "bert"}, False, True),
+        ({"architectures": ["BertModel"], "model_type": "bert"}, False, False),
+        ({"architectures": ["BertModel"], "model_type": "bert"}, True, False),
+        ({"architectures": ["RobertaForMaskedLM"], "model_type": "roberta"}, False, False),
+        ({"architectures": ["CLIPModel"], "model_type": "clip"}, False, False),
+        # Unknown architectures must fail OPEN: never hide a real chat model.
+        ({"architectures": ["SomeCustomNet"], "model_type": "custom"}, False, None),
+        ({}, False, None),
+    ],
+)
+def test_local_transformers_chat_classification(tmp_path, config, modules, expected):
+    """A safetensors dir is chat-capable on file format alone, so an embedding
+    export looked like a chat model, and auto-load tries the smallest first."""
+    path = _write_local_model(tmp_path, "row", config, modules = modules)
+    assert model_common._local_transformers_can_chat(path) is expected
+
+
+def test_local_embedding_model_is_not_chat_capable(tmp_path):
+    """End to end through the scanner: the row is still listed, since that is
+    how the user deletes it, but can_chat is false so auto-load skips it."""
+    _write_local_model(
+        tmp_path,
+        "all-MiniLM-L6-v2",
+        {"architectures": ["BertModel"], "model_type": "bert"},
+        modules = True,
+    )
+    _write_local_model(
+        tmp_path,
+        "tiny-llama",
+        {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+    )
+    rows = {
+        row.display_name: row
+        for path in sorted(tmp_path.iterdir())
+        for row in model_common._classify_local_path(path, "models_dir")
+    }
+    assert rows["all-MiniLM-L6-v2"].capabilities.can_chat is False
+    assert rows["tiny-llama"].capabilities.can_chat is True
+    # Training and LoRA support are unchanged: this only gates chat.
+    assert rows["all-MiniLM-L6-v2"].capabilities.can_train is True
+
+
+def test_cached_encoder_repo_is_not_chat_capable(tmp_path):
+    """Cached rows build capabilities from file format too, so a cached BERT
+    looked like a chat model to auto-load."""
+    snapshot = _write_local_model(
+        tmp_path, "snap", {"architectures": ["BertModel"], "model_type": "bert"}
+    )
+    fields = cache_inventory._cache_inventory_fields(
+        "sentence-transformers/all-MiniLM-L6-v2",
+        "safetensors",
+        identity = cache_inventory._LoadIdentity(
+            load_id = str(snapshot), active_cache = False, load_snapshot = snapshot
+        ),
+    )
+    assert fields["capabilities"]["can_chat"] is False
+
+
+def test_cached_generative_repo_stays_chat_capable(tmp_path):
+    """Control for the gate above."""
+    snapshot = _write_local_model(
+        tmp_path, "snap", {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
+    )
+    fields = cache_inventory._cache_inventory_fields(
+        "unsloth/Llama-3.2-1B-Instruct",
+        "safetensors",
+        identity = cache_inventory._LoadIdentity(
+            load_id = str(snapshot), active_cache = False, load_snapshot = snapshot
+        ),
+    )
+    assert fields["capabilities"]["can_chat"] is True
+
+
+def test_cached_row_without_a_snapshot_keeps_its_format_capability(tmp_path):
+    """Fails open: no snapshot to inspect must not hide the row."""
+    fields = cache_inventory._cache_inventory_fields(
+        "unsloth/Llama-3.2-1B-Instruct",
+        "safetensors",
+        identity = cache_inventory._LoadIdentity(
+            load_id = "unsloth/Llama-3.2-1B-Instruct",
+            active_cache = True,
+            load_snapshot = None,
+        ),
+    )
+    assert fields["capabilities"]["can_chat"] is True
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper"},
+        {"architectures": ["SomeCustomHead"], "model_type": "whisper"},
+        {"architectures": ["VisionEncoderDecoderModel"], "model_type": "vision-encoder-decoder"},
+        {"architectures": ["MusicgenForConditionalGeneration"], "model_type": "musicgen"},
+    ],
+)
+def test_non_chat_conditional_generation_is_not_chat_capable(tmp_path, config):
+    """These end in ForConditionalGeneration but cannot answer a text turn, and
+    are small enough that the cascade would stop there. The managed cache
+    already hides Whisper; scan folders did not."""
+    path = _write_local_model(tmp_path, "row", config)
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"},
+        {"architectures": ["Gemma3ForConditionalGeneration"], "model_type": "gemma3"},
+        {"architectures": ["BartForConditionalGeneration"], "model_type": "bart"},
+    ],
+)
+def test_real_conditional_generation_chat_models_are_unaffected(tmp_path, config):
+    """Guard on the list above: multimodal and seq2seq chat models must stay."""
+    path = _write_local_model(tmp_path, "row", config)
+    assert model_common._local_transformers_can_chat(path) is True
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"architectures": ["ViTModel"], "model_type": "vit"},
+        {"architectures": ["Dinov2Model"], "model_type": "dinov2"},
+        {"architectures": ["SwinModel"], "model_type": "swin"},
+        {"architectures": ["Wav2Vec2Model"], "model_type": "wav2vec2"},
+    ],
+)
+def test_bare_vision_and_audio_backbones_are_not_chat_capable(tmp_path, config):
+    """Their class names carry no task suffix, so only the model type gives them
+    away."""
+    path = _write_local_model(tmp_path, "row", config)
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+def test_unreadable_config_never_fails_the_scan(tmp_path):
+    """One bad config.json must classify as unknown, not take the inventory
+    request down. Deep nesting raises RecursionError, which is neither
+    JSONDecodeError nor OSError."""
+    cases = {
+        "deep": "[" * 60000 + "]" * 60000,
+        "truncated": '{"architectures": ["Llam',
+        "not_an_object": '["a", "b"]',
+        "empty": "",
+    }
+    for name, body in cases.items():
+        path = tmp_path / name
+        path.mkdir()
+        (path / "config.json").write_text(body, encoding = "utf-8")
+        assert model_common._local_transformers_can_chat(path) is None, name
+
+
+def test_oversized_config_is_skipped_rather_than_read(tmp_path):
+    path = tmp_path / "huge"
+    path.mkdir()
+    (path / "config.json").write_text(
+        '{"architectures": ["LlamaForCausalLM"], "pad": "'
+        + "a" * (model_common._MAX_LOCAL_JSON_BYTES + 1)
+        + '"}',
+        encoding = "utf-8",
+    )
+    assert model_common._local_transformers_can_chat(path) is None
+
+
+def test_a_fifo_named_config_json_does_not_block_the_scan(tmp_path):
+    """read_text() on a FIFO with no writer blocks forever, hanging the scan."""
+    os = pytest.importorskip("os")
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no mkfifo on this platform")
+    path = tmp_path / "fifo"
+    path.mkdir()
+    os.mkfifo(path / "config.json")
+    assert model_common._local_transformers_can_chat(path) is None
+
+
+@pytest.mark.parametrize(
+    "model_type",
+    ["siglip", "clip", "bert", "vit", "wav2vec2"],
+)
+def test_an_encoder_without_architectures_is_still_not_chat_capable(tmp_path, model_type):
+    """google/siglip2-* ships config.json with no architectures key, and the
+    encoder-only branch used to require one, so those rows stayed chat-capable
+    and sorted ahead of a real chat model."""
+    path = tmp_path / model_type
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps({"model_type": model_type}), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+def test_a_causal_lm_without_architectures_still_fails_open(tmp_path):
+    """Control: keyed on the encoder-only type list, so an unknown type with no
+    architectures stays inconclusive."""
+    path = tmp_path / "custom"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps({"model_type": "some_new_llm"}), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is None
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "blip", "architectures": ["BlipForConditionalGeneration"]},
+        {"model_type": "blip-2", "architectures": ["Blip2ForConditionalGeneration"]},
+        {"model_type": "instructblip", "architectures": ["InstructBlipForConditionalGeneration"]},
+        {"model_type": "git", "architectures": ["GitForCausalLM"]},
+    ],
+)
+def test_an_image_captioner_is_not_chat_capable(tmp_path, config):
+    """These generate text, but only about an image, so a plain text turn fails,
+    and the smallest-first cascade would load one and stop looking."""
+    path = tmp_path / "captioner"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+@pytest.mark.parametrize(
+    "architecture",
+    ["CLIPTextModelWithProjection", "CLIPVisionModelWithProjection", "CLIPTextModel"],
+)
+def test_a_projection_head_encoder_is_not_chat_capable(tmp_path, architecture):
+    """The encoder-only branch also required the name to end in Model, so a
+    projection variant fell through and kept its format capability."""
+    path = tmp_path / "proj"
+    path.mkdir()
+    (path / "config.json").write_text(
+        json.dumps({"model_type": "clip", "architectures": [architecture]}), encoding = "utf-8"
+    )
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "bert", "architectures": ["BertLMHeadModel"]},
+        {"model_type": "t5", "architectures": ["T5ForConditionalGeneration"]},
+        {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]},
+    ],
+)
+def test_a_generative_head_still_wins_over_the_encoder_type(tmp_path, config):
+    """Control for both gates above: a generative architecture is accepted
+    before the type list is consulted."""
+    path = tmp_path / "gen"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is True
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "llama", "architectures": ["LlamaModel"]},
+        {"model_type": "gpt2", "architectures": ["GPT2Model"]},
+        {"model_type": "t5", "architectures": ["T5Model"]},
+        {"model_type": "mistral", "architectures": ["MistralModel"]},
+    ],
+)
+def test_a_bare_text_backbone_is_not_chat_capable(tmp_path, config):
+    """AutoModel.save_pretrained writes the backbone name, and a backbone has no
+    LM head, so the cascade would stop on one before a usable chat model."""
+    path = tmp_path / "backbone"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+def test_an_unfamiliar_backbone_still_fails_open(tmp_path):
+    """The list is explicit, not shape-matched, so a custom FooModel keeps its
+    format capability."""
+    path = tmp_path / "custom"
+    path.mkdir()
+    (path / "config.json").write_text(
+        json.dumps({"model_type": "brand_new_arch", "architectures": ["FooModel"]}),
+        encoding = "utf-8",
+    )
+
+    assert model_common._local_transformers_can_chat(path) is None
+
+
+@pytest.mark.parametrize("layout", ["flat", "publisher_child"])
+def test_lmstudio_scan_matches_gguf_suffix_case_insensitively(tmp_path, layout):
+    """The custom and models-dir scans lower() the suffix; these two did not, so a
+    .GGUF was invisible only here. Windows and macOS treat the two spellings as one
+    name, so the file is reachable but unlisted."""
+    lm_dir = tmp_path / "models"
+    holder = lm_dir if layout == "flat" else lm_dir / "publisher"
+    holder.mkdir(parents = True)
+    for name in ("lower.gguf", "UPPER.GGUF", "Mixed.GguF"):
+        (holder / name).write_bytes(b"x")
+
+    found = {Path(row.path).name for row in local_inventory._scan_lmstudio_dir(lm_dir)}
+
+    assert found == {"lower.gguf", "UPPER.GGUF", "Mixed.GguF"}
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({"model_type": "bert", "architectures": ["BertModel"]}, False),
+        ({"model_type": "clip", "architectures": ["CLIPModel"]}, False),
+        ({"model_type": "llama", "architectures": ["LlamaForCausalLM"]}, True),
+    ],
+)
+def test_custom_promotion_keeps_the_classifier_verdict(tmp_path, config, expected):
+    """Promotion rebuilt capabilities from the format alone, which restored
+    can_chat on rows the classifier had ruled out."""
+    model_dir = tmp_path / "scan" / "model"
+    model_dir.mkdir(parents = True)
+    (model_dir / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"x" * 1024)
+
+    rows = local_inventory._scan_custom_folder(tmp_path / "scan")
+    assert rows, "the scan produced no row"
+    for row in rows:
+        promoted = local_inventory._promote_to_custom_source(row)
+        assert promoted.source == "custom"
+        assert promoted.capabilities.can_chat is expected

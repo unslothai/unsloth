@@ -584,6 +584,37 @@ def test_validate_dataset_streams_instead_of_materialising_columns():
     return True
 
 
+def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
+    """`min_length` must not come back as infinity.
+
+    It is seeded with float("inf") and only ever lowered inside the loop, on exactly
+    the iterations that also append to `text_lengths`. The inf->0 normalisation sat
+    inside `if text_lengths:`, so within that guard it could never see inf: the branch
+    was dead, and the case it existed for, a dataset where no sample has content,
+    skipped the line entirely and returned min_length = inf to the caller.
+
+    The warning guard has to move with it. With the normalisation hoisted, min_length
+    becomes 0 for an empty dataset, and `0 < 10` would newly claim "some samples are
+    very short" about zero measured samples.
+    """
+
+    preprocessor = TextPreprocessor()
+
+    for label, texts in (("all blank", ["", "   ", "\n"]), ("no rows", [])):
+        stats = preprocessor.validate_dataset({"text": texts})
+        assert stats["min_length"] == 0, (label, stats)
+        assert stats["max_length"] == 0, (label, stats)
+        assert not any("very short" in w for w in stats["warnings"]), (label, stats)
+
+    # a genuinely short sample must still be reported
+    stats = preprocessor.validate_dataset({"text": ["hi", "a much longer sample of text"]})
+    assert stats["min_length"] == 2, stats
+    assert any("very short" in w for w in stats["warnings"]), stats
+
+    print("test_validate_dataset_reports_zero_min_length_when_nothing_has_content passed")
+    return True
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
@@ -593,4 +624,5 @@ if __name__ == "__main__":
     success = test_validate_dataset_handles_tokenized_and_text_columns() and success
     success = test_validate_dataset_accepts_objects_without_column_names() and success
     success = test_validate_dataset_streams_instead_of_materialising_columns() and success
+    success = test_validate_dataset_reports_zero_min_length_when_nothing_has_content() and success
     sys.exit(0 if success else 1)

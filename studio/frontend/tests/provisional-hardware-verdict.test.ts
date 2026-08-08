@@ -186,12 +186,23 @@ test("the latch is claimed after the wait, not during it", async () => {
     "utf8",
   );
   const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
-  // Located by pattern: the claim carries guards, so a literal anchor goes stale.
-  const loopEnd = src.search(/if \(spendWait[^)]*\) hardwareWaitSpent = true;/);
-  assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop or the latch moved");
+  // Anchor on the loop's own closing brace, NOT on the latch. Searching for the latch
+  // made this assertion unfalsifiable: String.prototype.search returns the FIRST match,
+  // so moving the latch inside the loop moved loopEnd with it and the slice ended just
+  // short of the claim either way. The test then passed against the exact regression its
+  // header describes.
+  const loopEnd = src.indexOf("\n    }\n", loopStart);
+  assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop moved");
   assert.ok(
     !src.slice(loopStart, loopEnd).includes("hardwareWaitSpent = true"),
     "the latch is claimed inside the loop, so a concurrent caller skips an unfinished window",
+  );
+  // And it must still be claimed somewhere after the loop, or deleting it outright
+  // would satisfy the check above.
+  assert.match(
+    src.slice(loopEnd),
+    /if \(spendWait[^)]*\) hardwareWaitSpent = true;/,
+    "the latch is never claimed after the wait, so the window is never spent",
   );
 });
 
@@ -253,9 +264,10 @@ test("a rejected token stops the wait instead of polling it out", async () => {
     "utf8",
   );
   const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
-  // Located by pattern: the claim carries guards, so a literal anchor goes stale.
-  const loopEnd = src.search(/if \(spendWait[^)]*\) hardwareWaitSpent = true;/);
-  assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop or the latch moved");
+  // Same brace anchor as above rather than the latch pattern, so the slice cannot move
+  // with the code it is meant to be measuring.
+  const loopEnd = src.indexOf("\n    }\n", loopStart);
+  assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop moved");
   const loop = src.slice(loopStart, loopEnd);
   assert.ok(
     /if \(peek\.version === undefined\)\s*\{?[^}]*break;/.test(loop),
@@ -288,5 +300,193 @@ test("a rejected token does not consume the once-per-load window", async () => {
     src,
     /tokenRejected = true;/,
     "nothing records that the break was caused by a rejected token",
+  );
+});
+
+// The same guess, one layer up. `chatOnly` is seeded from the user agent, so on every Mac it
+// reads true from first paint, before /api/health has said anything. Train and Video rendered
+// straight off it, so both tabs blacked out on launch and only came back once the backend
+// answered -- which PR #7607's lazy detection can stretch to minutes.
+test("the store exposes an unknown state, not just chat-only", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/config/env.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /capabilitiesUnknown: \(\) => boolean;/,
+    "PlatformState has no unknown state, so a caller can only read the guess",
+  );
+  assert.match(
+    src,
+    /return !state\.fetched && !state\.detectionDeferred;/,
+    "the selector is not derived from `fetched`, the flag that already means " +
+      "'a server-reported verdict is stored'",
+  );
+});
+
+// The torch-warm kill switch (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) settles nothing until a
+// hardware-dependent operation runs, and a deferred reply carries no device_type, so `fetched`
+// never flips. Calling that unknown would spin Train and Video for the whole session.
+test("a deferred verdict counts as settled, not as still checking", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/config/env.ts", import.meta.url),
+    "utf8",
+  );
+  const selector = /capabilitiesUnknown: \(\) => \{([\s\S]*?)\n  \},/.exec(src);
+  assert.ok(selector, "capabilitiesUnknown is no longer a block the deferred case can live in");
+  assert.match(
+    selector[1],
+    /detectionDeferred/,
+    "a deferred reply leaves the tabs spinning with nothing left to wait for",
+  );
+});
+
+test("the sidebar gates Train and Video on a measured verdict", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;/,
+    "the rows still read chatOnly directly, so the UA guess disables them",
+  );
+  // Every row-level use of the verdict goes through the measured form.
+  //
+  // `disabled: chatOnly` is an object entry, so the regressed form ends in a comma and
+  // the old `includes("disabled: chatOnly;")` could never match anything. The character
+  // class keeps `disabled: chatOnlyMeasured,` from matching, since "M" is not in it.
+  for (const pattern of [/disabled: chatOnly[,;\s]/, /if \(chatOnly\) return;/]) {
+    assert.ok(
+      !pattern.test(src),
+      `${pattern} still reads the unmeasured verdict`,
+    );
+  }
+  // Both rows opt into the pending state rather than rendering a guessed gray-out.
+  assert.equal(
+    src.match(/pending: capabilitiesUnknown,/g)?.length,
+    2,
+    "Train and Video do not both mark themselves pending while the verdict is out",
+  );
+});
+
+// beforeLoad redirects are one-way: bouncing a cold /studio or /video load to /chat on the
+// pre-measurement guess strands a healthy host there for the rest of the session.
+test("the route guard waits out an unknown verdict on Train and Video", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/app/routes/__root.tsx", import.meta.url),
+    "utf8",
+  );
+  const guard = /const SELF_GATED_WHILE_UNKNOWN = \[([^\]]*)\]/.exec(src);
+  assert.ok(guard, "no list of paths that wait the verdict out");
+  for (const path of ["/studio", "/video"]) {
+    assert.ok(guard[1].includes(`"${path}"`), `${path} is still redirected on the guess`);
+  }
+  assert.match(
+    src,
+    /!\(unmeasured && waitsOutUnknownVerdict\(location\.pathname\)\)/,
+    "the redirect does not consult the unknown state",
+  );
+  // Child routes count too, or /studio/anything bounces while /studio does not.
+  assert.match(
+    src,
+    /pathname === base \|\| pathname\.startsWith\(`\$\{base\}\/`\)/,
+    "only the exact path waits the verdict out",
+  );
+});
+
+// The tab is enabled on a healthy Apple Silicon host (chat_only is false there), and the
+// backend has no video path for it, so the page has to say so rather than fail at load.
+test("the Video page gates on the backend's own capability answer", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/features/video/video-page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /hardware\.videoSupported === false/,
+    "the page does not read the backend's video verdict",
+  );
+  assert.match(
+    src,
+    /capabilitiesUnknown \|\| !hardware\.loaded/,
+    "the page renders its generator before the verdict has landed",
+  );
+  // A backend that predates the field sends nothing, which arrives as null; only an explicit
+  // false may hide the generator.
+  assert.ok(
+    !/videoSupported !== true/.test(src),
+    "an older backend's missing field would hide the page it has always served",
+  );
+});
+
+// The hardcoded "needs an NVIDIA or AMD GPU" is wrong on Apple Silicon: no GPU the user can
+// add would help, because there is no Apple video path at all.
+test("the Video tooltip is derived, not hardcoded", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /const videoDisabledHint: string \| undefined/, "no derived video hint");
+  assert.match(
+    src,
+    /platformDeviceType === "mac"\s*\?\s*"Video generation on macOS is coming soon\."/,
+    "a Mac is still told to fit a GPU",
+  );
+  assert.ok(
+    !/tooltip: chatOnly\s*\n?\s*\? "Video generation needs an NVIDIA or AMD GPU\."/.test(src),
+    "the hardcoded tooltip is still wired to the row",
+  );
+});
+
+// The Video gate waits on useHardwareInfo's `loaded`, and a failed probe used to resolve to
+// DEFAULT (loaded false) with nothing scheduled to run again: one blip and the page spun for
+// the rest of the session.
+test("a failed hardware probe is retried, not left unloaded", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/hooks/use-hardware-info.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /if \(!cancelled && !hw\.loaded\) retry = setTimeout\(load, RETRY_MS\);/,
+    "nothing re-probes after a failed read",
+  );
+  assert.match(
+    src,
+    /if \(retry !== undefined\) clearTimeout\(retry\);/,
+    "the retry outlives the component that scheduled it",
+  );
+});
+
+// The subscribe happens in the effect, one tick after the render read `cached`. A probe
+// that resolves in that gap notifies the listeners registered at the time, which does not
+// include this one, and leaves `cached` set so the fetch is skipped as redundant. Nothing
+// is then scheduled to call setInfo. The PR gates whole pages on `loaded`, so the symptom
+// is a permanent "Checking this machine..." rather than a stale value.
+test("a cache filled between render and subscribe still reaches the component", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/hooks/use-hardware-info.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /if \(cached\) listener\(cached\);\s*\n\s*else load\(\);/,
+    "a component that missed the notify has no path to the cache it skipped loading for",
+  );
+  // A 200 superseded by a later invalidate must not be reported as a failed probe: load()
+  // reads !loaded as failure and drops the page back to its loading state.
+  assert.ok(
+    !/return cached \?\? DEFAULT;/.test(src),
+    "a superseded but successful read still resolves as an unloaded DEFAULT",
   );
 });

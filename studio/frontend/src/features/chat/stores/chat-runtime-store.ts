@@ -9,6 +9,7 @@ import {
   type GpuIndexKind,
 } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import { create } from "zustand";
 import {
   GPU_LAYERS_AUTO,
@@ -91,9 +92,10 @@ export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
 export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 export const CHAT_GPU_MEMORY_MODE_KEY = "unsloth_chat_gpu_memory_mode";
 
-// Persist only the model-agnostic intents (auto/ngram/off). MTP modes
-// (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
-// choice would silently no-op on models without an MTP head. Unknown -> auto.
+// Persist only the model-agnostic intents (auto/ngram/off). The model-specific
+// drafter modes (mtp/mtp+ngram/dspark) and spec_draft_n_max stay session-only:
+// a persisted choice would silently no-op on a model with no MTP head or no
+// DSpark sidecar. Unknown -> auto.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
@@ -501,6 +503,7 @@ export function normalizeSpeculativeType(
   if (s === "auto" || s === "default") return "auto";
   if (s === "off") return "off";
   if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "dspark" || s === "draft-dspark") return "dspark";
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
   }
@@ -1032,14 +1035,27 @@ type ChatRuntimeStore = {
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
+  mlxKvBits: number | null;
+  /** Width the backend was last asked for; the verdict belongs beside it. */
+  loadedMlxKvBitsRequested: number | null;
+  mlxKvQuantReason: string | null;
+  chatTemplateOverrideReason: string | null;
+  mlxKvQuantNote: string | null;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
   /**
-   * Why MTP was disabled on the loaded model despite being requested, or null.
+   * Why speculative decoding was disabled despite being requested, or null.
    * Mirrors InferenceStatusResponse.spec_fallback_reason.
    */
   specFallbackReason: string | null;
+  /**
+   * Which drafter the loaded model's speculative resolution was about, "mtp" or
+   * "dspark". Paired with specFallbackReason: the reason alone cannot name the
+   * file to fix, since Auto resolves the kind server-side and the requested mode
+   * still reads "auto".
+   */
+  specDrafterKind: string | null;
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
@@ -1049,6 +1065,14 @@ type ChatRuntimeStore = {
   /** Slots the last successful load sent (null = default); the rollback
    *  re-sends it so a failed switch can't lose the override. */
   loadedNParallel: number | null;
+  /** user --batch-size override for gguf loads (null = llama.cpp default 2048) */
+  nBatch: number | null;
+  /** batch size the last successful load sent (null = default) */
+  loadedNBatch: number | null;
+  /** user --ubatch-size override for gguf loads (null = llama.cpp default 512) */
+  nUbatch: number | null;
+  /** micro-batch size the last successful load sent (null = default) */
+  loadedNUbatch: number | null;
   /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
@@ -1587,14 +1611,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
+  mlxKvBits: null,
+  loadedMlxKvBitsRequested: null,
+  mlxKvQuantReason: null,
+  chatTemplateOverrideReason: null,
+  mlxKvQuantNote: null,
   loadedKvCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
+  specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
   nParallel: null,
   loadedNParallel: null,
+  nBatch: null,
+  loadedNBatch: null,
+  nUbatch: null,
+  loadedNUbatch: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
@@ -1959,6 +1993,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               contextUsageByThreadId: {},
               activeModelIsLocal: false,
               specFallbackReason: null,
+              specDrafterKind: null,
             }
           : {}),
         // Switching to an external provider disables Deep Research, which only
@@ -2037,14 +2072,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolFullOutput: {},
       activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
+      mlxKvBits: null,
+      loadedMlxKvBitsRequested: null,
+      mlxKvQuantReason: null,
+      chatTemplateOverrideReason: null,
+      mlxKvQuantNote: null,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
+      specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
       nParallel: null,
       loadedNParallel: null,
+      nBatch: null,
+      loadedNBatch: null,
+      nUbatch: null,
+      loadedNUbatch: null,
       tensorParallel: false,
       loadedTensorParallel: null,
       // Standing preference: survives unload, unlike the per-model knobs above.
@@ -2614,7 +2659,8 @@ export function resolveSpeculativeSettingsForLoad({
     speculativeType,
     specDraftNMax:
       !usePersistedPreference &&
-      (speculativeType === "mtp" || speculativeType === "mtp+ngram")
+      speculativeType != null &&
+      DRAFT_N_MAX_SPEC_TYPES.has(speculativeType)
         ? state.specDraftNMax
         : null,
   };

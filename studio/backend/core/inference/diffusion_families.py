@@ -14,10 +14,11 @@ diffusers classes and base repo needed to assemble the full pipeline.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Optional
+from typing import Optional, Sequence
 
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both engines raise them verbatim.
@@ -112,9 +113,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         controlnet_pipeline_class = "FluxControlNetPipeline",
         controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
+        # Byte-identical mirror of comfyanonymous/flux_text_encoders (CLIP-L + T5-XXL fp16).
         sd_cpp_text_encoders = (
-            ("comfyanonymous/flux_text_encoders", "clip_l.safetensors", "clip_l"),
-            ("comfyanonymous/flux_text_encoders", "t5xxl_fp16.safetensors", "t5xxl"),
+            ("unsloth/flux-text-encoders", "clip_l.safetensors", "clip_l"),
+            ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors", "t5xxl"),
         ),
     ),
     # FLUX.2-klein is Flux2KleinPipeline (Qwen3 encoder), not the Mistral Flux2Pipeline, so it must precede a generic flux match.
@@ -136,14 +138,18 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.
         inpaint_preserves_size = False,
-        # FLUX.2's 32-channel AE needs the latent-format override; the single-file VAE ships in Comfy-Org/flux2-dev. Shares Qwen3-4B with z-image.
-        sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
+        # FLUX.2's 32-channel AE needs the latent-format override. The VAE is mirrored on its own because BFL licensed it Apache-2.0 while the rest of FLUX.2-dev is non-commercial. Shares Qwen3-4B with z-image.
+        sd_cpp_vae = ("unsloth/FLUX.2-VAE", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (
-            ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
+            (
+                "unsloth/Z-Image-Turbo-ComfyUI",
+                "split_files/text_encoders/qwen_3_4b.safetensors",
+                "llm",
+            ),
         ),
     ),
-    # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base, text-to-image only; VAE + Mistral encoder come from Comfy-Org/flux2-dev for sd-cli.
+    # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base, text-to-image only; sd-cli takes the Mistral encoder from unsloth/FLUX.2-dev-ComfyUI and the VAE from unsloth/FLUX.2-VAE.
     DiffusionFamily(
         name = "flux.2-dev",
         pipeline_class = "Flux2Pipeline",
@@ -159,11 +165,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # LoRA training via the DiT trainer (QLoRA nf4); the gated base needs an HF token with the FLUX.2-dev license accepted.
         trainable = True,
         train_base_repos = ("black-forest-labs/FLUX.2-dev",),
-        sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
+        sd_cpp_vae = ("unsloth/FLUX.2-VAE", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (
             (
-                "Comfy-Org/flux2-dev",
+                "unsloth/FLUX.2-dev-ComfyUI",
                 "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors",
                 "llm",
             ),
@@ -212,7 +218,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "QwenImageInpaintPipeline",
         controlnet_pipeline_class = "QwenImageControlNetPipeline",
         controlnet_model_class = "QwenImageControlNetModel",
-        sd_cpp_vae = ("Comfy-Org/Qwen-Image_ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
+        # Byte-identical mirror of Comfy-Org/Qwen-Image_ComfyUI.
+        sd_cpp_vae = ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
         # Qwen2.5-VL as a Q4_K_M GGUF keeps the CPU RAM win (bf16 encoder is ~15 GB). sd-cli --qwen2vl aliases --llm.
         sd_cpp_text_encoders = (
             (
@@ -244,9 +251,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         # Z-Image's MLP down-projections peak near 9e5, which overflows float16.
         fp16_incompatible = True,
-        sd_cpp_vae = ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors"),
+        # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
+        sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),
         sd_cpp_text_encoders = (
-            ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
+            (
+                "unsloth/Z-Image-Turbo-ComfyUI",
+                "split_files/text_encoders/qwen_3_4b.safetensors",
+                "llm",
+            ),
         ),
     ),
     # Krea 2 (diffusers >= 0.39): a ~12B single-stream DiT with a Qwen3-VL-4B encoder and the Qwen-Image VAE. Loaded per-component because the repo ships transformers-5.x configs.
@@ -467,6 +479,199 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
     return base or fam.base_repo
 
 
+# Byte-identical ungated unsloth mirrors of the gated vendor bases: a GGUF/FP8 pick ships only the
+# denoiser, so a gated base still 401s on the companions. Swapped at the fetch sites only, never in
+# ``resolve_base_repo``, whose result keys the UPSTREAM-id tables below (see ``canonical_base``).
+_GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
+    ("black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"),
+    ("black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"),
+    ("black-forest-labs/FLUX.1-Kontext-dev", "unsloth/FLUX.1-Kontext-dev"),
+    ("black-forest-labs/FLUX.1-Krea-dev", "unsloth/FLUX.1-Krea-dev"),
+    ("black-forest-labs/FLUX.2-dev", "unsloth/FLUX.2-dev"),
+    ("black-forest-labs/FLUX.2-klein-9B", "unsloth/FLUX.2-klein-9B"),
+    ("black-forest-labs/FLUX.2-klein-base-9B", "unsloth/FLUX.2-klein-base-9B"),
+    ("krea/Krea-2-Turbo", "unsloth/Krea-2-Turbo"),
+    ("krea/Krea-2-Raw", "unsloth/Krea-2-Raw"),
+    ("ideogram-ai/ideogram-4-fp8", "unsloth/ideogram-4-fp8"),
+    ("ideogram-ai/ideogram-4-nf4", "unsloth/ideogram-4-nf4"),
+    ("ideogram-ai/ideogram-4-nf4-diffusers", "unsloth/ideogram-4-nf4-diffusers"),
+)
+_GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _GATED_MIRROR_PAIRS}
+_MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _GATED_MIRROR_PAIRS}
+
+
+def mirror_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The ungated unsloth mirror of ``repo_id``, or None when it is not a gated vendor base."""
+    return _GATED_MIRRORS.get((repo_id or "").strip().lower())
+
+
+def canonical_base(repo_id: Optional[str]) -> str:
+    """A mirror id mapped back to the upstream it copies, else ``repo_id`` unchanged.
+
+    Base-keyed tables hold UPSTREAM ids, so every lookup normalises here: a mirror reaching
+    ``_FLUX2_BASE_INNER_DIM`` misses, and that shape guard fails OPEN, so it goes silent.
+    """
+    base = (repo_id or "").strip()
+    return _MIRROR_UPSTREAM.get(base.lower(), base)
+
+
+# What counts as a real weight file, vs the stray config an interrupted pull leaves behind.
+_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".pt", ".ckpt", ".gguf"})
+
+
+def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> bool:
+    """``_upstream_is_cached`` for ONE cache root. Never raises."""
+    try:
+        repo = root / f"models--{repo_id.replace('/', '--')}"
+        ref = repo / "refs" / "main"
+        revs = (
+            [repo / "snapshots" / ref.read_text(encoding = "utf-8").strip()]
+            if ref.is_file()
+            else sorted((repo / "snapshots").iterdir())
+        )
+        for rev in revs:
+            if not rev.is_dir():
+                continue
+            if wanted:
+                if all((rev / name).exists() for name in wanted):
+                    return True
+            elif any(p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
+        return False
+
+
+def _upstream_is_cached(
+    repo_id: str,
+    files: Optional[Sequence[str]] = None,
+    *,
+    other_root: bool = False,
+) -> bool:
+    """Whether the upstream load is SATISFIABLE from the local cache.
+
+    Not "has any blob": one config left by an interrupted or previously-tokened pull would pin every
+    later load to the gated upstream and re-raise the 401 the mirror exists to avoid. So the revision
+    must hold ``files``, else a real weight file. ``.incomplete`` downloads have no snapshot symlink,
+    so they count as absent.
+
+    Only the revision ``refs/main`` names counts, the one a gated fetch falls back to: on a 401 the
+    HEAD fails and ``hf_hub_download`` resolves the ref to ONE commit, so a complete but superseded
+    revision would read as cached and hand the loader a repo it cannot fetch from. With no ref (a
+    commit-pinned download) any revision counts, as before.
+
+    Reads the LIVE cache root; huggingface_hub's import-time constant goes stale after a
+    cache-folder change. ``other_root`` adds that constant back, for the callers whose fetch passes
+    ``reuse_other_cache_root``: those resolve each file through whichever root holds it, so bytes
+    left in the pre-change root really do satisfy the load. OFF by default, because a
+    ``from_pretrained`` is pinned to the live root and cannot see the other one -- counting those
+    bytes there would send a gated base back to the 401 the mirror exists to avoid.
+    """
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        roots = [Path(active_hf_hub_cache())]
+        if other_root:
+            from huggingface_hub import constants
+
+            # Exactly what ``cache_dir = None`` resolves to, i.e. the root the per-file reuse
+            # probe falls back to (file_download reads constants.HF_HUB_CACHE per call).
+            fallback = Path(constants.HF_HUB_CACHE)
+            if fallback != roots[0]:
+                roots.append(fallback)
+        wanted = tuple(files or ())
+        return any(_root_holds_upstream(root, repo_id, wanted) for root in roots)
+    except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
+        return False
+
+
+# Lowercased unsloth mirror -> the community repack the tables named before it. The mirrors are
+# byte identical, so an existing install that already pulled the repack holds the very same bytes
+# under the OLD repo key: the HF cache is keyed by repo id, so re-pointing the table alone would
+# re-download up to tens of GB on upgrade and fail outright offline.
+_SD_CPP_LEGACY_SOURCES: dict[str, str] = {
+    "unsloth/flux-text-encoders": "comfyanonymous/flux_text_encoders",
+    "unsloth/qwen-image-comfyui": "Comfy-Org/Qwen-Image_ComfyUI",
+    "unsloth/flux.2-vae": "Comfy-Org/flux2-dev",
+    "unsloth/flux.2-dev-comfyui": "Comfy-Org/flux2-dev",
+    "unsloth/z-image-turbo-comfyui": "Comfy-Org/z_image_turbo",
+    "unsloth/flux.2-klein-9b-comfyui": "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
+    "unsloth/wan2.2-ti2v-5b-gguf": "QuantStack/Wan2.2-TI2V-5B-GGUF",
+}
+
+
+def legacy_source_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The community repack ``repo_id`` mirrors, or None when it is not one of the mirrors."""
+    return _SD_CPP_LEGACY_SOURCES.get((repo_id or "").strip().lower())
+
+
+def prefer_cached_legacy_source(repo_id: str, files: Optional[Sequence[str]] = None) -> str:
+    """``repo_id``, or the community repack it mirrors when THAT already satisfies ``files``.
+
+    The mirror stays the preferred source for a fresh install; this only spares an existing one
+    from re-fetching bytes it already has under the old repo key. Same ``_upstream_is_cached``
+    probe the gated swap uses, so an interrupted or partial repack does not win.
+
+    Both cache roots count: the sd.cpp fetch passes ``reuse_other_cache_root``, so a repack left
+    behind by a cache-folder change is still reusable, and only the repo id can reach it -- once
+    the id has become the mirror those bytes are unreachable and the load re-pulls several GB
+    (offline, it fails outright).
+
+    PURE: table lookup + local stat, no network, so the staging plan and the fetch agree.
+    """
+    legacy = _SD_CPP_LEGACY_SOURCES.get((repo_id or "").strip().lower())
+    if not legacy:
+        return repo_id
+    return legacy if _upstream_is_cached(legacy, files, other_root = True) else repo_id
+
+
+def _is_local_path(base: str) -> bool:
+    """Whether ``base`` exists on disk, i.e. a local dir rather than a Hub id.
+
+    A user can clone a base into a relative dir named exactly like the vendor id
+    (``black-forest-labs/FLUX.1-dev``), which the loaders deliberately treat as local. OSError from
+    an id with invalid path characters just means "not a local path".
+    """
+    try:
+        return Path(base or "").expanduser().exists()
+    except OSError:
+        return False
+
+
+def prefer_ungated_mirror(
+    base: str,
+    hf_token: Optional[str] = None,
+    *,
+    files: Optional[Sequence[str]] = None,
+) -> str:
+    """``base``, or its ungated unsloth mirror when that is the better repo to FETCH from.
+
+    A GGUF/FP8 pick carries only the denoiser, so a gated base 401s on the companions; the mirrors
+    are byte identical, so this drops the gate without changing a weight. Fetch only: the upstream
+    id stays what the picker and status() show, what saved configs hold and what a trained LoRA's
+    base_model tag records. The one visible swap is the download manager row, which must name the
+    repo actually being pulled -- staging the gated id there is the 401 this exists to remove.
+
+    Declines to today's behaviour under ``UNSLOTH_DIFFUSION_NO_MIRROR``, for a local path, or when
+    the upstream already satisfies the load from cache and switching would re-pull tens of GiB.
+    ``files`` sharpens that last test to the names about to be fetched; without it any weight counts.
+
+    PURE: table lookup, env read, local stat, NO network. This runs inside pipeline assembly, where
+    an earlier ``model_info`` probe of the mirror put a Hub round trip on the load path and broke
+    four download-plan tests. A missing mirror surfaces as the ordinary download error.
+    ``hf_token`` is unused, kept so callers need not care.
+    """
+    del hf_token  # noqa: F841 -- signature stability only
+    mirror = mirror_repo(base)
+    if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+        return base
+    # A local path is never a Hub id: rewriting one sends loads the other sites resolve on disk
+    # (``Path(base).exists()``) to the Hub, skipping the copy already downloaded.
+    if _is_local_path(base):
+        return base
+    return base if _upstream_is_cached(base, files) else mirror
+
+
 # Default (steps, guidance) per model for callers that cannot pass them. Matched by substring, most specific first; same values as the UI MODEL_DEFAULTS table, keep in sync.
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image-turbo", 9, 0.0),
@@ -525,7 +730,8 @@ def family_prequant_repo(
     baked from ONE base's weights and the loader refuses it for any other base, so a variant
     without its own entry still returns the family default (harmless: the base_model_id
     validation then falls back to dense-quantise, exactly as before this table existed)."""
-    base = (base_repo or "").strip().lower()
+    # prequant_variant_repos is keyed on upstream ids.
+    base = canonical_base(base_repo).lower()
     if base:
         for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
             if entry_base == base and entry_scheme == scheme:
@@ -612,13 +818,44 @@ def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
 
 
 # FLUX.2-klein 9B pairs with Qwen3-8B, the 4B with the family-default Qwen3-4B (a mismatched encoder fails deep in sd-cli), so pick per variant.
+# Byte-identical mirror of Comfy-Org/vae-text-encorder-for-flux-klein-9b.
 _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (
     (
-        "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
+        "unsloth/FLUX.2-klein-9B-ComfyUI",
         "split_files/text_encoders/qwen_3_8b.safetensors",
         "llm",
     ),
 )
+
+
+def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
+    """Lowercased ids of repos that exist ONLY to hand sd.cpp a single-file VAE / text encoder.
+
+    They carry no DENOISER, so no diffusion pipeline loads from one. Third-party repacks never
+    cleared the cached-model trust gate, but their ``unsloth/*`` mirrors do, so they need excluding
+    by hand or each becomes an un-loadable On Device row. Derived from the tables, minus repos that
+    are also a real base: FLUX.1-schnell ships the FLUX.1 VAE and IS loadable.
+
+    Diffusion-only, and callers must keep it that way: the set includes
+    ``unsloth/Qwen2.5-VL-7B-Instruct-GGUF``, which is a perfectly good CHAT model that sd.cpp also
+    borrows as a text encoder. Hiding this set from a chat or GGUF listing would take a real model
+    away from a user who downloaded it to chat with. Today's only consumer is the non-GGUF
+    cached-model listing, which never sees a GGUF-only repo."""
+    companions: set[str] = set()
+    loadable: set[str] = set()
+    for fam in _FAMILIES:
+        if fam.sd_cpp_vae:
+            companions.add(fam.sd_cpp_vae[0])
+        companions.update(repo for repo, _f, _k in fam.sd_cpp_text_encoders)
+        loadable.add(fam.base_repo)
+        loadable.update(fam.train_base_repos)
+        if fam.deploy_base_repo:
+            loadable.add(fam.deploy_base_repo)
+        loadable.update(repo for _scheme, repo in fam.prequant_repos)
+        loadable.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
+        loadable.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
+    companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    return frozenset(r.strip().lower() for r in companions - loadable if r)
 
 
 def sd_cpp_text_encoders_for(
@@ -680,7 +917,8 @@ def assert_flux2_gguf_matches_base(fam, base_repo: str, gguf_path) -> None:
     unmapped base leaves the load exactly as it was."""
     if gguf_path is None or not str(getattr(fam, "name", "")).startswith("flux.2"):
         return
-    want = _FLUX2_BASE_INNER_DIM.get((base_repo or "").strip().lower())
+    # Keyed on upstream ids, and this guard fails OPEN on a miss, so a mirror id would disable it.
+    want = _FLUX2_BASE_INNER_DIM.get(canonical_base(base_repo).lower())
     got = gguf_flux2_inner_dim(gguf_path)
     if want is None or got is None or want == got:
         return

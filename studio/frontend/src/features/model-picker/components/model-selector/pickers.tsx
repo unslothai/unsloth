@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useNavigate } from "@tanstack/react-router";
+import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -2094,6 +2095,7 @@ export function HubModelPicker({
   const pickerInventory = useChatPickerInventory({ enabled: true });
   const { cachedGguf, cachedModels, cachedReady, refreshInventory } =
     pickerInventory;
+  const cachedReadyAtMount = useRef(cachedReady);
   const lmStudioModels = useMemo(
     () =>
       sortLmStudio(
@@ -2281,6 +2283,9 @@ export function HubModelPicker({
   }, [refreshScanFolders]);
 
   useEffect(() => {
+    if (!shouldRefreshPickerInventoryOnMount(cachedReadyAtMount.current)) {
+      return;
+    }
     void refreshInventory();
   }, [refreshInventory]);
 
@@ -3415,9 +3420,12 @@ export function HubModelPicker({
 
   const downloadedRowButtonClassName =
     "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
+  // Not focus-within: the dots menu returns focus to its trigger on close, so
+  // the row stayed lit after the pointer left. Keyboard focus and an open menu
+  // still light it.
   const downloadedRowShellClassName = (selected: boolean) =>
     cn(
-      "group flex items-center rounded-full transition-colors hover:bg-[#ececec] focus-within:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:focus-within:bg-[var(--sidebar-accent)]",
+      "group flex items-center rounded-full transition-colors hover:bg-[#ececec] has-[:focus-visible]:bg-[#ececec] has-[[data-state=open]]:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:has-[:focus-visible]:bg-[var(--sidebar-accent)] dark:has-[[data-state=open]]:bg-[var(--sidebar-accent)]",
       selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
     );
 
@@ -3539,6 +3547,7 @@ export function HubModelPicker({
       isLora: false,
       loadId: c.load_id,
       ggufVariant: variant.quant,
+      ggufFilename: variant.filename,
       isDownloaded: true,
       expectedBytes,
       isGguf: true,
