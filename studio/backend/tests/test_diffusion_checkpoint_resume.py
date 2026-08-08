@@ -1356,9 +1356,9 @@ def test_the_fingerprint_probe_does_not_read_whole_images(tmp_path):
         return time.perf_counter() - started
 
     # A whole-file hash would scale with the 128x size difference; head+tail does not.
-    assert _elapsed(big) < 8 * max(_elapsed(small), 1e-4), (
-        "the probe appears to scale with file size, so it is reading more than head and tail"
-    )
+    assert _elapsed(big) < 8 * max(
+        _elapsed(small), 1e-4
+    ), "the probe appears to scale with file size, so it is reading more than head and tail"
 
     # The direct statement of the same thing: two files that differ only in the middle, past
     # the probe window on both ends, are indistinguishable -- which is the documented tradeoff.
