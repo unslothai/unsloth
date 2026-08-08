@@ -95,12 +95,12 @@ async function readNativeClipboardFiles(): Promise<File[]> {
   let totalBytes = 0;
   const files: File[] = [];
   for (const file of nativeFiles) {
+    if (file.base64.length === 0) continue;
     if (
       !file.name ||
       file.name.length > 255 ||
       file.name.includes("/") ||
-      file.name.includes("\0") ||
-      file.base64.length === 0
+      file.name.includes("\0")
     ) {
       return [];
     }

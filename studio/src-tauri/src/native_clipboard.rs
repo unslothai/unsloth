@@ -153,11 +153,14 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
             continue;
         };
         let limit = clipboard_file_max_bytes(mime_type).min(remaining);
-        if !metadata.is_file() || metadata.len() > limit {
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > limit {
             continue;
         }
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        if source.take(limit + 1).read_to_end(&mut bytes).is_err() || bytes.len() as u64 > limit {
+        if source.take(limit + 1).read_to_end(&mut bytes).is_err()
+            || bytes.is_empty()
+            || bytes.len() as u64 > limit
+        {
             continue;
         }
         remaining -= bytes.len() as u64;
@@ -398,6 +401,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("notes.md");
         std::fs::write(&path, b"clipboard text").unwrap();
+
+        let empty = directory.path().join("empty.md");
+        File::create(&empty).unwrap();
         let oversized = directory.path().join("oversized.md");
         File::create(&oversized)
             .unwrap()
@@ -405,7 +411,8 @@ mod tests {
             .unwrap();
 
         let files =
-            read_clipboard_files(vec![directory.path().to_path_buf(), oversized, path]).unwrap();
+            read_clipboard_files(vec![directory.path().to_path_buf(), empty, oversized, path])
+                .unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "notes.md");
         assert_eq!(files[0].mime_type, "text/markdown");
