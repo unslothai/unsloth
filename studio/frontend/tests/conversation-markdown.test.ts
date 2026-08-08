@@ -559,6 +559,79 @@ test("leaves a comment inside a fence literal", () => {
   );
 });
 
+test("closes a list-nested fence inside the list, not at column zero", () => {
+  // A closer at column zero ends the list first, so it opens a new top-level
+  // fence that swallows every turn after this one.
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "Steps:\n\n- run the install\n\n  ```sh\n  npm ci" },
+    ]),
+    "Steps:\n\n- run the install\n\n  ```sh\n  npm ci\n  ```",
+  );
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "- run\n\n  ~~~\n  x" }]),
+    "- run\n\n  ~~~\n  x\n  ~~~",
+  );
+});
+
+test("closes a raw html block a blank line cannot end", () => {
+  // CommonMark start condition 1: only its own end tag ends the block, so the
+  // next role heading is raw html without this.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<pre>\nhello" }]),
+    "<pre>\nhello\n</pre>",
+  );
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: '<SCRIPT src="a.js">\nvar x = 1;' },
+    ]),
+    '<SCRIPT src="a.js">\nvar x = 1;\n</script>',
+  );
+  // Conditions 3, 4 and 5 run to the end of the document just the same.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<?php\necho 1;" }]),
+    "<?php\necho 1;\n?>",
+  );
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<![CDATA[\nraw" }]),
+    "<![CDATA[\nraw\n]]>",
+  );
+});
+
+test("leaves a raw html block that closes itself alone", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<pre>\nhello\n</pre>" }]),
+    "<pre>\nhello\n</pre>",
+  );
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<pre>hello</pre>" }]),
+    "<pre>hello</pre>",
+  );
+  // A blank line ends start conditions 6 and 7, and every turn is followed by
+  // one, so repairing them would only add noise.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<div>\nhello" }]),
+    "<div>\nhello",
+  );
+  // Indented four spaces it is a code block, not a raw html block.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "    <pre>\n    hello" }]),
+    "    <pre>\n    hello",
+  );
+});
+
+test("keeps a raw html start inside a fence literal", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "```\n<pre>\nhello\n```" }]),
+    "```\n<pre>\nhello\n```",
+  );
+  // And the other way round: a fence inside a raw html block is not a fence.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<pre>\n```js\nvar a = 1;" }]),
+    "<pre>\n```js\nvar a = 1;\n</pre>",
+  );
+});
+
 test("collapses line breaks inside a code span so it cannot be escaped", () => {
   assert.equal(
     renderConversationBlocks([
@@ -569,5 +642,56 @@ test("collapses line breaks inside a code span so it cannot be escaped", () => {
       },
     ]),
     "**source:** `ok <img src=x onerror=alert(1)>`",
+  );
+});
+
+test("reasoning that quotes a whole details element stays inside the block", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "thinking", text: "<details>\n<summary>FAQ</summary>\n\nbody\n\n</details>" },
+    ]),
+    [
+      "<details>",
+      "<summary>thinking</summary>",
+      "",
+      "&lt;details>",
+      "<summary>FAQ</summary>",
+      "",
+      "body",
+      "",
+      "&lt;/details>",
+      "",
+      "</details>",
+    ].join("\n"),
+  );
+});
+
+test("escapes a details opener carrying attributes", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "thinking", text: '<details open class="x">' }]),
+    [
+      "<details>",
+      "<summary>thinking</summary>",
+      "",
+      '&lt;details open class="x">',
+      "",
+      "</details>",
+    ].join("\n"),
+  );
+});
+
+test("a comment delimiter inside a code span opens nothing", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "Prefix it with `<!--` to comment it out." },
+    ]),
+    "Prefix it with `<!--` to comment it out.",
+  );
+});
+
+test("still closes a comment opened mid-line outside a code span", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "see <div><!-- note" }]),
+    "see <div><!-- note-->",
   );
 });

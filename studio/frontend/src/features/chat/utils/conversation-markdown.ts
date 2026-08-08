@@ -51,16 +51,69 @@ const LINE_BREAK_PATTERN = /[\r\n]/;
 // Chat stores generated audio as a custom tag holding a base64 data URI; the
 // bytes are for the player, not for a transcript.
 const AUDIO_DATA_URI_PATTERN = /<audio-player\s+src="data:[^"]*"\s*\/>/g;
-const DETAILS_CLOSE_PATTERN = /<\/(details)\s*>/gi;
-const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+// Both ends, not just the closer: reasoning that quotes a whole details
+// element would otherwise keep its opener, hand its closer to the entity, and
+// leave this block's own closer to the inner element, hiding every later turn.
+const DETAILS_TAG_PATTERN = /<(\/?)(details)((?:\s[^>]*)?)>/gi;
+// A code span is literal text, so a <!-- inside one opens nothing.
+const CODE_SPAN_PATTERN = /(`+)[^`]*\1/g;
+// Four spaces of indentation is an indented code block, so a fence or a raw
+// html block only starts within the first three columns. Splitting the
+// indentation off once keeps the opener's container context, which the
+// synthesized closer has to be written back into.
+// [\s\S] rather than .: a line separator is an ordinary character to a
+// markdown parser, and . would drop the whole line here.
+const INDENT_PATTERN = /^( {0,3})([\s\S]*)$/;
+const FENCE_PATTERN = /^(`{3,}|~{3,})(.*)$/;
 const EOL_PATTERN = /\r\n|[\r\n]/;
 
-// A message that ends mid-fence or mid-comment swallows everything after it,
-// including the next role heading, so each turn closes what it opened. Fence
-// and comment are tracked as one state: inside either, the other is literal.
+type HtmlBlockRule = {
+  readonly start: RegExp;
+  readonly end: RegExp;
+  readonly close: (match: RegExpExecArray) => string;
+};
+
+// Raw html blocks that a blank line does not close (CommonMark 4.6, start
+// conditions 1, 3, 4 and 5): they run to the end of the document. Condition 2
+// is the comment tracked below; 6 and 7 end at the blank line that already
+// separates every turn, so they need no repair.
+const HTML_BLOCK_RULES: readonly HtmlBlockRule[] = [
+  {
+    start: /^<(pre|script|style|textarea)(?=[ \t>]|$)/i,
+    end: /<\/(?:pre|script|style|textarea)>/i,
+    // Any of the four end tags satisfies the parser, but a viewer that renders
+    // the raw html needs the tag that was actually opened.
+    close: (match) => `</${(match[1] ?? "pre").toLowerCase()}>`,
+  },
+  { start: /^<\?/, end: /\?>/, close: () => "?>" },
+  { start: /^<![A-Za-z]/, end: />/, close: () => ">" },
+  { start: /^<!\[CDATA\[/, end: /\]\]>/, close: () => "]]>" },
+];
+
+function openedHtmlBlock(
+  rest: string,
+  line: string,
+): { readonly rule: HtmlBlockRule; readonly close: string } | null {
+  for (const rule of HTML_BLOCK_RULES) {
+    const match = rule.start.exec(rest);
+    // A line that meets the start and the end condition is the whole block.
+    if (!match || rule.end.test(line)) continue;
+    return { rule, close: rule.close(match) };
+  }
+  return null;
+}
+
+// A message that ends mid-fence, mid-comment or inside a raw html block
+// swallows everything after it, including the next role heading, so each turn
+// closes what it opened. The three are tracked as one state: inside any of
+// them, the other two are literal.
 function closeOpenBlocks(text: string): string {
   let open: string | null = null;
+  let openIndent = "";
   let comment = false;
+  let html: HtmlBlockRule | null = null;
+  let htmlClose = "";
+  let htmlIndent = "";
   // Split the way a parser does. Splitting on \n alone hides a fence opened in
   // a body that uses bare carriage returns.
   for (const line of text.split(EOL_PATTERN)) {
@@ -68,7 +121,12 @@ function closeOpenBlocks(text: string): string {
       if (line.includes("-->")) comment = false;
       continue;
     }
-    const [, run, info] = FENCE_PATTERN.exec(line) ?? [];
+    if (html) {
+      if (html.end.test(line)) html = null;
+      continue;
+    }
+    const [, indent = "", rest = ""] = INDENT_PATTERN.exec(line) ?? [];
+    const [, run, info] = FENCE_PATTERN.exec(rest) ?? [];
     if (open !== null) {
       // A closer repeats the opener's character, is at least as long, and
       // carries no info string.
@@ -80,17 +138,33 @@ function closeOpenBlocks(text: string): string {
     if (run) {
       // A backtick opener cannot carry a backtick in its info string; that
       // line is a paragraph, and treating it as a fence would open a real one.
-      if (run[0] === "~" || !info?.includes("`")) open = run;
+      if (run[0] === "~" || !info?.includes("`")) {
+        open = run;
+        openIndent = indent;
+      }
       continue;
     }
-    comment = line.lastIndexOf("<!--") > line.lastIndexOf("-->");
+    const opened = openedHtmlBlock(rest, line);
+    if (opened) {
+      html = opened.rule;
+      htmlClose = opened.close;
+      htmlIndent = indent;
+      continue;
+    }
+    // Deliberately not limited to a line-initial <!--: a mid-line one inside a
+    // raw html block still opens a comment in the browser.
+    const prose = line.replace(CODE_SPAN_PATTERN, "");
+    comment = prose.lastIndexOf("<!--") > prose.lastIndexOf("-->");
   }
   let out = text;
   if (comment) out += "-->";
   // Close on the body's own line ending. A renderer that ignores bare carriage
   // returns would read a \n-prefixed closer as a fresh fence instead.
   const eol = !text.includes("\n") && text.includes("\r") ? "\r" : "\n";
-  if (open !== null) out += `${eol}${open}`;
+  // Indented back to the opener's column: a closer written at column zero ends
+  // the list the opener sits in, and then opens a block of its own instead.
+  if (open !== null) out += `${eol}${openIndent}${open}`;
+  if (html) out += `${eol}${htmlIndent}${htmlClose}`;
   return out;
 }
 
@@ -183,7 +257,7 @@ function renderBlock(block: ConversationMarkdownBlock): string {
     // Reasoning that quotes a closing details tag would end the block early;
     // the entity renders as that same literal text.
     const text = closeOpenBlocks(
-      block.text.replace(DETAILS_CLOSE_PATTERN, "&lt;/$1>"),
+      block.text.replace(DETAILS_TAG_PATTERN, "&lt;$1$2$3>"),
     );
     // Collapsed so a transcript reads as the conversation first, with the
     // reasoning still there for anyone who wants it.
