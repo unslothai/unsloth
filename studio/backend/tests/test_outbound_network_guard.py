@@ -15,6 +15,7 @@ nothing about the other. CPU-only, and every connection here is to this same mac
 
 from __future__ import annotations
 
+import errno
 import socket
 import threading
 
@@ -120,6 +121,63 @@ def test_resolving_an_address_literal_does_not_make_it_dialable():
 
 def test_an_unconfigured_name_fails_at_resolution():
     """Blocked names fail the way an unresolvable name does, which callers already handle."""
+    with pytest.raises(socket.gaierror, match = "name resolution blocked"):
+        socket.getaddrinfo("huggingface.co", 443, socket.AF_INET, socket.SOCK_STREAM)
+
+
+def test_a_byte_hostname_is_read_rather_than_waved_through():
+    """The regression: bytes are a hostname too.
+
+    ``socket`` takes a name as ``str`` or ``bytes``. Compared as-is, the byte form
+    matched no rule and fell through to whatever the non-string case did -- which was
+    to allow it. That made ``getaddrinfo(b"huggingface.co", 443)`` a way straight out:
+    real resolution, and the address it returned dialable afterwards.
+    """
+    with pytest.raises(socket.gaierror, match = "name resolution blocked"):
+        socket.getaddrinfo(b"huggingface.co", 443, socket.AF_INET, socket.SOCK_STREAM)
+
+
+def test_a_byte_hostname_for_a_configured_server_still_works(monkeypatch, offbox_server):
+    """Reading the byte form must mean reading it, not refusing it."""
+    hostname, _address, port = offbox_server
+    monkeypatch.setenv("UNSLOTH_E2E_BASE_URL", f"http://{hostname}:{port}")
+
+    infos = socket.getaddrinfo(hostname.encode(), port, socket.AF_INET, socket.SOCK_STREAM)
+    assert infos
+
+
+def test_connect_ex_reports_the_block_the_way_it_reports_a_failure():
+    """connect_ex answers with an errno; callers branch on it rather than catching.
+
+    ``run.py`` probes a port exactly that way. Raising here would send code that only
+    handles a non-zero result down a path an ordinary failed connect_ex never takes.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        assert sock.connect_ex(("169.254.169.254", 80)) == errno.ENETUNREACH
+    finally:
+        sock.close()
+
+
+def test_a_fixture_can_ask_for_the_traffic_it_needs(allow_outbound_network):
+    """The escape hatch for fixtures built before the per-test guard exists.
+
+    Checked at the resolver, which needs no listener and opens no connection. Inside
+    the block the guard must not be what refuses: a runner with no DNS at all is free
+    to refuse for its own reasons, and saying so is the point of reading the message.
+    """
+    with pytest.raises(socket.gaierror, match = "name resolution blocked"):
+        socket.getaddrinfo("huggingface.co", 443, socket.AF_INET, socket.SOCK_STREAM)
+
+    with allow_outbound_network():
+        try:
+            assert socket.getaddrinfo("huggingface.co", 443, socket.AF_INET, socket.SOCK_STREAM)
+        except socket.gaierror as lifted:
+            assert "name resolution blocked" not in str(lifted), (
+                "allow_outbound() did not lift the guard: the lookup inside the block "
+                "was still refused by the guard rather than by the resolver"
+            )
+
     with pytest.raises(socket.gaierror, match = "name resolution blocked"):
         socket.getaddrinfo("huggingface.co", 443, socket.AF_INET, socket.SOCK_STREAM)
 

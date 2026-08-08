@@ -11,6 +11,7 @@ Model/variant for the managed mode resolve from ``--unsloth-model`` /
 ``--unsloth-gguf-variant``, then env vars, then ``test_studio_api.py`` defaults.
 """
 
+import contextlib
 import errno
 import itertools
 import os
@@ -225,12 +226,63 @@ def _configured_server_hosts() -> frozenset:
 # address-literal exemption below cannot widen anything through it.
 _RESOLVED_SERVER_ADDRESSES: set = set()
 
+# Lifted only by allow_outbound(), below. A module global rather than something a
+# fixture holds, because the callers that need it run before any per-test fixture
+# exists to hold it for them.
+_outbound_permitted = False
+
+
+@contextlib.contextmanager
+def allow_outbound():
+    """Permit real outbound traffic for the duration of the block.
+
+    For a session- or module-scoped fixture that has to fetch something for real. Those
+    are built before the per-test fixtures, so ``@pytest.mark.allow_network`` on the
+    test that happens to trigger one cannot reach back and lift the guard in time; the
+    fixture has to say so itself. A test body should still use the marker.
+    """
+    global _outbound_permitted
+
+    previous = _outbound_permitted
+    _outbound_permitted = True
+    try:
+        yield
+    finally:
+        _outbound_permitted = previous
+
+
+def _decoded_host(host):
+    """*host* as a comparable string, or None when it is not a name these rules can read.
+
+    The socket API takes a hostname as ``str`` or ``bytes``. Comparing the bytes form
+    against a set of strings matches nothing, so it has to be decoded before the rules
+    see it, or every rule below silently says no and the caller-facing default decides.
+    """
+    if isinstance(host, (bytes, bytearray)):
+        try:
+            return bytes(host).decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    if isinstance(host, str):
+        return host
+    return None
+
 
 def _host_is_allowed(host) -> bool:
-    """True for loopback and for any host the suite was explicitly pointed at."""
-    if not isinstance(host, str):
+    """True for loopback and for any host the suite was explicitly pointed at.
+
+    Anything that is not a readable hostname is refused rather than allowed. Defaulting
+    the other way made ``getaddrinfo(b"huggingface.co", 443)`` a complete way around the
+    guard: the byte string missed every rule, the non-string default let it through to
+    the real resolver, and the address it returned was then dialable.
+    """
+    if host is None:
+        # getaddrinfo(None, port) asks for a local address to bind, not a destination.
         return True
-    lowered = host.lower()
+    decoded = _decoded_host(host)
+    if decoded is None:
+        return False
+    lowered = decoded.strip().lower()
     return (
         lowered.startswith("127.")
         or lowered in _LOOPBACK_HOSTS
@@ -243,10 +295,11 @@ def _is_ip_literal(host) -> bool:
     """True when *host* is already an address, so resolving it consults no resolver."""
     import ipaddress
 
-    if not isinstance(host, str):
+    decoded = _decoded_host(host)
+    if decoded is None:
         return False
     try:
-        ipaddress.ip_address(host.strip("[]"))
+        ipaddress.ip_address(decoded.strip().strip("[]"))
     except ValueError:
         return False
     return True
@@ -270,8 +323,17 @@ def _is_local_endpoint(sock, address) -> bool:
     return _host_is_allowed(host)
 
 
-@pytest.fixture(autouse = True)
-def _no_outbound_network(request, monkeypatch):
+class _RealSocketCalls:
+    """The unpatched socket entry points, kept so a test can hand them back out."""
+
+    def __init__(self, connect, connect_ex, getaddrinfo):
+        self.connect = connect
+        self.connect_ex = connect_ex
+        self.getaddrinfo = getaddrinfo
+
+
+@pytest.fixture(scope = "session", autouse = True)
+def _outbound_network_guard():
     """Refuse every non-loopback connect, so no test depends on a live Hub.
 
     Several routes probe huggingface.co on paths these tests exercise, and every one
@@ -286,53 +348,54 @@ def _no_outbound_network(request, monkeypatch):
     fail immediately instead of hanging. Mark a test ``allow_network`` if it genuinely
     needs to dial out; the e2e ``studio_server`` tests reach their server on loopback
     and are unaffected.
+
+    Installed for the session rather than per test. pytest builds a test's fixtures
+    widest scope first, so a function-scoped guard is not in place yet while session-
+    and module-scoped fixtures are setting up, and those are as able to dial out as any
+    test body. A fixture that wants out says so with ``allow_outbound()``, since by then
+    it is too late for a marker on the test to reach back and lift anything.
     """
-    # Per test, so a name a test pointed the env vars at itself does not stay dialable
-    # for the rest of the run.
-    _RESOLVED_SERVER_ADDRESSES.clear()
-
-    if request.node.get_closest_marker("allow_network") is not None:
-        return
-
     import socket
 
-    real_connect = socket.socket.connect
-    real_connect_ex = socket.socket.connect_ex
+    real = _RealSocketCalls(
+        socket.socket.connect, socket.socket.connect_ex, socket.getaddrinfo
+    )
+    patch = pytest.MonkeyPatch()
 
-    def _guard(wrapped):
-        def blocked(self, address, *args, **kwargs):
-            if _is_local_endpoint(self, address):
-                return wrapped(self, address, *args, **kwargs)
-            raise OSError(
-                errno.ENETUNREACH,
-                f"outbound network blocked in tests (tried {address!r}); "
-                f"stub the call, or mark the test with @pytest.mark.allow_network",
-            )
+    def blocked_connect(self, address, *args, **kwargs):
+        if _outbound_permitted or _is_local_endpoint(self, address):
+            return real.connect(self, address, *args, **kwargs)
+        raise OSError(
+            errno.ENETUNREACH,
+            f"outbound network blocked in tests (tried {address!r}); "
+            f"stub the call, or mark the test with @pytest.mark.allow_network",
+        )
 
-        return blocked
-
-    monkeypatch.setattr(socket.socket, "connect", _guard(real_connect))
-    monkeypatch.setattr(socket.socket, "connect_ex", _guard(real_connect_ex))
+    def blocked_connect_ex(self, address, *args, **kwargs):
+        if _outbound_permitted or _is_local_endpoint(self, address):
+            return real.connect_ex(self, address, *args, **kwargs)
+        # Returned, not raised: connect_ex reports failure with an errno and callers
+        # branch on it (run.py probes a port that way). Raising here would send code
+        # that only handles a non-zero result down a path a real failure never takes.
+        return errno.ENETUNREACH
 
     # Resolution runs before either of those: socket.create_connection, which is what the
     # Hub's HTTP stack ends up in, calls getaddrinfo first. Left live, an uncached request
     # still hits the host resolver and can stall there, so the dependency is not actually
     # gone. Refuse the lookup too, which is also where a real resolver would fail.
-    real_getaddrinfo = socket.getaddrinfo
-
     def guarded_getaddrinfo(host, port, *args, **kwargs):
         # An address literal consults no resolver, so it cannot stall and is left alone;
         # the SSRF guards resolve private literals on purpose to prove they reject them,
         # and connect() still refuses anything non-loopback afterwards.
-        allowed_by_name = _host_is_allowed(host)
+        allowed_by_name = _outbound_permitted or _host_is_allowed(host)
         if not (allowed_by_name or _is_ip_literal(host)):
             raise socket.gaierror(
                 socket.EAI_NONAME,
                 f"name resolution blocked in tests ({host!r}); "
                 f"stub the call, or mark the test with @pytest.mark.allow_network",
             )
-        infos = real_getaddrinfo(host, port, *args, **kwargs)
-        if allowed_by_name:
+        infos = real.getaddrinfo(host, port, *args, **kwargs)
+        if allowed_by_name and not _outbound_permitted:
             # Carry the permission across the lookup, so the numeric address this hands
             # back is still dialable. Deliberately not done on the literal branch: that
             # one exists so a private literal can be resolved and then refused.
@@ -343,7 +406,9 @@ def _no_outbound_network(request, monkeypatch):
                     continue
         return infos
 
-    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+    patch.setattr(socket.socket, "connect", blocked_connect)
+    patch.setattr(socket.socket, "connect_ex", blocked_connect_ex)
+    patch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
 
     # A refused connection still looks retryable to huggingface_hub, which backs off
     # 1+2+4+8+8s over five attempts before giving up -- so blocking the socket without
@@ -352,19 +417,64 @@ def _no_outbound_network(request, monkeypatch):
     try:
         from huggingface_hub.utils import _http as hf_http
     except Exception:
-        return
-    import time as _time
+        hf_http = None
+    if hf_http is not None and getattr(hf_http, "time", None) is not None:
+        import time as _time
 
-    class _NoBackoffClock:
-        def __getattr__(self, name):
-            return getattr(_time, name)
+        class _NoBackoffClock:
+            def __getattr__(self, name):
+                return getattr(_time, name)
 
-        @staticmethod
-        def sleep(_seconds):
-            return None
+            @staticmethod
+            def sleep(_seconds):
+                return None
 
-    if getattr(hf_http, "time", None) is not None:
-        monkeypatch.setattr(hf_http, "time", _NoBackoffClock())
+        patch.setattr(hf_http, "time", _NoBackoffClock())
+
+    try:
+        yield real
+    finally:
+        patch.undo()
+
+
+@pytest.fixture(scope = "session")
+def allow_outbound_network(_outbound_network_guard):
+    """Hand a fixture the context manager that lifts the guard around a real fetch."""
+    return allow_outbound
+
+
+@pytest.fixture(autouse = True)
+def _no_outbound_network(request, monkeypatch, _outbound_network_guard):
+    """Per-test half of the guard: reset what the last test was allowed to reach.
+
+    Also lifts the guard for the whole of an ``allow_network`` test, which is where a
+    marker can still do the job: the test body has not started yet.
+    """
+    # Per test, so a name a test pointed the env vars at itself does not stay dialable
+    # for the rest of the run.
+    _RESOLVED_SERVER_ADDRESSES.clear()
+
+    # A proxy, where one is configured, is dialled instead of the server -- and it is
+    # not what the suite was pointed at, so the guard refuses it and the configured
+    # endpoint is unreachable after all. Bypass the proxy for those hosts rather than
+    # allowing it, since the same proxy would otherwise carry Hub traffic straight
+    # through. Only ever touches hosts the run named itself.
+    configured = _configured_server_hosts()
+    if configured and any(
+        os.environ.get(name) for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")
+    ):
+        for name in ("NO_PROXY", "no_proxy"):
+            existing = [part.strip() for part in (os.environ.get(name) or "").split(",")]
+            merged = [part for part in existing if part] + sorted(configured)
+            monkeypatch.setenv(name, ",".join(dict.fromkeys(merged)))
+
+    if request.node.get_closest_marker("allow_network") is not None:
+        import socket
+
+        real = _outbound_network_guard
+        monkeypatch.setattr(socket.socket, "connect", real.connect)
+        monkeypatch.setattr(socket.socket, "connect_ex", real.connect_ex)
+        monkeypatch.setattr(socket, "getaddrinfo", real.getaddrinfo)
 
 
 @pytest.fixture(autouse = True)
