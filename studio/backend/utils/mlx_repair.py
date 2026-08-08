@@ -182,7 +182,12 @@ def mlx_repair_in_flight() -> bool:
     window count, since both publish an answer the repair is about to replace: the stretch
     before the worker starts, and the worker itself. False the moment it has finished,
     whichever way it went, so a host that genuinely cannot train still gets a final
-    verdict -- as it does when the self-heal is opted out of, or cannot apply at all."""
+    verdict -- as it does when the self-heal is opted out of, or cannot apply at all.
+
+    The not-yet-started half is unbounded here on purpose: this module cannot tell a
+    repair that is moments away from starting from one whose scheduler never arrives.
+    Callers holding a verdict back on the strength of it pair this with
+    mlx_repair_started() and bound that half themselves."""
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
     if not is_apple_silicon():
@@ -192,6 +197,18 @@ def mlx_repair_in_flight() -> bool:
     if not attempted:
         return True
     return thread is not None and thread.is_alive()
+
+
+def mlx_repair_started() -> bool:
+    """True once start_mlx_autorepair_if_needed() has claimed the one-time latch.
+
+    Splits mlx_repair_in_flight()'s True into its two halves for callers that treat them
+    differently: a live worker is a reinstall that legitimately runs for many minutes,
+    while "not started yet" is a promise nothing has kept yet. Reads the latch rather
+    than the thread handle, so a worker whose start() blew up still counts as started and
+    falls through to in_flight's aliveness check."""
+    with _attempted_lock:
+        return _attempted
 
 
 def _uv_executable() -> str | None:

@@ -8,6 +8,7 @@ Main FastAPI application for Unsloth UI Backend
 import os
 import sys
 import threading
+import time
 from pathlib import Path as _Path
 import asyncio
 from dataclasses import asdict
@@ -1293,6 +1294,50 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
     return None
 
 
+# How long a self-heal that has not started yet may keep holding a verdict back once the
+# warm that schedules it is over. start_mlx_autorepair_if_needed() runs in
+# _post_warm_background_work, immediately after join_background_warm(), so the handoff is
+# the gap this covers; the warm itself is covered by _torch_warm_in_progress(), which is
+# minutes on a cold Mac and cannot be replaced by any fixed number.
+_MLX_PRESTART_GRACE_AFTER_WARM_S = 30.0
+# Absolute backstop, measured from the first hold. _torch_warm_in_progress() goes false when
+# the warm thread dies for any reason, but a warm parked forever inside an import never
+# does, and "the scheduler is still coming" would then be a permanent answer: Train and
+# Video would spin for the whole session instead of settling into the greyed state a broken
+# MLX stack has genuinely earned. Well above the warm's own worst case, since firing this on
+# a healthy boot would reintroduce the bug the hold exists to fix.
+_MLX_PRESTART_CEILING_S = 900.0
+
+_MLX_PRESTART_LOCK = threading.Lock()
+# (detection generation, first hold, last tick the warm was seen running). Keyed by
+# generation because detection is not once-per-process: a re-detect that republishes
+# mlx_unavailable is a new verdict and gets its own window rather than inheriting a spent
+# one. Guarded rather than atomic only because the three move together.
+_mlx_prestart_hold: Optional[tuple[int, float, float]] = None
+
+# Indirected so tests can drive the windows without sleeping through them.
+_mlx_prestart_clock = time.monotonic
+
+
+def _mlx_prestart_hold_ok(generation: int) -> bool:
+    """True while a self-heal that has not started yet may still hold a verdict back."""
+    global _mlx_prestart_hold
+    now = _mlx_prestart_clock()
+    warming = _torch_warm_in_progress()
+    with _MLX_PRESTART_LOCK:
+        held = _mlx_prestart_hold
+        if held is None or held[0] != generation:
+            _mlx_prestart_hold = (generation, now, now)
+            return True
+        _, first, warm_seen = held
+        if now - first >= _MLX_PRESTART_CEILING_S:
+            return False
+        if warming:
+            _mlx_prestart_hold = (generation, first, now)
+            return True
+        return now - warm_seen < _MLX_PRESTART_GRACE_AFTER_WARM_S
+
+
 def _superseded_by_mlx_repair(snapshot: Optional[tuple[bool, Optional[str]]]) -> bool:
     """True when the MLX self-heal is about to replace this settled verdict.
 
@@ -1300,10 +1345,28 @@ def _superseded_by_mlx_repair(snapshot: Optional[tuple[bool, Optional[str]]]) ->
     watchdog reads /api/liveness and holds its startup grace open while hardware_detecting
     is set, so a 15-minute reinstall must not stretch that grace. Only the UI reads
     chat_only, and only the UI has a row to grey out on it.
+
+    Bounded, never open-ended. A live worker holds the verdict for as long as its install
+    takes, capped by the repair's own timeout. A repair that has not started yet is only a
+    promise, and this is where that promise expires: the scheduler runs after the warm, so
+    the hold lasts while the warm does and a short handoff beyond it, under an absolute
+    ceiling for the warm that never ends. Past that the verdict settles exactly as it did
+    before any of this existed.
     """
     if snapshot is None:
         return False
-    return _hw_module.verdict_pending_mlx_repair(snapshot[0], snapshot[1])
+    if not _hw_module.verdict_pending_mlx_repair(snapshot[0], snapshot[1]):
+        return False
+    try:
+        from utils.mlx_repair import mlx_repair_started
+
+        # Read after the predicate, so a repair that claims the latch between the two calls
+        # resolves the safe way: still held, and now on the worker rather than on a clock.
+        if mlx_repair_started():
+            return True
+    except Exception as exc:
+        logger.debug("MLX repair start check failed, holding on the pre-start window: %s", exc)
+    return _mlx_prestart_hold_ok(_hw_module.DETECTION_GENERATION)
 
 
 def _torch_warm_in_progress() -> bool:
