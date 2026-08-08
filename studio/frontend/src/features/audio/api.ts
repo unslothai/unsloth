@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Fetch helpers for the Audio page. TTS model lifecycle goes through the shared
-// chat load API (@/features/chat); STT goes through the dictation sidecar
-// helpers. What lives here is the audio-only surface: generation and the clip
-// gallery.
-
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
@@ -17,7 +12,6 @@ async function parseJson<T>(response: Response): Promise<T> {
 }
 
 export interface GeneratedAudio {
-  /** Base64 WAV payload. */
   data: string;
   format: string;
   sample_rate: number;
@@ -26,11 +20,9 @@ export interface GeneratedAudio {
 export interface GenerateAudioResponse {
   model: string;
   audio: GeneratedAudio;
-  /** Exact gallery record created for this request; null when persistence failed. */
   clip_id?: string | null;
 }
 
-/** Sampling knobs the /audio/generate route reads from its chat-shaped body. */
 export interface GenerateAudioOptions {
   temperature?: number;
   top_p?: number;
@@ -38,7 +30,6 @@ export interface GenerateAudioOptions {
   signal?: AbortSignal;
 }
 
-/** Synthesize speech with the loaded TTS model. Resolves to base64 WAV. */
 export async function generateAudio(
   text: string,
   options: GenerateAudioOptions = {},
@@ -59,7 +50,6 @@ export async function generateAudio(
 
 export interface AudioGalleryClip {
   id: string;
-  /** Auth-protected WAV path; fetch through fetchClipObjectUrl, never a bare src. */
   url: string;
   prompt: string;
   model: string;
@@ -106,8 +96,6 @@ export async function clearAudioGallery(): Promise<number> {
   return body.removed;
 }
 
-/** The clip bytes as an object URL (the gallery is auth-protected, so a bare
- *  <audio src> cannot reach it). The caller owns revocation. */
 export async function fetchClipObjectUrl(
   url: string,
 ): Promise<{ url: string; bytes: number }> {

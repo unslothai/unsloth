@@ -4,8 +4,6 @@
 import type { FormatFilter } from "./recommended-fit";
 import type { ModelSelectorChangeMeta } from "./types";
 
-/** Community audio checkpoints can be discovered explicitly without treating
- * every Hub result as a runtime-supported recommendation. */
 export type CommunityModelPolicy = "none" | "search-only" | "recommended";
 
 export function shouldDiscoverCommunityModels(
@@ -83,8 +81,6 @@ export function macTtsHubRowIsRunnable({
   return !isMac || !isTts || isGguf || hasRunnableGgufSibling;
 }
 
-/** Curated task artifacts are explicit runtime contracts. The default All view
- * must show them on every platform; an explicit format choice still filters. */
 export function taskCatalogFormatMatches(
   format: FormatFilter,
   matchesFormat: boolean,
@@ -92,8 +88,6 @@ export function taskCatalogFormatMatches(
   return format === "all" || matchesFormat;
 }
 
-/** Curated task seeds are already an explicit page/runtime contract. They do
- * not need a live Hub pipeline tag and default All must not device-hide them. */
 export function taskPickerRowMatches({
   isCatalogSeed,
   isHidden = false,
@@ -216,8 +210,6 @@ export function filesystemRowsSupportedForTask(
   return !pickerIncludesStt && rowTask !== "automatic-speech-recognition";
 }
 
-/** GGUF variants are selected after the Hub row, so carry its task through the
- * expander instead of losing routing information at the quant click. */
 export function withPipelineTag(
   meta: ModelSelectorChangeMeta,
   pipelineTag: string | null | undefined,
