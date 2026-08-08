@@ -62,13 +62,42 @@ def _engine_guard(function):
     pytest.fail("the vllm_engine guard has moved or been renamed")
 
 
-def test_save_lora_is_not_behind_the_engine_guard():
+def _outside_the_guard(function):
+    """The function body with the `if vllm_engine is not None:` block removed.
+
+    Not `all - guard`: set subtraction drops a name assigned in BOTH places,
+    which is exactly `save_lora` now.
+    """
+    return ast.Module(
+        body = [
+            node
+            for node in function.body
+            if not (isinstance(node, ast.If) and "vllm_engine" in ast.unparse(node.test))
+        ],
+        type_ignores = [],
+    )
+
+
+def test_save_lora_is_set_outside_the_engine_guard():
+    """The bug: with no engine the attribute was never set at all.
+
+    Asserted as "set outside the guard" rather than "not set inside it", because
+    a model that HAS an engine keeps the Zoo helper it has always had.
+    """
     function = _patch_function()
-    guard = _engine_guard(function)
-    assert "save_lora" not in _assigned_attributes(guard), (
+    outside = _assigned_attributes(_outside_the_guard(function))
+    assert "save_lora" in outside, (
         "save_lora is set only when a vLLM engine exists, so fast_inference=False "
         "leaves the model without it"
     )
+
+
+def test_the_engine_path_keeps_the_zoo_helper():
+    """Saving under vLLM is read back by vLLM's own LoRA loader, so what that
+    file carries is not changed here."""
+    guard = ast.unparse(_engine_guard(_patch_function()))
+    assert "from unsloth_zoo.vllm_utils import save_lora" in guard
+    assert "functools.partial(save_lora, model)" in guard
 
 
 def test_save_lora_is_still_set_somewhere_in_the_function():
@@ -107,3 +136,87 @@ def test_a_missing_zoo_helper_does_not_break_loading():
     assert handlers, "the save_lora import is unguarded, so an older zoo raises on load"
     guarded = any("save_lora" in ast.unparse(node) for node in handlers)
     assert guarded, "the guarded import does not cover save_lora"
+
+
+def test_a_missing_zoo_helper_cannot_break_the_engineless_path():
+    """The engineless attach must not depend on the Zoo at all.
+
+    That import lives inside the engine guard now, so an older unsloth_zoo can
+    only ever cost a vLLM run its `save_lora`, never a plain one.
+    """
+    assert "unsloth_zoo" not in ast.unparse(_outside_the_guard(_patch_function()))
+
+
+def _peft_case(**lora_kwargs):
+    """A tiny PEFT model, and what PEFT itself would write for it."""
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    peft = pytest.importorskip("peft")
+    model = peft.get_peft_model(
+        transformers.AutoModelForCausalLM.from_pretrained(
+            "hf-internal-testing/tiny-random-LlamaForCausalLM", dtype = torch.float16
+        ),
+        peft.LoraConfig(r = 8, target_modules = ["q_proj", "v_proj"], **lora_kwargs),
+    )
+    return model
+
+
+def _saved_keys(model, save, tmp_path, name):
+    safetensors = pytest.importorskip("safetensors.torch")
+    directory = tmp_path / name
+    save(model, str(directory))
+    return set(safetensors.load_file(str(directory / "adapter_model.safetensors")))
+
+
+@pytest.mark.parametrize(
+    "lora_kwargs",
+    [
+        {},
+        {"modules_to_save": ["embed_tokens", "lm_head"]},
+        {"use_dora": True},
+        {"use_dora": True, "modules_to_save": ["lm_head"]},
+    ],
+    ids = ["plain", "modules_to_save", "dora", "dora_and_modules_to_save"],
+)
+def test_the_adapter_save_keeps_everything_peft_would_keep(tmp_path, lora_kwargs):
+    """The Zoo helper filters to `.lora_A.`/`.lora_B.` before PEFT selects, so
+    PEFT raises `KeyError: modules_to_save.default.weight` and a DoRA run loses
+    its `lora_magnitude_vector`. Unsloth adds `embed_tokens`/`lm_head` to
+    `modules_to_save` by itself once new tokens are trained, so both are
+    reachable with no vLLM in sight.
+    """
+    from unsloth.models._utils import save_lora_adapter
+
+    reference = _saved_keys(_peft_case(**lora_kwargs), lambda m, d: m.save_pretrained(d), tmp_path, "peft")
+    ours = _saved_keys(_peft_case(**lora_kwargs), save_lora_adapter, tmp_path, "ours")
+    assert ours == reference, f"missing {sorted(reference - ours)}, extra {sorted(ours - reference)}"
+
+
+def test_the_saved_adapter_still_loads_back(tmp_path):
+    """Key equality is not enough; PEFT has to accept the file."""
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    peft = pytest.importorskip("peft")
+    from unsloth.models._utils import save_lora_adapter
+
+    model = _peft_case(use_dora = True, modules_to_save = ["lm_head"])
+    directory = tmp_path / "roundtrip"
+    save_lora_adapter(model, str(directory))
+    base = transformers.AutoModelForCausalLM.from_pretrained(
+        "hf-internal-testing/tiny-random-LlamaForCausalLM", dtype = torch.float16
+    )
+    reloaded = peft.PeftModel.from_pretrained(base, str(directory))
+    assert reloaded is not None
+
+
+def test_the_adapter_is_cast_to_the_embedding_dtype(tmp_path):
+    """Which is the only thing the Zoo helper does beyond `save_pretrained`."""
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+    from unsloth.models._utils import save_lora_adapter
+
+    model = _peft_case()
+    directory = tmp_path / "dtype"
+    save_lora_adapter(model, str(directory))
+    saved = safetensors.load_file(str(directory / "adapter_model.safetensors"))
+    assert {v.dtype for v in saved.values()} == {torch.float16}
