@@ -684,6 +684,7 @@ class FastLanguageModel(FastLlamaModel):
                 revision = base_revision,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
             )
             is_model = True
         except ImportError:
@@ -711,6 +712,7 @@ class FastLanguageModel(FastLlamaModel):
                 revision = adapter_revision,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
             )
             is_peft = True
         except ImportError:
@@ -823,6 +825,7 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
             )
 
         if not was_disabled:
@@ -1466,6 +1469,7 @@ class FastModel(FastBaseModel):
                     revision = base_revision,
                     trust_remote_code = trust_remote_code,
                     local_files_only = local_files_only,
+                    cache_dir = kwargs.get("cache_dir"),
                 )
             is_model = True
         except ImportError:
@@ -1499,6 +1503,7 @@ class FastModel(FastBaseModel):
                 revision = adapter_revision,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
             )
             is_peft = True
         except ImportError:
@@ -1789,6 +1794,7 @@ class FastModel(FastBaseModel):
                     token = token,
                     trust_remote_code = trust_remote_code,
                     local_files_only = local_files_only,
+                    cache_dir = kwargs.get("cache_dir"),
                 )
 
         if not was_disabled:

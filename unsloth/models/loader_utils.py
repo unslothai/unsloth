@@ -288,9 +288,29 @@ def _prefer_legacy_lowercase_cache(
         )
 
     def _snapshot_has_complete_model(snapshot):
-        if not os.path.isfile(os.path.join(snapshot, "config.json")):
+        config_path = os.path.join(snapshot, "config.json")
+        try:
+            import json
+
+            with open(config_path, encoding = "utf-8") as config_file:
+                config = json.load(config_file)
+
+            if not isinstance(config, dict):
+                return False
+        except (OSError, ValueError, TypeError):
             return False
         if not _snapshot_has_tokenizer(snapshot):
+            return False
+        architectures = config.get("architectures") or []
+        is_vlm = "vision_config" in config or any(
+            architecture.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
+            for architecture in architectures
+            if isinstance(architecture, str)
+        )
+        if is_vlm and not any(
+            os.path.isfile(os.path.join(snapshot, filename))
+            for filename in ("processor_config.json", "preprocessor_config.json")
+        ):
             return False
         if any(
             os.path.isfile(os.path.join(snapshot, filename))
@@ -381,11 +401,16 @@ def get_model_name(
         new_model_name = BAD_MAPPINGS[model_name.lower()]
 
     if new_model_name is not None:
+        # A caller-supplied ref only survives case-only canonicalization. Cross-repo
+        # mapper and BAD_MAPPINGS redirects are loaded from their default branch.
+        cache_revision = (
+            revision if new_model_name.lower() == str(model_name).lower() else None
+        )
         new_model_name = _prefer_legacy_lowercase_cache(
             new_model_name,
             cache_dir,
             local_files_only,
-            revision,
+            cache_revision,
         )
 
     if (

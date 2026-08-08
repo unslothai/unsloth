@@ -21,6 +21,8 @@ def _write_cached_model(
     sharded = False,
     complete = True,
     tokenizer = True,
+    vision = False,
+    processor = True,
 ):
     snapshot = os.path.join(repo_cache, "snapshots", commit)
     os.makedirs(snapshot)
@@ -28,7 +30,11 @@ def _write_cached_model(
     os.makedirs(os.path.dirname(ref), exist_ok = True)
     with open(ref, "w", encoding = "utf-8") as ref_file:
         ref_file.write(commit)
-    open(os.path.join(snapshot, "config.json"), "w").close()
+    config = {"vision_config": {}} if vision else {}
+    with open(os.path.join(snapshot, "config.json"), "w", encoding = "utf-8") as config_file:
+        json.dump(config, config_file)
+    if vision and processor:
+        open(os.path.join(snapshot, "preprocessor_config.json"), "w").close()
     if tokenizer:
         open(os.path.join(snapshot, "tokenizer.json"), "w").close()
     if not sharded:
@@ -280,6 +286,45 @@ class TestGetModelName(unittest.TestCase):
                 ),
                 legacy,
             )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_cross_repo_remap_probes_default_revision(self):
+        canonical = "unsloth/Qwen3-8B-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            _write_cached_model(legacy_cache, "legacy-main", revision = "main")
+
+            self.assertEqual(
+                get_model_name(
+                    "Qwen/Qwen3-8B",
+                    load_in_4bit = True,
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    revision = "source-only-ref",
+                ),
+                legacy,
+            )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_vlm_cache_requires_processor_artifacts(self):
+        canonical = "unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            _write_cached_model(legacy_cache, "legacy-main", vision = True)
+            canonical_snapshot = _write_cached_model(
+                canonical_cache,
+                "canonical-main",
+                vision = True,
+                processor = False,
+            )
+            kwargs = dict(load_in_4bit = True, cache_dir = cache_dir, local_files_only = True)
+
+            self.assertEqual(get_model_name("Qwen/Qwen2.5-VL-3B-Instruct", **kwargs), legacy)
+            open(os.path.join(canonical_snapshot, "preprocessor_config.json"), "w").close()
+            self.assertEqual(get_model_name("Qwen/Qwen2.5-VL-3B-Instruct", **kwargs), canonical)
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_offline_legacy_cache_uses_transformers_default(self):
