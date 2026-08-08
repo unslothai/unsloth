@@ -13506,25 +13506,64 @@ def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
     return os.path.realpath(resolver(session_id))
 
 
-def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
-    """(sandbox_dir, absolute path) for a user-supplied name.
+# A tool may write into a subdirectory, so a single segment is not enough. The
+# depth matches the snapshot walk's.
+_MAX_SANDBOX_PATH_SEGMENTS = 4
 
-    Basename, character allowlist and realpath containment as the image route
-    has always done, factored out so the two callers cannot drift.
+
+def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
+    """(sandbox_dir, absolute path) for a user-supplied relative path.
+
+    Character allowlist per segment and realpath containment as the image route
+    has always done, factored out so the two callers cannot drift. Containment
+    is decided by the resolved path, never by the string, so a symlink pointing
+    out of the sandbox is refused like any other escape.
     """
-    safe_filename = os.path.basename(filename)
-    if not safe_filename or safe_filename in (".", ".."):
+    parts = [part for part in filename.replace("\\", "/").split("/") if part not in ("", ".")]
+    if not parts or len(parts) > _MAX_SANDBOX_PATH_SEGMENTS:
         raise HTTPException(status_code = 404, detail = "Not found")
-    if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", safe_filename):
-        raise HTTPException(status_code = 404, detail = "Not found")
+    for part in parts:
+        # os.path.join would let an absolute segment (or a Windows drive) throw
+        # the prefix away; realpath containment catches it, this is the guard in front.
+        if part == ".." or os.path.isabs(part) or os.path.splitdrive(part)[0]:
+            raise HTTPException(status_code = 404, detail = "Not found")
+        if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", part):
+            raise HTTPException(status_code = 404, detail = "Not found")
     sandbox_dir = _sandbox_dir_for(session_id, create = False)
-    file_path = os.path.realpath(os.path.join(sandbox_dir, safe_filename))
+    file_path = os.path.realpath(os.path.join(sandbox_dir, *parts))
     if file_path != sandbox_dir and not file_path.startswith(sandbox_dir + os.sep):
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
             detail = "Access denied",
         )
     return sandbox_dir, file_path
+
+
+def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
+    """Relative paths of the files in a sandbox, subdirectories included.
+
+    Bounded the same way the snapshot walk is, so a chat that unpacked an
+    archive cannot turn a listing into a filesystem crawl.
+    """
+    names: "list[str]" = []
+    for base, dirs, entries in os.walk(sandbox_dir):
+        depth = base[len(sandbox_dir) :].count(os.sep)
+        dirs[:] = [] if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1 else [
+            d for d in sorted(dirs) if not d.startswith(".")
+        ]
+        for entry in sorted(entries):
+            if entry.startswith(".") or entry.startswith("studio_exec_"):
+                continue
+            path = os.path.join(base, entry)
+            try:
+                if not os.path.isfile(path) or os.path.islink(path):
+                    continue
+            except OSError:
+                continue
+            names.append(os.path.relpath(path, sandbox_dir).replace(os.sep, "/"))
+            if len(names) >= 2000:
+                return names
+    return names
 
 
 @router.get("/sandbox/{session_id}")
@@ -13543,17 +13582,9 @@ async def list_sandbox_files(
     sandbox_dir = _sandbox_dir_for(session_id, create = False)
     files = []
     if os.path.isdir(sandbox_dir):
-        try:
-            names = os.listdir(sandbox_dir)
-        except OSError:
-            names = []
-        for name in sorted(names):
-            if name.startswith(".") or name.startswith("studio_exec_"):
-                continue
+        for name in _sandbox_listing_names(sandbox_dir):
             path = os.path.join(sandbox_dir, name)
             try:
-                if not os.path.isfile(path):
-                    continue
                 stat = os.stat(path)
             except OSError:
                 continue
@@ -13568,7 +13599,7 @@ async def list_sandbox_files(
     return {"path": sandbox_dir, "files": files}
 
 
-@router.get("/sandbox/{session_id}/{filename}")
+@router.get("/sandbox/{session_id}/{filename:path}")
 async def serve_sandbox_file(
     session_id: str,
     filename: str,

@@ -7174,6 +7174,7 @@ def sandbox_root() -> str:
 
 
 _legacy_sandbox_migrated = False
+_legacy_sandbox_lock = threading.Lock()
 
 
 def _migrate_legacy_sandbox(root: str) -> None:
@@ -7186,7 +7187,17 @@ def _migrate_legacy_sandbox(root: str) -> None:
     global _legacy_sandbox_migrated
     if _legacy_sandbox_migrated:
         return
-    _legacy_sandbox_migrated = True
+    # Under the lock, and flagged only once the move is done: setting it first
+    # let a concurrent first tool call create a destination session directory,
+    # which then looked like a collision and stranded the user's legacy files.
+    with _legacy_sandbox_lock:
+        if _legacy_sandbox_migrated:
+            return
+        _migrate_legacy_sandbox_locked(root)
+        _legacy_sandbox_migrated = True
+
+
+def _migrate_legacy_sandbox_locked(root: str) -> None:
     legacy = _legacy_sandbox_root()
     try:
         if os.path.realpath(legacy) == os.path.realpath(root) or not os.path.isdir(legacy):
@@ -7269,6 +7280,9 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
     if cached:
         return cached
     root = sandbox_root()
+    # Right after an upgrade a chat's files are still at the legacy root, and
+    # nothing else has run yet. This moves them without creating a session dir.
+    _migrate_legacy_sandbox(root)
     if not session_id:
         return os.path.join(root, "_default")
     if not _usable_session_id(session_id):
@@ -10342,7 +10356,11 @@ def _drain_process_output(
 
 
 _INTERNAL_FILE_PREFIXES = ("studio_exec_",)  # the sandbox's own scratch files
-_MAX_REPORTED_FILES = 25  # a shard-writing script must not blow up the result
+_MAX_REPORTED_FILES = 25
+# A build step or an unpacked archive can leave thousands of files; the walk is
+# bounded so a tool call cannot turn into a filesystem crawl.
+_MAX_SNAPSHOT_DEPTH = 4
+_MAX_SNAPSHOT_FILES = 2000  # a shard-writing script must not blow up the result
 
 
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, int]":
@@ -10353,20 +10371,24 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, int]":
     snapshot: "dict[str, int]" = {}
     if not workdir or not os.path.isdir(workdir):
         return snapshot
-    try:
-        names = os.listdir(workdir)
-    except OSError:
-        return snapshot
-    for name in names:
-        if name.startswith(".") or name.startswith(_INTERNAL_FILE_PREFIXES):
-            continue
-        path = os.path.join(workdir, name)
-        try:
-            if not os.path.isfile(path):
+    # Walked, not listed: a script writing outputs/report.csv is ordinary, and a
+    # top-level listing saw only the directory and dropped it.
+    for base, dirs, names in os.walk(workdir):
+        depth = base[len(workdir) :].count(os.sep)
+        dirs[:] = [] if depth >= _MAX_SNAPSHOT_DEPTH else [d for d in dirs if not d.startswith(".")]
+        for name in names:
+            if name.startswith(".") or name.startswith(_INTERNAL_FILE_PREFIXES):
                 continue
-            snapshot[name] = os.stat(path).st_mtime_ns
-        except OSError:
-            continue
+            path = os.path.join(base, name)
+            try:
+                if not os.path.isfile(path) or os.path.islink(path):
+                    continue
+                relative = os.path.relpath(path, workdir).replace(os.sep, "/")
+                snapshot[relative] = os.stat(path).st_mtime_ns
+            except OSError:
+                continue
+            if len(snapshot) >= _MAX_SNAPSHOT_FILES:
+                return snapshot
     return snapshot
 
 
@@ -10386,7 +10408,10 @@ def _created_file_sentinels(workdir: str | None, before: "dict[str, int]") -> st
 
     import json as _json
 
+    # Same cap on both: a script writing a frame per step would otherwise put
+    # every name in the result and the stored chat, and the UI would render them all.
     images = [n for n in changed if os.path.splitext(n)[1].lower() in _IMAGE_EXTS]
+    images = images[:_MAX_REPORTED_FILES]
     entries = []
     for name in changed[:_MAX_REPORTED_FILES]:
         try:
@@ -10496,11 +10521,16 @@ def _python_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        # A run that wrote its file and then hung still produced that file, so
+        # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
-            return _truncate(f"Execution timed out after {timeout} seconds.")
+            ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            return ended + (_created_file_sentinels(workdir, _before) if session_id else "")
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled."
+            return "Execution cancelled." + (
+                _created_file_sentinels(workdir, _before) if session_id else ""
+            )
 
         result = output or ""
         if proc.returncode != 0:
@@ -10608,11 +10638,16 @@ def _bash_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        # A run that wrote its file and then hung still produced that file, so
+        # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
-            return _truncate(f"Execution timed out after {timeout} seconds.")
+            ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            return ended + (_created_file_sentinels(workdir, _before) if session_id else "")
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled."
+            return "Execution cancelled." + (
+                _created_file_sentinels(workdir, _before) if session_id else ""
+            )
 
         result = output or ""
         if proc.returncode != 0:

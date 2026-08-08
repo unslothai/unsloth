@@ -306,6 +306,16 @@ def _setup_cache_env() -> None:
                 pass
 
 
+def setup_cache_env() -> None:
+    """Seed the cache env vars without creating every studio directory.
+
+    For `uvicorn main:app`, which bypasses run.py and so never reaches
+    ensure_studio_directories, but still has to pin UNSLOTH_COMPILE_LOCATION
+    before unsloth_zoo.compiler is imported.
+    """
+    _setup_cache_env()
+
+
 def ensure_studio_directories() -> None:
     """Create all standard studio directories on startup."""
     for dir_fn in (

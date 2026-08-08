@@ -278,11 +278,34 @@ def _strip_mcp_image_suffix(result: str) -> str:
     return head.rstrip()
 
 
+def _strip_files_sentinel(result: str) -> str:
+    """Drop a trailing ``__FILES__`` envelope, and only that.
+
+    Validated rather than split on sight: a tool whose own output contains the
+    literal text would otherwise lose everything after it.
+    """
+    marker = "\n__FILES__:"
+    start = result.rfind(marker)
+    if start == -1:
+        return result
+    payload_start = start + len(marker)
+    end = result.find("\n__", payload_start)
+    if end == -1:
+        end = len(result)
+    try:
+        if not isinstance(json.loads(result[payload_start:end]), list):
+            return result
+    except (ValueError, TypeError):
+        return result
+    return result[:start] + result[end:]
+
+
 def strip_result_for_model(result: str) -> str:
     """Remove frontend-only sentinels (image paths, RAG source map) before
     feeding the result back to the model."""
     result = _strip_mcp_image_suffix(result)
-    for sentinel in ("__IMAGES__:", "__FILES__:", "__RAG_SOURCES__:"):
+    result = _strip_files_sentinel(result)
+    for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):
         if sentinel in result:
             result = result.split(sentinel, 1)[0].rstrip()
     return result

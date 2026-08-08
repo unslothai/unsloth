@@ -194,6 +194,16 @@ import _platform_compat  # noqa: F401
 # unsloth-zoo import below, whose LLAMA_CPP_DEFAULT_DIR binding is import-time.
 from utils.paths.storage_roots import studio_root as _studio_root
 
+# Same reason, same deadline: unsloth_zoo.compiler reads UNSLOTH_COMPILE_LOCATION
+# at import time, and without this a direct start falls back to a CWD-relative
+# unsloth_compiled_cache (on Windows that is the user profile).
+from utils.paths.storage_roots import setup_cache_env as _setup_cache_env
+
+try:
+    _setup_cache_env()
+except Exception:  # noqa: BLE001
+    pass
+
 try:
     _LEGACY_STUDIO_ROOT = (_Path.home() / ".unsloth" / "studio").resolve()
 except (OSError, ValueError):

@@ -35,5 +35,11 @@ export function extractCreatedFiles(raw: string): {
 }
 
 export function sandboxFilePath(sessionId: string, filename: string): string {
-  return `/api/inference/sandbox/${encodeURIComponent(sessionId)}/${encodeURIComponent(filename)}`;
+  // Segment by segment: a file written to outputs/report.csv keeps a real "/"
+  // in the URL, which encodeURIComponent on the whole name would have escaped.
+  const path = filename
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `/api/inference/sandbox/${encodeURIComponent(sessionId)}/${path}`;
 }
