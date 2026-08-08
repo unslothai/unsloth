@@ -261,6 +261,25 @@ jobs:
           mkdir -p logs/playwright_image_footprint
           python tests/studio/playwright_image_model_footprint.py
 
+      - name: Image staged-download cancel/retry regression (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          PW_ART_DIR: logs/playwright_image_cancel_retry
+        run: |
+          mkdir -p logs/playwright_image_cancel_retry
+          python tests/studio/playwright_image_download_cancel_retry.py
+
+      # Same drive with the checkpoint absent, so the plan stages two entries instead of one and
+      # the queue's ordering and cancellation are covered as well as the single-entry path.
+      - name: Image staged-download cancel/retry regression, cold checkpoint (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          PW_ART_DIR: logs/playwright_image_cancel_retry_cold
+          PW_CHECKPOINT_CACHED: "0"
+        run: |
+          mkdir -p logs/playwright_image_cancel_retry_cold
+          python tests/studio/playwright_image_download_cancel_retry.py
+
       - name: Stop second Unsloth
         if: always()
         run: |

@@ -5687,6 +5687,29 @@ def test_download_plan_restages_the_old_root_half_when_other_files_are_missing_t
     ), "staging only the absent files would leave the old-root half stranded across two roots"
 
 
+def test_download_plan_stages_a_file_a_stale_live_copy_shadows(monkeypatch):
+    # The nastiest split: the live root holds an OLD copy under the right name and the other root
+    # holds the revision the plan sized. reuse_other_cache_root only switches roots when the live
+    # lookup finds nothing, so the stale copy wins and the load reads it, or refetches inline.
+    # Treating that as cached would report an empty plan for a base that is not actually usable.
+    _fake_hf_api(monkeypatch, {"unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS})
+    shadowed = {"model_index.json"}
+
+    def probe(repo_id, filename, revision = None, expected_size = None, roots = None, **kwargs):
+        asks_live = roots is not None and roots != (None,)
+        if filename in shadowed:
+            # Present in the live root but the wrong bytes; correct in the other root.
+            return expected_size is None if asks_live else True
+        return asks_live
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(probe))
+
+    plan = DiffusionBackend().download_plan("unsloth/Z-Image-Turbo", model_kind = "pipeline")
+
+    staged = {f for entry in plan["entries"] for f in entry["files"]}
+    assert staged == shadowed, "a stale live copy must be restaged, not trusted as an other-root hit"
+
+
 def test_download_plan_stages_nothing_for_a_base_wholly_in_the_other_root(monkeypatch):
     # The case reuse_other_cache_root exists for: one root holds the WHOLE base, so _prefetch_files
     # hands back that snapshot and the load reads it off disk. Nothing to restage.

@@ -1765,9 +1765,15 @@ class DiffusionBackend:
                 size = declared_sizes.get(name)
                 if self._hub_file_is_cached(repo, name, revision, size, roots = (live,)):
                     return "live"
-                if self._hub_file_is_cached(repo, name, revision, size, roots = (None,)):
-                    return "other"
-                return None
+                if not self._hub_file_is_cached(repo, name, revision, size, roots = (None,)):
+                    return None
+                # The other root holds a good copy, but reuse_other_cache_root only switches roots
+                # when the live lookup finds NOTHING. A stale live copy (right name, wrong bytes)
+                # therefore shadows the good one and gets served, or re-fetched inline. Passing no
+                # size asks presence alone, which is exactly what that switch tests.
+                if self._hub_file_is_cached(repo, name, revision, None, roots = (live,)):
+                    return None
+                return "other"
 
             where = {name: _where(name) for name in files}
             # A repo whose files STRADDLE the two roots cannot be handed to from_pretrained as one

@@ -2397,12 +2397,17 @@ def test_every_video_fetch_resolves_both_cache_roots():
     neither. So every fetch on the load path has to resolve both roots as well, or the file the
     planner skipped is re-pulled inside the load, outside the manager's progress, cancel and disk
     preflight -- and fails outright offline. The diffusion and sd.cpp fetches already opt in."""
-    src = (Path(__file__).resolve().parents[1] / "core/inference/video.py").read_text()
-    # The bare `from ... import name` has no trailing paren, so this counts call sites only.
-    calls = src.count("hf_hub_download_with_xet_fallback(")
-    optins = src.count("reuse_other_cache_root = True")
-    assert calls > 0, "no video fetch call sites found; this guard has gone stale"
-    assert optins == calls, (
-        f"{calls - optins} of {calls} video fetches resolve only the active cache root, "
-        "so the planner's both-roots probe can drop a file the load cannot then find"
-    )
+    # Every module on the video load path, not just video.py: the LTX-2.3 extras loader lives in
+    # video_ltx2.py and shipped without the opt-in while the plan already skipped its files.
+    root = Path(__file__).resolve().parents[1] / "core/inference"
+    for name in ("video.py", "video_ltx2.py"):
+        src = (root / name).read_text()
+        # The bare `from ... import name` has no trailing paren, so this counts call sites only.
+        calls = src.count("hf_hub_download_with_xet_fallback(")
+        if calls == 0:
+            continue
+        optins = src.count("reuse_other_cache_root = True")
+        assert optins == calls, (
+            f"{name}: {calls - optins} of {calls} video fetches resolve only the active cache "
+            "root, so the planner's both-roots probe can drop a file the load cannot then find"
+        )
