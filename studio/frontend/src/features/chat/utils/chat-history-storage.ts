@@ -77,11 +77,17 @@ let legacyChatImportGeneration = 0;
 // waiting so a new chat's first message can render, so every read-modify-write below has to.
 const pendingThreadRecordByThreadId = new Map<string, Promise<void>>();
 
+// Creators whose last write failed. assistant-ui caches a resolved initialize(), so it never asks
+// for the row again, and without this every later write to that thread would keep 404ing.
+const failedThreadRecordByThreadId = new Map<string, () => Promise<void>>();
+
 /** Register an in-flight thread row write so later writes to that thread wait for it. */
 export function trackStoredChatThreadRecord(
   threadId: string,
-  create: Promise<void>,
+  createRecord: () => Promise<void>,
 ): void {
+  const create = createRecord();
+  create.catch(() => failedThreadRecordByThreadId.set(threadId, createRecord));
   const inFlight = pendingThreadRecordByThreadId.get(threadId);
   // Overlapping initializations chain rather than replace: waiting on only the newest upsert lets
   // the slower one land afterwards and overwrite the row a caller has since corrected.
@@ -552,8 +558,26 @@ export async function ensureStoredChatThread(
   if (backendThread) {
     return backfillLegacyThreadFields(backendThread, legacyThread);
   }
-  if (!legacyThread || isChatThreadDeleted(legacyThread.id)) return undefined;
+  if (!legacyThread || isChatThreadDeleted(legacyThread.id)) {
+    return retryFailedThreadRecord(threadId);
+  }
   return importLegacyThread(legacyThread).catch(() => legacyThread);
+}
+
+/** Re-run a row write that failed, for a thread the reads above could not find. */
+async function retryFailedThreadRecord(
+  threadId: string,
+): Promise<ThreadRecord | undefined> {
+  const createRecord = failedThreadRecordByThreadId.get(threadId);
+  if (!createRecord) return undefined;
+  failedThreadRecordByThreadId.delete(threadId);
+  trackStoredChatThreadRecord(threadId, createRecord);
+  try {
+    await awaitStoredChatThreadRecord(threadId);
+  } catch {
+    return undefined;
+  }
+  return (await getChatThread(threadId).catch(() => null)) ?? undefined;
 }
 
 export async function listStoredChatMessages(

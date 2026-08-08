@@ -761,8 +761,7 @@ function createStudioDbAdapter(
 
     initialize(threadId: string) {
       // assistant-ui withholds the first message until this resolves, so the row write is tracked, not awaited.
-      trackStoredChatThreadRecord(
-        threadId,
+      trackStoredChatThreadRecord(threadId, () =>
         ensureThreadRecord({ threadId, modelType, pairId, projectId }),
       );
       // A run already streaming on this thread filed its handles under "__default" because
