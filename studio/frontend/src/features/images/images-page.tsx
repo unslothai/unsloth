@@ -2500,14 +2500,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             />
           )}
         </div>
-        {/* Create | Train page-mode switch, centered on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
-        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center">
+        {/* Create | Train page-mode switch: flow beside the selector at narrow desktop widths; center once all three controls fit safely. */}
+        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center md:static lg:absolute">
           <PillTabs
             ariaLabel="Page mode"
             value={pageMode}
             onValueChange={(v) => setPageMode(v as "create" | "train")}
             fit={true}
-            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-11"
+            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-11 md:[&>button]:px-3 lg:[&>button]:px-11"
             tabs={[
               {
                 value: "create",

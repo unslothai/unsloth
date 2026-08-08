@@ -690,7 +690,7 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 
 
 def test_images_header_clears_collapsed_tauri_titlebar_controls():
-    """Images follows Chat's pin-aware inset instead of sliding under collapsed controls."""
+    """Images clears collapsed controls without overlapping its narrow-desktop tabs."""
     source = IMAGES_PAGE.read_text(encoding = "utf-8")
     before, marker, after = source.partition("h-[48px] shrink-0 items-start justify-between")
     assert marker
@@ -703,6 +703,10 @@ def test_images_header_clears_collapsed_tauri_titlebar_controls():
     assert opening.index("isMobile") < opening.index("!pinned && isTauri")
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in opening
     assert "pl-[var(--studio-media-header-left-inset,1.5rem)]" in opening
+
+    mode_switch = source.split("Create | Train page-mode switch", 1)[1].split("tabs={[", 1)[0]
+    assert "md:static lg:absolute" in mode_switch
+    assert "md:[&>button]:px-3 lg:[&>button]:px-11" in mode_switch
 
 
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
