@@ -9398,6 +9398,8 @@ class LlamaCppBackend:
 
             # MTP does not clamp the slots. #7717 did, for a draft-acceptance collapse, but on
             # b10310 four MTP slots hit 1.97x the batch throughput of one, beating four without.
+            # llama.cpp#26031 reports concurrent MTP garbling on hybrid archs; it did not
+            # reproduce here (qwen35 and qwen35moe on CUDA, 24 staggered uneven requests).
 
             # ── Vulkan-ordinal preflight (BEFORE the Phase 1 kill) ────────
             # An explicit Vulkan pin the ggml probe never enumerated cannot be honored.
