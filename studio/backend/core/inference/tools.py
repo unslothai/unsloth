@@ -7370,6 +7370,26 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
     return workdir
 
 
+_DETACHED_SUFFIX = ".deleting-"
+
+
+def _delete_detached(path: str, root: str) -> None:
+    """Remove a detached sandbox, and any a previous run left behind.
+
+    An exit mid-delete strands the directory under a name no session id can
+    reach, which is the accumulating folder this whole change is about.
+    """
+    shutil.rmtree(path, ignore_errors = True)
+    try:
+        stale = [n for n in os.listdir(root) if _DETACHED_SUFFIX in n]
+    except OSError:
+        return
+    for name in stale:
+        candidate = os.path.join(root, name)
+        if os.path.isdir(candidate) and not os.path.islink(candidate):
+            shutil.rmtree(candidate, ignore_errors = True)
+
+
 def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     """Drop a deleted chat's sandbox. True when something was removed.
 
@@ -7416,16 +7436,15 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
             # Renamed while locked, deleted after: rmtree of a large tree would
             # otherwise hold the lock every tool start takes, and block the
             # event loop of the route that called this.
-            detached = f"{target}.deleting-{uuid.uuid4().hex[:8]}"
+            detached = f"{target}{_DETACHED_SUFFIX}{uuid.uuid4().hex[:8]}"
             try:
                 os.rename(target, detached)
             except OSError:
                 shutil.rmtree(target, ignore_errors = True)
                 return not os.path.isdir(target)
             threading.Thread(
-                target = shutil.rmtree,
-                args = (detached,),
-                kwargs = {"ignore_errors": True},
+                target = _delete_detached,
+                args = (detached, root),
                 name = "sandbox-delete",
                 daemon = True,
             ).start()

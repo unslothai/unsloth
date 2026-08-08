@@ -1606,5 +1606,34 @@ def test_deleting_a_big_sandbox_does_not_hold_the_tool_lock(tmp_path, monkeypatc
     assert time.monotonic() - started < 0.3, "a tool start waited for the delete"
 
 
+def test_a_delete_interrupted_by_a_restart_is_finished_later(tmp_path, monkeypatch):
+    """The detached directory is under a name no session id can reach, so an
+    exit mid-delete would strand it for good."""
+    import time
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_stale11"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    root = workdir.parent
+
+    # What a previous run left behind when it was killed mid-delete.
+    stranded = root / f"__LOCALID_gone999{tools._DETACHED_SUFFIX}abc12345"
+    stranded.mkdir()
+    (stranded / "leftover.bin").write_bytes(b"x")
+
+    (workdir / "data.bin").write_bytes(b"y")
+    assert tools.remove_session_sandbox(session, delete_files = True) is True
+    for _ in range(50):
+        if not stranded.exists() and not workdir.exists():
+            break
+        time.sleep(0.1)
+    assert not workdir.exists()
+    assert not stranded.exists(), "a previous run's leftover was never cleaned up"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
