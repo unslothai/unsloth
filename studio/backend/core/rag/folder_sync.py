@@ -15,7 +15,7 @@ import uuid
 import weakref
 from contextlib import ExitStack
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from storage import rag_db
 from utils.paths import ensure_dir, rag_uploads_root
@@ -689,6 +689,36 @@ def _check_root_identity(root: str, expected: tuple[int, int]) -> None:
         raise _FolderChanged("Linked folder root identity changed during reconciliation")
 
 
+def _source_reappeared(root: str, relative_path: str) -> bool:
+    """Check scanner eligibility without following a replaced path component."""
+    path = PurePosixPath(relative_path)
+    parts = path.parts
+    if (
+        not parts
+        or path.is_absolute()
+        or "\x00" in relative_path
+        or any(part == ".." for part in parts)
+    ):
+        raise _FolderChanged("Linked folder mapping has an invalid relative path")
+    current = root
+    for index, part in enumerate(parts):
+        current = os.path.join(current, part)
+        try:
+            current_stat = os.lstat(current)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise _FolderChanged("Linked source could not be rechecked") from exc
+        if stat.S_ISLNK(current_stat.st_mode):
+            return False
+        if index < len(parts) - 1:
+            if not stat.S_ISDIR(current_stat.st_mode):
+                return False
+        else:
+            return stat.S_ISREG(current_stat.st_mode)
+    return False
+
+
 def _set_job(job_id: str, **values) -> None:
     if not values:
         return
@@ -878,6 +908,7 @@ def _reconcile_folder(job_id: str) -> None:
             completed_at = _now(),
         )
         return
+    embedding_model = config.effective_embedding_model()
     conn = rag_db.get_connection()
     try:
         conn.execute(
@@ -1034,6 +1065,7 @@ def _reconcile_folder(job_id: str) -> None:
                 dedupe = False,
                 linked_folder_id = folder["id"],
                 linked_relative_path = rel,
+                model_name = embedding_model,
             )
             result = _wait_ingestion(ingestion_job)
             if result["status"] != "completed":
@@ -1096,6 +1128,9 @@ def _reconcile_folder(job_id: str) -> None:
         dependencies = ambiguous_dependencies.get(rel)
         if dependencies and not dependencies.issubset(replacement_succeeded):
             continue
+        _check_root_identity(folder["path"], scanned_identity)
+        if _source_reappeared(folder["path"], rel):
+            raise _FolderChanged("Linked source reappeared during reconciliation")
         _check_root_identity(folder["path"], scanned_identity)
         _delete_mapping(folder["id"], rel)
         deleted += 1

@@ -192,6 +192,77 @@ def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(rag_home,
 
 
 @requires_sqlite_vec
+def test_reconcile_pins_one_embedding_model_for_every_file(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "first.txt").write_text("first words", encoding = "utf-8")
+    (source / "second.txt").write_text("second words", encoding = "utf-8")
+    resolved = []
+    models = []
+
+    def effective_model():
+        resolved.append(True)
+        return "model/one" if len(resolved) == 1 else "model/two"
+
+    original_start = folder_sync.ingestion.start_ingestion
+
+    def capture_model(*args, **kwargs):
+        models.append(kwargs.get("model_name"))
+        return original_start(*args, **kwargs)
+
+    monkeypatch.setattr(folder_sync.config, "effective_embedding_model", effective_model)
+    monkeypatch.setattr(folder_sync.ingestion, "start_ingestion", capture_model)
+
+    assert _run(folder["id"])["status"] == "completed"
+    assert len(resolved) == 1
+    assert models == ["model/one", "model/one"]
+
+
+@requires_sqlite_vec
+def test_reconcile_retains_mapping_when_missing_file_reappears(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    linked = source / "notes.txt"
+    linked.write_text("durable words", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        before = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
+    finally:
+        conn.close()
+    linked.unlink()
+    original_scan = folder_sync._scan
+
+    def restore_after_scan(*args, **kwargs):
+        result = original_scan(*args, **kwargs)
+        linked.write_text("durable words", encoding = "utf-8")
+        return result
+
+    monkeypatch.setattr(folder_sync, "_scan", restore_after_scan)
+    result = _run(folder["id"])
+
+    assert result["status"] == "failed"
+    assert result["deleted"] == 0
+    conn = rag_db.get_connection()
+    try:
+        after = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
+        assert after["document_id"] == before["document_id"]
+        assert store.search_lexical(conn, folder["scope"], "durable", 5)
+    finally:
+        conn.close()
+
+
+@requires_sqlite_vec
 def test_extension_changing_rename_reingests_with_the_new_parser(rag_home, stub_embeddings):
     source, folder = _folder(rag_home)
     original = source / "notes.html"
