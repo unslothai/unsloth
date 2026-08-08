@@ -318,6 +318,12 @@ def _run_ps1(value: str | None) -> str:
     if value is not None:
         env["UNSLOTH_LLAMA_CPP_BACKEND"] = value
     harness = (
+        # The spliced snippet warns through setup.ps1's output sink, which the real
+        # script defines above every call site. Stub it to Write-Host so the warning
+        # lands on stdout, where the assertions below read it: without this the call
+        # errors out and the harness returns a bare "ARGS:".
+        "function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) "
+        "Write-Host $Message }\n"
         "$prebuiltArgs = @()\n"
         '$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()\n'
         '$sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()\n'

@@ -4,8 +4,10 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { useTrainingConfigStore } from "@/features/training";
-import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
+import {
+  getTrainingMethodLabel,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { useHardwareInfo } from "@/hooks";
 import { isAdapterMethod } from "@/types/training";
 import { ChipIcon, Database02Icon, GpuIcon, Settings04Icon } from "@hugeicons/core-free-icons";
@@ -109,7 +111,7 @@ export function SummaryStep() {
   const trainingMethodLabel = getTrainingMethodLabel(trainingMethod);
 
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
@@ -210,7 +212,7 @@ export function SummaryStep() {
             </div>
           </div>
           <Separator className="my-2" />
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+          <div className="grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
             <Row label="Epochs" value={epochs} mono />
             <Row label="Context" value={contextLength.toLocaleString()} mono />
             <Row label="LR" value={learningRate.toExponential()} mono />

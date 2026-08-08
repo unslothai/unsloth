@@ -3,27 +3,29 @@
 
 "use client";
 
-import { getAuthToken } from "@/features/auth/session";
+import { Spinner } from "@/components/ui/spinner";
+import { authFetch } from "@/features/auth";
+import {
+  preferSanitizedFullToolOutput,
+  useChatRuntimeStore,
+  useToolAwaitingApproval,
+  useToolOutputFor,
+  useToolPaneScope,
+} from "@/features/chat";
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { CodeIcon } from "lucide-react";
-import { Spinner } from "@/components/ui/spinner";
-import { memo } from "react";
+import { memo, useEffect, useRef, useState } from "react";
+import { pythonToolImagePath } from "./python-tool-image-path";
+import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
-import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import {
-  preferFullToolOutput,
-  useToolAwaitingApproval,
-  useToolOutputFor,
-  useToolPaneScope,
-} from "@/features/chat";
 
 interface StructuredResult {
   text: string;
@@ -38,6 +40,91 @@ function isStructuredResult(val: unknown): val is StructuredResult {
     "text" in val &&
     "images" in val &&
     "sessionId" in val
+  );
+}
+
+function PythonToolImage({
+  sessionId,
+  filename,
+}: {
+  sessionId: string;
+  filename: string;
+}) {
+  const imageKey = `${sessionId}\0${filename}`;
+  const [image, setImage] = useState<{ key: string; url: string } | null>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const [nearViewport, setNearViewport] = useState(
+    () => typeof IntersectionObserver === "undefined",
+  );
+
+  useEffect(() => {
+    if (nearViewport) {
+      return;
+    }
+    const element = imageRef.current;
+    if (!element) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setNearViewport(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [nearViewport]);
+
+  useEffect(() => {
+    if (!nearViewport) {
+      return;
+    }
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+
+    const load = async () => {
+      const response = await authFetch(
+        pythonToolImagePath(sessionId, filename),
+        {
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok) {
+        return;
+      }
+
+      const blob = await response.blob();
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      objectUrl = URL.createObjectURL(blob);
+      setImage({ key: imageKey, url: objectUrl });
+    };
+    load().catch(() => {
+      // A failed or cancelled image stays as its accessible alt text.
+    });
+
+    return () => {
+      controller.abort();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [filename, imageKey, nearViewport, sessionId]);
+
+  return (
+    <img
+      ref={imageRef}
+      src={image?.key === imageKey ? image.url : undefined}
+      alt={filename}
+      loading="lazy"
+      className="max-w-full rounded border border-border"
+    />
   );
 }
 
@@ -62,10 +149,8 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     output = result.text;
     images = result.images;
     sessionId = result.sessionId;
-  } else if (typeof result === "string") {
-    output = result;
-  } else if (result) {
-    output = JSON.stringify(result, null, 2);
+  } else if (result != null) {
+    output = stringifyToolResult(result);
   } else {
     output = "";
   }
@@ -78,9 +163,8 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     paneScope,
     toolCallId,
   );
-  const displayOutput = preferFullToolOutput(fullOutput, output);
+  const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
 
-  const authToken = getAuthToken();
   // The gate only opens once the call parsed, so a pending approval means the script is
   // written even while the args status still reads as streaming.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
@@ -129,7 +213,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
           ) : displayOutput ? (
             <div className="mt-2 border-t border-dashed pt-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">output</span>
+                <span className="text-xs font-medium text-muted-foreground">
+                  output
+                </span>
                 <CopyBtn text={displayOutput} />
               </div>
               <ToolResultOutput text={displayOutput} />
@@ -140,12 +226,10 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
           {images.length > 0 && sessionId && (
             <div className="mt-2 flex flex-col gap-2">
               {images.map((filename) => (
-                <img
+                <PythonToolImage
                   key={filename}
-                  src={`/api/inference/sandbox/${encodeURIComponent(sessionId)}/${encodeURIComponent(filename)}${authToken ? `?token=${encodeURIComponent(authToken)}` : ""}`}
-                  alt={filename}
-                  loading="lazy"
-                  className="max-w-full rounded border border-border"
+                  sessionId={sessionId}
+                  filename={filename}
                 />
               ))}
             </div>

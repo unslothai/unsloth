@@ -181,3 +181,275 @@ class TestOsKillReturncode:
         msg = _classify("", "/models/x.gguf", "local/x", -11)
         assert "GGUF file is valid" in msg
         assert "out of memory" not in msg.lower()
+
+
+class TestMissingSharedLibrary:
+    """The dynamic loader stops llama-server before it prints anything of its
+    own, so a stock container missing libgomp.so.1 used to be reported as an
+    invalid GGUF or too little memory."""
+
+    _LOADER_OUT = (
+        "/home/tester/.unsloth/llama.cpp/llama-server: error while loading "
+        "shared libraries: libgomp.so.1: cannot open shared object file: "
+        "No such file or directory"
+    )
+
+    def test_missing_libgomp_is_named_with_its_packages(self):
+        msg = _classify(self._LOADER_OUT, "/models/x.gguf", "local/x", 127)
+        assert "libgomp.so.1" in msg
+        assert "libgomp1" in msg
+        assert "Fedora/RHEL" in msg
+        assert "GGUF file is valid" not in msg
+        assert "enough memory" not in msg.lower()
+
+    def test_unknown_library_is_still_named(self):
+        out = "llama-server: error while loading shared libraries: libfoo.so.7: cannot open"
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "libfoo.so.7" in msg
+        assert "package manager" in msg
+        assert "libgomp1" not in msg
+
+    def test_exit_127_with_no_output_names_both_causes(self):
+        # 127 is also a shell-wrapper entrypoint whose exec target is gone, so
+        # it must not claim a distro package is missing. The generic
+        # file/memory message is still wrong.
+        msg = _classify("", "/models/x.gguf", "local/x", 127)
+        assert "could not be found or run" in msg
+        assert "shared libraries" in msg
+        assert "package manager" not in msg
+        assert "GGUF file is valid" not in msg
+        assert "enough memory" not in msg.lower()
+
+    def test_exit_127_on_a_pinned_binary_does_not_send_it_to_the_updater(self, monkeypatch):
+        # A wrapper whose exec target is gone exits 127 with no loader line, and
+        # the updater refuses to touch a LLAMA_SERVER_PATH pin, so the managed
+        # remedy is a dead end there too.
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+        msg = _classify("", "/models/x.gguf", "local/x", 127, "/opt/custom/llama-server")
+        assert "unsloth studio update" not in msg
+        assert "custom llama.cpp" in msg
+
+    def test_exit_127_on_a_managed_binary_still_points_at_the_updater(self):
+        msg = _classify("", "/models/x.gguf", "local/x", 127)
+        assert "unsloth studio update" in msg
+
+    def test_wrapper_exec_failure_is_not_called_a_system_library(self):
+        # write_exec_wrapper's entrypoint: /bin/sh reports a missing exec
+        # target as "not found" and exits 127.
+        out = (
+            "/home/t/.unsloth/llama.cpp/llama-server: 2: exec: "
+            "./build/bin/llama-server: not found"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "package manager" not in msg
+        assert "could not be found or run" in msg
+
+    def test_symbol_lookup_error_is_not_called_a_system_library(self):
+        # A mismatched bundled runtime exits 127 with this, not a loader line.
+        out = "llama-server: symbol lookup error: llama-server: undefined symbol: ggml_backend_init"
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "package manager" not in msg
+
+    def test_bundled_runtime_library_points_at_the_installer(self):
+        # libggml/libllama/libmtmd ship in build/bin (runtime_payload_health_groups)
+        # and no package manager can supply them.
+        out = (
+            "/home/t/.unsloth/llama.cpp/build/bin/llama-server: error while loading "
+            "shared libraries: libggml.so.0: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "libggml.so.0" in msg
+        assert "unsloth studio update" in msg
+        assert "package manager" not in msg
+
+    def test_corrupt_library_is_not_reported_as_missing(self):
+        # glibc reuses the same prefix for a present-but-unusable library.
+        out = (
+            "/opt/llama/llama-server: error while loading shared libraries: "
+            "/usr/lib/x86_64-linux-gnu/libgomp.so.1: file too short"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "file too short" in msg
+        assert "is missing" not in msg
+        assert "Install it with your package manager" not in msg
+
+    def test_corrupt_bundled_library_points_at_the_installer(self):
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "/home/t/.unsloth/llama.cpp/build/bin/libggml-cuda.so: invalid ELF header"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "invalid ELF header" in msg
+        assert "unsloth studio update" in msg
+        assert "is missing" not in msg
+
+    # Verified on glibc 2.39: an absolute DT_NEEDED dependency that exists but
+    # cannot be opened exits 127 with the EACCES strerror appended.
+    def test_permission_denied_library_is_not_reported_as_missing(self):
+        out = (
+            "/opt/llama/llama-server: error while loading shared libraries: "
+            "/opt/llama/lib/libgomp.so.1: cannot open shared object file: "
+            "Permission denied"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "Permission denied" in msg
+        assert "is missing" not in msg
+        assert "package manager" not in msg
+
+    def test_permission_denied_bundled_library_is_not_reported_as_missing(self):
+        out = (
+            "/home/t/.unsloth/llama.cpp/build/bin/llama-server: error while loading "
+            "shared libraries: /home/t/.unsloth/llama.cpp/build/bin/libggml.so: "
+            "cannot open shared object file: Permission denied"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "Permission denied" in msg
+        assert "is missing" not in msg
+
+    # glibc echoes the object name verbatim, so a path with spaces must not be
+    # truncated at the first space (verified on glibc 2.39).
+    def test_library_path_with_spaces_is_named_in_full(self):
+        out = (
+            "/opt/llama/llama-server: error while loading shared libraries: "
+            "/opt/My Runtime/libfoo.so: file too short"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "/opt/My Runtime/libfoo.so" in msg
+        assert "file too short" in msg
+
+    def test_missing_library_path_with_spaces_is_named_in_full(self):
+        out = (
+            "/opt/llama/llama-server: error while loading shared libraries: "
+            "/opt/My Runtime/libbar.so: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "/opt/My Runtime/libbar.so" in msg
+        assert "is missing" in msg
+
+    def test_an_absolute_path_is_not_offered_to_a_package_manager(self):
+        # An absolute DT_NEEDED names one exact file. No package puts a file at
+        # /opt/vendor, so apt/dnf is the wrong instruction whoever owns the
+        # binary.
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "/opt/vendor/libaccelerator.so: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "/opt/vendor/libaccelerator.so" in msg
+        assert "package manager" not in msg
+        assert "that exact location" in msg
+
+    def test_an_absolute_path_on_a_pinned_binary_names_the_custom_runtime(self, monkeypatch):
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "/opt/vendor/libaccelerator.so: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127, "/opt/custom/llama-server")
+        assert "custom llama.cpp" in msg
+        assert "unsloth studio update" not in msg
+        assert "package manager" not in msg
+
+    def test_a_bare_soname_keeps_package_advice_even_on_a_pinned_binary(self, monkeypatch):
+        # The counter-case that stops the rule from being "unmanaged means never
+        # mention a package": a custom-built llama.cpp on a bare-bones host is
+        # still missing a distro library, and libgomp1 is exactly what fixes it.
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "libgomp.so.1: cannot open shared object file: No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127, "/opt/custom/llama-server")
+        assert "libgomp1" in msg
+        assert "package manager" in msg
+
+    def test_a_relative_dt_needed_is_an_exact_path_too(self):
+        # glibc's rule is `strchr (name, '/') == NULL`: a slash anywhere means
+        # no search happened, so subdir/libfoo.so names one exact file just as
+        # an absolute path does. Reproduced on glibc 2.39 with a SONAME-less .so
+        # linked by relative path; it takes both to get here, so this is about
+        # matching the loader's rule rather than a case users hit.
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "subdir/libvendor.so: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "subdir/libvendor.so" in msg
+        assert "package manager" not in msg
+        assert "that exact location" in msg
+
+    def test_a_windows_absolute_path_is_recognised_too(self):
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "C:\\vendor\\accel.dll: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "package manager" not in msg
+        assert "that exact location" in msg
+
+    def test_bundled_library_under_a_spaced_path_still_points_at_the_installer(self):
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "/home/My User/.unsloth/llama.cpp/build/bin/libggml.so: invalid ELF header"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "/home/My User/.unsloth/llama.cpp/build/bin/libggml.so" in msg
+        assert "unsloth studio update" in msg
+
+    def test_pinned_custom_binary_is_not_called_unsloths_runtime(self, monkeypatch):
+        # LLAMA_SERVER_PATH pins an install update_flow.managed_install_root
+        # refuses to manage, so `unsloth studio update` cannot repair it.
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/mybuild/bin/llama-server")
+        out = (
+            "/opt/mybuild/bin/llama-server: error while loading shared libraries: "
+            "libggml.so: cannot open shared object file: No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127, "/opt/mybuild/bin/llama-server")
+        assert "libggml.so" in msg
+        assert "unsloth studio update" not in msg
+        assert "package manager" not in msg
+        assert "custom install" in msg
+
+    def test_managed_binary_still_points_at_the_installer(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+        binary.parent.mkdir(parents = True)
+        binary.write_text("")
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "llama.cpp"))
+        out = (
+            f"{binary}: error while loading shared libraries: libggml.so: "
+            "cannot open shared object file: No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127, str(binary))
+        assert "unsloth studio update" in msg
+
+    def test_nameless_loader_error_does_not_invent_a_library(self):
+        # glibc's own allocation failures pass an empty object name, so the
+        # text right after the colon is prose, not a soname.
+        out = "llama-server: error while loading shared libraries: cannot create search path array"
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "cannot create search path array" in msg
+        assert "the library cannot" not in msg
+        assert "is missing" not in msg
+
+    def test_loader_error_wins_without_a_returncode(self):
+        msg = _classify(self._LOADER_OUT, "/models/x.gguf", "local/x")
+        assert "libgomp.so.1" in msg
+
+    def test_a_normal_failure_is_untouched(self):
+        msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
+        assert "enough memory" in msg.lower()
+        assert "system library" not in msg
+
+    def test_a_named_arch_wins_over_exit_127(self):
+        # The bare code is only a fallback, so it must not mask a diagnosis the
+        # output already gives.
+        msg = _classify(_QWEN_IMAGE_OUT, "/models/qwen-image.gguf", "local/qwen-image", 127)
+        assert "Images page" in msg
+        assert "system library" not in msg

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -16,13 +17,52 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from routes.inference import _validate_native_gguf_companion
-from routes.inference import _request_matches_loaded_settings
+from routes.inference import _resolve_gguf_load_intent
 from routes.inference import _validate_native_mtp_drafter
 from routes.inference import _loaded_is_local_model
+from routes.inference import _mtp_draft_for_path
 from routes.inference import _native_gguf_companion_usable
-from utils.models.model_config import detect_mtp_file
+from utils.models.model_config import (
+    _local_gguf_companion_search_root,
+    detect_dspark_file,
+    detect_mtp_file,
+)
 from core.inference.llama_cpp import LlamaCppBackend
 from models.inference import LoadRequest
+
+
+def _request_matches_loaded_settings(
+    request,
+    backend,
+    _template = None,
+    native_grant_backed = False,
+):
+    model_path = backend.gguf_path
+    root = _local_gguf_companion_search_root(model_path, model_path)
+    draft = detect_mtp_file(model_path, search_root = root)
+    config = SimpleNamespace(
+        identifier = request.model_path,
+        gguf_hf_repo = None,
+        gguf_variant = request.gguf_variant,
+        gguf_file = model_path,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = draft,
+        gguf_dspark_file = detect_dspark_file(model_path, search_root = root),
+        is_vision = False,
+    )
+    intent = _resolve_gguf_load_intent(
+        config,
+        request,
+        native_grant_backed = native_grant_backed,
+        chat_template_override = None,
+        extra_args = None,
+        placement = SimpleNamespace(
+            resolved_gpu_ids = None,
+            gpu_ids_are_vulkan_ordinals = False,
+        ),
+        n_parallel = 1,
+    )
+    return backend._runtime_matches_intent(intent, None)
 
 
 def _write_pair(tmp_path: Path, folder: str | None = None) -> tuple[Path, Path]:
@@ -45,7 +85,7 @@ def test_native_companion_allows_model_directory(tmp_path):
 def test_native_mtp_companion_allows_mtp_directory(tmp_path, folder):
     weight, companion = _write_pair(tmp_path, folder)
     _validate_native_gguf_companion(
-        str(companion), str(weight), "MTP drafter", allow_mtp_subdir = True
+        str(companion), str(weight), "MTP drafter", allowed_subdirs = ("mtp",)
     )
 
 
@@ -61,7 +101,24 @@ def test_native_mtp_companion_allows_repo_root_mtp_directory(tmp_path):
         str(companion),
         str(weight),
         "MTP drafter",
-        allow_mtp_subdir = True,
+        allowed_subdirs = ("mtp",),
+        mtp_search_root = str(tmp_path),
+    )
+
+
+def test_native_dspark_companion_allows_repo_dspark_directory(tmp_path):
+    quant_dir = tmp_path / "Q4_0"
+    weight, _ = _write_pair(quant_dir)
+    companion_dir = tmp_path / "dspark"
+    companion_dir.mkdir()
+    companion = companion_dir / "dspark-model-Q8_0.gguf"
+    companion.write_bytes(b"draft")
+
+    _validate_native_gguf_companion(
+        str(companion),
+        str(weight),
+        "DSpark drafter",
+        allowed_subdirs = ("dspark",),
         mtp_search_root = str(tmp_path),
     )
 
@@ -79,7 +136,7 @@ def test_native_mtp_companion_rejects_unrelated_search_root(tmp_path):
             str(companion),
             str(weight),
             "MTP drafter",
-            allow_mtp_subdir = True,
+            allowed_subdirs = ("mtp",),
             mtp_search_root = str(tmp_path),
         )
 
@@ -133,7 +190,7 @@ def test_native_companion_rejects_arbitrary_nesting(tmp_path, folder):
     weight, companion = _write_pair(tmp_path, folder)
     with pytest.raises(HTTPException, match = "must live beside") as error:
         _validate_native_gguf_companion(
-            str(companion), str(weight), "MTP drafter", allow_mtp_subdir = True
+            str(companion), str(weight), "MTP drafter", allowed_subdirs = ("mtp",)
         )
     assert error.value.status_code == 400
 
@@ -167,7 +224,7 @@ def test_native_companion_rejects_directory_symlink_escape(tmp_path):
             str(model_dir / "MTP" / companion.name),
             str(weight),
             "MTP drafter",
-            allow_mtp_subdir = True,
+            allowed_subdirs = ("mtp",),
         )
 
 
@@ -364,6 +421,11 @@ def test_native_load_skips_rejected_mtp_candidate_for_next_one(tmp_path):
     assert detect_mtp_file(str(weight), str(tmp_path), skip_root = True, accept = _usable) == str(
         larger.resolve()
     )
+    assert _mtp_draft_for_path(
+        str(weight),
+        True,
+        log_native_fallback = True,
+    ) == str(larger.resolve())
 
 
 def test_native_load_returns_none_when_no_candidate_passes(tmp_path):

@@ -449,7 +449,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
           }),
     [isDataset, row.id, row.result, deviceType],
   );
-  const unsupported = support?.status === "unsupported";
+  const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
   const partialRepoId =
     row.isAvailableOnDevice && row.isPartialOnDevice
@@ -596,16 +596,16 @@ export const InventoryRow = memo(function InventoryRow({
   const rowTagsSignature = row.tags?.join("\u0001") ?? "";
   const unsupported = useMemo(() => {
     if (isDataset) return false;
-    return (
-      classifyUnslothSupport({
-        modelId: rowModelId,
-        pipelineTag: row.pipelineTag,
-        tags: rowTagsSignature ? rowTagsSignature.split("\u0001") : undefined,
-        libraryName: row.libraryName,
-        quantMethod: row.quantMethod,
-        deviceType,
-      }).status === "unsupported"
-    );
+    const classified = classifyUnslothSupport({
+      modelId: rowModelId,
+      pipelineTag: row.pipelineTag,
+      tags: rowTagsSignature ? rowTagsSignature.split("\u0001") : undefined,
+      libraryName: row.libraryName,
+      quantMethod: row.quantMethod,
+      deviceType,
+    });
+    // Images/Video run these, so they are not unsupported to a user.
+    return classified.status === "unsupported" && !classified.supportedIn;
   }, [
     isDataset,
     rowModelId,
@@ -744,7 +744,7 @@ export const InventoryRow = memo(function InventoryRow({
     deletableRepoId || settingsAction ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
-        buttonClassName="pointer-events-auto hub-modal-pe-guard p-2 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         iconClassName="size-4"
         settings={settingsAction}
         pin={

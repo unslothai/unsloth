@@ -1,0 +1,150 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Cache janitor
+
+# Keeps Actions cache usage clear of the 50 GB ceiling. At the ceiling GitHub
+# evicts by LRU regardless of reachability, and a partially evicted cache still
+# restores, then misses on the evicted objects: the hit rate collapses with
+# nothing failing.
+#
+# Deletes only families that resolve via restore-keys, where GitHub returns the
+# most recent prefix match so older generations serve no routine build:
+#   codeql-overlay-base-database-*  keys embed commit SHA + run id
+#   v0-rust-*                       Swatinem/rust-cache
+#
+# "Older" is not the same as unreachable. rust-cache passes its full key to
+# restoreCache, which tries an exact match first, so a build returning to an
+# earlier dependency state (a re-run of an old commit, a lockfile revert) can
+# still hit an older generation exactly. Pruning trades those rare exact hits
+# for headroom, which is the point; keep is the dial.
+#
+# Everything else is left alone. The hf-* / *-gguf-* model caches use exact keys,
+# so an entry that looks superseded is the only one its key will ever match and
+# deleting it costs a multi-GB re-download. setup-python does resolve by
+# restore-keys, but its hash is over the dependency file: one generation is live
+# at a time, and a superseded one expires by itself after 7 days unused.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'report = list candidates, delete nothing. delete = prune.'
+        type: choice
+        options: [report, delete]
+        default: report
+      keep:
+        description: 'Generations kept per prefix. 2 so an in-flight run cannot lose the cache it just resolved.'
+        type: string
+        default: '2'
+
+# Two sweeps would race on the same ids and spend their DELETEs on 404s.
+concurrency:
+  group: cache-janitor-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    name: Prune superseded caches
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+    steps:
+      - name: Prune
+        continue-on-error: true  # housekeeping must never page anyone
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Opt-in string, not a boolean: GitHub coerces an absent input and
+          # `false` alike, so `inputs.mode == false` is true when unset.
+          DELETE: ${{ (github.event_name == 'schedule' || inputs.mode == 'delete') && 'yes' || 'no' }}
+          KEEP: ${{ inputs.keep || '2' }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          all="$RUNNER_TEMP/caches.tsv"
+          grouped="$RUNNER_TEMP/grouped.tsv"
+
+          # Whitelist 1..99. Anything `[ n -le KEEP ]` cannot compare exits 2,
+          # and since that test is the left operand of `&&` set -e does not
+          # fire: the `continue` is skipped and every generation gets deleted,
+          # exit 0. All-digit is not enough, since a value past bash's integer
+          # range fails the same way.
+          case "$KEEP" in [1-9]|[1-9][0-9]) ;; *) echo "::warning::invalid keep=$KEEP, using 2"; KEEP=2 ;; esac
+
+          # Report a failed inventory. Deleting nothing is the safe direction,
+          # but silence means a broken janitor looks identical to a clean repo
+          # and nothing notices until the ceiling does.
+          if ! gh api --paginate "repos/$repo/actions/caches?per_page=100" \
+                 -q '.actions_caches[] | [.id, .created_at, .size_in_bytes, .ref, .version, .key] | @tsv' \
+                 > "$all"; then
+            echo "::warning::could not list caches for $repo; nothing pruned this run"
+            exit 0
+          fi
+
+          total=$(awk -F'\t' '{s+=$3} END {printf "%d", s+0}' "$all")
+          count=$(grep -c . "$all" || true)
+          echo "$count caches, $(( total / 1073741824 )) GiB, delete=$DELETE keep=$KEEP"
+
+          : > "$grouped"
+          while IFS=$'\t' read -r id created size ref ver key; do
+            [ -z "${id:-}" ] && continue
+            case "$key" in
+              codeql-overlay-base-database-*)
+                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}-[0-9]+-[0-9]+$//') ;;
+              v0-rust-*)
+                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{8,}$//') ;;
+              *) continue ;;
+            esac
+            # Unshortened means the suffix did not match, which would make
+            # generation 1 look like generation N. Skip rather than guess.
+            [ "$pre" = "$key" ] && continue
+            # Group per (ref, version), not per key. Lookup is scoped by all
+            # three: a branch cannot restore a sibling's cache, and a path or
+            # compression change mints a new version that is restored
+            # independently. Ranking them together lets two entries from one
+            # scope evict every usable entry of another.
+            printf '%s\t%s\t%s\t%s\n' "$ref|$ver|$pre" "$created" "$id" "$size" >> "$grouped"
+          done < "$all"
+
+          sort -t"$(printf '\t')" -k1,1 -k2,2r -o "$grouped" "$grouped"
+
+          prev=""; n=0; freed=0; deleted=0
+          while IFS=$'\t' read -r pre created id size; do
+            [ -z "${pre:-}" ] && continue
+            if [ "$pre" != "$prev" ]; then prev="$pre"; n=1; else n=$(( n + 1 )); fi
+            [ "$n" -le "$KEEP" ] && continue
+            if [ "$DELETE" != "yes" ]; then
+              freed=$(( freed + size )); deleted=$(( deleted + 1 )); continue
+            fi
+            # </dev/null or gh eats the loop's stdin and the sweep stops after one.
+            if gh api -X DELETE "repos/$repo/actions/caches/$id" --silent < /dev/null 2>/dev/null; then
+              freed=$(( freed + size )); deleted=$(( deleted + 1 ))
+            fi
+          done < "$grouped"
+
+          after=$(( total - freed ))
+          verb="pruned"; [ "$DELETE" = "yes" ] || verb="would prune"
+          echo "$verb $deleted caches, $(( freed / 1073741824 )) GiB"
+          {
+            echo "### Cache janitor"
+            echo ""
+            echo "| metric | value |"
+            echo "| --- | --- |"
+            echo "| mode | $([ "$DELETE" = yes ] && echo delete || echo 'report only') |"
+            echo "| kept per prefix | $KEEP |"
+            echo "| caches total | $count |"
+            echo "| candidates $verb | $deleted |"
+            echo "| freed | $(( freed / 1073741824 )) GiB |"
+            echo "| usage before | $(( total / 1073741824 )) GiB of 50 GB |"
+            echo "| usage after | $(( after / 1073741824 )) GiB of 50 GB |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$after" -gt 42949672960 ]; then
+            echo "::warning::Cache usage is $(( after / 1073741824 )) GiB of 50 GB after pruning. Lower keep to 1, or find the family that grew."
+          fi

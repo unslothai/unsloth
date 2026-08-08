@@ -28,11 +28,15 @@ name: Lint CI
 on:
   pull_request:
   push:
-    branches: [main, pip]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -43,11 +47,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -105,26 +109,42 @@ jobs:
         # exactly where a hoist refactor lives, and it skips brand-new
         # files whose re-export imports would otherwise look "unused".
         #
-        # Diff against the true merge-base, not the base tip. A two-dot
-        # diff against the tip re-lints every file the base branch
-        # changed after the PR branched, comparing newer base code
-        # (BEFORE) against the PR's older snapshot (AFTER) - a
-        # time-reversed comparison that flags the base branch's own
-        # refactors as blockers on PRs that never touched those files.
-        # The compare API returns the merge-base without needing local
-        # history, and fetching that single commit by SHA keeps the
-        # shallow (fetch-depth: 1) clone.
+        # Diff the merge-base against the PR HEAD, and pin BOTH ends
+        # explicitly.
+        #
+        # The base tip is the wrong BEFORE: a two-dot diff against it
+        # re-lints every file the base branch changed after the PR
+        # branched, comparing newer base code (BEFORE) against the PR's
+        # older snapshot (AFTER) - a time-reversed comparison that flags
+        # the base branch's own refactors as blockers.
+        #
+        # `HEAD` is the wrong AFTER for the same reason. On a
+        # pull_request event the checkout is refs/pull/N/merge, i.e.
+        # merge(PR head, base tip), so `$MERGE_BASE..HEAD` still spans
+        # every base commit since the branch point and reintroduces the
+        # exact false positives the merge-base was chosen to avoid.
+        # Naming the PR head SHA makes the range the PR's own commits
+        # and nothing else.
+        #
+        # Both endpoints are fetched by SHA so the shallow
+        # (fetch-depth: 1) clone is preserved; the verifier reads each
+        # revision with `git show REF:path` and never needs a checkout.
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           MERGE_BASE=$(gh api \
             "repos/${{ github.repository }}/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
             --jq .merge_base_commit.sha)
+          # A fork PR's head is not on origin as a branch, but it is
+          # always reachable as refs/pull/N/head.
           git fetch --no-tags --depth=1 origin "$MERGE_BASE"
+          git fetch --no-tags --depth=1 origin \
+            "refs/pull/${{ github.event.pull_request.number }}/head"
           mapfile -t CHANGED < <(
             git diff --name-only --diff-filter=M \
-              "$MERGE_BASE" HEAD -- '*.py' \
+              "$MERGE_BASE" "$HEAD_SHA" -- '*.py' \
               | grep -vE '(^|/)(unsloth_compiled_cache|node_modules|build|dist)/' || true
           )
           if [ "${#CHANGED[@]}" -eq 0 ]; then
@@ -132,10 +152,11 @@ jobs:
             exit 0
           fi
           printf 'merge base: %s\n' "$MERGE_BASE"
+          printf 'pr head:    %s\n' "$HEAD_SHA"
           printf 'checking %d file(s):\n' "${#CHANGED[@]}"
           printf '  %s\n' "${CHANGED[@]}"
           python scripts/verify_import_hoist.py \
-            --before "$MERGE_BASE" --after HEAD "${CHANGED[@]}"
+            --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
 
       - name: No leftover debugger / pdb / breakpoint calls
         # Catches the "I'll just stick a breakpoint() here" mistake

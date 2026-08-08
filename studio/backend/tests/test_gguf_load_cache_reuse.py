@@ -14,7 +14,7 @@ import logging
 import sys
 import threading
 import types as _types
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -78,6 +78,7 @@ except ImportError:
 from huggingface_hub import constants as hf_constants
 
 from core.inference.llama_cpp import (
+    GgufLoadIntent,
     LlamaCppBackend,
     cached_gguf_for_load,
     gguf_load_in_flight,
@@ -135,6 +136,35 @@ def _load_route_module(name: str, relative_path: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _run_route_load(route, request):
+    fastapi_request = SimpleNamespace(
+        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+    )
+    return asyncio.run(
+        route._load_model_impl(request, fastapi_request, current_subject = "test-user")
+    )
+
+
+@contextmanager
+def _reuse_route(route, backend, response):
+    with (
+        patch.object(
+            route,
+            "_resolve_model_identifier_for_request",
+            return_value = (REPO, REPO, False),
+        ),
+        patch.object(route, "resolve_effective_chat_template_override", return_value = None),
+        patch.object(route, "_gguf_load_response", return_value = response) as response_mock,
+        patch.object(route, "get_llama_cpp_backend", return_value = backend),
+        patch.object(
+            route,
+            "get_inference_backend",
+            return_value = SimpleNamespace(active_model_name = None),
+        ),
+    ):
+        yield response_mock
 
 
 async def _inline_to_thread(func, /, *args, **kwargs):
@@ -616,6 +646,206 @@ class TestCachedGgufForLoadProbe:
 
 
 class TestLoadHubDownloadExclusion:
+    def test_resident_local_directory_intent_uses_variant_until_path_is_resolved(self):
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_local_variant_identity",
+            "routes/inference.py",
+        )
+        model_identifier = "/models/local-quants"
+        loaded_path = "/models/model.gguf"
+        backend = SimpleNamespace(
+            extra_args = None,
+            gguf_path = loaded_path,
+            layer_preserves_tensor_intent = False,
+            last_load_intent = GgufLoadIntent(
+                model_identifier = model_identifier,
+                gguf_path = loaded_path,
+                hf_variant = VARIANT,
+            ),
+        )
+
+        with patch.object(route, "_mtp_draft_for_path", return_value = None):
+            intent = route._active_gguf_intent(
+                LoadRequest(model_path = model_identifier, gguf_variant = "Q8_0"),
+                backend,
+                model_identifier = model_identifier,
+                chat_template_override = None,
+                n_parallel = 1,
+                native_grant_backed = False,
+            )
+
+        assert intent.gguf_path is None
+        assert intent.hf_variant == "Q8_0"
+
+    def test_resident_gguf_reuse_precedes_model_metadata_resolution(self):
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_resident_fast_path_test",
+            "routes/inference.py",
+        )
+        response = object()
+        backend = SimpleNamespace(
+            is_loaded = True,
+            model_identifier = REPO,
+            adopt_load_intent_if_matched = lambda _intent: True,
+            _audio_probed = True,
+            # The reuse fast path consults this before asserting CHAT ownership; a real
+            # LlamaCppBackend exposes it as a property, so the double has to carry it too.
+            holds_no_vram = False,
+        )
+        request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
+
+        with (
+            _reuse_route(route, backend, response),
+            patch.object(
+                route,
+                "ModelConfig",
+                SimpleNamespace(
+                    from_identifier = lambda **_kwargs: (_ for _ in ()).throw(
+                        AssertionError("resident reuse must not resolve model metadata")
+                    )
+                ),
+            ),
+            patch.object(route, "_active_gguf_intent", return_value = object()),
+        ):
+            result = _run_route_load(route, request)
+
+        assert result is response
+
+    def test_post_config_reuse_preserves_resolved_display_name(self):
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_resolved_display_name_test",
+            "routes/inference.py",
+        )
+        response = object()
+        intent = GgufLoadIntent(model_identifier = REPO, gguf_path = "/cached/model.gguf")
+        backend = SimpleNamespace(
+            is_loaded = True,
+            model_identifier = REPO,
+            gguf_path = None,
+            matches_load_source = lambda _intent: True,
+            adopt_load_intent_if_matched = lambda _intent: True,
+            _audio_probed = True,
+            # The reuse fast path consults this before asserting CHAT ownership; a real
+            # LlamaCppBackend exposes it as a property, so the double has to carry it too.
+            holds_no_vram = False,
+        )
+        config = SimpleNamespace(
+            identifier = REPO,
+            display_name = "Gemma Test (UD-Q4_K_XL)",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            gguf_hf_repo = None,
+        )
+
+        with (
+            _reuse_route(route, backend, response) as response_mock,
+            patch.object(
+                route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: config),
+            ),
+            patch.object(route, "_resolve_inherited_extra_args", return_value = None),
+            patch.object(
+                route,
+                "_prepare_load_placement",
+                return_value = route._LoadPlacement(None, None, False, False),
+            ),
+            patch.object(route, "_resolve_gguf_load_intent", return_value = intent),
+            patch.object(route, "_loaded_is_local_model", return_value = False),
+        ):
+            result = _run_route_load(route, LoadRequest(model_path = REPO))
+
+        assert result is response
+        assert response_mock.call_args.args[1] == "already_loaded"
+        assert response_mock.call_args.kwargs["display_name"] == config.display_name
+
+    def test_local_intent_does_not_retain_hf_token(self):
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_local_intent_token_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "/models/local.gguf", hf_token = "secret")
+        common = dict(
+            chat_template_override = None,
+            extra_args = None,
+            gpu_ids = None,
+            n_parallel = 1,
+        )
+
+        local = route._gguf_request_intent(
+            GgufLoadIntent(model_identifier = request.model_path, gguf_path = request.model_path),
+            request,
+            **common,
+        )
+        remote = route._gguf_request_intent(
+            GgufLoadIntent(model_identifier = REPO, hf_repo = REPO),
+            request,
+            **common,
+        )
+
+        assert local.hf_token is None
+        assert remote.hf_token == "secret"
+
+    def test_runtime_response_projection_fails_loudly_on_backend_drift(self):
+        route = _load_route_module(
+            "inference_route_module_for_runtime_projection_test",
+            "routes/inference.py",
+        )
+        incomplete_backend = SimpleNamespace(
+            requested_spec_mode = "auto",
+            is_diffusion = False,
+            requested_parallel_slots = 1,
+            effective_parallel_slots = 1,
+        )
+
+        with pytest.raises(AttributeError, match = "runtime response fields"):
+            route._llama_runtime_fields(incomplete_backend)
+
+    def test_real_backend_resolves_every_runtime_response_field(self):
+        # The shipped class, not a fake: an unresolved field 500s every load and poll.
+        from core.inference.llama_cpp import LlamaCppBackend
+        from models.inference import _InferenceRuntimeFields
+
+        route = _load_route_module(
+            "inference_route_module_for_real_backend_projection_test",
+            "routes/inference.py",
+        )
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend.__init__()
+        supplied = {
+            "requires_trust_remote_code",
+            "speculative_type",
+            "requested_parallel_slots",
+            "parallel_slots",
+            "is_mlx",
+            "mlx_kv_bits",
+            "mlx_kv_bits_requested",
+            "mlx_kv_quant_eligibility",
+            "mlx_kv_quant_reason",
+            "mlx_kv_quant_note",
+            "chat_template_override_reason",
+        }
+        unresolved = sorted(
+            name
+            for name in _InferenceRuntimeFields.model_fields
+            if name not in supplied and not (hasattr(backend, name) or hasattr(backend, f"_{name}"))
+        )
+        assert unresolved == []
+
+        fields = route._llama_runtime_fields(backend)
+        assert fields["is_mlx"] is False
+        assert fields["mlx_kv_bits_requested"] is None
+
     def test_in_flight_marker_counts_and_normalizes_case(self):
         assert not hf_gguf_load_in_flight(REPO)
         with gguf_load_in_flight(REPO):
@@ -628,6 +858,23 @@ class TestLoadHubDownloadExclusion:
     def test_marker_noops_for_local_loads(self):
         with gguf_load_in_flight(None):
             assert not hf_gguf_load_in_flight("")
+
+    def test_chat_load_marker_is_repo_agnostic_and_nests(self):
+        # The GPU arbiter needs to know a chat load exists before llama-server is spawned, for local paths and safetensors too, so this marker carries no repo key.
+        from core.inference.llama_cpp import chat_load_active, chat_load_in_flight
+
+        assert not chat_load_active()
+        with chat_load_in_flight():
+            assert chat_load_active()
+            with chat_load_in_flight():
+                assert chat_load_active()
+            assert chat_load_active()
+        assert not chat_load_active()
+
+        with pytest.raises(RuntimeError):
+            with chat_load_in_flight():
+                raise RuntimeError("boom")
+        assert not chat_load_active()
 
     def test_marker_cleared_on_exception(self):
         with pytest.raises(RuntimeError):
@@ -779,7 +1026,7 @@ class TestLoadHubDownloadExclusion:
 
         class FakeBackend:
             @_with_gguf_load_marker
-            def load_model(self, *, hf_repo):
+            def load_model(self, intent):
                 started.set()
                 release.wait(timeout = 2)
                 finished.set()
@@ -791,7 +1038,10 @@ class TestLoadHubDownloadExclusion:
                 return_value = False,
             ):
                 task = asyncio.create_task(
-                    asyncio.to_thread(FakeBackend().load_model, hf_repo = REPO)
+                    asyncio.to_thread(
+                        FakeBackend().load_model,
+                        GgufLoadIntent(model_identifier = REPO, hf_repo = REPO),
+                    )
                 )
                 assert await asyncio.to_thread(started.wait, 1)
                 task.cancel()
@@ -809,28 +1059,26 @@ class TestLoadHubDownloadExclusion:
 
         asyncio.run(scenario())
 
-    def test_load_marker_precedes_hub_guard_and_unload(self):
+    def test_load_marker_precedes_hub_guard_which_precedes_the_gpu_handoff(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
             encoding = "utf-8"
         )
-        # _load_model_impl has more than one `if config.is_gguf:`, so anchor on
-        # the branch that actually owns the load marker rather than the first
-        # one in the file, which belongs to an earlier check.
+        # Anchor on the enclosing function, not a nearby `if config.is_gguf:`: the old anchor took the last such line before the load marker, which held
+        # only while _resolve_inherited_extra_args sat above every one of them. The ordering is a property of _load_model_impl.
         marker = source.index("enter_context(gguf_load_in_flight")
-        gguf_branch_start = source.rindex("if config.is_gguf:", 0, marker)
+        gguf_branch_start = source.rindex("async def _load_model_impl", 0, marker)
         gguf_branch = source[gguf_branch_start:]
 
-        # The gguf_load_in_flight marker must be entered before the hub-download
-        # guard and the unload so a concurrent load can't race the download
-        # manager. The llama_extra_args inheritance moved out of the branch into
-        # _resolve_inherited_extra_args, which must still run BEFORE it: the
-        # inherited value (e.g. a carried --no-mmproj) shapes the guard's
-        # require_mmproj. Anchor on the call form so the assertion pins the
-        # endpoint's call site, not the function definition.
-        assert source.index("= _resolve_inherited_extra_args(") < gguf_branch_start
+        # One chain, in this order:
+        # - _resolve_inherited_extra_args first: the inherited value (e.g. a carried --no-mmproj) shapes the guard's require_mmproj.
+        # - the gguf_load_in_flight marker before the hub-download guard: that handshake keeps a load and the download manager off the same files.
+        # - both before the CHAT handoff: the guard's 409 loads nothing, so checking it later destroyed a resident pipeline for a load that could never start.
+        # - the resident unload last. Anchored on call forms so each assertion pins a call site, not a definition.
         assert (
-            gguf_branch.index("enter_context(gguf_load_in_flight")
+            gguf_branch.index("= _resolve_inherited_extra_args(")
+            < gguf_branch.index("enter_context(gguf_load_in_flight")
             < gguf_branch.index("_hub_download_blocks_gguf_load")
+            < gguf_branch.index("enter_context(chat_load_in_flight")
             < gguf_branch.index("unsloth_backend.unload_model")
         )
         llama_source = (
@@ -893,6 +1141,8 @@ class TestLoadHubDownloadExclusion:
             extra_args_source = (REPO, VARIANT),
             hf_variant = VARIANT,
             model_identifier = REPO,
+            matches_load_source = lambda _intent: False,
+            adopt_load_intent_if_matched = lambda _intent: False,
         )
         request = LoadRequest(
             model_path = REPO,

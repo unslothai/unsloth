@@ -287,6 +287,22 @@ class RawTextDataLoader:
         return ""
 
 
+def _iter_column(dataset, column):
+    """Yield one column value at a time.
+
+    `dataset[column]` copies the whole column into Python objects, which for token
+    ids dominates validate_dataset's peak memory on datasets<4 (4.x returns a lazy
+    Column). Dataset.iter() streams Arrow batches instead; anything without it
+    (DataFrames, dicts, custom __getitem__) falls back to plain indexing.
+    """
+    batched = getattr(dataset, "iter", None)
+    if callable(batched):
+        for batch in batched(batch_size = 256):
+            yield from batch[column]
+    else:
+        yield from dataset[column]
+
+
 class TextPreprocessor:
     # Compile regex patterns once for better performance
     _WHITESPACE_PATTERN = re.compile(r"[^\S\n]+")
@@ -327,7 +343,11 @@ class TextPreprocessor:
         text = self._CODE_BLOCK_PATTERN.sub(r"<|code|\1|>\2<|/code|>", text)
         return text
 
-    def validate_dataset(self, dataset):
+    def validate_dataset(
+        self,
+        dataset,
+        tokenizer = None,
+    ):
         """
         Check for:
         - Minimum/maximum sequence lengths
@@ -346,7 +366,27 @@ class TextPreprocessor:
             "warnings": [],
         }
 
-        texts = dataset["text"]
+        # `column_names` is HF Dataset-only; None means a mapping-like (DataFrame,
+        # dict, custom __getitem__), which this method has always accepted.
+        column_names = getattr(dataset, "column_names", None)
+        if column_names is None or "text" in column_names:
+            texts = _iter_column(dataset, "text")
+
+        elif "input_ids" in column_names:
+            if tokenizer is None:
+                raise ValueError(
+                    "Dataset has 'input_ids' but no 'text' column; "
+                    "pass `tokenizer=` to validate_dataset() to decode it for validation."
+                )
+            # Generator, not a list: decoded text is consumed once by the loop below.
+            texts = (
+                tokenizer.decode(ids, skip_special_tokens = True)
+                for ids in _iter_column(dataset, "input_ids")
+            )
+
+        else:
+            raise ValueError("Dataset must have either 'text' or 'input_ids' column")
+
         text_lengths = []
         seen_texts = set()
 
@@ -377,7 +417,11 @@ class TextPreprocessor:
         # Calculate average length
         if text_lengths:
             stats["avg_length"] = sum(text_lengths) / len(text_lengths)
-            stats["min_length"] = stats["min_length"] if stats["min_length"] != float("inf") else 0
+
+        # No sample had content, so min_length is still its float("inf") seed. Report 0,
+        # like max_length and avg_length beside it, rather than handing back an infinity.
+        if stats["min_length"] == float("inf"):
+            stats["min_length"] = 0
 
         # Generate warnings
         if stats["empty_samples"] > 0:
@@ -389,7 +433,9 @@ class TextPreprocessor:
         if stats["encoding_issues"] > 0:
             stats["warnings"].append(f"Found {stats['encoding_issues']} encoding issues")
 
-        if stats["min_length"] < 10:
+        # Guard on text_lengths, not on min_length: with nothing measured it is now 0,
+        # and zero measured samples is not "some samples are very short".
+        if text_lengths and stats["min_length"] < 10:
             stats["warnings"].append("Some samples are very short (< 10 characters)")
 
         return stats

@@ -294,18 +294,108 @@ class TestSandboxEnvIsolation:
             "LANG",
             "TERM",
             "PYTHONIOENCODING",
+            "MPLBACKEND",
             "PYTHONPATH",
             "VIRTUAL_ENV",
             "SystemRoot",
             "PATHEXT",  # Windows only; minimal list so cwd scripts cannot hijack
             "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup
+            "TEMP",  # Windows only; native programs honour these, not TMPDIR
+            "TMP",
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
+        assert env["MPLBACKEND"] == "Agg"
         # PYTHONPATH is whitelist-built, never inherited: only the sandbox
         # sitecustomize shim dir (code-interpreter path remap).
         assert env["PYTHONPATH"].endswith("sandbox_site")
         assert "leak-me" not in env["PYTHONPATH"]
+
+    def _trusted_git_bash(
+        self,
+        monkeypatch,
+        tmp_path,
+        *,
+        usr_bin = True,
+    ):
+        """Lay out a Program Files Git install and point the resolvers at it."""
+        import core.inference.tools as tools_mod
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        prog = tmp_path / "Program Files"
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
+        bin_dir = prog / "Git" / "bin"
+        bin_dir.mkdir(parents = True)
+        if usr_bin:
+            (prog / "Git" / "usr" / "bin").mkdir(parents = True)
+        monkeypatch.setattr(tools_mod, "_windows_bash", lambda: str(bin_dir / "bash.exe"))
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
+        return prog, bin_dir
+
+    def test_bash_userland_dirs_precede_system32(self, monkeypatch, tmp_path):
+        # `bash -c` is non-login, so Git's usr\bin never joins PATH (ls/cat/grep
+        # missing) and must sort ahead of System32's DOS twins (FIND.EXE).
+        from core.inference.tools import _build_safe_env
+
+        prog, bin_dir = self._trusted_git_bash(monkeypatch, tmp_path)
+        usr_bin = prog / "Git" / "usr" / "bin"
+        env = _build_safe_env(str(tmp_path))
+        parts = env["PATH"].split(os.pathsep)
+        assert os.path.realpath(str(bin_dir)) in parts
+        assert os.path.realpath(str(usr_bin)) in parts
+        system32 = [p for p in parts if p.lower().endswith("system32")]
+        assert system32, parts
+        assert parts.index(os.path.realpath(str(usr_bin))) < parts.index(system32[0])
+        # Still behind the interpreter dir, so a Git python.exe cannot shadow it.
+        assert parts.index(os.path.realpath(str(bin_dir))) > 0
+
+    def test_untrusted_bash_contributes_no_userland(self, monkeypatch, tmp_path):
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env, _windows_bash_userland_dirs
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")]
+        )
+        shim = tmp_path / "scoop" / "shims"
+        shim.mkdir(parents = True)
+        monkeypatch.setattr(tools_mod, "_windows_bash", lambda: str(shim / "bash.exe"))
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
+        assert _windows_bash_userland_dirs() == []
+        assert str(shim) not in _build_safe_env(str(tmp_path))["PATH"].split(os.pathsep)
+
+    def test_no_bash_leaves_path_unchanged(self, monkeypatch, tmp_path):
+        # Fails closed: the cmd fallback host keeps exactly today's PATH.
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env, _windows_bash_userland_dirs
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [])
+        monkeypatch.setattr(tools_mod, "_windows_bash", lambda: None)
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
+        assert _windows_bash_userland_dirs() == []
+        before = _build_safe_env(str(tmp_path))["PATH"]
+        monkeypatch.setattr(tools_mod, "_windows_bash_userland_dirs", lambda: [])
+        assert _build_safe_env(str(tmp_path))["PATH"] == before
+
+    def test_temp_and_tmp_point_at_the_workdir_on_windows(self, monkeypatch, tmp_path):
+        # Windows reads TEMP/TMP, not TMPDIR; without them a child writes
+        # outside the sandbox workdir.
+        from core.inference.tools import _build_safe_env
+
+        self._trusted_git_bash(monkeypatch, tmp_path)
+        env = _build_safe_env(str(tmp_path))
+        assert env["TEMP"] == str(tmp_path)
+        assert env["TMP"] == str(tmp_path)
+
+    def test_temp_and_tmp_absent_on_posix(self, monkeypatch, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        env = _build_safe_env(str(tmp_path))
+        assert "TEMP" not in env
+        assert "TMP" not in env
+        assert env["TMPDIR"] == str(tmp_path)
 
     def test_host_git_dir_appended_after_curated(self, monkeypatch, tmp_path):
         # #7317: Windows Git lives under Program Files, not System32. Sandbox
@@ -492,10 +582,19 @@ class TestSandboxEnvIsolation:
         """When the known-folder API is unavailable, no roots are trusted: env
         vars (even %SystemDrive%) are caller-overrideable, so we never derive a
         trusted root from them."""
+        import ctypes
+
         import core.inference.tools as tools_mod
 
-        # ctypes fails on this Linux host, so the API path raises and we fail
-        # closed. Any attacker override of these env vars must be irrelevant.
+        # Make the API unavailable explicitly: relying on ctypes.windll being
+        # absent only holds off Windows, where the API exists and this asserted
+        # nothing.
+        class _NoKnownFolderApi:
+            def __getattr__(self, name):
+                raise OSError("known-folder API unavailable")
+
+        monkeypatch.setattr(ctypes, "windll", _NoKnownFolderApi(), raising = False)
+        # Any attacker override of these env vars must be irrelevant.
         monkeypatch.setenv("ProgramFiles", r"D:\attacker-writable")
         monkeypatch.setenv("ProgramW6432", r"D:\attacker-writable")
         monkeypatch.setenv("SystemDrive", "D:")
