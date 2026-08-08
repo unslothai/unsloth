@@ -1125,6 +1125,38 @@ def test_project_rag_retirement_failure_prevents_project_deletion(monkeypatch):
     assert deleted == []
 
 
+def test_project_deletion_skips_runtime_unavailable_rag(monkeypatch):
+    from routes import chat_history
+
+    project = {
+        "id": "p1",
+        "name": "Project",
+        "createdAt": 1,
+        "updatedAt": 1,
+    }
+    deleted = []
+    monkeypatch.setattr(rag_db, "rag_available", lambda: False)
+    monkeypatch.setattr(
+        folder_sync,
+        "retire_scope",
+        lambda scope: pytest.fail("runtime-unavailable RAG must not retire a scope"),
+    )
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: project)
+    monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
+    monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
+    monkeypatch.setattr(
+        chat_history,
+        "delete_chat_project",
+        lambda *args, **kwargs: (deleted.append(True), project)[1],
+    )
+
+    result = asyncio.run(
+        chat_history.delete_project("p1", SimpleNamespace(), current_subject = "test")
+    )
+    assert result.id == "p1"
+    assert deleted == [True]
+
+
 @requires_sqlite_vec
 def test_project_rag_cleanup_retires_every_folder_before_best_effort_deletion(
     rag_home, monkeypatch

@@ -554,7 +554,7 @@ def _retire_project_rag_sources(project_id: str) -> list[dict]:
     """Prevent new RAG sources from being linked while a project is deleted."""
     from storage import rag_db
 
-    if not rag_db.RAG_AVAILABLE:
+    if not rag_db.rag_available():
         return []
     from core.rag import folder_sync, store as rag_store
 
@@ -567,7 +567,7 @@ def _delete_project_rag_sources(project_id: str, folders: list[dict] | None = No
 
     from storage import rag_db
 
-    if not rag_db.RAG_AVAILABLE:
+    if not rag_db.rag_available():
         return
     from core.rag import folder_sync, store as rag_store
     from utils.paths import rag_uploads_root
