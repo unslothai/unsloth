@@ -842,6 +842,6 @@ def test_a_root_that_cannot_even_be_stat_ed_is_unknown(monkeypatch, tmp_path):
         )
         == []
     )
-    assert errors and isinstance(errors[0], OSError), (
-        "a root we could not stat is not evidence that the cache was deleted"
-    )
+    assert errors and isinstance(
+        errors[0], OSError
+    ), "a root we could not stat is not evidence that the cache was deleted"
