@@ -247,5 +247,38 @@ def test_a_live_owner_is_never_reaped(tmp_path, monkeypatch):
         _kill(child.pid)
 
 
+@pytest.mark.parametrize("content", [
+    "", "not json", "[]", "null", '{"children": "nope"}',
+    '{"children": [1, 2]}', '{"children": [{"pid": "x"}]}',
+])
+def test_a_malformed_record_never_blocks_startup(tmp_path, monkeypatch, content):
+    """The sweep runs before the server binds, so it must not raise on a record
+    written by an older build or truncated by a power cut."""
+    from utils import process_lifetime as pl
+
+    directory = tmp_path / "children"
+    directory.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(directory))
+    (directory / "700000.json").write_text(content)
+    assert pl.reap_recorded_children() == []
+
+
+def test_identity_separates_two_processes_started_together(tmp_path):
+    """Linux starttime has 10ms granularity, so identity carries the command
+    name too: a recycled pid has to match both."""
+    from utils import process_lifetime as pl
+
+    first = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    second = subprocess.Popen(["sleep", "30"]) if not IS_WINDOWS else None
+    try:
+        assert pl._pid_identity(first.pid) == pl._pid_identity(first.pid)
+        if second is not None:
+            assert pl._pid_identity(first.pid) != pl._pid_identity(second.pid)
+    finally:
+        _kill(first.pid)
+        if second is not None:
+            _kill(second.pid)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

@@ -386,7 +386,10 @@ def _pid_identity(pid: int) -> Optional[str]:
         try:
             with open(f"/proc/{pid}/stat", encoding = "utf-8") as fh:
                 stat = fh.read()
-            return stat[stat.rfind(")") + 2 :].split()[19]  # after comm: starttime
+            comm = stat[stat.find("(") + 1 : stat.rfind(")")]
+            # starttime has 10ms granularity, so pair it with comm: a recycled
+            # pid then has to match both.
+            return f"{stat[stat.rfind(')') + 2 :].split()[19]}:{comm}"
         except Exception:
             return None
     if _is_windows():
@@ -621,6 +624,9 @@ def _reap_one_record(path, timeout: float) -> "list[int]":
     except Exception:
         _unlink(path)
         return killed
+    if not isinstance(record, dict):
+        _unlink(path)
+        return killed
 
     owner_pid = record.get("owner_pid")
     owner_identity = record.get("owner_identity")
@@ -633,8 +639,9 @@ def _reap_one_record(path, timeout: float) -> "list[int]":
         return killed  # that Studio is still running; its children are its own
 
     unresolved = False
-    for entry in record.get("children") or []:
-        pid = entry.get("pid")
+    children = record.get("children")
+    for entry in children if isinstance(children, list) else []:
+        pid = entry.get("pid") if isinstance(entry, dict) else None
         if not isinstance(pid, int) or not _pid_alive(pid):
             continue
         identity = entry.get("identity")
