@@ -10043,7 +10043,11 @@ def _killpg_captured(pgid) -> None:
         return
     if isinstance(pgid, tuple):
         _tag, pid, identity = pgid
-        _windows_taskkill_tree(pid, identity)
+        # Fail closed: this runs long after the capture, so without a verified
+        # identity the pid may be someone else's now. The job object still takes
+        # the whole tree when Studio exits, which is the safe half to keep.
+        if identity is not None:
+            _windows_taskkill_tree(pid, identity)
         return
     if not hasattr(os, "killpg"):
         return

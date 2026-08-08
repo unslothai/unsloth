@@ -393,11 +393,14 @@ export function useTauriUpdate(isExternalServer = false) {
       // Deliberately NOT re-arming kill-on-close before the restart: relaunch()
       // starts the replacement as a child, so it inherits this job, and re-arming
       // would make this process kill it on the way out.
-      // relaunch() re-execs with the original argv, so flag the inherited --hidden as not a login
-      // start. It only fails when there is a --hidden to suppress, so let it stop the restart.
-      await invoke("mark_in_app_relaunch");
-      const { relaunch } = await import("@tauri-apps/plugin-process");
+      // The whole handoff is inside the recovery scope: anything that throws here
+      // leaves this process running with cleanup still stood down.
       try {
+        // relaunch() re-execs with the original argv, so flag the inherited --hidden as not a
+        // login start. It only fails when there is a --hidden to suppress, so let it stop the
+        // restart.
+        await invoke("mark_in_app_relaunch");
+        const { relaunch } = await import("@tauri-apps/plugin-process");
         await relaunch();
       } catch (relaunchError) {
         // No replacement process, so the marker would outlive it and unhide a later login start.

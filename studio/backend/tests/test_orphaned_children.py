@@ -350,5 +350,92 @@ def test_concurrent_adopts_all_survive(tmp_path, monkeypatch):
     pl._tracked_pids.clear()
 
 
+def test_a_survivor_keeps_its_record_through_a_clean_shutdown(tmp_path, monkeypatch):
+    """terminate_all cannot confirm every exit, and the record is the only
+    handle the next startup has on what is left."""
+    from utils import process_lifetime as pl
+
+    directory = tmp_path / "children"
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(directory))
+    pl._tracked_pids.clear()
+
+    stubborn = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        pl.adopt_pid(stubborn.pid)
+        # Signalling silently does nothing, as an unkillable child would.
+        monkeypatch.setattr(pl, "_posix_terminate", lambda pid, timeout = 5.0: None)
+        monkeypatch.setattr(pl.os, "kill", lambda pid, sig: None)
+
+        survivors = pl.terminate_all()
+        assert survivors == [stubborn.pid]
+
+        pl.clear_breadcrumb()
+        record = directory / f"{os.getpid()}.json"
+        assert record.is_file(), "the only handle on the survivor was deleted"
+        import json
+
+        assert [e["pid"] for e in json.loads(record.read_text())["children"]] == [stubborn.pid]
+    finally:
+        _kill(stubborn.pid)
+    pl._tracked_pids.clear()
+
+
+def test_a_confirmed_shutdown_still_clears_the_record(tmp_path, monkeypatch):
+    from utils import process_lifetime as pl
+
+    directory = tmp_path / "children"
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(directory))
+    pl._tracked_pids.clear()
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    pl.adopt_pid(child.pid)
+    assert pl.terminate_all(timeout = 3.0) == []
+    pl.clear_breadcrumb()
+    assert list(directory.glob("*.json")) == []
+
+
+def test_a_live_owner_survives_an_unreadable_identity(tmp_path, monkeypatch):
+    """A `ps` that failed for a moment must not cost a running Studio its
+    sidecars."""
+    import json
+
+    from utils import process_lifetime as pl
+
+    directory = tmp_path / "children"
+    directory.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(directory))
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        (directory / "123456.json").write_text(json.dumps({
+            "owner_pid": os.getppid(),  # alive
+            "owner_identity": "recorded-when-it-started",
+            "children": [{"pid": child.pid, "identity": pl._pid_identity(child.pid)}],
+        }))
+        # The lookup fails only for the owner, as a transient `ps` error would.
+        real = pl._pid_identity
+        monkeypatch.setattr(
+            pl, "_pid_identity",
+            lambda pid: None if pid == os.getppid() else real(pid),
+        )
+        assert pl.reap_recorded_children() == []
+        assert child.poll() is None, "a live Studio's child was killed"
+    finally:
+        _kill(child.pid)
+
+
+def test_an_unverifiable_captured_pid_is_not_taskkilled(monkeypatch):
+    """The delayed Windows path fails closed: the job object covers the tree."""
+    from core.inference import tools
+
+    ran = []
+    monkeypatch.setattr(tools, "_windows_taskkill_tree",
+                        lambda pid, identity = None: ran.append(pid) or True)
+    tools._killpg_captured(("windows-tree", 4321, None))
+    assert ran == [], "signalled a pid it could not verify"
+    tools._killpg_captured(("windows-tree", 4321, "created-at-t0"))
+    assert ran == [4321]
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

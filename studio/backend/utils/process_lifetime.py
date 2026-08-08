@@ -433,6 +433,9 @@ def _pid_identity(pid: int) -> Optional[str]:
         try:
             import subprocess
 
+            # TZ pinned: lstart is formatted in local time, so a machine that
+            # changes timezone between adopt and check would otherwise read as a
+            # different process.
             out = subprocess.run(
                 ["ps", "-o", "lstart=,comm=", "-p", str(pid)],
                 capture_output = True,
@@ -440,6 +443,7 @@ def _pid_identity(pid: int) -> Optional[str]:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 5,
+                env = {**os.environ, "TZ": "UTC"},
             )
             line = (out.stdout or "").strip()
             return line or None
@@ -507,8 +511,16 @@ def _write_breadcrumb() -> None:
 
 
 def clear_breadcrumb() -> None:
-    """Drop our record after a clean shutdown; everything in it is already gone."""
-    path = _breadcrumb_file()
+    """Drop our record after a clean shutdown.
+
+    Only when nothing is left: a child that outlived `terminate_all` still needs
+    the record, or the next startup has no way to find it.
+    """
+    with _record_lock:
+        if _tracked_pids:
+            _write_breadcrumb()
+            return
+        path = _breadcrumb_file()
     if path is not None:
         _unlink(path)
 
@@ -561,6 +573,30 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _pid_is_zombie(pid: int) -> bool:
+    """An exited child nobody waited on. It answers signals like a live process,
+    so a survivor check has to tell the two apart."""
+    if _is_windows():
+        return False
+    if _is_linux():
+        try:
+            with open(f"/proc/{pid}/stat", encoding = "utf-8") as fh:
+                return fh.read().rsplit(")", 1)[1].split()[0] == "Z"
+        except Exception:
+            return False
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["ps", "-o", "state=", "-p", str(pid)],
+            capture_output = True, text = True, encoding = "utf-8",
+            errors = "replace", timeout = 5,
+        )
+        return (out.stdout or "").strip().startswith("Z")
+    except Exception:
+        return False
+
+
 def adopt_pid(pid: Optional[int]) -> None:
     """Track a child (e.g. a multiprocessing worker started after the parent job
     was set up) and, on Windows, assign it to the job as belt-and-suspenders.
@@ -589,21 +625,31 @@ def adopt_pid(pid: Optional[int]) -> None:
             pass
 
 
-def terminate_all(timeout: float = 5.0) -> None:
+def terminate_all(timeout: float = 5.0) -> "list[int]":
     """Backstop sweep over adopted pids, after per-subsystem cleanup. SIGTERM,
     then SIGKILL the survivors after `timeout`. Skips a pid whose identity no
-    longer matches (recycled). Idempotent and teardown-safe."""
+    longer matches (recycled). Idempotent and teardown-safe.
+
+    Returns the pids still alive afterwards, so the caller can keep them in the
+    crash record rather than dropping the only handle on them."""
+    survivors: "list[int]" = []
     for pid, identity in list(_tracked_pids.items()):
-        _tracked_pids.pop(pid, None)
+        with _record_lock:
+            _tracked_pids.pop(pid, None)
         if identity is not None and _pid_identity(pid) != identity:
             continue  # pid was reused by an unrelated process
         try:
             if _is_windows():
                 os.kill(pid, signal.SIGTERM)
-                continue
-            _posix_terminate(pid, timeout)
+            else:
+                _posix_terminate(pid, timeout)
         except Exception:
             pass
+        if _pid_alive(pid) and not _pid_is_zombie(pid) and _identity_or_none(pid) == identity:
+            survivors.append(pid)
+            with _record_lock:
+                _tracked_pids[pid] = identity
+    return survivors
 
 
 def reap_recorded_children(timeout: float = 5.0) -> "list[int]":
@@ -640,7 +686,12 @@ def _reap_one_record(path, timeout: float) -> "list[int]":
     owner_identity = record.get("owner_identity")
     # Identity decides, not the pid: pids recycle, and this process may have
     # inherited the pid of the Studio that wrote the record.
-    owner_matches = owner_identity is None or owner_identity == _identity_or_none(owner_pid)
+    # Inconclusive counts as a match: a `ps` that failed for a moment must not
+    # make a live Studio look gone and cost it its running sidecars.
+    current_owner = _identity_or_none(owner_pid)
+    owner_matches = (
+        owner_identity is None or current_owner is None or owner_identity == current_owner
+    )
     if owner_pid == os.getpid() and owner_matches:
         return killed  # our own record
     if isinstance(owner_pid, int) and owner_matches and _pid_alive(owner_pid):
