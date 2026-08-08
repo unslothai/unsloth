@@ -66,6 +66,14 @@ _FEATURE_TYPE_NAMES = frozenset(
     "value classlabel translation translationvariablelanguages largelist list array2d "
     "array3d array4d array5d audio image video pdf".split()
 )
+# The feature classes that construct with no arguments. The rest are only usable in the
+# mapping form, where the card supplies what their constructor demands.
+# A card can alias a feature node into itself, so the walk is bounded rather than trusting
+# the tree to end. Nothing real nests anywhere near this deep.
+_MAX_FEATURE_DEPTH = 64
+_PARAMETERLESS_FEATURES = frozenset(
+    "translationvariablelanguages audio image video pdf".split()
+)
 # datasets' own version grammar. Anything else raises when it builds the cache directory.
 _VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 # Ordered, because datasets resolves a split's keyword patterns in this order and samples
@@ -212,7 +220,14 @@ _BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
         "date_format": str,
     },
     "text": {**_TEXT_PARAMETERS, "keep_linebreaks": bool, "sample_by": str},
-    "parquet": {"batch_size": int, "columns": list, "filters": list},
+    # fragment_scan_options reaches pyarrow as a scan-options object, which a card cannot
+    # write, so any value it can carry is one the builder chokes on.
+    "parquet": {
+        "batch_size": int,
+        "columns": list,
+        "filters": list,
+        "fragment_scan_options": None,
+    },
 }
 _EXTENSION_MODULES = {
     extension: module for module, names in _MODULE_EXTENSIONS.items() for extension in names.split()
@@ -321,7 +336,7 @@ def _normalized_dir(value: str) -> Optional[str]:
 
 def _known_dtype(dtype: str) -> bool:
     """A dtype datasets can turn into a Value, or one of its feature classes by name."""
-    if dtype in _VALUE_DTYPES or dtype.replace("_", "").lower() in _FEATURE_TYPE_NAMES:
+    if dtype in _VALUE_DTYPES or dtype.replace("_", "").lower() in _PARAMETERLESS_FEATURES:
         return True
     decimal = _DECIMAL_RE.fullmatch(dtype)
     if decimal is not None:
@@ -349,30 +364,39 @@ def _valid_class_label(spec: dict[str, Any]) -> bool:
     """ClassLabel takes its names as a list, or as a mapping datasets reads back into one,
     which it only can when the ids are every integer from zero up."""
     names = spec.get("names")
-    if names is None or isinstance(names, list):
+    if names is None:
         return True
-    if not isinstance(names, dict):
-        return False
-    ids = set()
-    for key in names:
-        try:
-            ids.add(int(key))
-        except (TypeError, ValueError):
+    if isinstance(names, dict):
+        ids = set()
+        for key in names:
+            try:
+                ids.add(int(key))
+            except (TypeError, ValueError):
+                return False
+        if ids != set(range(len(ids))):
             return False
-    return ids == set(range(len(ids)))
+        names = list(names.values())
+    if not isinstance(names, list):
+        return False
+    # ClassLabel stringifies the names and refuses a repeat.
+    labels = [str(name) for name in names]
+    return len(labels) == len(set(labels))
 
 
-def _valid_feature_node(node: Any) -> bool:
+def _valid_feature_node(node: Any, depth: int = 0) -> bool:
     """One node of a card's feature tree, read the way Features._from_yaml_list reads it.
 
     The first key names the node's role: dtype carries a value alias, the list forms and
     struct carry a nested node, and anything else has to be a feature class whose value is
     that class's parameters.
     """
+    if depth > _MAX_FEATURE_DEPTH:
+        # An aliased cycle, which datasets cannot build either.
+        return False
     if isinstance(node, str):
         return _known_dtype(node)
     if isinstance(node, list):
-        return all(_valid_feature_node(item) for item in node)
+        return all(_valid_feature_node(item, depth + 1) for item in node)
     if not isinstance(node, dict):
         return False
     keys = [key for key in node if key != "name"]
@@ -380,9 +404,9 @@ def _valid_feature_node(node: Any) -> bool:
         return True
     role = keys[0]
     if role == "dtype":
-        return _valid_feature_node(node["dtype"])
+        return _valid_feature_node(node["dtype"], depth + 1)
     if role in {"large_list", "list", "sequence", "struct"}:
-        return _valid_feature_node(node[role])
+        return _valid_feature_node(node[role], depth + 1)
     if role == "class_label":
         return isinstance(node["class_label"], dict) and _valid_class_label(node["class_label"])
     # A feature class, with the mapping under it being its keyword arguments. datasets
@@ -548,9 +572,19 @@ def _add_dataset_info_options(options: set[tuple[str, str]], payload: Any) -> No
 def _valid_info_version(version: Any) -> bool:
     """datasets parses this field into a Version, which only reads a mapping or an x.y.z
     string, so anything else raises before a config could be built."""
-    if version is None or isinstance(version, dict):
+    if version is None:
         return True
+    if isinstance(version, dict):
+        # Version.from_dict passes the mapping straight to the constructor.
+        version = version.get("version_str")
     return isinstance(version, str) and _VERSION_RE.fullmatch(version) is not None
+
+
+def _valid_info_features(features: Any) -> bool:
+    """dataset_info carries the same feature list a config does, parsed the same way."""
+    if isinstance(features, list):
+        return _valid_features(features)
+    return all(isinstance(child, dict) for child in features.values())
 
 
 def _valid_dataset_info(payload: Any) -> bool:
@@ -571,7 +605,7 @@ def _valid_dataset_info(payload: Any) -> bool:
         and isinstance(field(entry, "features"), (list, dict))
         and isinstance(field(entry, "splits"), (list, dict))
         # datasets walks each child with .get or .pop, so a scalar in there raises too.
-        and all(isinstance(child, dict) for child in children(field(entry, "features")))
+        and _valid_info_features(field(entry, "features"))
         and all(isinstance(child, dict) for child in children(field(entry, "splits")))
         for entry in entries
     )
@@ -1104,6 +1138,21 @@ def _paths_module(item: dict[str, Any], files: _DeclaredFiles) -> Optional[str]:
     return _split_module(named) if named else None
 
 
+def _mixed_declared_splits(item: dict[str, Any], files: _DeclaredFiles) -> bool:
+    """Whether the first config declares splits its builder cannot be chosen for. Each group
+    is resolved on its own, so two of them naming different formats stops the factory before
+    any config is selected and takes every sibling down too."""
+    root = _config_root(item, files)
+    if root is None:
+        return False
+    modules = set()
+    for group in _declared_path_groups(item):
+        resolved = [path for pattern in group for path in files.resolve(pattern, root)]
+        if resolved:
+            modules.add(_split_module([(path, _file_module(path.name)) for path in resolved]))
+    return len(modules) > 1
+
+
 def _declared_module(payload: Any, files: _DeclaredFiles) -> Optional[str]:
     """The builder datasets picks for the whole dataset, or None when the snapshot picks it.
 
@@ -1495,6 +1544,15 @@ def _inferred_snapshot_options(
     return options
 
 
+def _counted_split(item: Any) -> bool:
+    """A recorded split size datasets could match. It compares the numbers, so a count
+    written as a float or a bool still holds as long as it is a positive one."""
+    if not isinstance(item, dict):
+        return False
+    count = item.get("num_examples")
+    return isinstance(count, (int, float)) and not isinstance(count, str) and count > 0
+
+
 def _info_split_sets(payload: Any, declared: dict[str, Optional[set[str]]]) -> None:
     """Record the splits dataset_info promises per config, or None when it promises a size
     the data cannot match. datasets verifies the built splits against these, so a promise
@@ -1514,15 +1572,7 @@ def _info_split_sets(payload: Any, declared: dict[str, Optional[set[str]]]) -> N
         splits = entry["splits"]
         sized = list(splits.values()) if isinstance(splits, dict) else splits
         counted = (
-            all(
-                isinstance(item, dict)
-                and isinstance(item.get("num_examples"), int)
-                and not isinstance(item.get("num_examples"), bool)
-                and item["num_examples"] > 0
-                for item in sized
-            )
-            if isinstance(sized, list)
-            else False
+            all(_counted_split(item) for item in sized) if isinstance(sized, list) else False
         )
         declared[config] = set(_split_names(splits)) if counted else None
 
@@ -1621,9 +1671,11 @@ def _snapshot_card_options(
             return {(config, split) for config, split in options if config not in missing}
         declared_files = _DeclaredFiles(*scanned)
         unresolvable = _unresolvable_configs(collapsed, declared_files)
-        if next(iter(collapsed)) in unresolvable:
+        if next(iter(collapsed)) in unresolvable or _mixed_declared_splits(
+            next(iter(collapsed.values())), declared_files
+        ):
             # The first config is resolved before any module is chosen, so a declaration that
-            # matches nothing takes the whole snapshot down with it.
+            # matches nothing, or that names two formats at once, takes the snapshot with it.
             return set()
         required = _declared_module(card_data.get("configs"), declared_files) or _snapshot_module(
             snapshot, scans
