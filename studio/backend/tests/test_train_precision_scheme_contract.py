@@ -200,10 +200,22 @@ def _precision_memo_block() -> str:
     return block
 
 
+# A TS/TSX string literal in any of the three quotings. Prettier normalizes this file to
+# double quotes, but the guard must not depend on that: a hand-edit or a merge that spelled a
+# scheme 'nvfp4' or `nvfp4` would otherwise slip past every assertion below while rendering
+# exactly the same option. Verified by mutation -- a single-quoted arm used to pass clean.
+_STRING_LITERAL = re.compile(r"""["'`]([^"'`\\\n]*)["'`]""")
+_M_EQUALS = re.compile(r"""m === ["'`]([^"'`]+)["'`]""")
+
+
+def _strip_comments(block: str) -> str:
+    """Line and block comments removed, so a scheme merely NAMED in prose is not read as an
+    offered option (and, the other way round, so a commented-out arm cannot mask a real one)."""
+    return re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", block, flags = re.S))
+
+
 def _memo_string_literals(block: str) -> list[str]:
-    # Drop comments first, so a scheme merely NAMED in prose is not read as an offered option.
-    code = re.sub(r"//[^\n]*", "", block)
-    return re.findall(r'"([^"\\]*)"', code)
+    return _STRING_LITERAL.findall(_strip_comments(block))
 
 
 def test_the_precision_selector_names_only_training_precisions():
@@ -223,8 +235,8 @@ def test_the_precision_selector_names_only_training_precisions():
 def test_the_precision_selector_fallback_is_a_subset_of_what_the_backend_can_report(monkeypatch):
     """With no /diffusion/info report the panel falls back to a hardcoded array. It must stay
     inside what the backend could actually have said, or the first paint offers a dead option."""
-    returns = re.findall(r"return\s*\[([^\]]*)\]", _precision_memo_block())
-    fallback = [m for m in re.findall(r'"([^"]+)"', returns[-1])]
+    returns = re.findall(r"return\s*\[([^\]]*)\]", _strip_comments(_precision_memo_block()))
+    fallback = _STRING_LITERAL.findall(returns[-1])
     assert len(fallback) >= 2, f"failed to parse the fallback array: {returns[-1]!r}"
     advertisable = _every_advertisable_mode(monkeypatch)
     assert set(fallback) <= advertisable, (
@@ -237,9 +249,9 @@ def test_the_precision_selector_fallback_is_a_subset_of_what_the_backend_can_rep
 def test_the_reported_mode_filter_is_a_subset_of_what_the_backend_can_report(monkeypatch):
     """The panel narrows the backend's list through an explicit ``m === "..."`` whitelist.
     Every arm of it must be a mode the backend can actually emit."""
-    block = _precision_memo_block()
+    block = _strip_comments(_precision_memo_block())
     predicate = block[block.index(".filter(") : block.index("return [", block.index(".filter("))]
-    whitelist = set(re.findall(r'm === "([^"]+)"', predicate))
+    whitelist = set(_M_EQUALS.findall(predicate))
     assert whitelist, f"parsed no whitelist arms out of {predicate!r}"
     advertisable = _every_advertisable_mode(monkeypatch)
     assert whitelist <= advertisable, sorted(whitelist - advertisable)
