@@ -51,7 +51,9 @@ def _restores_a_saved_count(value: ast.AST) -> bool:
     return isinstance(value, ast.Name) and value.id.endswith("_clamped_slots")
 
 
-def _findings_for_tree(tree: ast.AST, lines: list[str], filename: str) -> list[tuple[str, int, str]]:
+def _findings_for_tree(
+    tree: ast.AST, lines: list[str], filename: str
+) -> list[tuple[str, int, str]]:
     found: list[tuple[str, int, str]] = []
     for func in ast.walk(tree):
         if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):

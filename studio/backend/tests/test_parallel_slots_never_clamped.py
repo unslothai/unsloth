@@ -82,9 +82,7 @@ def test_an_inherited_spec_env_does_not_take_the_slots(mtp_backend, monkeypatch,
 def test_the_batch_floor_follows_the_slot_count(mtp_backend, requested):
     """llama-server aborts below the slot count, so -b rises with an MTP load too."""
     backend, gguf = mtp_backend
-    cmd = _launch(
-        backend, gguf, n_parallel = requested, n_batch = 1, speculative_type = "mtp"
-    )["cmd"]
+    cmd = _launch(backend, gguf, n_parallel = requested, n_batch = 1, speculative_type = "mtp")["cmd"]
     assert _slots(cmd) == requested
     assert int(cmd[cmd.index("--batch-size") + 1]) >= max(2, requested)
 
