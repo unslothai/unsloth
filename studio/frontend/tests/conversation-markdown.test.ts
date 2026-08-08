@@ -530,3 +530,44 @@ test("drops a fragment url that cannot be encoded instead of throwing", () => {
     "**source:** `Broken`",
   );
 });
+
+test("closes a fence opened in a body that uses bare carriage returns", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "look:\r```js\rvar a = 1;" }]),
+    "look:\r```js\rvar a = 1;\r```",
+  );
+});
+
+test("leaves a paragraph that only looks like a fence alone", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "```a`b" }]),
+    "```a`b",
+  );
+});
+
+test("does not treat a fence closer carrying text as a closer", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "```\nx\n``` trailing" }]),
+    "```\nx\n``` trailing\n```",
+  );
+});
+
+test("leaves a comment inside a fence literal", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "```\n<!-- literal\n```" }]),
+    "```\n<!-- literal\n```",
+  );
+});
+
+test("collapses line breaks inside a code span so it cannot be escaped", () => {
+  assert.equal(
+    renderConversationBlocks([
+      {
+        kind: "source",
+        title: "ok\n\n<img src=x onerror=alert(1)>",
+        url: "javascript:alert(1)",
+      },
+    ]),
+    "**source:** `ok <img src=x onerror=alert(1)>`",
+  );
+});

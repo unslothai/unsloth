@@ -52,20 +52,45 @@ const LINE_BREAK_PATTERN = /[\r\n]/;
 // bytes are for the player, not for a transcript.
 const AUDIO_DATA_URI_PATTERN = /<audio-player\s+src="data:[^"]*"\s*\/>/g;
 const DETAILS_CLOSE_PATTERN = /<\/(details)\s*>/gi;
-const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
+const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const EOL_PATTERN = /\r\n|[\r\n]/;
 
 // A message that ends mid-fence or mid-comment swallows everything after it,
-// including the next role heading, so each turn closes what it opened.
+// including the next role heading, so each turn closes what it opened. Fence
+// and comment are tracked as one state: inside either, the other is literal.
 function closeOpenBlocks(text: string): string {
   let open: string | null = null;
-  for (const line of text.split("\n")) {
-    const run = FENCE_PATTERN.exec(line)?.[1];
-    if (!run) continue;
-    if (open === null) open = run;
-    else if (run[0] === open[0] && run.length >= open.length) open = null;
+  let comment = false;
+  // Split the way a parser does. Splitting on \n alone hides a fence opened in
+  // a body that uses bare carriage returns.
+  for (const line of text.split(EOL_PATTERN)) {
+    if (comment) {
+      if (line.includes("-->")) comment = false;
+      continue;
+    }
+    const [, run, info] = FENCE_PATTERN.exec(line) ?? [];
+    if (open !== null) {
+      // A closer repeats the opener's character, is at least as long, and
+      // carries no info string.
+      if (run && run[0] === open[0] && run.length >= open.length && !info?.trim()) {
+        open = null;
+      }
+      continue;
+    }
+    if (run) {
+      // A backtick opener cannot carry a backtick in its info string; that
+      // line is a paragraph, and treating it as a fence would open a real one.
+      if (run[0] === "~" || !info?.includes("`")) open = run;
+      continue;
+    }
+    comment = line.lastIndexOf("<!--") > line.lastIndexOf("-->");
   }
-  let out = open === null ? text : `${text}\n${open}`;
-  if (out.lastIndexOf("<!--") > out.lastIndexOf("-->")) out += "-->";
+  let out = text;
+  if (comment) out += "-->";
+  // Close on the body's own line ending. A renderer that ignores bare carriage
+  // returns would read a \n-prefixed closer as a fresh fence instead.
+  const eol = !text.includes("\n") && text.includes("\r") ? "\r" : "\n";
+  if (open !== null) out += `${eol}${open}`;
   return out;
 }
 
@@ -79,7 +104,10 @@ function fence(body: string, language = ""): string {
   return `${ticks}${language}\n${body}\n${ticks}`;
 }
 
-function inlineCode(value: string): string {
+function inlineCode(raw: string): string {
+  // A code span cannot hold a line break: a blank line ends it outright and
+  // leaves the rest of the value loose as markdown.
+  const value = raw.replace(/[\r\n]+/g, " ");
   const longestRun = [...value.matchAll(/`+/g)].reduce(
     (max, [run]) => Math.max(max, run.length),
     0,
@@ -129,16 +157,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function renderValue(label: string, value: unknown): string[] {
   if (value === undefined) return [];
   const escapedLabel = escapeMarkdownLabel(label);
-  if (typeof value === "string") {
-    if (LINE_BREAK_PATTERN.test(value)) return [`**${escapedLabel}:**`, fence(value)];
+  // Scalars render as text too. A json fence spends three lines on `10`, and a
+  // tool call with four of them reads as a wall of fences instead of a call.
+  if (value === null || typeof value !== "object") {
+    const text = typeof value === "string" ? value : String(value);
+    if (LINE_BREAK_PATTERN.test(text)) return [`**${escapedLabel}:**`, fence(text)];
     // A code span rather than escaping: tool values are data, and any list of
     // markdown metacharacters to escape is one another syntax slips past.
-    return [`**${escapedLabel}:** ${inlineCode(value)}`];
-  }
-  // Scalars inline too. A json fence spends three lines on `10`, and a tool
-  // call with four of them reads as a wall of fences instead of a call.
-  if (value === null || typeof value !== "object") {
-    return [`**${escapedLabel}:** ${inlineCode(String(value))}`];
+    return [`**${escapedLabel}:** ${inlineCode(text)}`];
   }
   return [
     `**${escapedLabel}:**`,
