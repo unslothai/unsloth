@@ -46,6 +46,23 @@ if printf '%s' "$PREBUILT_BLOCK" | grep -qF '_studio_dir_unreadable "$LLAMA_CPP_
 else
     bad "the default-home prebuilt install stops on an unreadable tree"
 fi
+# The source build only reaches its own guards after building, so the access check
+# has to run before the prebuilt/source branch, and skip the local-link paths.
+PRE_BRANCH="$(awk '/^if \[ "\$_LOCAL_LLAMA_CPP_LINKED" != true \]; then/,/^fi$/' "$SETUP_SH")"
+if printf '%s' "$PRE_BRANCH" | grep -qF '_studio_dir_unreadable "$LLAMA_CPP_DIR"' &&
+   printf '%s' "$PRE_BRANCH" | grep -qF '_assert_studio_owned_or_absent "$LLAMA_CPP_DIR"'; then
+    ok "the access guard runs before the prebuilt/source branch"
+else
+    bad "the access guard runs before the prebuilt/source branch"
+fi
+PRE_AT="$(grep -n '^if \[ "\$_LOCAL_LLAMA_CPP_LINKED" != true \]; then' "$SETUP_SH" | cut -d: -f1 | head -1)"
+BRANCH_AT="$(grep -n '^if \[ "\$_LOCAL_LLAMA_CPP_LINKED" = true \]; then' "$SETUP_SH" | cut -d: -f1 | head -1)"
+if [ -n "$PRE_AT" ] && [ -n "$BRANCH_AT" ] && [ "$PRE_AT" -lt "$BRANCH_AT" ]; then
+    ok "the early guard precedes the branch it protects"
+else
+    bad "the early guard precedes the branch it protects"
+fi
+
 # Run the custom-home ownership guard first to preserve its cautious wording.
 # Default the line numbers so a vanished grep fails loudly instead of erroring out.
 OWNED_LINE="$(printf '%s' "$PREBUILT_BLOCK" | grep -n '_assert_studio_owned_or_absent' | cut -d: -f1 | head -1)"

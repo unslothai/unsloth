@@ -2015,6 +2015,19 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     fi
 fi
 
+# Every branch below either replaces $LLAMA_CPP_DIR or builds into it, and the
+# source-build swap only reaches its own guards after the whole build. Check here
+# so a denied cache fails before the work, not after. The local-link paths are
+# excluded: they already replaced or reused the tree above.
+if [ "$_LOCAL_LLAMA_CPP_LINKED" != true ]; then
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    fi
+    if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
+        _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
+    fi
+fi
+
 if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
     : # local directory linked above; skip prebuilt install
 elif [ "$_explicit_vulkan_source_build" = true ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
