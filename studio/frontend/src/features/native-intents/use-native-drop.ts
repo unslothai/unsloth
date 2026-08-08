@@ -9,7 +9,7 @@ import type { NativeIntent } from "./types";
 export type NativeModelDropState =
   | { status: "idle" }
   | { status: "valid"; action: "load" | "replace" | "chip" }
-  | { status: "attach"; count: number }
+  | { status: "attach"; count: number; kind: "docs" | "images" | "mixed" }
   | { status: "invalid" };
 
 interface NativeModelDropOptions {
@@ -59,12 +59,12 @@ function dropStateForPaths(
   if (dropped.kind === "none") return { status: "idle" };
   if (dropped.kind === "docs") {
     return canAttachDocs(options)
-      ? { status: "attach", count: dropped.paths.length }
+      ? { status: "attach", count: dropped.paths.length, kind: "docs" }
       : { status: "invalid" };
   }
   if (dropped.kind === "images") {
     return canAttachImages(options)
-      ? { status: "attach", count: dropped.paths.length }
+      ? { status: "attach", count: dropped.paths.length, kind: "images" }
       : { status: "invalid" };
   }
   if (dropped.kind === "attach") {
@@ -72,7 +72,7 @@ function dropStateForPaths(
     const imagesSupported =
       dropped.images.length === 0 || canAttachImages(options);
     return docsSupported && imagesSupported
-      ? { status: "attach", count: attachmentCount(dropped) }
+      ? { status: "attach", count: attachmentCount(dropped), kind: "mixed" }
       : { status: "invalid" };
   }
   if (dropped.kind === "unsupported") return { status: "invalid" };

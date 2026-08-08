@@ -2812,9 +2812,17 @@ const Composer: FC<{
     }
   }, []);
 
+  // Declared here because cancelQueuedSend has to clear the dictation hold too.
+  const sendAfterDictationRef = useRef(false);
+  const heldTextRef = useRef<string | null>(null);
+
   const cancelQueuedSend = useCallback(() => {
     pendingSendRef.current = false;
     setPendingSend(false);
+    // A dictation send held behind the same block is the same intent. Leave it
+    // and it fires the transcript on its own once the block clears.
+    sendAfterDictationRef.current = false;
+    heldTextRef.current = null;
     dismissWaitToast();
   }, [dismissWaitToast]);
   cancelQueuedSendRef.current = cancelQueuedSend;
@@ -2951,7 +2959,6 @@ const Composer: FC<{
   // lands. Going through the form keeps queueing, indexing holds and draft
   // clearing identical to a typed send.
   const formRef = useRef<HTMLFormElement | null>(null);
-  const sendAfterDictationRef = useRef(false);
   const dictationBaseTextRef = useRef("");
   const dictationComposerRef = useRef("");
   // Thread switches reuse this composer, so the send has to know where it
@@ -2980,7 +2987,6 @@ const Composer: FC<{
   });
   const wasDictatingRef = useRef(false);
   // Composer text while a send waits on dictationBlocked, so an edit can drop it.
-  const heldTextRef = useRef<string | null>(null);
   useEffect(() => {
     if (isDictating) {
       if (wasDictatingRef.current) return;
