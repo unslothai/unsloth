@@ -9,9 +9,15 @@ name: Cache janitor
 # nothing failing.
 #
 # Deletes only families that resolve via restore-keys, where GitHub returns the
-# most recent match and older generations are already unreachable:
+# most recent prefix match so older generations serve no routine build:
 #   codeql-overlay-base-database-*  keys embed commit SHA + run id
 #   v0-rust-*                       Swatinem/rust-cache
+#
+# "Older" is not the same as unreachable. rust-cache passes its full key to
+# restoreCache, which tries an exact match first, so a build returning to an
+# earlier dependency state (a re-run of an old commit, a lockfile revert) can
+# still hit an older generation exactly. Pruning trades those rare exact hits
+# for headroom, which is the point; keep is the dial.
 #
 # Everything else is left alone. The hf-* / *-gguf-* model caches use exact keys,
 # so an entry that looks superseded is the only one its key will ever match and
@@ -70,9 +76,15 @@ jobs:
           case "$KEEP" in ""|*[!0-9]*) echo "::warning::invalid keep=$KEEP, using 2"; KEEP=2 ;; esac
           [ "$KEEP" -lt 1 ] && KEEP=1
 
-          gh api --paginate "repos/$repo/actions/caches?per_page=100" \
-            -q '.actions_caches[] | [.id, .created_at, .size_in_bytes, .ref, .key] | @tsv' \
-            > "$all" || true
+          # Report a failed inventory. Deleting nothing is the safe direction,
+          # but silence means a broken janitor looks identical to a clean repo
+          # and nothing notices until the ceiling does.
+          if ! gh api --paginate "repos/$repo/actions/caches?per_page=100" \
+                 -q '.actions_caches[] | [.id, .created_at, .size_in_bytes, .ref, .key] | @tsv' \
+                 > "$all"; then
+            echo "::warning::could not list caches for $repo; nothing pruned this run"
+            exit 0
+          fi
 
           total=$(awk -F'\t' '{s+=$3} END {printf "%d", s+0}' "$all")
           count=$(grep -c . "$all" || true)
