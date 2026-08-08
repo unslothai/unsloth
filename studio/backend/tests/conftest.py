@@ -11,6 +11,7 @@ Model/variant for the managed mode resolve from ``--unsloth-model`` /
 ``--unsloth-gguf-variant``, then env vars, then ``test_studio_api.py`` defaults.
 """
 
+import errno
 import itertools
 import os
 import sys
@@ -56,6 +57,13 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
 
 
 # Pytest CLI options
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "allow_network: let this test make non-loopback connections (see _no_outbound_network)",
+    )
 
 
 def pytest_addoption(parser):
@@ -181,6 +189,113 @@ def _assume_bare_metal(monkeypatch):
         return
     monkeypatch.setattr(
         routes_inference, "_metal_device_is_paravirtual", lambda: False, raising = False
+    )
+
+
+def _is_local_endpoint(sock, address) -> bool:
+    """True for anything the suite may dial: local IPC and loopback addresses.
+
+    Family first, because AF_UNIX carries a filesystem path rather than a host and
+    multiprocessing's pools connect over exactly that -- reading ``address[0]`` there
+    yields a directory name that matches no host rule and blocks process pools.
+    """
+    import socket as _socket
+
+    if getattr(sock, "family", None) not in (_socket.AF_INET, _socket.AF_INET6):
+        return True
+    try:
+        host = address[0]
+    except Exception:
+        return True
+    if not isinstance(host, str):
+        return True
+    return host.startswith("127.") or host in ("::1", "localhost", "0.0.0.0", "::", "")
+
+
+@pytest.fixture(autouse = True)
+def _no_outbound_network(request, monkeypatch):
+    """Refuse every non-loopback connect, so no test depends on a live Hub.
+
+    Several routes probe huggingface.co on paths these tests exercise, and every one
+    of them fails open, so the traffic never showed up as a failure -- it only showed
+    up as time. When the Hub answers slowly rather than refusing (a rate-limited CI
+    egress IP is the usual way), huggingface_hub retries with backoff and a file that
+    normally runs in six seconds sits there for minutes, until the job hits its cap
+    and is killed having reported nothing.
+
+    Blocking the socket keeps the online code path intact -- unlike HF_HUB_OFFLINE,
+    which flips the branch and changes what is under test -- while making the call
+    fail immediately instead of hanging. Mark a test ``allow_network`` if it genuinely
+    needs to dial out; the e2e ``studio_server`` tests reach their server on loopback
+    and are unaffected.
+    """
+    if request.node.get_closest_marker("allow_network") is not None:
+        return
+
+    import socket
+
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def _guard(wrapped):
+        def blocked(self, address, *args, **kwargs):
+            if _is_local_endpoint(self, address):
+                return wrapped(self, address, *args, **kwargs)
+            raise OSError(
+                errno.ENETUNREACH,
+                f"outbound network blocked in tests (tried {address!r}); "
+                f"stub the call, or mark the test with @pytest.mark.allow_network",
+            )
+        return blocked
+
+    monkeypatch.setattr(socket.socket, "connect", _guard(real_connect))
+    monkeypatch.setattr(socket.socket, "connect_ex", _guard(real_connect_ex))
+
+    # A refused connection still looks retryable to huggingface_hub, which backs off
+    # 1+2+4+8+8s over five attempts before giving up -- so blocking the socket without
+    # this turns a fast failure back into a ~23s one per call. Swap the clock only
+    # inside that module, since `time` is shared and real sleeps elsewhere matter.
+    try:
+        from huggingface_hub.utils import _http as hf_http
+    except Exception:
+        return
+    import time as _time
+
+    class _NoBackoffClock:
+        def __getattr__(self, name):
+            return getattr(_time, name)
+
+        @staticmethod
+        def sleep(_seconds):
+            return None
+
+    if getattr(hf_http, "time", None) is not None:
+        monkeypatch.setattr(hf_http, "time", _NoBackoffClock())
+
+
+@pytest.fixture(autouse = True)
+def _hub_reachable_without_probing(monkeypatch):
+    """Report the Hub as reachable without dialling it.
+
+    The reachability probes are themselves network calls, so with outbound traffic
+    blocked they would report the Hub down and send every caller into its offline
+    branch -- which is a different code path from the one these tests mean to cover.
+    Pinning them to "reachable" keeps the online path selected; the individual
+    request that follows is still blocked, and the callers already fail open on it.
+    Tests about offline behaviour patch these back.
+
+    Seeded through the memo rather than by patching ``hf_dns_dead`` /
+    ``hf_unreachable``: callers ``from utils.utils import`` those names, so patching
+    the source module leaves already-imported bindings pointing at the real probes.
+    Every caller reaches the memo through a function that reads the module global at
+    call time, so seeding it covers them all regardless of import style.
+    """
+    import time
+
+    from utils import utils as utils_utils
+
+    monkeypatch.setattr(
+        utils_utils, "_hf_reachability", (time.monotonic(), False), raising = False
     )
 
 
