@@ -232,6 +232,9 @@ class HealthPoller(threading.Thread):
         self.samples: list[Sample] = []
         self.token: str | None = None
         self.first_reply_at: float | None = None
+        # Filled in once the boot script reports it, so the waits below can tell "still
+        # starting" from "already dead".
+        self.server_pid: int | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self.t0 = time.monotonic()
@@ -260,7 +263,12 @@ class HealthPoller(threading.Thread):
             return list(self.samples)
 
     def wait_for(self, predicate, budget: float, what: str) -> Sample | None:
-        """First sample satisfying ``predicate``, or None once ``budget`` is spent."""
+        """First sample satisfying ``predicate``, or None once ``budget`` is spent.
+
+        Gives up early on a server that has exited. A boot that dies on a missing
+        dependency otherwise burns the whole budget answering nothing, and the timeout
+        message blames the verdict for a process that was never there to publish one.
+        """
         deadline = time.monotonic() + budget
         seen = 0
         while time.monotonic() < deadline:
@@ -269,6 +277,9 @@ class HealthPoller(threading.Thread):
                 if predicate(sample):
                     return sample
             seen = len(samples)
+            if self.server_pid and not _process_alive(self.server_pid):
+                info(f"the server (pid {self.server_pid}) exited while waiting for {what}")
+                return None
             time.sleep(POLL_INTERVAL_S)
         info(f"gave up waiting {budget:.0f}s for {what}")
         return None
@@ -467,6 +478,12 @@ def _read_marker(marker: Path) -> dict | None:
 def boot(port: int, log: Path, env: dict) -> int | None:
     """Run the repo's boot script and return the server pid.
 
+    --api-only because mlx-ci.yml boots on a bare `pip install -e .` with no built
+    studio/frontend/dist, and without the flag the server prints "Unsloth frontend build
+    not found" and exits before it binds. The workflows that run install.sh do have a
+    dist and deliberately serve it, which is why the flag is theirs to pass, not the
+    script's to assume.
+
     GITHUB_ENV is dropped for this call on purpose: with it set the script exports the
     pid into the workflow environment instead of printing it, and this file needs the pid
     in hand to stop the server before the next scenario boots on the next port.
@@ -475,7 +492,7 @@ def boot(port: int, log: Path, env: dict) -> int | None:
     child_env.pop("GITHUB_ENV", None)
     log.parent.mkdir(parents = True, exist_ok = True)
     result = subprocess.run(
-        ["bash", str(BOOT_SCRIPT), "--port", str(port), "--log", str(log)],
+        ["bash", str(BOOT_SCRIPT), "--port", str(port), "--log", str(log), "--api-only"],
         env = child_env,
         capture_output = True,
         text = True,
@@ -483,6 +500,11 @@ def boot(port: int, log: Path, env: dict) -> int | None:
     )
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
+    # Flushed here, not left to the next print: everything else in this file flushes as
+    # it goes, so an unflushed boot banner surfaces minutes later next to the timeout it
+    # preceded, and reads like the boot itself took that long.
+    sys.stdout.flush()
+    sys.stderr.flush()
     match = re.search(r"pid (\d+)", result.stdout)
     return int(match.group(1)) if match else None
 
@@ -507,6 +529,14 @@ def wait_for_health(port: int, log: Path) -> bool:
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     return result.returncode == 0
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def stop(pid: int | None) -> None:
@@ -646,6 +676,7 @@ def booted(port: int, log: Path, env: dict):
     getter = TokenGetter(base, poller)
     try:
         pid = boot(port, log, env)
+        poller.server_pid = pid
         # Started only now: the boot script wipes the auth directory, so a login thread
         # running before it would read the previous scenario's bootstrap password and
         # spend its retries on a credential this server has never heard of.
