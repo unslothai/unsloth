@@ -1501,6 +1501,7 @@ LAUNCHER_EOF
     fi
 
     _css_created=0
+    _css_shortcut_path=""
 
     if [ "$_css_os" = "linux" ]; then
         # ── Linux: .desktop file ──
@@ -1646,10 +1647,18 @@ STUB_EOF
         # Touch so Finder indexes it
         touch "$_css_app"
 
+        # lsd registers the bundle on its own within seconds; this just makes it
+        # immediate so Launchpad is not briefly missing a fresh install.
+        _css_lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+        if [ -x "$_css_lsregister" ]; then
+            "$_css_lsregister" -f "$_css_app" >/dev/null 2>&1 || true
+        fi
+
         # Symlink on Desktop
         if [ -d "$HOME/Desktop" ]; then
             ln -sf "$_css_app" "$HOME/Desktop/Unsloth Studio" 2>/dev/null || true
         fi
+        _css_shortcut_path="$_css_app"
         _css_created=1
 
     elif [ "$_css_os" = "wsl" ]; then
@@ -1792,7 +1801,11 @@ WSLPS1_EOF
     fi
 
     if [ "$_css_created" -eq 1 ]; then
-        substep "Created Unsloth Studio shortcut"
+        if [ -n "$_css_shortcut_path" ]; then
+            substep "Created Unsloth Studio shortcut at $_css_shortcut_path"
+        else
+            substep "Created Unsloth Studio shortcut"
+        fi
     fi
 }
 
