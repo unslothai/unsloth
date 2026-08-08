@@ -35,7 +35,8 @@ def test_install_ps1_leaves_system_directory_before_installing():
     guard_idx = src.index("$InSystemDir = Test-UnderSystemRoot $CurrentDir")
     for marker in (
         'step "winget" "available"',
-        "uv venv $VenvDir --python",
+        # No "uv " prefix: the installer invokes the resolved $script:UvExe, not the bare token.
+        "venv $VenvDir --python",
         'step "setup" "running unsloth studio setup..."',
     ):
         assert guard_idx < src.index(marker), (

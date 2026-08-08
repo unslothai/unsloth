@@ -2836,10 +2836,15 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
 
     if platform.system() == "Windows":
         powershell_args = ["powershell.exe"]
+        # -NoProfile unconditionally, not just on the hidden branch. setup.ps1 wants
+        # nothing from the user's profile, and a profile that aliases uv or python, or
+        # sets Set-StrictMode / $PSDefaultParameterValues, breaks it the same way it
+        # used to break install.ps1 -- which hands off to exactly here, from a console
+        # where stdout is a tty and the hidden branch therefore does not fire. Every
+        # other PowerShell child in the tree already passes it.
+        powershell_args.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            powershell_args.extend(
-                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
-            )
+            powershell_args.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
         # Use -Command + `*>&1` (not -File) so setup.ps1's Write-Host output
         # (Information stream #6) merges into stdout. -File drops it when
         # stdout is a pipe, e.g. `unsloth studio update --local 2>&1 | tee`.

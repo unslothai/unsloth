@@ -28,6 +28,7 @@ on:
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/test_installer_interactive_prompts.py'
+      - 'tests/test_installer_profile_hardening.py'
       - 'install*.sh'
       - 'install*.ps1'
       - 'install*.bat'
@@ -71,6 +72,7 @@ on:
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/test_installer_interactive_prompts.py'
+      - 'tests/test_installer_profile_hardening.py'
       - 'install*.sh'
       - 'install*.ps1'
       - 'install*.bat'
@@ -168,6 +170,7 @@ jobs:
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
+          tests/test_installer_profile_hardening.py
           -q
       - name: PowerShell rollback lifecycle tests
         if: runner.os == 'Windows'
