@@ -1018,11 +1018,21 @@ _path_access_denied() {
     setup_fail 1 "Permission denied reading the existing $_pad_label at $_pad_dir. Delete or rename that folder (Unsloth reinstalls it) or restore access, then re-run setup. Reinstalling the app does not reset it."
 }
 
+# POSIX makes a trailing slash follow a final symlink, so "link/" is never -L.
+# Strip it, but never past the root.
+_studio_rstrip_slash() {
+    _srs_path="$1"
+    while [ "$_srs_path" != "/" ] && [ "${_srs_path%/}" != "$_srs_path" ]; do
+        _srs_path="${_srs_path%/}"
+    done
+    printf '%s' "$_srs_path"
+}
+
 # An unsearchable ancestor makes everything under it unstattable, so a real path
 # reads as missing. Walk up to the deepest ancestor we can stat and report if it
 # is the blocker. Returns without reporting when the path is simply absent.
 _report_denied_ancestor() {
-    _rda_probe="$1"
+    _rda_probe="$(_studio_rstrip_slash "$1")"
     _rda_hops=0
     while [ ! -e "$_rda_probe" ] && [ "$_rda_probe" != "/" ] && [ "$_rda_probe" != "." ]; do
         # A symlink we cannot follow is the deepest component we can name, so keep
@@ -1035,6 +1045,7 @@ _report_denied_ancestor() {
                 /*) _rda_probe="$_rda_target" ;;
                 *) _rda_probe="$(dirname -- "$_rda_probe")/$_rda_target" ;;
             esac
+            _rda_probe="$(_studio_rstrip_slash "$_rda_probe")"
             continue
         fi
         # -- so a path starting with "-" is an operand, not a dirname option.

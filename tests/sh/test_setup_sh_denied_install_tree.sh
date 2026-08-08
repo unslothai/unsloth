@@ -144,7 +144,8 @@ import sys, pathlib
 src = pathlib.Path(sys.argv[1]).read_text()
 out = []
 for name in ("_studio_owned_adoptable", "_studio_dir_unsearchable",
-             "_studio_dir_unreadable", "_report_denied_ancestor",
+             "_studio_dir_unreadable", "_studio_rstrip_slash",
+             "_report_denied_ancestor",
              "_path_access_denied", "_assert_studio_owned_or_absent"):
     i = src.index(name + "() {")
     out.append(src[i:src.index("\n}\n", i) + 3])
@@ -308,6 +309,24 @@ else
     esac
 fi
 chmod 755 "$SYM/shared/denied"
+
+# A trailing slash follows the link, so "link/" is not -L: it must still report.
+chmod 000 "$SYM/shared/denied"
+if [ -d "$SYM/tmp/local/llama.cpp" ]; then
+    echo "  SKIP: this host cannot make an ancestor unsearchable (running as root?)"
+else
+    case "$(rda "$WORK" "$SYM/tmp/local/")" in
+        *"$SYM/shared/denied"*) ok "a trailing slash still finds the denied target" ;;
+        *) bad "a trailing slash still finds the denied target" ;;
+    esac
+fi
+chmod 755 "$SYM/shared/denied"
+
+# Stripping must stop at the root instead of emptying the path.
+case "$(bash -c '. "$1"; _studio_rstrip_slash "/"; printf "|"; _studio_rstrip_slash "//"' _ "$WORK/helpers.sh")" in
+    "/|/") ok "stripping trailing slashes never consumes the root" ;;
+    *) bad "stripping trailing slashes never consumes the root" ;;
+esac
 
 # A dangling symlink is genuinely missing, so it must not be reported as denied.
 ln -s "$SYM/gone" "$SYM/tmp/dangle"
