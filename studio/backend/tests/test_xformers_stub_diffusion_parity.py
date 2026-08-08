@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -262,6 +263,45 @@ def test_dit_training_refuses_dense_precision_under_the_stub(on_windows_rocm, mo
     cfg = type("C", (), {"base_precision": mode, "mixed_precision": "bf16"})()
     with pytest.raises(ValueError, match = "Windows-ROCm stub"):
         _resolve_base_precision(cfg, None, "cuda")
+
+
+@pytest.mark.parametrize(
+    "dist_version, hip_line, expected",
+    [
+        # AMD's own Windows build: repo.radeon.com/rocm/windows/rocm-rel-6.4.4 ships
+        # torch-2.8.0a0+gitfc14c65, so the version carries no "rocm" and only hip answers.
+        ("2.8.0a0+gitfc14c65", "hip: Optional[str] = '6.4.50101-9a6572ae7'", True),
+        # download.pytorch.org and TheRock DO tag theirs; the fast path must still work.
+        ("2.9.1+rocm7.2.1", "hip: Optional[str] = '7.2.1'", True),
+        ("2.9.0+rocmsdk20251116", "hip: Optional[str] = None", True),
+        ("2.9.1+cu128", "hip: Optional[str] = None", False),
+        ("2.9.1", "hip: Optional[str] = None", False),
+    ],
+)
+def test_rocm_is_detected_off_disk_without_importing_torch(
+    monkeypatch, tmp_path, dist_version, hip_line, expected
+):
+    """A rocm-tagged version is sufficient but not necessary, so the version string alone
+    cannot decide. The fake torch raises on import, which also proves no import happens."""
+    pkg = tmp_path / "torch"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(
+        "raise ImportError(\"DLL load failed while importing _C: amdhip64.dll not found\")\n"
+    )
+    (pkg / "version.py").write_text(f"from typing import Optional\n{hip_line}\n")
+
+    monkeypatch.setattr(
+        _torchao_stub.importlib.util, "find_spec",
+        lambda name: types.SimpleNamespace(origin = str(pkg / "__init__.py")),
+    )
+    monkeypatch.delitem(sys.modules, "torch", raising = False)
+    monkeypatch.setattr(
+        "importlib.metadata.version", lambda name: dist_version if name == "torch" else "0",
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    assert _torchao_stub._is_windows_rocm() is expected
+    assert "torch" not in sys.modules
 
 
 def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch):

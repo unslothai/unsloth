@@ -16,10 +16,14 @@ the diffusion paths install both stubs before importing diffusers.
 
 from __future__ import annotations
 
+import os
+import re
 import sys
 import types
 import importlib.abc
 import importlib.machinery
+import importlib.util
+from typing import Optional
 
 _STUB_SENTINEL = object()
 
@@ -112,6 +116,64 @@ def _module_is_rocm(mod) -> bool:
     )
 
 
+# torch/version.py is generated, and always spells the field the same way:
+# ``hip: Optional[str] = None`` on a CUDA build, ``= '6.4.50101-9a6572ae7'`` on a ROCm one.
+_HIP_LINE_RE = re.compile(r"^hip\s*(?::[^=]*)?=\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _version_is_rocm_tagged() -> Optional[bool]:
+    """Whether the installed wheel's version carries a rocm tag. None if unreadable."""
+    try:
+        from importlib.metadata import version
+        return "rocm" in version("torch").lower()
+    except Exception:  # noqa: BLE001 -- no dist-info / unreadable METADATA
+        return None
+
+
+def _hip_field_is_set() -> Optional[bool]:
+    """Whether torch/version.py's generated ``hip`` field names a ROCm version. None if
+    unreadable. Located with find_spec, which resolves the path without executing torch."""
+    try:
+        spec = importlib.util.find_spec("torch")
+        origin = getattr(spec, "origin", None) if spec is not None else None
+        if not origin:
+            return None
+        with open(
+            os.path.join(os.path.dirname(origin), "version.py"), encoding = "utf-8",
+            errors = "replace",
+        ) as handle:
+            found = _HIP_LINE_RE.search(handle.read())
+        if found is None:
+            return None
+        return found.group(1).strip().strip("\"'") not in ("None", "")
+    except Exception:  # noqa: BLE001 -- an unreadable tree is not a verdict
+        return None
+
+
+def _installed_torch_is_rocm() -> Optional[bool]:
+    """ROCm or not, read off disk without importing torch. None when it cannot be told.
+
+    Deciding this without an import is the point: the earliest caller is run.py at import time,
+    where importing torch costs seconds, sizes the OpenMP/BLAS pools before
+    configure_cpu_threads() can set them, and on Windows ROCm can fail outright until main.py
+    has registered the HIP DLL directories.
+
+    Two signals, because neither alone is enough. download.pytorch.org tags its wheels
+    (2.9.1+rocm7.2.1, 2.9.0+rocmsdk20251116) but AMD's own Windows build does not:
+    repo.radeon.com/rocm/windows/rocm-rel-6.4.4 ships torch-2.8.0a0+gitfc14c65, whose metadata
+    carries no rocm at all and where only ``hip`` answers. Conversely a wheel installed without
+    dist-info has no version to read and needs the tag. So a NEGATIVE is only returned when
+    BOTH were legible and both said no; otherwise the caller falls back to importing.
+    """
+    tagged = _version_is_rocm_tagged()
+    if tagged:
+        return True
+    hip = _hip_field_is_set()
+    if hip:
+        return True
+    return False if (tagged is False and hip is False) else None
+
+
 def _is_windows_rocm() -> bool:
     """True on a Windows host whose active torch is a ROCm build."""
     # Gate on the active torch runtime, not env-var presence -- HIP_PATH/ROCM_PATH
@@ -121,16 +183,10 @@ def _is_windows_rocm() -> bool:
     mod = sys.modules.get("torch")
     if mod is not None:
         return _module_is_rocm(mod)
-    # Not imported yet: read the wheel version off dist-info rather than importing torch.
-    # The earliest caller is run.py, at import time, where importing torch costs seconds and
-    # sizes the OpenMP/BLAS pools before configure_cpu_threads() can set them. Every ROCm
-    # build spells rocm in its local version: +rocm7.2.1, +rocmsdk20251116, +rocm7.10.0aN.
-    try:
-        from importlib.metadata import version
-        return "rocm" in version("torch").lower()
-    except Exception:
-        pass
-    # No dist-info (source checkout, vendored copy): importing is the only way left to know.
+    verdict = _installed_torch_is_rocm()
+    if verdict is not None:
+        return verdict
+    # Neither on-disk signal was readable: importing is the only way left to know.
     try:
         import torch
     except Exception:
