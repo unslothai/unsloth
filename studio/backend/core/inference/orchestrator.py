@@ -19,6 +19,7 @@ import base64
 import os
 import signal
 from loggers import get_logger
+from loggers.progress import progress_throttle
 import multiprocessing as mp
 import queue
 import threading
@@ -286,10 +287,10 @@ class InferenceOrchestrator:
                 ][:40]
                 if gguf_ids:
                     self._top_gguf_cache = gguf_ids
-                    logger.info("Top GGUF models: %s", gguf_ids)
+                    logger.debug("Top GGUF models: %s", gguf_ids)
                 if hub_ids:
                     self._top_hub_cache = hub_ids
-                    logger.info("Top hub models: %s", hub_ids)
+                    logger.debug("Top hub models: %s", hub_ids)
         except Exception as e:
             logger.warning("Failed to fetch top models: %s", e)
         finally:
@@ -552,7 +553,11 @@ class InferenceOrchestrator:
                 raise RuntimeError(f"Subprocess error: {error_msg}")
 
             if rtype == "status":
-                logger.info("Subprocess status: %s", resp.get("message", ""))
+                msg = resp.get("message", "")
+                # Throttle the repeated heartbeat line to ~10s, but keep resetting
+                # the deadline on every tick (the subprocess is still alive).
+                if progress_throttle.should_log(("inference-load", id(self)), msg):
+                    logger.info("Subprocess status: %s", msg)
                 # Reset deadline — subprocess is still alive and working
                 deadline = time.monotonic() + timeout
                 continue
@@ -879,9 +884,11 @@ class InferenceOrchestrator:
                 rid = resp.get("request_id")
                 rtype = resp.get("type", "")
 
-                # Status messages: log and skip
+                # Status messages: log (throttled to ~10s) and skip
                 if rtype == "status":
-                    logger.info("Subprocess status: %s", resp.get("message", ""))
+                    msg = resp.get("message", "")
+                    if progress_throttle.should_log(("inference-dispatch", id(self)), msg):
+                        logger.info("Subprocess status: %s", msg)
                     continue
 
                 # Route to mailbox if a matching request_id exists
@@ -1419,6 +1426,11 @@ class InferenceOrchestrator:
             self.active_model_name = None
             self.models.clear()
             raise
+        finally:
+            # A load can end through success, a worker failure, a stall, or a
+            # concurrent cancellation. Do not let its last status heartbeat
+            # suppress the first diagnostic line of the next attempt.
+            progress_throttle.reset(("inference-load", id(self)))
 
     def cancel_load(self, model_name: str) -> bool:
         """Abort an in-flight load by terminating its subprocess.
@@ -1450,6 +1462,9 @@ class InferenceOrchestrator:
         # leaves a window where load_model reads the marker still set, passes its pre-spawn
         # recheck, and loads the model after /unload reported it cancelled. Clear first.
         self.loading_models.discard(target)
+        # Make an immediate retry log its first heartbeat even while the
+        # cancelled load is still unwinding its response wait.
+        progress_throttle.reset(("inference-load", id(self)))
         self.active_model_name = None
         self.models.clear()
         self._shutdown_subprocess(timeout = 0.5)

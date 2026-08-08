@@ -25,6 +25,7 @@ import structlog
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from loggers import get_logger
+from loggers.progress import progress_throttle
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING, Literal, Iterator
@@ -2711,6 +2712,20 @@ class TrainingBackend:
                 if status:
                     self._progress.status_message = status
 
+                # Throttled (~10s) heartbeat so training progress shows in the log
+                # without a line per step; per-step metrics still stream to the UI
+                # over SSE. Empty message -> a pure time heartbeat (step changes
+                # every tick, so it must not key the throttle on the message).
+                if progress_throttle.should_log(("training", self.current_job_id)):
+                    _loss_str = f"{_safe_loss:.4f}" if _safe_loss is not None else "n/a"
+                    logger.info(
+                        "Training progress: step %s/%s, loss=%s, epoch=%.2f",
+                        self._progress.step,
+                        self._progress.total_steps or "?",
+                        _loss_str,
+                        float(self._progress.epoch or 0.0),
+                    )
+
                 step = event.get("step", 0)
                 loss = _safe_loss
                 lr = _safe_lr
@@ -2809,6 +2824,7 @@ class TrainingBackend:
                         logger.warning("Training warning: %s", message)
 
             elif etype == "complete":
+                progress_throttle.reset(("training", self.current_job_id))
                 msg = event.get("status_message", "Training completed")
                 stopped = self._should_stop or msg.strip().lower() in {
                     "training cancelled",
@@ -2841,6 +2857,10 @@ class TrainingBackend:
             elif etype == "error":
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
+                # Evict the throttle key on error/stop too (not just on complete),
+                # so a re-run reusing the job_id logs its first heartbeat at once
+                # and the entry doesn't linger for the process lifetime.
+                progress_throttle.reset(("training", self.current_job_id))
                 # Nothing left to save: drop an in-flight watchdog to its grace, not the
                 # save backstop.
                 self._complete_seen.set()

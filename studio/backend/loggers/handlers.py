@@ -28,6 +28,13 @@ from utils.native_path_leases import redact_native_paths
 logger = structlog.get_logger(__name__)
 
 
+def _logs_verbose() -> bool:
+    # Lazy import: config.py imports this module, so importing it at module load
+    # would be circular. By request time both modules are fully initialized.
+    from loggers.config import logs_verbose
+    return logs_verbose()
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         raw = (os.environ.get(name) or "").strip()
@@ -74,6 +81,12 @@ _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
     r"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
 )
+_STANDARD_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
+# Status/progress polls the UI hits every few seconds while an operation runs.
+# Their successful 200s carry no signal (the operation's own module logs state
+# changes), so they're suppressed on success but STILL logged on any error.
+# The export/load-progress polls live in _QUIET_SUCCESS_PATHS instead, which owns
+# the same rule GET-only; do not duplicate a path across both sets.
 _EXCLUDED_PATHS = {
     "/api/train/status",
     "/api/train/metrics",
@@ -137,8 +150,10 @@ def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) 
     """GET-only. Suppress a 2xx poll line that carries no signal, plus a chat list
     poll's transient pre-auth 401 (only in the bootstrap window before the first
     successful token refresh). Mutations, real (post-refresh) auth failures, and
-    all other errors always log. --verbose disables the whole suppressor."""
-    if _VERBOSE_ACCESS_LOG or method != "GET":
+    all other errors always log. --verbose disables the whole suppressor, via either
+    signal: the CLI zeroes the dedup windows, the direct `run.py --verbose` path only
+    sets UNSLOTH_STUDIO_VERBOSE/LOG_LEVEL."""
+    if _VERBOSE_ACCESS_LOG or _logs_verbose() or method != "GET":
         return False
     if 200 <= status_code < 300:
         return path in _QUIET_SUCCESS_PATHS or path in _CHAT_LIST_PATHS
@@ -174,7 +189,7 @@ class _DropDuplicateAsgiException(logging.Filter):
     reached this middleware, passes through untouched. --verbose keeps both copies."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if _VERBOSE_ACCESS_LOG:
+        if _VERBOSE_ACCESS_LOG or _logs_verbose():
             return True
         try:
             msg = record.msg if isinstance(record.msg, str) else ""
@@ -210,7 +225,11 @@ class LoggingMiddleware:
     ) -> bool:
         """True if an identical GET/2xx log fired < window ago (query string is part
         of the identity). Non-GET/non-2xx never dedup; quiet-poll paths use the longer
-        heartbeat. Stamps only on emit, so steady polls still log."""
+        heartbeat. Stamps only on emit, so steady polls still log. Verbose keeps every
+        line (the direct backend --verbose path doesn't zero the dedup env vars, so
+        honor it here too, not just via the CLI helper)."""
+        if _logs_verbose():
+            return False
         if method != "GET" or not (200 <= status_code < 300):
             return False
         window_ms = _QUIET_POLL_DEDUP_MS if path in _QUIET_POLL_PATHS else _ACCESS_LOG_DEDUP_MS
@@ -232,11 +251,15 @@ class LoggingMiddleware:
             return
 
         path = scope["path"]
-        excluded = (
-            path in _EXCLUDED_PATHS
-            or path.startswith("/assets/")
-            or path.endswith(_EXCLUDED_SUFFIXES)
-        )
+        method = scope["method"]
+        # Scanner/proxy probes (CONNECT, absolute-form "GET http://...", PRI,
+        # random verbs) are never legitimate app traffic. Static assets are pure
+        # noise too. Both are quiet even on 4xx. Status/progress polls
+        # (_EXCLUDED_PATHS) are quiet on success but still log on error. A normal
+        # GET/POST 404 is real signal and stays. Verbose keeps everything.
+        scanner = method not in _STANDARD_METHODS or path.startswith(("http://", "https://"))
+        static = path.startswith("/assets/") or path.endswith(_EXCLUDED_SUFFIXES)
+        success_poll = path in _EXCLUDED_PATHS
         start_time = time.perf_counter()
         status_code = 500
 
@@ -262,20 +285,27 @@ class LoggingMiddleware:
             raise
         else:
             end_time = time.perf_counter()
-            if 200 <= status_code < 300 and path == _AUTH_REFRESH_PATH:
+            is_success = 200 <= status_code < 300
+            if is_success and path == _AUTH_REFRESH_PATH:
                 self._auth_refreshed = True
+            if _logs_verbose():
+                suppress = False
+            elif scanner or static:
+                suppress = True
+            elif success_poll and is_success:
+                suppress = True
+            else:
+                suppress = False
             if (
-                not excluded
-                and not _is_quiet_success(
-                    scope["method"], path, status_code, not self._auth_refreshed
-                )
+                not suppress
+                and not _is_quiet_success(method, path, status_code, not self._auth_refreshed)
                 and not self._is_redundant_repeat(
-                    scope["method"], path, scope.get("query_string", b""), status_code, end_time
+                    method, path, scope.get("query_string", b""), status_code, end_time
                 )
             ):
                 logger.info(
                     "request_completed",
-                    method = scope["method"],
+                    method = method,
                     path = path,
                     status_code = status_code,
                     process_time_ms = round((end_time - start_time) * 1000, 2),

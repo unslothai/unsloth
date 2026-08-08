@@ -16,6 +16,36 @@ import structlog
 
 from loggers.handlers import filter_sensitive_data
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+# Libraries whose INFO/DEBUG chatter carries no operational signal for Studio
+# (per-request "HTTP Request: ... 200 OK", HF/transformers banners, multipart
+# part dumps). Raised to WARNING unless verbose, so their errors still surface.
+_NOISY_LIBS = (
+    "httpx",
+    "httpcore",
+    "huggingface_hub",
+    "transformers",
+    "datasets",
+    "multipart",
+    "watchfiles",
+    "urllib3",
+    "filelock",
+    "fsspec",
+    "asyncio",
+    "PIL",
+)
+
+
+def logs_verbose() -> bool:
+    """True when the user asked to keep everything (`--verbose` / LOG_LEVEL=DEBUG).
+
+    The single switch every log-noise suppression checks, so verbose restores the
+    full firehose and nothing is permanently hidden."""
+    if (os.getenv("UNSLOTH_STUDIO_VERBOSE", "") or "").strip().lower() in _TRUTHY:
+        return True
+    return os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG"
+
 
 class _DropTorchDtypeDeprecation(logging.Filter):
     """Drop transformers' once-per-run "`torch_dtype` is deprecated" warning_once.
@@ -85,7 +115,19 @@ class LogConfig:
             cache_logger_on_first_use = True,
         )
 
-        # Drop transformers' cosmetic "`torch_dtype` is deprecated" warning_once (see filter).
+        if not logs_verbose():
+            for name in _NOISY_LIBS:
+                logging.getLogger(name).setLevel(logging.WARNING)
+
+        # Structlog owns Studio's output and the stdlib root logger has no
+        # handler. Capturing warnings would therefore send them to
+        # ``py.warnings``' NullHandler and lose meaningful runtime warnings.
+        # Keep the standard warnings stream connected to stderr instead.
+        logging.captureWarnings(False)
+
+        # Drop transformers' cosmetic "`torch_dtype` is deprecated" warning_once (see
+        # filter). It is emitted at WARNING, so the _NOISY_LIBS level bump above does
+        # not cover it, and it stays dropped in verbose too — it is pure noise.
         _dtype_filter = _DropTorchDtypeDeprecation()
         for _name in (
             "transformers.configuration_utils",

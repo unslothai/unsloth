@@ -7543,7 +7543,7 @@ def execute_tool(
     with or without it. Tools without incremental output ignore it.
     ``website_policy``: hidden server-validated domain limits for web_search.
     """
-    logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
+    logger.debug(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _search_knowledge_base_with_budget(
