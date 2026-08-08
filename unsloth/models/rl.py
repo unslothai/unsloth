@@ -1119,7 +1119,20 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         # throws that away. `predict` and the two dataloader builders stay the base
         # Trainer's on every TRL, so they always cap.
         if packs_late and _eval_packing_on(args):
-            return _mark_capped(dataset, cap, drop_unsupervised)
+            # Left FOR the packer, so it is not capped -- and must not be marked
+            # as if it were. `packs_late` is read off the class, but TRL only
+            # actually prepares a split that was PASSED to `evaluate`:
+            #     if not self._skip_prepare_dataset and eval_dataset is not None
+            #        and not isinstance(eval_dataset, str):
+            # (trl 1.9.2 sft_trainer.py:1675, same line since 1.7.0). A split
+            # stored on the trainer, one named by a string key, and any run with
+            # `skip_prepare_dataset` therefore reach `get_eval_dataloader` as
+            # this very object with no packer having touched it -- and that
+            # builder, which does cap, then read the mark through
+            # `_cap_still_holds` and handed the collator the overlength rows.
+            # Where TRL really does pack, it hands back a NEW object, so nothing
+            # is lost by leaving this one unmarked.
+            return dataset
         # A packed split carries document lengths, not tokens. Slicing `input_ids`
         # under a `seq_lengths` that still describes the longer row makes
         # padding-free build position ids for tokens the row no longer has, which

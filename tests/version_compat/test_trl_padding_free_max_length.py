@@ -1492,6 +1492,123 @@ def test_eval_packing_on_a_late_split_follows_whether_trl_packs_it():
         assert _run(prepares_late, False) <= _MODEL_MAX_SEQ_LENGTH
 
 
+def _packing_aware_stub():
+    """The two real classes around the wrapper, in their actual shapes.
+
+    `packs_late` is read off the CLASS, but TRL only prepares a split that was
+    passed to `evaluate`:
+
+        if not self._skip_prepare_dataset and eval_dataset is not None
+           and not isinstance(eval_dataset, str):
+
+    (trl 1.9.2 sft_trainer.py:1675, unchanged since 1.7.0). Everything else --
+    a split stored on the trainer, a string key, a `skip_prepare_dataset` run --
+    goes straight to `Trainer.evaluate`, which hands that same object to
+    `self.get_eval_dataloader(eval_dataset)` (transformers 4.57.6
+    trainer.py:4467 and 4481). That builder is the entry point that caps.
+    """
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    seen = {}
+
+    class Base:  # transformers.Trainer
+        def get_eval_dataloader(self, eval_dataset = None):
+            seen["dataloader"] = (
+                self.eval_dataset[eval_dataset]
+                if isinstance(eval_dataset, str)
+                else eval_dataset
+                if eval_dataset is not None
+                else self.eval_dataset
+            )
+            return seen["dataloader"]
+
+        def evaluate(self, eval_dataset = None, **kw):
+            override = eval_dataset is not None
+            return self.get_eval_dataloader(eval_dataset if override else self.eval_dataset)
+
+    class Stub(Base):  # trl >= 1.7 SFTTrainer
+        def _prepare_dataset(self, dataset, *a, **kw):
+            seen["prepared"] = dataset
+            return dataset.map(lambda e: e)  # packing always yields a NEW object
+
+        def evaluate(self, eval_dataset = None, **kw):
+            if (
+                not self._skip_prepare_dataset
+                and eval_dataset is not None
+                and not isinstance(eval_dataset, str)
+            ):
+                eval_dataset = self._prepare_dataset(eval_dataset)
+            return super().evaluate(eval_dataset = eval_dataset, **kw)
+
+    _wrap_sft_evaluate_cap(Stub)
+    return Stub, seen
+
+
+def test_a_split_no_packer_reaches_is_still_capped_under_eval_packing():
+    """Deferring to the packer must not MARK the split as capped.
+
+    `evaluate()` with nothing passed, and `evaluate("name")`, never reach TRL's
+    prep: its guard needs `eval_dataset is not None and not isinstance(..., str)`.
+    The stored split then arrives at `get_eval_dataloader` as the very object
+    `evaluate` marked, and `_cap_still_holds` read that mark and handed the
+    collator the overlength rows -- with `max_length` cleared and nothing else
+    truncating, on a plain `SFTConfig(packing = True)`.
+    """
+    _, tok = _load_plain()
+    cap = _MODEL_MAX_SEQ_LENGTH
+
+    def _run(call, **flags):
+        Stub, seen = _packing_aware_stub()
+        stub = Stub()
+        stub.args = _Args(cap, None)
+        stub.args.eval_packing = flags.get("eval_packing")
+        stub.args.packing = flags.get("packing", False)
+        stub._skip_prepare_dataset = flags.get("skip_prepare", False)
+        stub.eval_dataset = _tokenized_dataset(tok)
+        call(stub)
+        return seen
+
+    # Stored split, `evaluate()` with no argument. TRL never prepares it.
+    for flags in ({"eval_packing": True}, {"packing": True}, {"eval_packing": True, "packing": True}):
+        seen = _run(lambda s: s.evaluate(), **flags)
+        assert "prepared" not in seen, "TRL does not prepare a stored split"
+        assert max(len(r) for r in seen["dataloader"]["input_ids"]) <= cap, (
+            f"{flags}: an overlength stored split reached the collator"
+        )
+
+    # A named split: `evaluate("name")` is excluded from TRL's prep by name.
+    Stub, seen = _packing_aware_stub()
+    stub = Stub()
+    stub.args = _Args(cap, None)
+    stub.args.eval_packing = True
+    stub.args.packing = False
+    stub._skip_prepare_dataset = False
+    stub.eval_dataset = {"validation": _tokenized_dataset(tok)}
+    stub.evaluate(eval_dataset = "validation")
+    assert "prepared" not in seen
+    assert max(len(r) for r in seen["dataloader"]["input_ids"]) <= cap, (
+        "an overlength named split reached the collator"
+    )
+
+    # `skip_prepare_dataset`: the split IS passed, and TRL still never packs it.
+    seen = _run(
+        lambda s: s.evaluate(eval_dataset = s.eval_dataset),
+        eval_packing = True,
+        skip_prepare = True,
+    )
+    assert "prepared" not in seen
+    assert max(len(r) for r in seen["dataloader"]["input_ids"]) <= cap, (
+        "skip_prepare_dataset + eval_packing let an overlength split through"
+    )
+
+    # The control, and the deferral this branch exists for: when TRL really does
+    # prepare the split, the packer must still receive the FULL rows.
+    seen = _run(lambda s: s.evaluate(eval_dataset = s.eval_dataset), eval_packing = True)
+    assert max(len(r) for r in seen["prepared"]["input_ids"]) > cap, (
+        "the split was cut before TRL's packer could redistribute the overflow"
+    )
+
+
 def test_the_installed_trl_is_on_the_side_of_1_7_0_that_its_version_says():
     """The source-level half: which shape the TRL actually installed here has."""
     from packaging.version import Version
