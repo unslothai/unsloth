@@ -4070,12 +4070,9 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "extras-no-deps.txt",
     )
 
-    # 4. Overrides (torchao) -- install the version matching the venv's torch so
-    #    its C++ extensions load (see _select_torchao_spec). Force replacement
-    #    only when the pin changed; repeatedly uninstalling the same wheel removes
-    #    shared top-level files owned by other distributions on Windows. Skipped when
-    #    torch is unavailable (Intel Mac GGUF-only) and on Windows ROCm (no working
-    #    build; see below).
+    # 4. Install the torch-matched torchao override. Reinstall only when the pin
+    #    changes, since Windows can remove shared files during replacement.
+    #    Skip when torch is unavailable or Windows ROCm has no working build.
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
     elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():
