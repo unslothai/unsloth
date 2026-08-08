@@ -167,6 +167,7 @@ import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-b
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
+import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
@@ -3015,6 +3016,17 @@ const Composer: FC<{
   // lands. Going through the form keeps queueing, indexing holds and draft
   // clearing identical to a typed send.
   const formRef = useRef<HTMLFormElement | null>(null);
+  // Mirrored into state so the publish effect re-runs when the node mounts: a
+  // ref mutation does not re-render. See usePublishedFrame.
+  const [composerEl, setComposerEl] = useState<HTMLFormElement | null>(null);
+  const attachComposer = useCallback((node: HTMLFormElement | null) => {
+    formRef.current = node;
+    setComposerEl(node);
+  }, []);
+  // The composer docks to the bottom of the viewport once a thread has turns,
+  // in the same column the corner overlay stack occupies. Published so the
+  // stack lifts above it rather than covering the Send button.
+  usePublishedFrame(composerEl);
   const dictationBaseTextRef = useRef("");
   const dictationComposerRef = useRef("");
   // Thread switches reuse this composer, so the send has to know where it
@@ -3419,7 +3431,7 @@ const Composer: FC<{
   return (
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
-      ref={formRef}
+      ref={attachComposer}
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
