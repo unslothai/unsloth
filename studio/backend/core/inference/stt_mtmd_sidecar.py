@@ -650,6 +650,21 @@ class MtmdSttSidecar:
                 pass
         return True
 
+    def _cancel_owned_load(self, owner: threading.Event) -> bool:
+        """Cancel startup only when it belongs to this transcription."""
+        with self._lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None or self._load_owner_cancel_event is not owner:
+                return False
+            event.set()
+            process = self._starting_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        return True
+
     def wait_for_load_to_settle(self) -> None:
         """Block until a cancelled startup has been reaped and its VRAM freed.
 
@@ -934,10 +949,7 @@ class MtmdSttSidecar:
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
         already_cancelled = cancel_event.is_set()
         cancel_event.set()
-        load_cancelled = False
-        if self._load_owner_cancel_event is cancel_event:
-            load_cancelled = self.cancel_pending_load()
-        return load_cancelled or not already_cancelled
+        return self._cancel_owned_load(cancel_event) or not already_cancelled
 
     def _post_transcribe(
         self,

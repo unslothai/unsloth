@@ -1039,6 +1039,7 @@ class WhisperSttSidecar:
         self._load_state_lock = threading.Lock()
         self._loading = False
         self._load_cancel_event: Optional[threading.Event] = None
+        self._load_owner_cancel_event: Optional[threading.Event] = None
         self._keep_alive_seconds = max(0.0, keep_alive_seconds)
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
@@ -1064,6 +1065,15 @@ class WhisperSttSidecar:
             event.set()
             return True
 
+    def _cancel_owned_load(self, owner: threading.Event) -> bool:
+        """Cancel startup only when it belongs to this transcription."""
+        with self._load_state_lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None or self._load_owner_cancel_event is not owner:
+                return False
+            event.set()
+            return True
+
     def wait_for_load_to_settle(self) -> None:
         """Block until any in-flight load() has exited and freed its memory.
 
@@ -1074,10 +1084,11 @@ class WhisperSttSidecar:
         with self._lock:
             pass
 
-    def _begin_load(self) -> threading.Event:
+    def _begin_load(self, owner: Optional[threading.Event] = None) -> threading.Event:
         event = threading.Event()
         with self._load_state_lock:
             self._load_cancel_event = event
+            self._load_owner_cancel_event = owner
             self._loading = True
         return event
 
@@ -1085,6 +1096,7 @@ class WhisperSttSidecar:
         with self._load_state_lock:
             if self._load_cancel_event is event:
                 self._load_cancel_event = None
+                self._load_owner_cancel_event = None
                 self._loading = False
 
     @staticmethod
@@ -1205,20 +1217,28 @@ class WhisperSttSidecar:
             return _CachedSttSnapshot(path = snapshot_path, is_multilingual = False)
         return _CachedSttSnapshot(path = snapshot_path, is_multilingual = None)
 
-    def load(self, model: Optional[str] = None):
+    def load(
+        self,
+        model: Optional[str] = None,
+        request_cancel_event: Optional[threading.Event] = None,
+    ):
         """Load (or switch to) a model, reusing it if already resident.
 
         Returns a ``(model, processor)`` pair.
         """
+        if request_cancel_event is not None and request_cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         model_id = resolve_model_id(model)
         with self._lock:
+            if request_cancel_event is not None and request_cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
             ensure_stt_available()
             if self._engine is not None and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
                 return self._engine
             import torch
 
-            cancel_event = self._begin_load()
+            cancel_event = self._begin_load(request_cancel_event)
             candidate = None
             device: Optional[str] = None
             try:
@@ -1279,6 +1299,7 @@ class WhisperSttSidecar:
                     self._model_id = model_id
                     self._device = device
                     self._load_cancel_event = None
+                    self._load_owner_cancel_event = None
                     self._loading = False
                 self._schedule_idle_unload_locked()
                 logger.info("STT model %s ready on %s", model_id, device)
@@ -1308,7 +1329,10 @@ class WhisperSttSidecar:
 
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        model, processor = self.load(model_id)
+        if cancel_event is None:
+            model, processor = self.load(model_id)
+        else:
+            model, processor = self.load(model_id, request_cancel_event = cancel_event)
         effective_generate_kwargs = dict(generate_kwargs)
         if cancel_event is not None:
             from transformers import StoppingCriteriaList
@@ -1424,7 +1448,7 @@ class WhisperSttSidecar:
         """Ask this request's Transformers generation or load to stop."""
         already_cancelled = cancel_event.is_set()
         cancel_event.set()
-        return self.cancel_pending_load() or not already_cancelled
+        return self._cancel_owned_load(cancel_event) or not already_cancelled
 
     def unload(self) -> None:
         with self._lock:
