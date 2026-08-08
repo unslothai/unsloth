@@ -977,10 +977,18 @@ create_studio_shortcuts() {
             echo "[WARN] Cannot create launcher: no entropy source for studio_install_id" >&2
             return 1
         fi
-        # Atomic write so a partial install can't leave a half-written id.
+        # Atomic write, then publish no-clobber: the desktop app mints this same
+        # id, so a plain mv could replace one a running backend already reported.
+        # ln fails with EEXIST instead and the read below adopts the winner. We
+        # cannot share the app's lock portably (flock(1) is absent on macOS).
         _css_id_tmp="$_css_id_file.$$.tmp"
-        printf '%s' "$_css_new_id" > "$_css_id_tmp" \
-            && mv "$_css_id_tmp" "$_css_id_file"
+        if printf '%s' "$_css_new_id" > "$_css_id_tmp"; then
+            if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then
+                # No hard links (exFAT/FAT32): still refuse to clobber.
+                [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"
+            fi
+        fi
+        rm -f "$_css_id_tmp"
         chmod 600 "$_css_id_file" 2>/dev/null || true
         unset _css_new_id _css_id_tmp
     fi
