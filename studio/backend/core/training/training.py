@@ -1265,10 +1265,9 @@ class TrainingBackend:
                 return "cancelled", existing
 
             if existing.state == "pending" and not owns_current:
-                self._reserve_start_cancel_tombstone_locked(
-                    start_request_id,
-                    reclaim_capacity = True,
-                )
+                # Not the active run, so it does not get the owner's over-cap slot: start
+                # plus cancel could otherwise be repeated to grow the table without bound.
+                self._reserve_start_cancel_tombstone_locked(start_request_id)
                 cancelled = replace(
                     existing,
                     state = "rejected",

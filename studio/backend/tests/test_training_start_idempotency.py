@@ -1044,3 +1044,22 @@ def test_owner_cancel_at_capacity_keeps_other_live_cancellations():
     # Unregistered ids keep hitting the hard cap.
     with pytest.raises(TrainingStartCancellationCapacityError):
         backend.cancel_start_request("stranger")
+
+
+def test_pending_cancels_cannot_grow_the_tombstone_table_past_the_cap():
+    """Only the owner of the active run gets the over-cap slot. A pending request is not it,
+    so start-then-cancel cannot be repeated to grow the table without bound."""
+    backend = TrainingBackend()
+    for index in range(_MAX_START_CANCEL_TOMBSTONES):
+        backend.cancel_start_request(f"unknown-{index}")
+
+    refused = 0
+    for index in range(50):
+        backend.reserve_start_request(f"pending-{index}", f"job-{index}")
+        try:
+            backend.cancel_start_request(f"pending-{index}")
+        except TrainingStartCancellationCapacityError:
+            refused += 1
+
+    assert refused >= 1
+    assert len(backend._start_cancel_tombstones) <= _MAX_START_CANCEL_TOMBSTONES

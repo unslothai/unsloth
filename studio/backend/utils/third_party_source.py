@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -440,11 +441,27 @@ def _valid_checkout(path: Path, spec: PinnedSource) -> bool:
     )
 
 
+def _clear_read_only(function, path, _error) -> None:
+    # Git marks .git/objects read-only, and Windows refuses to delete a read-only file, so
+    # replacing a checkout dies with WinError 5. Only retry when the path really is not
+    # writable: an open handle (WinError 32) must still surface rather than spin.
+    if os.access(path, os.W_OK):
+        raise
+    os.chmod(path, os.stat(path).st_mode | stat.S_IWRITE)
+    function(path)
+
+
 def _remove_owned_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink(missing_ok = True)
     elif path.is_dir():
-        shutil.rmtree(path)
+        # onexc replaced onerror in 3.12; the handler signature is the same either way.
+        handler = (
+            {"onexc": _clear_read_only}
+            if sys.version_info >= (3, 12)
+            else {"onerror": _clear_read_only}
+        )
+        shutil.rmtree(path, **handler)
 
 
 def _replace_owned_directory(staging: Path, destination: Path) -> None:
@@ -885,7 +902,26 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
     ):
         return destination.resolve()
 
-    destination.parent.mkdir(parents = True, exist_ok = True)
+    def _verified_legacy() -> Path | None:
+        candidate = (
+            Path(legacy_path) if legacy_path is not None else _default_legacy_dac_weights_path()
+        )
+        if candidate is not None and _artifact_matches(
+            candidate,
+            expected_size = _DAC_SIZE,
+            expected_sha256 = _DAC_SHA256,
+        ):
+            return candidate.resolve()
+        return None
+
+    try:
+        destination.parent.mkdir(parents = True, exist_ok = True)
+    except OSError:
+        # A read-only or full hub cache must not hide weights we can already verify.
+        fallback = _verified_legacy()
+        if fallback is None:
+            raise
+        return fallback
     try:
         with FileLock(str(destination.parent / ".install.lock"), timeout = 300):
             if _artifact_matches(
@@ -947,6 +983,13 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
                     "The pinned DAC speech weights are unavailable in the active Hugging Face cache"
                 ) from download_error
             raise RuntimeError("The downloaded DAC speech weights failed integrity validation")
+    except OSError:
+        # Same reasoning as the mkdir above: taking the lock needs a writable cache, and
+        # verified weights we already hold are a better answer than failing the load.
+        fallback = _verified_legacy()
+        if fallback is None:
+            raise
+        return fallback
     except Timeout as error:
         raise RuntimeError("Timed out waiting for the DAC speech weights installation") from error
 

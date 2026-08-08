@@ -9,6 +9,7 @@ import io
 import importlib
 import py_compile
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -824,3 +825,51 @@ def test_git_invocations_opt_into_long_paths(monkeypatch):
     assert len(seen) == 2
     for arguments in seen:
         assert arguments[:3] == ["git", "-c", "core.longpaths=true"], arguments
+
+
+def test_unwritable_hub_cache_still_uses_verified_legacy_dac_weights(monkeypatch, tmp_path):
+    """A read-only or full hub cache must not hide weights we can already verify: the
+    directory and lock are only needed to populate the cache, which is an optimisation."""
+    payload = b"legacy pinned DAC weights"
+    _configure_dac_artifact(monkeypatch, tmp_path, payload)
+    legacy = tmp_path / "legacy" / source._DAC_FILENAME
+    legacy.parent.mkdir()
+    legacy.write_bytes(payload)
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+
+    def refuse(*args, **kwargs):
+        raise OSError(errno.EACCES, "read-only file system")
+
+    monkeypatch.setattr(source.Path, "mkdir", refuse)
+
+    assert source.ensure_dac_speech_weights(legacy) == legacy.resolve()
+
+
+def test_replacing_a_checkout_clears_read_only_files(tmp_path):
+    """Git marks .git/objects read-only and Windows refuses to delete a read-only file, so
+    replacing a pinned checkout died with WinError 5 there."""
+    tree = tmp_path / "checkout" / ".git" / "objects" / "ab"
+    tree.mkdir(parents = True)
+    blob = tree / "cdef"
+    blob.write_bytes(b"object")
+    blob.chmod(stat.S_IRUSR)
+
+    source._remove_owned_path(tmp_path / "checkout")
+
+    assert not (tmp_path / "checkout").exists()
+
+
+def test_read_only_handler_reraises_when_the_path_is_already_writable(tmp_path):
+    """A locked file (WinError 32 on Windows) is not a read-only problem, so it must surface
+    rather than be retried into a loop."""
+    victim = tmp_path / "locked"
+    victim.write_bytes(b"x")
+
+    def boom(_path):
+        raise PermissionError("in use")
+
+    with pytest.raises(PermissionError):
+        try:
+            boom(victim)
+        except PermissionError as error:
+            source._clear_read_only(boom, str(victim), error)
