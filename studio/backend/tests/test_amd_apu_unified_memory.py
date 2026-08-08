@@ -221,7 +221,11 @@ class TestAmdSdkWheelsCountAsRocm:
     The arch map must use the same predicate or an APU goes unrecognised there."""
 
     @staticmethod
-    def _torch(hip, version, archs = ("gfx1151",)):
+    def _torch(
+        hip,
+        version,
+        archs = ("gfx1151",),
+    ):
         t = _fake_torch(hip, list(archs))
         t.__version__ = version
         return t
@@ -230,8 +234,8 @@ class TestAmdSdkWheelsCountAsRocm:
         ("hip", "version", "expected"),
         [
             ("6.2.0", "2.5.0+rocm6.2", True),
-            (None, "2.11.0+rocm7.13", True),   # AMD SDK wheel
-            (None, "2.5.0+ROCm7.0", True),     # case-insensitive
+            (None, "2.11.0+rocm7.13", True),  # AMD SDK wheel
+            (None, "2.5.0+ROCm7.0", True),  # case-insensitive
             (None, "2.5.0+cu124", False),
             (None, "2.5.0", False),
         ],
