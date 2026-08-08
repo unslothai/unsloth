@@ -696,6 +696,35 @@ class TestCpuIsolatedReplay:
         assert Path(second).read_bytes() == b"rebuilt binary"
         assert not Path(first).parent.exists()
 
+    def test_a_runtime_abandoned_by_a_dead_studio_is_swept(self, monkeypatch, tmp_path):
+        binary = _managed_runtime(monkeypatch, tmp_path)
+        runtime_root = tmp_path / "studio" / "runtime"
+        runtime_root.mkdir(parents = True)
+        dead = runtime_root / "llama-cpu-dead"
+        dead.mkdir()
+        # A pid no live process can hold, so the sweep must collect it.
+        (dead / "UNSLOTH_OWNER_PID").write_text("0")
+        legacy = runtime_root / "llama-cpu-legacy"
+        legacy.mkdir()
+
+        staged = LlamaCppBackend()._cpu_isolated_binary(str(binary))
+
+        assert staged is not None
+        assert not dead.exists()
+        # No owner stamp means an older Studio wrote it; leave it alone.
+        assert legacy.exists()
+
+    def test_a_live_owner_keeps_its_runtime(self, monkeypatch, tmp_path):
+        binary = _managed_runtime(monkeypatch, tmp_path)
+        one = LlamaCppBackend()
+        first = Path(one._cpu_isolated_binary(str(binary))).parent
+
+        second = Path(LlamaCppBackend()._cpu_isolated_binary(str(binary))).parent
+
+        assert first != second
+        assert first.exists()
+        assert (first / "UNSLOTH_OWNER_PID").read_text() == str(os.getpid())
+
     def test_a_failed_cleanup_is_retried_rather_than_orphaned(self, monkeypatch, tmp_path):
         binary = _managed_runtime(monkeypatch, tmp_path)
         backend = LlamaCppBackend()
@@ -821,6 +850,31 @@ def test_env_projector_cpu_recovery_preserves_vision_state(monkeypatch, tmp_path
     assert len(fallback_sources) == 1
     assert "--mmproj" not in fallback_sources[0]
     assert backend._is_vision is True
+
+
+def test_env_projector_cpu_recovery_keeps_audio_input(monkeypatch, tmp_path):
+    """An audio projector handed over by env must not report as text-only."""
+    projector = tmp_path / "env-mmproj.gguf"
+    projector.write_bytes(b"projector")
+    read = []
+    import utils.models.gguf_metadata as gguf_metadata
+
+    monkeypatch.setattr(
+        gguf_metadata, "read_mmproj_audio_capability", lambda path: read.append(path) or True
+    )
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(projector))
+
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [-11, -11, None],
+        mmproj_env = {"LLAMA_ARG_MMPROJ": str(projector)},
+    )
+
+    assert loaded is True
+    assert read == [str(projector)]
+    assert backend._is_vision is True
+    assert backend._mmproj_has_audio is True
 
 
 def test_inherited_split_mode_dropped_before_spawn_still_recovers(monkeypatch, tmp_path):

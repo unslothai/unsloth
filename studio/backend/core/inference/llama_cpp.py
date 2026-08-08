@@ -3005,6 +3005,55 @@ def _llama_lib_dir(binary: str) -> Path:
     return _resolve_llama_binary(binary).parent
 
 
+_CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
+
+
+def _cpu_runtime_owner_alive(staged_dir: Path) -> bool:
+    """Whether a live process still owns this staged CPU-fallback runtime."""
+    try:
+        pid = int(
+            (staged_dir / _CPU_RUNTIME_OWNER_FILE).read_text(encoding = "utf-8").strip()
+        )
+    except (OSError, ValueError):
+        # No owner stamp: written by an older Studio, so leave it alone.
+        return True
+    if pid == os.getpid():
+        return True
+    # 0 and negatives address process groups, never an owner.
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        ctypes.set_last_error(0)
+        handle = kernel32.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER
+        kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _sweep_abandoned_cpu_runtimes(runtime_root: Path) -> None:
+    """Delete staged runtimes whose owning Studio is gone (kill -9, host crash)."""
+    try:
+        candidates = list(runtime_root.glob("llama-cpu-*"))
+    except OSError:
+        return
+    for staged_dir in candidates:
+        if not staged_dir.is_dir() or _cpu_runtime_owner_alive(staged_dir):
+            continue
+        with contextlib.suppress(OSError):
+            shutil.rmtree(staged_dir, ignore_errors = True)
+
+
 def _lib_dir_has_ggml_backend(lib_dir: Path, backend: str) -> bool:
     """Match an exact or versioned ggml backend library soname."""
     stem = f"ggml-{backend}.dll" if sys.platform == "win32" else f"libggml-{backend}.so"
@@ -8930,11 +8979,17 @@ class LlamaCppBackend:
         try:
             runtime_root = _swa_cache_path().parent / "runtime"
             runtime_root.mkdir(parents = True, exist_ok = True)
+            _sweep_abandoned_cpu_runtimes(runtime_root)
             staged_runtime = tempfile.TemporaryDirectory(
                 prefix = "llama-cpu-",
                 dir = runtime_root,
             )
             staged_dir = Path(staged_runtime.name)
+            # A kill -9 skips TemporaryDirectory's atexit hook, so record the
+            # owner and let the next stage collect what no live Studio holds.
+            (staged_dir / _CPU_RUNTIME_OWNER_FILE).write_text(
+                str(os.getpid()), encoding = "utf-8"
+            )
             lib_dir = _llama_lib_dir(str(source_binary))
             gpu_backend = re.compile(
                 r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
@@ -10805,15 +10860,20 @@ class LlamaCppBackend:
                         raise RuntimeError(_ram_msg)
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
-                # independent of token names.
+                # independent of token names. A projector reaching the child only
+                # through LLAMA_ARG_MMPROJ never lands in launch_mmproj_path, so
+                # probe that too, but never one the unpinnable guard just dropped.
                 self._mmproj_has_audio = False
-                if launch_mmproj_path:
+                _audio_probe = launch_mmproj_path or (
+                    "" if _pv_mmproj_unpinnable else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
+                )
+                if launch_mmproj_path or os.path.isfile(_audio_probe):
                     try:
                         from utils.models.gguf_metadata import (
                             read_mmproj_audio_capability,
                         )
                         self._mmproj_has_audio = bool(
-                            read_mmproj_audio_capability(launch_mmproj_path)
+                            read_mmproj_audio_capability(_audio_probe)
                         )
                     except Exception as e:
                         logger.debug(f"mmproj audio-capability read failed: {e}")

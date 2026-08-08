@@ -1342,6 +1342,25 @@ def test_route_to_vulkan_prebuilt_hip_masked_host_still_honours_explicit_optin(m
     assert persist == "vulkan"
 
 
+def test_forced_vulkan_on_an_auto_routing_amd_host_persists_as_automatic(monkeypatch):
+    # This box has no HIP-capable AMD GPU, so it routes to Vulkan either way and
+    # the bundle is identical. Persisting it as automatic is what lets pre-#8050
+    # installs (whose every update re-asserts --llama-backend vulkan) stay
+    # eligible for the Vulkan CPU crash recovery.
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1034", rocm_gfx_targets = ["gfx1034"])
+    _routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, UPSTREAM, "pin", force_cpu = False, llama_backend = "vulkan"
+    )
+    assert persist == "auto"
+    # A host that can run HIP keeps the explicit choice explicit.
+    supported = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+    _routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        supported, UPSTREAM, "pin", force_cpu = False, llama_backend = "vulkan"
+    )
+    assert persist == "vulkan"
+
+
 def test_auto_vulkan_is_repository_specific_for_fork_only_gfx():
     # gfx1034 is served only by the fork's gfx103X bundle: ggml-org's windows-hip radeon
     # build does not target it and direct_upstream_release_plan() offers win-hip then CPU

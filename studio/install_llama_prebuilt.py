@@ -6701,11 +6701,12 @@ def _route_to_vulkan_prebuilt(
     the install marker when updates must re-assert Vulkan.
     """
     forced = force_vulkan_requested(llama_backend)
-    # Auto-fall back only when the run named no backend: an explicit hip/cpu is the opt-out.
     explicit_backend = resolved_llama_backend(llama_backend)
-    auto_no_hip = explicit_backend is None and _should_auto_vulkan_for_amd_windows(
-        host, published_repo
-    )
+    # Host-only test, so a forced Vulkan run can still tell that this box would
+    # have routed itself to Vulkan regardless.
+    amd_no_hip_host = _should_auto_vulkan_for_amd_windows(host, published_repo)
+    # Auto-fall back only when the run named no backend: an explicit hip/cpu is the opt-out.
+    auto_no_hip = explicit_backend is None and amd_no_hip_host
     # No PHYSICAL NVIDIA, not merely no usable one: Vulkan ignores CUDA_VISIBLE_DEVICES, so
     # auto-routing a host that hides its NVIDIA card would let it grab the reserved GPU.
     auto_intel = (
@@ -6744,7 +6745,11 @@ def _route_to_vulkan_prebuilt(
             "prebuilt instead of the detected GPU backend"
         )
         host = _vulkan_only_host(host)
-        persist_backend = "vulkan"
+        # A host with no HIP-capable AMD GPU routes here automatically anyway, so
+        # the bundle is the same either way. Persist it as automatic so pre-#8050
+        # installs (and the --llama-backend vulkan every update re-asserts) stop
+        # looking like a deliberate opt-out of the Vulkan CPU crash recovery.
+        persist_backend = "auto" if amd_no_hip_host else "vulkan"
     else:
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
         persist_backend = None
