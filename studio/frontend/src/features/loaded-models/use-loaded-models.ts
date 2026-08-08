@@ -56,6 +56,21 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
     };
   }, []);
 
+  // Runtimes whose load has settled but whose row is still the optimistic one.
+  // Retired only once a read has landed, so the row never blinks out in the gap
+  // between the load finishing and the status that replaces it arriving.
+  const settledRef = useRef<Set<LoadedModelSource>>(new Set());
+  const retireSettled = useCallback(() => {
+    if (settledRef.current.size === 0) return;
+    const done = settledRef.current;
+    settledRef.current = new Set();
+    setPending((prev) => {
+      const next = new Map(prev);
+      for (const source of done) next.delete(source);
+      return next.size === prev.size ? prev : next;
+    });
+  }, []);
+
   const refreshRef = useRef<() => void>(() => {});
   const refresh = useCallback(() => {
     if (!enabled) return;
@@ -81,9 +96,13 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
         if (pendingRef.current) {
           pendingRef.current = false;
           refreshRef.current();
+          return;
         }
+        // This read is the one that supersedes them, so retire only once no
+        // further read is already queued.
+        if (mountedRef.current) retireSettled();
       });
-  }, [enabled]);
+  }, [enabled, retireSettled]);
   useEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
@@ -108,13 +127,16 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
   useEffect(() => {
     if (!enabled) return;
     return subscribeModelLifecycle(({ runtime, loading, model }) => {
-      setPending((prev) => {
-        const next = new Map(prev);
-        if (loading) next.set(runtime, model);
-        else next.delete(runtime);
-        return next;
-      });
-      if (!loading) refresh();
+      if (loading) {
+        settledRef.current.delete(runtime);
+        setPending((prev) => new Map(prev).set(runtime, model));
+        return;
+      }
+      // Kept, not dropped: clearing here and waiting for the read to answer
+      // left the card with one row fewer for that gap, and with nothing at all
+      // when it was the only one, which read as the row randomly vanishing.
+      settledRef.current.add(runtime);
+      refresh();
     });
   }, [enabled, refresh]);
 

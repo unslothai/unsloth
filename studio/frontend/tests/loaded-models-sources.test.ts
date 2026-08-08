@@ -424,3 +424,36 @@ test("nothing announced leaves the polled rows untouched", () => {
   const rows: LoadedModelEntry[] = [];
   assert.equal(withPendingLoads(rows, new Map()), rows);
 });
+
+// Swapping one image model for another: the outgoing one stays resident until
+// the backend drops it, so yielding on source alone showed nothing loading for
+// the whole swap, which is exactly when the toast says it is working.
+test("a swap shows the incoming model alongside the outgoing one", () => {
+  const resident = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/FLUX.1-dev",
+    family: "flux",
+  } as never);
+  const rows = withPendingLoads(
+    resident,
+    new Map([["image", "unsloth/Z-Image-Turbo-GGUF"]]),
+  );
+  assert.equal(rows.length, 2);
+  const incoming = rows.find((row) => row.loading);
+  assert.equal(incoming?.name, "unsloth/Z-Image-Turbo-GGUF");
+  assert.ok(rows.some((row) => row.name === "unsloth/FLUX.1-dev"));
+});
+
+test("the announced row yields once that same model is resident", () => {
+  const resident = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+  } as never);
+  const rows = withPendingLoads(
+    resident,
+    new Map([["image", "unsloth/Z-Image-Turbo-GGUF"]]),
+  );
+  assert.equal(rows.length, 1);
+  assert.notEqual(rows[0].loading, true);
+});
