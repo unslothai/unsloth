@@ -734,7 +734,7 @@ def test_image_train_rail_tracks_the_shared_header_breakpoint():
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
     assert "pl-10 @[50rem]:w-[408px]" in layout
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
-    assert "@[50rem]:overflow-y-auto @[50rem]:pl-10" in layout
+    assert "pb-7 pl-10 pr-1.5 pt-4 @[50rem]:overflow-y-auto @[50rem]:pt-[42px]" in layout
     assert "overflow-x-hidden pr-5 pt-9" not in layout
     assert layout.count("pt-[42px]") == 2
     assert "md:w-[416px]" not in layout

@@ -1424,10 +1424,11 @@ export function DiffusionTrainPanel({
       </div>
 
       {/* Right: the run area. Before a run: training settings + previous-runs history; during/after: the live view. Selecting a previous run re-plots its logs read-only. */}
-      {/* Sections carry no card of their own: spacing and a rule separate them. The top
-          inset lives inside this pane so the structural divider remains uninterrupted. */}
+      {/* Sections carry no card of their own: spacing and a rule separate them. In the
+          stacked layout this pane needs only its ring inset; the larger top inset returns
+          beside the settings rail, where it keeps both desktop headings aligned. */}
       {/* 40px off the rule, the gutter the settings column has off the page edge. */}
-      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 px-1.5 pb-7 pl-8 pt-[42px] @[50rem]:overflow-y-auto @[50rem]:pl-10">
+      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 pb-7 pl-10 pr-1.5 pt-4 @[50rem]:overflow-y-auto @[50rem]:pt-[42px]">
         {viewRun && !hasRun ? (
           <>
             <div className="flex flex-col gap-3">
