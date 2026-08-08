@@ -5483,9 +5483,7 @@ def test_download_plan_stages_only_what_the_cache_is_missing(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_files_already_cached",
-        staticmethod(
-            lambda repo_id, files: set() if repo_id.endswith("-GGUF") else set(files)
-        ),
+        staticmethod(lambda repo_id, files: set() if repo_id.endswith("-GGUF") else set(files)),
     )
 
     plan = DiffusionBackend().download_plan(
