@@ -17,6 +17,7 @@ and a stubbed ``hf_hub_download`` fails the test if anything tries to fetch a wh
 from __future__ import annotations
 
 import threading
+import time
 import types
 
 import pytest
@@ -335,6 +336,54 @@ def test_a_trickling_server_cannot_hold_the_picker_open(monkeypatch):
     assert out == [b""]
 
 
+def test_an_old_urllib3_with_no_shutdown_still_cannot_hold_the_picker_open(monkeypatch):
+    # HTTPResponse.shutdown landed in urllib3 2.3.0. requirements/studio.txt floors it there, but
+    # an install that resolved its environment BEFORE that floor keeps whatever it already has,
+    # and nothing re-resolves a transitive pin on upgrade. On that urllib3 the watchdog degrades
+    # to Response.close(), which leaves the socket readable and the read parked -- measured
+    # against a real trickling loopback socket, the reader was still alive after 40 s.
+    #
+    # So the bound cannot be the interrupt working. This pins the other half: the drain runs on a
+    # worker the caller ABANDONS, so the picker answers on time no matter what is underneath.
+    still_reading = threading.Event()
+
+    class _Unwakeable:
+        status_code = 206
+        # No `raw`, exactly like a urllib3 predating shutdown: _interrupt_read falls through to
+        # close(), and close() does not end a read already inside iter_content.
+        raw = None
+
+        def iter_content(self, chunk_size = 1):
+            still_reading.set()
+            time.sleep(30)
+            yield b"never arrives"
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(diffusion_compat, "_HEADER_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(
+        "huggingface_hub.utils.get_session",
+        lambda: types.SimpleNamespace(get = lambda *a, **k: _Unwakeable()),
+    )
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+
+    started = time.monotonic()
+    assert diffusion_compat._read_gguf_header(KLEIN_4B_GGUF, KLEIN_4B_FILE, None) == b""
+    elapsed = time.monotonic() - started
+
+    assert still_reading.is_set(), "the fixture never got as far as blocking"
+    # Deadline plus the abandon grace, with room for a loaded CI box. The point is that this is
+    # bounded at all: without the worker it is the fixture's 30 s, and in the field it is forever.
+    assert elapsed < 5, f"the picker waited {elapsed:.1f}s on a read it cannot interrupt"
+
+
 def test_a_server_that_ignores_the_range_header_is_abandoned(monkeypatch, tmp_path):
     # A 200 means the whole multi-GB checkpoint is on the wire. Reading it here would BE the
     # download this preflight exists to avoid, so the body is dropped unread and the check
@@ -465,6 +514,42 @@ def test_the_header_probe_is_memoised_across_the_three_checks(monkeypatch, tmp_p
             diffusion_compat.assert_flux2_pick_compatible(
                 FLUX2_FAMILY, KLEIN_4B_GGUF, KLEIN_4B_FILE, KLEIN_9B_BASE
             )
+
+    assert len(requests) == 1
+
+
+def test_a_remembered_hub_failure_does_not_outlive_the_download(monkeypatch, tmp_path):
+    # The memo exists so three checks cost one probe, and a "no opinion" has to be remembered too
+    # or a genuinely unreadable pick re-probes the Hub forever. But the ordinary sequence is:
+    # plan probes while the file is NOT yet on disk (a blip, or simply an unfinished download) ->
+    # download completes -> the pre-eviction preflight asks again. If the negative shadows the
+    # local read, the guard is silent for the rest of the process on a file sitting right there,
+    # which is exactly the mismatch-after-a-19-GB-pull this preflight exists to prevent.
+    requests = _stub_range_reads(monkeypatch, {})  # the Hub has nothing to say: negative memoised
+
+    assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE) is None
+    assert len(requests) == 1
+
+    # The download lands the blob in the cache, which is what try_to_load_from_cache reports.
+    staged = tmp_path / "blobs" / KLEIN_4B_FILE
+    staged.parent.mkdir(parents = True, exist_ok = True)
+    staged.write_bytes(_gguf_header(4096, tmp_path))
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: str(staged))
+
+    assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE) == 4096
+    # ...and the retry is free: the negative still suppresses a second range request.
+    assert len(requests) == 1
+
+
+def test_a_remembered_hub_failure_still_suppresses_a_re_probe_while_nothing_is_on_disk(
+    monkeypatch, tmp_path
+):
+    # The other half of the memo's job, which the fix above must not cost: with no local file to
+    # re-read, a remembered negative answers without touching the network again.
+    requests = _stub_range_reads(monkeypatch, {})
+
+    for _ in range(3):
+        assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE) is None
 
     assert len(requests) == 1
 

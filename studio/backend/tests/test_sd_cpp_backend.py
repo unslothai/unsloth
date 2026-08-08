@@ -1262,3 +1262,93 @@ def test_the_delete_guard_names_the_repack_as_well_as_the_mirror(monkeypatch):
     protected = _with_mirrors(["unsloth/Z-Image-Turbo-ComfyUI"])
     assert "unsloth/Z-Image-Turbo-ComfyUI" in protected
     assert "Comfy-Org/z_image_turbo" in protected
+
+
+def test_begin_load_answers_without_waiting_on_the_header_probe(monkeypatch):
+    """begin_load returns at once by contract: the route thread hands the UI a status and the
+    multi-gigabyte pull happens on the worker. The FLUX.2 encoder pick needs the checkpoint's
+    inner_dim, which for an uncached pick means a range request over the wire -- bounded, but
+    bounded in SECONDS, and the route would wear every one of them on a load button press.
+
+    So the pre-lock probe is offline-only. The guard it feeds is a hint at that moment; the worker
+    re-probes with the network and publishes the real repos before it fetches a byte, which is the
+    second half of this test."""
+    import time as _time
+
+    from core.inference import diffusion_compat
+
+    diffusion_compat._reset_inner_dim_cache()
+    probed: list[str] = []
+
+    class _Slow:
+        def get(self, url, headers = None, timeout = None, stream = False):
+            probed.append(url)
+            _time.sleep(30)
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: _Slow())
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(b, "_run_load", lambda **kwargs: None)  # skip the download thread
+
+    started = _time.monotonic()
+    b.begin_load("unsloth/FLUX.2-klein-4B-GGUF", gguf_filename = "flux-2-klein-4b-Q4_K_M.gguf")
+    elapsed = _time.monotonic() - started
+
+    assert probed == [], "begin_load must not range-read the header on the route thread"
+    assert elapsed < 5, f"begin_load blocked for {elapsed:.1f}s"
+
+
+def test_the_worker_publishes_the_real_encoder_repos_before_fetching(monkeypatch):
+    # The delete-cached guard reads _loading.asset_repos. begin_load can only guess them for a
+    # FLUX.2 pick it has no header for, so an unrefreshed list would leave the 9B encoders
+    # deletable while the load is writing into them.
+    from core.inference import diffusion_compat
+
+    diffusion_compat._reset_inner_dim_cache()
+    nine_b = {repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS}
+    # The discriminating pick: a repo and filename that name no size, so the string fallback the
+    # offline probe leaves in place answers 4B, while the header says 9B. A hand-renamed file or a
+    # local On Device directory lands exactly here.
+    repo, filename = "unsloth/FLUX.2-klein-GGUF", "flux-2-klein-Q4_K_M.gguf"
+    monkeypatch.setattr(
+        bk.SdCppDiffusionBackend, "_flux2_inner_dim",
+        staticmethod(lambda repo_id, fn, fam, tok, allow_network = True:
+                     4096 if allow_network else None),
+    )
+
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(b, "_run_load", lambda **kwargs: None)
+    b.begin_load(repo, gguf_filename = filename)
+    token = b._load_token
+    assert not nine_b & set(b.loading_repo_ids()), (
+        "fixture is not discriminating: begin_load already guessed the 9B encoders"
+    )
+
+    monkeypatch.setattr(b, "_resolve_backend", lambda: ("oneshot", None, _FakeEngine()))
+    monkeypatch.setattr(b, "_preflight_companion_repos", lambda *a, **k: None)
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    seen_at_fetch: list[tuple[str, ...]] = []
+
+    def _fetch(*_a, **_k):
+        seen_at_fetch.append(b.loading_repo_ids())
+        raise SdCppCancelled("stop here; the publish already had to happen")
+
+    monkeypatch.setattr(b, "_fetch_assets", _fetch)
+    # The class method, not the instance attribute: begin_load's thread is stubbed out above, so
+    # the worker body has to be driven by hand.
+    bk.SdCppDiffusionBackend._run_load(
+        b,
+        repo_id = repo,
+        gguf_filename = filename,
+        base = "black-forest-labs/FLUX.2-klein-9B",
+        fam = detect_family(repo),
+        hf_token = None,
+        _load_token = token,
+    )
+
+    assert seen_at_fetch, "the fetch was never reached"
+    assert nine_b <= set(seen_at_fetch[0]), (
+        "the delete guard did not name the encoders this load is about to write"
+    )

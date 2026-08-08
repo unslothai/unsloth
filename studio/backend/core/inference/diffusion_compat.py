@@ -45,6 +45,8 @@ _GGUF_HEADER_BYTES = 256 * 1024
 # One short read. A pick is blocked on this in the UI, and a slow Hub must not stall the picker;
 # a timeout is just another fail-open.
 _HEADER_TIMEOUT_SECONDS = 15
+# How long to wait for an interrupted read to notice before leaving it to the GC.
+_ABANDON_GRACE_SECONDS = 0.5
 
 # (repo_id, gguf_filename, has_token) -> inner_dim or None. Bounded and process-local. It memoises
 # the MISS too -- the three checks on one pick would otherwise re-probe an unreachable Hub three
@@ -99,8 +101,9 @@ def _interrupt_read(response: Any) -> None:
 
     ``urllib3.HTTPResponse.shutdown`` half-closes the socket, which is the only thing that wakes a
     thread blocked inside ``iter_content``: ``Response.close`` drops the file object while the
-    socket stays readable, so the read sits there regardless. Best effort -- a urllib3 without it,
-    or a response already handed back to the pool, just leaves today's behaviour."""
+    socket stays readable, so the read sits there regardless. Best effort -- and on a urllib3
+    older than 2.3, which is where ``shutdown`` first appears, there is nothing here that can wake
+    it. The caller does not depend on this working; it reads on a worker it can abandon."""
     try:
         response.raw.shutdown()
     except Exception:  # noqa: BLE001 — a deadline that cannot fire must not become a new failure
@@ -142,18 +145,40 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
             watchdog.daemon = True
             watchdog.start()
             buffer = bytearray()
-            try:
-                for chunk in response.iter_content(chunk_size = 65536):
-                    buffer += chunk
-                    if len(buffer) >= _GGUF_HEADER_BYTES or time.monotonic() > deadline:
-                        break
-            # Keep what arrived rather than discarding it: the deadline firing on a merely SLOW
-            # link still leaves the tensor table (the first ~15 KiB) in hand, and the parser is
-            # truncation-safe, so a short prefix is answered or ignored, never guessed at.
-            except Exception:  # noqa: BLE001 — deadline fired, or the peer went away mid-body
-                pass
-            finally:
-                watchdog.cancel()
+
+            def _drain() -> None:
+                try:
+                    for chunk in response.iter_content(chunk_size = 65536):
+                        # extend, not `+=`: augmented assignment to a closed-over name would
+                        # rebind it as a local of _drain and lose every byte.
+                        buffer.extend(chunk)
+                        if len(buffer) >= _GGUF_HEADER_BYTES or time.monotonic() > deadline:
+                            break
+                # Keep what arrived rather than discarding it: the deadline firing on a merely
+                # SLOW link still leaves the tensor table (the first ~15 KiB) in hand, and the
+                # parser is truncation-safe -- swept over every prefix length of five header
+                # layouts, no cut ever produces a wrong dim, so a short prefix is answered or
+                # ignored. TRUNCATION only: a header with flipped bytes can still parse to a
+                # wrong dim (~0.6% under a 1-4 byte flip), which the loader's own full-file
+                # backstop shares. TLS makes that unlikely on this path.
+                except Exception:  # noqa: BLE001 — deadline fired, or the peer went away mid-body
+                    pass
+
+            # The drain runs on a worker this call can WALK AWAY FROM. The watchdog above only
+            # unblocks a parked read on urllib3 >= 2.3, where HTTPResponse.shutdown exists;
+            # below that it degrades to Response.close, which leaves the socket readable and the
+            # read parked. requirements/studio.txt floors urllib3, but an install predating that
+            # floor keeps whatever it already resolved, and this read sits on the /images/load
+            # route thread -- so the bound cannot depend on the version underneath us.
+            reader = threading.Thread(target = _drain, name = "gguf-header-read", daemon = True)
+            reader.start()
+            reader.join(_HEADER_TIMEOUT_SECONDS)
+            if reader.is_alive():
+                _interrupt_read(response)
+                reader.join(_ABANDON_GRACE_SECONDS)
+            watchdog.cancel()
+            # bytes() snapshots under the GIL, so an abandoned worker still appending cannot tear
+            # the copy; it can only lose a chunk that arrived too late to matter.
             return bytes(buffer[:_GGUF_HEADER_BYTES])
     except Exception:  # noqa: BLE001 — offline/transient must not block a load
         return b""
@@ -163,12 +188,19 @@ def flux2_inner_dim_for_pick(
     repo_id: str,
     gguf_filename: Optional[str],
     hf_token: Optional[str] = None,
+    *,
+    allow_network: bool = True,
 ) -> Optional[int]:
     """``inner_dim`` of the GGUF this pick names, WITHOUT downloading it, or None.
 
     Reads the file when it is already on disk, otherwise range-reads its header off the Hub.
     Memoised per (repo, filename) so the plan, the pre-eviction preflight and the native asset
-    resolver share one probe."""
+    resolver share one probe.
+
+    ``allow_network = False`` answers from the memo or from disk and gives up rather than making
+    the range request, for a caller that must not block: the range read is bounded but the bound
+    is seconds, and a request thread that only wants a hint should not wear them. Nothing is
+    memoised in that case, so the next caller that CAN wait still gets a real answer."""
     # A ".gguf" name only: a single_file load names a .safetensors, which has no GGUF header, and
     # spending a range request to learn that on every such load is pure waste.
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
@@ -177,8 +209,23 @@ def flux2_inner_dim_for_pick(
     key = (repo_id, gguf_filename, token is not None)
     with _CACHE_LOCK:
         if key in _INNER_DIM_CACHE:
-            return _INNER_DIM_CACHE[key]
+            memo = _INNER_DIM_CACHE[key]
+            if memo is not None:
+                return memo
+            cached_negative = True
+        else:
+            cached_negative = False
     local = _local_gguf_path(repo_id, gguf_filename)
+    if local is None and not allow_network:
+        return None
+    if cached_negative and local is None:
+        # A remembered "no opinion" stops the picker re-probing the Hub on every check, which is
+        # the point of the memo. But it must not outlive its cause: a Hub blip, or a probe that
+        # simply ran BEFORE the download finished, would otherwise disable the free on-disk read
+        # for the rest of the process and leave the guard permanently silent on a pick that is
+        # now sitting in the cache. Re-reading disk costs nothing, so only the network half of
+        # the negative is honoured.
+        return None
     if local is not None:
         # Same prefix parse as the remote path, so both read the file the same way: the loader's
         # backstop memory-maps the whole multi-GB checkpoint and builds a view over every tensor,

@@ -476,10 +476,15 @@ class SdCppDiffusionBackend:
             raise ValueError(f"Family '{fam.name}' has no native sd.cpp asset mapping.")
 
         base = resolve_base_repo(fam, base_repo)
-        # Probed BEFORE the lock: this is the one network step in the encoder pick, and holding
-        # _lock across it would stall status()/unload() for the length of an HTTP round trip. The
-        # load thread re-asks and gets the memo.
-        inner_dim = self._flux2_inner_dim(repo_id, gguf_filename, fam, hf_token)
+        # Offline-only here, and deliberately so. begin_load returns at once by contract -- the
+        # route thread answers the UI with a status and the pull happens on the worker -- so it
+        # cannot afford the range request's bound, let alone hold _lock across it and stall
+        # status()/unload() for the same span. Memo or on-disk header or nothing. This value only
+        # seeds the delete-cached guard's repo list below; the worker re-asks WITH the network and
+        # refreshes that list, so the guard converges within one round trip of the load starting.
+        inner_dim = self._flux2_inner_dim(
+            repo_id, gguf_filename, fam, hf_token, allow_network = False
+        )
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
@@ -569,6 +574,14 @@ class SdCppDiffusionBackend:
             specs = self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
             fetch_repo = _fetch_repo_map(specs, hf_token)
             assets = [(fetch_repo[repo], fn, kind) for repo, fn, kind in specs]
+            # begin_load could only guess the encoder repos (it may not have had the header yet);
+            # now they are known, so publish them before a single byte is fetched. Otherwise
+            # delete-cached would happily remove a companion this load is about to write into.
+            with self._lock:
+                if self._load_token == _load_token and self._loading is not None:
+                    self._loading.asset_repos = tuple(
+                        dict.fromkeys(r for r, _f, kind in specs if kind != "diffusion_model")
+                    )
             # Same preflight the plan runs, on POST-swap repos: catch a gated companion here, not
             # 15 GiB into the prefetch, without refusing one an ungated mirror stands in for. The
             # plan alone is not enough: the images page falls back to this load when it fails.
@@ -850,14 +863,21 @@ class SdCppDiffusionBackend:
 
     @staticmethod
     def _flux2_inner_dim(
-        repo_id: str, gguf_filename: str, fam: DiffusionFamily, hf_token: Optional[str]
+        repo_id: str,
+        gguf_filename: str,
+        fam: DiffusionFamily,
+        hf_token: Optional[str],
+        *,
+        allow_network: bool = True,
     ) -> Optional[int]:
         """The checkpoint's own FLUX.2 size, or None. Header-only and memoised, so the four
         ``_asset_specs`` callers share one probe; skipped outright for every other family, which
         has a single static encoder table and must stay network-free."""
         if fam.name != "flux.2-klein":
             return None
-        return flux2_inner_dim_for_pick(repo_id, gguf_filename, hf_token)
+        return flux2_inner_dim_for_pick(
+            repo_id, gguf_filename, hf_token, allow_network = allow_network
+        )
 
     def _asset_specs(
         self,
