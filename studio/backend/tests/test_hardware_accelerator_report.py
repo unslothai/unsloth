@@ -33,6 +33,16 @@ def _clear_report_cache():
     hw._accelerator_report_cache = None
 
 
+@pytest.fixture
+def on_accelerator(monkeypatch):
+    """Pin the host to CUDA so the probe runs, whatever the test machine is.
+
+    Without this every probe assertion below silently passes on a CPU-only runner by
+    never probing at all.
+    """
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+
+
 def _cpp_lib(torch = "2.10.0+cu128", cuda = 1208, python = "3.10.11", hip = None):
     """The real shape of an xformers wheel's cpp_lib.json (verified against 0.0.34)."""
     return {
@@ -126,7 +136,7 @@ def test_break_description_falls_back_to_the_raw_error():
 # -- the report -----------------------------------------------------------------------------------
 
 
-def test_report_has_the_documented_shape():
+def test_report_has_the_documented_shape(on_accelerator):
     report = hw.get_accelerator_report()
     assert report["python_version"] == __import__("platform").python_version()
     assert set(report["packages"]) == {"xformers", "flash_attn", "torchao", "bitsandbytes"}
@@ -141,7 +151,7 @@ def test_report_has_the_documented_shape():
     assert "built_for" in report["packages"]["xformers"]
 
 
-def test_report_flags_an_installed_but_dead_package(monkeypatch):
+def test_report_flags_an_installed_but_dead_package(monkeypatch, on_accelerator):
     monkeypatch.setattr(hw, "pkg_version", lambda name: "0.0.34")
     monkeypatch.setattr(
         hw,
@@ -162,7 +172,7 @@ def test_report_flags_an_installed_but_dead_package(monkeypatch):
     assert "2.10.0+cu128" in report["packages"]["xformers"]["reason"]
 
 
-def test_absent_package_is_not_degraded(monkeypatch):
+def test_absent_package_is_not_degraded(monkeypatch, on_accelerator):
     # "Not installed" is a normal configuration, not a broken one. Reporting it as
     # degraded would make the UI banner permanent on every machine without flash-attn.
     from importlib.metadata import PackageNotFoundError
@@ -178,7 +188,7 @@ def test_absent_package_is_not_degraded(monkeypatch):
         assert entry["reason"] is None
 
 
-def test_probe_can_be_skipped(monkeypatch):
+def test_probe_can_be_skipped(monkeypatch, on_accelerator):
     # Escape hatch for an install where importing a broken native wheel is worse than
     # not knowing. Versions still report; nothing is claimed to be broken.
     monkeypatch.setenv(hw._ACCELERATOR_PROBE_ENV, "1")
@@ -197,7 +207,7 @@ def test_probe_can_be_skipped(monkeypatch):
     assert report["packages"]["xformers"]["reason"] == "not probed"
 
 
-def test_report_survives_a_probe_that_raises(monkeypatch):
+def test_report_survives_a_probe_that_raises(monkeypatch, on_accelerator):
     # A diagnostic must never be what 500s /api/system/hardware.
     monkeypatch.setattr(hw, "pkg_version", lambda name: "0.0.34")
 
@@ -213,7 +223,7 @@ def test_report_survives_a_probe_that_raises(monkeypatch):
     assert set(report["degraded"]) == {"xformers", "flash_attn", "torchao", "bitsandbytes"}
 
 
-def test_report_is_cached(monkeypatch):
+def test_report_is_cached(monkeypatch, on_accelerator):
     calls = {"n": 0}
 
     def counting_probe(name):
@@ -258,3 +268,39 @@ def test_hardware_endpoint_returns_the_report_only_with_details():
     assert "get_accelerator_report()" in detail_branch[1]
     assert "get_accelerator_report()" not in detail_branch[0]
     assert '"accelerators"' in detail_branch[1]
+
+
+def test_a_cpu_or_mac_host_is_never_reported_as_degraded(monkeypatch):
+    # bitsandbytes is a dependency on every platform but only loads on CUDA/XPU, so on a
+    # Mac or a CPU-only host its import failure is expected, not a broken acceleration
+    # stack. Probing there would pin a permanent false banner to those installs.
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.MLX)
+    monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("probed a host that cannot use these kernels")
+
+    monkeypatch.setattr(hw, "_probe_xformers", must_not_run)
+    monkeypatch.setattr(hw, "_probe_import", must_not_run)
+    monkeypatch.setattr(hw, "_probe_flash_attn", must_not_run)
+
+    report = hw.get_accelerator_report(refresh = True)
+    assert report["probed"] is False
+    assert report["degraded"] == []
+    assert report["packages"]["bitsandbytes"]["reason"] == "not used on this device"
+
+
+def test_a_cpu_host_is_distinguishable_from_an_opted_out_one(monkeypatch):
+    # Two different unknowns: "these kernels do not apply here" and "you told us not to
+    # look". Collapsing them would make the About tab lie about one of them.
+    monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setenv(hw._ACCELERATOR_PROBE_ENV, "1")
+    opted_out = hw.get_accelerator_report(refresh = True)
+
+    monkeypatch.delenv(hw._ACCELERATOR_PROBE_ENV)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
+    no_gpu = hw.get_accelerator_report(refresh = True)
+
+    assert opted_out["packages"]["torchao"]["reason"] == "not probed"
+    assert no_gpu["packages"]["torchao"]["reason"] == "not used on this device"

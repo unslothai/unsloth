@@ -1123,12 +1123,26 @@ def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
         if not refresh and _accelerator_report_cache is not None:
             return copy.deepcopy(_accelerator_report_cache)
 
-        probe = os.environ.get(_ACCELERATOR_PROBE_ENV, "").strip().lower() not in (
+        disabled = os.environ.get(_ACCELERATOR_PROBE_ENV, "").strip().lower() in (
             "1",
             "true",
             "yes",
             "on",
         )
+        # These are CUDA/XPU kernels. On a Mac or a CPU-only host nothing loads them, and
+        # bitsandbytes fails to import there by design -- calling that a degraded
+        # acceleration stack would pin a permanent false banner to every Mac install.
+        try:
+            accelerated = get_device() in (DeviceType.CUDA, DeviceType.XPU)
+        except Exception:
+            accelerated = False
+        probe = accelerated and not disabled
+        if disabled:
+            skip_reason = "not probed"
+        elif not accelerated:
+            skip_reason = "not used on this device"
+        else:
+            skip_reason = None
         running = _running_torch()
         packages: Dict[str, Any] = {}
         degraded = []
@@ -1165,7 +1179,7 @@ def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
                     logger.debug(f"Accelerator probe for {import_name} failed: {e}")
                     entry["reason"] = f"{type(e).__name__}: {e}"
             elif version is not None:
-                entry["reason"] = "not probed"
+                entry["reason"] = skip_reason
 
             # Installed but dead is the case worth shouting about. Installed-and-absent
             # is normal, and unprobed is unknown, not broken.
