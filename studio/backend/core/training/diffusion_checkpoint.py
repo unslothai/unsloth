@@ -841,9 +841,7 @@ def snapshot_checkpoints(output_dir: str | os.PathLike[str]) -> list[tuple[Path,
     return [(path, _bundle_identity(path)) for path in list_checkpoints(output_dir)]
 
 
-def clear_own_checkpoints(
-    output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]"
-) -> None:
+def clear_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]") -> None:
     """Remove the bundles THIS run wrote, leaving the ones it found.
 
     A discard must not take the checkpoint the run resumed FROM with it: a resumed run writes

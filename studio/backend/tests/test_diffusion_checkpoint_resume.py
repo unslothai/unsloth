@@ -1547,17 +1547,14 @@ def test_the_sdxl_trainer_binds_its_output_dir_before_scanning_checkpoints():
     from core.training import diffusion_lora_trainer
 
     source = inspect.getsource(diffusion_lora_trainer).splitlines()
-    scan = next(
-        i for i, line in enumerate(source) if "snapshot_checkpoints(out_dir)" in line
-    )
+    scan = next(i for i, line in enumerate(source) if "snapshot_checkpoints(out_dir)" in line)
     # The binding that covers it has to be at the loop's own indentation -- one nested inside an
     # `if` that returns does not run on the normal path.
     scan_indent = len(source[scan]) - len(source[scan].lstrip())
     bound = [
         i
         for i, line in enumerate(source[:scan])
-        if line.strip().startswith("out_dir = ")
-        and len(line) - len(line.lstrip()) <= scan_indent
+        if line.strip().startswith("out_dir = ") and len(line) - len(line.lstrip()) <= scan_indent
     ]
     assert bound, "snapshot_checkpoints(out_dir) is reached before out_dir is bound"
 
@@ -1584,9 +1581,9 @@ def test_a_bundle_overwritten_by_this_run_is_discarded_with_it(run_dir):
     dc.clear_own_checkpoints(run_dir, preexisting)
 
     survivors = {p.name for p in dc.list_checkpoints(run_dir)}
-    assert survivors == {"checkpoint-10"}, (
-        f"the replacement written by the discarded run survived: {survivors}"
-    )
+    assert survivors == {
+        "checkpoint-10"
+    }, f"the replacement written by the discarded run survived: {survivors}"
 
 
 def test_resuming_into_another_directory_is_not_treated_as_owning_it(run_dir, tmp_path):
@@ -1637,9 +1634,7 @@ def test_the_identity_covers_lora_dropout(run_dir):
     assert error is None
 
     changed = _Run(run_dir, lora_dropout = 0.15, resume_from_checkpoint = path)
-    reason = dc.identity_for_config(run.cfg).mismatch_reason(
-        dc.identity_for_config(changed.cfg)
-    )
+    reason = dc.identity_for_config(run.cfg).mismatch_reason(dc.identity_for_config(changed.cfg))
     assert reason is not None and "dropout" in reason.lower()
 
     # An identity from before the field existed reads as unknown, which must not be a mismatch.
