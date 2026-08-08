@@ -3011,9 +3011,7 @@ _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 def _cpu_runtime_owner_alive(staged_dir: Path) -> bool:
     """Whether a live process still owns this staged CPU-fallback runtime."""
     try:
-        pid = int(
-            (staged_dir / _CPU_RUNTIME_OWNER_FILE).read_text(encoding = "utf-8").strip()
-        )
+        pid = int((staged_dir / _CPU_RUNTIME_OWNER_FILE).read_text(encoding = "utf-8").strip())
     except (OSError, ValueError):
         # No owner stamp: written by an older Studio, so leave it alone.
         return True
@@ -8987,9 +8985,7 @@ class LlamaCppBackend:
             staged_dir = Path(staged_runtime.name)
             # A kill -9 skips TemporaryDirectory's atexit hook, so record the
             # owner and let the next stage collect what no live Studio holds.
-            (staged_dir / _CPU_RUNTIME_OWNER_FILE).write_text(
-                str(os.getpid()), encoding = "utf-8"
-            )
+            (staged_dir / _CPU_RUNTIME_OWNER_FILE).write_text(str(os.getpid()), encoding = "utf-8")
             lib_dir = _llama_lib_dir(str(source_binary))
             gpu_backend = re.compile(
                 r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
@@ -10872,9 +10868,7 @@ class LlamaCppBackend:
                         from utils.models.gguf_metadata import (
                             read_mmproj_audio_capability,
                         )
-                        self._mmproj_has_audio = bool(
-                            read_mmproj_audio_capability(_audio_probe)
-                        )
+                        self._mmproj_has_audio = bool(read_mmproj_audio_capability(_audio_probe))
                     except Exception as e:
                         logger.debug(f"mmproj audio-capability read failed: {e}")
 
