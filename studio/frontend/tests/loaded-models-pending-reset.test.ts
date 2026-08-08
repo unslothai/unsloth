@@ -91,3 +91,76 @@ test("pending rows are cleared on disable, not on enable", () => {
   assert.doesNotMatch(guard, /if \(enabled\) setPending/);
   assert.match(guard, /!enabled &&/);
 });
+
+// A replacement load is the case the source-only suppression got wrong. The
+// backend keeps the old pipeline in _state and frees it only at the commit,
+// after the whole download, so /images/status reports the OLD model for
+// minutes while the announcement names the new one.
+test("a replacement load shows alongside the model it is replacing", () => {
+  const resident: LoadedModelEntry[] = [
+    {
+      id: "image:unsloth/flux-old",
+      kind: "image",
+      source: "image",
+      name: "unsloth/flux-old",
+      detail: "FLUX · BF16 · cuda",
+    },
+  ];
+  const pending = new Map<LoadedModelSource, string | null>([
+    ["image", "unsloth/flux-new"],
+  ]);
+
+  const rows = withPendingLoads(resident, pending);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].name, "unsloth/flux-new");
+  assert.equal(rows[1].loading, true);
+});
+
+test("the resident row wins once the replacement has committed", () => {
+  const committed: LoadedModelEntry[] = [
+    {
+      id: "image:unsloth/flux-new",
+      kind: "image",
+      source: "image",
+      name: "unsloth/flux-new",
+      detail: "FLUX · BF16 · cuda",
+    },
+  ];
+  const pending = new Map<LoadedModelSource, string | null>([
+    ["image", "unsloth/flux-new"],
+  ]);
+  assert.deepEqual(withPendingLoads(committed, pending), committed);
+});
+
+test("a status loading row still suppresses the announcement", () => {
+  // Chat and dictation report their own loading rows, and the backend may spell
+  // the name differently, so those must not double up.
+  const loadingRow: LoadedModelEntry[] = [
+    {
+      id: "chat:models/qwen3-0.6b.gguf",
+      kind: "text",
+      source: "chat",
+      name: "models/qwen3-0.6b.gguf",
+      detail: "Loading",
+      loading: true,
+    },
+  ];
+  const pending = new Map<LoadedModelSource, string | null>([
+    ["chat", "unsloth/Qwen3-0.6B-GGUF"],
+  ]);
+  assert.deepEqual(withPendingLoads(loadingRow, pending), loadingRow);
+});
+
+test("an unnamed announcement defers to any row for its runtime", () => {
+  const resident: LoadedModelEntry[] = [
+    {
+      id: "video:unsloth/wan",
+      kind: "video",
+      source: "video",
+      name: "unsloth/wan",
+      detail: "WAN",
+    },
+  ];
+  const pending = new Map<LoadedModelSource, string | null>([["video", null]]);
+  assert.deepEqual(withPendingLoads(resident, pending), resident);
+});

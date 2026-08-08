@@ -167,9 +167,8 @@ test("an unreadable progress read does not end a live load", async () => {
   stop();
 });
 
-test("a null phase is not terminal, so the row survives the first poll", async () => {
+test("a null phase is terminal, since it means the load left nothing behind", async () => {
   const { seen, settled, stop } = record();
-  const phases: (null | "ready")[] = [null, null, "ready"];
   let read = 0;
 
   await withBackgroundLoadNotice(
@@ -177,8 +176,40 @@ test("a null phase is not terminal, so the row survives the first poll", async (
     "unsloth/wan",
     async () => null,
     async () => {
+      read += 1;
+      return null;
+    },
+    TIMING,
+  );
+
+  // An eject or an eviction cancels the background worker, and load-progress
+  // then reports null for good: nothing loading and nothing loaded. Treating it
+  // as non-terminal left a "Loading" row with no eject on it for an hour.
+  await settled;
+  assert.equal(read, 1);
+  assert.deepEqual(seen, [
+    { runtime: "video", loading: true, model: "unsloth/wan" },
+    { runtime: "video", loading: false, model: "unsloth/wan" },
+  ]);
+  stop();
+});
+
+test("only downloading and finalizing keep the row up", async () => {
+  const { seen, settled, stop } = record();
+  const phases: ("downloading" | "finalizing" | "ready")[] = [
+    "downloading",
+    "finalizing",
+    "ready",
+  ];
+  let read = 0;
+
+  await withBackgroundLoadNotice(
+    "image",
+    "unsloth/flux",
+    async () => null,
+    async () => {
       const phase = phases[Math.min(read++, phases.length - 1)];
-      if (phase === null) assert.equal(seen.length, 1);
+      if (phase !== "ready") assert.equal(seen.length, 1);
       return phase;
     },
     TIMING,

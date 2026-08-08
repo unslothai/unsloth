@@ -337,7 +337,22 @@ export function withPendingLoads(
   if (pending.size === 0) return rows;
   const extra: LoadedModelEntry[] = [];
   for (const [source, model] of pending) {
-    if (rows.some((row) => row.source === source)) continue;
+    // A status row wins only when it describes the same load. Images and video
+    // keep the OLD pipeline resident while the replacement downloads, freeing it
+    // only at the commit, so a source-only test hid the incoming model for the
+    // whole pull: the card showed the model being replaced and no sign of the
+    // one arriving. A row that is itself loading always wins, which is what
+    // keeps chat and dictation from announcing the same load twice when the
+    // backend spells its name differently.
+    if (
+      rows.some(
+        (row) =>
+          row.source === source &&
+          (row.loading === true || model == null || row.name === model),
+      )
+    ) {
+      continue;
+    }
     extra.push({
       id: `${source}:pending`,
       kind: PENDING_KINDS[source],

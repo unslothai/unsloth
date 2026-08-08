@@ -87,7 +87,14 @@ export async function withModelLoadNotice<T>(
   }
 }
 
-/** What a `load-progress` endpoint reports; `null` before the first byte moves. */
+/**
+ * What a `load-progress` endpoint reports. `null` is terminal once a load has
+ * started: all three engines return it only for "nothing loading and nothing
+ * loaded", and `begin_load` records its loading state before the POST answers,
+ * so a read before the first byte moves says `downloading`. It is what a
+ * cancelled or evicted load leaves behind -- the Images page's own poll treats
+ * it the same way, and must, "else this loop spins forever".
+ */
 export type LoadPhase = "downloading" | "finalizing" | "ready" | "error" | null;
 
 /** How often the settle poll asks; overridable so a test need not sleep. */
@@ -150,10 +157,13 @@ async function settleWhenLoadEnds(
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, pollMs));
       // An unreadable read is not proof the load ended: a restarting backend or
-      // one dropped request would end the row early and hide a live load. Only
-      // a terminal phase settles it.
+      // one dropped request would end the row early and hide a live load. That
+      // is `undefined`, kept distinct from the `null` phase precisely so the two
+      // are not conflated here.
       const phase = await boundedRead(readPhase, readTimeoutMs);
-      if (phase === "ready" || phase === "error") return;
+      if (phase !== undefined && phase !== "downloading" && phase !== "finalizing") {
+        return;
+      }
     }
   } finally {
     notifyModelLifecycle({ runtime, loading: false, model });
