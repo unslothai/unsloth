@@ -1294,10 +1294,13 @@ function useStudioRuntimeAdapters(
           | undefined;
         const store = useChatRuntimeStore.getState();
         // Window check applies only when a local GGUF window is known; external
-        // providers have loadedContextLength === null.
+        // providers have loadedContextLength === null. llama.cpp stops at the window, so
+        // a saved count past it is stale; MLX runs past it by design, and a thread whose
+        // recount is unsupported -- a VLM, or one carrying tool history -- would never
+        // get another count to replace the one rejected here.
+        const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;
         const withinLocalLimit =
-          !store.loadedContextLength ||
-          (savedUsage?.totalTokens ?? 0) <= store.loadedContextLength;
+          !localLimit || (savedUsage?.totalTokens ?? 0) <= localLimit;
         // Legacy unscoped usage (no modelId) is trusted only when a known local
         // window bounds the totals, so an old local turn can't be misattributed
         // to a newly-selected external provider.
