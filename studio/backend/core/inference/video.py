@@ -789,6 +789,14 @@ class VideoBackend:
         # shipping a different checkpoint. low_vram is the one mode a small-card user reaches
         # for, so drop the flag rather than the mode; --offload-to-cpu and --clip-on-cpu, which
         # are where the savings actually are, still apply.
+        #
+        # The abort itself is fixed in the Unsloth sd.cpp fork (it casts F32 conv1d kernels to
+        # F16 in-graph on CPU backends), so this is no longer only a crash workaround, and it
+        # should not be reverted when that fix reaches the pinned prebuilt. Measured on a build
+        # carrying the fix, 640x384, 25 frames, 4 steps, q4_K, with --offload-to-cpu
+        # --clip-on-cpu already on: adding --vae-on-cpu moved peak VRAM 12.42 -> 12.42 GiB and
+        # wall time 20.9s -> 100.4s. Under --offload-to-cpu the peak is set by the streamed
+        # denoiser, so the flag buys nothing and costs 4.8x.
         native_offload = tuple(
             offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
         )
