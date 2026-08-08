@@ -1152,9 +1152,51 @@ def test_research_prompts_define_quality_and_citation_contracts():
     assert '"action":"finish"' in _AGENT_SYSTEM_PROMPT
 
 
+def test_agent_action_queries_are_redacted_before_they_leave_the_supervisor():
+    from core.research.parsing import _validate_agent_action
+
+    long_action = _validate_agent_action(
+        {
+            "action": "search",
+            "query": "public evidence " * 30
+            + 'password="'
+            + "private phrase " * 60
+            + '" useful sources',
+        },
+        set(),
+    )
+    assert "private" not in long_action["query"]
+
+    assert len(long_action["query"]) <= 500
+
+    assert _validate_agent_action(
+        {"action": "search", "title": "Verify", "query": "primary source"},
+        set(),
+    ) == {
+        "action": "search",
+        "title": "Verify",
+        "query": "primary source",
+    }
+    assert (
+        _validate_agent_action(
+            {"action": "fetch", "title": "Read", "url": "https://example.com"},
+            {"https://example.com"},
+        )["action"]
+        == "fetch"
+    )
+    with pytest.raises(ValueError, match = "unknown URL"):
+        _validate_agent_action(
+            {"action": "fetch", "url": "https://invented.example"},
+            {"https://example.com"},
+        )
+
+
 def test_research_agent_actions_are_model_directed_and_url_bounded():
-    from core.research.parsing import _normalize_synthesis_audit, _validate_agent_action
-    from core.research.redaction import _sanitize_public_query, _shield_untrusted
+    from core.research_runs import (
+        _normalize_synthesis_audit,
+        _sanitize_public_query,
+        _shield_untrusted,
+    )
 
     assert (
         _sanitize_public_query(
@@ -1175,18 +1217,6 @@ def test_research_agent_actions_are_model_directed_and_url_bounded():
             "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
             "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
         )
-    long_action = _validate_agent_action(
-        {
-            "action": "search",
-            "query": "public evidence " * 30
-            + 'password="'
-            + "private phrase " * 60
-            + '" useful sources',
-        },
-        set(),
-    )
-    assert "private" not in long_action["query"]
-
     allowed_urls = [f"https://example.com/source-{index}" for index in range(10)]
     audit = _normalize_synthesis_audit(
         {
@@ -1260,30 +1290,6 @@ def test_research_agent_actions_are_model_directed_and_url_bounded():
     assert "<query_history_json>" not in shielded
     assert "<untrusted_synthesis_audit_json>" not in shielded
     assert "<synthesis_audit_json>" not in shielded
-    assert len(long_action["query"]) <= 500
-
-    assert _validate_agent_action(
-        {"action": "search", "title": "Verify", "query": "primary source"},
-        set(),
-    ) == {
-        "action": "search",
-        "title": "Verify",
-        "query": "primary source",
-    }
-    assert (
-        _validate_agent_action(
-            {"action": "fetch", "title": "Read", "url": "https://example.com"},
-            {"https://example.com"},
-        )["action"]
-        == "fetch"
-    )
-    with pytest.raises(ValueError, match = "unknown URL"):
-        _validate_agent_action(
-            {"action": "fetch", "url": "https://invented.example"},
-            {"https://example.com"},
-        )
-
-
 def test_rag_evidence_makes_failed_web_search_recoverable():
     from core.research_runs import _research_step_failed
 
