@@ -697,3 +697,34 @@ def test_the_attention_trim_families_exclude_their_small_m_text_streams():
 
     assert exclude_tokens_for_scheme("fp8", "hunyuanvideo-1.5") == ()
     assert exclude_tokens_for_scheme(TQ_INT8, "ltx-2") == _INT8_EXCLUDE_NAME_TOKENS
+
+
+def test_minimax_h3_int8_excludes_its_small_m_projections():
+    """H3's adaLN projection is named ``adaln_proj``, which the generic token list does not match.
+
+    "norm" is the closest generic token and it does not appear in the name, so on the DENSE
+    checkpoint Linear(2688 -> 96768) clears min_features = 512, gets quantized, then runs at M = 1
+    and raises "self.size(0) needs to be greater than 16, but got 1" at the first denoise. Measured:
+    the offline builder bakes it and torch.compile dies on that module.
+
+    The pruned-modulation form hides this rather than fixing it, since there adaln_proj is
+    Linear(8 -> 96768) and falls under min_features anyway. So this exclusion is what makes the
+    dense path correct.
+
+    context_embedder and token_refiner run at M = 10 text tokens, measured, against the video
+    stream's thousands.
+    """
+    from core.inference.diffusion_transformer_quant import TQ_INT8, exclude_tokens_for_scheme
+
+    tokens = exclude_tokens_for_scheme(TQ_INT8, "minimax-h3")
+    for name in ("adaln_proj", "context_embedder", "token_refiner"):
+        assert name in tokens, f"minimax-h3 int8 must exclude {name}"
+
+    # The generic list genuinely does not cover adaln_proj, which is why the entry is needed at all.
+    # If a future generic token starts matching it, this assertion fails and the family entry can
+    # be reconsidered rather than left as dead weight.
+    from core.inference.diffusion_transformer_quant import _INT8_EXCLUDE_NAME_TOKENS
+
+    assert not any(t in "adaln_proj" for t in _INT8_EXCLUDE_NAME_TOKENS)
+    # fp8 has no M floor, so it must not inherit any of this.
+    assert exclude_tokens_for_scheme("fp8", "minimax-h3") == ()

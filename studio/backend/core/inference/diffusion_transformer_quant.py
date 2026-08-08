@@ -87,11 +87,31 @@ _HUNYUAN15_INT8_EXCLUDES = (
     "to_add_out",
     "ff_context",
 )
+# MiniMax-H3 is the same small-M story with one extra trap. Its adaLN projection is named
+# ``adaln_proj``, which no token in _INT8_EXCLUDE_NAME_TOKENS matches: "norm" is the closest and it
+# does not appear in the name. On the DENSE checkpoint that projection is Linear(2688 -> 96768), so
+# it clears min_features = 512 and gets quantized, then runs at M = 1 and raises
+# ``self.size(0) needs to be greater than 16, but got 1`` at the first denoise. Measured: the
+# offline builder happily bakes it, and torch.compile then dies on that module.
+#
+# The pruned-modulation form hides the bug rather than fixing it: there adaln_proj is
+# Linear(8 -> 96768), which falls under min_features and is skipped for free. So the exclusion is
+# what makes the DENSE path correct, and is a no-op on the pruned one.
+#
+# context_embedder and token_refiner run at M = text tokens, measured at 10, against the video
+# stream's thousands, so leaving them bf16 costs nothing measurable: they are 3.47% of GEMM time
+# even in the slow eager int8 path. "token_refiner" covers every refiner block's attn and ff.
+_MINIMAX_H3_INT8_EXCLUDES = (
+    "adaln_proj",
+    "context_embedder",
+    "token_refiner",
+)
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
     "hunyuanvideo-1.5": _HUNYUAN15_INT8_EXCLUDES,
     "hunyuanvideo-1.5-720p": _HUNYUAN15_INT8_EXCLUDES,
+    "minimax-h3": _MINIMAX_H3_INT8_EXCLUDES,
 }
 
 
