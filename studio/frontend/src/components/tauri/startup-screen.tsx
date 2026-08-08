@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  forceQuit,
+  FORCE_QUIT_AFTER_MS,
+} from "@/components/tauri/closing-signal";
+import {
   installProgressMessage,
   startupWaitingMessage,
   STATUS_MESSAGE_ROTATION_MS,
@@ -268,6 +272,15 @@ function RepairingContent({
 }
 
 function ClosingContent() {
+  // The reap has its own timeouts and normally beats this. If it does not, it is wedged,
+  // and the overlay is over the titlebar, so this button is the only way out of the app.
+  const [wedged, setWedged] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setWedged(true), FORCE_QUIT_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
     <div className="flex h-full w-full flex-col items-center">
       <div className="flex flex-1 items-center">
@@ -279,6 +292,16 @@ function ClosingContent() {
           Closing Unsloth Desktop...
         </p>
         <p className="text-sm text-muted-foreground">Shutting down the backend.</p>
+        {wedged && (
+          <div className="mt-4 flex flex-col items-center gap-2">
+            <p className="max-w-xs text-center text-xs text-muted-foreground">
+              This is taking longer than it should.
+            </p>
+            <ActionButton variant="secondary" onClick={() => void forceQuit()}>
+              Force quit
+            </ActionButton>
+          </div>
+        )}
       </div>
     </div>
   );

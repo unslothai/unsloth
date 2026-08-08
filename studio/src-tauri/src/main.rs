@@ -806,13 +806,13 @@ fn begin_quit() -> Option<QuitGuard> {
 /// without this the window just sits there looking frozen for all of it.
 const APP_CLOSING_EVENT: &str = "app-closing";
 
-/// Takes that overlay back down, for the quits a confirmation declines.
+/// Takes that overlay back down, for the quits that never reach the exit.
 const APP_CLOSING_CANCELLED_EVENT: &str = "app-closing-cancelled";
 
 /// Raises the overlay, and retracts it again unless `keep` is called. A guard rather than
-/// paired emits because everything it covers can bail out: a confirmation declines, or the
-/// reap panics (`cleanup_child_processes` is written to expect that). Either way the app is
-/// still there afterwards, and an overlay left up would cover it with no way back.
+/// paired emits because the reap it covers can panic (`cleanup_child_processes` is written
+/// to expect that), and the app is still there afterwards: an overlay left up would cover
+/// it with no way back.
 struct ClosingOverlay<E: Fn(&str)> {
     emit: E,
     retract: bool,
@@ -841,6 +841,34 @@ impl<E: Fn(&str)> Drop for ClosingOverlay<E> {
     }
 }
 
+/// The overlay's way out, offered once the reap has run well past its own timeouts. It
+/// covers the titlebar, so a teardown that wedges past them would otherwise leave a window
+/// with no controls and nothing to click. Exits without finishing the reap: on Windows the
+/// app job object takes the child tree down with the process, and everywhere else an
+/// orphaned backend beats an app that cannot be closed.
+#[tauri::command]
+fn force_quit() {
+    warn!("Force quit requested, exiting without waiting for the backend reap");
+    std::process::exit(0);
+}
+
+/// Confirm, cover the window, reap. Returns whether the caller should now exit.
+///
+/// Split out with its blocking parts injected because the order is the whole point and an
+/// `AppHandle` cannot be built in a test. The overlay goes up after the confirmations,
+/// never before: each one can put a "Keep training?" dialog on screen, and an overlay
+/// behind it would announce the opposite of what it is asking. It still lands before the
+/// reap, which is the whole of the wait.
+fn quit_sequence(confirm: impl Fn() -> bool, reap: impl FnOnce(), emit: impl Fn(&str)) -> bool {
+    if !confirm() {
+        return false;
+    }
+    let overlay = ClosingOverlay::raise(emit);
+    reap();
+    overlay.keep();
+    true
+}
+
 /// Confirm, reap the backend, then exit. Off the caller's thread because the confirmations
 /// block, and never exit first: that would orphan the backend tree.
 fn request_quit(app: &tauri::AppHandle) {
@@ -848,36 +876,33 @@ fn request_quit(app: &tauri::AppHandle) {
         info!("Quit already awaiting confirmation, ignoring the repeat request");
         return;
     };
-    // A second handle: the first moves into a thread that may never start.
-    let unspawned = app.clone();
     let app = app.clone();
     // The guard moves into the closure, so a failed spawn drops it and the next request retries.
     let spawned = std::thread::Builder::new()
         .name("request-quit".to_string())
         .spawn(move || {
             let _guard = guard;
-            // Raised from here rather than the CloseRequested arm so the tray Quit is
-            // covered too, and before the confirmations because those block as well.
-            let overlay = ClosingOverlay::raise(|event| {
-                let _ = app.emit(event, ());
-            });
-            if !(confirm_quit_during_install(&app)
-                && confirm_quit_during_update(&app)
-                && confirm_quit_during_shell_update(&app)
-                && confirm_quit_during_training(&app)
-                && confirm_quit_during_downloads(&app))
-            {
-                return;
+            // Driven from here rather than the CloseRequested arm so the tray Quit gets
+            // the same overlay.
+            let quitting = quit_sequence(
+                || {
+                    confirm_quit_during_install(&app)
+                        && confirm_quit_during_update(&app)
+                        && confirm_quit_during_shell_update(&app)
+                        && confirm_quit_during_training(&app)
+                        && confirm_quit_during_downloads(&app)
+                },
+                || cleanup_child_processes(&app),
+                |event| {
+                    let _ = app.emit(event, ());
+                },
+            );
+            if quitting {
+                app.exit(0);
             }
-            cleanup_child_processes(&app);
-            overlay.keep();
-            app.exit(0);
         });
     if let Err(error) = spawned {
         warn!("Could not spawn the quit thread: {error}");
-        // The close button raises the overlay optimistically, and no thread now exists
-        // to retract it.
-        let _ = unspawned.emit(APP_CLOSING_CANCELLED_EVENT, ());
     }
 }
 
@@ -1058,6 +1083,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             set_training_active,
             set_renderer_activity,
+            force_quit,
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
             app_layout::reset_app_window_layout_initialized,
@@ -1386,30 +1412,36 @@ mod tests {
     }
 
     #[test]
-    fn a_quit_that_reaches_exit_leaves_the_overlay_up() {
+    fn a_quit_that_reaches_exit_covers_the_reap() {
         let events = std::cell::RefCell::new(Vec::new());
 
-        let overlay = ClosingOverlay::raise(|event| events.borrow_mut().push(event.to_string()));
-        // The confirmations and the reap block, so anything emitted after them paints
-        // too late to cover the wait.
-        events.borrow_mut().push("reap".to_string());
-        overlay.keep();
+        let quitting = quit_sequence(
+            || true,
+            || events.borrow_mut().push("reap".to_string()),
+            |event| events.borrow_mut().push(event.to_string()),
+        );
 
+        assert!(quitting);
+        // The reap blocks for up to ~15s, so an overlay emitted after it paints too late
+        // to cover anything.
         assert_eq!(events.into_inner(), ["app-closing", "reap"]);
     }
 
     #[test]
-    fn a_declined_quit_takes_the_overlay_back_down() {
+    fn a_declined_quit_never_raises_the_overlay() {
         let events = std::cell::RefCell::new(Vec::new());
 
-        drop(ClosingOverlay::raise(|event| {
-            events.borrow_mut().push(event.to_string())
-        }));
+        let quitting = quit_sequence(
+            || false,
+            || events.borrow_mut().push("reap".to_string()),
+            |event| events.borrow_mut().push(event.to_string()),
+        );
 
-        assert_eq!(
-            events.into_inner(),
-            ["app-closing", "app-closing-cancelled"],
-            "the app keeps running, so the overlay cannot be left up"
+        assert!(!quitting, "a declined confirmation must not reach the exit");
+        assert!(
+            events.into_inner().is_empty(),
+            "the confirmations are dialogs, and an overlay behind one would claim the app \
+             is closing while it asks whether to keep going"
         );
     }
 
@@ -1418,9 +1450,11 @@ mod tests {
         let events = std::cell::RefCell::new(Vec::new());
 
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _overlay =
-                ClosingOverlay::raise(|event| events.borrow_mut().push(event.to_string()));
-            panic!("the reap panicked");
+            quit_sequence(
+                || true,
+                || panic!("the reap panicked"),
+                |event| events.borrow_mut().push(event.to_string()),
+            )
         }));
 
         assert!(unwound.is_err());

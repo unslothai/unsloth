@@ -11,6 +11,7 @@ import {
   APP_CLOSING_CANCELLED_EVENT,
   APP_CLOSING_EVENT,
   clearAppClosing,
+  FORCE_QUIT_AFTER_MS,
   isAppClosing,
   markAppClosing,
   subscribeAppClosing,
@@ -18,6 +19,15 @@ import {
 
 function source(path: string): Promise<string> {
   return readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
+}
+
+/** The ClosingContent body, up to whatever component is declared after it. */
+function closingContent(screen: string): string {
+  const start = screen.indexOf("function ClosingContent()");
+  if (start < 0) {
+    throw new Error("ClosingContent is gone");
+  }
+  return screen.slice(start, screen.indexOf("\nfunction ", start + 1));
 }
 
 test("app-closing raises the overlay and app-closing-cancelled clears it", () => {
@@ -38,7 +48,7 @@ test("app-closing raises the overlay and app-closing-cancelled clears it", () =>
   unsubscribe();
 });
 
-test("the close button's optimistic mark does not double-fire on Rust's event", () => {
+test("a re-emitted app-closing does not re-render the overlay", () => {
   const seen: boolean[] = [];
   const unsubscribe = subscribeAppClosing((closing) => seen.push(closing));
 
@@ -72,8 +82,8 @@ test("the backend hook routes both quit events into the store", async () => {
     /register<void>\(APP_CLOSING_CANCELLED_EVENT,\s*\(\) => \{\s*clearAppClosing\(\);/,
     "a cancelled quit would strand the overlay over a running app",
   );
-  // Subscribed, not mirrored into state: the close button can raise the overlay between
-  // the hook's render and the effect that a useState mirror would subscribe from.
+  // Subscribed, not mirrored into state: the listener lives inside the long event effect,
+  // which has no way back to a setState from the render that registered it.
   assert.match(
     hook,
     /const closing = useSyncExternalStore\(subscribeAppClosing, isAppClosing\);/,
@@ -108,28 +118,61 @@ test("the overlay covers the app instead of replacing it", async () => {
   );
 });
 
-test("the close button raises the overlay before awaiting the round trip", async () => {
+test("the close button leaves the overlay to Rust", async () => {
   const titlebar = await source("components/tauri/window-titlebar.tsx");
 
-  // Only this titlebar, and only in this order: on macOS close means hide, and marking
-  // after the await would leave the window frozen for the length of the IPC hop.
-  assert.match(
+  // Raising it here would put it behind the quit confirmations, one of which asks whether
+  // to keep training. Rust raises it only once those have passed.
+  assert.doesNotMatch(
     titlebar,
-    /markAppClosing\(\);\s*try \{\s*await appWindow\.close\(\);/,
+    /markAppClosing/,
+    "the close button is raising the overlay before the quit is committed",
   );
+  assert.match(titlebar, /onClick=\{\(\) => runWindowAction\(\(appWindow\) =>\s*appWindow\.close\(\)\)\}/);
+});
+
+test("the overlay offers a way out of a wedged reap", async () => {
+  // Past stop_backend's own worst case, or the button fires over a teardown that was
+  // merely slow.
+  assert.ok(
+    FORCE_QUIT_AFTER_MS > 15_000,
+    "force quit would race a reap that is still within its timeouts",
+  );
+
+  const signal = await source("components/tauri/closing-signal.ts");
+  assert.match(signal, /await invoke\("force_quit"\)/);
+
+  const screen = await source("components/tauri/startup-screen.tsx");
+  const body = closingContent(screen);
+
+  // Gated on the timer, and the timer is cleared on unmount: a declined quit unmounts the
+  // overlay, and a stray timer would raise the button over a running app.
+  assert.match(body, /const \[wedged, setWedged\] = useState\(false\);/);
   assert.match(
-    titlebar,
-    /catch \(error\) \{\s*\/\/[^\n]*\n\s*clearAppClosing\(\);/,
-    "a close() that never started a quit would strand the overlay",
+    body,
+    /setTimeout\(\(\) => setWedged\(true\), FORCE_QUIT_AFTER_MS\)/,
   );
+  assert.match(body, /return \(\) => clearTimeout\(timer\);/);
+  assert.match(body, /\{wedged && \(/, "the button is not gated on the timer");
+  assert.match(body, /onClick=\{\(\) => void forceQuit\(\)\}/);
+  assert.match(body, /Force quit/);
+});
+
+test("the force quit command is registered with Tauri", async () => {
+  const rust = await readFile(
+    new URL("../../src-tauri/src/main.rs", import.meta.url),
+    "utf8",
+  );
+
+  // An unregistered command fails at the invoke, which is the one moment the user has no
+  // other way out.
+  assert.match(rust, /^\s*force_quit,$/m);
+  assert.match(rust, /#\[tauri::command\]\nfn force_quit\(\)/);
 });
 
 test("the overlay names the wait it is covering", async () => {
   const screen = await source("components/tauri/startup-screen.tsx");
-
-  const start = screen.indexOf("function ClosingContent()");
-  assert.ok(start >= 0, "ClosingContent is gone");
-  const body = screen.slice(start, screen.indexOf("\nfunction ", start + 1));
+  const body = closingContent(screen);
 
   assert.match(body, /Closing Unsloth Desktop\.\.\./);
   assert.match(body, /Shutting down the backend\./);

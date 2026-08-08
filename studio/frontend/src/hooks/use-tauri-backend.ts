@@ -153,8 +153,8 @@ export function useTauriBackend() {
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
   const [tauriEventsReady, setTauriEventsReady] = useState(!isTauri);
-  // Read through rather than mirrored into state: the close button can raise the overlay
-  // between this render and the effect that would have subscribed to it.
+  // Read through rather than mirrored into state: the app-closing listener is registered
+  // inside the long event effect below, which cannot reach a setState from this render.
   const closing = useSyncExternalStore(subscribeAppClosing, isAppClosing);
 
   function setBackendStatus(nextStatus: BackendStatus) {
