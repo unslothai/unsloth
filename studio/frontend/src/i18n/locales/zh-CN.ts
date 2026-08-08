@@ -1063,7 +1063,7 @@ export const zhCN = {
         builtFor: "为 {build} 编译",
         bannerTitle: "优化内核已安装但无法加载",
         bannerBody:
-          "{packages} 无法在此加载，Unsloth 正回退到较慢的默认实现。训练和推理仍可运行，但会占用更多显存和时间。",
+          "{packages} 无法在此加载，因此其优化内核不可用。上方列表显示仍在正常工作的组件。",
       },
       updates: "更新",
       help: "帮助",

@@ -1134,7 +1134,7 @@ export const fr = {
         builtFor: "Compilé pour {build}",
         bannerTitle: "Des noyaux optimisés sont installés mais ne se chargent pas",
         bannerBody:
-          "{packages} ne peut pas se charger ici, Unsloth revient donc aux chemins plus lents. L'entraînement et l'inférence fonctionnent toujours, mais consomment plus de mémoire et de temps.",
+          "{packages} ne peut pas se charger ici, ses noyaux optimisés sont donc indisponibles. La liste ci-dessus indique ce qui fonctionne encore.",
       },
       updates: "Mise à jour",
       help: "Aide",

@@ -327,6 +327,18 @@ def test_the_fix_hint_redacts_a_credentialed_mirror(monkeypatch):
     monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://wheels.internal/whl")
     assert _utils._xformers_torch_index_url().startswith("https://wheels.internal/whl/")
 
+    # An authority that cannot be parsed -- a bad IPv6 bracket, a non-numeric port -- is
+    # exactly the input whose secret this exists to withhold, so the fallback drops the URL
+    # instead of echoing it. The hint then omits --index-url rather than printing the token.
+    for malformed in (
+        "https://ci:s3cr3t@[bad:ipv6/simple",
+        "https://wheels.internal:notaport/simple?token=abc123",
+    ):
+        monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", malformed)
+        assert _utils._xformers_torch_index_url() is None
+        assert "s3cr3t" not in _utils._xformers_fix_hint()
+        assert "abc123" not in _utils._xformers_fix_hint()
+
 
 def test_the_fix_hint_names_no_index_without_a_cuda_torch(monkeypatch):
     # ROCm / XPU / CPU: there is no CUDA-matched xformers index to point at, and inventing

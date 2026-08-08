@@ -2316,7 +2316,8 @@ def _xformers_torch_index_url():
     import os
 
     base = os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
-    return f"{_redact_index_url(base.rstrip('/'))}/{family}"
+    redacted = _redact_index_url(base.rstrip("/"))
+    return f"{redacted}/{family}" if redacted else None
 
 
 def _redact_index_url(url):
@@ -2326,6 +2327,9 @@ def _redact_index_url(url):
     signed-URL query, and this hint goes to stdout on the default import path -- into logs,
     CI output and shared notebooks. pip redacts the same thing in its own output; the URL is
     still copy-pasteable, since the user's own mirror config supplies the secret back.
+
+    Returns None when the URL cannot be parsed: the caller then omits ``--index-url``
+    entirely rather than printing an authority we could not take apart.
     """
     try:
         from urllib.parse import urlsplit, urlunsplit
@@ -2340,7 +2344,11 @@ def _redact_index_url(url):
             host = f"***@{host}"
         return urlunsplit((parts.scheme, host, parts.path, "", ""))
     except Exception:  # noqa: BLE001 -- an unparseable mirror must not break the hint
-        return str(url)
+        # And must not be echoed back either. A malformed authority (a bad IPv6 bracket, a
+        # non-numeric port) is exactly the input whose credentials or signed query this
+        # function exists to keep out of stdout, so the fallback drops the URL rather than
+        # printing the one thing it was asked to hide. The caller omits --index-url on None.
+        return None
 
 
 def _xformers_fix_hint():

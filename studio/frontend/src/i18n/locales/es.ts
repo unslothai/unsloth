@@ -1126,7 +1126,7 @@ export const es = {
         builtFor: "Compilado para {build}",
         bannerTitle: "Los kernels optimizados están instalados pero no se cargan",
         bannerBody:
-          "{packages} no se puede cargar aquí, así que Unsloth vuelve a las rutas más lentas. El entrenamiento y la inferencia siguen funcionando, pero usan más memoria y tiempo.",
+          "{packages} no se puede cargar aquí, así que sus kernels optimizados no están disponibles. La lista de arriba muestra lo que sigue funcionando.",
       },
       updates: "Actualización",
       help: "Ayuda",

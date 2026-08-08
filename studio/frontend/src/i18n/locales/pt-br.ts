@@ -1108,7 +1108,7 @@ export const ptBR = {
         builtFor: "Compilado para {build}",
         bannerTitle: "Kernels otimizados estão instalados, mas não carregam",
         bannerBody:
-          "{packages} não consegue carregar aqui, então o Unsloth está voltando aos caminhos mais lentos. Treinamento e inferência continuam funcionando, mas usam mais memória e tempo.",
+          "{packages} não consegue carregar aqui, portanto seus kernels otimizados estão indisponíveis. A lista acima mostra o que continua funcionando.",
       },
       updates: "Atualização",
       help: "Ajuda",

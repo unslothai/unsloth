@@ -534,6 +534,43 @@ def test_the_capability_follows_the_mask_the_app_runs_under(monkeypatch, mask, e
     assert hw._visible_compute_capability() == expected
 
 
+def test_a_busy_gpu_does_not_turn_a_healthy_wheel_red(monkeypatch, fake_probe):
+    """bitsandbytes keeps CUDA visible on purpose, so opening Settings while a trainer has
+    filled the GPU (or holds it in EXCLUSIVE_PROCESS) fails at context creation on a healthy
+    install -- and this answer is cached for the life of the backend, so the banner would sit
+    there until restart."""
+    monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
+    fake_probe(
+        {
+            "bitsandbytes": {
+                "imports": False,
+                "runs": None,
+                "error": "RuntimeError: CUDA error: all CUDA-capable devices are busy or unavailable",
+            }
+        }
+    )
+
+    report = hw.get_accelerator_report(refresh = True)
+
+    assert "bitsandbytes" not in report["degraded"], "a busy GPU is not a broken wheel"
+    row = report["packages"]["bitsandbytes"]
+    assert row["probed"] is False and row["runs"] is None
+    assert "busy" in (row["reason"] or "").lower(), "and the row says why"
+
+
+def test_a_real_import_failure_is_still_degraded(monkeypatch, fake_probe):
+    # The classification must not swallow the case the report exists for.
+    monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
+    fake_probe(
+        {"bitsandbytes": {"imports": False, "runs": None, "error": "OSError: undefined symbol"}}
+    )
+
+    report = hw.get_accelerator_report(refresh = True)
+
+    assert "bitsandbytes" in report["degraded"]
+    assert report["packages"]["bitsandbytes"]["probed"] is True
+
+
 def test_an_unresolved_capability_reaches_the_child_as_unknown(monkeypatch):
     """The child reads an EMPTY UNSLOTH_PROBE_DEVICE_CC as "no override" and falls back to
     nvidia-smi over every physical GPU -- so serializing an unresolvable mask as "" handed it

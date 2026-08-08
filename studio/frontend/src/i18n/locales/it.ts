@@ -1101,7 +1101,7 @@ export const it = {
         builtFor: "Compilato per {build}",
         bannerTitle: "I kernel ottimizzati sono installati ma non si caricano",
         bannerBody:
-          "{packages} non può essere caricato qui, quindi Unsloth torna ai percorsi più lenti. Addestramento e inferenza continuano a funzionare, ma usano più memoria e tempo.",
+          "{packages} non può essere caricato qui, quindi i suoi kernel ottimizzati non sono disponibili. L'elenco sopra mostra cosa funziona ancora.",
       },
       updates: "Aggiornamento",
       help: "Aiuto",

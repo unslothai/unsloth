@@ -1055,6 +1055,33 @@ def _running_torch() -> Dict[str, Optional[str]]:
 _MAX_REASON_CHARS = 300
 
 
+# Failures that say "ask again later", not "this wheel is broken": the GPU was busy, full, or
+# claimed by another process. Mirrors _INCONCLUSIVE_PROBE_ERRORS in
+# unsloth/utils/attention_dispatch.py, which makes the same call for the in-process probe.
+_INCONCLUSIVE_PROBE_ERRORS = (
+    "out of memory",
+    "busy or unavailable",
+    "all cuda-capable devices are busy",
+    "no cuda-capable device",
+    "cuda_error_not_permitted",
+    "insufficient driver",
+    "initialization error",
+    "invalid device ordinal",
+    "invalid device id",
+    "currently in use",
+    "in use by another process",
+    "exclusive",
+)
+
+
+def _probe_was_inconclusive(error) -> bool:
+    """True when the probe failed for a reason that never tested the wheel."""
+    if not error:
+        return False
+    text = str(error).lower()
+    return any(marker in text for marker in _INCONCLUSIVE_PROBE_ERRORS)
+
+
 def _short_reason(reason: Optional[str]) -> Optional[str]:
     if not reason:
         return None
@@ -1518,6 +1545,21 @@ def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
                 entry["imports"] = result.get("imports") is True
                 entry["runs"] = result.get("runs") if isinstance(result.get("runs"), bool) else None
                 error = result.get("error")
+                if _probe_was_inconclusive(error):
+                    # The probe never got as far as testing the wheel. bitsandbytes keeps CUDA
+                    # visible on purpose, so opening Settings while a trainer has filled the GPU
+                    # (or holds it in EXCLUSIVE_PROCESS) fails at context creation on a perfectly
+                    # healthy install -- and this answer is cached for the life of the backend,
+                    # so a red banner would sit there until restart. Same classification the
+                    # in-process xformers probe applies for the same reason.
+                    # Reported as NOT probed, which is what happened: acceleratorHealth reads
+                    # that as unknown and now renders the reason beside it, so the user sees
+                    # why rather than a red row or a bare "Not checked".
+                    entry["probed"] = False
+                    entry["runs"] = None
+                    entry["reason"] = _short_reason(error)
+                    packages[import_name] = entry
+                    continue
                 if import_name == "xformers":
                     error = _describe_xformers_break(entry.get("built_for"), error)
                 entry["reason"] = _short_reason(error)

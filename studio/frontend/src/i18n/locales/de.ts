@@ -1134,7 +1134,7 @@ export const de = {
         builtFor: "Gebaut für {build}",
         bannerTitle: "Optimierte Kernel sind installiert, laden aber nicht",
         bannerBody:
-          "{packages} kann hier nicht geladen werden, daher greift Unsloth auf langsamere Standardpfade zurück. Training und Inferenz funktionieren weiterhin, brauchen aber mehr Speicher und Zeit.",
+          "{packages} kann hier nicht geladen werden, daher stehen seine optimierten Kernel nicht zur Verfügung. Die Liste oben zeigt, was weiterhin funktioniert.",
       },
       updates: "Update",
       help: "Hilfe",

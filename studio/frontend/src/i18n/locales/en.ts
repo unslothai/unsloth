@@ -1086,7 +1086,7 @@ export const en = {
         builtFor: "Built for {build}",
         bannerTitle: "Optimized kernels are installed but not loading",
         bannerBody:
-          "{packages} cannot load here, so Unsloth is falling back to slower defaults. Training and inference still work, but they use more memory and time.",
+          "{packages} cannot load here, so its optimized kernels are unavailable. The list above shows what is still working.",
       },
       updates: "Update",
       help: "Help",
