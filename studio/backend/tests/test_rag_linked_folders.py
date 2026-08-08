@@ -192,9 +192,7 @@ def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(rag_home,
 
 
 @requires_sqlite_vec
-def test_reconcile_pins_one_embedding_model_for_every_file(
-    rag_home, stub_embeddings, monkeypatch
-):
+def test_reconcile_pins_one_embedding_model_for_every_file(rag_home, stub_embeddings, monkeypatch):
     source, folder = _folder(rag_home)
     (source / "first.txt").write_text("first words", encoding = "utf-8")
     (source / "second.txt").write_text("second words", encoding = "utf-8")
