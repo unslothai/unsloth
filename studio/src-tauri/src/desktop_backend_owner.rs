@@ -238,11 +238,20 @@ fn ensure_studio_root_id_at_with_blank_observer(
         return Ok(None);
     }
 
+    // Reading an existing id needs no lock: it is published atomically, so an
+    // unlocked read only ever sees a complete id. Locking first would make a
+    // read-only or full share/ block startup even when the id is right there.
+    if let Some(existing) = read_studio_root_id_file(path)? {
+        set_private_dir_permissions(parent);
+        return Ok(Some(existing));
+    }
+
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("could not create {}: {}", parent.display(), error))?;
     set_private_dir_permissions(parent);
     let _lock = lock_studio_root_id(parent)?;
 
+    // Re-read under the lock; a concurrent caller may have won.
     if let Some(existing) = read_studio_root_id_file(path)? {
         return Ok(Some(existing));
     }
@@ -1651,6 +1660,23 @@ mod tests {
 
         assert_eq!(ensure_studio_root_id_at(&path, false).unwrap(), None);
         assert!(!path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn existing_studio_root_id_is_read_without_the_install_lock() {
+        // A read-only or full share/ must not stop a usable id from being read.
+        let path = temp_root_id_path("unlockable");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, ROOT_ID).unwrap();
+        // Make the lock file impossible to open.
+        std::fs::create_dir_all(path.parent().unwrap().join(STUDIO_INSTALL_ID_LOCK_FILE)).unwrap();
+
+        assert_eq!(
+            ensure_studio_root_id_at(&path, true).unwrap(),
+            Some(ROOT_ID.to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
     }
 
     #[test]
