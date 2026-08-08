@@ -213,9 +213,9 @@ class TestDeviceNameFallback:
         props = _props(name = device_name)
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == ""
-        assert is_unified is False, (
-            f"discrete device {device_name!r} should NOT be classified as unified-memory"
-        )
+        assert (
+            is_unified is False
+        ), f"discrete device {device_name!r} should NOT be classified as unified-memory"
 
     def test_empty_name_returns_false(self) -> None:
         """Absent name must not crash and must default to discrete."""
