@@ -8,6 +8,8 @@ loads via spec_from_file_location without the studio venv. run.py defaults are
 checked by AST so we never import its heavy deps (uvicorn/structlog).
 """
 
+import subprocess
+
 import ast
 import importlib.util
 import io
@@ -15,10 +17,13 @@ import os
 import sys
 import tarfile
 import types
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
 import pytest
+
+from utils import process_lifetime
 
 _BACKEND = Path(__file__).resolve().parent.parent
 _CT_PY = _BACKEND / "cloudflare_tunnel.py"
@@ -1508,3 +1513,270 @@ def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachabl
     assert "requested but failed to start" in out
     assert "reachable from the public internet" in out
     assert "local network only" not in out
+
+
+_TUNNEL_ID = "11111111-2222-3333-4444-5555aabbccdd"
+_HOST = "studio.example.com"
+_LOGIN_URL, _PROMPT = "https://dash.fed.cloudflare.com/argotunnel?aud=x", "Please open this URL:"
+_API_REFUSAL = "code: 1000, reason: Invalid access token"
+_WRAP = (
+    "failed to provision routing, please create it manually via Cloudflare dashboard or UI; "
+    "most likely you already have a conflicting record there. You can also rerun this command "
+    "with --overwrite-dns to overwrite any existing DNS records for this hostname.: "
+)
+_COLLIDED = "failed to create tunnel: tunnel with name already exists"
+_OFFLINE = "INF Request failed\ndial tcp: i/o timeout"
+_ABSENT = "there should only be 1 non-deleted Tunnel named unsloth-AB12CD"
+
+
+class FakeLogin:
+    def __init__(
+        self,
+        cert,
+        *,
+        rc = 0,
+        alive = 0,
+        extra = "",
+    ):
+        self.pid, self.records = 999_000, []
+        self.stdout = iter([_PROMPT + "\n", _LOGIN_URL + "\n", extra])
+        self.returncode, self._cert, self._rc, self._alive = None, cert, rc, alive
+
+    def _write_cert(self, text):
+        if self._cert is not None:
+            self._cert.parent.mkdir(parents = True, exist_ok = True)
+            self._cert.write_text(text, encoding = "utf-8")
+
+    def poll(self):
+        self.records.append(ct._read(ct._RECORD))
+        if self.returncode is not None:
+            return self.returncode
+        self._write_cert("" if self._alive else "STUDIO-CERT")
+        if self._alive > 0:
+            self._alive -= 1
+            return None
+        self.returncode = self._rc
+        return self.returncode
+
+    def terminate(self):
+        self._write_cert("STUDIO-CERT")
+        self.returncode = -15
+
+    def wait(self, timeout = None):
+        return self.returncode
+
+
+class FakeCloudflared:
+    def __init__(self, cert_dir):
+        self.cert_dir, self.calls, self.deleted = cert_dir, [], []
+        self.cert_at_delete = []
+        self.create_outcomes = []
+        self.route_outcome = None
+        self.delete_outcome = None
+        self.login = lambda: FakeLogin(cert_dir / "cert.pem", alive = 1)
+        self.child = None
+
+    def spawn(self, binary):
+        self.child = self.login()
+        return self.child
+
+    def __call__(self, binary, *args):
+        self.calls.append(args)
+        outcome = (1, "unexpected command")
+        if args[0] == "create":
+            outcome = self.create_outcomes.pop(0) if self.create_outcomes else self._create(args[1])
+        elif args[0] == "route" and args[1] == "dns" and ct._NAME_RE.match(args[2]):
+            added = f"Added CNAME {args[-1]} which will route to this tunnel"
+            outcome = self.route_outcome or (0, added)
+        elif args[0] == "delete":
+            self.deleted.append(args[1])
+            self.cert_at_delete.append((self.cert_dir / "cert.pem").exists())
+            outcome = self.delete_outcome or (0, "")
+        out, err = ("", outcome[1]) if outcome[0] else (outcome[1], "")
+        return subprocess.CompletedProcess(args, outcome[0], out, err)
+
+    def _create(self, name):
+        assert name in (ct._read(ct._RECORD) or {}).get("tunnel_names", [])
+        credentials = self.cert_dir / "creds" / f"{_TUNNEL_ID}.json"
+        credentials.parent.mkdir(parents = True, exist_ok = True)
+        credentials.write_text("{}", encoding = "utf-8")
+        return 0, (
+            f"Created tunnel {name} with id {_TUNNEL_ID.upper()}\n"
+            f"Tunnel credentials written to {credentials}."
+        )
+
+
+@pytest.fixture
+def cf(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    cert_dir = tmp_path / "cloudflared"
+    monkeypatch.setattr(ct, "origin_cert_path", lambda: cert_dir / "cert.pem")
+    monkeypatch.setattr(ct, "_claim_path", lambda: tmp_path / "claim" / "claim.json")
+    fake = FakeCloudflared(cert_dir)
+    monkeypatch.setattr(ct, "_cli", fake)
+    monkeypatch.setattr(ct, "_spawn_login", fake.spawn)
+    return fake
+
+
+def _provision(hostname = _HOST, **kwargs):
+    return ct.provision_custom_tunnel(hostname, binary = "cloudflared", **kwargs)
+
+
+def _settle(binary = "cloudflared"):
+    with ct.certificate_state_claim("cleanup"):
+        ct._settle(binary)
+
+
+def _cert(cf):
+    return cf.cert_dir / "cert.pem"
+
+
+def _created(cf):
+    return [call[1] for call in cf.calls if call[0] == "create"]
+
+
+def test_a_successful_run_records_the_identity_and_removes_the_certificate(cf):
+    seen = []
+    identity = _provision("https://Studio.Example.COM/", on_login_url = seen.append)
+    assert seen == [_LOGIN_URL]
+    assert identity["hostname"] == _HOST
+    assert ct._NAME_RE.match(identity["tunnel_name"])
+    assert identity["tunnel_id"] == _TUNNEL_ID
+    assert not _cert(cf).exists()
+    assert ct._read(ct._RECORD) is None
+    assert ct._string_list(ct._ORPHANS) == []
+    credentials = ct.state_root() / f"{_TUNNEL_ID}.json"
+    assert identity["credentials"] == str(credentials)
+    assert credentials.stat().st_mode & 0o777 == 0o600
+    assert not any({"--overwrite-dns", "-f"} & set(call) for call in cf.calls)
+    assert 999_000 not in process_lifetime._tracked_pids
+
+
+def test_a_dns_conflict_is_refused_and_leaves_nothing_to_clean_up(cf):
+    cf.route_outcome = (1, "code: 1003, reason: A CNAME record with that host already exists")
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert excinfo.value.code == "dns_conflict" and _HOST in excinfo.value.detail
+    assert not _cert(cf).exists()
+    assert cf.deleted == _created(cf)
+    assert ct.read_identity() is None
+    assert ct._string_list(ct._ORPHANS) == []
+    assert ct._read(ct._RECORD) is None
+    assert not (ct.state_root() / f"{_TUNNEL_ID}.json").exists()
+
+
+@pytest.mark.parametrize("cause", [_API_REFUSAL, "Cannot add route: " + "detail " * 50, "", None])
+def test_a_route_failure_is_reported_as_itself_and_keeps_the_hostname_owned(cf, cause):
+    cf.route_outcome = (1, f"INF Request failed\n{_WRAP}{cause}" if cause is not None else _OFFLINE)
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert excinfo.value.code == "route_failed"
+    assert excinfo.value.detail == (cause if cause is not None else "dial tcp: i/o timeout")[:300]
+    assert "--overwrite-dns" not in excinfo.value.detail
+    assert ct._string_list(ct._ORPHANS) == [_HOST]
+
+
+@pytest.mark.parametrize(
+    "fails, made, ours", [([_COLLIDED], 2, 1), ([_COLLIDED] * 2, 2, 0), ([_OFFLINE], 1, 1)]
+)
+def test_only_a_name_collision_regenerates_and_disowns_the_colliding_name(cf, fails, made, ours):
+    cf.create_outcomes = [(1, text) for text in fails]
+    cf.route_outcome = (1, _API_REFUSAL)
+    with pytest.raises(ct.ProvisioningError):
+        _provision()
+    assert len(set(_created(cf))) == made
+    assert cf.deleted == _created(cf)[made - ours :]
+
+
+@pytest.mark.parametrize("delete_says, still_owed", [(_OFFLINE, True), (_ABSENT, False)])
+def test_only_a_tunnel_that_might_still_exist_is_written_down(cf, delete_says, still_owed):
+    cf.route_outcome = (1, _API_REFUSAL)
+    cf.delete_outcome = (1, delete_says)
+    with pytest.raises(ct.ProvisioningError):
+        _provision()
+    assert ct._string_list(ct._ABANDONED) == (_created(cf) if still_owed else [])
+    assert ct._read(ct._RECORD) is None and cf.cert_at_delete == [True]
+    assert ct._delete_tunnel(None, "unsloth-AB12CD") is False
+    assert ct._delete_tunnel(None, "prod-gateway") is True
+
+
+def test_a_pre_existing_certificate_is_refused_and_left_alone(cf):
+    _cert(cf).parent.mkdir(parents = True, exist_ok = True)
+    _cert(cf).write_text("USER-CERT", encoding = "utf-8")
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert excinfo.value.code == "certificate_exists"
+    assert _cert(cf).read_text(encoding = "utf-8") == "USER-CERT"
+    assert ct._read(ct._RECORD) is None
+    assert cf.calls == []
+
+
+@pytest.mark.parametrize("found", ["/etc/cloudflared/cert.pem", "/Users/A B/cert.pem", None])
+def test_a_certificate_that_appeared_during_login_is_not_adopted(cf, found):
+    what = f"an existing certificate at {found}" if found else "a certificate"
+    said = f"You have {what} which login would overwrite.\n"
+    cf.login = lambda: FakeLogin(_cert(cf), extra = said)
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert excinfo.value.code == "certificate_exists"
+    assert excinfo.value.detail == (found or str(ct.origin_cert_path()))
+    assert _cert(cf).read_text(encoding = "utf-8") == "STUDIO-CERT"
+
+
+@pytest.mark.parametrize("ending", ["cancelled", "login_timed_out", "raises"])
+def test_a_login_ended_early_leaves_no_certificate_behind(cf, monkeypatch, ending):
+    def explode():
+        raise RuntimeError("the flag this check read is gone")
+
+    if ending == "login_timed_out":
+        monkeypatch.setattr(ct, "_LOGIN_DEADLINE", 0.0)
+    cf.login = lambda: FakeLogin(_cert(cf), alive = 3)
+    stop = explode if ending == "raises" else (lambda: True) if ending == "cancelled" else None
+    with pytest.raises(RuntimeError if ending == "raises" else ct.ProvisioningError) as excinfo:
+        _provision(cancelled = stop)
+    assert ending == "raises" or excinfo.value.code == ending
+    assert cf.child.returncode == -15
+    assert not _cert(cf).exists()
+    assert ct._read(ct._RECORD) is None
+
+
+def test_a_certificate_that_changed_since_it_was_recorded_is_left_alone(cf):
+    ct._write(ct._RECORD, {"hostname": _HOST, "cert_digest": "0" * 64})
+    _cert(cf).parent.mkdir(parents = True, exist_ok = True)
+    _cert(cf).write_text("USER-CERT", encoding = "utf-8")
+    _settle()
+    assert _cert(cf).read_text(encoding = "utf-8") == "USER-CERT"
+
+
+def test_the_orphan_is_recorded_before_the_run_is_discarded(cf):
+    ct._write(
+        ct._RECORD,
+        {
+            "hostname": _HOST,
+            "route_attempted": True,
+            "tunnel_names": ["prod-gateway", "unsloth-AB12CD"],
+        },
+    )
+    _settle()
+    assert ct._string_list(ct._ORPHANS) == [_HOST]
+    assert cf.deleted == ["unsloth-AB12CD"]
+    assert ct._read(ct._RECORD) is None
+
+
+def test_the_login_child_is_written_down_on_disk_while_it_runs(cf):
+    _provision()
+    seen = cf.child.records[0]
+    assert seen["login_pid"] == 999_000 and "login_created" in seen
+    assert ct._read(ct._RECORD) is None
+
+
+def test_every_command_is_pinned_to_the_certificate_we_proved(monkeypatch):
+    monkeypatch.setenv("TUNNEL_ORIGIN_CERT", "/somewhere/else/cert.pem")
+    monkeypatch.setenv("TUNNEL_FORCE_PROVISIONING_DNS", "1")
+    sent = {}
+    monkeypatch.setattr(ct.subprocess, "run", lambda a, **k: sent.update(argv = a, env = k["env"]))
+    ct._cli("cloudflared", "route", "dns", "unsloth-AB12CD", _HOST)
+    argv = sent["argv"]
+    assert argv[argv.index("--origincert") + 1] == str(ct.origin_cert_path())
+    assert not {"--overwrite-dns", "-f"} & set(argv)
+    assert not any(key.startswith("TUNNEL_") for key in sent["env"])

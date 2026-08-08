@@ -13,6 +13,18 @@ running. Stdlib only (back-end imports are lazy) so it is safe to import early.
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
+import signal
+
+import secrets
+
+import logging
+
+import hashlib
+
+import errno
+
 import os
 import platform
 import re
@@ -23,6 +35,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # cloudflared logs the temporary-tunnel URL; match only the URL so we do not depend
 # on the surrounding wording, which Cloudflare may change. The negative lookahead
@@ -989,3 +1003,504 @@ def close_studio_tunnel_lifecycle() -> None:
         _accepting_starts = False
         _tunnel_lifecycle += 1
     stop_studio_tunnel()
+
+
+_RECORD = "provisioning.json"
+_IDENTITY = "identity.json"
+_ORPHANS = "orphans.json"
+_ABANDONED = "abandoned-tunnels.json"
+
+_NAME_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+_NAME_RE = re.compile(r"^unsloth-[A-Z0-9]{6}$")
+
+# cloudflared exposes these failure classes only in command output.
+_CREATE_COLLISION = "tunnel with name already exists"
+_ROUTE_CONFLICT = "already exists"
+_LOGIN_REFUSED = "which login would overwrite"
+_LOGIN_REFUSED_RE = re.compile(r"existing certificate at (.+?) which login would overwrite")
+_TUNNEL_ABSENT = "non-deleted tunnel named"
+_LOGIN_URL_RE = re.compile(r"https://\S*cloudflare\.com/argotunnel\S*")
+_TUNNEL_ID_RE = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+_CREDENTIALS_RE = re.compile(r"credentials written to (.+?\.json)", re.IGNORECASE)
+_ROUTE_ADVICE = "overwrite any existing DNS records for this hostname."
+
+_CLI_TIMEOUT = 60.0
+_LOGIN_DEADLINE = 900.0
+
+_claim_lock = threading.Lock()
+
+
+class ProvisioningError(Exception):
+    """Report a provisioning step failure with a stable error code."""
+
+    def __init__(
+        self,
+        code,
+        detail = "",
+    ):
+        super().__init__(detail or code)
+        self.code, self.detail = code, detail
+
+
+def origin_cert_path() -> Path:
+    return Path.home() / ".cloudflared" / "cert.pem"
+
+
+def _claim_path() -> Path:
+    return Path.home() / ".unsloth" / "cloudflare" / "claim.json"
+
+
+def _state_dir() -> Path:
+    from utils.paths.storage_roots import studio_root
+    return studio_root() / "cloudflare"
+
+
+def _writable_dir(path: Path) -> Path:
+    path.mkdir(parents = True, exist_ok = True)
+    _chmod(path, 0o700)
+    return path
+
+
+def state_root() -> Path:
+    return _writable_dir(_state_dir())
+
+
+def _chmod(path: Path, mode: int) -> None:
+    with suppress(OSError):
+        os.chmod(path, mode)
+
+
+def _unlink(path: Path) -> None:
+    with suppress(OSError):
+        path.unlink(missing_ok = True)
+
+
+def _load(path: Path) -> Optional[object]:
+    try:
+        return json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _store(path: Path, payload: object) -> None:
+    _writable_dir(path.parent)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(payload), encoding = "utf-8")
+        _chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    finally:
+        _unlink(tmp)
+
+
+def _read(name: str) -> Optional[object]:
+    return _load(_state_dir() / name)
+
+
+def _write(name: str, payload: object) -> None:
+    _store(_state_dir() / name, payload)
+
+
+def _discard(name: str) -> None:
+    _unlink(_state_dir() / name)
+
+
+def _digest(path: Path) -> Optional[str]:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _string_list(name: str) -> list:
+    record = _read(name)
+    return [item for item in record if isinstance(item, str)] if isinstance(record, list) else []
+
+
+def read_identity() -> Optional[dict]:
+    record = _read(_IDENTITY)
+    return record if isinstance(record, dict) and record.get("hostname") else None
+
+
+def _set_orphan(hostname: str, *, stranded: bool) -> None:
+    orphans = _string_list(_ORPHANS)
+    if stranded == (hostname in orphans):
+        return
+    _write(_ORPHANS, orphans + [hostname] if stranded else [h for h in orphans if h != hostname])
+
+
+def canonical_hostname(raw: str) -> str:
+    """Normalize a hostname to lowercase A-label form without a trailing dot."""
+    text = (raw or "").strip()
+    invalid = ProvisioningError("invalid_hostname", "Enter a hostname like studio.example.com.")
+    try:
+        host = urlsplit(text if "://" in text else "//" + text).hostname or ""
+    except ValueError:
+        raise invalid from None
+    labels = []
+    for label in host.strip(".").split("."):
+        if not label:
+            raise invalid
+        try:
+            labels.append(label if label.isascii() else label.encode("idna").decode("ascii"))
+        except UnicodeError:
+            raise invalid from None
+    return ".".join(labels)
+
+
+def _process_create_time(pid: Optional[int]) -> Optional[float]:
+    try:
+        import psutil
+        return psutil.Process(pid).create_time()
+    except Exception:
+        return None
+
+
+def _pid_alive(pid: object) -> bool:
+    if not isinstance(pid, int) or pid < 2:
+        return False
+    try:
+        import psutil
+        return psutil.pid_exists(pid)
+    except Exception:
+        # Not os.kill(pid, 0): on Windows signal 0 is CTRL_C_EVENT, not a probe.
+        return True
+
+
+def _claim_is_live(claim: object) -> bool:
+    if not isinstance(claim, dict) or not _pid_alive(claim.get("pid")):
+        return False
+    recorded = claim.get("created")
+    actual = _process_create_time(claim.get("pid"))
+    if not isinstance(recorded, float) or actual is None:
+        return True
+    return abs(actual - recorded) < 1.0
+
+
+@contextmanager
+def certificate_state_claim(operation: str):
+    path = _claim_path()
+    with _claim_lock:
+        holder = _load(path)
+        if _claim_is_live(holder):
+            step = holder.get("operation") or "setup"
+            detail = f"Another Cloudflare {step} step is already running."
+            raise ProvisioningError("certificate_state_busy", detail)
+        pid = os.getpid()
+        _store(path, {"pid": pid, "created": _process_create_time(pid), "operation": operation})
+    try:
+        yield
+    finally:
+        with _claim_lock:
+            holder = _load(path)
+            if isinstance(holder, dict) and holder.get("pid") == os.getpid():
+                _unlink(path)
+
+
+# Strip ambient TUNNEL_* flag bindings before invoking cloudflared.
+def _child_env() -> dict:
+    return {key: value for key, value in os.environ.items() if not key.startswith("TUNNEL_")}
+
+
+def _cli_argv(binary: str, *args: str) -> list:
+    return [binary, "tunnel", "--no-autoupdate", "--origincert", str(origin_cert_path()), *args]
+
+
+def _cli(binary: str, *args: str):
+    try:
+        return subprocess.run(
+            _cli_argv(binary, *args),
+            capture_output = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = _CLI_TIMEOUT,
+            env = _child_env(),
+            **_windows_hidden_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProvisioningError("cloudflared_unreachable", str(exc)) from exc
+
+
+def _output(result) -> str:
+    return "\n".join(part for part in (result.stdout, result.stderr) if part)
+
+
+def _error_summary(text: str) -> str:
+    text = _LOGIN_URL_RE.sub("", text or "")
+    # Run by UUID because provisioning deletes the account certificate.
+    lines = [line.strip() for line in text.splitlines() if line.strip()] or [""]
+    _, advised, cause = lines[-1].partition(_ROUTE_ADVICE)
+    return (cause.lstrip(": ").strip() if advised else lines[-1])[:300]
+
+
+def _terminate(proc) -> None:
+    try:
+        proc.terminate()
+        proc.wait(timeout = 5.0)
+    except Exception:
+        try:
+            proc.kill()
+            proc.wait(timeout = 5.0)
+        except Exception:
+            pass
+
+
+def _spawn_login(binary: str):
+    def _spawn():
+        return subprocess.Popen(
+            [binary, "tunnel", "--no-autoupdate", "login"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            encoding = "utf-8",
+            errors = "replace",
+            env = _child_env(),
+            **_lifetime_kwargs(),
+            **_windows_hidden_kwargs(),
+        )
+
+    return _spawn_child(_spawn)
+
+
+def _capture_certificate(record: dict) -> None:
+    digest = _digest(origin_cert_path())
+    if digest is not None:
+        record["cert_digest"] = digest
+        _write(_RECORD, record)
+
+
+def _run_login(
+    record: dict,
+    binary: str,
+    on_login_url: Optional[Callable[[str], None]],
+    cancelled: Optional[Callable[[], bool]],
+) -> None:
+    proc = _spawn_login(binary)
+    try:
+        from utils.process_lifetime import adopt_pid
+        adopt_pid(proc.pid)
+    except Exception:
+        pass
+    record["login_pid"] = proc.pid
+    record["login_created"] = _process_create_time(proc.pid)
+    _write(_RECORD, record)
+
+    seen = []
+
+    def _drain():
+        for line in proc.stdout or ():
+            seen.append(line)
+            match = _LOGIN_URL_RE.search(line)
+            if match is not None and on_login_url is not None:
+                try:
+                    # Never logged: this URL authorizes the user's Cloudflare account.
+                    on_login_url(match.group(0))
+                except Exception:
+                    pass
+
+    reader = threading.Thread(target = _drain, daemon = True, name = "cloudflared-login")
+    reader.start()
+    deadline = time.monotonic() + _LOGIN_DEADLINE
+    try:
+        while proc.poll() is None:
+            if cancelled is not None and cancelled():
+                raise ProvisioningError("cancelled", "Cloudflare setup was cancelled.")
+            if time.monotonic() >= deadline:
+                raise ProvisioningError("login_timed_out", "The Cloudflare login did not finish.")
+            time.sleep(0.2)
+    finally:
+        if proc.poll() is None:
+            _terminate(proc)
+        with suppress(Exception):
+            from utils.process_lifetime import forget_pid
+            forget_pid(proc.pid)
+        # Delete cert.pem only when its final digest proves this run created it.
+        _capture_certificate(record)
+        reader.join(timeout = 2.0)
+        with suppress(Exception):
+            proc.stdout.close()
+        record.pop("login_pid", None)
+        record.pop("login_created", None)
+        _write(_RECORD, record)
+
+    text = "".join(seen)
+    if _LOGIN_REFUSED in text:
+        found = _LOGIN_REFUSED_RE.search(text)
+        record.pop("cert_digest", None)
+        _write(_RECORD, record)
+        path = found.group(1) if found else str(origin_cert_path())
+        raise ProvisioningError("certificate_exists", path)
+    if proc.returncode != 0:
+        raise ProvisioningError("login_failed", _error_summary(text))
+    if not record.get("cert_digest"):
+        raise ProvisioningError("login_failed", "The Cloudflare login wrote no certificate.")
+
+
+def _generate_tunnel_name() -> str:
+    return "unsloth-" + "".join(secrets.choice(_NAME_ALPHABET) for _ in range(6))
+
+
+def _credentials_path(text: str, tunnel_id: str) -> Path:
+    match = _CREDENTIALS_RE.search(text)
+    beside_the_certificate = origin_cert_path().with_name(f"{tunnel_id}.json")
+    return Path(match.group(1).strip()) if match else beside_the_certificate
+
+
+def _create_tunnel(record: dict, binary: str) -> Tuple[str, str, Path]:
+    for attempt in (0, 1):
+        name = _generate_tunnel_name()
+        record.setdefault("tunnel_names", []).append(name)
+        _write(_RECORD, record)
+        result = _cli(binary, "create", name)
+        text = _output(result)
+        if result.returncode == 0:
+            match = _TUNNEL_ID_RE.search(text)
+            if match is None:
+                raise ProvisioningError("tunnel_create_failed", "cloudflared reported no id.")
+            tunnel_id = match.group(0).lower()
+            return name, tunnel_id, _credentials_path(text, tunnel_id)
+        collided = _CREATE_COLLISION in text
+        if collided:
+            record["tunnel_names"].remove(name)
+            _write(_RECORD, record)
+        if not collided or attempt:
+            raise ProvisioningError("tunnel_create_failed", _error_summary(text))
+
+
+def _secure_credentials(source: Path, tunnel_id: str) -> Path:
+    target = state_root() / f"{tunnel_id}.json"
+    try:
+        shutil.move(str(source), str(target))
+    except OSError:
+        target = source
+    _chmod(target, 0o600)
+    return target
+
+
+def _route_hostname(record: dict, binary: str, name: str, hostname: str) -> None:
+    record["route_attempted"] = True
+    _write(_RECORD, record)
+    result = _cli(binary, "route", "dns", name, hostname)
+    if result.returncode == 0:
+        return
+    text = _output(result)
+    # Only a confirmed DNS conflict proves route creation changed nothing.
+    if _ROUTE_CONFLICT not in text.lower():
+        raise ProvisioningError("route_failed", _error_summary(text))
+    record.pop("route_attempted", None)
+    _write(_RECORD, record)
+    detail = f"A DNS record for {hostname} already exists and Studio will not replace it."
+    raise ProvisioningError("dns_conflict", detail)
+
+
+def _delete_tunnel(binary: Optional[str], name: object) -> bool:
+    if not isinstance(name, str) or not _NAME_RE.match(name):
+        return True
+    if not binary:
+        return False
+    try:
+        result = _cli(binary, "delete", name)
+    except ProvisioningError as exc:
+        logger.warning("Could not delete Cloudflare tunnel %s: %s", name, exc.detail)
+        return False
+    text = _output(result)
+    if result.returncode == 0 or _TUNNEL_ABSENT in text.lower():
+        return True
+    logger.warning("Could not delete Cloudflare tunnel %s: %s", name, _error_summary(text))
+    return False
+
+
+def _abandon(binary: Optional[str], names) -> None:
+    stranded = [
+        name for name in names if isinstance(name, str) and not _delete_tunnel(binary, name)
+    ]
+    if stranded:
+        _write(_ABANDONED, list(dict.fromkeys(_string_list(_ABANDONED) + stranded)))
+
+
+def _reap_login_child(record: dict) -> None:
+    pid, created = record.get("login_pid"), record.get("login_created")
+    actual = _process_create_time(pid) if _pid_alive(pid) else None
+    if actual is None or not isinstance(created, float) or abs(actual - created) >= 1.0:
+        return
+    try:
+        import psutil
+        os.kill(pid, signal.SIGTERM)
+        psutil.Process(pid).wait(timeout = 5.0)
+    except Exception:
+        pass
+
+
+def _delete_our_certificate(record: dict) -> None:
+    path = origin_cert_path()
+    if record.get("cert_digest") and _digest(path) == record["cert_digest"]:
+        _unlink(path)
+
+
+def _settle(binary: Optional[str]) -> None:
+    record = _read(_RECORD)
+    if not isinstance(record, dict):
+        if (_state_dir() / _RECORD).exists():
+            logger.warning("Cloudflare setup record is unreadable; leaving it in place.")
+        return
+    _reap_login_child(record)
+    if read_identity() is None:
+        if record.get("route_attempted") and record.get("hostname"):
+            _set_orphan(str(record["hostname"]), stranded = True)
+        _abandon(binary, record.get("tunnel_names") or ())
+        if record.get("credentials"):
+            _unlink(Path(str(record["credentials"])))
+    _delete_our_certificate(record)
+    _discard(_RECORD)
+
+
+def _provision(
+    record: dict,
+    hostname: str,
+    binary: str,
+    on_login_url: Optional[Callable[[str], None]],
+    cancelled: Optional[Callable[[], bool]],
+) -> None:
+    if origin_cert_path().exists():
+        raise ProvisioningError("certificate_exists", str(origin_cert_path()))
+    _run_login(record, binary, on_login_url, cancelled)
+    if cancelled is not None and cancelled():
+        raise ProvisioningError("cancelled", "Cloudflare setup was cancelled.")
+    name, tunnel_id, credentials = _create_tunnel(record, binary)
+    record["credentials"] = str(_secure_credentials(credentials, tunnel_id))
+    _write(_RECORD, record)
+    _route_hostname(record, binary, name, hostname)
+    _write(
+        _IDENTITY,
+        {
+            "hostname": hostname,
+            "tunnel_name": name,
+            "tunnel_id": tunnel_id,
+            "credentials": record["credentials"],
+        },
+    )
+    _set_orphan(hostname, stranded = False)
+
+
+def provision_custom_tunnel(
+    hostname: str,
+    *,
+    binary: str,
+    on_login_url: Optional[Callable[[str], None]] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
+) -> Optional[dict]:
+    """Create this install's tunnel and DNS record."""
+    host = canonical_hostname(hostname)
+    with certificate_state_claim("setup"):
+        if read_identity() is not None:
+            detail = "This machine already has a Cloudflare tunnel."
+            raise ProvisioningError("identity_exists", detail)
+        _settle(binary)
+        if (_state_dir() / _RECORD).exists():
+            raise ProvisioningError("setup_record_unreadable", str(_state_dir() / _RECORD))
+        record = {"hostname": host}
+        _write(_RECORD, record)
+        try:
+            _provision(record, host, binary, on_login_url, cancelled)
+        finally:
+            _settle(binary)
+    return read_identity()
