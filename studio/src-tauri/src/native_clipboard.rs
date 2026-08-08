@@ -11,7 +11,8 @@ const MAX_CLIPBOARD_IMAGE_DIMENSION: i32 = 8192;
 const MAX_CLIPBOARD_RGBA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CLIPBOARD_PNG_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_SOURCE_BYTES: u64 = 20 * 1024 * 1024;
-const MAX_CLIPBOARD_TOTAL_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_CLIPBOARD_AUDIO_BYTES: u64 = 25 * 1024 * 1024;
+const MAX_CLIPBOARD_TOTAL_BYTES: u64 = MAX_CLIPBOARD_AUDIO_BYTES;
 const MAX_CLIPBOARD_FILES: usize = 8;
 const MAX_CLIPBOARD_CANDIDATES: usize = 32;
 #[cfg(target_os = "linux")]
@@ -100,6 +101,14 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
     Some(mime_type)
 }
 
+fn clipboard_file_max_bytes(mime_type: &str) -> u64 {
+    if mime_type.starts_with("audio/") {
+        MAX_CLIPBOARD_AUDIO_BYTES
+    } else {
+        MAX_CLIPBOARD_SOURCE_BYTES
+    }
+}
+
 fn open_regular_clipboard_file(path: &Path) -> Option<File> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -143,7 +152,7 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
         let Ok(metadata) = source.metadata() else {
             continue;
         };
-        let limit = MAX_CLIPBOARD_SOURCE_BYTES.min(remaining);
+        let limit = clipboard_file_max_bytes(mime_type).min(remaining);
         if !metadata.is_file() || metadata.len() > limit {
             continue;
         }
@@ -402,6 +411,35 @@ mod tests {
         assert_eq!(files[0].mime_type, "text/markdown");
 
         assert_eq!(BASE64.decode(&files[0].base64).unwrap(), b"clipboard text");
+    }
+
+    #[test]
+    fn clipboard_audio_uses_the_chat_upload_boundary() {
+        assert_eq!(clipboard_file_max_bytes("audio/mpeg"), 25 * 1024 * 1024);
+        assert_eq!(
+            clipboard_file_max_bytes("text/markdown"),
+            MAX_CLIPBOARD_SOURCE_BYTES
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let accepted = directory.path().join("accepted.mp3");
+        File::create(&accepted)
+            .unwrap()
+            .set_len(MAX_CLIPBOARD_AUDIO_BYTES)
+            .unwrap();
+        let oversized = directory.path().join("oversized.mp3");
+        File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_CLIPBOARD_AUDIO_BYTES + 1)
+            .unwrap();
+
+        let files = read_clipboard_files(vec![oversized, accepted]).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "accepted.mp3");
+        assert_eq!(
+            BASE64.decode(&files[0].base64).unwrap().len() as u64,
+            MAX_CLIPBOARD_AUDIO_BYTES
+        );
     }
 
     #[cfg(unix)]
