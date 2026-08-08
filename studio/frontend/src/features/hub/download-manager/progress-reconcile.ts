@@ -6,12 +6,9 @@
 // the store, the toaster and the API client, and this is the part that decides
 // what a card shows and when a download counts as finished.
 
-import { MAX_PROGRESS_FRACTION } from "./download-manager-config";
 import { DOWNLOAD_KIND } from "./constants";
-import type {
-  ManagedDownload,
-  ProgressLike,
-} from "./download-manager-types";
+import { MAX_PROGRESS_FRACTION } from "./download-manager-config";
+import type { ManagedDownload, ProgressLike } from "./download-manager-types";
 
 export function hasObservedExpectedBytes(job: ManagedDownload): boolean {
   // Finalized bytes only: an `.incomplete` blob hitting expected size isn't
@@ -50,20 +47,36 @@ export function resolveProgressUpdate(
       : job.expectedBytes
     : Math.max(reported > 0 ? reported : job.expectedBytes, job.expectedBytes);
   const previousDownloadedBytes = job.downloadedBytes;
-  // The byte counters are high-water marks for every job kind, the way the
-  // fraction below already is, and for the same reason: the backend recomputes
-  // them from the shared per-repo blobs/ dir, so one poll that cannot resolve
-  // the variant's expected files reports zero. Only the total is backend-owned.
-  // Letting that single reading through rewrote a finished card to "0 B of
-  // 33 GB" permanently, and since completion needs completedBytes to reach
-  // expectedBytes the job never finalized and kept its Retry/Resume controls.
-  // resetMonotonic still drops the mark: a new generation's bytes are its own.
+  const reportedCompleted = progressResp.completed_bytes ?? 0;
+  // Hold the last reading through a poll that found nothing, rather than
+  // publishing the "I could not measure this" answer as a measurement. The
+  // backend recomputes both counters from the shared per-repo blobs/ dir every
+  // poll, and when it cannot resolve a variant's expected files it returns an
+  // all-zero reading against the caller's catalog-hinted total; the failure
+  // behind that is negatively cached, so every poll for the whole TTL says the
+  // same thing and a finished card reads "0 B of 33 GB" until the app restarts.
+  //
+  // Deliberately NOT a high-water mark, which is what the fraction below uses.
+  // Bytes have legitimate reasons to fall inside one generation and the
+  // fraction does not: an XET run that falls back to HTTP re-claims with the
+  // same generation and a freshly computed completed_baseline_bytes, and
+  // resuming in XET mode purges the partial outright. A floor would pin the
+  // card near full for the whole retry and starve the rolling-window rate of
+  // the movement it needs to publish a speed or an ETA. Only a zero is ignored,
+  // so every real change -- up or down -- still lands on the next poll.
   const downloadedBytes = resetMonotonic
     ? Math.max(0, progressResp.downloaded_bytes)
-    : Math.max(previousDownloadedBytes, progressResp.downloaded_bytes, 0);
+    : progressResp.downloaded_bytes > 0
+      ? progressResp.downloaded_bytes
+      : Math.max(previousDownloadedBytes, 0);
+  // Same rule, and it cannot manufacture a completion: hasObservedExpectedBytes
+  // also needs completeOnDisk, which is never held over, and the backend only
+  // ever sets it on a reading whose own completed_bytes already cleared the bar.
   const completedBytes = resetMonotonic
-    ? Math.max(0, progressResp.completed_bytes ?? 0)
-    : Math.max(job.completedBytes, progressResp.completed_bytes ?? 0, 0);
+    ? Math.max(0, reportedCompleted)
+    : reportedCompleted > 0
+      ? reportedCompleted
+      : Math.max(job.completedBytes, 0);
   const completeOnDisk = progressResp.complete_on_disk === true;
   const madeProgress =
     resetMonotonic ||

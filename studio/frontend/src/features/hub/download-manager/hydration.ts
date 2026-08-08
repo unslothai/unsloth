@@ -179,19 +179,22 @@ async function probeHydratedIdleProgress(
     );
     const current = getState().jobs[key];
     if (!current || !ACTIVE_STATES.has(current.state)) return "settled";
-    const { downloadedBytes } = applyProgressUpdate(key, current, progressResp);
+    applyProgressUpdate(key, current, progressResp);
     const updated = getState().jobs[key];
     if (!updated || !ACTIVE_STATES.has(updated.state)) return "settled";
     if (hasObservedExpectedBytes(updated)) {
       finalize(key, "complete", { bytes: updated.downloadedBytes });
       return "settled";
     }
-    // The high-water mark, not the raw reading: a poll that cannot resolve a
-    // variant's expected files reports zero, and evicting a live job on one of
-    // those is how a finished download lost its card. A persisted job whose
-    // cache really was wiped therefore no longer reads "gone" here; it adopts
-    // and the poll loop's idle-evict grace removes it instead.
-    return downloadedBytes > 0 ? "active" : "gone";
+    // The raw reading decides this one, not the figure the card keeps. Whether
+    // anything is on disk is a question about the cache, and a persisted job
+    // whose cache was wiped has to read "gone" here rather than adopt and sit
+    // in the panel as a phantom download until the idle-evict grace expires
+    // sixty seconds later, blocking a fresh start for the same repo meanwhile.
+    // The reason the resolved figure holds a zero over -- an unresolvable
+    // variant file set -- is answered on the backend now, so a finished
+    // download does not reach this line reading zero in the first place.
+    return progressResp.downloaded_bytes > 0 ? "active" : "gone";
   } catch {
     return "active";
   }
