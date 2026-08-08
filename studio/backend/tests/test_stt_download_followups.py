@@ -9,9 +9,11 @@ These cover what that changed.
 """
 
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +21,20 @@ from core.inference import stt_download_worker as worker_mod
 from core.inference import stt_ggml_sidecar as ggml_mod
 from core.inference import stt_mtmd_sidecar as mtmd_mod
 from core.inference import stt_sidecar as snapshot_mod
+
+
+class _FakeMeta:
+    """One Hub file's metadata, pinned to an immutable commit."""
+
+    commit_hash = "a" * 40
+    etag = "etag"
+    size = 1
+
+
+class _FakeInfo:
+    """One repo's metadata, pinned to an immutable commit."""
+
+    sha = "a" * 40
 
 
 def _write_snapshot(hub_cache: Path, repo: str, revision: str, filename: str) -> Path:
@@ -82,6 +98,17 @@ def test_a_cancel_during_metadata_leaves_the_shared_cache_alone(
     cache would purge partials, both after the user was told it stopped.
     """
     claims, prepares, spawns = [], [], []
+    # Stub the Hub metadata call. Unstubbed it reaches huggingface.co, and when that
+    # fails (offline CI) the exception lands in _run's handler before the guard under
+    # test, so every assertion below passes without the guard existing at all.
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", lambda *a, **k: _FakeMeta())
+    monkeypatch.setattr(
+        huggingface_hub,
+        "HfApi",
+        lambda *a, **k: SimpleNamespace(model_info = lambda *a, **k: _FakeInfo()),
+    )
     monkeypatch.setattr(
         module, "_claim_stt_repository", lambda repo: claims.append(repo) or (None, None)
     )
@@ -129,7 +156,7 @@ def test_a_worker_that_ignores_sigterm_is_killed():
     """The canceller holds the repository reservation until the reap returns."""
     process = subprocess.Popen(
         [
-            "python",
+            sys.executable,
             "-c",
             "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
         ]
