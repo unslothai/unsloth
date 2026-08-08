@@ -1993,9 +1993,7 @@ def _train_dit(
             # Same as the LoRA trainer: a completed run has nothing to resume, and the final
             # iteration writes no bundle, so save_steps leaves the run's own checkpoint-400
             # behind for a later resume to roll back to. An earlier run's bundles stay.
-            retire_own_checkpoints(
-                out_dir, preexisting_checkpoints, resumed_here = resumed_here
-            )
+            retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
     else:
         # Discarded: the user asked to throw this run away. Before periodic checkpoints
         # existed a discard left nothing behind, because the output directory was only ever

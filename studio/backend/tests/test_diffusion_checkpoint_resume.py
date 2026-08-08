@@ -1887,7 +1887,7 @@ def test_both_trainers_honour_the_fp32_optimizer_override(run_dir):
     trainers = Path(dc.__file__).parent
     for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
         source = (trainers / name).read_text(encoding = "utf-8")
-        marker = source.find("def _make_optimizer") 
+        marker = source.find("def _make_optimizer")
         if marker < 0:
             marker = source.find("def _make_lora_optimizer")
         assert marker > 0, name
