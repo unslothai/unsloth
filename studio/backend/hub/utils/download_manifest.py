@@ -1625,10 +1625,9 @@ def _iter_variant_state_files(
     requested, raw = _hub_cache_spellings(hub_cache)
     # Every scope this cache's state can sit in, so a variant filed under the
     # pre-resolve digest is enumerated instead of reading as "no variant state".
+    scopes = cache_scope_names(raw) if requested is not None and raw is not None else (None,)
     scoped_dirs: list[Path] = []
-    for scope in (
-        cache_scope_names(raw) if raw is not None and requested is not None else (None,)
-    ):
+    for scope in scopes:
         scoped_probe = path_factory(
             repo_type,
             repo_id,
