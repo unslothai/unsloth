@@ -1240,9 +1240,9 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         assert head and "await" not in head.group(1), f"{rel}: the sequence is taken after an await"
         guard = re.search(r"if \(pick !== pickSeq\.current\) return (\w+);", src)
         assert guard, f"{rel}: a superseded plan is not dropped"
-        assert guard.group(1) == "true", (
-            f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
-        )
+        assert (
+            guard.group(1) == "true"
+        ), f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
 
 
 def test_a_pick_that_never_loads_restores_its_generation_recipe():
@@ -1254,18 +1254,20 @@ def test_a_pick_that_never_loads_restores_its_generation_recipe():
     So the rollback token carries the recipe and every rollback path puts all of it back."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
-        assert "type PickRevert = { prev: string | null; steps: number; guidance: number };" in src, (
-            f"{rel}: the rollback token does not carry the generation recipe"
+        assert (
+            "type PickRevert = { prev: string | null; steps: number; guidance: number };" in src
+        ), f"{rel}: the rollback token does not carry the generation recipe"
+        revert = re.search(
+            r"const revertPick = useCallback\(\(r: PickRevert\) => \{(.*?)\}, \[\]\);", src, re.S
         )
-        revert = re.search(r"const revertPick = useCallback\(\(r: PickRevert\) => \{(.*?)\}, \[\]\);", src, re.S)
         assert revert, f"{rel}: no shared rollback helper"
         body = revert.group(1)
         for setter in ("setQuant(r.prev)", "setSteps(r.steps)", "setGuidance(r.guidance)"):
             assert setter in body, f"{rel}: rollback does not restore {setter}"
         # No rollback path may still put back the label alone.
-        assert "setQuant(quantRevert.current.prev)" not in src, (
-            f"{rel}: a rollback path restores the label without its recipe"
-        )
+        assert (
+            "setQuant(quantRevert.current.prev)" not in src
+        ), f"{rel}: a rollback path restores the label without its recipe"
 
 
 def test_staged_downloads_always_scope_their_files():

@@ -1026,7 +1026,10 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 local = Path(
                     hf_hub_download_with_xet_fallback(
-                        base, name, hf_token, cancel_event = cancel,
+                        base,
+                        name,
+                        hf_token,
+                        cancel_event = cancel,
                         # Same reason as the checkpoint: the plan already treats either root as cached.
                         reuse_other_cache_root = True,
                     )
@@ -1624,7 +1627,9 @@ class VideoBackend:
 
         return Path(
             hf_hub_download_with_xet_fallback(
-                repo_id, gguf_filename or "", hf_token,
+                repo_id,
+                gguf_filename or "",
+                hf_token,
                 # Matches the planner's both-roots cache probe, as the diffusion fetches already do.
                 reuse_other_cache_root = True,
             )
