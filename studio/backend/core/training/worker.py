@@ -1535,6 +1535,75 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     return gcn_arch, is_unified
 
 
+# 16 GiB, not a percentage: on a 128 GiB Strix Halo a flat 20% withholds 25.6 GiB, while
+# 0.90 there reserves 12.8 GiB and was measured as OS-starving. The constant sits between.
+_UNIFIED_OS_RESERVE_BYTES = 16 * 1024**3
+_UNIFIED_MAX_RESERVE_FRACTION = 0.20
+_DISCRETE_MEM_FRACTION = 0.90
+_MEM_FRACTION_ENV = "UNSLOTH_ROCM_MEM_FRACTION"
+
+
+def _parse_mem_fraction_env(env_value: str | None) -> float | None:
+    """``UNSLOTH_ROCM_MEM_FRACTION`` as a float, None when unset or unusable.
+
+    Shared with the OOM guard's log line so it can say whether the override was
+    actually honoured, rather than just whether the variable was set.
+    """
+    try:
+        override = float(env_value)  # None -> TypeError, "" / "  " -> ValueError
+    except (TypeError, ValueError):
+        return None
+    # Two-sided on purpose: NaN loses every comparison, so this rejects it. A one-sided
+    # `override <= 0.0 or override > 1.0` would pass NaN to set_per_process_memory_fraction.
+    return override if 0.0 < override <= 1.0 else None
+
+
+def _rocm_memory_fraction(
+    total_bytes: int,
+    is_unified: bool,
+    platform: str,
+    env_value: str | None = None,
+) -> float:
+    """Pick the ``set_per_process_memory_fraction`` cap for a ROCm device.
+
+    ``total_bytes`` must be ``get_device_properties().total_memory``: the caching
+    allocator caps at ``fraction * device_prop.totalGlobalMem`` (c10's
+    ``CUDACachingAllocator::setMemoryFraction``), and that is the same value. Not
+    ``mem_get_info``, whose total is a runtime budget on some hosts -- an absolute
+    byte reserve only lands where intended when both sides divide by the same number.
+
+    - ``env_value`` (``UNSLOTH_ROCM_MEM_FRACTION``) wins when it parses to a
+      float in ``(0.0, 1.0]``; anything else is ignored, never fatal.
+    - Unified + win32: ``1.0``. The WDDM budget already excludes the OS share,
+      so any sub-1.0 cap double-taxes it (see the guard's own comment).
+    - Unified elsewhere: reserve ``min(_UNIFIED_MAX_RESERVE_FRACTION of total,
+      _UNIFIED_OS_RESERVE_BYTES)``, then clamp the cap to ``_DISCRETE_MEM_FRACTION``
+      so a huge pool never ends up looser than a discrete card. The percentage
+      ceiling keeps small pools at exactly the historical cap.
+    - Discrete: ``_DISCRETE_MEM_FRACTION``.
+    """
+    override = _parse_mem_fraction_env(env_value)
+    if override is not None:
+        return override
+
+    if not is_unified:
+        return _DISCRETE_MEM_FRACTION
+    if platform == "win32":
+        return 1.0
+    if total_bytes <= 0:
+        # The caller defaults a missing or None total to 0; with no pool size there is
+        # nothing to solve against, so keep the historical cap.
+        return 1.0 - _UNIFIED_MAX_RESERVE_FRACTION
+
+    # Solved in fraction space, not bytes: (total - 0.20 * total) / total rounds
+    # to 0.7999999999999999 on some pool sizes (12/24/28/48 GiB), which would
+    # break the "never tighter than the historical 0.80" guarantee by a ULP.
+    reserve_fraction = min(_UNIFIED_MAX_RESERVE_FRACTION, _UNIFIED_OS_RESERVE_BYTES / total_bytes)
+    # Past ~160 GiB the byte reserve is under 10% of the pool, which would hand a unified
+    # host a looser cap than a discrete card and invert the ordering the guard is built on.
+    return min(1.0 - reserve_fraction, _DISCRETE_MEM_FRACTION)
+
+
 def _tilelang_platform_supported() -> bool:
     """True iff a tilelang 0.1.8 wheel will load: Linux x86_64/aarch64, non-HIP torch.
 
@@ -3613,8 +3682,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 1g. ROCm OOM guard ──
     # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
     # set_per_process_memory_fraction caps the allocator so PyTorch raises OutOfMemoryError
-    # first. Unified-memory APUs (gfx1150/1151/1152) share GPU+system RAM, so use 0.80 vs 0.90
-    # for discrete; classify via gcnArchName, else device-name markers. Skipped if no torch.
+    # first. Unified hosts share GPU+system RAM and need OS headroom, so the cap depends on
+    # the classification and the pool size (see _rocm_memory_fraction and
+    # _rocm_classify_unified_memory). Skipped if no torch.
     if _hw.IS_ROCM:
         try:
             import torch as _torch_mem
@@ -3631,22 +3701,48 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
                 # Unified hosts on native Windows: mem_get_info's total is the WDDM budget the driver
                 # grants HIP (BIOS carve + ~half of remaining RAM). The OS share is already outside it, so
-                # the Linux 0.80 starve-protection double-taxes (48.49 GiB budget -> 38.79 allowed) and
+                # any sub-1.0 starve-protection double-taxes (48.49 GiB budget -> 38.79 allowed) and
                 # blocks loads that fit in free memory. Current AMD Windows wheels only enforce sub-1.0
                 # fractions (gfx1151: 0.5 caps, 1.0 overcommits via WDDM), so 1.0 behaves like torch's
-                # uncapped default. On Linux the total spans nearly all RAM, so keep the 0.80 headroom.
-                if _is_unified:
-                    _mem_fraction = 1.0 if sys.platform == "win32" else 0.80
-                else:
-                    _mem_fraction = 0.90
+                # uncapped default. On Linux the total spans nearly all RAM, so keep a bounded headroom
+                # (see _rocm_memory_fraction).
+                # props.total_memory, not mem_get_info: the caching allocator sets its
+                # ceiling to fraction * device_prop.totalGlobalMem (CUDACachingAllocator's
+                # setMemoryFraction), which is exactly this value. An absolute byte reserve
+                # only lands where intended if the denominator matches the allocator's.
+                _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
+                _env_raw = os.environ.get(_MEM_FRACTION_ENV)
+                _env_fraction = _parse_mem_fraction_env(_env_raw)
+                if _env_raw and _env_fraction is None:
+                    logger.warning(
+                        "ROCm OOM guard: ignoring %s=%r (needs a float in (0.0, 1.0]); "
+                        "using the computed cap instead",
+                        _MEM_FRACTION_ENV,
+                        _env_raw,
+                    )
+                _mem_fraction = _rocm_memory_fraction(
+                    _total_bytes, _is_unified, sys.platform, _env_raw
+                )
+                # A wheel that reports no total still gets a cap; say so rather than
+                # printing "0.0 of 0.0 GiB allowed" on the one host whose props are suspect.
+                _allowed = (
+                    f"{_total_bytes * _mem_fraction / 1024**3:.1f} of "
+                    f"{_total_bytes / 1024**3:.1f} GiB allowed"
+                    if _total_bytes > 0
+                    else "device total unreported by this wheel"
+                )
                 _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
-                    "ROCm OOM guard: set_per_process_memory_fraction(%.2f) — "
-                    "%s memory host (%s, %s)",
+                    "ROCm OOM guard: set_per_process_memory_fraction(%.4f) — "
+                    "%s memory host (%s, %s), %s, %s",
                     _mem_fraction,
                     "unified" if _is_unified else "discrete",
                     _dev_name,
                     _gcn_arch or "unknown arch",
+                    _allowed,
+                    f"from {_MEM_FRACTION_ENV}"
+                    if _env_fraction is not None
+                    else f"computed; override with {_MEM_FRACTION_ENV}",
                 )
                 # Unified Windows APUs: the WDDM budget is user-raisable, but nothing on the box says so
                 # -- users see "48 GB VRAM" on a 96 GB machine. Say where the limit comes from.
