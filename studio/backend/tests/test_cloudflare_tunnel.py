@@ -1576,7 +1576,8 @@ class FakeCloudflared:
         self.login = lambda: FakeLogin(cert_dir / "cert.pem", alive = 1)
         self.child = None
 
-    def spawn(self, binary):
+    def spawn(self, binary, token):
+        self.spawned_with = token
         self.child = self.login()
         return self.child
 
@@ -1810,11 +1811,12 @@ def test_a_claim_held_by_another_process_blocks_this_one(cf, tmp_path):
 def test_the_login_child_is_written_down_on_disk_while_it_runs(cf):
     _provision()
     seen = cf.child.records[0]
-    assert seen["login_pid"] == 999_000 and "login_created" in seen
+    assert seen["login_pid"] == 999_000 and seen["login_token"]
+    assert seen["login_token"] == cf.spawned_with
     assert ct._read(ct._RECORD) is None
 
 
-@pytest.mark.parametrize("landing", ["adopting the pid", "reading its create time"])
+@pytest.mark.parametrize("landing", ["adopting the pid", "starting the reader"])
 def test_an_interrupt_before_the_wait_still_ends_the_login_child(cf, monkeypatch, landing):
     def interrupt(*args, **kwargs):
         raise KeyboardInterrupt("a shutdown lands with the child already spawned")
@@ -1822,7 +1824,14 @@ def test_an_interrupt_before_the_wait_still_ends_the_login_child(cf, monkeypatch
     if landing == "adopting the pid":
         monkeypatch.setattr(process_lifetime, "adopt_pid", interrupt)
     else:
-        monkeypatch.setattr(ct, "_process_create_time", interrupt)
+        real_thread = threading.Thread
+
+        def only_the_login_reader(*args, **kwargs):
+            if kwargs.get("name") == "cloudflared-login":
+                interrupt()
+            return real_thread(*args, **kwargs)
+
+        monkeypatch.setattr(ct.threading, "Thread", only_the_login_reader)
     with pytest.raises(KeyboardInterrupt):
         _provision()
     assert cf.child is not None and cf.child.returncode == -15
@@ -1847,3 +1856,7 @@ class _AlwaysFree:
 
     def release(self):
         pass
+
+
+_TOKEN = "3f8c1d" * 5 + "ab"
+_OTHER_TOKEN = "c4" + "3f8c1d" * 5

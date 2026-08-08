@@ -1009,6 +1009,7 @@ _RECORD = "provisioning.json"
 _IDENTITY = "identity.json"
 _ORPHANS = "orphans.json"
 _ABANDONED = "abandoned-tunnels.json"
+_CONNECTOR = "connector.json"
 
 _NAME_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _NAME_RE = re.compile(r"^unsloth-[A-Z0-9]{6}$")
@@ -1025,6 +1026,8 @@ _CREDENTIALS_RE = re.compile(r"credentials written to (.+?\.json)", re.IGNORECAS
 _ROUTE_ADVICE = "overwrite any existing DNS records for this hostname."
 
 _CLI_TIMEOUT = 60.0
+# cloudflared drains in-flight requests for thirty seconds before it goes.
+_CONNECTOR_EXIT_WAIT = 35.0
 _LOGIN_DEADLINE = 900.0
 
 # Fall back only when the platform explicitly lacks file locking.
@@ -1033,7 +1036,10 @@ _LOCK_UNSUPPORTED = frozenset({errno.ENOTSUP, errno.EOPNOTSUPP})
 # Keep the Windows lock past the readable holder message.
 _LOCK_OFFSET = 1 << 30
 
+_TOKEN_VAR = "UNSLOTH_CHILD_TOKEN"
+
 _claim_lock = threading.Lock()
+_connector_lock = threading.Lock()
 
 
 class ProvisioningError(Exception):
@@ -1154,16 +1160,32 @@ def canonical_hostname(raw: str) -> str:
     return ".".join(labels)
 
 
-def _process_create_time(pid: Optional[int]) -> Optional[float]:
+def _new_token() -> str:
+    return secrets.token_hex(16)
+
+
+def _process_token(pid: Optional[int]) -> Optional[str]:
+    if not _addressable(pid):
+        return None
     try:
         import psutil
-        return psutil.Process(pid).create_time()
+        return psutil.Process(pid).environ().get(_TOKEN_VAR) or None
     except Exception:
         return None
 
 
+# Refuse to signal a PID unless its recorded identity still matches.
+def _same_process(recorded: object, pid: Optional[int]) -> bool:
+    actual = _process_token(pid)
+    return actual is not None and actual == recorded
+
+
+def _addressable(pid: object) -> bool:
+    return isinstance(pid, int) and pid >= 2
+
+
 def _pid_alive(pid: object) -> bool:
-    if not isinstance(pid, int) or pid < 2:
+    if not _addressable(pid):
         return False
     try:
         import psutil
@@ -1238,9 +1260,111 @@ def certificate_state_claim(operation: str):
             _claim_lock.release()
 
 
+def _connector_lock_path() -> Path:
+    return _writable_dir(_state_dir()) / "connector.lock"
+
+
+class ConnectorReservation:
+    def __init__(self, fd: int):
+        self._fd = fd
+        self._guard = threading.Lock()
+        self.token = _new_token()
+
+    def record_connector(self, connector_pid: int) -> None:
+        with self._guard:
+            if self._fd is None:
+                raise RuntimeError("the connector reservation has already been released")
+            _write(
+                _CONNECTOR,
+                {
+                    "connector_pid": connector_pid,
+                    # A pid alone is a pid a later process may be reusing.
+                    "connector_token": self.token,
+                },
+            )
+
+    def release(self) -> None:
+        with self._guard:
+            fd, self._fd = self._fd, None
+        if fd is None:
+            return
+        try:
+            _discard(_CONNECTOR)
+        finally:
+            _release_lock(fd)
+            with suppress(OSError):
+                os.close(fd)
+            _connector_lock.release()
+
+
+def reserve_connector() -> Optional[ConnectorReservation]:
+    fd, locked, held = None, False, False
+    try:
+        fd = os.open(str(_connector_lock_path()), os.O_CREAT | os.O_RDWR, 0o600)
+        locked = _lock_exclusively(fd)
+        if not locked:
+            return None
+        held = _connector_lock.acquire(blocking = False)
+        if not held:
+            return None
+        if not _end_previous_connector(_read(_CONNECTOR)):
+            return None
+        _discard(_CONNECTOR)
+        reservation = ConnectorReservation(fd)
+        fd, held = None, False
+        return reservation
+    finally:
+        if fd is not None:
+            if locked:
+                _release_lock(fd)
+            with suppress(OSError):
+                os.close(fd)
+        if held:
+            _connector_lock.release()
+
+
+def _terminate_connector(pid: int) -> bool:
+    try:
+        import psutil
+
+        process = psutil.Process(pid)
+        os.kill(pid, signal.SIGTERM)
+        process.wait(timeout = _CONNECTOR_EXIT_WAIT)
+        return True
+    except Exception:
+        return not _pid_alive(pid)
+
+
+def _end_previous_connector(record: object) -> bool:
+    if not isinstance(record, dict):
+        return True
+    pid = record.get("connector_pid")
+    if not _pid_alive(pid):
+        return True
+    if not _same_process(record.get("connector_token"), pid):
+        return True
+    return _terminate_connector(pid)
+
+
+def reclaim_at_launch() -> None:
+    try:
+        reservation = reserve_connector()
+        if reservation is not None:
+            reservation.release()
+    except Exception:
+        logger.warning("Cloudflare connector reclaim stopped.", exc_info = True)
+
+
 # Strip ambient TUNNEL_* flag bindings before invoking cloudflared.
-def _child_env() -> dict:
-    return {key: value for key, value in os.environ.items() if not key.startswith("TUNNEL_")}
+def _child_env(token: Optional[str] = None) -> dict:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("TUNNEL_") and key != _TOKEN_VAR
+    }
+    if token is not None:
+        env[_TOKEN_VAR] = token
+    return env
 
 
 def _cli_argv(binary: str, *args: str) -> list:
@@ -1286,7 +1410,7 @@ def _terminate(proc) -> None:
             pass
 
 
-def _spawn_login(binary: str):
+def _spawn_login(binary: str, token: str):
     def _spawn():
         return subprocess.Popen(
             [binary, "tunnel", "--no-autoupdate", "login"],
@@ -1294,7 +1418,7 @@ def _spawn_login(binary: str):
             stderr = subprocess.STDOUT,
             encoding = "utf-8",
             errors = "replace",
-            env = _child_env(),
+            env = _child_env(token),
             **_lifetime_kwargs(),
             **_windows_hidden_kwargs(),
         )
@@ -1330,12 +1454,13 @@ def _run_login(
                     pass
 
     try:
-        proc = _spawn_login(binary)
+        token = _new_token()
+        proc = _spawn_login(binary, token)
         with suppress(Exception):
             from utils.process_lifetime import adopt_pid
             adopt_pid(proc.pid)
         record["login_pid"] = proc.pid
-        record["login_created"] = _process_create_time(proc.pid)
+        record["login_token"] = token
         _write(_RECORD, record)
         thread = threading.Thread(target = _drain, daemon = True, name = "cloudflared-login")
         thread.start()
@@ -1361,7 +1486,7 @@ def _run_login(
             with suppress(Exception):
                 proc.stdout.close()
             record.pop("login_pid", None)
-            record.pop("login_created", None)
+            record.pop("login_token", None)
             _write(_RECORD, record)
 
     text = "".join(seen)
@@ -1460,9 +1585,8 @@ def _abandon(binary: Optional[str], names) -> None:
 
 
 def _reap_login_child(record: dict) -> None:
-    pid, created = record.get("login_pid"), record.get("login_created")
-    actual = _process_create_time(pid) if _pid_alive(pid) else None
-    if actual is None or not isinstance(created, float) or abs(actual - created) >= 1.0:
+    pid = record.get("login_pid")
+    if not _same_process(record.get("login_token"), pid):
         return
     try:
         import psutil
