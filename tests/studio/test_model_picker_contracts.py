@@ -1071,11 +1071,13 @@ def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
         ("features/video/video-page.tsx", "VIDEO_CATALOG"),
     ):
         src = _read(rel)
-        call = re.search(
-            r"diffusionRoutePick\(\s*wanted,\s*routeSearch\.quant,\s*(.*?),?\s*\);", src, re.S
-        )
-        assert call, f"{rel}: the routed pick passes no spec"
-        assert f"loadSpecFor(wanted, {catalog})" in call.group(1), rel
+        # The middle argument is the routed filename and has been respelled more than
+        # once; the load-bearing part is the third, so do not pin the second.
+        call = re.search(r"diffusionRoutePick\(\s*wanted,\s*(.*?),?\s*\);", src, re.S)
+        assert call, f"{rel}: the routed pick does not go through diffusionRoutePick"
+        assert f"loadSpecFor(wanted, {catalog})" in call.group(
+            1
+        ), f"{rel}: the routed pick passes no catalog spec"
 
 
 def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
@@ -1098,14 +1100,19 @@ def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
 
 def test_diffusion_pages_never_drop_a_gguf_pick_silently():
     """The fallback branch splits a local path; a repo pick reaching it has no
-    filename. It must say so instead of returning with no request and no toast."""
+    filename. It used to error out there. It now resolves the repo's own .gguf
+    instead, which is the better answer, but either way the branch must do
+    something: returning with no request and no toast drops the pick in silence."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         branch = re.search(
-            r'if \(!filename\.toLowerCase\(\)\.endsWith\("\.gguf"\)\) \{.*?\}', src, re.S
+            r'if \(!filename\.toLowerCase\(\)\.endsWith\("\.gguf"\)\) \{.*?\n        \}', src, re.S
         )
         assert branch, f"{rel}: gguf extension guard not found"
-        assert "toast.error(" in branch.group(0), f"{rel}: guard returns silently"
+        body = branch.group(0)
+        assert (
+            "toast.error(" in body or "loadGgufRepoPick(" in body
+        ), f"{rel}: guard returns silently"
 
 
 def test_diffusion_pages_stage_downloads_through_the_manager():
@@ -1137,13 +1144,25 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         assert "if (!active)" in ready.group(0), f"{rel}: a hidden page still takes the GPU"
         # Deferred, not dropped: something has to fire the held pick when the page returns.
         assert "stagedLoadDeferred" in ready.group(0), f"{rel}: the pick is discarded"
+        # The dependency array grew when the load body moved into runStagedLoad, so match
+        # the effect by its guard and let the deps be whatever they need to be.
         flush = re.search(
-            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[active\]\);",
+            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[active[^\]]*\]\);",
             src,
             re.S,
         )
         assert flush, f"{rel}: nothing flushes the deferred load when the page is shown"
-        assert "handleLoadRef.current(" in flush.group(0), f"{rel}: deferred load never runs"
+        # Either the flush calls the loader itself or it calls the same helper the visible
+        # path uses. What it may not do is clear the flag and stop there.
+        assert "runStagedLoad()" in flush.group(0) or "handleLoadRef.current(" in flush.group(
+            0
+        ), f"{rel}: deferred load never runs"
+        if "runStagedLoad()" in flush.group(0):
+            runner = re.search(r"const runStagedLoad = useCallback\(.*?\n  \}, \[", src, re.S)
+            assert runner, f"{rel}: runStagedLoad not found"
+            assert "handleLoadRef.current(" in runner.group(
+                0
+            ), f"{rel}: runStagedLoad loads nothing"
 
 
 def test_staged_downloads_always_scope_their_files():
