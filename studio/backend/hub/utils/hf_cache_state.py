@@ -405,10 +405,14 @@ def preferred_repo_cache_dirs(
 
 
 def _configured_hub_cache() -> Optional[Path]:
+    # Path()-wrapped: the setting is typed Path, but a caller (or a test) that
+    # hands back a str would otherwise turn `root / name` above into a TypeError
+    # that surfaces as an empty progress reading -- the very card being fixed.
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
 
-        return get_hf_cache_paths().hub_cache
+        configured = get_hf_cache_paths().hub_cache
+        return Path(configured) if configured else None
     except Exception:
         return None
 

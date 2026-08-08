@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Generic, Optional, Sequence, TypeVar
 
 from loggers import get_logger
 
@@ -34,6 +34,11 @@ logger = get_logger(__name__)
 
 # (repo_id, hf_token) -> (expected_total_bytes, expected_blob_hashes)
 SnapshotMetadataResolver = Callable[[str, Optional[str]], "tuple[int, frozenset[str]]"]
+# (repo_id, hf_token) -> the files HF says this target should contain. Optional,
+# and the only thing that lets a materialized snapshot with no manifest settle.
+SnapshotExpectedFilesResolver = Callable[
+    [str, Optional[str]], "Sequence[download_manifest.ExpectedFile]"
+]
 # repo-relative snapshot path -> whether it belongs to the variant being polled.
 # Supplied per repo kind, so this module keeps knowing nothing about quant labels.
 VariantFileMatcher = Callable[[str], bool]
@@ -72,27 +77,32 @@ def _empty_progress(expected_bytes: int) -> dict:
     }
 
 
-class _EntryManifest:
-    """One manifest read per cache entry, taken only once something asks for it.
+_T = TypeVar("_T")
 
-    Two callers want it -- the unknown-hash byte fallback and the completion
-    check -- and the completion check only wants it once its cheap byte guards
-    have passed. Reading it up front would put a state-dir lookup on every poll
-    of every repo that is still mid-download.
+
+class _Lazy(Generic[_T]):
+    """A value computed at most once, and only once something asks for it.
+
+    The entry's manifest, its newest snapshot dir and the metadata file list are
+    each wanted by two callers -- the unknown-file-set byte reading and the
+    completion check -- and the completion check only wants them once its cheap
+    byte guards have passed. Taking them up front would put a state-dir lookup,
+    a ``snapshots/`` listing and a metadata call on every poll of every repo
+    that is still mid-download.
     """
 
-    __slots__ = ("_read", "_value", "_loaded")
+    __slots__ = ("_compute", "_value", "_loaded")
 
-    def __init__(self, read: Callable[[], Optional[download_manifest.Manifest]]) -> None:
-        self._read = read
-        self._value: Optional[download_manifest.Manifest] = None
+    def __init__(self, compute: Callable[[], _T]) -> None:
+        self._compute = compute
+        self._value: Optional[_T] = None
         self._loaded = False
 
-    def get(self) -> Optional[download_manifest.Manifest]:
+    def get(self) -> _T:
         if not self._loaded:
-            self._value = self._read()
+            self._value = self._compute()
             self._loaded = True
-        return self._value
+        return self._value  # type: ignore[return-value]
 
 
 def _variant_bytes_on_disk(
@@ -126,28 +136,26 @@ def _variant_bytes_on_disk(
     return _materialized_bytes(snapshot_dir, variant_file_matcher)
 
 
-def _materialized_bytes(
-    snapshot_dir: Path,
-    variant_file_matcher: Optional["VariantFileMatcher"],
-) -> int:
-    """Bytes the snapshot dir actually presents, ``None`` matcher meaning all of them.
+def _materialized_bytes(snapshot_dir: Path, variant_file_matcher: "VariantFileMatcher") -> int:
+    """Bytes the variant's files present in the snapshot dir.
 
-    A finalized blob is not yet a usable download: HF writes the blob and then
-    links it into the snapshot dir, and a run killed between the two leaves the
-    first without the second. ``stat`` follows the link, so a dangling one
-    raises and contributes nothing, while the Windows copy layout is read as is.
+    A predicate, not a file list, because this is the path where the file list
+    is precisely what could not be determined. That makes it a lower bound on
+    the wrong side for shared companions -- the matcher accepts every mmproj and
+    drafter in the repo, while a plan fetches one of each -- so it is fit for a
+    byte reading the caller clamps and displays, and not for deciding whether a
+    download finished. ``stat`` follows the link, so a blob that was written but
+    never linked contributes nothing, and the Windows copy layout is read as is.
     """
     total = 0
     try:
-        entries = sorted(snapshot_dir.rglob("*"))
+        entries = snapshot_dir.rglob("*")  # unordered: the result is a sum
     except OSError:
         return 0
     for path in entries:
         try:
             relative = path.relative_to(snapshot_dir).as_posix()
-            if variant_file_matcher is not None and not variant_file_matcher(relative):
-                continue
-            if not path.is_file():
+            if not variant_file_matcher(relative) or not path.is_file():
                 continue
             total += path.stat().st_size
         except (OSError, ValueError):
@@ -161,19 +169,17 @@ def _snapshot_complete_on_disk(
     repo_id: str,
     variant: Optional[str],
     entry: Path,
-    snapshot_dir: Optional[Path],
-    entry_manifest: _EntryManifest,
+    snapshot_dir: "_Lazy[Optional[Path]]",
+    entry_manifest: "_Lazy[Optional[download_manifest.Manifest]]",
+    metadata_files: "_Lazy[tuple[download_manifest.ExpectedFile, ...]]",
     expected_total: int,
     completed_bytes: int,
     in_progress_bytes: int,
-    expected_hashes: frozenset[str],
-    matched_hashes: frozenset[str],
-    metadata_total: int,
-    variant_file_matcher: Optional["VariantFileMatcher"],
 ) -> bool:
     if expected_total <= 0 or completed_bytes < expected_total or in_progress_bytes > 0:
         return False
-    if snapshot_dir is None:
+    snapshot = snapshot_dir.get()
+    if snapshot is None:
         return False
     if variant is None and hf_cache_scan.repo_cache_dir_has_incomplete_blobs(entry):
         return False
@@ -185,37 +191,33 @@ def _snapshot_complete_on_disk(
     ):
         return False
     manifest = entry_manifest.get()
-    if manifest is not None:
-        return download_manifest.verify_against_disk(manifest, snapshot_dir).ok
-    # No manifest, but the download can still be provably finished: HF metadata
-    # named every blob this revision expects, all of them are on disk finalized,
-    # and the snapshot dir presents at least their declared bytes. That is the
-    # same evidence a manifest verify collects, so refusing it only kept a
-    # materialized snapshot partial forever -- a manifest that was never written
-    # (metadata was unreachable at the end of the run), was deleted, or was
-    # filed under a cache scope this reader can no longer name is not evidence
-    # of an unfinished download.
-    #
-    # Every clause is load-bearing. The expected set has to have come from
-    # metadata, since an empty hash set means "unknown" and a caller's
-    # catalog-hinted total is not something completion may be judged against.
-    # Set containment, not just the byte total, so one oversized blob cannot
-    # stand in for a shard that never arrived. And the snapshot dir has to hold
-    # the bytes: a blob is written before it is linked, so a run killed in
-    # between leaves finalized blobs that no snapshot file points at. A variant
-    # shares that dir with its siblings, so it needs the caller's matcher to
-    # measure only its own files, and without one there is nothing to measure.
-    if not expected_hashes or metadata_total <= 0:
-        return False
-    if completed_bytes < metadata_total or not expected_hashes <= matched_hashes:
-        return False
-    if variant is not None and variant_file_matcher is None:
-        return False
-    materialized = _materialized_bytes(
-        snapshot_dir,
-        variant_file_matcher if variant is not None else None,
-    )
-    return materialized >= metadata_total
+    if manifest is None:
+        # No manifest, but HF metadata describes the same thing a manifest does:
+        # the exact files this download was supposed to fetch, at their declared
+        # sizes. Verify against that rather than refusing outright, because a
+        # manifest that was never written (metadata was unreachable when the run
+        # ended), was deleted, or sits under a cache scope this reader cannot
+        # name is not evidence of an unfinished download -- and refusing left a
+        # materialized snapshot partial forever.
+        #
+        # Nothing weaker will do here. The caller's expected_bytes is a catalog
+        # hint, and a byte total assembled from the shared blobs/ dir cannot
+        # tell this variant's bytes from a sibling's or a stray companion's, so
+        # neither is grounds for calling a download complete. Checking the named
+        # files against the snapshot dir also catches the case a blob-level
+        # tally structurally cannot: HF writes a blob and then links it, so a
+        # run killed in between leaves bytes that nothing points at.
+        metadata_expected = metadata_files.get()
+        if not metadata_expected:
+            return False
+        manifest = download_manifest.Manifest(
+            repo_type = repo_type,
+            repo_id = repo_id,
+            variant = variant,
+            started_at = "",
+            expected_files = metadata_expected,
+        )
+    return download_manifest.verify_against_disk(manifest, snapshot).ok
 
 
 def compute_snapshot_progress(
@@ -229,6 +231,7 @@ def compute_snapshot_progress(
     metadata_resolver: SnapshotMetadataResolver,
     variant: Optional[str] = None,
     variant_file_matcher: Optional[VariantFileMatcher] = None,
+    expected_files_resolver: Optional[SnapshotExpectedFilesResolver] = None,
 ) -> dict:
     """Synchronous progress reading. Safe to run under ``asyncio.to_thread``."""
     empty = _empty_progress(expected_bytes)
@@ -268,6 +271,12 @@ def compute_snapshot_progress(
     # Retry/Resume on the card. Fall back to the variant's own files in the
     # snapshot dir, which stay attributable when the blob hashes do not.
     variant_file_set_unknown = variant is not None and not expected_hashes
+    # Resolved at most once, and only if a reading gets far enough to need it.
+    metadata_files: "_Lazy[tuple[download_manifest.ExpectedFile, ...]]" = _Lazy(
+        lambda: tuple(expected_files_resolver(repo_id, hf_token))
+        if expected_files_resolver is not None
+        else ()
+    )
 
     readings: list[tuple[int, int, Optional[str], bool]] = []
     cache_dirs = (
@@ -283,7 +292,6 @@ def compute_snapshot_progress(
     for entry in cache_dirs:
         completed_bytes = 0
         in_progress_bytes = 0
-        matched_hashes: set[str] = set()
         cache_path = hf_cache_scan.resolve_hf_cache_realpath(entry)
         blobs_dir = entry / "blobs"
         if blobs_dir.is_dir():
@@ -308,14 +316,15 @@ def compute_snapshot_progress(
                         if expected_hashes:
                             if f.name not in expected_hashes:
                                 continue
-                            matched_hashes.add(f.name)
                         elif not count_unscoped:
                             continue
                         completed_bytes += f.stat().st_size
                 except OSError:
                     continue
-        snapshot_dir = latest_snapshot_dir(entry)
-        entry_manifest = _EntryManifest(
+        snapshot_dir: "_Lazy[Optional[Path]]" = _Lazy(
+            lambda entry = entry: latest_snapshot_dir(entry)
+        )
+        entry_manifest: "_Lazy[Optional[download_manifest.Manifest]]" = _Lazy(
             lambda entry = entry: download_manifest.read_manifest(
                 repo_type,
                 repo_id,
@@ -324,14 +333,17 @@ def compute_snapshot_progress(
             )
         )
         if variant_file_set_unknown:
-            completed_bytes = max(
-                completed_bytes,
-                _variant_bytes_on_disk(
-                    entry_manifest.get(),
-                    snapshot_dir,
-                    variant_file_matcher,
-                ),
+            on_disk = _variant_bytes_on_disk(
+                entry_manifest.get(),
+                snapshot_dir.get(),
+                variant_file_matcher,
             )
+            # Clamped, because the matcher behind the no-manifest half of that
+            # reading accepts every companion in the repo and so can overshoot.
+            # A bar reading "44 GB of 33 GB" is a worse answer than a pinned one.
+            if expected_total > 0:
+                on_disk = min(on_disk, expected_total)
+            completed_bytes = max(completed_bytes, on_disk)
         readings.append(
             (
                 completed_bytes,
@@ -344,13 +356,10 @@ def compute_snapshot_progress(
                     entry = entry,
                     snapshot_dir = snapshot_dir,
                     entry_manifest = entry_manifest,
+                    metadata_files = metadata_files,
                     expected_total = expected_total,
                     completed_bytes = completed_bytes,
                     in_progress_bytes = in_progress_bytes,
-                    expected_hashes = expected_hashes,
-                    matched_hashes = frozenset(matched_hashes),
-                    metadata_total = meta_total,
-                    variant_file_matcher = variant_file_matcher,
                 ),
             )
         )
@@ -429,6 +438,7 @@ async def snapshot_progress_response(
     metadata_resolver: SnapshotMetadataResolver,
     variant: Optional[str] = None,
     variant_file_matcher: Optional[VariantFileMatcher] = None,
+    expected_files_resolver: Optional[SnapshotExpectedFilesResolver] = None,
 ) -> dict:
     """Async wrapper: offloads the blocking cache walk and never raises."""
     try:
@@ -443,6 +453,7 @@ async def snapshot_progress_response(
             metadata_resolver = metadata_resolver,
             variant = variant,
             variant_file_matcher = variant_file_matcher,
+            expected_files_resolver = expected_files_resolver,
         )
     except Exception as e:
         logger.warning(

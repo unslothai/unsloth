@@ -3528,6 +3528,13 @@ def test_gguf_progress_settles_complete_from_disk_without_a_manifest(monkeypatch
         lambda *_args, **_kwargs: SimpleNamespace(
             download_size_bytes = 100,
             required_hashes = frozenset({"mainhash"}),
+            expected_files = (
+                download_manifest.ExpectedFile(
+                    path = "model-Q4_K_M.gguf",
+                    size = 100,
+                    sha256 = "mainhash",
+                ),
+            ),
         ),
     )
     monkeypatch.setattr(
@@ -3579,6 +3586,18 @@ def test_gguf_progress_without_a_manifest_needs_every_expected_blob(monkeypatch,
         lambda *_args, **_kwargs: SimpleNamespace(
             download_size_bytes = 300,
             required_hashes = frozenset({"shard1", "shard2"}),
+            expected_files = (
+                download_manifest.ExpectedFile(
+                    path = "model-Q4_K_M-00001-of-00002.gguf",
+                    size = 150,
+                    sha256 = "shard1",
+                ),
+                download_manifest.ExpectedFile(
+                    path = "model-Q4_K_M-00002-of-00002.gguf",
+                    size = 150,
+                    sha256 = "shard2",
+                ),
+            ),
         ),
     )
     monkeypatch.setattr(
@@ -3688,8 +3707,14 @@ def test_gguf_progress_without_a_manifest_needs_the_snapshot_materialized(monkey
 
     HF writes the blob and then links it into the snapshot dir, so a run killed
     between the two leaves bytes that nothing points at. With a manifest,
-    verify_against_disk catches it; without one, the blob evidence alone would
+    verify_against_disk catches it; without one, blob-level evidence alone would
     have called an unloadable snapshot complete.
+
+    The stray companion is the reason completion is judged against the metadata
+    file list rather than a byte total taken over the snapshot dir. Every mmproj
+    and drafter in a repo looks like it belongs to whichever variant is being
+    polled -- a plan fetches one of each -- so a leftover one, or an opt-in
+    ``dspark/`` drafter, would cover for the shard that never landed.
     """
     entry = tmp_path / "models--Org--Model-GGUF"
     snap = entry / "snapshots" / "rev0"
@@ -3697,6 +3722,7 @@ def test_gguf_progress_without_a_manifest_needs_the_snapshot_materialized(monkey
     snap.mkdir(parents = True)
     blobs.mkdir(parents = True)
     (blobs / "mainhash").write_bytes(b"x" * 100)  # never linked into rev0
+    (snap / "mmproj-F32.gguf").write_bytes(b"y" * 5_000)  # not in this plan
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
 
     async def _run_inline(fn, *args, **kwargs):
@@ -3709,6 +3735,13 @@ def test_gguf_progress_without_a_manifest_needs_the_snapshot_materialized(monkey
         lambda *_args, **_kwargs: SimpleNamespace(
             download_size_bytes = 100,
             required_hashes = frozenset({"mainhash"}),
+            expected_files = (
+                download_manifest.ExpectedFile(
+                    path = "model-Q4_K_M.gguf",
+                    size = 100,
+                    sha256 = "mainhash",
+                ),
+            ),
         ),
     )
     monkeypatch.setattr(

@@ -507,7 +507,14 @@ def _variant_manifest_in_any_cache(
     manifest = download_manifest.read_manifest("model", repo_id, variant)
     if manifest is not None:
         return manifest
+    # Whatever the active cache resolves to was just probed by the call above,
+    # and a state-dir miss is not free, so skip the entry that repeats it. In
+    # the common case preferred_repo_cache_dirs returns only that entry and this
+    # loop does no work at all.
+    active = download_manifest._canonical_hub_cache()
     for entry in preferred_repo_cache_dirs("model", repo_id):
+        if active is not None and download_manifest._canonical_hub_cache(entry.parent) == active:
+            continue
         manifest = download_manifest.read_manifest(
             "model",
             repo_id,
@@ -566,6 +573,27 @@ async def get_gguf_download_progress_response(
             ),
         )
 
+    def _expected_files_resolver(
+        resolved_repo_id: str, token: Optional[str]
+    ) -> Sequence[download_manifest.ExpectedFile]:
+        """What HF says this variant should contain, paths and declared sizes.
+
+        The only thing that lets a finished variant whose manifest is missing
+        settle terminal instead of staying partial forever, so it has to be the
+        metadata's own file list: a byte tally taken from the shared blobs/ dir
+        cannot tell this quant's bytes from a sibling's. The requirement lookup
+        is cached, and snapshot_progress only calls this once a reading has
+        otherwise passed for complete.
+        """
+        if progress_variant is None:
+            return ()
+        requirement = gguf_variants.gguf_variant_requirements(
+            resolved_repo_id,
+            progress_variant,
+            token,
+        )
+        return requirement.expected_files if requirement is not None else ()
+
     def _variant_file_matcher(path: str) -> bool:
         # Which snapshot files a quant owns, for the reading snapshot_progress
         # falls back to when the blob hashes cannot be resolved. Main shards are
@@ -587,6 +615,7 @@ async def get_gguf_download_progress_response(
         metadata_resolver = _metadata_resolver,
         variant = progress_variant,
         variant_file_matcher = _variant_file_matcher,
+        expected_files_resolver = _expected_files_resolver,
     )
 
 
