@@ -80,7 +80,7 @@ jobs:
           # but silence means a broken janitor looks identical to a clean repo
           # and nothing notices until the ceiling does.
           if ! gh api --paginate "repos/$repo/actions/caches?per_page=100" \
-                 -q '.actions_caches[] | [.id, .created_at, .size_in_bytes, .ref, .key] | @tsv' \
+                 -q '.actions_caches[] | [.id, .created_at, .size_in_bytes, .ref, .version, .key] | @tsv' \
                  > "$all"; then
             echo "::warning::could not list caches for $repo; nothing pruned this run"
             exit 0
@@ -91,7 +91,7 @@ jobs:
           echo "$count caches, $(( total / 1073741824 )) GiB, delete=$DELETE keep=$KEEP"
 
           : > "$grouped"
-          while IFS=$'\t' read -r id created size ref key; do
+          while IFS=$'\t' read -r id created size ref ver key; do
             [ -z "${id:-}" ] && continue
             case "$key" in
               codeql-overlay-base-database-*)
@@ -103,11 +103,12 @@ jobs:
             # Unshortened means the suffix did not match, which would make
             # generation 1 look like generation N. Skip rather than guess.
             [ "$pre" = "$key" ] && continue
-            # Group per ref, not per key. Caches are ref-scoped: a branch cannot
-            # restore a sibling's, but every branch can restore the default
-            # branch's. Ranking all refs together lets two branch-scoped copies
-            # rank newest and evict the default-branch copy everyone shares.
-            printf '%s\t%s\t%s\t%s\n' "$ref|$pre" "$created" "$id" "$size" >> "$grouped"
+            # Group per (ref, version), not per key. Lookup is scoped by all
+            # three: a branch cannot restore a sibling's cache, and a path or
+            # compression change mints a new version that is restored
+            # independently. Ranking them together lets two entries from one
+            # scope evict every usable entry of another.
+            printf '%s\t%s\t%s\t%s\n' "$ref|$ver|$pre" "$created" "$id" "$size" >> "$grouped"
           done < "$all"
 
           sort -t"$(printf '\t')" -k1,1 -k2,2r -o "$grouped" "$grouped"
