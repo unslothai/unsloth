@@ -13,10 +13,11 @@ name: Cache janitor
 #   codeql-overlay-base-database-*  keys embed commit SHA + run id
 #   v0-rust-*                       Swatinem/rust-cache
 #
-# Everything else is left alone. The hf-* / *-gguf-* model caches use exact keys
-# with no restore-keys, so an entry that looks superseded is the only one its key
-# will ever match and deleting it costs a multi-GB re-download. Hence the
-# allowlist rather than a newest-N-per-prefix heuristic.
+# Everything else is left alone. The hf-* / *-gguf-* model caches use exact keys,
+# so an entry that looks superseded is the only one its key will ever match and
+# deleting it costs a multi-GB re-download. setup-python does resolve by
+# restore-keys, but its hash is over the dependency file: one generation is live
+# at a time, and a superseded one expires by itself after 7 days unused.
 
 on:
   schedule:
