@@ -196,9 +196,15 @@ def test_no_release_ever_published_a_cu128_wheel():
             assert "+cu128" not in asset, (version, asset)
 
 
-def _mismatch_message(monkeypatch, *, cuda = "12.8", vllm = "0.23.0",
-                      machine = "x86_64", system = "Linux",
-                      soname = 13):
+def _mismatch_message(
+    monkeypatch,
+    *,
+    cuda = "12.8",
+    vllm = "0.23.0",
+    machine = "x86_64",
+    system = "Linux",
+    soname = 13,
+):
     import platform as _platform
     import unsloth.import_fixes as import_fixes
 
@@ -273,15 +279,16 @@ def test_matching_cuda_is_not_reported_as_a_mismatch(monkeypatch):
 
 def test_unrelated_error_is_not_reported_as_a_mismatch(monkeypatch):
     import unsloth.import_fixes as import_fixes
-
-    assert import_fixes._get_vllm_cuda_mismatch_message(
-        ImportError("vllm._C: undefined symbol: _ZN3c108ListType3ofTsEv")
-    ) is None
+    assert (
+        import_fixes._get_vllm_cuda_mismatch_message(
+            ImportError("vllm._C: undefined symbol: _ZN3c108ListType3ofTsEv")
+        )
+        is None
+    )
 
 
 def test_table_ranges_are_ordered_and_disjoint():
     from packaging.version import Version
-
     previous_high = None
     for low, high, by_cuda in _VLLM_WHEEL_ASSETS:
         assert Version(low) <= Version(high), (low, high)

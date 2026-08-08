@@ -2968,9 +2968,7 @@ def _is_broken_vllm_error(error) -> bool:
 
 
 _VLLM_RELEASES_URL = "https://github.com/vllm-project/vllm/releases"
-_VLLM_INSTALL_DOCS_URL = (
-    "https://docs.vllm.ai/en/latest/getting_started/installation/gpu/"
-)
+_VLLM_INSTALL_DOCS_URL = "https://docs.vllm.ai/en/latest/getting_started/installation/gpu/"
 
 # A plain release version, e.g. "0.23.0". Anything else (rc / dev / post builds)
 # has no matching GitHub release asset, so we never name a wheel for it.
