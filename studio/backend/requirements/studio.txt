@@ -11,6 +11,12 @@ datasets==4.3.0
 pyjwt
 # gradio>=4.0.0                  # 148 MB - Unsloth uses React + FastAPI, not Gradio
 huggingface-hub==0.36.2
+# Transitive via requests, pinned here for one reason: the GGUF header range-read
+# preflight bounds itself by half-closing the socket, and HTTPResponse.shutdown is
+# the only thing that wakes a read parked inside iter_content. It landed in 2.3.0;
+# below that the read is uninterruptible. The preflight abandons the reader either
+# way, so this is defence in depth, not the bound itself.
+urllib3>=2.3.0
 structlog>=24.1.0
 diceware
 ddgs

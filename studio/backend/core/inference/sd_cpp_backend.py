@@ -33,6 +33,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
+from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import resolve_diffusion_device_target
 from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
@@ -258,6 +259,9 @@ class _SdState:
     hf_token: Optional[str] = None
     # The GGUF basename this load committed: some variants pick their encoder by filename, and a local *klein-9B*.gguf carries that keyword only in the basename.
     gguf_filename: Optional[str] = None
+    # The FLUX.2 inner_dim this load read out of the checkpoint's own header, when it could. Kept
+    # so the delete guard reconstructs the SAME encoder pick without re-probing under the lock.
+    flux2_inner_dim: Optional[int] = None
 
 
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
@@ -472,6 +476,15 @@ class SdCppDiffusionBackend:
             raise ValueError(f"Family '{fam.name}' has no native sd.cpp asset mapping.")
 
         base = resolve_base_repo(fam, base_repo)
+        # Offline-only here, and deliberately so. begin_load returns at once by contract -- the
+        # route thread answers the UI with a status and the pull happens on the worker -- so it
+        # cannot afford the range request's bound, let alone hold _lock across it and stall
+        # status()/unload() for the same span. Memo or on-disk header or nothing. This value only
+        # seeds the delete-cached guard's repo list below; the worker re-asks WITH the network and
+        # refreshes that list, so the guard converges within one round trip of the load starting.
+        inner_dim = self._flux2_inner_dim(
+            repo_id, gguf_filename, fam, hf_token, allow_network = False
+        )
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
@@ -490,7 +503,7 @@ class SdCppDiffusionBackend:
                 asset_repos = tuple(
                     dict.fromkeys(
                         r
-                        for r, _f, kind in self._asset_specs(repo_id, gguf_filename, fam)
+                        for r, _f, kind in self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
                         if kind != "diffusion_model"
                     )
                 ),
@@ -557,9 +570,18 @@ class SdCppDiffusionBackend:
             # Swap ONCE so the size probe and the download agree: sizes come from paths-info, which
             # -- unlike model_info -- 401s anonymously on a gated repo, so probing the upstream
             # drops the VAE from the progress total the mirror then pulls.
-            specs = self._asset_specs(repo_id, gguf_filename, fam)
+            inner_dim = self._flux2_inner_dim(repo_id, gguf_filename, fam, hf_token)
+            specs = self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
             fetch_repo = _fetch_repo_map(specs, hf_token)
             assets = [(fetch_repo[repo], fn, kind) for repo, fn, kind in specs]
+            # begin_load could only guess the encoder repos (it may not have had the header yet);
+            # now they are known, so publish them before a single byte is fetched. Otherwise
+            # delete-cached would happily remove a companion this load is about to write into.
+            with self._lock:
+                if self._load_token == _load_token and self._loading is not None:
+                    self._loading.asset_repos = tuple(
+                        dict.fromkeys(r for r, _f, kind in specs if kind != "diffusion_model")
+                    )
             # Same preflight the plan runs, on POST-swap repos: catch a gated companion here, not
             # 15 GiB into the prefetch, without refusing one an ungated mirror stands in for. The
             # plan alone is not enough: the images page falls back to this load when it fails.
@@ -659,6 +681,7 @@ class SdCppDiffusionBackend:
                     mode = mode,
                     hf_token = hf_token,
                     gguf_filename = gguf_filename,
+                    flux2_inner_dim = inner_dim,
                 )
                 with self._lock:
                     if self._load_token != _load_token:
@@ -713,7 +736,12 @@ class SdCppDiffusionBackend:
             # Unreachable through the route, but a direct caller gets the same message begin_load would raise.
             raise ValueError(f"'{repo_id}' has no native sd.cpp asset mapping.")
 
-        specs = self._asset_specs(repo_id, gguf_filename, fam)
+        specs = self._asset_specs(
+            repo_id,
+            gguf_filename,
+            fam,
+            self._flux2_inner_dim(repo_id, gguf_filename, fam, hf_token),
+        )
         by_repo = self._assets_by_repo(specs)
 
         # STAGED before the load runs, so each entry must name the repo _fetch_assets will pull
@@ -798,7 +826,12 @@ class SdCppDiffusionBackend:
         if fam is None or not gguf_filename:
             return
         # Post-swap, as the plan and the load are: the swap is pure, so all three decide alike.
-        specs = self._asset_specs(repo_id, gguf_filename, fam)
+        specs = self._asset_specs(
+            repo_id,
+            gguf_filename,
+            fam,
+            self._flux2_inner_dim(repo_id, gguf_filename, fam, hf_token),
+        )
         fetch_repo = _fetch_repo_map(specs, hf_token)
         self._preflight_companion_repos(
             self._assets_by_repo([(fetch_repo[r], fn, kind) for r, fn, kind in specs]),
@@ -828,16 +861,41 @@ class SdCppDiffusionBackend:
                 continue
         return out
 
+    @staticmethod
+    def _flux2_inner_dim(
+        repo_id: str,
+        gguf_filename: str,
+        fam: DiffusionFamily,
+        hf_token: Optional[str],
+        *,
+        allow_network: bool = True,
+    ) -> Optional[int]:
+        """The checkpoint's own FLUX.2 size, or None. Header-only and memoised, so the four
+        ``_asset_specs`` callers share one probe; skipped outright for every other family, which
+        has a single static encoder table and must stay network-free."""
+        if fam.name != "flux.2-klein":
+            return None
+        return flux2_inner_dim_for_pick(
+            repo_id, gguf_filename, hf_token, allow_network = allow_network
+        )
+
     def _asset_specs(
-        self, repo_id: str, gguf_filename: str, fam: DiffusionFamily
+        self,
+        repo_id: str,
+        gguf_filename: str,
+        fam: DiffusionFamily,
+        inner_dim: Optional[int] = None,
     ) -> list[tuple[str, str, str]]:
         """(repo, filename, kind) for every file sd-cli needs. ``kind`` is the
         SdCppModelFiles field; the transformer reuses the diffusers GGUF."""
         specs: list[tuple[str, str, str]] = [(repo_id, gguf_filename, "diffusion_model")]
         if fam.sd_cpp_vae:
             specs.append((fam.sd_cpp_vae[0], fam.sd_cpp_vae[1], "vae"))
-        # Pick the encoder per variant from the load identity so a 9B GGUF fetches the right one.
-        for terepo, tefile, kind in sd_cpp_text_encoders_for(fam, repo_id, gguf_filename):
+        # Pick the encoder per variant so a 9B GGUF fetches the right one: from the header when the
+        # caller read it, else from the load identity, which a renamed file makes silent.
+        for terepo, tefile, kind in sd_cpp_text_encoders_for(
+            fam, repo_id, gguf_filename, inner_dim = inner_dim
+        ):
             specs.append((terepo, tefile, kind))
         return specs
 
@@ -949,11 +1007,16 @@ class SdCppDiffusionBackend:
             repos = [state.repo_id, state.base_repo]
             if fam.sd_cpp_vae:
                 repos.append(fam.sd_cpp_vae[0])
-            # Same per-variant selection as _asset_specs (keyed on repo id AND GGUF filename) so the delete guard protects the encoder repo this load downloaded.
+            # Same per-variant selection as _asset_specs (the header dim this load committed, else
+            # repo id AND GGUF filename) so the delete guard protects the encoder repo this load
+            # actually downloaded. Read off the state, never re-probed: this runs under _lock.
             repos.extend(
                 terepo
                 for terepo, _f, _k in sd_cpp_text_encoders_for(
-                    fam, state.repo_id, state.gguf_filename
+                    fam,
+                    state.repo_id,
+                    state.gguf_filename,
+                    inner_dim = state.flux2_inner_dim,
                 )
             )
             return _with_mirrors(repos)

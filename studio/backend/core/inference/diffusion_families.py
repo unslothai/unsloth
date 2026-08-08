@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Optional, Sequence
+from typing import NamedTuple, Optional, Sequence
 
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both engines raise them verbatim.
@@ -862,12 +863,25 @@ def sd_cpp_text_encoders_for(
     fam: DiffusionFamily,
     repo_id: Optional[str] = None,
     gguf_filename: Optional[str] = None,
+    inner_dim: Optional[int] = None,
 ) -> tuple[tuple[str, str, str], ...]:
     """The sd.cpp text encoders for a specific load.
 
-    FLUX.2-klein picks by variant (9B needs Qwen3-8B, 4B the family default) keyed on the load
-    identity (repo id + GGUF filename); every other family returns its static table."""
+    FLUX.2-klein picks by variant (9B needs Qwen3-8B, 4B the family default); every other family
+    returns its static table.
+
+    ``inner_dim`` is the checkpoint's own answer, read from the GGUF header
+    (``gguf_flux2_inner_dim``): it decides whenever the caller has it, because a renamed or
+    hand-picked file makes the load identity say nothing. The repo id + filename string match is
+    the fallback for the callers that have no header to read (the delete guard reconstructs a
+    committed load; the plan runs before a byte is fetched)."""
     if fam.name == "flux.2-klein":
+        # A dim this family does not have (a FLUX.2-dev file, a misread) falls through to the
+        # strings rather than guessing, exactly as the base-size guard fails open on one.
+        if inner_dim == _FLUX2_KLEIN_9B_INNER_DIM:
+            return _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
+        if inner_dim == _FLUX2_KLEIN_4B_INNER_DIM:
+            return fam.sd_cpp_text_encoders
         identity = f"{repo_id or ''}/{gguf_filename or ''}".lower()
         # Match the size token on its own: klein-BASE-9B is 9B too, and matching "klein-9b"
         # literally handed it the 4B text encoder.
@@ -886,6 +900,8 @@ _FLUX2_INNER_DIMS = {
     4096: "FLUX.2-klein-9B / klein-base-9B",
     6144: "FLUX.2-dev",
 }
+_FLUX2_KLEIN_4B_INNER_DIM = 3072
+_FLUX2_KLEIN_9B_INNER_DIM = 4096
 _FLUX2_BASE_INNER_DIM = {
     "black-forest-labs/flux.2-klein-4b": 3072,
     "black-forest-labs/flux.2-klein-base-4b": 3072,
@@ -895,17 +911,131 @@ _FLUX2_BASE_INNER_DIM = {
 }
 
 
+class _HeaderTensor(NamedTuple):
+    """The two fields a FLUX.2 size probe reads off a GGUF tensor table entry."""
+
+    name: str
+    shape: Sequence[int]
+
+
+def flux2_base_inner_dim(base_repo: Optional[str]) -> Optional[int]:
+    """The ``inner_dim`` a FLUX.2 base config expects, or None when the repo is not one we map.
+
+    Keyed on UPSTREAM ids, reached through ``canonical_base``: a known ungated mirror is
+    byte-identical to what it copies, so it maps back and is checked exactly like its upstream.
+    Anything else -- a local path, a third-party repack, a base we do not ship -- misses, and
+    every caller fails OPEN on the None rather than guessing."""
+    return _FLUX2_BASE_INNER_DIM.get(canonical_base(base_repo or "").lower())
+
+
+def _flux2_inner_dim_from_tensors(tensors) -> Optional[int]:
+    """``inner_dim`` from a parsed GGUF tensor table, or None when the probe tensor is absent."""
+    for t in tensors:
+        if t.name == _FLUX2_PROBE_TENSOR or t.name.endswith("." + _FLUX2_PROBE_TENSOR):
+            # GGUF stores dims reversed relative to torch, so the input dim leads. A missing or
+            # non-positive dim is a parse that went wrong, and "0" would be compared against the
+            # base as a real answer and refuse a valid pick; say nothing instead.
+            dim = int(t.shape[0]) if len(t.shape) else 0
+            return dim if dim > 0 else None
+    return None
+
+
 def gguf_flux2_inner_dim(path) -> Optional[int]:
     """``inner_dim`` of a FLUX.2 GGUF, read from its header, or None if it cannot be determined."""
     try:
         from gguf import GGUFReader
-        for t in GGUFReader(str(path)).tensors:
-            if t.name == _FLUX2_PROBE_TENSOR or t.name.endswith("." + _FLUX2_PROBE_TENSOR):
-                # GGUF stores dims reversed relative to torch, so the input dim leads.
-                return int(t.shape[0])
+        return _flux2_inner_dim_from_tensors(GGUFReader(str(path)).tensors)
     except Exception:
         return None
-    return None
+
+
+def gguf_flux2_inner_dim_from_header(header: bytes) -> Optional[int]:
+    """``inner_dim`` read from the leading bytes of a FLUX.2 GGUF, or None.
+
+    Lets the selection-time preflight range-read a few hundred KiB over HTTP instead of pulling
+    the whole multi-GB checkpoint: the tensor table it needs sits in the first ~15 KiB. Same
+    parser as ``gguf_flux2_inner_dim``, with the two things a PREFIX changes:
+
+    * ``_build_tensors`` is skipped. The base class builds a numpy view over every tensor's DATA,
+      which a prefix does not carry -- and satisfying those reads would allocate the whole
+      declared checkpoint (tens of GiB), which is exactly the cost this avoids. Only the name and
+      shape from the table are wanted, and both are already parsed.
+    * ``_get`` REFUSES a read past the end instead of returning short or zero-filled data. The
+      table is read field by field, so a prefix cutting between a tensor's name and its dims
+      would otherwise hand back a zero shape -- a wrong answer, not a missing one, and one that
+      would refuse a perfectly valid pick.
+
+    None on anything unreadable: too short a prefix, a non-GGUF file, an absent probe tensor."""
+    if not header:
+        return None
+    tmp_path = None
+    reader = None
+    try:
+        import numpy as np
+        from gguf import GGUFReader
+
+        class _HeaderOnlyGGUFReader(GGUFReader):  # type: ignore[misc, valid-type]
+            """``GGUFReader`` over a file that holds only the header."""
+
+            def _get(
+                self,
+                offset,
+                dtype,
+                count = 1,
+                override_order = None,
+            ):
+                itemsize = int(np.empty([], dtype = dtype).itemsize)
+                if int(offset) < 0 or int(offset) + itemsize * int(count) > len(self.data):
+                    raise ValueError("GGUF header is truncated")
+                return super()._get(offset, dtype, count, override_order)
+
+            def _build_tensors(self, start_offs, fields):
+                # ``field.name`` is the decoded tensor name and parts[3] its dims, both already
+                # read from real bytes by ``_get_tensor_info_field``.
+                self.tensors = [_HeaderTensor(field.name, field.parts[3]) for field in fields]
+
+        # GGUFReader memory-maps a path, so the prefix has to land on disk. Bounded by the
+        # caller's range request, so this is KiB, never the checkpoint.
+        fd, tmp_path = tempfile.mkstemp(suffix = ".gguf-header")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(header)
+        reader = _HeaderOnlyGGUFReader(tmp_path)
+        # Belt and braces on top of the refusing ``_get``: ``data_offset`` is where the table
+        # ends, so a table that ran past the prefix is not one to read a shape out of. The
+        # alignment slack is for a header-only file, whose padding was never written.
+        if reader.data_offset > len(header) + min(int(reader.alignment), 4096):
+            return None
+        return _flux2_inner_dim_from_tensors(reader.tensors)
+    except Exception:  # noqa: BLE001 — an unreadable header is not a verdict
+        return None
+    finally:
+        # Drop the mmap before unlinking: Windows refuses to delete a mapped file.
+        del reader
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def flux2_mismatch_reason(
+    gguf_name: str, base_repo: str, got: Optional[int], want: Optional[int]
+) -> Optional[str]:
+    """Why this FLUX.2 GGUF cannot load against this base, or None when they agree.
+
+    One message for all three checks on the pairing (the plan, the pre-eviction preflight and the
+    loader's backstop), so the user reads the same sentence wherever it is caught. ``gguf_name`` is
+    a display name the caller has already reduced to a basename. Returns None on any unknown -- an
+    unreadable header, an unmapped base -- so every caller fails open."""
+    if want is None or got is None or want == got:
+        return None
+    return (
+        f"'{gguf_name}' is a "
+        f"{_FLUX2_INNER_DIMS.get(got, f'FLUX.2 variant with inner_dim {got}')} "
+        f"checkpoint, but it is being loaded against '{base_repo}', which is "
+        f"{_FLUX2_INNER_DIMS.get(want, f'inner_dim {want}')}. Pass base_repo for the matching "
+        f"variant, or pick the GGUF that matches the selected model."
+    )
 
 
 def assert_flux2_gguf_matches_base(fam, base_repo: str, gguf_path) -> None:
@@ -914,20 +1044,23 @@ def assert_flux2_gguf_matches_base(fam, base_repo: str, gguf_path) -> None:
     Without this the mismatch surfaces from inside the GGUF quantizer as a bare shape error
     ("expected torch.Size([18432, 3072]), decodes to (24576, 4096)") that names neither the file
     nor the repo. Fail-open by construction: any unreadable file, non-FLUX.2 tensor set, or
-    unmapped base leaves the load exactly as it was."""
+    unmapped base leaves the load exactly as it was.
+
+    The LAST of three checks on the same pairing, and the only one that opens the downloaded file:
+    ``diffusion_compat`` runs the same comparison off a range-read header at plan time and again
+    before the resident pipeline is torn down, so a mismatch normally never reaches here."""
     if gguf_path is None or not str(getattr(fam, "name", "")).startswith("flux.2"):
         return
-    # Keyed on upstream ids, and this guard fails OPEN on a miss, so a mirror id would disable it.
-    want = _FLUX2_BASE_INNER_DIM.get(canonical_base(base_repo).lower())
-    got = gguf_flux2_inner_dim(gguf_path)
-    if want is None or got is None or want == got:
+    # Short-circuit on the free half: an unmapped base fails open anyway, so a mirror id must not
+    # cost a memory-map of the whole checkpoint.
+    want = flux2_base_inner_dim(base_repo)
+    if want is None:
         return
-    raise ValueError(
-        f"'{Path(str(gguf_path)).name}' is a {_FLUX2_INNER_DIMS.get(got, f'FLUX.2 variant with inner_dim {got}')} "
-        f"checkpoint, but it is being loaded against '{base_repo}', which is "
-        f"{_FLUX2_INNER_DIMS.get(want, f'inner_dim {want}')}. Pass base_repo for the matching "
-        f"variant, or pick the GGUF that matches the selected model."
+    reason = flux2_mismatch_reason(
+        Path(str(gguf_path)).name, base_repo, gguf_flux2_inner_dim(gguf_path), want
     )
+    if reason is not None:
+        raise ValueError(reason)
 
 
 def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:

@@ -2917,6 +2917,15 @@ class DiffusionDownloadPlanResponse(BaseModel):
 
     entries: List[DiffusionDownloadPlanEntry] = Field(default_factory = list)
     total_bytes: int = Field(0, description = "Sum across entries, 0 when the estimate failed")
+    incompatible_reason: Optional[str] = Field(
+        None,
+        description = "Why this pick cannot load as selected (today: a FLUX.2 GGUF paired with a "
+        "different-size base), so the picker can refuse at selection time instead of after a "
+        "multi-GB download. Reported rather than raised: the images page falls back to "
+        "/images/load on any plan failure, which would start that very download. Null means "
+        "nothing is known to be wrong -- the check reads metadata only and stays silent on an "
+        "unreadable header, an unmapped base or an offline host.",
+    )
 
 
 class DiffusionStatusResponse(BaseModel):

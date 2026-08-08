@@ -232,6 +232,13 @@ export interface DiffusionDownloadPlan {
     gguf_filename: string | null;
   }[];
   total_bytes: number;
+  /**
+   * Why this pick cannot load as selected (a FLUX.2 GGUF paired with a different-size base), or
+   * null/undefined when nothing is known to be wrong. The backend reads metadata only, so it stays
+   * silent rather than guessing; when it does speak, refuse the pick here -- the alternative is the
+   * loader saying the same thing after a ~19 GB download. Optional: an older backend omits it.
+   */
+  incompatible_reason?: string | null;
 }
 
 /** What to stage through the download manager before loading this pick. */

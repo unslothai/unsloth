@@ -2,9 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Assertions over the model catalog: keys, aliases, integrity, quant routing ladders, search matching. Plain node:assert like i18n:check. Run: npm run catalog:check
+//
+// `--network` adds an OPT-IN pass that asks the Hub whether every declared artifact is actually
+// downloadable and whether each `gated` flag matches reality. It is deliberately not part of
+// `npm run catalog:check`: it needs the network, and a Hub hiccup must never fail an unrelated PR.
+// Run it on a schedule instead (.github/workflows/model-catalog-network-check.yml), or by hand
+// with `npm run catalog:check:network`.
 
 import assert from "node:assert/strict";
 
+import type { CatalogGroup, ModelArtifact } from "./model-catalog.ts";
 import {
   IMAGE_CATALOG,
   VIDEO_CATALOG,
@@ -466,8 +473,15 @@ assert.equal(
   "gguf",
 );
 // LTX-2.3 video carries the official BF16 single file (no FP8: the loader refuses its scaled-fp8 one), which keeps the ~50 GB Gemma3 encoder resident, so B200-class only.
+// Looked up by the retired unsloth/LTX-2.3 id on purpose: it is no longer the canonicalId (that
+// repo does not exist), and a pasted or persisted copy must still land on this group through the
+// GGUF artifact's suffix-stripped key.
 const ltxGroup = groupForRepoId("unsloth/LTX-2.3", VIDEO_CATALOG);
 assert.ok(ltxGroup);
+assert.equal(ltxGroup.canonicalId, "Lightricks/LTX-2.3");
+assert.equal(groupForRepoId("Lightricks/LTX-2.3", VIDEO_CATALOG), ltxGroup);
+// The retired id is not an artifact, so it can never be handed to a load as a repo to fetch.
+assert.equal(loadSpecFor("unsloth/LTX-2.3", VIDEO_CATALOG), null);
 assert.equal(
   pickDefaultArtifact(ltxGroup, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
     .format,
@@ -552,3 +566,169 @@ assert.ok(groupMatchesQuery(ltx23, "ltx"));
 assert.ok(groupMatchesQuery(ltx23, "lightricks/ltx-2.3"));
 
 console.log("model-catalog check: all assertions passed");
+
+// ── opt-in: does the Hub agree? (`--network`) ─────────────────────────────────
+//
+// Every failure this catches was reported by hand: a preconfigured link that 401s because its
+// repo is gated and the entry never said so, or 404s because the repo/file was renamed or never
+// published. Neither is visible to a pure-data check, and both surface to the user as a download
+// that dies partway through.
+//
+// Anonymous on purpose: that is what a fresh install sees, and it is exactly the request whose
+// 401 the `gated` flag exists to predict. Retries cover Hub flakiness; only a definitive verdict
+// (a repo that answers "gone", a filename the repo does not list, a `gated` flag that disagrees
+// with the API) fails the run.
+
+const HF_API = "https://huggingface.co/api/models";
+const HF_RESOLVE = "https://huggingface.co";
+const NETWORK_ATTEMPTS = 3;
+const NETWORK_BATCH = 4;
+
+interface HubRepo {
+  /** false for an open repo; "auto" / "manual" for a gated one. */
+  gated?: boolean | string;
+  siblings?: { rfilename: string }[];
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Fetch with retries. Never throws and never rejects: an answer the Hub could not give is
+ * `{ response: null }`, which callers must treat as "no opinion". A rate limit, a 5xx window or a
+ * DNS blip is the Hub having a moment, and turning one of those into a red nightly is exactly
+ * what this whole check promises not to do.
+ */
+async function fetchWithRetry(
+  url: string,
+  init?: RequestInit,
+): Promise<{ response: Response | null; why: string }> {
+  let why = "unknown";
+  for (let attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(url, init);
+      if (response.status !== 429 && response.status < 500) return { response, why: "" };
+      why = `HTTP ${response.status}`;
+    } catch (err) {
+      why = String(err);
+    }
+    if (attempt < NETWORK_ATTEMPTS) await sleep(500 * 2 ** (attempt - 1));
+  }
+  return { response: null, why };
+}
+
+/** Run `work` over `items`, a few at a time: ~35 repos, and the Hub does not need a thundering herd. */
+async function inBatches<T>(items: T[], work: (item: T) => Promise<void>): Promise<void> {
+  for (let i = 0; i < items.length; i += NETWORK_BATCH) {
+    await Promise.all(items.slice(i, i + NETWORK_BATCH).map(work));
+  }
+}
+
+async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<string[]> {
+  const failures: string[] = [];
+  const groups = catalogs.flat();
+  // One metadata call per repo id, however many artifacts share it.
+  const artifactsByRepo = new Map<string, ModelArtifact[]>();
+  for (const group of groups) {
+    for (const artifact of group.artifacts) {
+      const bucket = artifactsByRepo.get(artifact.repoId);
+      if (bucket) bucket.push(artifact);
+      else artifactsByRepo.set(artifact.repoId, [artifact]);
+    }
+  }
+
+  await inBatches([...artifactsByRepo.entries()], async ([repoId, artifacts]) => {
+    const { response, why } = await fetchWithRetry(`${HF_API}/${repoId}`);
+    if (response === null) {
+      console.warn(
+        `::warning::${repoId}: the Hub did not answer after ${NETWORK_ATTEMPTS} attempts (${why}). Not a verdict about the catalog.`,
+      );
+      return;
+    }
+    if (!response.ok) {
+      // 401 on the METADATA endpoint means private-or-absent (the Hub will not say which);
+      // a gated-but-public repo answers 200 with gated set, so this is never just "needs a licence".
+      failures.push(
+        `${repoId}: HTTP ${response.status} from ${HF_API}/${repoId} -- the repo is missing, renamed or private, so no user can download it`,
+      );
+      return;
+    }
+    let repo: HubRepo;
+    try {
+      repo = (await response.json()) as HubRepo;
+    } catch (err) {
+      // A 200 that is not JSON is a captive portal or a proxy, not a catalog problem. Reject the
+      // run rather than throwing out of Promise.all with a raw stack.
+      failures.push(`${repoId}: the Hub answered 200 with unreadable JSON (${err})`);
+      return;
+    }
+    const hubGated = Boolean(repo.gated);
+    for (const artifact of artifacts) {
+      const declaredGated = artifact.gated === true;
+      if (hubGated && !declaredGated) {
+        failures.push(
+          `${repoId}: the Hub reports gated=${JSON.stringify(repo.gated)} but the catalog entry has no \`gated: true\`, so an anonymous download 401s`,
+        );
+      } else if (!hubGated && declaredGated) {
+        failures.push(
+          `${repoId}: marked \`gated: true\` but the Hub reports it open -- the router skips it for no reason`,
+        );
+      }
+    }
+
+    const declaredFiles = [
+      ...new Set(artifacts.map((a) => a.filename).filter((f): f is string => Boolean(f))),
+    ];
+    if (declaredFiles.length === 0) return;
+    const listed = new Set((repo.siblings ?? []).map((s) => s.rfilename));
+    for (const filename of declaredFiles) {
+      if (!listed.has(filename)) {
+        failures.push(`${repoId}: declares '${filename}', which the repo does not contain`);
+        continue;
+      }
+      if (hubGated) continue; // resolve/ 401s without a token; the sibling list is the check.
+      // Listed is not the same as fetchable: resolve/ is the endpoint the download hits.
+      const head = await fetchWithRetry(`${HF_RESOLVE}/${repoId}/resolve/main/${filename}`, {
+        method: "HEAD",
+      });
+      if (head.response === null) {
+        console.warn(
+          `::warning::${repoId}: could not HEAD '${filename}' (${head.why}). Not a verdict.`,
+        );
+      } else if (!head.response.ok) {
+        failures.push(
+          `${repoId}: '${filename}' is listed but resolve/main returned HTTP ${head.response.status}`,
+        );
+      }
+    }
+  });
+
+  // Advisory only. A canonicalId is a display/grouping key, and 15 of them are deliberately not
+  // repos; but one that is BOTH `unsloth/*`-shaped and dead clears every owner guard in the app,
+  // so it is worth naming without failing a scheduled job over it.
+  const artifactIds = new Set([...artifactsByRepo.keys()].map((id) => id.toLowerCase()));
+  const orphans = groups
+    .map((g) => g.canonicalId)
+    .filter((id) => !artifactIds.has(id.toLowerCase()));
+  await inBatches(orphans, async (canonicalId) => {
+    const { response } = await fetchWithRetry(`${HF_API}/${canonicalId}`);
+    // A null response is an unreachable Hub, which is simply no advice.
+    if (response !== null && !response.ok) {
+      console.warn(
+        `::warning::canonicalId '${canonicalId}' is not a real repo (HTTP ${response.status}). Harmless as a grouping key, but it must never reach a load.`,
+      );
+    }
+  });
+
+  return failures;
+}
+
+if (process.argv.includes("--network")) {
+  console.log("model-catalog check: --network, asking the Hub about every declared artifact...");
+  const failures = await checkCatalogAgainstTheHub([IMAGE_CATALOG, VIDEO_CATALOG]);
+  if (failures.length > 0) {
+    for (const failure of failures) console.error(`::error::${failure}`);
+    console.error(`model-catalog network check: ${failures.length} problem(s)`);
+    process.exit(1);
+  }
+  console.log("model-catalog network check: every declared repo, file and gated flag agrees with the Hub");
+}

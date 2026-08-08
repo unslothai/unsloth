@@ -1212,6 +1212,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       isDownloaded?: boolean,
     ): Promise<boolean> => {
       if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
+      // Read inside the try, acted on outside it, as on the images page.
+      let incompatible: string | null = null;
       try {
         const plan = await getVideoDownloadPlan({
           model_path: repoId,
@@ -1220,7 +1222,13 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // Same token handleLoad sends: without it the metadata lookup fails on a gated base and the plan drops the companion entry, so the load pulls those files inline.
           hf_token: hfApiToken(getHfToken()),
         });
-        if (plan.entries.length > 0) {
+        // Same selection-time refusal the images page makes: the plan is the last point at which
+        // an incompatible pairing can be caught before the download it would waste. No video
+        // family declares one today (the check is the FLUX.2 GGUF/base size pairing, and the video
+        // planner has no diffusers base to pair against), so this is the shared envelope's half of
+        // the contract rather than a live path -- keep it, or a future one lands unguarded.
+        incompatible = plan.incompatible_reason ?? null;
+        if (!incompatible && plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts };
           stage(
             plan.entries.map((e) => ({
@@ -1234,6 +1242,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         }
       } catch {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
+      }
+      if (incompatible) {
+        toast.error(incompatible);
+        return false;
       }
       return handleLoadRef.current(repoId, opts);
     },
