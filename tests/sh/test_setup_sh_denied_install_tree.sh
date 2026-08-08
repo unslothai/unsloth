@@ -89,6 +89,13 @@ if grep -q 'rm -rf "$LLAMA_CPP_DIR" 2>/dev/null' "$SETUP_SH"; then
 else
     ok "the failing rm keeps its stderr"
 fi
+# Mode 111 defeats the rm but stays searchable, so a replace postcondition on the
+# search-only probe falls through to the generic "could not be replaced" message.
+if [ "$(grep -c '_studio_dir_unsearchable "\$LLAMA_CPP_DIR"' "$SETUP_SH")" = 0 ]; then
+    ok "no replace site still uses the search-only probe"
+else
+    bad "no replace site still uses the search-only probe"
+fi
 if [ "$(grep -c 'if \[ -e "$LLAMA_CPP_DIR" \]; then' "$SETUP_SH")" -ge 2 ]; then
     ok "both replace sites check the postcondition"
 else

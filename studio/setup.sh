@@ -2000,7 +2000,9 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         fi
         rm -rf "$LLAMA_CPP_DIR" || true
         if [ -e "$LLAMA_CPP_DIR" ]; then
-            if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+            # Unreadable, not just unsearchable: mode 111 defeats the rm above but
+            # stays searchable, which would fall through to the generic message.
+            if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
                 _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
             fi
             step "llama.cpp" "the existing install could not be replaced with a link" "$C_ERR"
@@ -2724,7 +2726,9 @@ else
             # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
             rm -rf "$LLAMA_CPP_DIR" || true
             if [ -e "$LLAMA_CPP_DIR" ]; then
-                if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                # Same probe as the other replace sites: the hoisted guard covers a
+                # tree that was already denied, this catches one denied mid-build.
+                if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
                     _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
                 fi
                 step "llama.cpp" "built, but the existing install could not be replaced" "$C_ERR"
