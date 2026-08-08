@@ -5564,27 +5564,127 @@ def test_files_already_cached_ignores_a_superseded_revision(monkeypatch, tmp_pat
     )
 
 
-def test_files_already_cached_reads_both_roots_and_skips_unusable_hits(monkeypatch, tmp_path):
-    """Both roots count: every diffusion fetch passes reuse_other_cache_root, so bytes left in the
-    pre-change root really do satisfy the load. A dangling symlink is a path but not usable bytes,
-    and an absent file is simply missing."""
+def test_files_already_cached_skips_unusable_hits(monkeypatch, tmp_path):
+    """A dangling symlink is a path but not usable bytes, and an absent file is simply missing, so
+    neither can complete the live root's set."""
+    live, _other = _two_cache_roots(monkeypatch, tmp_path)
+    sha = "c" * 40
+    repo = "black-forest-labs/FLUX.1-dev"
+    _seed_cache_file(live, repo, "model_index.json", sha)
+    _seed_cache_file(live, repo, "vae/diffusion_pytorch_model.safetensors", sha)
+    _seed_cache_file(live, repo, "text_encoder/model.safetensors", sha, dangling = True)
+
+    probe = DiffusionBackend._files_already_cached
+    files = ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]
+    assert probe(repo, files, sha) == set(files)
+    # The dangling link and the file that was never fetched both leave the set incomplete.
+    assert probe(repo, [*files, "text_encoder/model.safetensors"], sha) == set()
+    assert probe(repo, [*files, "scheduler/scheduler_config.json"], sha) == set()
+
+
+def test_files_already_cached_takes_the_whole_set_from_the_fallback_root(monkeypatch, tmp_path):
+    """The other root still counts, as a WHOLE: every diffusion fetch passes
+    reuse_other_cache_root, so a repo left behind by a cache-folder change really does satisfy the
+    load -- _prefetch_files resolves every file there and hands from_pretrained that snapshot."""
+    _live, other = _two_cache_roots(monkeypatch, tmp_path)
+    sha = "c" * 40
+    repo = "black-forest-labs/FLUX.1-dev"
+    files = ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]
+    for name in files:
+        _seed_cache_file(other, repo, name, sha)
+
+    assert DiffusionBackend._files_already_cached(repo, files, sha) == set(files)
+
+
+def test_files_already_cached_refuses_a_set_split_over_two_roots(monkeypatch, tmp_path):
+    """Never a per-file union. Neither root holds a complete snapshot, so _prefetch_files finds
+    the files under two roots, returns None instead of a snapshot dir, and from_pretrained falls
+    back to the hub id pinned to hub_cache_dir() -- which cannot see the fallback root. Calling
+    this repo cached drops it from the plan and the loader then refetches the other root's share
+    inline, outside the Downloads panel's progress and its disk preflight."""
     live, other = _two_cache_roots(monkeypatch, tmp_path)
     sha = "c" * 40
     repo = "black-forest-labs/FLUX.1-dev"
     _seed_cache_file(live, repo, "model_index.json", sha)
     _seed_cache_file(other, repo, "vae/diffusion_pytorch_model.safetensors", sha)
-    _seed_cache_file(live, repo, "text_encoder/model.safetensors", sha, dangling = True)
+    files = ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]
 
-    assert DiffusionBackend._files_already_cached(
-        repo,
-        [
-            "model_index.json",
-            "vae/diffusion_pytorch_model.safetensors",
-            "text_encoder/model.safetensors",
-            "scheduler/scheduler_config.json",
-        ],
-        sha,
-    ) == {"model_index.json", "vae/diffusion_pytorch_model.safetensors"}
+    # Every file is on disk somewhere, at the right commit, and nothing is missing.
+    assert DiffusionBackend._files_already_cached(repo, files, sha) == set()
+    # One root holding the whole set is the only thing that changes the verdict.
+    _seed_cache_file(live, repo, "vae/diffusion_pytorch_model.safetensors", sha)
+    assert DiffusionBackend._files_already_cached(repo, files, sha) == set(files)
+
+
+def test_download_plan_stages_a_repo_split_across_two_cache_roots(monkeypatch, tmp_path):
+    """End to end: a base repo whose files sit half in the live root and half in the import-time
+    one must keep its row. Dropping it tells the panel there is nothing to fetch and the load then
+    pulls the fallback root's files itself."""
+    live, other = _two_cache_roots(monkeypatch, tmp_path)
+    base_sha = "9" * 40
+    base = "black-forest-labs/FLUX.1-dev"
+    _fake_hf_api_with_shas(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": ([_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)], "8" * 40),
+            base: (_FLUX_BASE_SIBLINGS, base_sha),
+        },
+    )
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base)
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+    # No mirror swap, so the staged id and the probed commit are the vendor's own.
+    _all_cached(monkeypatch)
+    staged = [
+        name
+        for name in _FLUX_BASE_SIBLINGS_BY_NAME
+        if _base_file_downloaded(name, include_transformer = False)
+    ]
+    assert len(staged) > 1
+    _seed_cache_file(live, base, staged[0], base_sha)
+    for name in staged[1:]:
+        _seed_cache_file(other, base, name, base_sha)
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    by_repo = {e["repo_id"]: e for e in plan["entries"]}
+    assert base in by_repo, "a split base repo must keep its row"
+    assert by_repo[base]["files"] == staged
+    assert by_repo[base]["bytes"] == sum(_FLUX_BASE_SIBLINGS_BY_NAME[n] for n in staged)
+    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
+
+
+def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, tmp_path):
+    """The other half of the rule, so the split guard cannot become "always stage": a repo left
+    complete in the import-time root after a cache-folder change still leaves the plan."""
+    _live, other = _two_cache_roots(monkeypatch, tmp_path)
+    base_sha, gguf_sha = "9" * 40, "8" * 40
+    base = "black-forest-labs/FLUX.1-dev"
+    _fake_hf_api_with_shas(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": ([_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)], gguf_sha),
+            base: (_FLUX_BASE_SIBLINGS, base_sha),
+        },
+    )
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base)
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+    _all_cached(monkeypatch)
+    for name in _FLUX_BASE_SIBLINGS_BY_NAME:
+        if _base_file_downloaded(name, include_transformer = False):
+            _seed_cache_file(other, base, name, base_sha)
+    _seed_cache_file(other, "unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", gguf_sha)
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    assert plan == {"entries": [], "total_bytes": 0}
 
 
 def test_files_already_cached_survives_an_unreadable_root(monkeypatch, tmp_path):

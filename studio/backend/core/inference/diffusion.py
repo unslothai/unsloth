@@ -1578,9 +1578,16 @@ class DiffusionBackend:
         files: list[str],
         revision: Optional[str] = None,
     ) -> set[str]:
-        """Of ``files``, the names on disk AT ``revision`` under either root a load resolves
-        through: Studio pins its live setting, ``cache_dir = None`` falls back to
-        huggingface_hub's constant, and both prefetch fetches pass ``reuse_other_cache_root``.
+        """Of ``files``, the names ONE root serves whole at ``revision``: all of them, or none.
+
+        Both roots are searched -- Studio pins its live setting, ``cache_dir = None`` falls back
+        to huggingface_hub's constant -- but hits are never UNIONED across them. A set split
+        between the roots is complete in neither: ``_prefetch_files`` hands back a snapshot only
+        when every file came from the SAME root, else None, and ``from_pretrained`` is then pinned
+        to ``hub_cache_dir()`` (the ``cache_dir`` in every ``pipe_kwargs`` below) and cannot see
+        the other root. Dropping such a repo moves its refetch inline, outside the panel's
+        progress and disk preflight. Fallback-holds-all still drops: the prefetch returns that
+        snapshot and the load reads it off disk, and a lone GGUF resolves through the same reuse.
 
         ``revision`` is REQUIRED to drop anything. Defaulted, ``try_to_load_from_cache`` reads the
         cache's OWN ``refs/main``, which a republished repo leaves on the superseded commit: the
@@ -1589,7 +1596,7 @@ class DiffusionBackend:
 
         Only a str is a cached path; a miss is None and a known-absent file is a sentinel. Never
         raises: an unreadable cache means "stage it"."""
-        if not revision:
+        if not revision or not files:
             return set()
         try:
             from huggingface_hub import try_to_load_from_cache
@@ -1599,18 +1606,29 @@ class DiffusionBackend:
             roots = (hub_cache_dir(), None)
         except Exception:  # noqa: BLE001 — no hub package / unreadable settings: stage everything
             return set()
-        cached: set[str] = set()
-        for name in files:
-            for root in roots:
+        wanted = set(files)
+        live_root, fallback_root = roots
+
+        def _hits(root: Optional[str]) -> set[str]:
+            found: set[str] = set()
+            for name in wanted:
                 try:
                     hit = try_to_load_from_cache(repo_id, name, cache_dir = root, revision = revision)
                 except Exception:  # noqa: BLE001 — a cache we cannot read is not a verdict
                     continue
                 # is_file() is belt and braces: hub already ends on os.path.isfile today.
                 if isinstance(hit, str) and Path(hit).is_file():
-                    cached.add(name)
-                    break
-        return cached
+                    found.add(name)
+            return found
+
+        live = _hits(live_root)
+        if live == wanted:
+            return wanted
+        # A partial live hit IS the split: the prefetch takes those here and the rest from the
+        # fallback, so it returns no snapshot and the pinned load refetches the fallback's share.
+        if live:
+            return set()
+        return wanted if _hits(fallback_root) == wanted else set()
 
     @staticmethod
     def _current_sha(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
@@ -1704,7 +1722,11 @@ class DiffusionBackend:
             one "@diffusion" scope slot, and download_registry refuses a claim whose scoped_files
             differ from the live job's: a shrinking list would 409 a second pick sharing this base
             where it used to adopt the running job. Staging a cached file costs nothing anyway,
-            since hf_hub_download returns the pointer without a transfer."""
+            since hf_hub_download returns the pointer without a transfer.
+
+            "Cached" is per ROOT, never a union across the two: a set split between the live and
+            fallback roots is complete in neither, so dropping it would move the refetch inline.
+            See ``_files_already_cached``."""
             cached = self._files_already_cached(repo, files, revision)
             if files and cached.issuperset(files):
                 return
