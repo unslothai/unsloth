@@ -1487,8 +1487,7 @@ def test_the_delete_switch_only_appears_where_it_works():
     """A training run has no sandbox, and a chat in a project shares the project
     workspace, which chat deletion does not touch."""
     sidebar = (
-        Path(__file__).resolve().parents[2]
-        / "frontend" / "src" / "components" / "app-sidebar.tsx"
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "components" / "app-sidebar.tsx"
     ).read_text(encoding = "utf-8")
     assert "function deleteTargetHasFiles" in sidebar
     assert 'return target.kind === "chat" && !target.item.projectId;' in sidebar

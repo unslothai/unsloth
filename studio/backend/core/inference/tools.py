@@ -7382,9 +7382,7 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
         if _active_sessions.get(session_id, 0) > 0:
             # Queued rather than dropped: the chat is already gone from history,
             # so no later delete or clear would ever name this session again.
-            _pending_removals[session_id] = delete_files or _pending_removals.get(
-                session_id, False
-            )
+            _pending_removals[session_id] = delete_files or _pending_removals.get(session_id, False)
             return False
         return _remove_session_sandbox_locked(session_id, delete_files)
 
