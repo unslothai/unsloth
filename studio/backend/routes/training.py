@@ -2649,6 +2649,22 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
     return resolve_dataset_path(raw)
 
 
+def _preflight_diffusion_resume(config: dict, identity: Any, target_steps: int) -> None:
+    """Validate ``config["resume_from_checkpoint"]`` against ``identity`` and PIN it.
+
+    On success the config's resume path is rewritten to the exact ``checkpoint-<N>``
+    directory that was accepted, so the trainer subprocess resumes the bundle this preflight
+    approved rather than re-picking "newest" from a directory that could have changed.
+    Called twice -- once before the dataset is known, once with its fingerprint -- and both
+    times BEFORE the resident GPU models are freed. Raises ResumeError."""
+    from core.training.diffusion_checkpoint import preflight_resume
+
+    path, _step = preflight_resume(
+        config["resume_from_checkpoint"], identity = identity, target_steps = target_steps
+    )
+    config["resume_from_checkpoint"] = path
+
+
 @router.post("/diffusion/start", response_model = DiffusionTrainingStartResponse)
 async def start_diffusion_training(
     body: DiffusionTrainingStartRequest,
@@ -2748,6 +2764,41 @@ async def start_diffusion_training(
     if _precision_reason:
         raise HTTPException(status_code = 400, detail = _precision_reason)
 
+    # Preflight a resume request in the same place and for the same reason: a checkpoint from a
+    # different family / base / LoRA shape / precision must 400 BEFORE the resident GPU model is
+    # evicted, not fail in the child once the user's Images pipeline is already gone. The dataset
+    # half of the identity needs the discovery pass, so it runs below (still before eviction).
+    from core.training.diffusion_checkpoint import (
+        ResumeError,
+        dataset_fingerprint,
+        identity_for_config,
+        resolve_resume_dir,
+    )
+
+    resuming = bool(normalized_cfg.resume_from_checkpoint)
+    # Only built for a resume: identity_for_config scans the local Hub cache for the base repo's
+    # revision, which a plain start has no use for.
+    resume_identity = identity_for_config(normalized_cfg) if resuming else None
+    if resuming:
+        try:
+            # Resolve + contain it here, like data_dir / output_dir: the trainer subprocess would
+            # otherwise resolve a relative name against its own cwd.
+            config["resume_from_checkpoint"] = str(
+                resolve_resume_dir(normalized_cfg.resume_from_checkpoint)
+            )
+            # In epochs mode the real target is only known once the dataset size is; skip the
+            # "already finished" check here and make it below, with the resolved step count.
+            # Offloaded like the other preflights: validating a bundle parses a safetensors
+            # header and walks two torch-zip pickles, which must not block the event loop.
+            await asyncio.to_thread(
+                _preflight_diffusion_resume,
+                config,
+                resume_identity,
+                0 if normalized_cfg.num_epochs > 0 else normalized_cfg.train_steps,
+            )
+        except ResumeError as e:
+            raise HTTPException(status_code = 400, detail = str(e))
+
     # Run the trainers' trust gate here too, so an untrusted/typoed base 400s BEFORE freeing GPU residents rather than failing in the child.
     from core.training.diffusion_train_common import _assert_trusted_base_model
 
@@ -2773,7 +2824,7 @@ async def start_diffusion_training(
         reserved = True
         # Preflight the dataset: a missing/empty/uncaptionable data_dir otherwise fails inside the trainer AFTER eviction. Same discovery the trainer runs, so the two cannot disagree.
         try:
-            await asyncio.to_thread(
+            pairs = await asyncio.to_thread(
                 _dtc.discover_image_caption_pairs,
                 config["data_dir"],
                 instance_prompt = config.get("instance_prompt") or None,
@@ -2783,6 +2834,18 @@ async def start_diffusion_training(
             )
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code = 400, detail = str(e))
+        if resuming:
+            # The dataset half of the resume identity, now that the images are known -- and the
+            # step target, which epochs mode only resolves here. Still before the GPU teardown.
+            try:
+                await asyncio.to_thread(
+                    _preflight_diffusion_resume,
+                    config,
+                    resume_identity.with_dataset(dataset_fingerprint(pairs)),
+                    _dtc.resolve_train_steps(normalized_cfg, len(pairs)),
+                )
+            except ResumeError as e:
+                raise HTTPException(status_code = 400, detail = str(e))
         # Free resident GPU workloads before the trainer loads its own pipeline. Offloaded: the teardown blocks on generation locks and a subprocess join.
         await asyncio.to_thread(_free_gpu_for_diffusion_training)
         job_id = service.start(config)
@@ -2847,8 +2910,11 @@ async def list_diffusion_training_runs(
     per-run records. Summaries only; fetch one run for its config + metric logs."""
     from core.training.diffusion_training_service import list_diffusion_runs
 
+    # Offloaded: each record's can_resume is re-derived by validating the checkpoint bundles on
+    # disk (safetensors header + torch-zip pickle walk per file), which must not block the loop.
+    records = await asyncio.to_thread(list_diffusion_runs, limit = limit)
     summaries: list[DiffusionTrainingRunSummary] = []
-    for r in list_diffusion_runs(limit = limit):
+    for r in records:
         # list_diffusion_runs skips non-dict / missing-id records, but a wrong-typed field would still raise here; catch per record so one bad file never breaks the panel.
         try:
             summaries.append(DiffusionTrainingRunSummary(**r))
@@ -2865,7 +2931,8 @@ async def get_diffusion_training_run(
     step/loss/grad-norm logs (for re-plotting a past run's charts)."""
     from core.training.diffusion_training_service import get_diffusion_run
 
-    rec = get_diffusion_run(job_id)
+    # Offloaded for the same reason as the listing: the read re-validates the run's checkpoints.
+    rec = await asyncio.to_thread(get_diffusion_run, job_id)
     # A valid-JSON file that is not an object makes DiffusionTrainingRunDetail(**rec) raise TypeError, not the ValidationError caught below. Treat any non-dict record as absent.
     if not isinstance(rec, dict):
         raise HTTPException(status_code = 404, detail = "No such training run.")

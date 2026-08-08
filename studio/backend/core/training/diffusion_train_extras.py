@@ -100,6 +100,23 @@ class LoRAEMA:
     def state_dict(self) -> dict[str, Any]:
         return {name: t.detach().clone() for name, t in self._shadow.items()}
 
+    def load_state_dict(self, state: dict[str, Any], updates: int = 0) -> None:
+        """Restore shadows saved by ``state_dict`` (a resume checkpoint), in place.
+
+        ``updates`` restores the warmup ramp position: without it a resumed run would
+        restart the ramp and pull the shadow hard towards the current weights. Entries the
+        live model does not have are ignored, so a checkpoint from a differently-wrapped
+        model degrades to "keep the freshly initialised shadow" instead of raising."""
+        import torch
+
+        with torch.no_grad():
+            for name, shadow in self._shadow.items():
+                saved = (state or {}).get(name)
+                if saved is None or tuple(saved.shape) != tuple(shadow.shape):
+                    continue
+                shadow.copy_(saved.to(device = shadow.device, dtype = shadow.dtype))
+        self.updates = max(0, int(updates or 0))
+
     def copy_to(self, model: Any) -> dict[str, Any]:
         """Write the shadow values into ``model``'s params, returning the
         displaced originals so ``restore`` can undo the swap."""
