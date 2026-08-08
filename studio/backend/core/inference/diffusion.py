@@ -1461,6 +1461,7 @@ class DiffusionBackend:
         single_file_is_pipeline: bool = False,
         include_transformer: bool = False,
         sizes_out: Optional[dict[str, int]] = None,
+        file_sizes_out: Optional[dict[tuple[str, str], int]] = None,
         skip_te_components: tuple[str, ...] = (),
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
@@ -1468,6 +1469,8 @@ class DiffusionBackend:
 
         ``sizes_out``, when given, is filled with per-repo byte totals so the download
         plan can size one job per repo off this same single pair of Hub lookups.
+        ``file_sizes_out`` is the per (repo, filename) breakdown, so the plan can drop
+        files already cached and still size what is left.
 
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
@@ -1516,6 +1519,8 @@ class DiffusionBackend:
                         continue
                     base_files.append(s.rfilename)
                     total += s.size or 0
+                    if file_sizes_out is not None:
+                        file_sizes_out[(repo_id, s.rfilename)] = s.size or 0
                 if sizes_out is not None:
                     sizes_out[repo_id] = total
                 return total, base_files
@@ -1526,6 +1531,8 @@ class DiffusionBackend:
                 total += gguf_bytes
                 if sizes_out is not None:
                     sizes_out[repo_id] = gguf_bytes
+                if file_sizes_out is not None:
+                    file_sizes_out[(repo_id, gguf_filename)] = gguf_bytes
             # A whole-pipeline single file (SDXL) needs only the base's config/tokenizer, not its weights.
             if kind == "single_file" and single_file_is_pipeline:
                 base_filter = _base_config_file_downloaded
@@ -1540,12 +1547,38 @@ class DiffusionBackend:
                 if base_filter(s.rfilename) and not _dense_te_shard(s.rfilename):
                     base_files.append(s.rfilename)
                     base_bytes += s.size or 0
+                    if file_sizes_out is not None:
+                        file_sizes_out[(base_repo, s.rfilename)] = s.size or 0
             total += base_bytes
             if sizes_out is not None:
                 sizes_out[base_repo] = base_bytes
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
         return total, base_files
+
+    @staticmethod
+    def _files_already_cached(repo_id: str, files: list[str]) -> set[str]:
+        """Of ``files``, the names already on disk under either root a load resolves
+        through: Studio pins its live setting, the prefetch writes under
+        huggingface_hub's import-time constant. Only a str is a cached path; a miss is
+        None and a known-absent file is a sentinel. Never raises: an unreadable cache
+        means "stage it", which is the old behaviour."""
+        try:
+            from huggingface_hub import try_to_load_from_cache
+        except Exception:  # noqa: BLE001 — no hub package: stage everything
+            return set()
+        cached: set[str] = set()
+        for name in files:
+            for root in (hub_cache_dir(), None):
+                try:
+                    hit = try_to_load_from_cache(repo_id, name, cache_dir = root)
+                except Exception:  # noqa: BLE001 — a cache we cannot read is not a verdict
+                    continue
+                # is_file() too: a dangling symlink is a path but not usable bytes.
+                if isinstance(hit, str) and Path(hit).is_file():
+                    cached.add(name)
+                    break
+        return cached
 
     def download_plan(
         self,
@@ -1581,6 +1614,7 @@ class DiffusionBackend:
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
         te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
         sizes: dict[str, int] = {}
+        file_sizes: dict[tuple[str, str], int] = {}
         total, base_files = self._estimate_download_bytes(
             repo_id,
             gguf_filename,
@@ -1592,6 +1626,7 @@ class DiffusionBackend:
             include_transformer = kind == "gguf"
             and self._dense_quant_prefetch_needed(fam, {**load_kwargs, "base_repo": base}),
             sizes_out = sizes,
+            file_sizes_out = file_sizes,
             skip_te_components = tuple(te_files),
         )
         # Decided once, from the staged file list, and both probed and reported: a gated base
@@ -1601,37 +1636,50 @@ class DiffusionBackend:
         fetch_base = prefer_ungated_mirror(base, hf_token, files = base_files)
         _assert_base_repo_accessible(fetch_base, hf_token)
         entries: list[dict[str, Any]] = []
+
+        def _stage(repo: str, files: list[str], sized: dict[str, int], gguf: Optional[str]) -> int:
+            """Queue what is missing and return the bytes dropped as already cached.
+
+            A pick whose files are all on disk yields no entry, so the caller loads
+            straight from cache instead of staging a download that fetches nothing.
+            Entries are what the Downloads panel lists, so a cached repo listed here
+            reads as a re-download of a model the user already has."""
+            cached = self._files_already_cached(repo, files)
+            missing = [name for name in files if name not in cached]
+            dropped = sum(sized.get(name, 0) for name in cached)
+            if missing:
+                entries.append(
+                    {
+                        "repo_id": repo,
+                        "files": missing,
+                        "bytes": int(sum(sized.get(name, 0) for name in missing)),
+                        "gguf_filename": gguf,
+                    }
+                )
+            return int(dropped)
+
+        skipped = 0
         for repo, files in te_files.values():
-            entries.append(
-                {
-                    "repo_id": repo,
-                    "files": [name for name, _size in files],
-                    "bytes": int(sum(size for _name, size in files)),
-                    "gguf_filename": None,
-                }
-            )
             total += int(sum(size for _name, size in files))
+            skipped += _stage(repo, [n for n, _s in files], dict(files), None)
         if gguf_filename and not Path(repo_id).expanduser().exists():
-            entries.append(
-                {
-                    "repo_id": repo_id,
-                    "files": [gguf_filename],
-                    "bytes": int(sizes.get(repo_id, 0)),
-                    "gguf_filename": gguf_filename,
-                }
+            skipped += _stage(
+                repo_id,
+                [gguf_filename],
+                {gguf_filename: int(sizes.get(repo_id, 0))},
+                gguf_filename,
             )
         if base_files and not Path(base).expanduser().exists():
             # STAGED before the loader runs, so it must name the MIRROR: a gated upstream here 401s
             # an anonymous user at staging and the swap downstream is never reached. status(), the
             # API base repo, saved configs and LoRA tags keep the vendor id; sizes key on it too.
-            entries.append(
-                {
-                    "repo_id": fetch_base,
-                    "files": base_files,
-                    "bytes": int(sizes.get(base, 0)),
-                    "gguf_filename": None,
-                }
+            skipped += _stage(
+                fetch_base,
+                base_files,
+                {name: file_sizes.get((base, name), 0) for name in base_files},
+                None,
             )
+        total = max(0, total - skipped)
         return {"entries": entries, "total_bytes": int(total)}
 
     @staticmethod

@@ -5056,6 +5056,15 @@ _FLUX_BASE_SIBLINGS = [
 ]
 
 
+@pytest.fixture(autouse = True)
+def _plan_cache_probe_is_empty(monkeypatch):
+    """Plan tests otherwise read the real HF cache, so a dev holding one of these repos
+    would watch its files get dropped. Tests that exercise the skip stub this themselves."""
+    monkeypatch.setattr(
+        DiffusionBackend, "_files_already_cached", staticmethod(lambda repo_id, files: set())
+    )
+
+
 def _fake_hf_api(monkeypatch, repos):
     """Point HfApi.model_info at a canned sibling list per repo id."""
 
@@ -5421,3 +5430,69 @@ def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path
 
     assert seen == [1]
     assert backend._teardown_waiters == 0
+
+
+def test_download_plan_skips_files_already_in_the_cache(monkeypatch):
+    # A model fully on disk must plan nothing: entries are what the Downloads panel lists, so
+    # staging a cached repo reads as re-downloading a model the user already has.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+    _no_cache(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend, "_files_already_cached", staticmethod(lambda repo_id, files: set(files))
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    assert plan["entries"] == []
+    assert plan["total_bytes"] == 0
+
+
+def test_download_plan_stages_only_what_the_cache_is_missing(monkeypatch):
+    # The common case after a base repo is shared: the companion is on disk, a new quant is not.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+    _no_cache(monkeypatch)
+    # Everything but the checkpoint repo is cached.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_files_already_cached",
+        staticmethod(
+            lambda repo_id, files: set() if repo_id.endswith("-GGUF") else set(files)
+        ),
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    assert [e["repo_id"] for e in plan["entries"]] == ["unsloth/FLUX.1-dev-GGUF"]
+    assert plan["entries"][0]["files"] == ["flux1-dev-Q4_K_M.gguf"]
+    # The cached base is gone from the total too, or the progress bar waits on bytes nobody fetches.
+    assert plan["total_bytes"] == 7 * GB
