@@ -388,26 +388,18 @@ def test_ambiguous_rename_failure_retains_all_prior_mappings(
     for name, text in (("old-a.txt", "durable alpha"), ("old-b.txt", "durable bravo")):
         (source / name).write_text(text, encoding = "utf-8")
     assert _run(folder["id"])["status"] == "completed"
+    (source / "old-a.txt").rename(source / "renamed-a.txt")
+    (source / "old-b.txt").rename(source / "renamed-b.txt")
+    renamed_b_stat = (source / "renamed-b.txt").stat()
     conn = rag_db.get_connection()
     try:
         conn.execute(
-            "UPDATE linked_folder_files SET device=0, inode=0, content_hash=NULL WHERE folder_id=?",
-            (folder["id"],),
+            "UPDATE linked_folder_files SET device=?, inode=?, content_hash=NULL WHERE folder_id=?",
+            (renamed_b_stat.st_dev, renamed_b_stat.st_ino, folder["id"]),
         )
         conn.commit()
     finally:
         conn.close()
-    (source / "old-a.txt").rename(source / "renamed-a.txt")
-    (source / "old-b.txt").rename(source / "renamed-b.txt")
-
-    original_scan = folder_sync._scan
-
-    def colliding_scan(*args, **kwargs):
-        found, identity = original_scan(*args, **kwargs)
-        for metadata in found.values():
-            metadata["device"] = 0
-            metadata["inode"] = 0
-        return found, identity
 
     original_start = folder_sync.ingestion.start_ingestion
 
@@ -416,7 +408,6 @@ def test_ambiguous_rename_failure_retains_all_prior_mappings(
             raise RuntimeError("embed unavailable")
         return original_start(*args, **kwargs)
 
-    monkeypatch.setattr(folder_sync, "_scan", colliding_scan)
     monkeypatch.setattr(folder_sync.ingestion, "start_ingestion", fail_one)
     result = _run(folder["id"])
 
@@ -849,8 +840,7 @@ def test_requested_rebuild_promotes_an_intervening_pending_sync(rag_home):
     conn = rag_db.get_connection()
     try:
         conn.execute(
-            "UPDATE linked_folder_sync_jobs "
-            "SET status='completed', rebuild_requested=1 WHERE id=?",
+            "UPDATE linked_folder_sync_jobs SET status='completed', rebuild_requested=1 WHERE id=?",
             (completed,),
         )
         pending = "intervening-sync"
@@ -1238,6 +1228,43 @@ def test_project_deletion_skips_runtime_unavailable_rag(monkeypatch):
     )
     assert result.id == "p1"
     assert deleted == [True]
+
+
+def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home, monkeypatch):
+    from routes import rag as rag_routes
+    from storage import studio_db
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    project_id = "project"
+    scope = store.project_scope(project_id)
+    saved_path = ensure_dir(rag_uploads_root()) / "race.txt"
+    retired = False
+
+    def resolve_upload(*args, **kwargs):
+        nonlocal retired
+        saved_path.write_text("saved", encoding = "utf-8")
+        retired = True
+        return str(saved_path), "race.txt"
+
+    monkeypatch.setattr(rag_routes.rag_db, "rag_available", lambda: True)
+    monkeypatch.setattr(studio_db, "get_chat_project", lambda value: {"id": value})
+    monkeypatch.setattr(
+        rag_routes.folder_sync,
+        "scope_retired",
+        lambda value: value == scope and retired,
+    )
+    monkeypatch.setattr(rag_routes, "_resolve_document_upload", resolve_upload)
+    monkeypatch.setattr(
+        rag_routes.ingestion,
+        "start_ingestion",
+        lambda *args, **kwargs: pytest.fail("retired project upload must not ingest"),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(rag_routes.upload_project_document(project_id, subject = "test"))
+
+    assert getattr(exc_info.value, "status_code", None) == 409
+    assert not saved_path.exists()
 
 
 @requires_sqlite_vec

@@ -431,9 +431,9 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
         conn.close()
 
 
-def _raise_if_scope_retired(scope: str) -> None:
+def _raise_if_scope_retired(scope: str, detail: str = "Knowledge base is being deleted") -> None:
     if folder_sync.scope_retired(scope):
-        raise HTTPException(status_code = 409, detail = "Knowledge base is being deleted")
+        raise HTTPException(status_code = 409, detail = detail)
 
 
 @router.post("/knowledge-bases/{kb_id}/documents")
@@ -544,18 +544,26 @@ async def upload_project_document(
 
     if get_chat_project(project_id) is None:
         raise HTTPException(status_code = 404, detail = "Project not found")
+    scope = store.project_scope(project_id)
+    _raise_if_scope_retired(scope, "Project is being deleted")
     stored_path, filename = _resolve_document_upload(file, native_path_lease)
-    with _rag_unavailable_as_503(stored_path):
-        document_id, job_id = ingestion.start_ingestion(
-            store.project_scope(project_id),
-            None,
-            None,
-            filename,
-            stored_path,
-            project_id = project_id,
-            ocr = ocr,
-            caption = caption,
-        )
+    try:
+        with folder_sync.scope_lock(scope):
+            _raise_if_scope_retired(scope, "Project is being deleted")
+            with _rag_unavailable_as_503(stored_path):
+                document_id, job_id = ingestion.start_ingestion(
+                    scope,
+                    None,
+                    None,
+                    filename,
+                    stored_path,
+                    project_id = project_id,
+                    ocr = ocr,
+                    caption = caption,
+                )
+    except HTTPException:
+        _remove_stored_upload(stored_path)
+        raise
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
 
