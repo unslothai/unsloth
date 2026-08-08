@@ -128,14 +128,27 @@ _B200_FREE_MIB = 181928
 _MIB = 1024 * 1024
 
 
-def _fake_torch_with_memory(hip, archs, free_mib, total_mib, *, cuda_ok = True):
+def _fake_torch_with_memory(
+    hip,
+    archs,
+    free_mib,
+    total_mib,
+    *,
+    cuda_ok = True,
+):
     """_fake_torch plus mem_get_info, which the memory probe needs."""
     t = _fake_torch(hip, archs, cuda_ok = cuda_ok)
     t.cuda.mem_get_info = lambda i: (free_mib * _MIB, total_mib * _MIB)
     return t
 
 
-def _probe(monkeypatch, hip, archs, free_mib = _B200_FREE_MIB, total_mib = _B200_TOTAL_MIB):
+def _probe(
+    monkeypatch,
+    hip,
+    archs,
+    free_mib = _B200_FREE_MIB,
+    total_mib = _B200_TOTAL_MIB,
+):
     for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(_m, raising = False)
     monkeypatch.setitem(
@@ -157,14 +170,10 @@ class TestTheRocmProbeReservesHostRamOnAnApu:
     system RAM. The Vulkan probe already did both; this matches it."""
 
     def test_an_apu_loses_the_host_reserve_and_reports_no_total(self, monkeypatch):
-        assert _probe(monkeypatch, "6.2.0", ["gfx1151:xnack-"]) == [
-            (0, _B200_FREE_MIB - 1024, 0)
-        ]
+        assert _probe(monkeypatch, "6.2.0", ["gfx1151:xnack-"]) == [(0, _B200_FREE_MIB - 1024, 0)]
 
     def test_a_discrete_amd_card_is_untouched(self, monkeypatch):
-        assert _probe(monkeypatch, "6.2.0", ["gfx1100"]) == [
-            (0, _B200_FREE_MIB, _B200_TOTAL_MIB)
-        ]
+        assert _probe(monkeypatch, "6.2.0", ["gfx1100"]) == [(0, _B200_FREE_MIB, _B200_TOTAL_MIB)]
 
     def test_nvidia_through_the_torch_fallback_is_untouched(self, monkeypatch):
         """The real local GPU: no HIP, so nothing here may apply."""
@@ -177,9 +186,7 @@ class TestTheRocmProbeReservesHostRamOnAnApu:
         ]
 
     def test_the_reserve_cannot_go_negative(self, monkeypatch):
-        assert _probe(monkeypatch, "6.2.0", ["gfx1151"], free_mib = 512, total_mib = 512) == [
-            (0, 0, 0)
-        ]
+        assert _probe(monkeypatch, "6.2.0", ["gfx1151"], free_mib = 512, total_mib = 512) == [(0, 0, 0)]
 
     @pytest.mark.parametrize("arch", ["gfx1150", "gfx1151", "gfx1152"])
     def test_every_unified_arch_is_covered(self, monkeypatch, arch):
