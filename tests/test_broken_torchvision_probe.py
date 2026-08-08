@@ -46,12 +46,15 @@ def test_the_nms_break_is_recognised():
     assert import_fixes._is_broken_torchvision_error(_NMS)
 
 
-@pytest.mark.parametrize("message", [
-    "/usr/lib/torchvision/_C.so: undefined symbol: _ZN3c10",
-    "libc10.so: cannot open shared object file: No such file or directory",
-    "No module named 'torchvision.io.video'",
-    "No module named 'torchvision.io._video'",
-])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "/usr/lib/torchvision/_C.so: undefined symbol: _ZN3c10",
+        "libc10.so: cannot open shared object file: No such file or directory",
+        "No module named 'torchvision.io.video'",
+        "No module named 'torchvision.io._video'",
+    ],
+)
 def test_the_other_shapes_of_the_same_break_are_recognised(message):
     """A half-overwritten install and an ABI mismatch reach us differently."""
     assert import_fixes._is_broken_torchvision_error(ImportError(message))
@@ -125,7 +128,9 @@ def test_the_probe_runs_on_the_path_the_table_calls_compatible():
 def test_the_skip_variable_still_skips_everything():
     """It guards the whole function, so it must come before the probe."""
     source = ast.unparse(_check_function())
-    assert source.index("UNSLOTH_SKIP_TORCHVISION_CHECK") < source.index("_probe_torchvision_binary")
+    assert source.index("UNSLOTH_SKIP_TORCHVISION_CHECK") < source.index(
+        "_probe_torchvision_binary"
+    )
     with mock.patch.dict("os.environ", {"UNSLOTH_SKIP_TORCHVISION_CHECK": "1"}):
         with mock.patch.object(import_fixes, "_probe_torchvision_binary") as probe:
             import_fixes.torchvision_compatibility_check()

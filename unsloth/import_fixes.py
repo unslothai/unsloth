@@ -1021,8 +1021,8 @@ def _probe_torchvision_binary(torch_version_raw, torchvision_version_raw):
     `image_utils` the moment anything touches `processing_utils`.
     """
     try:
-        import torchvision           # noqa: F401
-        import torchvision.ops       # noqa: F401  where the compiled nms lives
+        import torchvision  # noqa: F401
+        import torchvision.ops  # noqa: F401  where the compiled nms lives
     except Exception as error:
         # Anything we cannot explain is left alone rather than reported as a
         # torchvision break; the caller that really needs it will raise it.
