@@ -560,7 +560,11 @@ function StartupSurface({ children }: { children: ReactNode }) {
  */
 export function ClosingScreen() {
   return (
-    <div className="fixed inset-0 z-[9999]">
+    // pointer-events-auto, not the inherited default: Radix parks pointer-events:none on
+    // <body> while any modal layer is open, and a quit raised from the window controls,
+    // the tray or Alt+F4 never closes that layer. Inheriting it would make the overlay
+    // click-through onto the dialog it is hiding and leave Force quit dead.
+    <div className="pointer-events-auto fixed inset-0 z-[9999]">
       <StartupSurface>
         <div className="flex h-full w-full flex-col items-center justify-center text-center">
           <ClosingContent />

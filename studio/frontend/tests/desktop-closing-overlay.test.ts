@@ -113,8 +113,25 @@ test("the overlay covers the app instead of replacing it", async () => {
   );
   assert.match(
     closingScreen,
-    /className="fixed inset-0 z-\[9999\]"/,
+    /className="[^"]*fixed inset-0 z-\[9999\]"/,
     "a covering overlay has to outrank the titlebar and the download stack",
+  );
+});
+
+test("the overlay survives a modal's body pointer-events lockout", async () => {
+  const screen = await source("components/tauri/startup-screen.tsx");
+  const closingScreen = screen.slice(
+    screen.indexOf("export function ClosingScreen()"),
+  );
+
+  // Radix parks pointer-events:none on <body> for as long as any modal layer is open,
+  // and pointer-events inherits. A quit raised from the titlebar controls, the tray or
+  // Alt+F4 never closes that layer, so without an explicit auto the overlay is
+  // click-through onto the dialog it is hiding and the force quit button is dead.
+  assert.match(
+    closingScreen,
+    /className="pointer-events-auto /,
+    "an open dialog would make the overlay click-through and kill the way out",
   );
 });
 
@@ -133,9 +150,12 @@ test("the close button leaves the overlay to Rust", async () => {
 
 test("the overlay offers a way out of a wedged reap", async () => {
   // Past stop_backend's own worst case, or the button fires over a teardown that was
-  // merely slow.
+  // merely slow. Windows is the platform that gets here and its bounded worst case is
+  // ~18s: 2 liveness plus 2 shutdown requests at 2s each, then two 5s waits for the child
+  // to exit either side of the CTRL_BREAK. The installer's and updater's 5s graceful waits
+  // are cfg(unix), so they cost Windows nothing.
   assert.ok(
-    FORCE_QUIT_AFTER_MS > 15_000,
+    FORCE_QUIT_AFTER_MS >= 35_000,
     "force quit would race a reap that is still within its timeouts",
   );
 
@@ -167,7 +187,13 @@ test("the force quit command is registered with Tauri", async () => {
   // An unregistered command fails at the invoke, which is the one moment the user has no
   // other way out.
   assert.match(rust, /^\s*force_quit,$/m);
-  assert.match(rust, /#\[tauri::command\]\nfn force_quit\(\)/);
+  // Takes the handle so it can clean up before the exit: std::process::exit runs no
+  // destructors, and the tray icon only sends its NIM_DELETE from Drop.
+  assert.match(
+    rust,
+    /#\[tauri::command\]\nfn force_quit\(app: tauri::AppHandle\)/,
+  );
+  assert.match(rust, /app\.cleanup_before_exit\(\)/);
 });
 
 test("the overlay names the wait it is covering", async () => {

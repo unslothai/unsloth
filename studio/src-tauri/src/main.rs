@@ -802,18 +802,23 @@ fn begin_quit() -> Option<QuitGuard> {
     (!QUIT_IN_PROGRESS.swap(true, Ordering::SeqCst)).then_some(QuitGuard)
 }
 
-/// Asks the renderer for the closing overlay. Reaping the backend takes up to ~15s, and
-/// without this the window just sits there looking frozen for all of it. Windows only, see
-/// `request_quit`.
+/// Asks the renderer for the closing overlay. Reaping the backend takes up to ~18s on
+/// Windows, which is the only platform that asks for it: `stop_spawned_backend` spends up
+/// to 2 liveness requests and 2 shutdown requests at `LOCAL_HTTP_TIMEOUT` (2s each), then
+/// waits twice for the child to exit (5s each) either side of the CTRL_BREAK. Without this
+/// the window just sits there looking frozen for all of it. See `request_quit`.
 const APP_CLOSING_EVENT: &str = "app-closing";
 
 /// Takes that overlay back down, for the quits that never reach the exit.
 const APP_CLOSING_CANCELLED_EVENT: &str = "app-closing-cancelled";
 
 /// Raises the overlay, and retracts it again unless `keep` is called. A guard rather than
-/// paired emits because the reap it covers can panic (`cleanup_child_processes` is written
-/// to expect that), and the app is still there afterwards: an overlay left up would cover
-/// it with no way back.
+/// paired emits so that every way out of the reap takes it back down, early returns and
+/// unwinds alike, because the app is still there afterwards and an overlay left up would
+/// cover it with no way back. Nothing under `cleanup_child_processes` panics today: its one
+/// `.expect` reads a `ShutdownFlag` managed on the line after the `BackendState` that gates
+/// it, and everything below recovers poisoned locks instead of unwrapping them. So the
+/// unwind arm is cheap insurance against a future reap, not a live case.
 struct ClosingOverlay<E: Fn(&str)> {
     emit: E,
     retract: bool,
@@ -842,16 +847,39 @@ impl<E: Fn(&str)> Drop for ClosingOverlay<E> {
     }
 }
 
+/// Abandons the reap, on the platforms where that is safe. Returns whether the caller
+/// should now exit.
+///
+/// Split out with its cleanup injected, the same way `quit_sequence` is, so both platform
+/// shapes stay covered by tests on whichever one is running them.
+///
+/// Windows only. There the app job object is kill-on-close and this process is a member, so
+/// exiting takes the backend tree down with it. Everywhere else the backend is spawned as
+/// its own process-group leader with nothing holding it, which is the whole reason
+/// `setup_unix_termination_signals` exists, and exiting here would orphan it.
+fn force_quit_sequence(windows: bool, cleanup: impl FnOnce()) -> bool {
+    if !windows {
+        warn!("Force quit ignored: exiting here would orphan the backend process group");
+        return false;
+    }
+    warn!("Force quit requested, exiting without waiting for the backend reap");
+    // Before the exit, the way Tauri itself pairs them in `AppHandle::exit`. `process::exit`
+    // runs no destructors, and the tray icon only sends its `NIM_DELETE` from `Drop`, so
+    // skipping this leaves a ghost icon in the notification area until the user hovers it.
+    cleanup();
+    true
+}
+
 /// The overlay's way out, offered once the reap has run well past its own timeouts. The
 /// overlay covers the titlebar, so a teardown that wedges past them would otherwise leave a
 /// window with no controls and nothing to click. Only the Windows overlay reaches this, but
 /// it stays registered everywhere rather than splitting the handler list over a `cfg`: a
-/// command nothing invokes costs nothing. Exits without finishing the reap, which the app
-/// job object makes safe on Windows by taking the child tree down with the process.
+/// command nothing invokes costs nothing.
 #[tauri::command]
-fn force_quit() {
-    warn!("Force quit requested, exiting without waiting for the backend reap");
-    std::process::exit(0);
+fn force_quit(app: tauri::AppHandle) {
+    if force_quit_sequence(cfg!(target_os = "windows"), || app.cleanup_before_exit()) {
+        std::process::exit(0);
+    }
 }
 
 /// Confirm, cover the window, reap. Returns whether the caller should now exit.
@@ -1206,9 +1234,12 @@ fn main() {
             } => show_main_window(app),
             tauri::RunEvent::Exit => {
                 // Safety net for framework-driven exits. When another path already owns
-                // cleanup, this blocks the main event-loop thread until that path is
-                // done: worst case roughly 15s, waiting on the graceful-then-force stop
-                // of the installer (5s), the updater (5s) and the backend (5s).
+                // cleanup, this blocks the main event-loop thread until that path is done.
+                // Worst case is roughly 15s on Unix, waiting on the graceful-then-force
+                // stop of the installer (5s), the updater (5s) and the backend (5s), and
+                // roughly 18s on Windows, where those first two graceful waits are
+                // `#[cfg(unix)]` and go straight to the force kill, but the backend spends
+                // its liveness, shutdown and CTRL_BREAK budgets in series instead.
                 cleanup_child_processes(app);
             }
             _ => {}
@@ -1524,6 +1555,43 @@ mod tests {
             events.into_inner().is_empty(),
             "nothing was raised, so the unwind has nothing to retract: a cancel here would \
              be the guard half-armed"
+        );
+    }
+
+    #[test]
+    fn force_quit_cleans_up_before_it_exits_on_windows() {
+        let cleaned = std::cell::Cell::new(0);
+
+        let exiting = force_quit_sequence(true, || cleaned.set(cleaned.get() + 1));
+
+        assert!(
+            exiting,
+            "the overlay's last resort has to actually reach the exit"
+        );
+        assert_eq!(
+            cleaned.get(),
+            1,
+            "process::exit runs no destructors, so the tray icon has to be cleared here or \
+             it outlives the process"
+        );
+    }
+
+    #[test]
+    fn force_quit_is_a_no_op_off_windows() {
+        let cleaned = std::cell::Cell::new(0);
+
+        let exiting = force_quit_sequence(false, || cleaned.set(cleaned.get() + 1));
+
+        assert!(
+            !exiting,
+            "off Windows the backend is its own process-group leader with no job object \
+             holding it, so exiting without the reap would orphan it"
+        );
+        assert_eq!(
+            cleaned.get(),
+            0,
+            "nothing is exiting, so tearing the app's own state down would leave a live app \
+             with no tray icon"
         );
     }
 
