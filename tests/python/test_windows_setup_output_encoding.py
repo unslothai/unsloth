@@ -139,7 +139,11 @@ $Rule = [string]::new([char]0x2500, 52)
 """
 
 
-def _run_capturing_bytes(script: str, use_command_shape: bool, stem: str = "setup_output") -> bytes:
+def _run_capturing_bytes(
+    script: str,
+    use_command_shape: bool,
+    stem: str = "setup_output",
+) -> bytes:
     """Run through a real pipe, in both launch shapes the product uses.
 
     ``-File`` is how the desktop app spawns the installer; ``-Command ... *>&1``
@@ -377,9 +381,9 @@ def test_the_sink_helper_is_defined_before_the_first_line_it_prints(path: Path) 
     masked = _mask_literals(path.read_text(encoding = "utf-8"))
     definition = masked.index("function Write-StudioLine")
     first_call = min(m.start() for m in re.finditer(r"\bWrite-StudioLine\b", masked))
-    assert first_call == definition + len("function "), (
-        f"{path.name} calls Write-StudioLine before defining it"
-    )
+    assert first_call == definition + len(
+        "function "
+    ), f"{path.name} calls Write-StudioLine before defining it"
 
 
 @pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
