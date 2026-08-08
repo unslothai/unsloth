@@ -306,6 +306,27 @@ class TestPytorchMirror:
         assert url is not None
         assert url.startswith("https://mirror.example/pytorch/whl/cu130/xformers-")
 
+    def test_a_query_token_mirror_keeps_its_token(self, monkeypatch):
+        """Private mirrors authenticate by query string as often as by userinfo. Appending
+        after the query buried the wheel path inside the token value -- the request path
+        stayed /whl and the token became "abc/cu130/xformers-..." -- so the one shape this
+        setting exists for was the one that could not resolve a wheel."""
+        monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl?token=abc")
+        url = wheel_utils.xformers_wheel_url(_env())
+        assert url is not None
+        assert url.startswith("https://mirror.example/whl/cu130/xformers-")
+        assert url.endswith("?token=abc")
+
+    def test_a_fragment_survives_the_join_too(self):
+        assert (
+            wheel_utils.join_wheel_url("https://m/whl#frag", "cu130/x.whl")
+            == "https://m/whl/cu130/x.whl#frag"
+        )
+        # And the ordinary case is unchanged, trailing slash or not.
+        assert wheel_utils.join_wheel_url("https://m/whl/", "cu130/x.whl") == (
+            "https://m/whl/cu130/x.whl"
+        )
+
     def test_the_default_is_unchanged_without_the_mirror(self, monkeypatch):
         monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
         url = wheel_utils.xformers_wheel_url(_env())

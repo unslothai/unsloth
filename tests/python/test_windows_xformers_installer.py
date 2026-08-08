@@ -150,14 +150,14 @@ def test_installer_installs_xformers_from_the_torch_index():
         "if ($TorchIndexUrl -and -not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL))"
         in block
     )
-    assert "Get-TorchIndexLeafName" not in block
+    # The leaf is read to BUILD a URL under the override, never to throw the override away:
+    # a full-URL override can be an authenticated mirror whose leaf is not a family, and
+    # rebuilding a download.pytorch.org URL over it strands an air-gapped host.
+    assert "$_xfIndexUrl = $TorchIndexUrl" in block
     # Unpinned, install the direct wheel URL: --default-index does not make an index
     # exclusive, and cu126/cu128/cu130 share a version string, so a machine with UV_INDEX
     # set can satisfy the pin from the wrong CUDA family.
-    assert (
-        '$_xfWheelUrl = "$_xfBase/$_xfCudaTag/xformers-$_xfVersion-$_xfPyTag-win_amd64.whl"'
-        in block
-    )
+    assert '$_xfWheelUrl = Join-UrlPath $_xfBase "$_xfCudaTag/$_xfWheelName"' in block
     assert "--reinstall-package xformers $_xfWheelUrl" in block
     # The already-installed check compares against the wheel's OWN build target, not the
     # resident torch: the stable-ABI wheel records the floor release it was compiled
@@ -176,10 +176,58 @@ def test_a_family_pin_still_gets_the_direct_wheel_url():
     block = _extract(
         r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
     )
-    condition = re.search(r"if \(\$TorchIndexUrl[^\n]*\) \{\n\s+\$_xfIndexUrl = ", block)
+    condition = re.search(r"if \(\$TorchIndexUrl[^\n]*\) \{", block)
     assert condition is not None, "the index branch must be gated on the full-URL override"
     assert "UNSLOTH_TORCH_INDEX_URL" in condition.group(0)
     assert "$TorchIndexPinned" not in condition.group(0)
+    # ...and the family-pin side builds a URL rather than resolving a version.
+    assert '$_xfWheelUrl = Join-UrlPath $_xfBase "$_xfCudaTag/$_xfWheelName"' in block
+
+
+def test_a_full_url_override_naming_a_cuda_leaf_gets_a_direct_url():
+    """`--default-index` is not exclusive -- uv reads UV_INDEX "in addition to" it -- and every
+    CUDA family publishes the same xFormers version, so an index resolve can always be
+    satisfied from the wrong one. A documented `.../cu130` override names the leaf, so the
+    wheel is addressed under it directly, which nothing can substitute for."""
+    block = _extract(
+        r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
+    )
+    assert "$_xfOverrideLeaf = Get-TorchIndexLeafName $TorchIndexUrl" in block
+    assert "'^cu\\d+$'" in block
+    assert "$_xfWheelUrl = Join-UrlPath $TorchIndexUrl $_xfWheelName" in block
+
+
+def test_the_index_fallback_hides_the_machine_level_indexes():
+    """The one path that still resolves rather than fetching a URL: a mirror root whose leaf
+    is not a CUDA family. UV_INDEX / UV_EXTRA_INDEX_URL are cleared around that call so the
+    chosen index really is the only one, and restored afterwards."""
+    block = _extract(
+        r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
+    )
+    assert "$env:UV_INDEX = $null" in block
+    assert "$env:UV_EXTRA_INDEX_URL = $null" in block
+    assert "$env:UV_INDEX = $_xfSavedIndex" in block
+    assert "$env:UV_EXTRA_INDEX_URL = $_xfSavedExtra" in block
+    assert "} finally {" in block, "the restore must survive a failing install"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_the_url_join_keeps_a_tokenized_mirrors_query():
+    """Executed, not read: a private mirror may authenticate by query string, and appending
+    after the query put the wheel path inside the token value -- request path still /whl,
+    token unusable. Same rule as the Python side's join_wheel_url."""
+    joiner = _extract(r"^    function Join-UrlPath \{.*?^    \}", _source())
+    out = _run_pwsh(
+        f"{joiner}\n"
+        "Write-Output (Join-UrlPath 'https://m/whl?token=abc' 'cu130/x.whl')\n"
+        "Write-Output (Join-UrlPath 'https://m/whl/' 'cu130/x.whl')\n"
+        "Write-Output (Join-UrlPath 'https://m/whl#f' 'cu130/x.whl')\n"
+    )
+    assert out.splitlines() == [
+        "https://m/whl/cu130/x.whl?token=abc",
+        "https://m/whl/cu130/x.whl",
+        "https://m/whl/cu130/x.whl#f",
+    ]
 
 
 def test_installer_never_installs_an_unpinned_xformers():
@@ -189,6 +237,10 @@ def test_installer_never_installs_an_unpinned_xformers():
     source = _source()
     for match in re.finditer(r'"xformers[^"]*"', source):
         spec = match.group(0)
+        # A wheel FILENAME is not a spec: it names one exact file and cannot resolve to
+        # anything else, which is the whole point of preferring it.
+        if spec.endswith('.whl"'):
+            continue
         assert spec == '"xformers==$_xfVersion"', f"unpinned xFormers spec in install.ps1: {spec}"
 
 

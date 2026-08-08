@@ -406,10 +406,25 @@ def xformers_wheel_url(env: dict[str, str] | None) -> str | None:
     python_tag = xformers_filename_python_tag(version)
     if python_tag is None:
         return None
-    return (
-        f"{pytorch_wheel_index_base_url()}/{family}"
-        f"/xformers-{version}-{python_tag}-{platform_leaf}.whl"
+    return join_wheel_url(
+        pytorch_wheel_index_base_url(),
+        f"{family}/xformers-{version}-{python_tag}-{platform_leaf}.whl",
     )
+
+
+def join_wheel_url(base: str, path: str) -> str:
+    """``base`` + ``path``, with any ?query / #fragment kept at the end.
+
+    UNSLOTH_PYTORCH_MIRROR is allowed to authenticate by query string
+    (``https://mirror/whl?token=abc``), and appending after the query put the wheel path
+    INSIDE the token value -- leaving the request path at /whl and the token unusable. The
+    tokenized private mirror this setting exists for was the one shape that could not
+    resolve a wheel.
+    """
+    cut = min([i for i in (base.find("?"), base.find("#")) if i >= 0], default = -1)
+    if cut < 0:
+        return f"{base.rstrip('/')}/{path}"
+    return f"{base[:cut].rstrip('/')}/{path}{base[cut:]}"
 
 
 def redact_url_credentials(url: str) -> str:

@@ -3552,6 +3552,20 @@ exit 0
         return "${scheme}://${host_}"
     }
 
+    # Append a path to a URL that may carry ?query / #fragment auth. A private mirror is
+    # allowed to be "https://mirror/whl?token=abc", and a naive "$base/$leaf" put the leaf
+    # INSIDE the token value, leaving the path still /whl -- so the tokenized mirror this
+    # exists to honour was the one case that could not resolve a wheel.
+    function Join-UrlPath {
+        param([string]$Base, [string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Base)) { return $Path }
+        $cut = $Base.IndexOfAny([char[]]('?', '#'))
+        if ($cut -lt 0) { return "$($Base.TrimEnd('/'))/$Path" }
+        $head = $Base.Substring(0, $cut).TrimEnd('/')
+        $tail = $Base.Substring($cut)
+        return "$head/$Path$tail"
+    }
+
     # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
     # torch.__version__ -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu,
     # matching setup.ps1's stale-venv parse.
@@ -4263,22 +4277,33 @@ exit 0
                 # honoured, as it is everywhere else in this script.
                 $_xfIndexUrl = $null
                 $_xfWheelUrl = $null
+                $_xfPyTag = Get-XformersFilenamePythonTag $_xfVersion
+                $_xfWheelName = if ($_xfPyTag) { "xformers-$_xfVersion-$_xfPyTag-win_amd64.whl" } else { $null }
                 # A FULL-URL override only. UNSLOTH_TORCH_INDEX_FAMILY also sets
                 # $TorchIndexPinned, and routing that through the index reintroduced the very
                 # hole above: cu126 / cu128 / cu130 share a version string, so a machine-level
                 # UV_INDEX could satisfy the pin with the wrong family. A family pin names a
                 # leaf we can build a direct URL from, so it takes the URL path.
                 if ($TorchIndexUrl -and -not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
-                    $_xfIndexUrl = $TorchIndexUrl
+                    # Even here, prefer a URL. When the override already names a CUDA leaf
+                    # (.../cu130, the documented shape) the wheel can be addressed under it
+                    # directly, which no UV_INDEX can substitute for. Only an override whose
+                    # leaf is not a family -- a bare PEP 503 mirror root -- has to be resolved,
+                    # and that one gets the machine-level indexes cleared below.
+                    $_xfOverrideLeaf = Get-TorchIndexLeafName $TorchIndexUrl
+                    if ($_xfWheelName -and [regex]::IsMatch($_xfOverrideLeaf, '^cu\d+$')) {
+                        $_xfWheelUrl = Join-UrlPath $TorchIndexUrl $_xfWheelName
+                    } else {
+                        $_xfIndexUrl = $TorchIndexUrl
+                    }
                 } else {
-                    $_xfBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
-                    $_xfPyTag = Get-XformersFilenamePythonTag $_xfVersion
-                    if ($_xfPyTag) {
-                        $_xfWheelUrl = "$_xfBase/$_xfCudaTag/xformers-$_xfVersion-$_xfPyTag-win_amd64.whl"
+                    $_xfBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR } else { "https://download.pytorch.org/whl" }
+                    if ($_xfWheelName) {
+                        $_xfWheelUrl = Join-UrlPath $_xfBase "$_xfCudaTag/$_xfWheelName"
                     } else {
                         # Unknown filename shape: fall back to the index rather than guessing
                         # a URL that 404s.
-                        $_xfIndexUrl = "$_xfBase/$_xfCudaTag"
+                        $_xfIndexUrl = Join-UrlPath $_xfBase $_xfCudaTag
                     }
                 }
                 $_xfSource = if ($_xfWheelUrl) { $_xfWheelUrl } else { $_xfIndexUrl }
@@ -4297,7 +4322,20 @@ exit 0
                 $_xfExit = if ($_xfWheelUrl) {
                     Invoke-InstallCommandRetry -Label "install xFormers" { & $_xfUv pip install --python $VenvPython --no-deps --reinstall-package xformers $_xfWheelUrl }
                 } else {
-                    Invoke-InstallCommandRetry -Label "install xFormers" { & $_xfUv pip install --python $VenvPython --no-deps --reinstall-package xformers "xformers==$_xfVersion" --default-index $_xfIndexUrl }
+                    # --default-index does not make an index exclusive: uv reads UV_INDEX and
+                    # UV_EXTRA_INDEX_URL "in addition to" it, and every CUDA family publishes the
+                    # SAME xformers version, so a machine-level index could satisfy the pin from
+                    # the wrong one. Cleared for this call only, and restored after.
+                    $_xfSavedIndex = $env:UV_INDEX
+                    $_xfSavedExtra = $env:UV_EXTRA_INDEX_URL
+                    try {
+                        $env:UV_INDEX = $null
+                        $env:UV_EXTRA_INDEX_URL = $null
+                        Invoke-InstallCommandRetry -Label "install xFormers" { & $_xfUv pip install --python $VenvPython --no-deps --reinstall-package xformers "xformers==$_xfVersion" --default-index $_xfIndexUrl }
+                    } finally {
+                        $env:UV_INDEX = $_xfSavedIndex
+                        $env:UV_EXTRA_INDEX_URL = $_xfSavedExtra
+                    }
                 }
                 if ($_xfExit -ne 0) {
                     substep "[WARN] could not install xFormers $_xfVersion (exit $_xfExit); attention falls back to torch SDPA." "Yellow"
