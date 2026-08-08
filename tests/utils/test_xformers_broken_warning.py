@@ -218,7 +218,6 @@ def test_a_live_flash_attention_is_not_reported_as_an_sdpa_fallback(capsys):
     a broken xformers costs nothing -- and "falling back to SDPA, it uses more memory" is a
     performance warning about a run that is on the faster of the two kernels."""
     from unsloth.models import _utils
-
     for flash, expected, forbidden in (
         (True, "FlashAttention is handling attention instead", "uses more memory"),
         (False, "SDPA", "FlashAttention is handling attention instead"),

@@ -2293,10 +2293,7 @@ def _announce_xformers_breakage(
             f"{_xformers_fix_hint()}"
         )
     else:
-        print(
-            f"Unsloth: Xformers is installed but could not be used. {fallback}.\n"
-            f"{reason}"
-        )
+        print(f"Unsloth: Xformers is installed but could not be used. {fallback}.\n" f"{reason}")
     if UNSLOTH_ENABLE_LOGGING and error is not None:
         print(str(error))
 
