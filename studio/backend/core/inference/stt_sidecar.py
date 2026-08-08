@@ -1312,7 +1312,6 @@ class WhisperSttSidecar:
         effective_generate_kwargs = dict(generate_kwargs)
         if cancel_event is not None:
             from transformers import StoppingCriteriaList
-
             class _CancelCriteria:
                 def __call__(self, *_args, **_kwargs):
                     return cancel_event.is_set()

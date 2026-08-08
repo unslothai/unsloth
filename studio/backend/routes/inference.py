@@ -9434,9 +9434,7 @@ async def _transcribe_audio_result(
     sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(engine))
     cancel_event = threading.Event() if request is not None else None
     disconnect_watcher = (
-        asyncio.create_task(
-            _await_stt_disconnect_then_cancel(request, sidecar, cancel_event)
-        )
+        asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))
         if request is not None and cancel_event is not None
         else None
     )
