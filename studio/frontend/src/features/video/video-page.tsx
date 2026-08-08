@@ -72,6 +72,7 @@ import {
   routedGgufFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
+import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 
@@ -183,14 +184,16 @@ function saveLink(href: string, filename: string) {
   link.click();
 }
 
-// MP4 saves the original file straight from its signed link; WebM / GIF are transcoded by the backend on demand (501 when the codec is absent).
+// MP4 streams from its signed link to the chosen path: that link is cross-origin under Tauri,
+// where an anchor no longer saves, and a clip is too big to hold in memory on the way past.
+// WebM / GIF are transcoded by the backend on demand (501 when the codec is absent).
 async function downloadVideo(
   src: string,
   video: GalleryVideo,
   format: VideoExportFormat = "mp4",
 ) {
   if (format === "mp4") {
-    saveLink(src, exportFilename(video, format));
+    await downloadUrlStreaming(src, exportFilename(video, format));
     return;
   }
   const blob = await fetchGalleryVideoExport(video.id, format);
@@ -863,7 +866,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const handleDownload = useCallback(
     async (src: string, video: GalleryVideo, format: "mp4" | "webm" | "gif") => {
       if (format === "mp4") {
-        void downloadVideo(src, video, format);
+        void downloadVideo(src, video, format).catch((err) => {
+          if (!isDownloadCancelled(err)) toast.error("Could not save video.");
+        });
         return;
       }
       const toastId = toast.loading(`Converting to ${format.toUpperCase()}…`);
@@ -872,6 +877,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         toast.dismiss(toastId);
       } catch (err) {
         toast.dismiss(toastId);
+        if (isDownloadCancelled(err)) return;
         toast.error(
           err instanceof Error ? err.message : `Failed to export ${format}`,
         );
