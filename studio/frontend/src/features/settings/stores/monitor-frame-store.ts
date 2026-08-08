@@ -25,11 +25,30 @@ export type MonitorFrame = {
 export type MonitorFramePublisher = object;
 
 interface MonitorFrameState {
+  /** The union of every published box: what the stack has to keep clear of. */
   frame: MonitorFrame | null;
-  publisher: MonitorFramePublisher | null;
+  frames: ReadonlyMap<MonitorFramePublisher, MonitorFrame>;
   setFrame: (publisher: MonitorFramePublisher, frame: MonitorFrame) => void;
-  /** No-op unless `publisher` still owns the frame. */
+  /** Drops only this publisher's box; the others still count. */
   clearFrame: (publisher: MonitorFramePublisher) => void;
+}
+
+/** One box covering them all, so the stack dodges whichever is in its way. */
+function union(
+  frames: ReadonlyMap<MonitorFramePublisher, MonitorFrame>,
+): MonitorFrame | null {
+  let merged: MonitorFrame | null = null;
+  for (const frame of frames.values()) {
+    merged = merged
+      ? {
+          left: Math.min(merged.left, frame.left),
+          top: Math.min(merged.top, frame.top),
+          right: Math.max(merged.right, frame.right),
+          bottom: Math.max(merged.bottom, frame.bottom),
+        }
+      : frame;
+  }
+  return merged;
 }
 
 function sameFrame(a: MonitorFrame | null, b: MonitorFrame | null): boolean {
@@ -44,19 +63,22 @@ function sameFrame(a: MonitorFrame | null, b: MonitorFrame | null): boolean {
 
 export const useMonitorFrameStore = create<MonitorFrameState>((set) => ({
   frame: null,
-  publisher: null,
+  frames: new Map(),
   // Written from a layout effect on every reconcile, so no-op writes must not
   // notify: the overlay stack re-renders on this.
   setFrame: (publisher, frame) =>
-    set((state) =>
-      state.publisher === publisher && sameFrame(state.frame, frame)
-        ? state
-        : { frame, publisher },
-    ),
+    set((state) => {
+      if (sameFrame(state.frames.get(publisher) ?? null, frame)) return state;
+      const frames = new Map(state.frames).set(publisher, frame);
+      return { frames, frame: union(frames) };
+    }),
   clearFrame: (publisher) =>
-    set((state) =>
-      state.publisher === publisher ? { frame: null, publisher: null } : state,
-    ),
+    set((state) => {
+      if (!state.frames.has(publisher)) return state;
+      const frames = new Map(state.frames);
+      frames.delete(publisher);
+      return { frames, frame: union(frames) };
+    }),
 }));
 
 // The corner stack's own inset, and the gap left between it and the monitor.

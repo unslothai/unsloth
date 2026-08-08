@@ -34,7 +34,7 @@ function corner(height = 300): MonitorFrame {
 }
 
 function reset(): void {
-  useMonitorFrameStore.setState({ frame: null, publisher: null });
+  useMonitorFrameStore.setState({ frame: null, frames: new Map() });
 }
 
 test("a panel publishes its own box", () => {
@@ -70,7 +70,11 @@ test("an exiting panel does not clear the replacement's frame", () => {
   );
   // A monitor that then sits still resizes nothing and republishes nothing, so
   // a lost frame would stay lost and the stack would sit back on top of it.
-  assert.equal(useMonitorFrameStore.getState().publisher, reopened);
+  assert.deepEqual(
+    [...useMonitorFrameStore.getState().frames.keys()],
+    [reopened],
+    "only the panel that is still open may still be published",
+  );
 });
 
 test("the replacement can still clear its own frame when closed", () => {
@@ -132,4 +136,52 @@ test("clearing on behalf of a panel that owns nothing does not notify", () => {
   unsubscribe();
   assert.equal(notifications, 0);
   assert.deepEqual(useMonitorFrameStore.getState().frame, corner());
+});
+
+// The card is the first overlay in that corner that is persistent rather than
+// transient, and the chat composer docks to the bottom of the same column once
+// a thread has turns. The card sat on the Send button and swallowed the click,
+// which the chat UI Playwright suite caught as a 60s timeout on a button it
+// could see. So the store carries every published box, not just the newest.
+test("two publishers are dodged together, not one at a time", () => {
+  reset();
+  const monitor = {};
+  const composer = {};
+  useMonitorFrameStore.getState().setFrame(monitor, corner(300));
+  useMonitorFrameStore
+    .getState()
+    .setFrame(composer, { left: 300, top: 780, right: 1100, bottom: 860 });
+  assert.deepEqual(
+    useMonitorFrameStore.getState().frame,
+    { left: 300, top: 584, right: 1424, bottom: 884 },
+    "the stack has to clear both, so it reads their union",
+  );
+});
+
+test("dropping one publisher leaves the other's box intact", () => {
+  reset();
+  const monitor = {};
+  const composer = {};
+  const composerBox = { left: 300, top: 780, right: 1100, bottom: 860 };
+  useMonitorFrameStore.getState().setFrame(monitor, corner(300));
+  useMonitorFrameStore.getState().setFrame(composer, composerBox);
+  useMonitorFrameStore.getState().clearFrame(monitor);
+  assert.deepEqual(useMonitorFrameStore.getState().frame, composerBox);
+});
+
+// A composer that is hidden measures 0x0, and publishing that would pull the
+// union out to the top-left corner and pin the stack there.
+test("the publish hook drops an unmeasurable box rather than publishing it", () => {
+  const HOOK = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/settings/hooks/use-published-frame.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  assert.match(HOOK, /box\.width === 0 && box\.height === 0/);
+  assert.match(HOOK, /observer\?\.disconnect\(\)/, "and it must unsubscribe");
+  assert.match(HOOK, /clearFrame\(publisher\);\s*\n\s*\};/, "and clear on unmount");
 });
