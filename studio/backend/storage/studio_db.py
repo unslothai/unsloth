@@ -2449,9 +2449,7 @@ def sync_chat_messages(
         # and discarding that leaves a protected message pointing at a row the prune below
         # removes. The client cannot then reopen the thread at all.
         proposed_parents = {
-            str(m["id"]): m.get("parentId")
-            for m in messages
-            if str(m["id"]) in protected
+            str(m["id"]): m.get("parentId") for m in messages if str(m["id"]) in protected
         }
         messages = [m for m in messages if str(m["id"]) not in protected]
         _raise_if_chat_message_thread_conflicts(
@@ -2529,9 +2527,7 @@ def sync_chat_messages(
                     f"DELETE FROM chat_messages WHERE thread_id = ? AND id IN ({placeholders})",
                     (thread_id, *chunk),
                 )
-            _relink_orphaned_protected_messages(
-                conn, thread_id, research_ids, proposed_parents
-            )
+            _relink_orphaned_protected_messages(conn, thread_id, research_ids, proposed_parents)
             _recompute_chat_thread_updated_at(conn, thread_id)
         elif reconciled_messages:
             _bump_chat_thread_updated_at(
@@ -2553,16 +2549,12 @@ def sync_chat_messages(
         conn.close()
 
 
-
 # Distinguishes "row is gone" from "row has no parent"; both are safe, for different reasons.
 _MISSING = object()
 
 
 def _relink_orphaned_protected_messages(
-    conn,
-    thread_id: str,
-    research_ids: set,
-    proposed_parents: dict,
+    conn, thread_id: str, research_ids: set, proposed_parents: dict
 ) -> None:
     """Reseat any protected message the prune just orphaned.
 
