@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Measures the pointer-active strip of an overlay scrollbar and publishes it
- * for right-edge controls. Classic scrollbars already take layout space, so
- * their gutter stays unset.
+ * Publishes the pointer-active strip of an overlay scrollbar for right-edge
+ * controls. Classic scrollbars take layout space, so their gutter stays unset.
  */
 
 export const OVERLAY_SCROLLBAR_GUTTER_VAR = "--overlay-scrollbar-gutter";
@@ -12,10 +11,10 @@ export const OVERLAY_SCROLLBAR_GUTTER_VAR = "--overlay-scrollbar-gutter";
 /** Ignore widths too large to be a scrollbar. */
 const MAX_GUTTER_PX = 48;
 
-/** Re-measuring is a forced layout, so resize bursts are coalesced. */
+/** Re-measuring forces layout, so resize bursts are coalesced. */
 const RESIZE_SETTLE_MS = 200;
 
-/** A measured width, plus whether the sweep could read the DOM at all. */
+/** `reliable` is false when the sweep could not read the DOM at all. */
 type Measurement = { gutter: number; reliable: boolean };
 
 function measure(doc: Document): Measurement {
@@ -25,8 +24,7 @@ function measure(doc: Document): Measurement {
   }
 
   const probe = doc.createElement("div");
-  // Keep the probe in the viewport and above dialogs. Explicit pointer events
-  // override the body setting used while a Radix modal is open.
+  // Above dialogs; pointer-events:auto beats a Radix modal's body "none".
   probe.style.cssText =
     "position:fixed;top:0;left:0;width:60px;height:60px;margin:0;border:0;padding:0;opacity:0;overflow-y:scroll;pointer-events:auto;z-index:2147483647";
   const content = doc.createElement("div");
@@ -53,15 +51,14 @@ function measure(doc: Document): Measurement {
       }
       gutter = offset;
     }
-    // The sweep never reached the probe's own content, so hit testing is
-    // unusable here. A width is not distinguishable from no scrollbar.
+    // Hit testing unusable here: a width is indistinguishable from no scrollbar.
     return { gutter: 0, reliable: false };
   } finally {
     body.removeChild(probe);
   }
 }
 
-/** Measures the scrollbar's pointer-active width, or 0 when none is reliable. */
+/** Pointer-active scrollbar width, or 0 when nothing reliable was read. */
 export function measureOverlayScrollbarGutter(doc: Document): number {
   return measure(doc).gutter;
 }
@@ -71,8 +68,7 @@ export function applyOverlayScrollbarGutter(doc: Document): number {
   const { gutter, reliable } = measure(doc);
   const root = doc.documentElement;
   if (!reliable) {
-    // Keep the last good gutter: dropping it would shift every row that
-    // reserved it, on nothing more than one unreadable sweep.
+    // Keep the last good gutter: one unreadable sweep must not shift rows.
     return (
       Number.parseFloat(
         root.style.getPropertyValue(OVERLAY_SCROLLBAR_GUTTER_VAR),

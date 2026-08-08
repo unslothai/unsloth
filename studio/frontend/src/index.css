@@ -2720,8 +2720,7 @@ html[data-chat-font] .aui-root {
 	scrollbar-gutter: stable;
 }
 
-/* Keep right-edge controls clear of the measured overlay scrollbar strip.
-   Classic scrollbars fall back to zero because they already take layout space. */
+/* Reserve the measured overlay strip; classic scrollbars already take space. */
 .overlay-scrollbar-gutter {
 	padding-right: var(--overlay-scrollbar-gutter, 0px);
 }

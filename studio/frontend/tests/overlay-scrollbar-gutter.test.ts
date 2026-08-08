@@ -24,7 +24,6 @@ type Node = {
   getBoundingClientRect: () => { top: number; right: number; height: number };
 };
 
-/** Whether the probe overrides a non-interactive body. */
 function optsIntoHitTesting(node: Node): boolean {
   return /(^|;)\s*pointer-events\s*:\s*auto\s*(;|$)/.test(node.style.cssText);
 }
@@ -113,7 +112,6 @@ test("an overlay scrollbar's hit strip is measured, not assumed", () => {
   const { doc, bodyChildren } = fakeDocument({ railPx: 21, layoutPx: 0 });
 
   assert.equal(measureOverlayScrollbarGutter(doc), 21);
-  // The probe must always be removed.
   assert.deepEqual(bodyChildren, []);
 });
 
@@ -139,7 +137,6 @@ test("an unreadable sweep leaves the layout alone rather than guessing", () => {
 });
 
 test("an open modal's pointer-events:none does not erase the gutter", () => {
-  // Re-measurement can run while a modal disables body pointer events.
   const { doc, vars } = fakeDocument({
     railPx: 21,
     layoutPx: 0,
@@ -156,8 +153,7 @@ test("one unreadable sweep does not drop a gutter already in use", () => {
 
   assert.equal(applyOverlayScrollbarGutter(doc), 21);
 
-  // Same scrollbar, but this sweep read nothing. Re-measuring must not shift
-  // every row that already reserved the strip.
+  // Same scrollbar, unreadable sweep: rows that reserved the strip must hold.
   knobs.contentReachable = false;
   assert.equal(applyOverlayScrollbarGutter(doc), 21);
   assert.equal(vars.get(OVERLAY_SCROLLBAR_GUTTER_VAR), "21px");
@@ -243,7 +239,6 @@ test("regaining focus re-measures, so a changed scrollbar setting is picked up",
   handlers.get("focus")?.();
   assert.equal(vars.get(OVERLAY_SCROLLBAR_GUTTER_VAR), "15px");
 
-  // Turning overlay scrollbars off must remove the gutter again.
   railPx = 0;
   handlers.get("focus")?.();
   assert.equal(vars.has(OVERLAY_SCROLLBAR_GUTTER_VAR), false);
