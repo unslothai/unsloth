@@ -721,11 +721,7 @@ def _try_transport_retry(
     )
 
 
-def _try_http_retry(
-    registry: download_registry.DownloadRegistry,
-    key: str,
-    **kwargs,
-) -> bool:
+def _try_http_retry(registry: download_registry.DownloadRegistry, key: str, **kwargs) -> bool:
     """Reclaim *key* over HTTP: the terminal rung of the recovery ladder. Thin alias kept because
     "retry over HTTP" is what most call sites mean and read better than the transport keyword."""
     return _try_transport_retry(

@@ -130,7 +130,9 @@ def test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim(monkeypatch, t
         return None
 
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", _start)
-    monkeypatch.setattr(download_lifecycle, "_record_xet_failure", lambda *a: pytest.fail("charged"))
+    monkeypatch.setattr(
+        download_lifecycle, "_record_xet_failure", lambda *a: pytest.fail("charged")
+    )
     register_worker = download_lifecycle.register_worker
 
     registry = download_registry.DownloadRegistry()
@@ -146,7 +148,13 @@ def test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim(monkeypatch, t
     generation = registry.current_generation(key)
     spawned = []
 
-    def fake_spawn(args, _token, *, use_xet, protected_blob_hashes = None):
+    def fake_spawn(
+        args,
+        _token,
+        *,
+        use_xet,
+        protected_blob_hashes = None,
+    ):
         spawned.append((args, use_xet))
         return _Proc(0)
 
@@ -186,7 +194,14 @@ def test_an_unspawnable_xet_retry_falls_through_to_http(monkeypatch, tmp_path):
 
     spawned = []
 
-    def flaky_spawn(args, _token, *, use_xet, protected_blob_hashes = None, **_kw):
+    def flaky_spawn(
+        args,
+        _token,
+        *,
+        use_xet,
+        protected_blob_hashes = None,
+        **_kw,
+    ):
         spawned.append(use_xet)
         if use_xet:
             raise OSError("cannot fork")
