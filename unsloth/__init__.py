@@ -86,11 +86,13 @@ def _unsloth_version():
     # checkouts that were never installed. Do NOT borrow unsloth_zoo.__version__:
     # the zoo is a separate distribution pinned with `>=` and routinely trails.
     from importlib.metadata import PackageNotFoundError, version as _dist_version
+
     try:
         return _dist_version("unsloth")
     except PackageNotFoundError:
         pass
     import re
+
     _utils = os.path.join(os.path.dirname(__file__), "models", "_utils.py")
     try:
         with open(_utils, encoding = "utf-8") as _f:
