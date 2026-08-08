@@ -112,9 +112,9 @@ def test_mlx_wandb_run_config_excludes_subject_and_secrets():
         encoding = "utf-8"
     )
 
-    assert '_wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}' in source, (
-        "MLX W&B run config must exclude subject and the token/s3 secrets"
-    )
+    assert (
+        '_wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}' in source
+    ), "MLX W&B run config must exclude subject and the token/s3 secrets"
 
 
 def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
