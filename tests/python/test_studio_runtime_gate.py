@@ -70,14 +70,18 @@ def test_terminal_launch_boundaries_use_the_runtime_gate():
 
 def test_terminal_update_holds_the_gate_through_environment_mutation():
     source = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    body = source[source.index("def update(") : source.index("def _release_self_exe_lock_windows")]
+    start = source.index("def update(")
+    # To the next top-level def, rather than naming the one that happens to follow today.
+    end = source.index("\ndef ", start + 1)
+    body = source[start:end]
     consume = body.index("_studio_runtime_gate.consume_runtime_gate_handoff()")
     guard = body.index("with _studio_runtime_launch_guard(", consume)
     idle_scan = body.index("_studio_runtime_gate.ensure_managed_environment_is_idle", guard)
-    release_self = body.index("_release_self_exe_lock_windows()", idle_scan)
-    setup = body.index("_run_setup_script(", release_self)
+    # The launcher transaction wraps the mutation; it replaced the self-exe lock release.
+    launcher = body.index("_WindowsLauncherUpdateTransaction()", idle_scan)
+    setup = body.index("_run_setup_script(", launcher)
     verify = body.index("_fail_if_install_damaged()", setup)
-    assert consume < guard < idle_scan < release_self < setup < verify
+    assert consume < guard < idle_scan < launcher < setup < verify
 
 
 def test_terminal_setup_holds_the_gate_through_environment_mutation():
