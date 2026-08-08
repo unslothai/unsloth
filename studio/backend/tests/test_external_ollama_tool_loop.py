@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Critical contracts for Studio-managed external-provider tool rounds."""
-
 import asyncio
 import copy
 import json
@@ -109,13 +107,16 @@ def test_executes_tool_continues_and_aggregates_usage(monkeypatch):
         ]
     )
 
-    output = asyncio.run(_collect(client, confirm_tool_calls = True))
+    options = {"confirm_tool_calls": True, "request_kwargs": {"continue_final_message": True}}
+    output = asyncio.run(_collect(client, **options))
 
     assert executed == [("web_search", {"query": "Cairo"})]
-    assert [message["role"] for message in client.calls[1]["messages"][-2:]] == [
+    assert tuple(message["role"] for message in client.calls[1]["messages"][-2:]) == (
         "assistant",
         "tool",
-    ]
+    )
+    assert client.calls[0]["continue_final_message"] is True
+    assert "continue_final_message" not in client.calls[1]
     assert sum('"type": "tool_start"' in line for line in output) == 1
     assert any('"awaiting_confirmation": true' in line for line in output)
     assert sum('"type": "tool_end"' in line for line in output) == 1

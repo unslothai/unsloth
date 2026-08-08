@@ -10013,7 +10013,10 @@ async def _proxy_to_external_provider(
         if _external_studio_tool_intent
         else []
     )
-    _use_external_studio_tools = bool(_external_studio_tools)
+    _external_tool_budget = (
+        payload.max_tool_calls_per_message if payload.max_tool_calls_per_message is not None else 25
+    )
+    _use_external_studio_tools = bool(_external_studio_tools) and _external_tool_budget > 0
     _external_studio_tool_names = {
         tool["function"]["name"]
         for tool in _external_studio_tools
@@ -10164,12 +10167,11 @@ async def _proxy_to_external_provider(
                     "prompt_cache_ttl": payload.prompt_cache_ttl,
                     "compaction_threshold": payload.compaction_threshold,
                     "fast_mode": payload.fast_mode,
+                    "continue_final_message": _continue_final_message(payload),
                 },
                 provider_enabled_tools = _external_provider_enabled_tools,
                 tool_choice = payload.tool_choice,
-                max_tool_iterations = payload.max_tool_calls_per_message
-                if payload.max_tool_calls_per_message is not None
-                else 25,
+                max_tool_iterations = _external_tool_budget,
                 tool_call_timeout = payload.tool_call_timeout
                 if payload.tool_call_timeout is not None
                 else 300,

@@ -349,6 +349,8 @@ async def stream_external_chat_with_tools(
         else:
             round_tool_choice = None
         round_request_kwargs = dict(request_kwargs)
+        if observed_call_rounds:
+            round_request_kwargs.pop("continue_final_message", None)
         round_request_kwargs["parallel_tool_calls"] = parallel_tool_calls
         upstream = client.stream_chat_completion(
             messages = conversation,

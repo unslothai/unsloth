@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Trust-boundary coverage for saved external-provider tool execution."""
-
 import asyncio
 from types import SimpleNamespace
 
@@ -84,7 +82,7 @@ def _payload(**kwargs):
     return ChatCompletionRequest(
         model = "default",
         external_model = kwargs.pop("external_model", "model"),
-        messages = [SYSTEM, {"role": "user", "content": "hello"}],
+        messages = kwargs.pop("messages", [SYSTEM, {"role": "user", "content": "hello"}]),
         stream = kwargs.pop("stream", True),
         provider_id = "saved",
         provider_type = "ollama",
@@ -114,7 +112,10 @@ def _run(payload):
 def test_saved_opt_in_owns_routing_and_empty_selection_falls_through(monkeypatch, selected, path):
     captured = _configure(monkeypatch, selected)
 
-    _run(_payload(rag_scope = {"collection_id": "scope"}))
+    prefill = [SYSTEM, {"role": "assistant", "content": "partial"}]
+    payload = _payload(messages = prefill, continue_final_message = True)
+    payload.rag_scope = {"collection_id": "scope"}
+    _run(payload)
 
     assert captured["client"] == {
         "provider_type": "custom",
@@ -128,8 +129,12 @@ def test_saved_opt_in_owns_routing_and_empty_selection_falls_through(monkeypatch
         assert "Keep this instruction." in system_content
         assert "Do not answer from memory" in system_content
         assert captured["tracker"]["track_active_generation"] is False
+        assert captured["managed"]["request_kwargs"]["continue_final_message"] is True
         with pytest.raises(inference_mod.HTTPException):
             _run(_payload(stream = False))
+        captured.clear()
+        _run(_payload(stream = False, max_tool_calls_per_message = 0))
+        assert captured["plain"]["messages"][0]["content"] == SYSTEM["content"]
 
 
 def test_process_policy_and_request_intent_control_saved_external_tools(monkeypatch):
