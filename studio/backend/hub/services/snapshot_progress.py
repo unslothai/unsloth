@@ -412,6 +412,17 @@ def compute_snapshot_progress(
 
     completed_bytes, in_progress_bytes, cache_path, complete_on_disk, target_present = selected
     downloaded_bytes = completed_bytes + in_progress_bytes
+    # A reading taken while some root could not be listed is only ever a LOWER bound. The
+    # active root raising EACCES/EIO while a remembered cache still holds the repo dir (with a
+    # sibling quant in it) gives a non-null selection carrying target_present False and zero
+    # bytes -- and hydration reads that as "the variant was deleted" and retires the job,
+    # though the inaccessible root may hold every byte of it. Absence claims need a complete
+    # scan behind them, so downgrade them to unknown; a positive reading is unaffected,
+    # because bytes we did see are bytes that are there.
+    scan_incomplete = bool(scan_errors)
+    if scan_incomplete:
+        if not target_present:
+            target_present = None
     # Subtract the companion baseline only while still counted in completed_bytes
     # and the variant is not yet verified complete, else genuine progress reads as
     # 0-byte. A baseline that covers the whole expected total is never subtracted
@@ -442,6 +453,7 @@ def compute_snapshot_progress(
             "progress": 0,
             "cache_path": cache_path,
             "target_present": target_present,
+            "cache_measured": not scan_incomplete,
         }
 
     display_expected_total = max(0, expected_total - effective_baseline_bytes)
@@ -451,6 +463,8 @@ def compute_snapshot_progress(
             "expected_bytes": display_expected_total,
             "cache_path": cache_path,
             "target_present": target_present,
+            # Zero bytes read out of an incomplete scan is not evidence of zero bytes on disk.
+            "cache_measured": not scan_incomplete,
         }
 
     # Cap at 0.99 until the manifest-backed disk check verifies completion: on
@@ -474,6 +488,7 @@ def compute_snapshot_progress(
         "progress": round(progress, 3),
         "cache_path": cache_path,
         "target_present": target_present,
+        "cache_measured": not scan_incomplete,
     }
 
 

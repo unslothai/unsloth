@@ -424,7 +424,7 @@ def test_list_cached_gguf_load_id_breaks_mtime_ties_like_variant_discovery(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [legacy], raising = False)
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [legacy], raising = False)
 
     rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
 
@@ -692,7 +692,7 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -752,7 +752,7 @@ def test_the_pins_excuse_covers_only_the_quants_it_holds(monkeypatch, tmp_path):
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -809,7 +809,7 @@ def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkey
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
     variant = GgufVariantInfo(
         filename = "Model-Q4_K_M.gguf",
@@ -1155,7 +1155,7 @@ def test_vision_is_read_from_the_cache_root_holding_the_row(monkeypatch, tmp_pat
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active, legacy])
 
     row = {
         c["repo_id"]: c
@@ -1189,7 +1189,7 @@ def test_vision_is_not_invented_for_a_copy_that_ships_no_projector(monkeypatch, 
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active, legacy])
 
     row = {
         c["repo_id"]: c
@@ -3514,7 +3514,7 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
 
     # Disk-only means disk-only: a remote listing here would be the bug this route avoids.
@@ -3557,7 +3557,7 @@ def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_p
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
 
     def _unreachable(*args, **kwargs):
@@ -3596,7 +3596,7 @@ def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
 
     from hub.services.models import cache_inventory
@@ -3963,7 +3963,8 @@ def _pin_caches(monkeypatch, active: Path, roots: list[Path]) -> None:
             source = "test",
         ),
     )
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: list(roots))
+    # **kw so the stub keeps matching the real signature, which now takes scan_errors.
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: list(roots))
 
 
 def _unreachable_hub(monkeypatch) -> None:

@@ -430,6 +430,32 @@ def test_repo_delete_clears_legacy_scope_when_handed_a_RESOLVED_root(monkeypatch
     assert download_manifest.read_manifest("model", "Org/Model", "Q4_K_M") is None
 
 
+def test_variant_delete_clears_legacy_scope_when_handed_a_RESOLVED_root(monkeypatch, tmp_path):
+    """Same asymmetry, one variant at a time.
+
+    The single-variant delete route reaches purge_state with the root
+    resolve_delete_target_root already resolved, so the raw spelling reproduced the canonical
+    digest and only that scope was probed. The read path still probed both, so the exact
+    variant the user deleted came back as partial (or cancelled) on the next poll, its files
+    gone but its state file sitting under the pre-resolve digest.
+    """
+    spelled, resolved = _redirected_hub_cache(tmp_path)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = str(spelled)),
+    )
+    legacy = _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
+
+    removed = download_manifest.purge_state(
+        "model", "Org/Model", "Q4_K_M", hub_cache = str(resolved)
+    )
+
+    assert removed is True
+    assert not legacy.is_file()
+    assert download_manifest.read_manifest("model", "Org/Model", "Q4_K_M") is None
+
+
 def test_variant_index_sees_legacy_scope_when_handed_a_RESOLVED_root(monkeypatch, tmp_path):
     """Same asymmetry on the inventory side.
 

@@ -401,10 +401,18 @@ def _state_paths(
     collapses to one entry whenever the two spellings agree, which is every path
     that resolves to itself.
     """
+    # _scope_spellings, not cache_scope_names, for the reason the repo-wide purge already
+    # uses it: the single-variant delete route hands us a root that resolve_delete_target_root
+    # has ALREADY resolved, so the raw spelling reproduces the canonical digest and the
+    # pre-resolve scope is never probed. The read paths do probe it (they are fed the raw
+    # configured setting), so an exact-variant delete left a legacy-scoped manifest or cancel
+    # marker behind for the next read to resurrect the variant as partial or cancelled.
+    # _scope_spellings adds the configured cache's own spelling only when it names the same
+    # directory, so deleting out of a non-active cache still cannot touch the active one.
     scopes = (
         (None,)
         if hub_cache is None
-        else cache_scope_names(raw_hub_cache if raw_hub_cache is not None else hub_cache)
+        else _scope_spellings(raw_hub_cache if raw_hub_cache is not None else hub_cache)
     )
     paths = [
         path_factory(
