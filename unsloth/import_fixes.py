@@ -1012,23 +1012,19 @@ def _is_broken_torchvision_error(error) -> bool:
     return False
 
 
-# PyPI carries exactly one torchvision build per release and it is the CUDA
-# one: its `_C.so` links libcudart.so.12, libc10_cuda.so and libtorch_cuda.so.
-# The ROCm, XPU and CPU builds link libamdhip64/libc10_hip/libtorch_hip (or
-# nothing) instead, and live only on download.pytorch.org under an index named
-# after torch's own local tag. `--no-deps` keeps the installed torch, so on
-# those hosts an unqualified pin swaps a working wheel for a CUDA one and
-# raises the very `operator torchvision::nms does not exist` this command is
-# handed out to clear. CUDA tags are left alone: PyPI already ships that build
-# and the sonames match across cu12x.
+# PyPI carries exactly one torchvision build per release and it is one CUDA
+# family: its `_C.so` links libcudart, libc10_cuda and libtorch_cuda. Every
+# other build -- CPU, XPU, ROCm, and every CUDA family but PyPI's -- lives only
+# on download.pytorch.org, under an index named after torch's own local tag.
+# `--no-deps` keeps the installed torch, so an unqualified pin swaps a working
+# wheel for PyPI's and raises the very `operator torchvision::nms does not
+# exist` this command is handed out to clear. A tag we cannot turn into an
+# index (a vendor build: this repo's Radeon extras install
+# `torch 2.9.1+rocm7.2.0.lw.git7e1940d4` beside a repo.radeon.com torchvision;
+# or a source build) has no wheel to name at all, and neither does a
+# prerelease, whose stable-looking companion is synthesised from the release
+# numbers alone.
 _TORCH_BACKEND_INDEX = re.compile(r"cpu|xpu|cu\d+|rocm\d+(?:\.\d+)*", re.IGNORECASE)
-
-# Builds that no public index pairs with, so no pinned reinstall can repair
-# them: a vendor wheel (this repo's own Radeon extras install
-# `torch 2.9.1+rocm7.2.0.lw.git7e1940d4` beside a `repo.radeon.com` torchvision),
-# a source build, and any nightly, whose stable-looking companion version is
-# synthesised from the release numbers alone.
-_TORCH_PRERELEASE_TAGS = (".dev", "a0", "b0", "rc", "alpha", "beta", "nightly")
 
 
 def _torch_local_tag(torch_version_raw):
@@ -1038,7 +1034,12 @@ def _torch_local_tag(torch_version_raw):
 
 
 def _has_no_matching_public_wheel(torch_version_raw):
-    if any(tag in (torch_version_raw or "") for tag in _TORCH_PRERELEASE_TAGS):
+    try:
+        # `.is_prerelease`, not a substring list: `2.11.0a1` and `2.11.0b2` are
+        # prereleases that no `a0`/`b0` match would catch.
+        if TrueVersion(torch_version_raw).is_prerelease:
+            return True
+    except Exception:
         return True
     local = _torch_local_tag(torch_version_raw)
     return bool(local) and not _TORCH_BACKEND_INDEX.fullmatch(local)
@@ -1078,7 +1079,7 @@ def _torchvision_repair_command(required = None, torch_version_raw = None):
         spec = f"torchvision=={required[0]}.{required[1]}.*"
     local = _torch_local_tag(torch_version_raw)
     index = ""
-    if local and not local.lower().startswith("cu") and _TORCH_BACKEND_INDEX.fullmatch(local):
+    if local and _TORCH_BACKEND_INDEX.fullmatch(local):
         index = f" --index-url https://download.pytorch.org/whl/{local.lower()}"
     return f'pip install --force-reinstall --no-deps --no-cache-dir{index} "{spec}"'
 

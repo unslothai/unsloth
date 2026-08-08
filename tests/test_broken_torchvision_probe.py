@@ -248,15 +248,16 @@ def test_the_repair_command_keeps_the_backend_torch_was_built_for():
             )
         return str(excinfo.value)
 
-    for tag in ("rocm6.3", "rocm6.2.4", "xpu", "cpu"):
+    # CUDA families included: PyPI ships exactly one of them, so `cu118only*`
+    # (pyproject.toml:176) is as mismatched against PyPI's build as ROCm is.
+    for tag in ("rocm6.3", "rocm6.2.4", "xpu", "cpu", "cu118", "cu126", "cu128"):
         command = advice(f"2.7.0+{tag}")
         assert f"--index-url https://download.pytorch.org/whl/{tag}" in command, command
         assert "torchvision==0.22.0" in command, command
 
-    # PyPI already ships the CUDA build, and a plain release has no backend tag.
-    for raw in ("2.7.0+cu128", "2.7.0"):
-        assert "--index-url" not in advice(raw), raw
-        assert "force-reinstall" in advice(raw), raw
+    # No local tag, so PyPI's own build is the one that pairs with it.
+    assert "--index-url" not in advice("2.7.0")
+    assert "force-reinstall" in advice("2.7.0")
 
 
 def test_a_build_no_public_index_carries_is_not_sent_to_pip():
@@ -282,6 +283,10 @@ def test_a_build_no_public_index_carries_is_not_sent_to_pip():
         ("2.9.1+rocmsdk20260116", (0, 24, 1)),  # Radeon Windows extra
         ("2.7.0+git1a2b3c", (0, 22, 0)),  # built from source
         ("2.12.0.dev20260801+cpu", (0, 27, 0)),  # nightly
+        # Prereleases past the first: no `a0`/`b0` substring to match on.
+        ("2.11.0a1+cu128", (0, 26, 0)),
+        ("2.11.0b2+cu128", (0, 26, 0)),
+        ("2.7.0rc1", (0, 22, 0)),
     ):
         text = advice(raw, required)
         assert "pip install" not in text, text
