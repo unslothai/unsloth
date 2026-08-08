@@ -1724,6 +1724,75 @@ class ExternalProviderClient:
                     native_blocks.append(dict(block))
             return native_blocks
 
+        def _native_content_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+            """Return the longest ordered Anthropic block snapshot saved by the tool loop."""
+
+            managed_ids = {
+                tool_call.get("id")
+                for tool_call in message.get("tool_calls") or []
+                if isinstance(tool_call, dict) and tool_call.get("id")
+            }
+            allowed_types = {
+                "thinking",
+                "redacted_thinking",
+                "text",
+                "compaction",
+                "tool_use",
+                "server_tool_use",
+                "web_search_tool_result",
+                "web_fetch_tool_result",
+                "bash_code_execution_tool_result",
+                "text_editor_code_execution_tool_result",
+                "code_execution_tool_result",
+            }
+            ordered: list[dict[str, Any]] = []
+            for tool_call in message.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                extra = tool_call.get("extra_content")
+                anthropic = extra.get("anthropic") if isinstance(extra, dict) else None
+                blocks = anthropic.get("content_blocks") if isinstance(anthropic, dict) else None
+                candidate = [
+                    dict(block)
+                    for block in (blocks if isinstance(blocks, list) else [])
+                    if isinstance(block, dict)
+                    and block.get("type") in allowed_types
+                    and (block.get("type") != "tool_use" or block.get("id") in managed_ids)
+                    and (block.get("type") != "text" or bool(block.get("text")))
+                    and (block.get("type") != "compaction" or bool(block.get("content")))
+                ]
+                if len(candidate) > len(ordered):
+                    ordered = candidate
+            return ordered
+
+        def _append_tool_use_blocks(blocks: list[dict[str, Any]], tool_calls: list[Any]) -> None:
+            saved_ids = {block.get("id") for block in blocks if block.get("type") == "tool_use"}
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function") or {}
+                if not isinstance(function, dict) or not function.get("name"):
+                    continue
+                raw_input = function.get("arguments") or "{}"
+                try:
+                    parsed_input = (
+                        _json.loads(raw_input) if isinstance(raw_input, str) else raw_input
+                    )
+                except Exception:
+                    parsed_input = {"_raw": raw_input}
+                if not isinstance(parsed_input, dict):
+                    parsed_input = {"value": parsed_input}
+                if tool_call.get("id") in saved_ids:
+                    continue
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tool_call.get("id") or f"toolu_{time.time_ns()}",
+                        "name": function["name"],
+                        "input": parsed_input,
+                    }
+                )
+
         # Extract system prompt; translate image_url parts to Anthropic format
         system: Optional[str] = None
         filtered: list[dict[str, Any]] = []
@@ -1778,6 +1847,16 @@ class ExternalProviderClient:
                     _flat_result = _json.dumps(content)
                 _append_tool_result(_tr_id, _flat_result)
                 continue
+            if (
+                msg.get("role") == "assistant"
+                and isinstance(msg.get("tool_calls"), list)
+                and msg["tool_calls"]
+            ):
+                ordered_blocks = _native_content_blocks(msg)
+                if ordered_blocks:
+                    _append_tool_use_blocks(ordered_blocks, msg["tool_calls"])
+                    filtered.append({"role": "assistant", "content": ordered_blocks})
+                    continue
             if isinstance(content, list):
                 # Translate OpenAI multimodal parts -> Anthropic native shapes.
                 # - `image_url`     -> `{type:"image", source:...}`
@@ -1880,27 +1959,7 @@ class ExternalProviderClient:
                 # OpenAI's top-level `tool_calls` field; the call lives inside a
                 # content block `{type:"tool_use", id, name, input}`.
                 if msg.get("role") == "assistant" and isinstance(msg.get("tool_calls"), list):
-                    for _tc in msg["tool_calls"]:
-                        if not isinstance(_tc, dict):
-                            continue
-                        _fn = _tc.get("function") or {}
-                        if not isinstance(_fn, dict) or not _fn.get("name"):
-                            continue
-                        _raw = _fn.get("arguments") or "{}"
-                        try:
-                            _input = _json.loads(_raw) if isinstance(_raw, str) else _raw
-                        except Exception:
-                            _input = {"_raw": _raw}
-                        if not isinstance(_input, dict):
-                            _input = {"value": _input}
-                        anthropic_parts.append(
-                            {
-                                "type": "tool_use",
-                                "id": _tc.get("id") or f"toolu_{time.time_ns()}",
-                                "name": _fn["name"],
-                                "input": _input,
-                            }
-                        )
+                    _append_tool_use_blocks(anthropic_parts, msg["tool_calls"])
                 # Skip whole-message append when nothing usable survived. An
                 # empty content array (e.g. user dropped only an unparseable
                 # `input_document`) would 400 with "messages.N.content: at
@@ -1918,31 +1977,11 @@ class ExternalProviderClient:
                     and msg["tool_calls"]
                 ):
                     _text_content = msg.get("content")
-                    _blocks: list[dict[str, Any]] = _native_thinking_blocks(msg)
+                    _blocks = _native_thinking_blocks(msg)
                     if isinstance(_text_content, str) and _text_content:
                         _blocks.append({"type": "text", "text": _text_content})
                     _blocks.extend(_native_hosted_blocks(msg))
-                    for _tc in msg["tool_calls"]:
-                        if not isinstance(_tc, dict):
-                            continue
-                        _fn = _tc.get("function") or {}
-                        if not isinstance(_fn, dict) or not _fn.get("name"):
-                            continue
-                        _raw = _fn.get("arguments") or "{}"
-                        try:
-                            _input = _json.loads(_raw) if isinstance(_raw, str) else _raw
-                        except Exception:
-                            _input = {"_raw": _raw}
-                        if not isinstance(_input, dict):
-                            _input = {"value": _input}
-                        _blocks.append(
-                            {
-                                "type": "tool_use",
-                                "id": _tc.get("id") or f"toolu_{time.time_ns()}",
-                                "name": _fn["name"],
-                                "input": _input,
-                            }
-                        )
+                    _append_tool_use_blocks(_blocks, msg["tool_calls"])
                     if _blocks:
                         filtered.append({"role": "assistant", "content": _blocks})
                     continue
@@ -2317,6 +2356,7 @@ class ExternalProviderClient:
                 client_tool_uses: dict[int, dict[str, Any]] = {}
                 thinking_blocks: dict[int, dict[str, Any]] = {}
                 hosted_blocks: dict[int, dict[str, Any]] = {}
+                native_content_blocks: dict[int, dict[str, Any]] = {}
                 next_client_tool_index = 0
                 compaction_blocks_seen = 0
                 # Document citations from ``citations_delta`` events. Deduped by
@@ -2526,13 +2566,22 @@ class ExternalProviderClient:
                                     "code_execution_tool_result",
                                 }
                             ):
-                                hosted_blocks[block_index] = dict(content_block)
+                                native_block = dict(content_block)
+                                hosted_blocks[block_index] = native_block
+                                native_content_blocks[block_index] = native_block
                             if block_type in ("thinking", "redacted_thinking") and isinstance(
                                 block_index, int
                             ):
-                                thinking_blocks[block_index] = dict(content_block)
+                                native_block = dict(content_block)
+                                thinking_blocks[block_index] = native_block
+                                native_content_blocks[block_index] = native_block
                                 if block_type == "thinking":
                                     thinking_blocks[block_index].setdefault("thinking", "")
+                            elif block_type == "text" and isinstance(block_index, int):
+                                native_content_blocks[block_index] = {
+                                    "type": "text",
+                                    "text": str(content_block.get("text") or ""),
+                                }
                             elif block_type == "tool_use" and isinstance(block_index, int):
                                 seed_input = content_block.get("input")
                                 client_tool_uses[block_index] = {
@@ -2624,8 +2673,11 @@ class ExternalProviderClient:
                                 # text_delta. Capture both; emit on stop.
                                 seed = content_block.get("content") or ""
                                 current_compaction = {
+                                    "type": "compaction",
                                     "content": seed if isinstance(seed, str) else "",
                                 }
+                                if isinstance(block_index, int):
+                                    native_content_blocks[block_index] = current_compaction
 
                         elif event_type == "content_block_delta":
                             delta = event.get("delta", {})
@@ -2672,6 +2724,16 @@ class ExternalProviderClient:
                                         )
                                         thinking_open = False
                                     if text:
+                                        block_index = event.get("index")
+                                        native_text = (
+                                            native_content_blocks.get(block_index)
+                                            if isinstance(block_index, int)
+                                            else None
+                                        )
+                                        if isinstance(native_text, dict):
+                                            native_text["text"] = str(
+                                                native_text.get("text") or ""
+                                            ) + str(text)
                                         yield _content_chunk(text)
                                     # web_search citations: web_search_tool_result.
                                     # User-doc citations: citations_delta below.
@@ -2724,6 +2786,20 @@ class ExternalProviderClient:
                                     arguments = _json.dumps(
                                         client_call["input"], separators = (",", ":")
                                     )
+                                native_input = client_call["input"]
+                                if arguments:
+                                    try:
+                                        parsed_input = _json.loads(arguments)
+                                        if isinstance(parsed_input, dict):
+                                            native_input = parsed_input
+                                    except Exception:
+                                        pass
+                                native_content_blocks[block_index] = {
+                                    "type": "tool_use",
+                                    "id": client_call["id"],
+                                    "name": client_call["name"],
+                                    "input": native_input,
+                                }
                                 tool_call: dict[str, Any] = {
                                     "index": client_call["index"],
                                     "id": client_call["id"],
@@ -2751,6 +2827,19 @@ class ExternalProviderClient:
                                         dict(hosted_blocks[index])
                                         for index in sorted(hosted_blocks)
                                     ]
+                                ordered_blocks = [
+                                    dict(native_content_blocks[index])
+                                    for index in sorted(native_content_blocks)
+                                    if native_content_blocks[index].get("type") != "text"
+                                    or native_content_blocks[index].get("text")
+                                    if native_content_blocks[index].get("type") != "compaction"
+                                    or native_content_blocks[index].get("content")
+                                ]
+                                if ordered_blocks:
+                                    anthropic_extra = tool_call.setdefault(
+                                        "extra_content", {}
+                                    ).setdefault("anthropic", {})
+                                    anthropic_extra["content_blocks"] = ordered_blocks
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",

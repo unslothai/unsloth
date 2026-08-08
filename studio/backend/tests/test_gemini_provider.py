@@ -3557,6 +3557,17 @@ def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch
     follow-up must become a `role:"user"` message with a `tool_result`
     block."""
     captured: dict = {"messages": None}
+    native_blocks = [
+        {
+            "type": "server_tool_use",
+            "id": "srv_1",
+            "name": "web_search",
+            "input": {"query": "x"},
+        },
+        {"type": "web_search_tool_result", "tool_use_id": "srv_1", "content": []},
+        {"type": "text", "text": "let me check"},
+        {"type": "tool_use", "id": "call_a", "name": "lookup", "input": {"q": "x"}},
+    ]
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
@@ -3585,6 +3596,7 @@ def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch
                         {
                             "id": "call_a",
                             "type": "function",
+                            "extra_content": {"anthropic": {"content_blocks": native_blocks}},
                             "function": {
                                 "name": "lookup",
                                 "arguments": '{"q":"x"}',
@@ -3617,7 +3629,14 @@ def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch
     # block.
     asst = [m for m in msgs if m.get("role") == "assistant"]
     assert asst and isinstance(asst[0]["content"], list), asst
-    tool_uses = [b for b in asst[0]["content"] if b.get("type") == "tool_use"]
+    blocks = asst[0]["content"]
+    assert [block["type"] for block in blocks] == [
+        "server_tool_use",
+        "web_search_tool_result",
+        "text",
+        "tool_use",
+    ]
+    tool_uses = [blocks[-1]]
     assert len(tool_uses) == 1, asst[0]
     assert tool_uses[0]["name"] == "lookup"
     assert tool_uses[0]["input"] == {"q": "x"}
