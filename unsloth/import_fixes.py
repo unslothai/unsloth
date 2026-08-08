@@ -2287,6 +2287,15 @@ def fix_peft_transformers_weight_conversion_import():
         _install_transformers_core_model_loading_stub()
         patched_any = True
 
+    # Present but incomplete. transformers 5.x kept both modules and dropped
+    # names peft still imports at module top -- `cannot import name
+    # '_MODEL_TO_CONVERSION_PATTERN' from 'transformers.conversion_mapping'`.
+    # The stubs above only fire when a module is ABSENT, so that case fell
+    # through here and no-oped. Backfill the missing names onto the real
+    # module: strictly additive, so a transformers that still defines them is
+    # untouched, and nothing else on either side changes.
+    patched_any = _backfill_missing_conversion_symbols() or patched_any
+
     # An importable submodule can still lack individual symbols; backfill just
     # those names rather than replacing a real module wholesale.
     backfilled = {}
@@ -2302,7 +2311,7 @@ def fix_peft_transformers_weight_conversion_import():
         )
 
     if not patched_any:
-        # Real submodules present; failure was for some other reason.
+        # Real submodules present and complete; failure was for another reason.
         return False
 
     # Force a fresh import now that stubs are in place. Drop any cached
@@ -2323,6 +2332,404 @@ def fix_peft_transformers_weight_conversion_import():
         "transformers <5."
     )
     return True
+
+
+# What peft.utils.transformers_weight_conversion imports at module top. Kept
+# beside the stubs so the two lists cannot drift apart.
+_PEFT_CONVERSION_SYMBOLS = {
+    "transformers.conversion_mapping": (
+        "_MODEL_TO_CONVERSION_PATTERN",
+        "get_checkpoint_conversion_mapping",
+        "get_model_conversion_mapping",
+    ),
+    "transformers.core_model_loading": (
+        "Concatenate",
+        "ConversionOps",
+        "MergeModulelist",
+        "Transpose",
+        "WeightConverter",
+        "WeightRenaming",
+        "dot_natural_key",
+        "rename_source_key",
+    ),
+}
+
+# Of those, the ones peft calls rather than merely imports. The stubs are
+# deliberately inert: on transformers <5 the whole module is ours and peft's
+# converter never runs. Landing an inert body on a REAL transformers is a
+# different matter -- peft would call it and get a wrong answer, so these are
+# replaced by a placeholder that says what is wrong instead.
+_PEFT_CONVERSION_RUNTIME_SYMBOLS = frozenset(
+    (
+        "transformers.core_model_loading.dot_natural_key",
+        "transformers.core_model_loading.rename_source_key",
+        "transformers.core_model_loading.WeightRenaming",
+        "transformers.core_model_loading.WeightConverter",
+        # `build_peft_weight_mapping` buckets its entries with
+        # `isinstance(op, Concatenate)` / `isinstance(op, MergeModulelist)` and
+        # builds `Transpose(dim0 = 0, dim1 = 1)` outright, so an inert stub does not
+        # merely fail to help: the isinstance arms go quiet and the conversion is
+        # skipped. `ConversionOps` stays import-only -- peft subclasses it at module
+        # top and never asks about instances of it.
+        "transformers.core_model_loading.Concatenate",
+        "transformers.core_model_loading.MergeModulelist",
+        "transformers.core_model_loading.Transpose",
+        "transformers.conversion_mapping.get_checkpoint_conversion_mapping",
+        "transformers.conversion_mapping.get_model_conversion_mapping",
+    )
+)
+
+
+def _unsupported_conversion_symbol(qualified, donor_value = None):
+    """A stand-in that satisfies the import and refuses to answer wrongly.
+
+    Shaped like whatever it replaces: peft runs `isinstance(entry, X)` on the
+    class-valued names, so those stay classes -- never instantiable, which
+    makes the isinstance answer False, and False is right when the class does
+    not exist.
+    """
+    short = qualified.rsplit(".", 1)[-1]
+    message = (
+        f"Unsloth: this transformers does not provide {qualified}, which "
+        "peft.utils.transformers_weight_conversion calls to convert LoRA "
+        "weights. Unsloth supplied a placeholder so the import succeeds; "
+        "answering for it would silently mis-convert the adapter. Pin a "
+        "transformers that still exports it, or a peft that does not need it."
+    )
+    if isinstance(donor_value, type):
+        # `isinstance` has to raise, not answer False. peft buckets its
+        # conversion entries by type, and a placeholder that quietly matches
+        # nothing drops the operations instead of reporting that it cannot do
+        # the job. Subclassing still works: peft does `class PeftConcatenate
+        # (Concatenate)` at module top, and creating a class does not construct
+        # one.
+        class _RefusingMeta(type):
+            def __instancecheck__(cls, instance):
+                raise RuntimeError(message)
+
+        def _refuse_init(self, *args, **kwargs):
+            raise RuntimeError(message)
+
+        return _RefusingMeta(
+            short,
+            (object,),
+            {
+                "__init__": _refuse_init,
+                "__doc__": message,
+            },
+        )
+
+    def _refuse(*args, **kwargs):
+        raise RuntimeError(message)
+
+    _refuse.__name__ = _refuse.__qualname__ = short
+    _refuse.__doc__ = message
+    return _refuse
+
+
+# The model types peft actually acts on, and what it converts them as. Only two
+# base patterns reach a rewrite -- `_MOE_TARGET_MODULE_MAPPING` and
+# `_MOE_FUSED_TARGETS` are keyed on `mixtral` and `qwen2_moe` alone, and
+# `_convert_peft_config_moe` returns early for anything else -- so this is the
+# whole set of lookups that must not be answered with a silent None.
+# Snapshotted from transformers `conversion_mapping._MODEL_TO_CONVERSION_PATTERN`,
+# because the case this file handles is that map being gone. Names are the
+# reason it is a list and not a rule: `deepseek_v3`, `dots1`, `longcat_flash`,
+# `minimax`, `mellum`, `qwen3_next`, `solar_open` and `flex_olmo` are all fused
+# MoE and none of them say so.
+_PEFT_MOE_CONVERSION_PATTERNS = {
+    # The two base patterns map to themselves, and leaving them out was not the
+    # harmless omission it looked like: `mixtral` says nothing about MoE, so the
+    # substring hint answered the default for it -- the silent None this stand-in
+    # exists to prevent -- and the drift test failed outright on transformers
+    # 5.5.0, which pyproject permits. `qwen3_5_moe` is here for 5.3.0, where it
+    # is a separate key; the hint would catch that one, but only by its name.
+    "mixtral": "mixtral",
+    "qwen2_moe": "qwen2_moe",
+    "qwen3_5_moe": "qwen2_moe",
+    "minimax": "mixtral",
+    "minimax_m2": "mixtral",
+    "afmoe": "qwen2_moe",
+    "cohere2_moe": "qwen2_moe",
+    "deepseek_v2": "qwen2_moe",
+    "deepseek_v3": "qwen2_moe",
+    "deepseek_v32": "qwen2_moe",
+    "dots1": "qwen2_moe",
+    "ernie4_5_moe": "qwen2_moe",
+    "exaone_moe": "qwen2_moe",
+    "flex_olmo": "qwen2_moe",
+    "glm4_moe": "qwen2_moe",
+    "glm4_moe_lite": "qwen2_moe",
+    "glm4v_moe": "qwen2_moe",
+    "glm_moe_dsa": "qwen2_moe",
+    "hunyuan_v1_moe": "qwen2_moe",
+    "longcat_flash": "qwen2_moe",
+    "mellum": "qwen2_moe",
+    "olmoe": "qwen2_moe",
+    "qwen3_moe": "qwen2_moe",
+    "qwen3_next": "qwen2_moe",
+    "qwen3_omni_moe": "qwen2_moe",
+    "qwen3_omni_moe_thinker": "qwen2_moe",
+    "solar_open": "qwen2_moe",
+}
+
+# MoE-named model types whose conversion family is NOT one of the two fused ones,
+# so peft's `_convert_peft_config_moe` finds no `_MOE_TARGET_MODULE_MAPPING` entry
+# and returns without a rewrite. The substring hint below raised for all three
+# purely on the name, turning a load that works into a hard error. Every one is a
+# shipping model: `qwen3_5_moe_text` converts as `qwen3_5_text`, and both Granite
+# MoE variants as `granitemoe`. Checked before the hint, never instead of the
+# snapshot above, so a genuinely fused type still refuses.
+_PEFT_MOE_NAMED_NOT_FUSED = frozenset(
+    (
+        "granitemoehybrid",
+        "granitemoeshared",
+        "qwen3_5_moe_text",
+    )
+)
+
+# The other half of the same carve-out: MoE-named model types that are not in the
+# conversion map AT ALL. peft's `.get()` answers None for them and skips the target
+# rewrite, so a refusal here breaks an ordinary adapter load -- `qwen3_vl_moe` and
+# `lfm2_moe` are both supported models that the substring hint caught. Kept apart
+# from the set above so its upstream canary keeps comparing like with like: that
+# one is "in the map, mapped elsewhere", this one is "not in the map".
+#
+# Every `*moe*` / `*mixtral*` model type absent from `_MODEL_TO_CONVERSION_PATTERN`
+# in BOTH 5.3.0 and 5.5.0. A name absent from one only (`afmoe`, `qwen3_5_moe`)
+# stays fused: refusing a type that was fused costs an error message, answering
+# None for one is the silent mis-conversion this exists to prevent.
+_PEFT_MOE_NAMED_NOT_CONVERTED = frozenset(
+    (
+        "ernie4_5_vl_moe",
+        "glm4v_moe_text",
+        "glm4v_moe_vision",
+        "granitemoe",
+        "jetmoe",
+        "lfm2_moe",
+        "phimoe",
+        "qwen3_vl_moe",
+        "qwen3_vl_moe_text",
+    )
+)
+
+# How many of those pairs a candidate map has to agree with before we believe it
+# is the conversion map under a new name. Three, so a coincidence does not pass
+# and a version that has renamed or dropped a handful of model types still does.
+_CONVERSION_MAP_MATCHES = 3
+
+
+def _recover_conversion_pattern_map(real):
+    """Find the model-type map under whatever name this transformers uses.
+
+    peft copies this dict and looks model families up in it, so an empty one
+    is not a harmless placeholder: `_convert_peft_config_moe` misses the
+    lookup and leaves legacy LoRA targets unconverted, with no error. The most
+    likely reason for the name to disappear is a rename, so go by shape --
+    a non-empty module-level `dict[str, str]` -- rather than by name.
+
+    Shape alone is not enough to install one, though. A module that renames the
+    map is just as likely to carry some other `dict[str, str]` (an alias table,
+    a doc map), and the largest of those is not the conversion map. So a
+    candidate also has to agree with the known model-type -> pattern pairs
+    above, and the best agreement wins rather than the biggest dict. Nothing
+    convincing means nothing recovered: the caller then installs the map that
+    raises on a MoE lookup, which is the safe answer, not the wrong one.
+    """
+    best = None
+    best_matches = 0
+    for attribute in vars(real).values():
+        if not isinstance(attribute, dict) or not attribute:
+            continue
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in attribute.items()):
+            continue
+        matches = sum(1 for k, v in _PEFT_MOE_CONVERSION_PATTERNS.items() if attribute.get(k) == v)
+        if matches < _CONVERSION_MAP_MATCHES:
+            continue
+        if matches > best_matches or (matches == best_matches and len(attribute) > len(best)):
+            best, best_matches = attribute, matches
+    return best
+
+
+_MISSING = object()
+
+
+class _UnavailableConversionPatternMap(dict):
+    """A conversion map that answers only for entries someone put in it, and raises otherwise.
+
+    Stands in when transformers has REMOVED the model-type map rather than renamed it, so
+    there is nothing to recover. Importing peft's converter still works, which is the point
+    of the backfill, but a lookup we cannot answer honestly raises where it happens instead
+    of returning None and letting the adapter load mis-converted.
+
+    ``copy`` returns another one of these because peft copies the map at import
+    (`_MODEL_TO_CONVERSION_PATTERN = _MODEL_TO_CONVERSION_PATTERN.copy()`) and a plain dict
+    copy would be silent again. Writes still work, so peft's own `["mixtral"] = "mixtral"`
+    lands and answers normally.
+    """
+
+    _MESSAGE = (
+        "Unsloth: this transformers exports no model-type conversion map, so peft cannot "
+        "convert legacy LoRA targets for fused MoE checkpoints. Re-save the adapter with a "
+        "transformers that still ships transformers.conversion_mapping, or load it with a "
+        "peft that does not need the conversion."
+    )
+
+    # Only fused-MoE lookups are unsafe to answer with a silent None. peft reaches
+    # `_convert_peft_config_moe` for ANY model type that has a checkpoint conversion
+    # mapping, not just MoE ones, and for those a None is the correct answer: the function
+    # returns without a MoE target rewrite, which is what it would do with the real map
+    # too. Raising for all of them would break ordinary adapter loads to guard a case they
+    # are not in.
+    #
+    # The snapshot is the list, not a rule over the name: eleven of the twenty-four fused
+    # MoE model types say nothing about MoE in their names (`deepseek_v3`, `dots1`,
+    # `longcat_flash`, `minimax`, `mellum`, `qwen3_next`, `solar_open`, `flex_olmo` among
+    # them), so a substring test answered the default for exactly the checkpoints this
+    # exists to protect. The substring hints stay on top of it, for a fused MoE model type
+    # added after this snapshot that does follow the naming convention.
+    _MOE_HINTS = ("moe", "mixtral")
+
+    def _is_moe(self, key):
+        name = str(key).lower()
+        if name in _PEFT_MOE_CONVERSION_PATTERNS:
+            return True
+        if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
+            return False
+        return any(hint in name for hint in self._MOE_HINTS)
+
+    def _answer(self, key, default):
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        if self._is_moe(key):
+            raise RuntimeError(self._MESSAGE)
+        return default
+
+    def copy(self):
+        new = type(self)()
+        dict.update(new, self)
+        return new
+
+    def get(
+        self,
+        key,
+        default = None,
+    ):
+        return self._answer(key, default)
+
+    def __getitem__(self, key):
+        answer = self._answer(key, _MISSING)
+        if answer is _MISSING:
+            raise KeyError(key)
+        return answer
+
+
+def _backfill_conversion_symbols_once(builders, added):
+    """One pass over the modules. Returns True if any was left unimportable.
+
+    Split out so the caller can run it again: a module that could not be
+    imported this time may import fine once a module later in the pass has been
+    backfilled.
+    """
+    skipped = False
+    for name, symbols in _PEFT_CONVERSION_SYMBOLS.items():
+        real = sys.modules.get(name)
+        if real is None:
+            try:
+                real = importlib.import_module(name)
+            except Exception:
+                skipped = True
+                continue
+        if getattr(real, _UNSLOTH_STUB_SENTINEL, False):
+            continue  # ours already, and complete
+        missing = [s for s in symbols if not hasattr(real, s)]
+        if not missing:
+            continue
+        # Build the stub off to the side rather than installing it, so the real
+        # module keeps its identity and everything else it exports.
+        saved = sys.modules.pop(name, None)
+        try:
+            donor = builders[name]()
+        finally:
+            if saved is not None:
+                sys.modules[name] = saved
+            else:
+                sys.modules.pop(name, None)
+        for symbol in missing:
+            qualified = f"{name}.{symbol}"
+            if symbol == "_MODEL_TO_CONVERSION_PATTERN":
+                # peft copies this and looks families up in it, so the stub's
+                # empty dict silently drops every alias. Recover the real one.
+                recovered = _recover_conversion_pattern_map(real)
+                if recovered is None:
+                    logger.warning(
+                        "Unsloth: this transformers exports no model-type "
+                        "conversion map, so peft cannot convert legacy LoRA "
+                        "targets for fused MoE checkpoints. Adapters for other "
+                        "architectures are unaffected."
+                    )
+                # An empty dict is the one shape that fails SILENTLY. peft does
+                # `_MODEL_TO_CONVERSION_PATTERN.copy()` at import and then
+                # `.get(model_type, None)`, and a None makes `_convert_peft_config_moe`
+                # return early, so every affected adapter loads with its legacy targets
+                # unconverted and no message anywhere. Every other runtime symbol here is
+                # backfilled as fail-on-use for exactly that reason; this one now matches.
+                setattr(
+                    real,
+                    symbol,
+                    dict(recovered) if recovered else _UnavailableConversionPatternMap(),
+                )
+                added.append(qualified)
+                continue
+            if qualified in _PEFT_CONVERSION_RUNTIME_SYMBOLS:
+                # peft calls this one. The stub bodies exist to make the import
+                # work on transformers <5, where peft's converter never runs;
+                # on a real transformers it would run and answer wrongly.
+                setattr(
+                    real,
+                    symbol,
+                    _unsupported_conversion_symbol(qualified, getattr(donor, symbol, None)),
+                )
+                added.append(qualified)
+                continue
+            if hasattr(donor, symbol):
+                setattr(real, symbol, getattr(donor, symbol))
+                added.append(qualified)
+    return skipped
+
+
+def _backfill_missing_conversion_symbols():
+    """Add only the names a real module is missing, taken from our own stub.
+
+    Never replaces a module and never overwrites a name transformers defines,
+    so this is a no-op on every release that still exports them.
+    """
+    builders = {
+        "transformers.conversion_mapping": _install_transformers_conversion_mapping_stub,
+        "transformers.core_model_loading": _install_transformers_core_model_loading_stub,
+    }
+    added = []
+    # One pass is not enough when the two drifts coincide. conversion_mapping
+    # imports names from core_model_loading at its own module top, so while
+    # core_model_loading is still missing them, importing conversion_mapping
+    # raises and the pass skips it. Backfilling core_model_loading later in the
+    # same pass unblocks that import, but nothing comes back for it, and
+    # _gpu_init calls this guard once, so an installation carrying both drifts
+    # stayed broken. Repeat while a pass both adds a symbol and leaves a module
+    # unimportable; each pass adds at least one symbol, so the bound is the
+    # number of modules and there is no way to spin.
+    for _attempt in range(len(_PEFT_CONVERSION_SYMBOLS) + 1):
+        before = len(added)
+        skipped = _backfill_conversion_symbols_once(builders, added)
+        if not skipped or len(added) == before:
+            break
+    if added:
+        logger.info(
+            "Unsloth: backfilled %s so peft.utils."
+            "transformers_weight_conversion imports on this transformers.",
+            ", ".join(added),
+        )
+    return bool(added)
 
 
 def patch_peft_weight_converter_compatibility():
