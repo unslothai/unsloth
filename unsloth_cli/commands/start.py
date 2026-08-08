@@ -10,6 +10,7 @@ import errno
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -121,6 +122,34 @@ _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
 # colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
+# Vibe (Mistral) selects a model by its `alias` field. VIBE_HOME relocates the
+# whole home dir (like HERMES_HOME) so this session's config.toml and .env never
+# touch the user's real ~/.vibe. Vibe's config merge is not just union-by-name:
+# providers use WithUnionMerge(merge_key="name") and models are deep-merged by
+# alias key, so a project ./.vibe/config.toml holding [[providers]] name =
+# "unsloth-studio" or [[models]] alias = "unsloth-local" would win the merge and
+# resolve our session's active_model to the project's endpoint. To make the
+# collision impossible we mint session-unique provider + alias names at import
+# time — a fresh, unpredictable suffix that a project TOML cannot preregister.
+_VIBE_PROVIDER_PREFIX = "unsloth-studio-"
+_VIBE_MODEL_ALIAS_PREFIX = "unsloth-local-"
+_VIBE_SESSION_TOKEN = secrets.token_hex(4)
+_VIBE_PROVIDER = f"{_VIBE_PROVIDER_PREFIX}{_VIBE_SESSION_TOKEN}"
+_VIBE_MODEL_ALIAS = f"{_VIBE_MODEL_ALIAS_PREFIX}{_VIBE_SESSION_TOKEN}"
+_VIBE_ENV_KEY = "UNSLOTH_API_KEY"
+# Vibe's upstream README ships two install recipes: POSIX pipes the install.sh
+# through bash, Windows first bootstraps uv via PowerShell (irm | iex) and then
+# runs `uv tool install mistral-vibe`. If we only prompt the second half on
+# Windows, a first-time user without uv sees the install prompt fail silently
+# (uv missing) even though the README's two-step recipe would have worked. Fold
+# both steps into one PowerShell command; `_install_command` on os.name == 'nt'
+# already runs the hint under `powershell -NoProfile -ExecutionPolicy Bypass`,
+# so the two statements chain cleanly with a semicolon. On POSIX we keep the
+# one-liner curl-into-bash form documented for Linux/macOS.
+_VIBE_POSIX_INSTALL_HINT = "curl -LsSf https://mistral.ai/vibe/install.sh | bash"
+_VIBE_WINDOWS_INSTALL_HINT = (
+    "irm https://astral.sh/uv/install.ps1 | iex; uv tool install mistral-vibe"
+)
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
@@ -351,6 +380,8 @@ _YOLO_COMMAND_FLAGS = {
     # Pi never prompts per tool call; its only approval gate is project trust, so -a
     # (trust project resources) is the closest "don't ask me" equivalent.
     "pi": ["--approve"],
+    # Vibe accepts both --auto-approve and --yolo; the former is its documented name.
+    "vibe": ["--auto-approve"],
 }
 
 
@@ -440,6 +471,14 @@ def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], 
 
 def _hermes_install_hint() -> str:
     return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
+
+
+def _vibe_install_hint() -> str:
+    # Vibe's upstream README uses `curl | bash` on POSIX and `uv tool install
+    # mistral-vibe` on Windows (after installing uv via PowerShell). Piping the
+    # POSIX curl recipe under PowerShell would fail (no native curl+bash), so
+    # switch on os.name the same way _hermes_install_hint does.
+    return _VIBE_WINDOWS_INSTALL_HINT if os.name == "nt" else _VIBE_POSIX_INSTALL_HINT
 
 
 def _npm_install_hint(package: str, *, ignore_scripts: bool = False) -> str:
@@ -4188,6 +4227,97 @@ def write_hermes_config(base: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
+def _vibe_toml_escape(value: str) -> str:
+    """Escape a string value for inclusion in a TOML basic string literal.
+
+    TOML basic strings share JSON's backslash escaping rules for `\\` and `"`,
+    plus the control-character subset most likely to appear in a URL or key
+    (newline, carriage return, tab). Everything else is passed through as UTF-8.
+    """
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+
+
+def write_vibe_config(
+    base: str,
+    key: str,
+    model: dict,
+    path: Path,
+    yolo: bool = False,
+) -> None:
+    """Write a session `config.toml` (and sibling `.env`) that points vibe at Unsloth.
+
+    Vibe reads `config.toml` from `$VIBE_HOME/config.toml` (default `~/.vibe/`) and
+    auto-loads any `$VIBE_HOME/.env`. VIBE_HOME relocation (like HERMES_HOME) keeps
+    the user's real `~/.vibe/` untouched for the duration of this session.
+
+    The provider is registered via vibe's array-of-tables `[[providers]]` format
+    with `api_style = "openai"` and `backend = "generic"`, matching the shape vibe
+    already ships for llamacpp-style local OpenAI-compatible servers. The model is
+    exposed under a stable alias (_VIBE_MODEL_ALIAS) so `active_model` never depends
+    on the exact repo id (which may vary by GGUF quant).
+    """
+    api_base = _vibe_toml_escape(f"{base}/v1")
+    model_id = _vibe_toml_escape(model["id"])
+    lines = [
+        f'active_model = "{_VIBE_MODEL_ALIAS}"',
+        # A vibe session pinned to Unsloth Studio has no reason to phone home;
+        # telemetry/updates/notifications would surprise the user mid-session.
+        "enable_telemetry = false",
+        "enable_update_checks = false",
+        "enable_auto_update = false",
+        "enable_notifications = false",
+    ]
+    if yolo:
+        # `default_agent = "auto-approve"` is the persistent config equivalent of
+        # `vibe --auto-approve` for both interactive and programmatic (-p) runs.
+        lines += ['default_agent = "auto-approve"', "auto_approve = true"]
+    lines += [
+        "",
+        "[[providers]]",
+        f'name = "{_VIBE_PROVIDER}"',
+        f'api_base = "{api_base}"',
+        f'api_key_env_var = "{_VIBE_ENV_KEY}"',
+        'api_style = "openai"',
+        'backend = "generic"',
+        "",
+        "[[models]]",
+        f'name = "{model_id}"',
+        f'provider = "{_VIBE_PROVIDER}"',
+        f'alias = "{_VIBE_MODEL_ALIAS}"',
+    ]
+    # Vibe's per-model `auto_compact_threshold` defaults to 200,000 tokens, far
+    # larger than a small local GGUF window. When the real window is below that
+    # default, vibe would keep the session growing until the Unsloth /v1 server
+    # rejects the request for exceeding the model context. Derive the threshold
+    # at 90% of the real window (matches the compaction headroom used for
+    # hermes) so vibe compacts before overflowing smaller local models.
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        window = int(window)
+        threshold = max(1, int(window * 0.9))
+        lines.append(f"auto_compact_threshold = {threshold}")
+    text = "\n".join(lines) + "\n"
+    path.parent.mkdir(parents = True, exist_ok = True)
+    if not path.exists() or path.read_text(encoding = "utf-8") != text:
+        path.write_text(text, encoding = "utf-8")
+        typer.echo(f"Updated {path}")
+    # Vibe auto-loads $VIBE_HOME/.env; put the minted key there so a passthrough
+    # `vibe` subcommand that re-parses its own config still finds the credential.
+    # 0600: this file holds an API key and the parent dir may be world-traversable.
+    env_path = path.parent / ".env"
+    env_text = f"{_VIBE_ENV_KEY}={key}\n"
+    env_path.unlink(missing_ok = True)
+    fd = os.open(env_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+        handle.write(env_text)
+
+
 def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -4915,3 +5045,90 @@ def pi(
             install_hint = install_hint,
             clear_screen = True,
         )
+
+
+@start_app.command("vibe", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def vibe(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    serve: bool = _SERVE_OPTION,
+    yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
+):
+    """Point Mistral Vibe at the running Unsloth server and start it."""
+    # Route a leading `org/name` positional to --model; forward the rest to the agent.
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    # Vibe has no first-class subagent MCP tool for a parent coding agent to
+    # delegate to (unlike Claude/Codex/OpenCode/Pi), so reject --as-subagent early
+    # instead of letting the flag reach the vibe binary.
+    _reject_as_subagent("vibe", ctx.args)
+    # Vibe ships an official installer per platform: `curl | bash` for POSIX,
+    # `uv tool install mistral-vibe` for Windows (piping curl into PowerShell
+    # would fail because PowerShell has no native curl+bash). _vibe_install_hint
+    # routes on os.name the same way _hermes_install_hint does.
+    install_hint = _vibe_install_hint()
+    _require_agent_for_launch("vibe", install_hint, launch)
+    base, key, entry = _connect(
+        api_key,
+        model,
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        serve = serve,
+        launch = launch,
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            reasoning = reasoning,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
+    )
+    command = ["vibe", *_yolo_command_flags("vibe", yolo), *ctx.args]
+    with _session_config("vibe", launch, persist = persist) as home:
+        # $VIBE_HOME is vibe's documented override for the home dir (default ~/.vibe).
+        # Placing our config + .env under a session-scoped $VIBE_HOME leaves the
+        # user's real ~/.vibe untouched, matching the pattern used for HERMES_HOME
+        # and CODEX_HOME. HOME is also relocated so any auxiliary lookup that falls
+        # back to ~/... (e.g. a nested tool that ignores VIBE_HOME) still stays in
+        # the session.
+        vibe_home = home / ".vibe"
+        write_vibe_config(base, key, entry, vibe_home / "config.toml", yolo = yolo)
+        # Vibe's config precedence (per vibe/core/config/default_orchestrator.py)
+        # from lowest to highest: schema defaults → GrowthBook → user TOML →
+        # project TOML (`./.vibe/config.toml`) → `VIBE_*` env vars → runtime
+        # overrides → admin. Setting only VIBE_HOME would leave the session
+        # pinned in the user-TOML layer, so a trusted project `./.vibe/config.toml`
+        # in the CWD would silently override our active_model + provider and
+        # route prompts to the project's model instead of the local Unsloth /v1
+        # server. Pinning VIBE_ACTIVE_MODEL to our alias forces the environment
+        # layer to win over the project layer for the one field that decides
+        # which [[models]] entry vibe uses; the [[providers]] and [[models]]
+        # tables themselves still come from VIBE_HOME/config.toml.
+        env = {
+            _VIBE_ENV_KEY: key,
+            "VIBE_HOME": str(vibe_home),
+            "VIBE_ACTIVE_MODEL": _VIBE_MODEL_ALIAS,
+            "HOME": str(home),
+        }
+        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
