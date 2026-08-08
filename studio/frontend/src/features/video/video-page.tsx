@@ -1251,6 +1251,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // this the older one restages over the newer queue, or loads the model the user left.
       // Bumped before the non-hub return too: a local pick must invalidate an in-flight hub plan.
       const pick = ++pickSeq.current;
+      // The previous pick's staged intent dies with it. A pick that stages nothing (fully cached,
+      // local, no plan) never calls stage(), so the hook's queue keeps running the older job and
+      // its onReady would load the model the user moved away from, evicting this one.
+      pendingStagedLoad.current = null;
+      stagedLoadDeferred.current = false;
+      stagedQuantRevert.current = null;
       if (source !== "hub") return handleLoadRef.current(repoId, opts);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
       const ownRevert = quantRevert.current;
@@ -1431,11 +1437,20 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         toast.error("Only unsloth or on-device video models can be loaded here");
         return;
       }
+      // Its own rollback, like every other branch: leaving the previous pick's entry live lets an
+      // older staged download revert over a selection this pick already replaced.
+      const revert: PickRevert = { prev: quant, steps, guidance };
+      quantRevert.current = revert;
       setQuant(null);
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void loadOrStage(id, { kind: "pipeline" }, meta.source);
+      void loadOrStage(id, { kind: "pipeline" }, meta.source).then((started) => {
+        if (!started) {
+          revertPick(revert);
+          quantRevert.current = null;
+        }
+      });
     },
     [busy, handleLoad, loadOrStage, quant, steps, guidance, revertPick],
   );

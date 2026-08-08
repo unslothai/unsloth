@@ -133,6 +133,11 @@ export interface GgufVariantDetail {
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
   partial?: boolean;
+  /** Variants sharing this key share one companion download footprint (text
+   *  encoder, VAE, tokenizer, configs). The set is not repo-wide: one repo can
+   *  hold GGUFs of different families, and FLUX.2-klein picks its text encoder
+   *  per checkpoint size. Null/absent means unknown, so the repo is one group. */
+  dependency_key?: string | null;
 }
 
 export interface GgufVariantsResponse {

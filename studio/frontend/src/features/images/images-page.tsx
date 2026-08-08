@@ -1937,6 +1937,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // this the older one restages over the newer queue, or loads the model the user left.
       // Bumped before the non-hub return too: a local pick must invalidate an in-flight hub plan.
       const pick = ++pickSeq.current;
+      // The previous pick's staged intent dies with it. A pick that stages nothing (fully cached,
+      // local, no plan) never calls stage(), so the hook's queue keeps running the older job and
+      // its onReady would load the model the user moved away from, evicting this one.
+      pendingStagedLoad.current = null;
+      stagedLoadDeferred.current = false;
+      stagedQuantRevert.current = null;
       if (source !== "hub") return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = currentLoadAdvanced(repoId);

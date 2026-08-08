@@ -1303,15 +1303,44 @@ def test_every_pick_replaces_the_rollback_it_leaves_behind():
         select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S)
         assert select, f"{rel}: handleModelSelect not found"
         body = select.group(1)
-        assert body.count("const revert: PickRevert = { prev: quant, steps, guidance };") >= (
-            body.count("quantRevert.current = revert;")
-        ), f"{rel}: a revert entry is created without being installed"
-        # The curated non-GGUF branch is the one that historically had none.
-        curated = re.search(r'if \(spec && spec\.kind !== "gguf"\) \{(.*?)\n      \}', body, re.S)
-        assert curated, f"{rel}: curated non-gguf branch not found"
-        assert "quantRevert.current = revert;" in curated.group(
-            1
-        ), f"{rel}: a curated pick moves the selection but leaves the previous pick's rollback live"
+        # One installed entry per branch that moves the label. Counting is what catches the
+        # branches nobody thinks about: the curated non-GGUF one and the generic pipeline
+        # fall-through both shipped without an entry at different points.
+        moves = body.count("setQuant(")
+        installs = body.count("quantRevert.current = revert;")
+        assert moves == installs, (
+            f"{rel}: {moves} branches move the selection but only {installs} install a rollback, "
+            "so an older staged download can revert over a pick that already replaced it"
+        )
+
+
+def test_a_new_pick_drops_the_previous_staged_intent():
+    """A staged download outlives the pick that made it. If the next pick stages nothing of its
+    own -- fully cached, local, or no plan at all -- it never calls `stage()`, so the hook's queue
+    keeps running the OLDER job and its `onReady` loads the model the user moved away from,
+    evicting the one they actually chose. The pick sequence alone does not cover this: the older
+    job already staged, so there is no pending response left to invalidate.
+
+    So the intent is dropped at the start of every pick, before any early return, and a pick that
+    does stage simply writes a fresh one."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        body = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
+        assert body, f"{rel}: loadOrStage not found"
+        text = body.group(1)
+        cleared = text.index("pendingStagedLoad.current = null;")
+        assert cleared < text.index('if (source !== "hub")'), (
+            f"{rel}: a non-hub pick returns while the previous staged intent is still armed"
+        )
+        assert cleared < text.index("await "), f"{rel}: the intent survives until the plan resolves"
+        # The deferred re-fire and the rollback owner belong to that dead intent too.
+        head = text[: text.index('if (source !== "hub")')]
+        assert "stagedLoadDeferred.current = false;" in head, (
+            f"{rel}: a deferred staged load can still fire for the abandoned pick"
+        )
+        assert "stagedQuantRevert.current = null;" in head, (
+            f"{rel}: the dead intent keeps ownership of the rollback"
+        )
 
 
 def test_staged_downloads_always_scope_their_files():
@@ -3002,3 +3031,94 @@ def test_bare_vision_and_audio_backbones_are_classified_non_chat():
     encoders = encoders.split(")", 1)[0]
     for model_type in ('"vit"', '"dinov2"', '"swin"', '"wav2vec2"', '"resnet"'):
         assert model_type in encoders, model_type
+
+
+def test_the_gguf_footprint_is_resolved_per_dependency_group_not_per_repo():
+    """The companion set a diffusion GGUF needs (text encoder, VAE, tokenizer,
+    configs) is not repository-wide: `detect_family_for_pick` falls back to
+    `repo_id/filename`, so one neutral repo can hold GGUFs of two families with
+    different base repos, and `sd_cpp_text_encoders_for` hands FLUX.2-klein-9B a
+    different text encoder than klein-4B in the same repo. Sampling ONE
+    representative and pasting its companionBytes onto every row therefore
+    advertised a GB-wrong "Full required size" on the rows it did not sample."""
+    src = _read(
+        "features/model-picker/components/model-selector/pickers.tsx"
+    )
+    # The old shape: one scalar for the whole listing.
+    assert "const [companionBytes, setCompanionBytes] = useState" not in src
+    assert "const [companionBytesByKey, setCompanionBytesByKey] = useState<\n    Map<string, number>\n  >" in src
+    # Representatives are derived per key, not once for the listing.
+    group = src.split("const footprintVariants = useMemo(", 1)[1]
+    group = group.split("}, [displayVariants, effectiveRecommended]);", 1)[0]
+    assert "new Map<string, GgufVariantDetail>()" in group
+    assert 'const key = variant.dependency_key ?? "";' in group
+    # The recommended quant still wins, but only inside its own group.
+    assert "variant.quant === effectiveRecommended" in group
+    assert "current.quant !== effectiveRecommended" in group
+
+
+def test_every_footprint_group_gets_its_own_resolve_call():
+    """One request per distinct key. The ordinary repo has exactly one key, so the
+    common case stays exactly one request, which is what the representative scheme
+    exists to protect."""
+    src = _read(
+        "features/model-picker/components/model-selector/pickers.tsx"
+    )
+    effect = src.split("const [companionBytesByKey, setCompanionBytesByKey]", 1)[1]
+    effect = effect.split("const variantOptionKeys = useMemo(", 1)[0]
+    assert "for (const footprintVariant of footprintVariants) {" in effect
+    assert "resolveDownloadFootprint(repoId, {" in effect
+    # Each resolution writes only its own key, into a fresh Map: mutating the state
+    # Map in place would leave React on the old identity and drop earlier groups.
+    assert "next.set(dependencyKey, companion);" in effect
+    assert "const next = new Map(previous);" in effect
+    # Cleared per listing, so a reopened repo never shows the previous repo's totals.
+    assert "setCompanionBytesByKey(new Map());" in effect
+
+
+def test_each_quant_row_reads_its_own_dependency_key():
+    """A row must look up its own group, and keep the plain formatBytes fallback
+    when that group has no answer yet (or the backend sends no key at all)."""
+    src = _read(
+        "features/model-picker/components/model-selector/pickers.tsx"
+    )
+    row = src.split("{displayVariants.map((v) => {", 1)[1]
+    row = row.split("</TooltipContent>", 1)[0]
+    assert 'companionBytesByKey.get(v.dependency_key ?? "") ?? null' in row
+    # The fallback and the tooltip gate still hang off this row's own value.
+    assert "companionBytes === null ? (\n                  <SizeText value={formatBytes(v.size_bytes)} />" in row
+    assert "companionBytes={companionBytes}" in row
+
+
+def test_the_dependency_key_survives_the_variant_validator():
+    """isValidGgufVariant filters the listing, so a field it rejects never reaches a
+    row. An older backend sends none, which must stay valid."""
+    src = _read(
+        "features/model-picker/components/model-selector/pickers.tsx"
+    )
+    guard = src.split("function isValidGgufVariant(", 1)[1].split("\n}", 1)[0]
+    assert "candidate.dependency_key === undefined" in guard
+    assert "candidate.dependency_key === null" in guard
+    assert 'typeof candidate.dependency_key === "string"' in guard
+    types = _read("features/chat/types/api.ts")
+    assert "dependency_key?: string | null;" in types
+
+
+def test_the_backend_keys_the_footprint_on_family_and_text_encoders():
+    """Both sources of variation have to be in the key. Folding in only the family
+    would give klein-4B and klein-9B the same key inside one repo, which is the
+    exact case the per-row lookup exists for."""
+    src = _read_backend("hub/services/models/gguf_variants.py")
+    helper = src.split("def _variant_dependency_key(", 1)[1].split("\ndef ", 1)[0]
+    assert "detect_family_for_pick(repo_id, filename)" in helper
+    assert "sd_cpp_text_encoders_for(fam, repo_id, filename)" in helper
+    # No family means no grouping information, not a fabricated key.
+    assert "if fam is None:\n            return None" in helper
+    # It runs once per row inside the listing, so it must never fail it.
+    assert "except Exception as e:" in helper
+    assert helper.rstrip().endswith("return None")
+    # Every row of the listing carries one, local and remote branches alike.
+    answer = src.split("async def get_gguf_variants_answer(", 1)[1]
+    assert answer.count("dependency_key = _variant_dependency_key(") >= 4
+    schema = _read_backend("hub/schemas/inventory.py")
+    assert "dependency_key: Optional[str] = Field(" in schema

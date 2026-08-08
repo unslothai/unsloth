@@ -966,7 +966,13 @@ function isValidGgufVariant(variant: unknown): variant is GgufVariantDetail {
     Number.isFinite(candidate.size_bytes) &&
     candidate.size_bytes >= 0 &&
     (candidate.downloaded === undefined ||
-      typeof candidate.downloaded === "boolean")
+      typeof candidate.downloaded === "boolean") &&
+    // Carried through so each row can look up its own dependency group's
+    // footprint. Absent or null on an older backend, which groups the repo as
+    // one, so it must never reject the row.
+    (candidate.dependency_key === undefined ||
+      candidate.dependency_key === null ||
+      typeof candidate.dependency_key === "string")
   );
 }
 
@@ -1378,54 +1384,88 @@ function GgufVariantExpander({
   }, [sortedVariants, showAllQuantizations, onDevice]);
 
   // A diffusion GGUF is not self-contained: the loader also needs a text
-  // encoder, VAE, tokenizer and configs. Resolve that shared companion set
-  // once from a representative quant, then add it to every listed checkpoint.
-  const footprintVariant = useMemo(
-    () =>
-      displayVariants?.find((variant) => variant.quant === effectiveRecommended) ??
-      displayVariants?.[0] ??
-      null,
-    [displayVariants, effectiveRecommended],
-  );
-  const [companionBytes, setCompanionBytes] = useState<number | null>(null);
+  // encoder, VAE, tokenizer and configs. That companion set is NOT
+  // repository-wide, so one representative's footprint cannot speak for the
+  // whole listing: a neutral repo can hold GGUFs of different families with
+  // different base repos, and FLUX.2-klein picks a different text encoder for
+  // its 9B checkpoints than for its 4B ones. Both are folded into the
+  // backend's dependency_key, so grouping by it is what keeps a non
+  // representative row from advertising a GB-wrong total. One request per
+  // distinct key: the ordinary repo has exactly one, which is the cost this
+  // representative scheme exists to protect.
+  const footprintVariants = useMemo(() => {
+    const byKey = new Map<string, GgufVariantDetail>();
+    for (const variant of displayVariants ?? []) {
+      // An unkeyed repo (older backend, or no family resolved) collapses to one
+      // group, which is exactly the previous repo-wide behavior.
+      const key = variant.dependency_key ?? "";
+      const current = byKey.get(key);
+      if (current === undefined) {
+        byKey.set(key, variant);
+        continue;
+      }
+      // The recommended quant is the representative of its own group when it
+      // has one; otherwise the group's first row stands.
+      if (
+        current.quant !== effectiveRecommended &&
+        variant.quant === effectiveRecommended
+      ) {
+        byKey.set(key, variant);
+      }
+    }
+    return Array.from(byKey.values());
+  }, [displayVariants, effectiveRecommended]);
+  const [companionBytesByKey, setCompanionBytesByKey] = useState<
+    Map<string, number>
+  >(() => new Map());
   useEffect(() => {
     let cancelled = false;
-    setCompanionBytes(null);
-    if (!resolveDownloadFootprint || isLocalPath || !footprintVariant) {
+    setCompanionBytesByKey(new Map());
+    if (!resolveDownloadFootprint || isLocalPath) {
       return () => {
         cancelled = true;
       };
     }
-    const expectedBytes = ggufVariantExpectedBytes(footprintVariant);
-    void resolveDownloadFootprint(repoId, {
-      source: sourceOverride ?? "hub",
-      isLora: false,
-      ggufVariant: footprintVariant.quant,
-      ggufFilename: footprintVariant.filename,
-      isDownloaded: footprintVariant.downloaded,
-      expectedBytes,
-      isGguf: true,
-    })
-      .then((footprint) => {
-        if (cancelled || !footprint) return;
-        const checkpoint =
-          footprint.checkpointBytes > 0
-            ? footprint.checkpointBytes
-            : expectedBytes;
-        const companion = footprint.requiredBytes - checkpoint;
-        if (Number.isFinite(companion) && companion > 0) {
-          setCompanionBytes(companion);
-        }
+    for (const footprintVariant of footprintVariants) {
+      const dependencyKey = footprintVariant.dependency_key ?? "";
+      const expectedBytes = ggufVariantExpectedBytes(footprintVariant);
+      void resolveDownloadFootprint(repoId, {
+        source: sourceOverride ?? "hub",
+        isLora: false,
+        ggufVariant: footprintVariant.quant,
+        ggufFilename: footprintVariant.filename,
+        isDownloaded: footprintVariant.downloaded,
+        expectedBytes,
+        isGguf: true,
       })
-      .catch(() => {
-        // The checkpoint size remains useful when an older backend or a Hub
-        // metadata failure cannot provide the companion footprint.
-      });
+        .then((footprint) => {
+          if (cancelled || !footprint) return;
+          const checkpoint =
+            footprint.checkpointBytes > 0
+              ? footprint.checkpointBytes
+              : expectedBytes;
+          const companion = footprint.requiredBytes - checkpoint;
+          if (Number.isFinite(companion) && companion > 0) {
+            // A fresh Map per resolution: React compares state by identity, and
+            // the groups resolve independently, so a mutation would drop the
+            // rows whose request landed first.
+            setCompanionBytesByKey((previous) => {
+              const next = new Map(previous);
+              next.set(dependencyKey, companion);
+              return next;
+            });
+          }
+        })
+        .catch(() => {
+          // The checkpoint size remains useful when an older backend or a Hub
+          // metadata failure cannot provide the companion footprint.
+        });
+    }
     return () => {
       cancelled = true;
     };
   }, [
-    footprintVariant,
+    footprintVariants,
     isLocalPath,
     repoId,
     resolveDownloadFootprint,
@@ -1512,6 +1552,10 @@ function GgufVariantExpander({
         const oom = fit === "oom";
         const tight = fit === "tight";
         const expectedBytes = ggufVariantExpectedBytes(v);
+        // This row's own dependency group, never the listing's: see the
+        // footprintVariants comment above.
+        const companionBytes =
+          companionBytesByKey.get(v.dependency_key ?? "") ?? null;
         // A folder has no download to resume; a quant short a shard has no files to load.
         const unusableLocal = isLocalPath && v.partial === true;
         const keyBase = `${repoId}:${v.filename}`;
