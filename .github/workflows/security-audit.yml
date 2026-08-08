@@ -236,7 +236,15 @@ jobs:
           with open("pyproject.toml", "rb") as f:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
-          extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
+          try:
+              extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
+          except KeyError:
+              # A bare KeyError here reads as a generic crash, which is how this
+              # went unnoticed on the pip branch for three weeks.
+              raise SystemExit(
+                  "pyproject.toml has no [huggingfacenotorch] extra, so the hf-stack "
+                  "scan set cannot be built. Add the extra, or update this workflow."
+              )
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print("# core deps + huggingfacenotorch extras.")
           for spec in core + extras:
@@ -829,7 +837,15 @@ jobs:
           with open("pyproject.toml", "rb") as f:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
-          extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
+          try:
+              extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
+          except KeyError:
+              # A bare KeyError here reads as a generic crash, which is how this
+              # went unnoticed on the pip branch for three weeks.
+              raise SystemExit(
+                  "pyproject.toml has no [huggingfacenotorch] extra, so the hf-stack "
+                  "scan set cannot be built. Add the extra, or update this workflow."
+              )
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print("# core deps + huggingfacenotorch extras.")
           for spec in core + extras:
