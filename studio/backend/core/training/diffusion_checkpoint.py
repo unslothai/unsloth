@@ -391,12 +391,25 @@ def restore_rng_state(
         if cpu is not None:
             torch.set_rng_state(cpu.cpu().to(torch.uint8))
         if torch.cuda.is_available():
-            count = torch.cuda.device_count()
-            cuda_states = [tensors.get(f"torch_cuda_{i}") for i in range(count)]
-            # Only restore when the checkpoint covers every visible device: set_rng_state_all
-            # requires one state per device, and a short list would raise.
-            if count and all(s is not None for s in cuda_states):
-                torch.cuda.set_rng_state_all([s.cpu().to(torch.uint8) for s in cuda_states])
+            # Per device, not set_rng_state_all. That call needs one state per visible
+            # device, so covering it with an all-or-nothing guard meant a bundle written
+            # with fewer devices visible than the resume sees restored NOTHING -- including
+            # cuda:0, the only device training touches. The whole per-step noise stream
+            # (randn_like for the latent and the noise, randint for the timestep) then
+            # restarted at the wrong offset while every other part of the resume looked
+            # correct, so the run finished healthy and silently wrong: measured on a real
+            # B200 SDXL run, 192/192 LoRA tensors differed from the uninterrupted control
+            # and the first step after the resume was off by 0.024. The exposure is
+            # ordinary -- the trainer is a spawned child inheriting CUDA_VISIBLE_DEVICES,
+            # which Studio masks elsewhere, so a mask change between the run and the Resume
+            # click was enough. Restoring device by device covers whatever the bundle
+            # holds and leaves the rest alone, and is identical to the old behaviour when
+            # the counts match (verified bit-exact against the same control).
+            for i in range(torch.cuda.device_count()):
+                state = tensors.get(f"torch_cuda_{i}")
+                if state is None:
+                    continue
+                torch.cuda.set_rng_state(state.cpu().to(torch.uint8), i)
     except Exception:  # noqa: BLE001 -- best-effort restore, never fatal
         pass
 
@@ -529,6 +542,17 @@ def save_checkpoint(
             # clock). Nested rather than merged, so a caller can never shadow a reserved key.
             "progress": dict(progress or {}),
             "files": files,
+            # Byte size per listed file, so read_checkpoint can catch a truncation the
+            # header parse structurally cannot. _valid_state_file walks a torch zip's pickle
+            # to STOP and requires one non-empty data/ member; truncating the tensor storages
+            # themselves leaves both intact, and torch.load then returns UNINITIALIZED memory
+            # -- measured at +/-1e22 and non-finite -- which a resume feeds straight into the
+            # optimizer as Adam moments. The run diverges on its first step while reporting a
+            # clean resume. This is free to write and free to check.
+            #
+            # Additive on purpose: an older bundle has no sizes and skips the check rather
+            # than failing it, and an older build ignores the key, so no version bump.
+            "file_sizes": _file_sizes(staging, files),
         }
         # LAST: the manifest is the completion marker, so nothing may be written after it.
         _write_text(staging / TRAINER_STATE_FILENAME, json.dumps(manifest, indent = 2))
@@ -566,6 +590,17 @@ def _torch_save(torch: Any, obj: Any, path: Path) -> None:
     _fsync_file(path)
 
 
+def _file_sizes(staging: Path, files: dict[str, str]) -> dict[str, int]:
+    """``{role: bytes}`` for everything already written into the staging dir."""
+    sizes: dict[str, int] = {}
+    for role, name in files.items():
+        try:
+            sizes[role] = int((staging / name).stat().st_size)
+        except OSError:
+            continue
+    return sizes
+
+
 def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding = "utf-8")
     _fsync_file(path)
@@ -592,7 +627,16 @@ def _fsync_file(path: Path) -> None:
     EIO surface here rather than at write() time, and ``_valid_state_file`` only parses a
     safetensors header, so a bundle whose tensor bytes never reached the device would be
     promoted and later read as valid. The caller turns that into "this run cannot be resumed".
-    A platform that simply cannot flush the handle is not such a failure and is ignored."""
+    A platform that simply cannot flush the handle is not such a failure and is ignored.
+
+    That discrimination is real on POSIX and NOT available on Windows: CPython maps os.fsync
+    to the UCRT's _commit, which collapses every FlushFileBuffers failure into EBADF and puts
+    the actual Win32 code in _doserrno, where Python does not look. EBADF has to stay in the
+    set below, because a volume that cannot flush reports it too, and failing every save on
+    such a volume is the worse error -- especially as the resulting write error is sticky for
+    the life of the run record. So on Windows a genuine flush failure is swallowed here, and
+    the durability guarantee rests on the per-file size check in read_checkpoint instead,
+    which catches the truncation a lost writeback actually produces."""
     try:
         # O_RDWR, not O_RDONLY: Windows' _commit maps to FlushFileBuffers, which needs write
         # access on the handle. We just wrote the file, so we own it.
@@ -735,6 +779,8 @@ def read_checkpoint(path: str | os.PathLike[str]) -> Optional[dict[str, Any]]:
     files = manifest.get("files")
     if not isinstance(files, dict) or not files.get("adapter"):
         return None
+    sizes = manifest.get("file_sizes")
+    sizes = sizes if isinstance(sizes, dict) else {}
     for role, name in files.items():
         if not isinstance(name, str) or not name or Path(name).name != name:
             return None
@@ -742,6 +788,15 @@ def read_checkpoint(path: str | os.PathLike[str]) -> Optional[dict[str, Any]]:
         # constant LR schedule), so only the weight bundles must carry tensors.
         if not _valid_state_file(directory / name, require_tensor = role in ("adapter", "ema")):
             return None
+        expected_size = sizes.get(role)
+        if isinstance(expected_size, int) and not isinstance(expected_size, bool):
+            # Absent on a bundle written before sizes were recorded, which skips the check
+            # rather than failing it -- an old checkpoint stays resumable.
+            try:
+                if (directory / name).stat().st_size != expected_size:
+                    return None
+            except OSError:
+                return None
     return manifest
 
 
@@ -761,7 +816,9 @@ def _valid_state_file(path: Path, require_tensor: bool = True) -> bool:
 
 
 def latest_valid_checkpoint(
-    output_dir: str | os.PathLike[str], not_before: Optional[float] = None
+    output_dir: str | os.PathLike[str],
+    not_before: Optional[float] = None,
+    not_after: Optional[float] = None,
 ) -> Optional[tuple[Path, dict]]:
     """The newest complete bundle under ``output_dir`` as ``(path, manifest)``, or None.
     Scans newest-first and skips any bundle that fails validation, so one corrupt
@@ -770,7 +827,14 @@ def latest_valid_checkpoint(
     ``not_before`` (a run's start time) skips bundles written BEFORE it. Two runs can share an
     output directory -- training the same adapter name twice writes into the same folder -- and
     the earlier run's bundles can carry higher step numbers than the later run's, so without
-    this a fresh run would advertise, and then resume, a different run's training state."""
+    this a fresh run would advertise, and then resume, a different run's training state.
+
+    ``not_after`` (a run's end time) is the same fence in the other direction, and it matters
+    just as much: with only a lower bound, an EARLIER run that has already finished still sees
+    every bundle a LATER run wrote into the shared folder, and offers the newest of them as
+    its own. The identity gate cannot catch that -- same family, same base, same dataset, same
+    LoRA shape -- so the earlier run resumes the later run's optimizer moments, LR position
+    and RNG under its own config, and records the wrong lineage while doing it."""
     for candidate in list_checkpoints(output_dir):
         manifest = read_checkpoint(candidate)
         if manifest is None:
@@ -781,6 +845,15 @@ def latest_valid_checkpoint(
             except (TypeError, ValueError):
                 created = 0.0
             if created < float(not_before):
+                continue
+        if not_after is not None:
+            try:
+                created = float(manifest.get("created_at") or 0.0)
+            except (TypeError, ValueError):
+                created = 0.0
+            # A bundle with no usable created_at (0.0) is not fenced out by the upper bound:
+            # it predates the field, and refusing it would make an old run unresumable.
+            if created and created > float(not_after):
                 continue
         return candidate, manifest
     return None
@@ -798,6 +871,7 @@ def describe_resume_state(
     *,
     status: Optional[str] = None,
     started_at: Optional[float] = None,
+    ended_at: Optional[float] = None,
     total_steps: Optional[int] = None,
 ) -> dict[str, Any]:
     """What the UI needs to offer (or explain the absence of) a Resume action for a run.
@@ -822,7 +896,9 @@ def describe_resume_state(
         root = Path(str(output_dir)).expanduser()
         if not root.is_dir():
             return {**blank, "resume_blocked_reason": "This run's output folder no longer exists."}
-        found = latest_valid_checkpoint(root, not_before = started_at)
+        found = latest_valid_checkpoint(
+            root, not_before = started_at, not_after = ended_at
+        )
     except OSError:
         return blank
     if found is None:
@@ -892,6 +968,35 @@ def resolve_resume_dir(path_value: str) -> Path:
     return resolved
 
 
+def _assert_loadable(path: Path, manifest: dict[str, Any]) -> None:
+    """Actually open every state file the manifest lists, and turn any failure into a
+    ResumeError.
+
+    read_checkpoint deliberately only parses headers -- it is called once per bundle by the
+    run-history listing, which must stay cheap -- so it cannot tell a torch zip that walks to
+    STOP from one torch.load will refuse. A pickle carrying a global outside the weights_only
+    allowlist is exactly that, and it passed the route preflight: 200 OK, resident GPU model
+    evicted, then the child died on a raw UnpicklingError. That is precisely the outcome the
+    module docstring promises this preflight prevents, so pay the load here, on the one
+    bundle a user actually asked to resume. These are MB-scale files and this runs in a
+    worker thread."""
+    loaded = LoadedCheckpoint(path = path, manifest = manifest)
+    files = manifest.get("files")
+    for role in (files or {}) if isinstance(files, dict) else ():
+        try:
+            if role in ("adapter", "ema"):
+                loaded.tensors(role)
+            else:
+                loaded.torch_state(role)
+        except ResumeError:
+            raise
+        except Exception as error:  # noqa: BLE001 -- any unreadable state file is a refusal
+            raise ResumeError(
+                f"The '{role}' file in '{path.name}' could not be read back "
+                f"({type(error).__name__}), so this checkpoint cannot be resumed."
+            ) from error
+
+
 def preflight_resume(
     path_value: str, *, identity: CheckpointIdentity, target_steps: int
 ) -> tuple[str, int]:
@@ -931,6 +1036,8 @@ def preflight_resume(
     reason = saved.mismatch_reason(identity)
     if reason:
         raise ResumeError(reason)
+    # After the identity gate, so a mismatched bundle still fails fast on the cheap check.
+    _assert_loadable(path, manifest)
     step = int(manifest.get("global_step") or 0)
     if target_steps and step >= int(target_steps):
         raise ResumeError(

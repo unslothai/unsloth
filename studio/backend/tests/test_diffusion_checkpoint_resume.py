@@ -350,10 +350,19 @@ def test_a_partial_adapter_restore_is_refused(run_dir):
     run.save(3)
     from safetensors.torch import save_file
 
+    adapter = run_dir / "checkpoint-3" / dc.ADAPTER_FILENAME
     save_file(
         {"weight": torch.zeros(4, 4), "renamed.weight": torch.zeros(4, 4)},
-        str(run_dir / "checkpoint-3" / dc.ADAPTER_FILENAME),
+        str(adapter),
     )
+    # Rewriting a bundle by hand changes the adapter's size, which read_checkpoint now checks
+    # against the manifest. Keep it honest, or this exercises the truncation guard instead of
+    # the name-mismatch guard it is here for.
+    manifest_path = run_dir / "checkpoint-3" / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    manifest["file_sizes"]["adapter"] = adapter.stat().st_size
+    manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
+
     fresh = _Run(run_dir)
     fresh.cfg = __import__("dataclasses").replace(fresh.cfg, resume_from_checkpoint = str(run_dir))
     with pytest.raises(ValueError, match = "restored 1 of 2 adapter tensors"):
@@ -1006,3 +1015,149 @@ def test_sampler_state_round_trips_and_rejects_a_foreign_dataset_size():
     other = PermutationBatchSampler(3, random.Random(0))
     other.load_state_dict(state)
     assert all(0 <= i < 3 for i in other.next_batch(10))
+
+
+# ── the header parse is not a load ────────────────────────────────────────────
+
+
+def test_a_truncated_tensor_storage_is_refused(run_dir):
+    """The state-file validator walks a torch zip's pickle to STOP and wants one non-empty
+    ``data/`` member. Truncating the moment STORAGES leaves both intact, and ``torch.load``
+    then hands back uninitialized memory -- non-finite, order 1e22 -- which a resume feeds
+    into the optimizer as Adam moments. The run diverges on its first step and reports a
+    clean resume while doing it. The recorded size is what catches this."""
+    import zipfile
+
+    run = _Run(run_dir)
+    run.step_once(0.5)
+    run.save(2)
+    optimizer_pt = run_dir / "checkpoint-2" / dc.OPTIMIZER_FILENAME
+    assert dc.read_checkpoint(run_dir / "checkpoint-2") is not None
+
+    with zipfile.ZipFile(optimizer_pt) as src:
+        members = [(i, src.read(i.filename)) for i in src.infolist()]
+    with zipfile.ZipFile(optimizer_pt, "w") as dst:
+        for info, blob in members:
+            # Every tensor storage clipped to one byte; the pickle and the header survive.
+            if "/data/" in info.filename and len(blob) > 1:
+                blob = blob[:1]
+            dst.writestr(info.filename, blob)
+
+    assert dc.read_checkpoint(run_dir / "checkpoint-2") is None
+    fresh = _Run(run_dir)
+    fresh.cfg = __import__("dataclasses").replace(
+        fresh.cfg, resume_from_checkpoint = str(run_dir)
+    )
+    with pytest.raises(dc.ResumeError):
+        fresh.restore()
+
+
+def test_a_bundle_torch_load_refuses_is_rejected_by_the_preflight(run_dir):
+    """A ``.pt`` carrying a global outside the ``weights_only`` allowlist walks to STOP like
+    any other, so the header check passes it. Before the preflight actually loaded, the start
+    route returned 200, evicted the resident GPU model, and only then did the child die on a
+    raw UnpicklingError -- exactly what the preflight exists to prevent."""
+    run = _Run(run_dir)
+    run.save(2)
+    checkpoint = run_dir / "checkpoint-2"
+    # eval is not in the weights_only allowlist; the zip still parses.
+    torch.save({"boom": eval}, str(checkpoint / dc.SCHEDULER_FILENAME), pickle_protocol = 2)
+    manifest_path = checkpoint / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    manifest["file_sizes"]["scheduler"] = (checkpoint / dc.SCHEDULER_FILENAME).stat().st_size
+    manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    # The cheap gate still passes it -- that is the point.
+    assert dc.read_checkpoint(checkpoint) is not None
+    with pytest.raises(dc.ResumeError, match = "scheduler"):
+        dc.preflight_resume(str(checkpoint), identity = _identity(), target_steps = 500)
+
+
+# ── two runs sharing an output directory ──────────────────────────────────────
+
+
+def test_a_finished_run_does_not_offer_its_successors_checkpoint(run_dir):
+    """``not_before`` fences off an EARLIER run's bundles. Without the matching upper fence a
+    finished run still sees every bundle a LATER run wrote into the shared folder and offers
+    the newest of them as its own. The identity gate cannot catch it -- same family, base,
+    dataset and LoRA shape -- so the earlier run would resume its successor's optimizer
+    moments, LR position and RNG under its own config."""
+    early = _Run(run_dir)
+    early.save(10)
+    early_manifest = json.loads(
+        (run_dir / "checkpoint-10" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
+    )
+    early_created = early_manifest["created_at"]
+    early_started = early_created - 1.0
+
+    later = _Run(run_dir)
+    later.save(50)
+    later_created = json.loads(
+        (run_dir / "checkpoint-50" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
+    )["created_at"]
+    assert later_created > early_created, "fixture did not order the two runs"
+    # The first run ended between the two saves.
+    early_ended = (early_created + later_created) / 2.0
+
+    fenced = dc.describe_resume_state(
+        str(run_dir), status = "stopped", started_at = early_started, ended_at = early_ended
+    )
+    assert fenced["checkpoint_step"] == 10
+    assert fenced["checkpoint_path"].endswith("checkpoint-10")
+
+    # The later run, with no upper fence of its own yet, still sees its own newest.
+    live = dc.describe_resume_state(
+        str(run_dir), status = "stopped", started_at = early_ended, ended_at = None
+    )
+    assert live["checkpoint_step"] == 50
+
+
+def test_a_bundle_with_no_created_at_survives_the_upper_fence(run_dir):
+    """An older bundle predates ``created_at`` and reads 0.0. Fencing it out by an end time
+    would make every pre-existing run unresumable, which is the opposite of the point."""
+    run = _Run(run_dir)
+    run.save(4)
+    manifest_path = run_dir / "checkpoint-4" / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    del manifest["created_at"]
+    manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    found = dc.latest_valid_checkpoint(run_dir, not_after = 1.0)
+    assert found is not None and dc.checkpoint_step(found[0]) == 4
+
+
+# ── RNG restore across a change in visible devices ────────────────────────────
+
+
+def test_cuda_rng_restores_the_devices_the_bundle_covers(monkeypatch):
+    """A bundle written with one device visible, restored where two are.
+
+    ``set_rng_state_all`` needs one state per visible device, and guarding that with
+    all-or-nothing meant this case restored NOTHING -- including cuda:0, the only device the
+    trainer touches. Every other part of the resume looked correct, so the run finished
+    healthy and silently wrong: on a real B200 SDXL run all 192 LoRA tensors diverged from
+    the uninterrupted control. The trainer is a spawned child inheriting
+    CUDA_VISIBLE_DEVICES, so a change to the mask between the run and the Resume click was
+    enough to trigger it."""
+    restored: list[tuple[int, bytes]] = []
+
+    fake_cuda = type(
+        "FakeCuda",
+        (),
+        {
+            "is_available": staticmethod(lambda: True),
+            "device_count": staticmethod(lambda: 2),
+            "set_rng_state": staticmethod(
+                lambda state, index: restored.append((index, bytes(state.tolist())))
+            ),
+            "set_rng_state_all": staticmethod(
+                lambda states: pytest.fail("must not need every device")
+            ),
+        },
+    )()
+    monkeypatch.setattr(torch, "cuda", fake_cuda)
+
+    only_device_zero = torch.tensor([7, 8, 9], dtype = torch.uint8)
+    dc.restore_rng_state({}, {"torch_cuda_0": only_device_zero})
+
+    assert restored == [(0, bytes([7, 8, 9]))], "cuda:0 was not restored"

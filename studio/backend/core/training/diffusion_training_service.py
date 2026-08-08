@@ -101,6 +101,7 @@ def _resume_fields(
     *,
     status: Optional[str] = None,
     started_at: Optional[float] = None,
+    ended_at: Optional[float] = None,
     total_steps: Optional[int] = None,
     write_error: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -109,14 +110,20 @@ def _resume_fields(
 
     Derived, not trusted: a persisted record is a snapshot of the moment the run ended, but
     the user can delete the output folder afterwards. ``started_at`` fences off bundles an
-    EARLIER run of the same adapter name left in the same folder. ``write_error`` is the run's
+    EARLIER run of the same adapter name left in the same folder, and ``ended_at`` fences off
+    the ones a LATER run put there after this one finished -- without the upper bound a
+    finished run offers, and resumes, its successor's training state. ``write_error`` is the run's
     own report that a checkpoint write failed; that is sticky and blocks resume (mirroring the
     MLX trainer's ``resume_blocked``), because whatever older state is on disk predates the
     adapter that was published, so continuing from it would silently lose steps. Never raises."""
     try:
         from core.training.diffusion_checkpoint import describe_resume_state
         state = describe_resume_state(
-            output_dir, status = status, started_at = started_at, total_steps = total_steps
+            output_dir,
+            status = status,
+            started_at = started_at,
+            ended_at = ended_at,
+            total_steps = total_steps,
         )
     except Exception:  # noqa: BLE001 -- history must never break on a checkpoint scan
         state = {}
@@ -156,6 +163,7 @@ def _refresh_resume_state(rec: dict) -> dict:
             output_dir,
             status = rec.get("status"),
             started_at = rec.get("started_at"),
+            ended_at = rec.get("ended_at"),
             total_steps = rec.get("total_steps"),
             write_error = rec.get("checkpoint_write_error"),
         )

@@ -61,7 +61,11 @@ from core.training.diffusion_train_common import (
     restore_resume_state,
     write_resume_checkpoint,
 )
-from core.training.diffusion_checkpoint import identity_for_config, preflight_resume
+from core.training.diffusion_checkpoint import (
+    clear_checkpoints,
+    identity_for_config,
+    preflight_resume,
+)
 from core.training.diffusion_train_extras import (
     LoRAEMA,
     PersistentConditioningCache,
@@ -1966,6 +1970,19 @@ def _train_dit(
                 ema_path = str(Path(ema_dir) / DEFAULT_LORA_FILENAME)
             except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved
                 _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")
+    else:
+        # Discarded: the user asked to throw this run away. Before periodic checkpoints
+        # existed a discard left nothing behind, because the output directory was only ever
+        # created inside this save gate. save_steps now writes bundles as the run goes, so
+        # without this a discard leaves up to save_total_limit copies of the optimizer state
+        # in a directory the user never got an artifact from -- invisible to every scanner,
+        # unresumable (the record is marked discarded), and with no delete path in the UI.
+        clear_checkpoints(out_dir)
+        try:
+            out_dir.rmdir()
+        except OSError:
+            # Not ours to remove if anything else is in it (a previous run's adapter).
+            pass
     _emit(
         on_event,
         "complete",

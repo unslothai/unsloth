@@ -69,7 +69,11 @@ from core.training.diffusion_train_common import (  # noqa: F401
     restore_resume_state,
     write_resume_checkpoint,
 )
-from core.training.diffusion_checkpoint import identity_for_config, preflight_resume
+from core.training.diffusion_checkpoint import (
+    clear_checkpoints,
+    identity_for_config,
+    preflight_resume,
+)
 
 
 def compute_sdxl_add_time_ids(resolution: int) -> tuple[int, int, int, int, int, int]:
@@ -677,6 +681,20 @@ def run_diffusion_lora_training(
             # Mirror into loras/diffusion so the Images picker discovers it (its scan skips subdirs).
             # ``done`` (the step reached), not cfg.train_steps: a stop at 11/500 must not advertise 500.
             catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
+        else:
+            # Discarded: the user asked to throw this run away. Before periodic checkpoints
+            # existed a discard left nothing behind, because the output directory was only
+            # ever created inside this save gate. save_steps now writes bundles as the run
+            # goes, so without this a discard leaves up to save_total_limit copies of the
+            # optimizer state in a directory the user never got an artifact from -- invisible
+            # to every scanner, unresumable (the record is marked discarded), and with no
+            # delete path in the UI.
+            clear_checkpoints(out_dir)
+            try:
+                out_dir.rmdir()
+            except OSError:
+                # Not ours to remove if anything else is in it (an earlier run's adapter).
+                pass
         _emit(
             on_event,
             "complete",
