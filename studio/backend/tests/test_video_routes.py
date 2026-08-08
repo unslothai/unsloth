@@ -809,6 +809,34 @@ def test_delete_guard_protects_the_native_video_companion_repos(monkeypatch):
     assert deletion._video_blocks_delete("unsloth/something-else") is None
 
 
+def test_delete_guard_protects_the_native_video_companion_repos_mid_load(monkeypatch):
+    # The in-flight twin of the check above: during an H3 load status()["loaded"] is still False,
+    # yet the download is pulling from the same companion repos, so deleting one would yank blobs
+    # out from under it. loading_repo_ids() reported only repo_id and base_repo.
+    from hub.services.models import deletion
+
+    class _Backend:
+        def status(self):
+            return {"loaded": False, "repo_id": None, "base_repo": None}
+
+        def loaded_repo_ids(self):
+            return ()
+
+        def loading_repo_ids(self):
+            return (
+                "leejet/MiniMax-H3-GGUF",
+                "MiniMaxAI/MiniMax-H3",
+                "unsloth/MiniMax-H3-GGUF",
+                "Comfy-Org/MiniMax-H3",
+            )
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+    assert deletion._video_blocks_delete("Comfy-Org/MiniMax-H3") is not None
+    # Loading from the leejet mirror still pulls the Qwen encoder from the unsloth GGUF companion.
+    assert deletion._video_blocks_delete("unsloth/MiniMax-H3-GGUF") is not None
+    assert deletion._video_blocks_delete("unsloth/something-else") is None
+
+
 def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
     # The plan drives the staged download, so it must use the encoder policy the load will run with: an fp8 request takes a hosted pre-cast encoder, and staging the dense one pulls ~49 GB of Gemma3.
     backend = video_module.get_video_backend()

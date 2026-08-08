@@ -288,6 +288,9 @@ class _VideoLoadingState:
     base_repo: str
     expected_bytes: Optional[int] = None
     error: Optional[str] = None
+    # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3
+    # GGUF and component repos). Mirrors the image backend's _SdLoading.asset_repos.
+    asset_repos: tuple[str, ...] = ()
 
 
 def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
@@ -738,6 +741,10 @@ class VideoBackend:
         with self._lock:
             if self._load_token == token and self._loading is not None:
                 self._loading.base_repo = fam.base_repo
+                # The download list below pulls from the H3 companion repos too, and neither is
+                # repo_id or base_repo, so without this the delete-cached guard would let one be
+                # deleted out from under the in-flight load. The committed twin is loaded_repo_ids().
+                self._loading.asset_repos = (H3_GGUF_REPO, H3_COMPONENT_REPO)
                 self._loading.expected_bytes = total or None
 
         resolved: list[Path] = []
@@ -1370,14 +1377,17 @@ class VideoBackend:
         """Repo ids an in-flight background load is downloading (empty when idle).
 
         The delete-cached guard needs this: during a load ``status()["loaded"]`` is
-        still False, but deleting the target repo (or its companion base) would yank
-        blobs and snapshot files from under the download/assembly. Mirrors the image
-        backend's guard (DiffusionBackend.loading_repo_ids)."""
+        still False, but deleting the target repo (or its companion base, or one of the
+        native H3 companion repos an H3 load also downloads from) would yank blobs and
+        snapshot files from under the download/assembly. The in-flight twin of
+        loaded_repo_ids(); mirrors the image backend's guard
+        (DiffusionBackend.loading_repo_ids)."""
         with self._lock:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
-            return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
+            ids = (loading.repo_id, loading.base_repo, *loading.asset_repos)
+            return tuple(r for r in ids if r)
 
     def loaded_repo_ids(self) -> tuple[str, ...]:
         """Repo ids the COMMITTED model reads from disk (empty unless a native model is loaded).

@@ -2299,6 +2299,78 @@ def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path)
     assert gpu_arbiter.current_owner() is None
 
 
+def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypatch, tmp_path):
+    """The in-flight twin of loaded_repo_ids(). An H3 load downloads from the GGUF and component
+    companion repos as well as repo_id, but loading_repo_ids() reported only repo_id and base_repo,
+    so the cached-model delete guard allowed deleting Comfy-Org/MiniMax-H3 (and, when loading from
+    another mirror as here, the GGUF companion) out from under the running download."""
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: "/existing/sd-cli",
+    )
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    backend = VideoBackend()
+    backend._load_token = 7
+    backend._loading = video_mod._VideoLoadingState(
+        repo_id = "leejet/MiniMax-H3-GGUF", base_repo = ""
+    )
+    guarded: list[tuple[str, ...]] = []
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        # Sampled per file, so the guard has to be armed BEFORE any of the bytes land.
+        guarded.append(tuple(backend.loading_repo_ids()))
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = 7,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+
+    assert len(guarded) == 4
+    for ids in guarded:
+        assert "leejet/MiniMax-H3-GGUF" in ids
+        assert fam.base_repo in ids
+        assert H3_GGUF_REPO in ids
+        assert H3_COMPONENT_REPO in ids
+
+
 def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path):
     """ensure_sd_cpp_binary probes runnability only, so an sd.cpp build older than H3 support is
     handed back and clears the version() gate: the load reported ready and the first generation
