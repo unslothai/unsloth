@@ -145,6 +145,33 @@ def test_pristine_trl_sft_config_keeps_an_explicit_loss_type():
         assert got == wanted, f"explicit loss_type {wanted!r} was clobbered to {got!r}"
 
 
+def test_dataclass_field_default_is_nll_for_hfargumentparser():
+    """`HfArgumentParser` reads the field, not the `__init__` default.
+
+    It builds one argparse argument per `dataclasses.fields()` entry and always
+    passes the value through, so a field left at TRL's unresolved `None` sends
+    `loss_type = None` into `__post_init__` and comes back out as chunked_nll
+    however the `__init__` default reads.
+    """
+    import dataclasses
+
+    import unsloth  # noqa: F401
+
+    pristine = _pristine_sft_config_cls()
+    if not hasattr(pristine, "loss_type"):
+        pytest.skip("this TRL has no SFTConfig.loss_type")
+
+    import trl
+
+    for cls in (pristine, trl.SFTConfig):
+        field = {f.name: f for f in dataclasses.fields(cls)}["loss_type"]
+        assert field.default == "nll", (
+            f"{cls.__name__}.loss_type field default is {field.default!r}, "
+            "expected 'nll'. HfArgumentParser and any other dataclass-driven "
+            "entry point would pass that default through and land on chunked_nll."
+        )
+
+
 # --------------------------------------------------------------------------
 # 2. The normalisation predicates themselves
 # --------------------------------------------------------------------------
