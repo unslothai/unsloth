@@ -35,7 +35,6 @@ from core.inference.llama_cpp import (
     LlamaCppBackend,
     _emitted_n_batch,
     _extra_args_n_ubatch,
-    _repatch_parallel_slots,
 )
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, strip_shadowing_flags
 from models.inference import LoadRequest, ValidateModelRequest
@@ -403,36 +402,6 @@ def test_emitted_batch_clears_both_llama_server_floors(n_batch, n_parallel, expe
     assert _emitted_n_batch(None, n_parallel) is None
 
 
-def test_restoring_slots_re_raises_the_batch_flag():
-    """Two paths hand slots back after --batch-size was emitted: the paravirtual
-    drafter drop, which restores the slots the extras-MTP clamp took, and the
-    non-MTP fallback retry, which restores them in its own argv. Both patched only
-    --parallel, so an explicit small batch emitted at one slot met a restored eight
-    and aborted the very fallback the restore exists to make work."""
-    # emitted at 1 slot, restored to 8: the floor moves with it
-    argv = ["llama-server", "--parallel", "1", "--batch-size", "2", "--ubatch-size", "64"]
-    assert _repatch_parallel_slots(argv, 8, 2) is True
-    assert argv[argv.index("--parallel") + 1] == "8"
-    assert argv[argv.index("--batch-size") + 1] == "8"
-    # the micro-batch is not raised: llama.cpp caps it against the batch itself
-    assert argv[argv.index("--ubatch-size") + 1] == "64"
-
-    # a batch already above the restored floor is left alone
-    argv = ["llama-server", "--parallel", "1", "--batch-size", "4096"]
-    assert _repatch_parallel_slots(argv, 8, 4096) is True
-    assert argv[argv.index("--batch-size") + 1] == "4096"
-
-    # llama.cpp defaults emit no flag, and the restore must not invent one
-    argv = ["llama-server", "--parallel", "1"]
-    assert _repatch_parallel_slots(argv, 8, None) is True
-    assert "--batch-size" not in argv
-
-    # no --parallel to patch: report it so the caller does not rebind n_parallel
-    argv = ["llama-server", "--batch-size", "2"]
-    assert _repatch_parallel_slots(argv, 8, 2) is False
-    assert argv[argv.index("--batch-size") + 1] == "2"
-
-
 def test_budgets_use_the_raised_batch_not_the_requested_one():
     """llama.cpp caps the micro-batch against the batch it is GIVEN
     (cparams.n_ubatch = min(cparams.n_batch, n_ubatch or n_batch)), and the loader
@@ -616,10 +585,9 @@ def test_the_local_guard_charges_diffusion_nothing_for_the_batch_flags():
 
 def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     """self._n_ubatch is recorded next to _commit_effective_parallel_slots and the two are
-    read together later (the slot save re-estimates the KV from both). Both slot RESTORES
-    (the paravirtual drafter drop and the non-MTP retry) raise the count after the sizing
-    pass ran, so recording the sizing pass's value would pair the launched slots with a
-    micro-batch derived at the clamped count and under-state that cache. Pinned on the
+    read together later (the slot save re-estimates the KV from both). The fit-time reduction
+    moves the count after the sizing pass, so recording that pass's value would pair the launched
+    slots with a micro-batch derived at the old count and under-state that cache. Pinned on the
     source, since reaching the record needs a real spawn."""
     import ast
     import inspect
@@ -642,7 +610,7 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     assert "_launched_ubatch=_ubatch_for_slots(n_parallel)" in compact
     # and it is derived after the last thing that can move the slot count
     assert compact.index("_launched_ubatch=_ubatch_for_slots") > compact.index(
-        "n_parallel=_mtp_clamped_slots"
+        "gpu_indices,use_fit,n_parallel=_gi_slots,False,_slots"
     )
 
 

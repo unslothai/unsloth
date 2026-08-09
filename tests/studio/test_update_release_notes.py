@@ -1113,10 +1113,16 @@ def test_code_span_closers_ignore_backslashes():
 
 
 def test_the_overlay_stack_fits_the_viewport():
-    """The update card's own cap does not account for a long download list
-    stacked beneath it."""
+    """The update card's own cap does not account for a long download list stacked
+    beneath it. The cap is no longer the literal class `max-h-[calc(100dvh_-_2rem)]`
+    but `stackGeometry`, whose arithmetic is checked numerically in
+    studio/frontend/tests/monitor-stack-inset.test.ts; what has to hold here is that
+    the stack reads it rather than growing unbounded."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
-    assert "max-h-[calc(100dvh_-_2rem)]" in provider
+    stacks = provider.count("z-[9998] flex flex-col items-end gap-2")
+    assert stacks, "the bottom-right overlay stack is gone"
+    # Counted, not merely present: capping only one of the stacks is the bug here.
+    assert provider.count("maxHeight: stack.maxHeight") == stacks, "every stack is capped"
     panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
         encoding = "utf-8"
     )
@@ -1126,11 +1132,22 @@ def test_the_overlay_stack_fits_the_viewport():
 
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():
-    """The download panel shares the desktop stack, so the update card's own
-    cap is not enough there either."""
+    """The download panel shares the desktop stack, so the update card's own cap is
+    not enough there either, and the desktop branch has been left uncapped before."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
-    assert provider.count("max-h-[calc(100dvh_-_2rem)]") == 2, "both stacks are capped"
+    assert provider.count("useStackGeometry()") == 2, "both stacks measure themselves"
+    assert provider.count("maxHeight: stack.maxHeight") == 2, "both stacks are capped"
     assert "flex min-h-0" in TAURI_BANNER.read_text(encoding = "utf-8")
+
+
+def test_the_stack_geometry_is_checked_numerically():
+    """The cap is arithmetic now, not a class name, so the node test owns it. Named
+    here so deleting it does not quietly leave the cap unchecked."""
+    geometry = REPO / "studio/frontend/tests/monitor-stack-inset.test.ts"
+    src = geometry.read_text(encoding = "utf-8")
+    assert (
+        "stackGeometry(null, W, H).maxHeight, H - 32" in src
+    ), "nothing pins the no-obstacle cap to the 2rem the class used to spell"
 
 
 def test_desktop_notes_are_looked_up_by_the_backend_version():
@@ -1360,7 +1377,8 @@ def test_the_download_panel_can_shrink_inside_the_capped_stack():
     )
     assert 'positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end"' in panel
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
-    assert "max-h-[calc(100dvh_-_2rem)]" in provider, "the cap this has to absorb"
+    stacks = provider.count("z-[9998] flex flex-col items-end gap-2")
+    assert provider.count("maxHeight: stack.maxHeight") == stacks, "the cap this has to absorb"
 
 
 @pytest.fixture(scope="module")

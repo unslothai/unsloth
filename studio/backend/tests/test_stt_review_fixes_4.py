@@ -182,11 +182,17 @@ def test_status_reads_do_not_block_during_a_llama_cpp_update():
         ), "a status read blocked for the length of the llama.cpp install"
 
 
-def test_ggml_download_drops_its_adopted_pid(monkeypatch):
+def test_ggml_download_drops_its_adopted_pid(monkeypatch, tmp_path):
     """spawn_download() adopts a PID; left adopted it can be reused, and
     terminate_all would then signal whatever inherited it.
     """
     forgotten = []
+
+    # Once metadata resolves, _run() prepares the repo's cache for HTTP before it
+    # reaches the stubbed worker, and that writes: it creates the repo directory and
+    # a .transport marker. The session conftest deliberately pins HF_HUB_CACHE to the
+    # developer's real cache, so without a cache of its own this test edits it.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
 
     class _Finished:
         pid = 7777
@@ -196,6 +202,28 @@ def test_ggml_download_drops_its_adopted_pid(monkeypatch):
             return 0
 
     monkeypatch.setattr(ggml_mod, "_cached_model_path", lambda model_id: None)
+    # _run() opens with a HEAD to the Hub for the size and etag. It is best-effort and
+    # swallows its own errors, but leaving it live makes this test depend on a network
+    # round trip it does not care about, so answer it locally.
+    import huggingface_hub
+
+    class _Metadata:
+        """Stands in for HfFileMetadata; unset fields read as None, as they may on the Hub.
+
+        ``commit_hash`` has to be a real-looking sha: _run() pins the download to an
+        immutable revision and refuses anything that is not one.
+        """
+
+        size = 1
+        etag = "stub"
+        commit_hash = "0" * 40
+
+        def __getattr__(self, _name):
+            return None
+
+    monkeypatch.setattr(
+        huggingface_hub, "get_hf_file_metadata", lambda *a, **k: _Metadata(), raising = False
+    )
     import core.inference.stt_download_worker as worker_mod
 
     monkeypatch.setattr(worker_mod, "spawn_download", lambda *a, **k: _Finished())
