@@ -393,7 +393,19 @@ def test_the_encoder_config_is_read_from_the_pinned_cache_not_the_default_one(mo
             # exactly the one call this test is about.
             raise RuntimeError("only the call shape is under test")
 
+    # Every import the loader makes before the config read is stubbed, so this asserts the call
+    # shape on any host. Without accelerate / safetensors it would otherwise return None from the
+    # import line and never reach AutoConfig, which is a pass for the wrong reason (and a KeyError
+    # on the assertions below) on a CPU runner that has torch but not the rest.
     monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(AutoConfig = _AutoConfig))
+    monkeypatch.setitem(
+        sys.modules,
+        "accelerate",
+        types.SimpleNamespace(init_empty_weights = lambda **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules, "safetensors", types.SimpleNamespace(safe_open = lambda *a, **k: None)
+    )
     monkeypatch.setitem(
         sys.modules,
         "utils.hf_xet_fallback",
