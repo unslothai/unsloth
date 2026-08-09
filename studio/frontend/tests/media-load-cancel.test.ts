@@ -148,6 +148,29 @@ for (const [page, path] of PAGES) {
       raced.slice(0, raced.indexOf("return false;")),
       /void pollLoadProgress\(\)/,
     );
+    // That compensating unload names no load, so it must not fire once a newer one owns the
+    // page -- picking another model straight after cancelling is the natural next action, and
+    // an unscoped unload landing then would tear the replacement down instead.
+    assert.match(body, /const startLoad = \+\+loadSeq\.current;/);
+    assert.match(raced, /if \(startLoad === loadSeq\.current\) \{/);
+  });
+
+  test(`the ${page} cancelled poll leaves the status read to the unload`, () => {
+    // The unload's own response is authoritative and already carries the newest ticket. A status
+    // read issued from the cancelled branch would take a newer one still, and /status can report
+    // the model as resident while teardown is in progress -- which is the same stale-answer-wins
+    // bug the fence exists to close.
+    const poll = SOURCE.slice(
+      SOURCE.indexOf("const pollLoadProgress = useCallback("),
+      SOURCE.indexOf("}, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);"),
+    );
+    const cancelled = poll.slice(poll.lastIndexOf("if (seq !== cancelSeq.current) {"));
+    assert.ok(cancelled.length > 0, "expected the cancelled-status branch");
+    assert.doesNotMatch(
+      cancelled.slice(0, cancelled.indexOf("return;")),
+      /refreshStatus\(\)/,
+      "the cancelled branch must not allocate a ticket newer than the unload's",
+    );
   });
 
   test(`the ${page} progress poll is invalidated by a cancel`, () => {

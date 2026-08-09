@@ -1371,6 +1371,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Bumped by every cancel / eject (see dropResidentState). Requests that were already awaiting a
   // response when the cancel landed compare against it and discard their own result.
   const cancelSeq = useRef(0);
+  // Bumped by every load start. The compensating unload below carries no identity, so it must not
+  // fire once a newer load owns the page -- it would tear that one down instead.
+  const loadSeq = useRef(0);
 
   // Client-side state that only means anything while a model is resident: the
   // in-flight replacement load's tracking, and the Reapply target. Shared with
@@ -1801,10 +1804,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const ticket = ++statusTicket.current;
         const loaded = await getDiffusionStatus();
         if (seq !== cancelSeq.current) {
-          // Cancelled while this read was in flight, so it describes a pipeline being torn down --
-          // and it holds a ticket NEWER than the unload's, so applying it would discard the
-          // unloaded answer and leave the controls advertising a model that is gone.
-          void refreshStatus();
+          // Cancelled while this read was in flight, so it describes a pipeline being torn down.
+          // Drop it and refresh NOTHING: the unload's own response is authoritative and already
+          // holds the newest ticket, and a status read issued from here would take a newer one
+          // still and could re-report the model mid-teardown.
           return;
         }
         setStatusIfNewest(ticket, loaded);
@@ -2058,6 +2061,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // unload that can reach the backend first, find no load registered, and succeed without
       // stopping anything.
       const startSeq = cancelSeq.current;
+      const startLoad = ++loadSeq.current;
       setBusy("loading");
       // Show the chat-style toast immediately; the poll updates it by id.
       dismissLoadToast();
@@ -2110,11 +2114,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // Cancelled during the start request. The unload it sent may have landed before this load
         // registered, in which case it stopped nothing and the model is loading right now with no
         // toast and no Cancel button. The load exists on the backend as of this line, so unload
-        // once more -- that one cannot miss it.
-        try {
-          await unloadDiffusionModel();
-        } catch {
-          // Best effort: the poll is already gone, and refreshStatus below reports the truth.
+        // once more -- that one cannot miss it. Unless a NEWER load has since taken the page:
+        // this unload names nothing, so firing it then would cancel that load instead of this
+        // one, and the newer start has already superseded this load's token on the backend.
+        if (startLoad === loadSeq.current) {
+          try {
+            await unloadDiffusionModel();
+          } catch {
+            // Best effort: the poll is already gone, and refreshStatus below reports the truth.
+          }
         }
         void refreshStatus();
         return false;
