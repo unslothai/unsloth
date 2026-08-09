@@ -398,3 +398,26 @@ def test_a_transformers_stub_in_sys_modules_does_not_break_the_import(monkeypatc
             importlib.util.find_spec("transformers")   # __spec__ None / not set
         IF.check_transformers_dependency_versions()    # must not raise
         assert _warnings(caplog) == []
+
+
+def test_check_also_runs_on_the_mlx_branch():
+    """Apple Silicon never reaches `_gpu_init`.
+
+    `unsloth/__init__.py` splits on `_IS_MLX`; only the `else` arm imports
+    `_gpu_init`, and the MLX arm imports transformers itself. Registering the check
+    on one arm only leaves every MLX user with transformers' own wrong remedy, so
+    the call has to sit inside the `if _IS_MLX:` body, next to the torchao fixes
+    that are there for exactly this reason.
+    """
+    import ast
+    from pathlib import Path
+
+    source = Path(IF.__file__).with_name("__init__.py").read_text(encoding = "utf-8")
+    branch = next(
+        node for node in ast.parse(source).body
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "_IS_MLX"
+    )
+    body = ast.unparse(ast.Module(body = branch.body, type_ignores = []))
+    assert "check_transformers_dependency_versions" in body, "not called on the MLX path"
+    # And the GPU arm still reaches it through _gpu_init.
+    assert "_gpu_init" in ast.unparse(ast.Module(body = branch.orelse, type_ignores = []))

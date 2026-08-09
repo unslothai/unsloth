@@ -98,6 +98,14 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # Same reason again: this branch imports transformers itself further down,
+        # so a --no-deps floor miss surfaces here with the same wrong remedy.
+        from .import_fixes import check_transformers_dependency_versions as _check_tf_deps
+        _check_tf_deps()
+        del _check_tf_deps
+    except Exception:
+        pass
+    try:
         import unsloth_zoo
     except ImportError as _e:
         raise ImportError(
