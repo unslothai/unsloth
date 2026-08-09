@@ -2845,18 +2845,24 @@ _PS_PROXY_PROBE = (
     "try { $OutputEncoding = [Console]::OutputEncoding } catch { }; "
     "$PSModuleAutoLoadingPreference = 'All'; "
     # This process is pwsh.exe / powershell.exe, so PowerShell ran the CONSOLEHOST profile --
-    # and a caller in the VS Code Integrated Console or the ISE keeps its proxy defaults in
-    # Microsoft.VSCode_profile.ps1 / Microsoft.PowerShellISE_profile.ps1 instead, which this
-    # process never loads. The probe then reported no proxy and the -NoProfile setup child
-    # could not download anything on exactly the host that needed it. Dot-source the caller's
-    # other CurrentUser host profiles, from their own directory only, each failure ignored.
-    "try { $__unslothProfile = $PROFILE.CurrentUserCurrentHost; "
+    # and a caller in the VS Code Integrated Console keeps its proxy defaults in
+    # Microsoft.VSCode_profile.ps1 instead, which this process never loads. The probe then
+    # reported no proxy and the -NoProfile setup child could not download anything on exactly
+    # the host that needed it.
+    #
+    # ONLY the caller's own host profile, named by _UNSLOTH_PS_HOST_PROFILE, and only when the
+    # caller could be identified. Sourcing every Microsoft.*_profile.ps1 in the directory ran
+    # profiles belonging to hosts nobody was using: they can overwrite the console's
+    # $PSDefaultParameterValues, have side effects, or call exit before the record is written.
+    "try { $__unslothHostProfileName = $env:_UNSLOTH_PS_HOST_PROFILE; "
+    "if ($__unslothHostProfileName) { "
+    "$__unslothProfile = $PROFILE.CurrentUserCurrentHost; "
     "if ($__unslothProfile) { "
-    "$__unslothProfileDir = Split-Path -Parent $__unslothProfile; "
-    "foreach ($__unslothHostProfile in @(Get-ChildItem -LiteralPath $__unslothProfileDir "
-    "-Filter 'Microsoft.*_profile.ps1' -File -ErrorAction SilentlyContinue)) { "
-    "if ($__unslothHostProfile.FullName -ne $__unslothProfile) { "
-    "try { . $__unslothHostProfile.FullName } catch { } } } } } catch { }; "
+    "$__unslothHostProfile = Join-Path (Split-Path -Parent $__unslothProfile) "
+    "$__unslothHostProfileName; "
+    "if (($__unslothHostProfile -ne $__unslothProfile) -and "
+    "(Test-Path -LiteralPath $__unslothHostProfile -PathType Leaf)) { "
+    "try { . $__unslothHostProfile } catch { } } } } } catch { }; "
     "$out = @{}; "
     "foreach ($k in @($PSDefaultParameterValues.Keys)) { "
     "if ($k -is [string] -and [regex]::IsMatch($k, ':Proxy(Credential|UseDefaultCredentials)?$', "
@@ -2880,6 +2886,28 @@ _PS_PROXY_PROBE = (
     f"Write-Output '{_PROXY_PROBE_BEGIN}'; $out | ConvertTo-Json -Compress; "
     f"Write-Output '{_PROXY_PROBE_END}' }}"
 )
+
+
+# What the CALLER's host names its own CurrentUserCurrentHost profile, when we can tell. VS Code
+# is the case that matters and the one that announces itself; a host we cannot identify gets no
+# extra profile rather than someone else's.
+_HOST_PROFILE_BY_TERM_PROGRAM = {"vscode": "Microsoft.VSCode_profile.ps1"}
+
+
+def _caller_host_profile_name() -> Optional[str]:
+    term_program = (os.environ.get("TERM_PROGRAM") or "").strip().casefold()
+    return _HOST_PROFILE_BY_TERM_PROGRAM.get(term_program)
+
+
+def _profile_probe_env() -> dict:
+    """The probe child's environment, naming the caller's host profile when it is known."""
+    env = dict(os.environ)
+    name = _caller_host_profile_name()
+    if name:
+        env["_UNSLOTH_PS_HOST_PROFILE"] = name
+    else:
+        env.pop("_UNSLOTH_PS_HOST_PROFILE", None)
+    return env
 
 
 def _framed_probe_record(stdout: str) -> Optional[str]:
@@ -2927,6 +2955,11 @@ def _profile_probe_hosts() -> list[str]:
 # project still supports, evaluating `str | list[str]` at def time raises TypeError -- which
 # would take the whole CLI import down with it. The other unions here are quoted for the same
 # reason.
+# The whole profile probe's budget, shared across however many hosts are tried. A profile that
+# is slow, interactive or broken costs this once and the child proceeds exactly as it does today.
+_PROFILE_PROBE_TIMEOUT_SECONDS = 20.0
+
+
 def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str]:
     """The caller's profile proxy defaults as JSON, or None.
 
@@ -2941,6 +2974,10 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
     Entirely best effort. A profile that is slow, interactive or broken costs one timeout and
     the child proceeds exactly as it does today."""
     hosts = [powershell] if isinstance(powershell, str) else list(powershell)
+    # ONE budget for the whole probe, not one per host. Both editions installed and both
+    # profiles hung meant two full timeouts back to back, so every standalone setup or update
+    # stalled for twice the stated best-effort cost before it even started.
+    deadline = time.monotonic() + _PROFILE_PROBE_TIMEOUT_SECONDS
     merged: dict = {}
     # $PSDefaultParameterValues keys are case-INSENSITIVE, so "Invoke-WebRequest:Proxy" and
     # "invoke-webrequest:proxy" are one entry to PowerShell and two to a Python dict. Carrying
@@ -2950,6 +2987,9 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
     claimed: dict = {}
     seen_keys: set = set()
     for host in hosts:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             probe = subprocess.run(
                 [
@@ -2960,6 +3000,7 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
                     "-Command",
                     _PS_PROXY_PROBE,
                 ],
+                env = _profile_probe_env(),
                 capture_output = True,
                 text = True,
                 # The profile ran before the record was printed and may have said anything in
@@ -2970,7 +3011,7 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
                 # is ASCII; the banner is allowed to arrive mangled and be discarded.
                 encoding = "utf-8",
                 errors = "replace",
-                timeout = 20,
+                timeout = remaining,
                 **_windows_hidden_subprocess_kwargs(),
             )
         except (OSError, subprocess.SubprocessError):
@@ -3043,7 +3084,10 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         # install.ps1 publishes this around the handoff; a standalone update has to go and find
         # it, because -NoProfile below drops the profile that holds it and setup.ps1 downloads
         # the VC++ runtime and the uv installer on its own.
-        if not os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS"):
+        # PRESENCE, not truthiness. install.ps1 sets this to "{}" when it found no proxy, and
+        # treating that as "nobody handed anything over" sent an installer launch off to reload
+        # the very profiles it had deliberately discarded.
+        if os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS") is None:
             probed = _probe_profile_proxy_defaults(_profile_probe_hosts() or ["powershell.exe"])
             if probed:
                 env = {**(env or os.environ), "_UNSLOTH_PS_PROXY_DEFAULTS": probed}

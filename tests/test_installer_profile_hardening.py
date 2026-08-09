@@ -19,6 +19,7 @@ import os
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -1307,21 +1308,36 @@ def test_the_setup_child_does_not_hand_the_proxy_secret_to_its_descendants():
     assert removed_at < prelude.find("$PSDefaultParameterValues[$_.Name]")
 
 
-def test_the_probe_loads_the_callers_host_specific_profile():
-    """pwsh.exe and powershell.exe run the CONSOLEHOST profile. A caller in the VS Code
-    Integrated Console or the ISE keeps its defaults in Microsoft.VSCode_profile.ps1 or
-    Microsoft.PowerShellISE_profile.ps1, which those executables never load -- so the probe
-    reported no proxy and the -NoProfile child could not download on the one host that needed
-    it."""
-    from unsloth_cli.commands.studio import _PS_PROXY_PROBE
+def test_the_probe_loads_only_the_callers_own_host_profile(monkeypatch):
+    """pwsh.exe and powershell.exe run the CONSOLEHOST profile, so a caller in the VS Code
+    Integrated Console -- whose defaults live in Microsoft.VSCode_profile.ps1 -- got no proxy
+    and the -NoProfile child could not download.
 
-    assert "Microsoft.*_profile.ps1" in _PS_PROXY_PROBE
-    assert "CurrentUserCurrentHost" in _PS_PROXY_PROBE
+    Only THAT profile, though, and only when the caller can be identified. Sourcing every
+    Microsoft.*_profile.ps1 in the directory ran profiles for hosts nobody was using, which can
+    overwrite the console's own defaults, have side effects, or exit before the record."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    probe = studio_cmd._PS_PROXY_PROBE
+    assert "$env:_UNSLOTH_PS_HOST_PROFILE" in probe
+    assert "Microsoft.*_profile.ps1" not in probe, "no directory-wide sourcing"
+    assert "CurrentUserCurrentHost" in probe
     # From the user's own profile directory only, and never the one already loaded.
-    assert "Split-Path -Parent $__unslothProfile" in _PS_PROXY_PROBE
-    assert "-ne $__unslothProfile" in _PS_PROXY_PROBE
-    # And before the table is read, or it would snapshot the defaults the extra profiles set.
-    assert _PS_PROXY_PROBE.find("Microsoft.*_profile.ps1") < _PS_PROXY_PROBE.find("$out = @{}")
+    assert "Split-Path -Parent $__unslothProfile" in probe
+    assert "-ne $__unslothProfile" in probe
+    # And before the table is read, or it would snapshot the defaults that profile sets.
+    assert probe.find("_UNSLOTH_PS_HOST_PROFILE") < probe.find("$out = @{}")
+
+    # The caller's host is named from the environment it announces itself in.
+    monkeypatch.setenv("TERM_PROGRAM", "vscode")
+    assert studio_cmd._profile_probe_env()["_UNSLOTH_PS_HOST_PROFILE"] == (
+        "Microsoft.VSCode_profile.ps1"
+    )
+    # An unidentifiable host gets no extra profile rather than someone else's.
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    assert "_UNSLOTH_PS_HOST_PROFILE" not in studio_cmd._profile_probe_env()
+    monkeypatch.delenv("TERM_PROGRAM", raising = False)
+    assert "_UNSLOTH_PS_HOST_PROFILE" not in studio_cmd._profile_probe_env()
 
 
 def test_a_script_block_proxy_default_is_evaluated_not_dropped():
@@ -1339,3 +1355,47 @@ def test_a_script_block_proxy_default_is_evaluated_not_dropped():
     assert "$_UnslothDefaultValue -is [scriptblock]" in installer
     assert "& $_UnslothDefaultValue" in installer
     assert "$_UnslothDefaultResolved.AbsoluteUri" in installer
+
+
+def test_an_installer_launch_with_no_proxy_still_skips_the_probe(monkeypatch):
+    """The ABSENCE of the handoff is how a standalone update is recognised. install.ps1 used to
+    remove the variable when it had no proxy, so an installer launch -- including one started
+    with -NoProfile or by the desktop app -- went off and reloaded the very profiles it had
+    deliberately discarded, reapplying a stale proxy during setup."""
+    installer = INSTALL_PS1.read_text(encoding = "utf-8")
+    handoff = installer[installer.index("$previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS") :]
+    handoff = handoff[: handoff.index("try {")]
+    assert "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS" not in handoff, (
+        "the installer must publish an explicit empty handoff, not remove the variable"
+    )
+    assert "'{}'" in handoff
+
+    # And the CLI keys on presence, so "{}" means "the installer looked, there is none".
+    source = STUDIO_COMMAND.read_text(encoding = "utf-8")
+    assert 'os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS") is None' in source
+
+
+def test_the_profile_probe_shares_one_timeout_across_hosts(monkeypatch):
+    """Both editions installed and both profiles hung meant two full timeouts back to back, so
+    every standalone setup stalled for twice the cost the helper documents."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    budget = 0.4
+    monkeypatch.setattr(studio_cmd, "_PROFILE_PROBE_TIMEOUT_SECONDS", budget)
+    asked: list[float] = []
+
+    def _hang(argv, **kwargs):
+        # A profile that really does hang burns the timeout it was given, which is what makes
+        # a per-host budget cost twice as much wall clock as the helper documents.
+        asked.append(kwargs["timeout"])
+        time.sleep(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(studio_cmd.subprocess, "run", _hang)
+    started = time.monotonic()
+    assert studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]) is None
+    elapsed = time.monotonic() - started
+    assert asked, "the probe must have been attempted"
+    # One budget for the whole probe, however many hosts it tries.
+    assert sum(asked) <= budget + 0.05, asked
+    assert elapsed < budget * 1.8, elapsed

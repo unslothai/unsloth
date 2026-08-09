@@ -4453,11 +4453,13 @@ exit 0
     # only. setup.ps1 runs with -NoProfile and downloads on its own; see the prologue.
     $previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS
     $hadPreviousProxyHandoff = ($null -ne $previousProxyHandoff)
-    if ($script:UnslothProxyHandoffJson) {
-        $env:_UNSLOTH_PS_PROXY_DEFAULTS = $script:UnslothProxyHandoffJson
-    } else {
-        Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
-    }
+    # Set even when there is nothing to hand over. Its ABSENCE is how the CLI recognises a
+    # standalone update and goes looking through the user's profiles -- so removing it here made
+    # an installer launch, including one started with -NoProfile or by the desktop app, reload
+    # those profiles and reapply a stale proxy during setup: exactly the isolation those launch
+    # paths asked for. An empty object says "the installer looked, and there is none".
+    $env:_UNSLOTH_PS_PROXY_DEFAULTS =
+        if ($script:UnslothProxyHandoffJson) { $script:UnslothProxyHandoffJson } else { '{}' }
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
