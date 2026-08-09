@@ -210,9 +210,11 @@ def _orphan_companions_blocking() -> dict:
         size = sum(_repo_blob_bytes(r) for r in repos)
         if size <= 0:
             continue
-        cache_path = None
+        # The repo dir itself, not its parent: ``scoped_delete_root`` resolves the owning cache
+        # by walking up to the ``models--`` component, so a bare root resolves to nothing and the
+        # delete comes back "Invalid cache_path". Passing it scopes the removal to this one cache.
         try:
-            cache_path = str(Path(getattr(repos[0], "repo_path")).parent)
+            cache_path = str(Path(getattr(repos[0], "repo_path")))
         except (TypeError, OSError):
             cache_path = None
         orphans.append(

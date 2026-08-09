@@ -224,7 +224,11 @@ def test_orphan_listing_reports_the_stranded_companions_once_the_quants_are_gone
     result = asyncio.run(companion_cleanup.orphan_companions_response())
     assert [c["repo_id"] for c in result["companions"]] == [BASE_REPO]
     assert result["total_bytes"] == COMPANION_BYTES
-    assert result["companions"][0]["cache_path"] == "/cache"
+    # The repo dir, not the cache root: the delete route resolves the owning cache from it.
+    assert (
+        result["companions"][0]["cache_path"]
+        == "/cache/models--black-forest-labs--FLUX.2-klein-4B"
+    )
 
 
 def test_orphan_listing_never_offers_a_repo_that_holds_a_checkpoint(monkeypatch):
