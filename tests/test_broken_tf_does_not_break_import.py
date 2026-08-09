@@ -370,16 +370,18 @@ def test_an_imported_backend_is_not_opted_out_when_transformers_comes_later(tmp_
     assert "ENV_USE_TF None" in out.stdout, out.stdout
     # The backend nobody is using still gets opted out.
     assert "ENV_USE_FLAX 0" in out.stdout, out.stdout
-    # And leaving the variable unset is what preserves it.
-    probe = _run(
-        """
-        from transformers.utils import import_utils
-        print("TF_AVAILABLE", getattr(import_utils, "_tf_available", "ABSENT"))
-        """,
-        site = site,
-    )
-    assert probe.returncode == 0, probe.stderr[-3000:]
+    # And leaving the variable unset is what preserves it. Only 4.x has a flag to
+    # read: `_v4_names()` is also empty when Transformers is absent altogether, and
+    # probing it there is a ModuleNotFoundError rather than a finding.
     if _v4_names().get("_tf_available"):
+        probe = _run(
+            """
+            from transformers.utils import import_utils
+            print("TF_AVAILABLE", getattr(import_utils, "_tf_available", "ABSENT"))
+            """,
+            site = site,
+        )
+        assert probe.returncode == 0, probe.stderr[-3000:]
         assert "TF_AVAILABLE True" in probe.stdout, probe.stdout
 
 
