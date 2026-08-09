@@ -608,7 +608,6 @@ class SdCppDiffusionBackend:
             # mirror or a cached community repack is where the bytes actually land.
             try:
                 from hub.utils.companion_assets import record_companion_link
-
                 for asset_repo in dict.fromkeys(
                     rid
                     for repo, _f, kind in specs
