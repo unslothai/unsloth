@@ -2521,16 +2521,18 @@ def test_a_broken_diagnostic_never_replaces_the_real_failure(fake_runtime, tmp_p
         backend.generate(prompt = "a clip")
 
 
-@pytest.mark.parametrize("exc, expected", [
-    (RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB."), True),
-    (RuntimeError("HIP out of memory"), True),
-    (RuntimeError("Tried to allocate 2.00 GiB"), True),
-    (RuntimeError("scheduler produced NaN sigmas"), False),
-    (ValueError("bad prompt"), False),
-])
+@pytest.mark.parametrize(
+    "exc, expected",
+    [
+        (RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB."), True),
+        (RuntimeError("HIP out of memory"), True),
+        (RuntimeError("Tried to allocate 2.00 GiB"), True),
+        (RuntimeError("scheduler produced NaN sigmas"), False),
+        (ValueError("bad prompt"), False),
+    ],
+)
 def test_out_of_memory_is_recognised_by_text_not_only_by_class(exc, expected):
     # torch raises torch.OutOfMemoryError on CUDA but a plain RuntimeError on some backends, so
     # an isinstance check alone would miss exactly the reports this is for.
     import core.inference.video as video_mod
-
     assert video_mod._is_out_of_memory(exc) is expected

@@ -176,6 +176,7 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
     if dtype is None:
         try:
             import torch
+
             # fp16 rather than fp32: the fused kernels are half-precision only, so probing at fp32
             # would report "math only" on hardware where flash is perfectly healthy.
             dtype = torch.float16

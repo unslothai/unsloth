@@ -808,7 +808,12 @@ def _clear_sdpa_probe_cache():
     att._SDPA_PROBE_CACHE.clear()
 
 
-def _stub_probe(monkeypatch, kernels, *, record = None):
+def _stub_probe(
+    monkeypatch,
+    kernels,
+    *,
+    record = None,
+):
     def _probe(device, dtype):
         if record is not None:
             record.append((device, dtype))
@@ -826,12 +831,15 @@ def test_math_only_is_read_off_a_probe_not_the_flags(monkeypatch):
     assert att.available_sdpa_kernels(_target()) == ("math",)
 
 
-@pytest.mark.parametrize("kernels", [
-    ("flash", "mem_efficient", "cudnn", "math"),
-    ("flash", "math"),
-    ("mem_efficient", "math"),
-    ("cudnn", "math"),
-])
+@pytest.mark.parametrize(
+    "kernels",
+    [
+        ("flash", "mem_efficient", "cudnn", "math"),
+        ("flash", "math"),
+        ("mem_efficient", "math"),
+        ("cudnn", "math"),
+    ],
+)
 def test_any_subquadratic_kernel_means_not_math_only(kernels, monkeypatch):
     # Flash / mem-efficient / cuDNN are all O(N) in working set, so any one of them present means
     # the score matrix is never materialised and there is nothing to warn about.
@@ -922,8 +930,10 @@ def test_apply_native_reports_a_math_only_device(monkeypatch):
         info = lambda *a, **k: None,
     )
 
-    assert apply_attention_backend(_pipe(_FakeTransformer()), None, logger = logger,
-                                   target = _target()) is None
+    assert (
+        apply_attention_backend(_pipe(_FakeTransformer()), None, logger = logger, target = _target())
+        is None
+    )
     assert len(logged) == 1 and "math_only" in logged[0]
 
 
@@ -946,6 +956,8 @@ def test_apply_does_not_warn_when_a_real_backend_engaged(monkeypatch):
         info = lambda *a, **k: None,
     )
     t = _FakeTransformer()
-    assert apply_attention_backend(_pipe(t), "_native_cudnn", logger = logger,
-                                   target = _target()) == "_native_cudnn"
+    assert (
+        apply_attention_backend(_pipe(t), "_native_cudnn", logger = logger, target = _target())
+        == "_native_cudnn"
+    )
     assert seen == [] and logged == []
