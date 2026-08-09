@@ -1748,7 +1748,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the controls column below. Load progress shows in a toast. */}
-      <div className="pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+      <div className="@container pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
@@ -1767,7 +1767,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           />
           {/* Loaded-model status line: family / kind / offload / speed, as the images page surfaces on load. Hidden until a model is resident. */}
           {status?.loaded && (
-            <div className="hidden items-center gap-3 text-ui-11 md:flex">
+            <div className="hidden min-w-0 items-center gap-3 text-ui-11 @min-[720px]:flex">
               {status.family && <StatusChip label="Family" value={status.family} />}
               {status.model_kind && <StatusChip label="Kind" value={status.model_kind} />}
               {status.offload_policy && (
