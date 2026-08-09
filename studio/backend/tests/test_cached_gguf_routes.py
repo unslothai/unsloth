@@ -3289,6 +3289,29 @@ def test_pipeline_class_guard_is_silent_when_diffusers_is_absent(monkeypatch):
     assert assert_pipeline_class_available("ZImagePipeline", "z-image") is None
 
 
+def test_pipeline_class_guard_is_silent_when_a_lazy_submodule_cannot_import(monkeypatch):
+    # Same contract as the absent-diffusers case, for the install that is PRESENT but only
+    # partially usable. diffusers' top level is a lazy module, so the attribute probe is what
+    # actually imports the pipeline's submodule, and when that submodule's own dependencies are
+    # unsatisfiable it raises RuntimeError ("Failed to import diffusers.pipelines..."). hasattr
+    # absorbs AttributeError only, so the RuntimeError escaped this guard exactly the way a
+    # missing diffusers used to: not the ValueError the routes map to 400, so a bare 500 with the
+    # message lost -- and, now that the training preflight calls this too, a refusal that arrives
+    # as a 500 instead of the actionable 400. There is no version to judge here either.
+    import types
+
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    class _LazyModule(types.ModuleType):
+        __version__ = "0.40.0"
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"Failed to import diffusers.pipelines.{name.lower()}")
+
+    monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
+    assert assert_pipeline_class_available("ZImagePipeline", "z-image") is None
+
+
 def test_cached_pipeline_needs_a_detectable_image_family(monkeypatch):
     # A top-level model_index.json only proves the repo is a diffusers pipeline: an unsloth-hosted pipeline of a class this backend
     # cannot assemble cleared the trust gate, was advertised, then failed validate_load_request. Both gates now, like the video branch.

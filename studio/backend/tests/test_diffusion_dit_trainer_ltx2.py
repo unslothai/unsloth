@@ -644,3 +644,20 @@ def test_the_component_rule_reads_the_registry_rather_than_a_repo_blocklist():
     assert resolve_trainable_family("unsloth/Qwen-Image-FP8") == "qwen-image"
     # An official base is never a component, whichever registry it comes from.
     assert "lightricks/ltx-2" not in _component_only_repos()
+
+
+def test_the_preflight_survives_a_diffusers_that_cannot_import_its_pipeline(monkeypatch):
+    # The pipeline gate must refuse an OLD diffusers and stay silent on a BROKEN one. diffusers'
+    # top level is lazy, so the attribute probe is what imports the pipeline's submodule, and an
+    # install whose own dependencies are unsatisfiable raises RuntimeError from there rather than
+    # reporting the class missing. That is not the ValueError the start route maps to 400, so it
+    # would leave the preflight as a bare 500. Nothing here is a version judgement: let the load
+    # fail later with its own message.
+    class _LazyModule(types.ModuleType):
+        __version__ = "0.40.0"
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"Failed to import diffusers.pipelines.{name.lower()}")
+
+    monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
+    assert resolve_trainable_family("Lightricks/LTX-2") == "ltx-2"
