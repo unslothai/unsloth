@@ -321,6 +321,6 @@ def test_gpu_branch_still_sources_version_from_gpu_init():
     tree = ast.parse(UNSLOTH_INIT.read_text(encoding = "utf-8"))
 
     gpu_branch = ast.Module(body = _mlx_branch(tree).orelse, type_ignores = [])
-    assert "from ._gpu_init import __version__" in ast.unparse(gpu_branch), (
-        "GPU path must keep resolving __version__ through _gpu_init -> models._utils"
-    )
+    assert "from ._gpu_init import __version__" in ast.unparse(
+        gpu_branch
+    ), "GPU path must keep resolving __version__ through _gpu_init -> models._utils"
