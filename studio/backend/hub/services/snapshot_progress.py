@@ -151,8 +151,7 @@ def _variant_bytes_on_disk(
 
 
 def _variant_main_shard_present(
-    snapshot_dir: Optional[Path],
-    variant_file_matcher: Optional["VariantFileMatcher"],
+    snapshot_dir: Optional[Path], variant_file_matcher: Optional["VariantFileMatcher"]
 ) -> Optional[bool]:
     """Whether the variant's OWN files are in the snapshot dir. None when unanswerable.
 
