@@ -261,19 +261,116 @@ def _unknown_gguf_variant_key(filename: str) -> str:
     return f"{parents}/{stem}" if parents and stem else stem or "gguf"
 
 
+def gguf_variant_family(filename: str) -> str:
+    """The shard family *filename* belongs to: its directory plus its shard-stripped name.
+
+    The unit a row and a download plan describe. Every shard of one split GGUF shares
+    a family, which is why summing sizes within a family is right; two files that do
+    NOT share one are two different checkpoints, so summing across them is not.
+    """
+    return _unknown_gguf_variant_key(filename)
+
+
 def extract_quant_label(filename: str) -> str:
     return extract_quant_token(filename) or _unknown_gguf_variant_key(filename)
+
+
+def _segment_names_quant(segment: str, quant: str) -> bool:
+    """Whether a path segment is a name for *quant* (``Q6_K/``, ``Llama-3.3-70B-Q6_K/``)."""
+    match = _select_quant_match(segment)
+    if match is None:
+        return False
+    return f"{match.group(1) or ''}{match.group(2)}".lower() == quant.lower()
+
+
+_QUANT_NAME_SEPARATORS = ("-", ".", "_", " ")
+
+
+def _stem_names_quant(stem: str, quant: str) -> bool:
+    """Whether the basename ends in *quant*, the convention ``<model>-<QUANT>.gguf``.
+
+    ``ltx-2.3-22b-dev-Q6_K`` does; ``..._exp-16-iq2_s-16_shr-...`` does not -- there the
+    token is one field of a config string and names nothing.
+    """
+    low, wanted = stem.lower(), quant.lower()
+    if low == wanted:
+        return True
+    return low.endswith(wanted) and low[: -len(wanted)].endswith(_QUANT_NAME_SEPARATORS)
+
+
+def gguf_variant_key(filename: str) -> str:
+    """The persisted identity of a selectable GGUF variant.
+
+    The bare quant token when that token names the file within its path -- the shape
+    almost every repo uses, so this is byte-identical to the historical key there and
+    every stored pin, manifest and marker keeps resolving. When the token does NOT
+    single the file out, because a sibling directory holds another checkpoint at the
+    same quant (``distilled/`` beside the repo root) or because the token is only a
+    field inside a longer name, the key is the file's :func:`gguf_variant_family`
+    instead, which is unique and which the loader already accepts as a spelling
+    (``model_config._find_local_gguf_by_variant`` matches its shard-stripped relative
+    path, as does ``llama_cpp._gguf_files_for_variant``).
+
+    A pure function of the path, deliberately: the remote listing sees a whole repo
+    while a cache scan sees whatever was downloaded, and a key that depended on the
+    set would disagree between them and strand a finished download as incomplete.
+    """
+    path = filename.replace("\\", "/")
+    quant = extract_quant_token(path)
+    if quant is None:
+        return _unknown_gguf_variant_key(path)
+    parents, _, basename = path.rpartition("/")
+    if any(segment and not _segment_names_quant(segment, quant) for segment in parents.split("/")):
+        return _unknown_gguf_variant_key(path)
+    if extract_quant_token(basename) is not None and not _stem_names_quant(
+        _gguf_stem(basename), quant
+    ):
+        return _unknown_gguf_variant_key(path)
+    return quant
+
+
+def _variant_scope_label(filename: str) -> str:
+    """The part of a qualified variant's path that tells it apart from its namesakes."""
+    parents = filename.replace("\\", "/").rpartition("/")[0].strip("/")
+    return parents or _gguf_stem(filename)
 
 
 def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
     unknown_variants = [
         variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
-    if not unknown_variants:
-        return
     ambiguous = len(unknown_variants) > 1
-    for variant in unknown_variants:
-        variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
+    for variant in variants:
+        token = extract_quant_token(variant.filename)
+        if token is None:
+            variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
+        elif variant.quant.lower() != token.lower():
+            # A key qualified by path: show the quant, plus what distinguishes it.
+            variant.display_label = f"{token} · {_variant_scope_label(variant.filename)}"
+
+
+def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
+    """``variant key -> (first filename, size of that variant's shard family)``.
+
+    *entries* is an iterable of ``(path, size)`` for main GGUFs only, already filtered
+    of mmproj, drafters and big-endian builds.
+
+    Sizes are summed across the shards of ONE family, never across families. A repo
+    that ships the same quant twice (``BF16/QwQ-32B-BF16-*`` beside
+    ``BF16/QwQ-32B.BF16-*``) therefore advertises what a load would actually read
+    rather than the total of both copies. The family kept is the one holding the
+    lexicographically first file, which is the shard the lister and the loader open.
+    """
+    families: dict[str, dict[str, list[tuple[str, int]]]] = {}
+    for path, size in entries:
+        families.setdefault(gguf_variant_key(path), {}).setdefault(
+            gguf_variant_family(path), []
+        ).append((path, int(size or 0)))
+    grouped: dict[str, tuple[str, int]] = {}
+    for key, by_family in families.items():
+        chosen = min(by_family.values(), key = lambda members: min(path for path, _ in members))
+        grouped[key] = (min(path for path, _ in chosen), sum(size for _, size in chosen))
+    return grouped
 
 
 def _env_offline() -> bool:
@@ -580,10 +677,8 @@ def list_gguf_variants(
             return _ready_cached_variants(cached)
         raise
 
-    variants: list[GgufVariantInfo] = []
     has_vision = False
-    quant_totals: dict[str, int] = {}
-    quant_first_file: dict[str, str] = {}
+    main_files: list[tuple[str, int]] = []
 
     for sibling in info.siblings:
         filename = getattr(sibling, "rfilename", None)
@@ -594,24 +689,18 @@ def list_gguf_variants(
         if is_mmproj_filename(filename):
             has_vision = True
             continue
-        quant = extract_quant_label(filename)
         # The two extractors disagree on F16-be-checkpoint-Q4_K_M shapes; judge with the
         # loader's label so no row is advertised for a file the remote detector refuses.
         from utils.models.model_config import _extract_quant_label as _loader_quant
 
         if is_big_endian_gguf_path(filename, _loader_quant(filename)):
             continue
-        quant_totals[quant] = quant_totals.get(quant, 0) + int(getattr(sibling, "size", 0) or 0)
-        quant_first_file.setdefault(quant, filename)
+        main_files.append((filename, int(getattr(sibling, "size", 0) or 0)))
 
-    for quant, total_size in quant_totals.items():
-        variants.append(
-            GgufVariantInfo(
-                filename = quant_first_file[quant],
-                quant = quant,
-                size_bytes = total_size,
-            )
-        )
+    variants = [
+        GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
+        for quant, (filename, size) in group_gguf_variant_files(main_files).items()
+    ]
 
     variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants)
@@ -649,8 +738,7 @@ def list_local_gguf_variants(
         else _registered_custom_model_root(directory)
     )
 
-    quant_totals: dict[str, int] = {}
-    quant_first_file: dict[str, str] = {}
+    main_files: list[tuple[str, int]] = []
     has_vision = False
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
@@ -668,23 +756,17 @@ def list_local_gguf_variants(
         rel = file.relative_to(root).as_posix()
         if _is_local_mtp_drafter(file, custom_root, rel):
             continue
-        quant = extract_quant_label(rel)
         # The two extractors disagree on F16-be-checkpoint-Q4_K_M shapes; judge with the
         # loader's label so no row is listed for a file the local detector refuses.
         from utils.models.model_config import _extract_quant_label as _loader_quant
 
         if is_big_endian_gguf_path(rel, _loader_quant(rel)):
             continue
-        quant_totals[quant] = quant_totals.get(quant, 0) + size
-        quant_first_file.setdefault(quant, rel)
+        main_files.append((rel, size))
 
     variants = [
-        GgufVariantInfo(
-            filename = quant_first_file[quant],
-            quant = quant,
-            size_bytes = size,
-        )
-        for quant, size in quant_totals.items()
+        GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
+        for quant, (filename, size) in group_gguf_variant_files(main_files).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants)

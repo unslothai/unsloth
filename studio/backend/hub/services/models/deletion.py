@@ -19,6 +19,7 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
     extract_quant_label,
     extract_quant_token,
+    gguf_variant_key,
     is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
 from hub.utils.hf_cache_state import (
@@ -131,7 +132,13 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the
     quant label names the folder); only empty dirs go, so siblings are safe.
     Returns (count removed, removal failures other than a concurrent refill)."""
-    variant_key = (extract_quant_token(variant) or variant).lower()
+    # A path-qualified variant key names its own folder; its quant token belongs to
+    # sibling checkpoints too, so it must not reach for a <quant>/ dir it does not own.
+    variant_key = (
+        variant.lower()
+        if "/" in variant
+        else (extract_quant_token(variant) or variant).lower()
+    )
     removed = 0
     failures: list[str] = []
     for target_repo in target_repos:
@@ -217,7 +224,7 @@ def _delete_gguf_variant_from_repos(
         matched = _repo_file_matches(
             target_repo,
             lambda name: _is_main_gguf_filename(name)
-            and extract_quant_label(name).lower() == variant.lower(),
+            and gguf_variant_key(name).lower() == variant.lower(),
         )
 
         for snap, _blob, name in matched:
@@ -440,7 +447,7 @@ def reclaim_replaced_gguf_variant(
         matches = _repo_file_matches(
             target_repo,
             lambda name: _is_main_gguf_filename(name)
-            and extract_quant_label(name).lower() == variant_key,
+            and gguf_variant_key(name).lower() == variant_key,
         )
         for snap, blob, name in matches:
             # Prune only a file we can identify as a real, stale cache blob. A

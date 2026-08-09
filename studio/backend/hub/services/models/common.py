@@ -19,6 +19,7 @@ from hub.schemas.inventory import (
 )
 from hub.utils.gguf import (
     extract_quant_label,
+    gguf_variant_key,
     is_gguf_filename as _is_gguf_filename,
     is_mmproj_filename as _is_mmproj_filename,
     is_mtp_drafter_path as _is_mtp_drafter_path,
@@ -769,7 +770,7 @@ def _classify_local_path(
     if gguf_files:
         gguf_size_bytes = _sum_file_sizes(gguf_files)
         variant = (
-            extract_quant_label(gguf_files[0].name)
+            gguf_variant_key(gguf_files[0].name)
             if scan_path.is_file() and len(gguf_files) == 1
             else None
         )

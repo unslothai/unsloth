@@ -30,6 +30,7 @@ from hub.utils.hf_cache_state import (
 from hub.utils.gguf import (
     GgufVariantInfo,
     extract_quant_label,
+    gguf_variant_key,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
     list_empty_gguf_variant_dirs,
@@ -392,7 +393,7 @@ def _local_main_gguf_blobs_by_quant(
                         str(blob) for blob in hashes if blob
                     )
                     continue
-                quant = extract_quant_label(normalized).lower()
+                quant = gguf_variant_key(normalized).lower()
                 if is_big_endian_gguf_path(normalized, quant):
                     continue
                 bucket = result.setdefault(quant, {}).setdefault(normalized, set())
@@ -918,7 +919,7 @@ async def get_gguf_variants_answer(
             # The default comes from the ready rows; with none ready every row is the fallback.
             ready = [v for v in variants if _downloaded(v)]
             best = pick_best_gguf([v.filename for v in (ready or variants)])
-            default_variant = extract_quant_label(best) if best else None
+            default_variant = gguf_variant_key(best) if best else None
 
             return GgufVariantsResponse(
                 repo_id = response_repo_id,
@@ -943,7 +944,7 @@ async def get_gguf_variants_answer(
         ) -> GgufVariantsResponse:
             filenames = [v.filename for v in variants]
             best = pick_best_gguf(filenames)
-            default_variant = extract_quant_label(best) if best else None
+            default_variant = gguf_variant_key(best) if best else None
             return GgufVariantsResponse(
                 repo_id = response_repo_id,
                 variants = [
@@ -1158,7 +1159,7 @@ async def get_gguf_variants_answer(
 
         filenames = [v.filename for v in variants]
         best = pick_best_gguf(filenames)
-        default_variant = extract_quant_label(best) if best else None
+        default_variant = gguf_variant_key(best) if best else None
 
         # Per-snapshot accounting: a variant counts as present only when one
         # snapshot holds all its files (split GGUFs need every shard together),
@@ -1192,7 +1193,7 @@ async def get_gguf_variants_answer(
                     by_filename[key] = max(by_filename.get(key, 0), size)
                     if _is_mmproj_filename(f.name) or _is_mtp_drafter_path(rel):
                         continue
-                    q = extract_quant_label(rel)
+                    q = gguf_variant_key(rel)
                     if is_big_endian_gguf_path(rel, q):
                         continue
                     q = q.lower()

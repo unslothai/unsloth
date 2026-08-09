@@ -30,6 +30,7 @@ logger = get_logger(__name__)
 
 from hub.utils.gguf import (
     extract_quant_label,
+    gguf_variant_key,
     is_big_endian_gguf_path,
     is_gguf_filename,
     is_mmproj_filename,
@@ -776,7 +777,7 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         rel = path.relative_to(snapshot_dir).as_posix()
         if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
             continue
-        quant = extract_quant_label(rel)
+        quant = gguf_variant_key(rel)
         # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the
         # quant. Judged with the loader's label, since the two extractors disagree on
         # F16-be-checkpoint-Q4_K_M and this file must not mark Q4_K_M complete.
