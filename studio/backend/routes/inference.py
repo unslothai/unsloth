@@ -13526,7 +13526,6 @@ def _require_usable_session(session_id: str) -> None:
     session that had been given one.
     """
     from core.inference.tools import _usable_session_id
-
     if not session_id or not _usable_session_id(session_id):
         raise HTTPException(status_code = 404, detail = "Not found")
 
