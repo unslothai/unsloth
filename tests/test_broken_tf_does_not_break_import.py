@@ -387,7 +387,8 @@ def test_an_opt_in_that_was_consumed_and_restored_still_counts(tmp_path):
     Reading only `os.environ` would then undo a choice Transformers honoured.
     """
     out = _run_guard(
-        tmp_path, 'del os.environ["FORCE_TF_AVAILABLE"]',
+        tmp_path,
+        'del os.environ["FORCE_TF_AVAILABLE"]',
         FORCE_TF_AVAILABLE = "1",
     )
     assert out.returncode == 0, out.stderr[-3000:]
@@ -488,7 +489,6 @@ def test_the_default_snapshot_is_not_an_opt_in():
     import_utils.USE_TF = "AUTO"
     import_utils.FORCE_TF_AVAILABLE = "AUTO"
     import_utils.USE_JAX = "AUTO"
-    _exec_guard(
-        {"transformers": object(), "transformers.utils.import_utils": import_utils}, {})
+    _exec_guard({"transformers": object(), "transformers.utils.import_utils": import_utils}, {})
     assert import_utils._tf_available is False
     assert import_utils._flax_available is False

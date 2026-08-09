@@ -40,8 +40,12 @@ else:
     _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
     _import_utils = sys.modules.get("transformers.utils.import_utils")
     for _flag, _modules, _opt_ins, _cached in (
-        ("_tf_available", ("tensorflow",),
-         ("USE_TF", "FORCE_TF_AVAILABLE"), ("USE_TF", "FORCE_TF_AVAILABLE")),
+        (
+            "_tf_available",
+            ("tensorflow",),
+            ("USE_TF", "FORCE_TF_AVAILABLE"),
+            ("USE_TF", "FORCE_TF_AVAILABLE"),
+        ),
         ("_flax_available", ("flax", "jax"), ("USE_FLAX",), ("USE_JAX",)),
     ):
         if any(_m in sys.modules for _m in _modules):
@@ -55,8 +59,7 @@ else:
         # Transformers is concerned, and `os.environ` no longer shows it. Read
         # what Transformers actually used. Note the spelling: the environment
         # variable is `USE_FLAX`, the constant it lands in is `USE_JAX`.
-        if any(str(getattr(_import_utils, _v, "")).upper() in _TRUE
-               for _v in _cached):
+        if any(str(getattr(_import_utils, _v, "")).upper() in _TRUE for _v in _cached):
             continue
         try:
             # Absent on 5.x, and a module proxy can refuse the write.
