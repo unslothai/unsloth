@@ -3801,10 +3801,24 @@ _VIDEO_GEN_TASK = "text-to-video"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 
 
+# The two denoiser partitions, by the filename prefix the loader itself validates against
+# (``video_minimax_h3``). These GGUFs carry no architecture metadata, so the NAME is the only
+# evidence there is, and it is the same evidence the load path acts on.
+_H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
+
+
 def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
-    """True when a name hint is one of the MiniMax-H3 GGUF bundle repos (video, never chat)."""
+    """True when a name hint names MiniMax-H3 GGUF weights (video, never chat).
+
+    Either a known bundle repo id, or a validated denoiser FILENAME. The filename half matters
+    for a GGUF the user copied into a custom local directory rather than leaving under one of the
+    bundle ids: with no architecture metadata to fall back on, ``_local_model_task`` returned null
+    and an otherwise loadable checkpoint was dropped from the Video On Device picker."""
     if not hint:
         return False
+    name = str(hint).strip().lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if name.endswith(".gguf") and name.startswith(_H3_DENOISER_GGUF_PREFIXES):
+        return True
     try:
         from hub.utils.gguf import is_h3_bundle_repo
         return is_h3_bundle_repo(hint)
