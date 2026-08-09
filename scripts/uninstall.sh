@@ -557,22 +557,38 @@ _unsloth_uninstall_main() {
                 "$_lsr" -u "$HOME/Applications/Unsloth Studio.app" 2>/dev/null || true
             fi
             # WKWebView data, keyed by bundle id. Created at first launch, not by install.sh.
+            # The packaged desktop app shares this bundle id and is the only thing that
+            # writes this data; the shell launcher just opens a browser. This script never
+            # removes that app, so it must not reset it either.
             _bid="ai.unsloth.studio"
-            echo "Removing WebView caches and app data ($_bid)..."
-            _remove_path "$HOME/Library/Caches/$_bid"
-            _remove_path "$HOME/Library/WebKit/$_bid"
-            _remove_path "$HOME/Library/Application Support/$_bid"
-            _remove_path "$HOME/Library/HTTPStorages/$_bid"
-            _remove_path "$HOME/Library/HTTPStorages/$_bid.binarycookies"
-            _remove_path "$HOME/Library/Cookies/$_bid.binarycookies"
-            _remove_path "$HOME/Library/Saved Application State/$_bid.savedState"
-            # defaults, not rm: cfprefsd rewrites the plist from memory. ByHost is a separate
-            # domain. As the home's owner, or under sudo root just edits root's own domain.
-            if command -v defaults >/dev/null 2>&1; then
-                _run_as_home_owner defaults delete "$_bid" >/dev/null 2>&1 || true
-                _run_as_home_owner defaults -currentHost delete "$_bid" >/dev/null 2>&1 || true
+            _bid_owner=""
+            for _bid_cand in "/Applications/Unsloth.app" \
+                             "/Applications/Unsloth Studio (Desktop).app" \
+                             "$HOME/Applications/Unsloth.app"; do
+                if [ -x "$_bid_cand/Contents/MacOS/unsloth-studio" ]; then
+                    _bid_owner="$_bid_cand"
+                    break
+                fi
+            done
+            if [ -n "$_bid_owner" ]; then
+                echo "Keeping app data ($_bid): it belongs to $_bid_owner"
+            else
+                echo "Removing WebView caches and app data ($_bid)..."
+                _remove_path "$HOME/Library/Caches/$_bid"
+                _remove_path "$HOME/Library/WebKit/$_bid"
+                _remove_path "$HOME/Library/Application Support/$_bid"
+                _remove_path "$HOME/Library/HTTPStorages/$_bid"
+                _remove_path "$HOME/Library/HTTPStorages/$_bid.binarycookies"
+                _remove_path "$HOME/Library/Cookies/$_bid.binarycookies"
+                _remove_path "$HOME/Library/Saved Application State/$_bid.savedState"
+                # defaults, not rm: cfprefsd rewrites the plist from memory. ByHost is a separate
+                # domain. As the home's owner, or under sudo root just edits root's own domain.
+                if command -v defaults >/dev/null 2>&1; then
+                    _run_as_home_owner defaults delete "$_bid" >/dev/null 2>&1 || true
+                    _run_as_home_owner defaults -currentHost delete "$_bid" >/dev/null 2>&1 || true
+                fi
+                _remove_path "$HOME/Library/Preferences/$_bid.plist"
             fi
-            _remove_path "$HOME/Library/Preferences/$_bid.plist"
             ;;
         Linux)
             if [ "$_is_wsl" = "1" ]; then
