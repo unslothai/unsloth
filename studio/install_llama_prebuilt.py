@@ -42,7 +42,7 @@ except ImportError:
     FileLock = None
     FileLockTimeout = None
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Union
 
 # Shared component-agnostic machinery lives in prebuilt_core (same directory);
 # put studio/ on sys.path so it resolves whether this file is run as a script
@@ -4471,6 +4471,37 @@ def download_validation_model(path: Path, cache_path: Path | None = None) -> Non
         raise PrebuiltFallback(f"validation model unavailable: {exc}") from exc
 
 
+# A probe model supplied either directly or as a thunk fetched on first use.
+ValidationModelProvider = Union[Path, Callable[[], Path]]
+
+
+def lazy_validation_model(
+    path: Path, cache_path: Path | None = None
+) -> Callable[[], Path]:
+    """Fetch the tiny GGUF probe on first use, at most once.
+
+    An approved bundle proves its integrity by sha256 and so skips the staged smoke
+    test, leaving the probe unread on the default install path. Fetching it up front
+    still made huggingface.co a hard gate: a 429 there raised PrebuiltFallback and
+    forced a multi-minute source build over a file nothing went on to open.
+    """
+    fetched = False
+
+    def ensure() -> Path:
+        nonlocal fetched
+        if not fetched:
+            download_validation_model(path, cache_path)
+            fetched = True
+        return path
+
+    return ensure
+
+
+def resolve_validation_model(probe: ValidationModelProvider) -> Path:
+    """Materialize a probe model that may have been supplied lazily."""
+    return probe() if callable(probe) else probe
+
+
 def free_local_port() -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
@@ -6292,7 +6323,7 @@ def validate_prebuilt_choice(
     host: HostInfo,
     install_dir: Path,
     work_dir: Path,
-    probe_path: Path,
+    probe: ValidationModelProvider,
     *,
     requested_tag: str,
     llama_tag: str,
@@ -6360,6 +6391,8 @@ def validate_prebuilt_choice(
     # disabled for now. The check and the source-build fallback it triggers are
     # kept intact; flip the flag / env to restore it (#5854).
     if choice.expected_sha256 is None or staged_validation_enabled():
+        # Only branch that reads the probe, so this is where a lazy one is fetched.
+        probe_path = resolve_validation_model(probe)
         validate_quantize(
             quantize_path,
             probe_path,
@@ -6428,7 +6461,7 @@ def validate_prebuilt_attempts(
     host: HostInfo,
     install_dir: Path,
     work_dir: Path,
-    probe_path: Path,
+    probe: ValidationModelProvider,
     *,
     requested_tag: str,
     llama_tag: str,
@@ -6492,7 +6525,7 @@ def validate_prebuilt_attempts(
                 host,
                 staging_dir,
                 work_dir,
-                probe_path,
+                probe,
                 requested_tag = requested_tag,
                 llama_tag = llama_tag,
                 release_tag = release_tag,
@@ -7103,8 +7136,10 @@ def install_prebuilt(
                     sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                     return
             with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
-                probe_path = work_dir / "stories260K.gguf"
-                download_validation_model(probe_path, validation_model_cache_path(install_dir))
+                probe = lazy_validation_model(
+                    work_dir / "stories260K.gguf",
+                    validation_model_cache_path(install_dir),
+                )
                 release_count = len(release_plans)
                 for release_index, plan in enumerate(release_plans):
                     choice = plan.attempts[0]
@@ -7142,7 +7177,7 @@ def install_prebuilt(
                             host,
                             install_dir,
                             work_dir,
-                            probe_path,
+                            probe,
                             requested_tag = requested_tag,
                             llama_tag = plan.llama_tag,
                             release_tag = plan.release_tag,

@@ -2386,9 +2386,12 @@ def test_install_prebuilt_does_not_skip_unhealthy_existing_install(
             [plan],
         ),
     )
+    # Trip on the first real step past the skip check. The probe download used to
+    # stand in for it, but it is fetched lazily now and an approved bundle never
+    # reads it, so that tripwire would sit unarmed while the flow ran on.
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "download_validation_model",
+        "validate_prebuilt_attempts",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unhealthy install must continue into normal install flow")
         ),
@@ -3326,7 +3329,7 @@ def _nvidia_linux_host():
     )
 
 
-def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
+def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256, probe = None):
     """Run validate_prebuilt_choice with heavy steps stubbed; return the quantize/server smoke-test call counts."""
     calls = {"quantize": 0, "server": 0}
     server_path = tmp_path / "install" / "build" / "bin" / "llama-server"
@@ -3374,7 +3377,7 @@ def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
         _nvidia_linux_host(),
         tmp_path / "install",
         tmp_path / "work",
-        tmp_path / "stories260K.gguf",
+        probe if probe is not None else tmp_path / "stories260K.gguf",
         requested_tag = "b9998",
         llama_tag = "b9998",
         release_tag = "b9998",
@@ -3407,6 +3410,51 @@ def test_validate_prebuilt_choice_approved_validation_runs_when_flag_enabled(tmp
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", True)
     calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
     assert calls == {"quantize": 1, "server": 1}
+
+
+def test_validate_prebuilt_choice_never_fetches_probe_for_approved_bundle(tmp_path, monkeypatch):
+    # The probe is only read by the smoke test, so an approved bundle with the flag off
+    # must not fetch it at all: a huggingface.co outage or 429 used to raise
+    # PrebuiltFallback here and force a source build over a file nothing opens.
+    def refuse() -> Path:
+        raise AssertionError("probe model must not be fetched when the smoke test is skipped")
+
+    calls = _run_validate_prebuilt_choice(
+        monkeypatch, tmp_path, expected_sha256 = "ab" * 32, probe = refuse
+    )
+    assert calls == {"quantize": 0, "server": 0}
+
+
+def test_validate_prebuilt_choice_fetches_probe_once_when_validating(tmp_path, monkeypatch):
+    # A hashless build validates, so the probe is fetched -- once for both smoke steps.
+    fetches = []
+    probe_path = tmp_path / "stories260K.gguf"
+
+    def fetch() -> Path:
+        fetches.append(1)
+        return probe_path
+
+    calls = _run_validate_prebuilt_choice(
+        monkeypatch, tmp_path, expected_sha256 = None, probe = fetch
+    )
+    assert calls == {"quantize": 1, "server": 1}
+    assert len(fetches) == 1
+
+
+def test_lazy_validation_model_downloads_once_on_first_use(tmp_path, monkeypatch):
+    downloads = []
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        lambda path, cache_path = None: downloads.append((path, cache_path)),
+    )
+    probe_path = tmp_path / "stories260K.gguf"
+    ensure = INSTALL_LLAMA_PREBUILT.lazy_validation_model(probe_path, tmp_path / "cache.gguf")
+
+    assert downloads == []           # constructing the thunk touches the network never
+    assert ensure() == probe_path
+    assert ensure() == probe_path
+    assert len(downloads) == 1       # and repeat use is served from the first fetch
 
 
 def test_staged_validation_enabled_default_off(monkeypatch):
