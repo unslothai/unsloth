@@ -989,9 +989,8 @@ def test_link_ggml_runtime_wires_windows_libomp(tmp_path):
 
 
 def test_link_ggml_runtime_wires_linux_libomp(tmp_path):
-    # llama's clang-built linux-arm64 libggml-base.so NEEDS libomp.so.5, shipped
-    # in the llama bundle and never on the host: without it beside whisper-server
-    # the loader fails with "libomp.so.5: cannot open shared object file".
+    # llama's clang-built linux-arm64 libggml-base.so NEEDS libomp.so.5, bundled
+    # and never on the host: without it whisper-server fails to load.
     bin_dir = tmp_path / "llama_bin"
     bin_dir.mkdir()
     for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cpu-armv8.0_1.so", "libomp.so.5"):
@@ -1010,8 +1009,8 @@ def test_link_ggml_runtime_wires_linux_libomp(tmp_path):
 
 
 def test_link_ggml_runtime_linux_libomp_alone_is_not_a_pairing(tmp_path):
-    # Same fail-closed rule as the Windows libomp case: OpenMP without ggml is
-    # not a usable llama runtime.
+    # Same fail-closed rule as the Windows case: OpenMP without ggml is not a
+    # usable llama runtime.
     bin_dir = tmp_path / "llama_bin"
     bin_dir.mkdir()
     (bin_dir / "libomp.so.5").write_bytes(b"x")
