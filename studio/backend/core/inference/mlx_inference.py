@@ -122,8 +122,20 @@ def _render_registered_vlm_prompt(
     config, model_type = _mlx_vlm_model_config(model)
     if config is None:
         return None
-    if model_type not in getattr(prompt_utils, "MODEL_CONFIG", {}):
-        return None
+    model_config = getattr(prompt_utils, "MODEL_CONFIG", {})
+    if model_type not in model_config:
+        folded = model_type.casefold() if isinstance(model_type, str) else None
+        canonical = next(
+            (key for key in model_config if isinstance(key, str) and key.casefold() == folded),
+            None,
+        )
+        if canonical is None:
+            return None
+        # Preserve the checkpoint's config object. The prompt helper only needs
+        # its own canonical routing key, and mutating the loaded model would make
+        # later capability and export logic observe a value it never published.
+        config = dict(config) if isinstance(config, dict) else dict(config.__dict__)
+        config["model_type"] = canonical
 
     # Recovery path: sweeps the caller's original list rather than reusing a copy (#7066).
     swept = neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor))

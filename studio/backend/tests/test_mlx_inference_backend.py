@@ -1665,16 +1665,15 @@ def test_mlx_audio_probe_that_answered_no_still_retracts_audio_vlm(monkeypatch):
         ("gemma4", True),
         ("phi4mm", True),
         ("minicpmo", True),
-        ("qwen3_omni_moe", False),
+        ("qwen3_omni_moe", True),
     ],
 )
 def test_mlx_vlm_renderer_audio_marker_contract(model_type, places_marker):
     """Pins which mlx-vlm message builders honour num_audios.
 
     This is the message-construction layer, not the final template render:
-    qwen3_omni_moe is registered but its formatter drops audio here, so
-    classifying on registry membership alone would advertise a model whose
-    prompt can never carry an audio marker.
+    Every currently registered native-audio formatter preserves the requested
+    audio count under mlx-vlm 0.6.10.
     """
     pu = pytest.importorskip("mlx_vlm.prompt_utils")
     render = lambda n: pu.apply_chat_template(
@@ -1686,6 +1685,37 @@ def test_mlx_vlm_renderer_audio_marker_contract(model_type, places_marker):
         return_messages = True,
     )
     assert (render(1) != render(0)) is places_marker
+
+
+def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
+    """The official checkpoint capitalizes its model type while mlx-vlm's
+    registry uses lowercase. Studio must reach the registered renderer rather
+    than rejecting the checkpoint before the loader's normalization can run."""
+    from unsloth_zoo.mlx.loader import _ensure_vlm_prompt_utils_patched
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
+    _ensure_vlm_prompt_utils_patched()
+    model = SimpleNamespace(
+        config = {"model_type": "NemotronH_Nano_Omni_Reasoning_V3"},
+    )
+    messages = [{"role": "user", "content": "Transcribe this audio."}]
+
+    plain = _render_registered_vlm_prompt(
+        None,
+        model,
+        messages,
+        num_images = 0,
+        num_audios = 0,
+    )
+    marked = _render_registered_vlm_prompt(
+        None,
+        model,
+        messages,
+        num_images = 0,
+        num_audios = 1,
+    )
+
+    assert plain and marked and plain != marked
 
 
 def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
