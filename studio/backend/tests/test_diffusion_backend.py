@@ -6097,7 +6097,12 @@ def test_dense_quant_estimate_carries_the_text_encoder_share():
 _ROCM_16G = (15_870, 16_305)
 
 
-def _loaded_backend_on_a_16g_card(tmp_path, monkeypatch, *, base_repo = "base/repo"):
+def _loaded_backend_on_a_16g_card(
+    tmp_path,
+    monkeypatch,
+    *,
+    base_repo = "base/repo",
+):
     """A loaded GGUF pipeline, then a 16 GB discrete-CUDA memory snapshot. Patched AFTER the load
     so the load itself still plans against the fixture's CPU target and is unaffected."""
     from core.inference import diffusion as dmod
@@ -6120,7 +6125,9 @@ def _loaded_backend_on_a_16g_card(tmp_path, monkeypatch, *, base_repo = "base/re
     return backend
 
 
-def test_generate_refuses_a_resolution_whose_activations_cannot_fit(fake_runtime, tmp_path, monkeypatch):
+def test_generate_refuses_a_resolution_whose_activations_cannot_fit(
+    fake_runtime, tmp_path, monkeypatch
+):
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError) as excinfo:
@@ -6136,7 +6143,9 @@ def test_generate_refuses_a_resolution_whose_activations_cannot_fit(fake_runtime
     assert len(backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 4)["images"]) == 1
 
 
-def test_generate_guard_measures_the_input_image_not_the_sliders(fake_runtime, tmp_path, monkeypatch):
+def test_generate_guard_measures_the_input_image_not_the_sliders(
+    fake_runtime, tmp_path, monkeypatch
+):
     # img2img / inpaint / upscale / edit take their OUTPUT size from the uploaded image, so reading
     # the width/height kwargs would check a frame this call never renders. A 2048x2048 upload with
     # the sliders left at 1024 is four times the planned area.
@@ -6190,7 +6199,9 @@ def test_generate_guard_env_override(fake_runtime, tmp_path, monkeypatch):
     assert len(backend.generate(prompt = "a sloth", width = 1088, height = 1920, steps = 4)["images"]) == 1
 
 
-def test_generate_guard_leaves_a_large_batch_to_the_oom_backoff(fake_runtime, tmp_path, monkeypatch):
+def test_generate_guard_leaves_a_large_batch_to_the_oom_backoff(
+    fake_runtime, tmp_path, monkeypatch
+):
     # The chunk loop halves a failed multi-image forward down to singletons, so budgeting the whole
     # chunk here would refuse batches that complete today (the measured batch-32 fast path). The
     # guard budgets one image, the case no backoff can rescue.

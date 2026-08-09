@@ -179,7 +179,6 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
         return snapshot
     try:
         import torch
-
         reclaimable = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
     except Exception:  # noqa: BLE001 -- no allocator reading: the plain snapshot still stands
         return snapshot

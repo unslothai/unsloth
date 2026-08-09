@@ -598,7 +598,9 @@ def test_reclaimable_snapshot_credits_cached_blocks_without_flushing(monkeypatch
     monkeypatch.setattr(
         dm,
         "snapshot_device_memory",
-        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 2_000, total_mib = 16_302),
+        lambda target: DeviceMemory(
+            "cuda", "cuda", "discrete_vram", free_mib = 2_000, total_mib = 16_302
+        ),
     )
     # 6 GiB reserved, 2 GiB in live tensors: 4 GiB is cached and reclaimable.
     _fake_torch_allocator(monkeypatch, reserved = 6 * 1024**3, allocated = 2 * 1024**3)
@@ -614,7 +616,9 @@ def test_reclaimable_snapshot_never_claims_more_than_the_card(monkeypatch):
     monkeypatch.setattr(
         dm,
         "snapshot_device_memory",
-        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 15_000, total_mib = 16_302),
+        lambda target: DeviceMemory(
+            "cuda", "cuda", "discrete_vram", free_mib = 15_000, total_mib = 16_302
+        ),
     )
     _fake_torch_allocator(monkeypatch, reserved = 40 * 1024**3, allocated = 0)
     assert dm.reclaimable_snapshot_device_memory(_target(device = "cuda")).free_mib == 16_302
@@ -628,7 +632,9 @@ def test_reclaimable_snapshot_falls_back_when_the_allocator_is_unreadable(monkey
     monkeypatch.setattr(
         dm,
         "snapshot_device_memory",
-        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 2_000, total_mib = 16_302),
+        lambda target: DeviceMemory(
+            "cuda", "cuda", "discrete_vram", free_mib = 2_000, total_mib = 16_302
+        ),
     )
     torch = types.ModuleType("torch")
 
@@ -647,7 +653,9 @@ def test_reclaimable_snapshot_passthrough_off_cuda(monkeypatch):
     monkeypatch.setattr(
         dm,
         "snapshot_device_memory",
-        lambda target: DeviceMemory("mps", "mps", "unified_memory", free_mib = 8_000, total_mib = 16_000),
+        lambda target: DeviceMemory(
+            "mps", "mps", "unified_memory", free_mib = 8_000, total_mib = 16_000
+        ),
     )
     _fake_torch_allocator(monkeypatch, reserved = 6 * 1024**3, allocated = 0)
     assert dm.reclaimable_snapshot_device_memory(_target(device = "mps")).free_mib == 8_000
@@ -716,7 +724,6 @@ def test_safe_budget_matches_the_reported_16g_card():
     # Anchors every number below: if the reserve rule changes, this fails first rather than
     # silently moving the floors the rest of this section is calibrated against.
     from core.inference.diffusion_memory import _safe_device_budget_mib
-
     assert _safe_device_budget_mib(_discrete(_16G_FREE_MIB, _16G_TOTAL_MIB)) == _16G_BUDGET_MIB
 
 
@@ -823,12 +830,7 @@ def test_text_encoder_split_larger_than_the_companions_clamps_at_zero():
 
 
 def _legacy_offload_policy(
-    *,
-    budget,
-    model_dense_mib,
-    companion_dense_mib,
-    runtime_headroom_mib,
-    base_overhead_mib,
+    *, budget, model_dense_mib, companion_dense_mib, runtime_headroom_mib, base_overhead_mib
 ):
     """The auto-path decision as it stood BEFORE the streamed-text-encoder tier, written out
     independently. The back-compat fence below compares the shipped planner against it, so a
@@ -847,7 +849,6 @@ def test_no_text_encoder_split_reproduces_the_previous_decision():
     # so across the size matrix the planner must land exactly where it did before, and must never
     # report the new tier.
     from core.inference.diffusion_memory import _safe_device_budget_mib
-
     for free, total in ((6_000, 8_192), (11_000, 12_288), (15_870, 16_305), (80_000, 81_920)):
         for model_dense in (2_000, 14_271, 40_000):
             for companion in (None, 200, 7_820, 30_000):
@@ -924,9 +925,7 @@ def test_apply_group_offload_streams_text_encoders_when_asked(monkeypatch):
     import core.inference.diffusion_memory as mem
 
     pipe, applied, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
-    assert (
-        mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
-    )
+    assert mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
     assert applied == [transformer, te, te2]
     assert te.placed is None and te2.placed is None
     assert vae.placed is not None  # the VAE is the companion the tier keeps resident
@@ -1012,7 +1011,13 @@ def test_apply_memory_plan_threads_the_stream_flag_to_the_group_applier(monkeypa
 
     seen = {}
 
-    def _fake(pipe, device, logger, *, stream_text_encoders = False):
+    def _fake(
+        pipe,
+        device,
+        logger,
+        *,
+        stream_text_encoders = False,
+    ):
         seen["stream_text_encoders"] = stream_text_encoders
         return True
 
@@ -1032,12 +1037,18 @@ def test_apply_memory_plan_threads_the_stream_flag_to_the_group_applier(monkeypa
 
 # The Z-Image-Turbo GGUF hint from the report: the base repo carries the distilled marker, so the
 # estimate here is the discounted one (0.85), which is the honest 13,872 MiB the issue measured.
-_TURBO_HINT = "z-image Z-Image-Turbo-Q4_K_S.gguf unsloth/Z-Image-Turbo-GGUF Tongyi-MAI/Z-Image-Turbo"
+_TURBO_HINT = (
+    "z-image Z-Image-Turbo-Q4_K_S.gguf unsloth/Z-Image-Turbo-GGUF Tongyi-MAI/Z-Image-Turbo"
+)
 
 
-def _shortfall(width, height, memory = None, **kw):
+def _shortfall(
+    width,
+    height,
+    memory = None,
+    **kw,
+):
     from core.inference.diffusion_memory import image_activation_shortfall_message
-
     return image_activation_shortfall_message(
         device_memory = memory if memory is not None else _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
         width = width,
@@ -1095,7 +1106,9 @@ def test_guard_never_refuses_at_or_below_the_resolution_the_load_planned_for():
     # picks runs 1024x1024 on cards whose entire budget is below that figure. Treating it as a
     # hard limit there would refuse generations that complete today, so the guard is confined to
     # requests LARGER than what was planned. An 8 GB card is the case that proves it.
-    small = _discrete(int(8 * 1024 * 0.97), 8 * 1024)  # safe budget 5898 MiB, under the 6963 default
+    small = _discrete(
+        int(8 * 1024 * 0.97), 8 * 1024
+    )  # safe budget 5898 MiB, under the 6963 default
     assert _shortfall(1024, 1024, memory = small) is None
     assert _shortfall(512, 512, memory = small) is None
     # It still refuses the genuinely oversized frame on that same card.
@@ -1135,7 +1148,6 @@ def test_guard_is_skipped_off_cuda_and_rocm():
 
 def test_guard_env_override_lets_an_oversized_generation_through(monkeypatch):
     from core.inference.diffusion_memory import OVERSIZED_GENERATE_ENV
-
     for value in ("1", "true", "YES", " on "):
         monkeypatch.setenv(OVERSIZED_GENERATE_ENV, value)
         assert _shortfall(1088, 1920) is None, value
@@ -1165,7 +1177,6 @@ def test_raiser_raises_valueerror_so_the_route_answers_400():
     # while RuntimeError there is reserved for the not-loaded / cancelled sentinels and otherwise
     # becomes an opaque 500 with the reason stripped.
     from core.inference.diffusion_memory import raise_on_image_activation_shortfall
-
     with pytest.raises(ValueError, match = "1088x1920"):
         raise_on_image_activation_shortfall(
             device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
@@ -1199,7 +1210,6 @@ def test_default_resolution_plans_identically_across_card_sizes():
     # card, and the plan a discrete CUDA target reaches with no text-encoder split is the plan it
     # reached before either change. Neither fix leaks into the other's territory.
     from core.inference.diffusion_memory import _safe_device_budget_mib
-
     for gigabytes in (8, 12, 16, 24, 32, 48, 80):
         total = gigabytes * 1024
         memory = _discrete(int(total * 0.97), total)
