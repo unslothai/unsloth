@@ -16,25 +16,17 @@
 
 """The GRPO autocast belongs to a trainer, not to the process.
 
-rl.py decides the precision inside the generated trainer's __init__ and
-records it twice: on `args`, which is that trainer's own object, and in
-ACCELERATE_MIXED_PRECISION, which every trainer in the process shares.
+rl.py records the precision twice: on `args`, which belongs to one trainer, and
+in ACCELERATE_MIXED_PRECISION, which every trainer in the process shares. Build
+a float32 T4 trainer first (rl.py writes 'no') and a float16 trainer second
+(rl.py writes 'fp16'), and the first trainer's generation loop, which reread the
+env var every batch, enters a float16 autocast it was explicitly kept out of:
+the same overflow to inf and then NaN test_float32_no_fp16_autocast.py prevents.
 
-A program that builds two trainers before running either one therefore has
-one env var describing two different answers. Build a float32 trainer for a
-T4 first (rl.py writes 'no' so nothing autocasts into float16) and a normal
-float16 trainer second (rl.py writes 'fp16'), and the first trainer's
-generation loop, which read the env var afresh on every batch, would enter a
-float16 autocast it was explicitly kept out of. That is the same overflow to
-inf and then NaN that test_float32_no_fp16_autocast.py exists to prevent.
-
-Both halves are executed here rather than described: the rl.py __init__ block
-and the _prepare_inputs autocast header are pulled out of the sources as
-strings and run against fake args / model / trainer objects, sharing one
-dict as the process environment. No GPU, no model download, no trl import.
-There is no T4 on the machine this runs on, so the hardware is simulated:
-torch.cuda is made to answer "available, no bfloat16", which is all the code
-under test ever asks it.
+The rl.py __init__ block and the _prepare_inputs header are pulled out of the
+sources as strings and run against fake args / model / trainer objects sharing
+one dict as the environment. No GPU, no model download, no trl import; torch.cuda
+is made to answer "available, no bfloat16", all the code under test ever asks.
 """
 
 import ast
@@ -156,8 +148,8 @@ def _build_trainer(
     )
     env.setdefault("UNSLOTH_FORCE_FLOAT32", "0")
     if mark_forced_float32:
-        # What from_pretrained stamps on the model it just loaded. `forced_float32`
-        # sets it apart from the env, which is what an earlier load leaves behind.
+        # What from_pretrained stamps on the model. `forced_float32` sets it apart
+        # from the env, which is what an earlier load leaves behind.
         model._unsloth_forced_float32 = (
             (env["UNSLOTH_FORCE_FLOAT32"] == "1") if forced_float32 is None else forced_float32
         )

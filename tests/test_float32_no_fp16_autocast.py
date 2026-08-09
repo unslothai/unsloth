@@ -16,30 +16,20 @@
 
 """A float32 model on a GPU without bf16 must not be wrapped in fp16 autocast.
 
-Spark_TTS_(0_5B) loads with `dtype = torch.float32` ("Spark seems to only
-work on float32 for now") and sets `fp16 = False, bf16 = False` with the
-comment "We're doing full float32 so disable mixed precision". On a T4 it
-logged [nan] x 7 and then died at inference inside torch.multinomial, which
-refuses a distribution containing NaN.
+Spark_TTS_(0_5B) loads with `dtype = torch.float32` and sets `fp16 = False,
+bf16 = False`. On a T4 it logged [nan] x 7 and then died at inference inside
+torch.multinomial, which refuses a distribution containing NaN.
 
-The cause is upstream of the sampler. rl.py reads "neither flag set" as
-"user did not choose" and picks an autocast dtype itself:
+The cause is upstream of the sampler: rl.py reads "neither flag set" as "user
+did not choose" and picks the autocast dtype itself, which on a T4 is float16.
+float16 carries five exponent bits against float32's eight, so a value the
+model was loaded wide enough to hold overflows to inf and then NaN. bf16 GPUs
+keep the autocast, since bf16 has float32's exponent range; only float16 is
+unsafe and only that case changes.
 
-    use_bf16_amp = (not float16) and _bf16_supported()
-    args.fp16 = not use_bf16_amp
-
-On a T4 `_bf16_supported()` is False, so a model deliberately loaded in
-float32 trains under float16 autocast. float16 carries five exponent bits
-against float32's eight, so a value the model was loaded wide enough to hold
-overflows to inf and then NaN.
-
-bf16 GPUs keep the autocast: bf16 has float32's exponent range, so the
-memory saving costs nothing in range. Only the float16 fallback is unsafe,
-and only that case changes.
-
-The block lives in rl.py as a string that is compiled into the generated
-trainer, so these tests pull the literal out and execute it against fake
-`args` / `model` objects. No GPU, no network, no trl import.
+The block lives in rl.py as a string compiled into the generated trainer, so
+these tests pull the literal out and execute it against fake `args` / `model`
+objects. No GPU, no network, no trl import.
 """
 
 import ast
@@ -104,9 +94,8 @@ def _run(
 ):
     """Execute the block and report what it decided."""
     config = types.SimpleNamespace(dtype = model_dtype, torch_dtype = model_dtype)
-    # from_pretrained records this only when the caller passed dtype =
-    # torch.float32 themselves. Defaulting it from the model dtype keeps each
-    # test's intent readable; the V100 recipe below overrides it.
+    # from_pretrained records this only for an explicit dtype = torch.float32.
+    # Defaulting it from the model dtype keeps each test's intent readable.
     model = types.SimpleNamespace(
         config = config,
         _unsloth_user_float32 = (
@@ -134,10 +123,9 @@ def _run(
     torch.cuda = types.SimpleNamespace(is_bf16_supported = lambda: bf16_supported)
     import sys
 
-    # Stub the PARENT too. `from unsloth_zoo.device_type import x` imports
-    # unsloth_zoo first, and the real package __init__ can raise on its own --
-    # which would silently route the block through the torch.cuda fallback
-    # instead of the branch under test, depending on import order.
+    # Stub the PARENT too: `from unsloth_zoo.device_type import x` imports
+    # unsloth_zoo first, and a raising package __init__ would silently route the
+    # block through the torch.cuda fallback instead of the branch under test.
     mod = types.ModuleType("unsloth_zoo.device_type")
     mod.device_is_bf16_supported = lambda: bf16_supported
     utils = types.ModuleType("unsloth_zoo.utils")

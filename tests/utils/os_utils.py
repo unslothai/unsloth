@@ -8,8 +8,8 @@ import importlib
 def _missing_dependency(message):
     """Skip under pytest, since exiting at import time aborts the whole session.
 
-    Returns under a plain script so the caller can print its install guidance
-    before exiting; skipping first keeps that wall of text out of a test run."""
+    Returns under a plain script so the caller can still print its install
+    guidance before exiting; skipping first keeps that out of a test run."""
     if "pytest" in sys.modules:
         import pytest
         pytest.skip(message, allow_module_level = True)

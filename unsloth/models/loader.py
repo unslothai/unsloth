@@ -456,8 +456,8 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_4bit = False
 
         # Login to allow private models
-        # Before any normalization: dtype is also derived from a 4bit config's
-        # compute dtype below, which is not a request for the whole model.
+        # Before normalization: dtype is also derived below from a 4bit config's
+        # compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
         token = hf_login(token)
         # Align dtype with bnb_4bit_compute_dtype if provided and dtype is unset.
@@ -1112,9 +1112,8 @@ class FastLanguageModel(FastLlamaModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
-        # This path only dispatches archs outside FORCE_FLOAT32 and never sets
-        # UNSLOTH_FORCE_FLOAT32, so answer False rather than leaving the trainer
-        # to read whatever a later load writes into the environment.
+        # This path never sets UNSLOTH_FORCE_FLOAT32, so answer False rather than
+        # leave the trainer reading whatever a later load writes to the environment.
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
         model = _mark_full_finetuning(model, False)
@@ -1223,8 +1222,8 @@ class FastModel(FastBaseModel):
                 load_in_4bit = False
 
         # Login to allow private models
-        # Before any normalization: dtype is also derived from a 4bit config's
-        # compute dtype below, which is not a request for the whole model.
+        # Before normalization: dtype is also derived below from a 4bit config's
+        # compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
         token = hf_login(token)
         if whisper_language is not None:
@@ -1458,9 +1457,9 @@ class FastModel(FastBaseModel):
                 revision = base_revision,
                 **kwargs,
             )
-            # Returns before the FORCE_FLOAT32 scan, and no diffusion type is on that list,
-            # so the answer is False. Stamped rather than left unset: the trainer would
-            # otherwise read whatever UNSLOTH_FORCE_FLOAT32 an earlier load wrote.
+            # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that
+            # list, so False. Stamped, not left unset, or the trainer reads whatever
+            # UNSLOTH_FORCE_FLOAT32 an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
             return _mark_requested_float32(model, user_float32), tokenizer

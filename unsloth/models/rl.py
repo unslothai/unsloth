@@ -1950,14 +1950,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # bf16 (V100/T4) keep them in float32 so they never autocast to fp16. On a bf16 GPU,
             # full finetuning can still use bf16 autocast (master weights stay float32), which is
             # faster and uses less memory; LoRA/QLoRA keep float32 when forced.
-            # Stamped by from_pretrained, same as the forced float32 answer below.
-            # The env is process wide, so a LoRA model loaded after this one would
-            # otherwise say "no full finetuning" and cost this trainer its bfloat16.
+            # Stamped by from_pretrained: the env is process wide, so a LoRA model
+            # loaded after this one would cost this trainer its bfloat16.
             "full_finetuning = getattr(model, '_unsloth_full_finetuning', None)\n"
             "if full_finetuning is None: full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
-            # Stamped on the model by from_pretrained, same as _unsloth_grpo_autocast reads
-            # it. The env is process wide, so a forced family loaded earlier in the process
-            # would otherwise answer here for a model that is not forced at all.
+            # Stamped by from_pretrained: the env is process wide, so a forced family
+            # loaded earlier would answer here for a model that is not forced at all.
             "model_forced_float32 = getattr(model, '_unsloth_forced_float32', None)\n"
             "if model_forced_float32 is None: model_forced_float32 = os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'\n"
             "if model_forced_float32 and not (full_finetuning and _bf16_supported()):\n"
@@ -1971,9 +1969,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "float16 = dtype == torch.float16\n"
             "bfloat16 = dtype == torch.bfloat16\n"
             "float32 = dtype == torch.float32\n"
-            # Set by from_pretrained only when the caller passed dtype = torch.float32
-            # themselves, which is a request rather than a side effect of upcasting.
-            # On the model, so loading a second model cannot rewrite this one's answer.
+            # Set only when the caller passed dtype = torch.float32 themselves: a
+            # request, not a side effect of upcasting, and immune to a second load.
             "user_float32 = bool(getattr(model, '_unsloth_user_float32', False))\n"
             "if full_finetuning:\n"
             "    if bfloat16 and use_fp16: use_fp16 = False\n"
@@ -1988,12 +1985,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32' and float32 and user_float32 and not _bf16_supported():\n"
-            # float32 was asked for at load time and neither precision flag was set. The
-            # only autocast available without bf16 is float16, whose exponent range is far
-            # narrower, so values overflow to inf and then NaN. Gated on the explicit
-            # request because full finetuning upcasts weights to float32 by itself and
-            # float16 autocast over float32 master weights is the normal V100/T4 recipe
-            # (see #4082). bf16 GPUs are unaffected: bf16 has float32's exponent range.
+            # Without bf16 the only autocast is float16, whose narrower exponent range
+            # overflows float32 values to inf then NaN. Gated on the explicit request:
+            # full finetuning upcasts to float32 itself, and float16 autocast over
+            # float32 master weights is the normal V100/T4 recipe (see #4082).
             "    print('Unsloth: Model is in float32 and this GPU has no bfloat16 support, so training stays in float32. Pass fp16 = True to force float16 mixed precision instead.')\n"
             "    args.fp16 = False\n"
             "    args.bf16 = False\n"

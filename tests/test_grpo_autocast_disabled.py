@@ -16,23 +16,18 @@
 
 """ACCELERATE_MIXED_PRECISION = 'no' is a value, not an absence.
 
-The GRPO replacements read it as a two-way switch:
-
-    torch.float16 if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") == "fp16"
-    else torch.bfloat16
-
-so 'no' comes out as bfloat16 and autocast is entered anyway. On a T4 or V100
-torch does not merely ignore that, it raises
+The GRPO replacements read it as a two-way switch, fp16 else bfloat16, so 'no'
+comes out as bfloat16 and autocast is entered anyway. On a T4 or V100 torch does
+not merely ignore that, it raises
 
     RuntimeError: Current CUDA Device does not support bfloat16.
                   Please switch dtype to float16.
 
-Two callers set 'no', and both land on exactly those GPUs: full finetuning
-already did, and rl.py now does for a model the user explicitly loaded in
-float32. So the branch meant to keep training in float32 could instead stop it.
-
-The fix is `enabled`, not a different dtype: torch only validates bfloat16
-when autocast is on, and turning it off is what 'no' means.
+Two callers set 'no' and both land on exactly those GPUs: full finetuning
+already did, and rl.py now does for a model explicitly loaded in float32, so the
+branch meant to keep training in float32 could instead stop it. The fix is
+`enabled`, not a different dtype: torch only validates bfloat16 when autocast is
+on, and turning it off is what 'no' means.
 """
 
 import ast
@@ -53,11 +48,9 @@ SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 # ---- the premise ---------------------------------------------------------
 #
-# Every check below drives torch.amp.autocast(device_type = "cuda"). On a CPU
-# runner torch warns "CUDA is not available. Disabling" and hands back a no-op,
-# which would make these pass or fail for reasons that have nothing to do with
-# the code under test. Claiming the device is present is what lets them run
-# anywhere; nothing here needs a GPU, only torch's own dispatch decisions.
+# Every check drives torch.amp.autocast(device_type = "cuda"), and on a CPU
+# runner torch hands back a no-op instead. Claiming the device is present is
+# what lets these run anywhere; only torch's dispatch decisions are needed.
 
 
 class _pretend_cuda:
@@ -139,8 +132,8 @@ def test_the_injected_snippet_is_valid_python():
 @pytest.mark.parametrize(
     "precision,has_bf16,expect_enabled",
     [
-        # The T4/V100 case, where the bug bites. accelerate never asks for
-        # bf16 on this hardware, so that pairing is not a case.
+        # The T4/V100 case, where the bug bites. accelerate never asks for bf16
+        # on this hardware, so that pairing is not a case.
         ("no", False, False),
         ("fp16", False, True),
         (None, False, True),

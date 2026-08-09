@@ -589,9 +589,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     except:
         pass
 
-    # Mixed precision autocast. from_pretrained stamps the forced float32 answer on
-    # the model it loaded; UNSLOTH_FORCE_FLOAT32 is process wide and every load
-    # rewrites it, so a later load would otherwise decide this model's rollouts.
+    # Mixed precision autocast. Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is
+    # process wide, so a later load would otherwise decide this model's rollouts.
     forced_float32 = getattr(self, "_unsloth_forced_float32", None)
     if forced_float32 is None:
         forced_float32 = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
@@ -1050,9 +1049,8 @@ class FastBaseModel:
         # The base + tokenizer prefetch runs AFTER the load-mode validation below, so an invalid
         # load_in_* combination fails without first downloading a snapshot.
 
-        # Whether float32 was ASKED for, as opposed to arrived at by upcasting.
-        # Only an explicit request may suppress the float16 autocast that full
-        # finetuning relies on for V100/T4 (see rl.py, issue #4082).
+        # Whether float32 was asked for rather than arrived at by upcasting. Only an
+        # explicit request may suppress the V100/T4 float16 autocast (see #4082).
         user_float32 = _requested_float32(dtype)
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16

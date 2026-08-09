@@ -948,9 +948,8 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_push_to_hub_token)
 def _unsloth_grpo_autocast(self):
     """Decide the GRPO autocast once and latch it on the trainer.
 
-    ACCELERATE_MIXED_PRECISION is process wide, so a trainer built after this
-    one but before it runs would rewrite it and hand this trainer the other
-    trainer's precision. args belongs to this trainer alone, so ask it first.
+    ACCELERATE_MIXED_PRECISION is process wide, so a trainer built later but run
+    first would hand this trainer its precision. args belongs to this trainer.
     """
     if not hasattr(self, "_autocast_enabled"):
         args = getattr(self, "args", None)
@@ -969,16 +968,14 @@ def _unsloth_grpo_autocast(self):
         # both set it, and reading it as bfloat16 raises on a T4 or V100.
         self._autocast_enabled = precision != "no"
         self._autocast_force_float32 = False
-        # from_pretrained stamps this on the model it loaded. UNSLOTH_FORCE_FLOAT32
-        # is process wide and every load rewrites it, so a model loaded after this
-        # trainer was built would otherwise answer for it here.
+        # Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a
+        # model loaded after this trainer was built would answer for it here.
         forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
         if forced is None:
             forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
         if forced and precision != "bf16":
-            # Gemma3 / gpt-oss set "no" as well, but still want float16 autocast.
-            # A trainer that picked bf16 anyway (full finetuning on a bf16 GPU)
-            # keeps it: float16 is the precision the forced list exists to avoid.
+            # Gemma3 / gpt-oss set "no" but still want float16 autocast. A trainer
+            # already on bf16 keeps it: float16 is what the forced list avoids.
             self._autocast_dtype = torch.float16
             self._autocast_enabled = True
             self._autocast_force_float32 = True
@@ -987,15 +984,13 @@ def _unsloth_grpo_autocast(self):
 
 
 def _unsloth_grpo_autocast_kwargs(self, device_type = "cuda"):
-    """torch.amp.autocast keyword arguments for GRPO generation."""
+    """torch.amp.autocast kwargs for GRPO generation."""
     enabled, dtype = _unsloth_grpo_autocast(self)
     if not getattr(self, "_autocast_force_float32", False) and torch.is_autocast_enabled(
         device_type
     ):
-        # Already inside an autocast: inherit its dtype by not naming one.
-        # `dtype` has to be absent rather than a sentinel, since autocast hands
-        # whatever it is straight to set_autocast_dtype, which takes a
-        # torch.dtype and nothing else.
+        # Already inside an autocast: inherit its dtype by omitting the key, since
+        # autocast passes whatever it gets straight to set_autocast_dtype.
         return {"enabled": enabled}
     return {"enabled": enabled, "dtype": dtype}
 
@@ -1004,8 +999,8 @@ def grpo_trainer__prepare_inputs(function_name, function):
     if function_name != "_prepare_inputs":
         return function
 
-    # Add mixed precision training. The decision is latched on the trainer, so a
-    # second trainer's __init__ cannot change this trainer's autocast mid run.
+    # Latched on the trainer, so a second trainer's __init__ cannot change this
+    # trainer's autocast mid run.
     function = function.replace(
         "with torch.inference_mode():",
         "with torch.inference_mode(), "
@@ -1567,9 +1562,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             lm_head = self.model.get_output_embeddings().weight
 
-            # Size on the dtype the forward actually runs in. With autocast off
-            # that is the model's own dtype, which is float32 for an explicit
-            # float32 load but still bfloat16 for pure bfloat16 full finetuning.
+            # Size on the dtype the forward actually runs in: with autocast off that
+            # is the model's own dtype, float32 or bfloat16 depending on the load.
             forward_dtype = (
                 self._autocast_dtype if getattr(self, "_autocast_enabled", True) else lm_head.dtype
             )
