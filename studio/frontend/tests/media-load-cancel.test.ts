@@ -145,7 +145,7 @@ for (const [page, path] of PAGES) {
     // ...and must NOT then start polling a load it just cancelled.
     const raced = body.slice(body.indexOf("if (startSeq !== cancelSeq.current)"));
     assert.doesNotMatch(
-      raced.slice(0, raced.indexOf("return false;")),
+      raced.slice(0, raced.indexOf("return settle(false);")),
       /void pollLoadProgress\(\)/,
     );
     // That compensating unload names no load, so it must not fire once a newer one owns the
@@ -230,6 +230,17 @@ for (const [page, path] of PAGES) {
     assert.match(handler, /const pending = pendingStart\.current;/);
     assert.match(handler, /setBusy\("unloading"\);/);
     assert.match(handler, /await pending;/);
+    // And it must cover the WHOLE load path, not just the start POST: the compensating unload
+    // runs after that POST resolves and names no load, so a model picked while it is in flight
+    // would be torn down by it. handleLoad publishes one promise up front and settles it at
+    // every exit, so waiting on it waits for the teardown too.
+    const load = SOURCE.slice(
+      SOURCE.indexOf("const handleLoad = useCallback("),
+      SOURCE.indexOf("const handleLoad = useCallback(") + 3000,
+    );
+    assert.match(load, /pendingStart\.current = inFlight;/);
+    assert.match(load, /const settle = \(started: boolean\): boolean => \{/);
+    assert.doesNotMatch(load, /pendingStart\.current = startRequest;/);
   });
 
   test(`the ${page} recovers when the compensating unload fails`, () => {

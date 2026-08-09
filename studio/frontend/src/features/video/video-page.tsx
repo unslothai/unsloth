@@ -785,10 +785,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Bumped by every load start. The compensating unload below carries no identity, so it must not
   // fire once a newer load owns the page -- it would tear that one down instead.
   const loadSeq = useRef(0);
-  // The start request currently in flight, if any. A cancel that lands before the backend has
-  // registered the load has to wait for it: begin_load REFUSES a second load while one is live
-  // ("a load is already in progress"), so a model picked in that window would be rejected while
-  // the cancelled one kept going. Holding busy until the start settles closes the window.
+  // The load currently in flight, if any, as a promise that settles only once handleLoad has run
+  // to the end -- including the compensating unload it may issue. A cancel that lands before the
+  // backend has registered the load has to wait for all of it: begin_load REFUSES a second load
+  // while one is live ("a load is already in progress"), so a model picked in that window would be
+  // rejected while the cancelled one kept going, and the compensating unload names no load, so one
+  // still in flight would tear down whatever the user picked next. Holding busy shuts both.
   const pendingStart = useRef<Promise<unknown> | null>(null);
 
   // Client-side state that only means anything while a model is resident: the
@@ -1397,6 +1399,19 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // stopping anything.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
+      // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
+      let settleLoad: () => void = () => {};
+      const inFlight = new Promise<void>((resolve) => {
+        settleLoad = resolve;
+      });
+      pendingStart.current = inFlight;
+      // Every exit below goes through this: it settles the promise a cancel is waiting on and
+      // releases the ref, so the page cannot stay busy on a load that has already finished.
+      const settle = (started: boolean): boolean => {
+        settleLoad();
+        if (pendingStart.current === inFlight) pendingStart.current = null;
+        return started;
+      };
       setBusy("loading");
       dismissLoadToast();
       lastLoadSig.current = null;
@@ -1425,12 +1440,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           transformer_quant:
             opts.kind === "pipeline" && transformerQuant !== "auto" ? transformerQuant : undefined,
         });
-        pendingStart.current = startRequest;
-        try {
-          await startRequest;
-        } finally {
-          if (pendingStart.current === startRequest) pendingStart.current = null;
-        }
+        await startRequest;
       } catch (err) {
         lastLoad.current = prevLastLoad;
         setCanReapply(prevCanReapply);
@@ -1439,7 +1449,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         reportLoadFailure(err instanceof Error ? err.message : "", "Failed to start load");
         setBusy(null);
         void refreshStatus();
-        return false;
+        return settle(false);
       }
       if (startSeq !== cancelSeq.current) {
         // Cancelled during the start request. The unload it sent may have landed before this load
@@ -1456,14 +1466,14 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             // so a failure here is not best-effort: the load is running, untracked. Put the
             // tracking back exactly as a failed cancel does, so it stays visible and cancellable.
             restoreLoadTracking();
-            return false;
+            return settle(false);
           }
         }
         void refreshStatus();
-        return false;
+        return settle(false);
       }
       void pollLoadProgress();
-      return true;
+      return settle(true);
     },
     [
       pollLoadProgress,
@@ -1857,10 +1867,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const handleCancelLoad = useCallback(async () => {
     const wasLoading = busy === "loading";
     if (await handleUnload()) {
-      // Hold the page busy until any start request still in flight has settled. The backend
-      // refuses a second load while one is registered, so a model picked in this window would be
-      // rejected while the load just cancelled -- which may not have been registered yet when the
-      // unload arrived -- carried on. handleLoad's own compensating unload runs as it settles.
+      // Hold the page busy until the load in flight has run to the END, compensating unload and
+      // all. The backend refuses a second load while one is registered, so a model picked in this
+      // window would be rejected while the load just cancelled -- which may not have been
+      // registered yet when the unload arrived -- carried on; and that compensating unload names
+      // no load, so one still in flight would tear down whatever was picked instead.
       const pending = pendingStart.current;
       if (pending) {
         setBusy("unloading");
