@@ -840,6 +840,26 @@ def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, str]:
     return model_snapshot, dataset_snapshot
 
 
+def _provenance_awaiting_attestation(
+    marker: dict[str, Any], config: dict[str, Any]
+) -> bool:
+    """Training stopped before the worker attested loaded hub resources.
+
+    Stop-and-save can finish while provenance is still the initial ``pending`` marker
+    written at run start. Those runs have a valid checkpoint but no attested revision
+    pins yet; resume should behave like a legacy run without exact resource requirements.
+    """
+    if marker.get("status") != "pending":
+        return False
+    if marker.get("model_status") is not None or marker.get("dataset_status") is not None:
+        return False
+    if config.get("actual_model_repo_id"):
+        return False
+    if config.get("model_snapshot_path") or config.get("dataset_snapshot_path"):
+        return False
+    return True
+
+
 def exact_resume_resource_requirements(config: dict[str, Any]) -> tuple[bool, bool]:
     marker = config.get(RESOURCE_PROVENANCE_KEY)
     if marker is None:
@@ -850,6 +870,8 @@ def exact_resume_resource_requirements(config: dict[str, Any]) -> tuple[bool, bo
         or marker.get("status") not in {"pending", "incomplete", "complete"}
     ):
         raise ExactResumeResourcesUnavailable("The resource provenance is invalid.")
+    if _provenance_awaiting_attestation(marker, config):
+        return False, False
 
     from utils.paths import is_local_path
 
@@ -891,6 +913,8 @@ def resource_provenance_resume_blocker(config: dict[str, Any]) -> Optional[str]:
     """
     marker = config.get(RESOURCE_PROVENANCE_KEY)
     if marker is None:
+        return None
+    if isinstance(marker, dict) and _provenance_awaiting_attestation(marker, config):
         return None
     try:
         exact_resume_resource_requirements(config)
