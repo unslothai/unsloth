@@ -584,7 +584,6 @@ def _declares_configs(snapshot: Path, name: str) -> bool:
         return True
     try:
         from yaml import YAMLError, safe_load
-
         try:
             payload = safe_load(path.read_text(encoding = "utf-8"))
         except YAMLError:
