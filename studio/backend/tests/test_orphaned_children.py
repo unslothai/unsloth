@@ -1302,17 +1302,19 @@ def test_an_unanswerable_cleanup_query_counts_as_disarmed():
     assert "cleanupRearmedRef.current = !isTauri;" in gate, "a failed query still reads as armed"
 
 
-def test_the_component_installer_leads_its_own_group():
-    """It spawns a validation llama-server, and both PDEATHSIG and the startup
-    sweep reach only what was recorded."""
+def test_the_component_installer_stays_in_the_backend_group():
+    """The desktop stop path force-kills this backend's group, so a session of
+    its own would let the installer keep rewriting files after the app reports
+    the backend stopped."""
     import inspect
 
     from utils.prebuilt import update_flow
 
     source = inspect.getsource(update_flow.stream_installer)
-    assert 'start_new_session = (os.name == "posix")' in source
+    assert "start_new_session = " not in source
+    # Still recorded, which is what the macOS sweep has to work from.
     spawn = source.index("subprocess.Popen(")
-    assert source.index("start_new_session", spawn) < source.index("adopt_pid(proc.pid)", spawn)
+    assert "adopt_pid(proc.pid)" in source[spawn:]
 
 
 def test_the_owner_identity_is_retried_and_then_kept(monkeypatch):
@@ -1341,6 +1343,50 @@ def test_a_fork_child_does_not_keep_the_parents_identity(monkeypatch):
     monkeypatch.setattr(pl, "_owner_identity", "the-parents")
     pl._reset_after_fork()
     assert pl._owner_identity is None, "the child would record its parent's identity"
+
+
+def test_a_fork_child_does_not_claim_the_parents_children(tmp_path, monkeypatch):
+    """Its record would name processes it never started, and a later startup
+    would reap them while their real parent is still running."""
+    from utils import process_lifetime as pl
+
+    monkeypatch.setattr(pl, "_tracked_pids", {4321: "started-at"})
+    monkeypatch.setattr(pl, "_tracked_pgids", {4321: 4321})
+    pl._reset_after_fork()
+    assert pl._tracked_pids == {}
+    assert pl._tracked_pgids == {}
+
+
+def test_a_missing_child_identity_is_filled_in_later(tmp_path, monkeypatch):
+    """None is permanent otherwise: nothing signals an entry it cannot verify,
+    so that child outlives every shutdown."""
+    import json
+
+    from utils import process_lifetime as pl
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
+    monkeypatch.setattr(pl, "_tracked_pids", {5150: None})
+    monkeypatch.setattr(pl, "_tracked_pgids", {})
+    monkeypatch.setattr(pl, "_owner_identity", "owner")
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "found-later")
+
+    pl._write_breadcrumb()
+    record = pl._breadcrumb_file()
+    written = json.loads(record.read_text(encoding = "utf-8"))
+    assert written["children"][0]["identity"] == "found-later"
+    # Written back, so it costs one probe rather than one per write.
+    assert pl._tracked_pids[5150] == "found-later"
+
+
+def test_an_exited_child_is_not_probed_again(monkeypatch):
+    from utils import process_lifetime as pl
+
+    calls = []
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: calls.append(pid))
+    assert pl._refreshed_identity(9999, None) is None
+    assert calls == []
 
 
 if __name__ == "__main__":

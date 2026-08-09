@@ -313,8 +313,13 @@ def _reset_after_fork() -> None:
     _spawner whose thread does not exist here. Start clean instead of deadlocking."""
     global _spawner, _spawner_lock, _record_lock, _owner_identity
     _spawner_lock = threading.Lock()
-    # A different pid here, so the parent's identity is not this process's.
+    # A different pid here, so the parent's identity is not this process's, and
+    # the parent's children are not this process's either: adopting anything
+    # would otherwise write a record claiming them, and a later startup would
+    # reap them out from under the parent that is still running.
     _owner_identity = None
+    _tracked_pids.clear()
+    _tracked_pgids.clear()
     # A fork while another thread was inside adopt_pid / forget_pid leaves this
     # held here with nobody to release it, and the first adoption blocks forever.
     _record_lock = threading.Lock()
@@ -613,6 +618,21 @@ def _own_identity() -> "Optional[str]":
     return _owner_identity
 
 
+def _refreshed_identity(pid: int, identity: "Optional[str]") -> "Optional[str]":
+    """Fill in an identity the adoption could not read, while the child lives.
+
+    Recorded as None it is permanent, and neither terminate_all nor the startup
+    sweep will signal an entry it cannot verify, so that child would outlive
+    every shutdown. Written back, so this costs one probe per gap.
+    """
+    if identity is not None or not _pid_alive(pid):
+        return identity
+    identity = _pid_identity(pid)
+    if identity is not None:
+        _tracked_pids[pid] = identity
+    return identity
+
+
 def _write_breadcrumb() -> None:
     path = _breadcrumb_file()
     if path is None:
@@ -625,7 +645,8 @@ def _write_breadcrumb() -> None:
             "owner_pid": os.getpid(),
             "owner_identity": _own_identity(),
             "children": [
-                {"pid": pid, "identity": identity, "pgid": _tracked_pgids.get(pid)}
+                {"pid": pid, "identity": _refreshed_identity(pid, identity),
+                 "pgid": _tracked_pgids.get(pid)}
                 for pid, identity in _tracked_pids.items()
             ],
         }

@@ -310,9 +310,10 @@ def stream_installer(
         errors = "replace",
         # Make the Python child emit the UTF-8 we decode above.
         env = utf8_child_env(env),
-        # Its own group: the installer spawns a validation llama-server, and
-        # both PDEATHSIG and the startup sweep reach only what is recorded.
-        start_new_session = (os.name == "posix"),
+        # Deliberately NOT start_new_session: the desktop stop path force-kills
+        # this backend's process group, and a session of its own would take the
+        # installer out of it, leaving it rewriting files after the app reports
+        # the backend stopped.
         **child_popen_kwargs(),
     )
     # The kwargs above are empty on macOS, so record it: an installer that
