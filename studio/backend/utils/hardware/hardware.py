@@ -718,7 +718,6 @@ def clear_gpu_cache():
         # load budgeting against a pool that looks smaller than it is.
         try:
             import torch
-
             empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
             if callable(empty_cache):
                 empty_cache()

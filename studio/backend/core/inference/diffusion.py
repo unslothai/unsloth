@@ -3572,12 +3572,7 @@ class DiffusionBackend:
         return pipe
 
     def _resident_sized_plan(
-        self,
-        plan: Any,
-        fam: DiffusionFamily,
-        base: str,
-        target: DiffusionDeviceTarget,
-        kind: str,
+        self, plan: Any, fam: DiffusionFamily, base: str, target: DiffusionDeviceTarget, kind: str
     ) -> Any:
         """``plan`` with its weight term replaced by the family table's bf16-RESIDENT total, for
         the unified-memory refusal only.
