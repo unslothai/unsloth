@@ -29,6 +29,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from typing import Callable, Optional
 
 _PR_SET_PDEATHSIG = 1
@@ -555,6 +556,124 @@ def _group_has_members(pgid: object) -> bool:
     return any(not _pid_is_zombie(pid) for pid in members)
 
 
+def _child_pid_map() -> "Optional[dict[int, list[int]]]":
+    """Parent pid -> its children, or None when the table cannot be read."""
+    if _is_linux():
+        try:
+            table: "dict[int, list[int]]" = {}
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{entry}/stat", encoding = "utf-8") as fh:
+                        stat = fh.read()
+                except OSError:
+                    continue
+                # After the comm field: state, ppid, pgrp, ...
+                tail = stat[stat.rfind(")") + 2 :].split()
+                if len(tail) > 1:
+                    table.setdefault(int(tail[1]), []).append(int(entry))
+            return table
+        except Exception:
+            return None
+    if sys.platform == "darwin":
+        try:
+            import subprocess
+
+            out = subprocess.run(
+                ["ps", "-A", "-o", "pid=,ppid="],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 5,
+            )
+            if out.returncode != 0:
+                return None  # a failed query is not an answer, as above
+            table = {}
+            for line in (out.stdout or "").splitlines():
+                parts = line.split()
+                if len(parts) != 2:
+                    continue
+                try:
+                    child, parent = int(parts[0]), int(parts[1])
+                except ValueError:
+                    continue
+                table.setdefault(parent, []).append(child)
+            return table
+        except Exception:
+            return None
+    return None
+
+
+def collect_descendants(pid: "Optional[int]") -> "list[tuple[int, Optional[str]]]":
+    """A pid's descendants and their start-time identities.
+
+    Read this BEFORE signalling the parent: its children are reparented the
+    moment it exits, and nothing then ties them back to it. The identities let
+    the kill below skip a number that has since moved on to something else.
+    """
+    if not pid or _is_windows():
+        return []
+    table = _child_pid_map()
+    if not table:
+        return []
+    found: "list[tuple[int, Optional[str]]]" = []
+    seen = {pid}
+    queue = list(table.get(pid, ()))
+    while queue:
+        child = queue.pop(0)
+        if child in seen:
+            continue
+        seen.add(child)
+        found.append((child, _pid_identity(child)))
+        queue.extend(table.get(child, ()))
+    return found
+
+
+def terminate_descendants(
+    collected: "list[tuple[int, Optional[str]]]", timeout: float = 5.0
+) -> None:
+    """SIGTERM then SIGKILL what `collect_descendants` found, still alive.
+
+    The POSIX counterpart of the Windows ``taskkill /T``: a child that shares
+    this process's group cannot be reached with killpg, so its own children are
+    signalled by pid instead.
+    """
+    if not collected or _is_windows():
+        return
+    live: "list[tuple[int, Optional[str]]]" = []
+    for pid, identity in collected:
+        if not _still_the_same(pid, identity):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+        live.append((pid, identity))
+    deadline = time.monotonic() + max(0.0, timeout)
+    while live:
+        live = [item for item in live if _pid_alive(item[0]) and not _pid_is_zombie(item[0])]
+        if not live or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    for pid, identity in live:
+        if not _still_the_same(pid, identity):
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def _still_the_same(pid: int, identity: "Optional[str]") -> bool:
+    """False only when the pid is provably a different process now."""
+    current = _pid_identity(pid)
+    if identity is None or current is None:
+        return True
+    return _same_identity(identity, current)
+
+
 def _group_member_pids(pgid: int) -> "Optional[list[int]]":
     """Pids in a process group, or None when they cannot be enumerated."""
     if _is_linux():
@@ -911,7 +1030,21 @@ def terminate_pid(pid: "Optional[int]", timeout: float = 5.0) -> None:
     if not pid:
         return
     with _record_lock:
+        identity = _tracked_pids.get(pid)
         pgid = _tracked_pgids.get(pid)
+    # Same test terminate_all runs. An announced child can exit without the line
+    # that clears it, and its pid is free the moment the group behind it empties,
+    # so signalling on the number alone can take a stranger's tree down.
+    current = _pid_identity(pid)
+    if identity is not None and current is not None and not _same_identity(identity, current):
+        # A pid is only reusable once nothing holds the number as a process
+        # group either, so there is no group of ours left to reap here.
+        forget_pid(pid)
+        return
+    if _pid_alive(pid) and (identity is None or current is None):
+        # Cannot prove this is still our child. Leave it alone and keep the
+        # record: the startup sweep repeats the test with a fresh reading.
+        return
     tree_stands = False
     try:
         if _is_windows():
@@ -1179,14 +1312,24 @@ def _posix_terminate(pid: int, timeout: float = 5.0) -> None:
     # SIGTERM, give the child up to `timeout` to exit, then SIGKILL. Reaping
     # belongs to the child's owner (or init for orphans). Prefer the group
     # (covers grandchildren) when pid leads its own group.
-    import time
-
-    killer = os.kill
+    group_leader = False
     try:
-        if os.getpgid(pid) == pid:
-            killer = os.killpg
+        group_leader = os.getpgid(pid) == pid
     except Exception:
         pass
+    # A child sharing this process's group cannot be reached with killpg, so its
+    # own children have to be named individually -- and named now, while the
+    # parent that links them is still alive. Always run, so a return out of the
+    # signalling below still takes the tree.
+    descendants = [] if group_leader else collect_descendants(pid)
+    try:
+        _posix_terminate_one(pid, group_leader, timeout)
+    finally:
+        terminate_descendants(descendants, timeout)
+
+
+def _posix_terminate_one(pid: int, group_leader: bool, timeout: float) -> None:
+    killer = os.killpg if group_leader else os.kill
     try:
         killer(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -1194,7 +1337,6 @@ def _posix_terminate(pid: int, timeout: float = 5.0) -> None:
     except Exception:
         return
     deadline = time.monotonic() + max(0.0, timeout)
-    group = killer is getattr(os, "killpg", None)
     next_state_check = 0.0
     while time.monotonic() < deadline:
         try:
@@ -1210,7 +1352,7 @@ def _posix_terminate(pid: int, timeout: float = 5.0) -> None:
             # that is already gone. Reading the state costs a fork off Linux,
             # hence twice a second rather than at the poll rate.
             next_state_check = now + 0.5
-            gone = (not _group_has_members(pid)) if group else _pid_is_zombie(pid)
+            gone = (not _group_has_members(pid)) if group_leader else _pid_is_zombie(pid)
             if gone:
                 return
         time.sleep(0.05)

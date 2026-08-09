@@ -726,9 +726,10 @@ def test_the_windows_breadcrumb_fallback_takes_the_whole_tree(tmp_path, monkeypa
     assert trees == [4242], "only the leader was signalled"
 
 
-def test_the_diffusion_runner_leads_its_own_group():
-    """The shim spawns the visual server, and _posix_terminate only reaches a
-    tree through killpg, which needs the recorded pid to be a group leader."""
+def test_the_diffusion_runner_stays_in_the_backend_group():
+    """The desktop stops this backend by signalling its process group and
+    force-kills it five seconds later, so a session of its own would leave the
+    shim and the visual server holding the GPU until the next launch."""
     import ast
     import inspect
 
@@ -743,9 +744,9 @@ def test_the_diffusion_runner_leads_its_own_group():
                 continue
             if getattr(call.func, "attr", None) != "Popen":
                 continue
-            assert any(
+            assert not any(
                 kw.arg == "start_new_session" for kw in call.keywords
-            ), "the runner shares Studio's process group, so its child is unreachable"
+            ), "a session of its own is out of reach of the group the desktop stops"
             return
     raise AssertionError("could not find the diffusion runner spawn")
 
@@ -1468,18 +1469,19 @@ def test_an_unanswerable_group_query_is_not_an_empty_group(monkeypatch):
     assert pl._group_has_members(4711) is True, "a failed query read as gone"
 
 
-def test_the_diffusion_group_goes_down_with_an_ordinary_stop():
-    """The desktop shutdown only waits for this path, so the shim's own group
+def test_the_visual_server_goes_down_with_an_ordinary_stop():
+    """The desktop shutdown only waits for this path, so what the shim started
     has to be taken down here rather than by the next startup sweep."""
     import inspect
 
     from core.inference.llama_cpp import LlamaCppBackend
 
     source = inspect.getsource(LlamaCppBackend._kill_process)
-    assert "_leading_process_group" in source
-    assert "_kill_process_group(_pgid)" in source
-    # Captured before the wait: getpgid stops answering once the leader is reaped.
-    assert source.index("_leading_process_group") < source.index("self._process.terminate()")
+    assert "_collect_descendants" in source
+    assert "_terminate_descendants" in source
+    # Named before the wait: the shim's children are reparented once it exits.
+    assert source.index("_collect_descendants") < source.index("self._process.terminate()")
+    assert source.index("self._process.terminate()") < source.index("_terminate_descendants")
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "posix termination path")
@@ -2064,20 +2066,14 @@ def test_an_installer_timeout_takes_its_announced_children_with_it(monkeypatch):
     assert terminated == [9931], terminated
 
 
-def test_a_diffusion_group_is_reachable_after_its_leader_has_gone():
-    """getpgid stops answering once the shim exits, and this backend keeps
-    running, so no startup sweep would reach its visual server."""
+def test_no_process_group_id_is_kept_past_the_group_it_names():
+    """A pid is reusable once nothing holds the number as a process group any
+    more, so a group id cached across an unload eventually names a stranger."""
     source = (
         Path(__file__).resolve().parents[1] / "core" / "inference" / "llama_cpp.py"
     ).read_text(encoding = "utf-8")
 
-    assert "self._diffusion_pgid = self._leading_process_group(self._process.pid)" in source
-    kill = source[source.index("def _kill_process(self):") :]
-    kill = kill[: kill.index("def ", 10)]
-    # Formatting-agnostic: the point is that the kill path falls back to the
-    # kept group id rather than only asking a leader that may be gone.
-    assert "_diffusion_pgid" in kill, "only asks a leader that may be gone"
-    assert "self._diffusion_pgid = None" in kill, "kept a group id past its kill"
+    assert "_diffusion_pgid" not in source, "a kept group id outlives its group"
 
 
 def test_a_failed_installer_takes_its_announced_children_with_it(monkeypatch):
@@ -2342,6 +2338,62 @@ def test_a_validation_server_dies_with_a_killed_installer(tmp_path):
                 os.kill(server_pid, signal.SIGKILL)
             except OSError:
                 pass
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "posix termination path")
+def test_a_child_in_our_own_group_still_takes_its_children_down(tmp_path):
+    """killpg is not available for a child that shares this process's group, so
+    without the walk the diffusion shim dies and the visual server keeps the GPU."""
+    from utils import process_lifetime as pl
+
+    marker = tmp_path / "grandchild.pid"
+    shim = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys, time, pathlib\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            f"pathlib.Path({str(marker)!r}).write_text(str(child.pid))\n"
+            "time.sleep(60)\n",
+        ],
+    )  # deliberately in this process's group, as the runner now is
+    grandchild = None
+    try:
+        for _ in range(200):
+            if marker.is_file():
+                break
+            time.sleep(0.05)
+        grandchild = int(marker.read_text())
+        pl._posix_terminate(shim.pid, timeout = 5.0)
+        for _ in range(100):
+            if not _alive(grandchild):
+                break
+            time.sleep(0.05)
+        assert not _alive(grandchild), "the visual server survived its runner"
+    finally:
+        _kill(shim.pid)
+        if grandchild is not None:
+            _kill(grandchild)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "posix identity check")
+def test_terminate_pid_leaves_a_pid_that_is_no_longer_ours_alone(monkeypatch):
+    """An announced child can exit without the line that clears it, so the pid
+    reached here may already belong to someone else's tree."""
+    from utils import process_lifetime as pl
+
+    stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        monkeypatch.setitem(pl._tracked_pids, stranger.pid, "1")  # an impossible start time
+        monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
+        pl.terminate_pid(stranger.pid, timeout = 1.0)
+        time.sleep(0.5)
+        # poll(), not a signal-0 probe: a killed child of this process answers
+        # that probe as a zombie until it is waited on.
+        assert stranger.poll() is None, "signalled a pid the record does not match"
+    finally:
+        _kill(stranger.pid)
+        stranger.wait(timeout = 5)
 
 
 if __name__ == "__main__":

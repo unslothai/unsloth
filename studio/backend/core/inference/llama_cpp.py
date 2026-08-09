@@ -7290,10 +7290,11 @@ class LlamaCppBackend:
             encoding = "utf-8",
             errors = "replace",
             env = utf8_child_env(env),
-            # Its own group: the shim spawns the visual server, and the startup
-            # sweep can only killpg a recorded pid that leads one. Without this
-            # the runner dies alone and its child keeps the GPU.
-            start_new_session = (os.name == "posix"),
+            # Deliberately NOT start_new_session, as with the component
+            # installer: the desktop stops this backend by signalling its
+            # process group and force-kills it after five seconds, so a session
+            # of its own would leave the shim and the visual server holding the
+            # GPU until the next launch sweeps them.
             **_windows_hidden_subprocess_kwargs(),
             **_child_popen_kwargs(),
         )
@@ -7304,11 +7305,6 @@ class LlamaCppBackend:
             adopt_pid(self._process.pid)
         except Exception as e:
             logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
-        # Kept from here on: a shim that has already exited (a failed health
-        # check, a crash before the next reload) answers no getpgid, and this
-        # backend keeps running, so no startup sweep would reach its visual
-        # server either.
-        self._diffusion_pgid = self._leading_process_group(self._process.pid)
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
         )
@@ -13321,6 +13317,26 @@ class LlamaCppBackend:
         except OSError:
             pass
 
+    @staticmethod
+    def _collect_descendants(pid):
+        """The server's own children, for the kill below. Empty when unreadable."""
+        try:
+            from utils.process_lifetime import collect_descendants
+            return collect_descendants(pid)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _terminate_descendants(collected):
+        """The diffusion shim's visual server, and anything else it started."""
+        if not collected:
+            return
+        try:
+            from utils.process_lifetime import terminate_descendants
+            terminate_descendants(collected, timeout = 5.0)
+        except Exception as e:
+            logger.debug(f"Could not terminate server descendants: {e}")
+
     def _kill_process(self):
         """Terminate the subprocess if running."""
         # Stop the watchdog before a deliberate kill so a planned reload/unload
@@ -13340,13 +13356,13 @@ class LlamaCppBackend:
         terminable = hasattr(self._process, "terminate")
         if not terminable:
             logger.debug("no terminable llama-server process to kill; clearing state")
-        # Captured before the wait below reaps the leader and getpgid stops
-        # answering. The diffusion shim leads its own group so the startup sweep
-        # can reach its visual server; this is what takes that group down on an
-        # ordinary stop, which is the only path the desktop shutdown waits for.
-        _pgid = self._leading_process_group(getattr(self._process, "pid", None)) or getattr(
-            self, "_diffusion_pgid", None
-        )
+        # Both read before the terminate below: getpgid stops answering once the
+        # wait reaps the leader, and the shim's children are reparented the
+        # moment it exits. This is the only stop the desktop shutdown waits for,
+        # so the visual server has to be named while that link still exists.
+        _pid = getattr(self._process, "pid", None)
+        _pgid = self._leading_process_group(_pid)
+        _descendants = self._collect_descendants(_pid)
         try:
             if terminable:
                 self._process.terminate()
@@ -13368,7 +13384,7 @@ class LlamaCppBackend:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
             self._kill_process_group(_pgid)
-            self._diffusion_pgid = None
+            self._terminate_descendants(_descendants)
             # getattr: teardown must tolerate a partially-built backend (failed
             # __init__ or a __new__-built instance), as with _llama_log_fh below.
             if getattr(self, "_stats_logger", None) is not None:
