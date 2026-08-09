@@ -291,6 +291,7 @@ class _FakePopen:
         self.terminated = False
         self.killed = False
         self._alive = True
+        self.pid = 424243  # every real Popen has one; the lifetime record reads it
 
     def poll(self):
         return None if self._alive else 0
