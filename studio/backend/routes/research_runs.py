@@ -9,6 +9,7 @@ import asyncio
 import json
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -43,7 +44,15 @@ _SENSITIVE_KEY_SUFFIXES = (
     "sessiontoken",
 )
 _MAX_PLAN_STEPS = 30
-_DELTA_ONLY_EVENTS = {"reasoning.updated", "report.updated"}
+_DELTA_ONLY_EVENTS = {
+    "reasoning.updated",
+    "report.updated",
+    "phase.progress",
+    "phase.started",
+    "phase.ended",
+}
+# Dedicated to the blocking event wait so open streams cannot exhaust the default executor.
+_EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "research-events")
 
 
 class CreateResearchRun(BaseModel):
@@ -418,7 +427,10 @@ async def retry_research_run(
     return run
 
 
-@router.get("/{run_id}/events")
+# POST too: proxies that stream /v1/chat/completions still buffer a streamed GET until it closes.
+@router.post("/{run_id}/events")
+# Separate registration, out of the schema: one api_route would give both verbs one operationId.
+@router.get("/{run_id}/events", include_in_schema = False)
 async def research_events(
     run_id: str,
     request: Request,
@@ -432,13 +444,18 @@ async def research_events(
 
     async def stream():
         nonlocal cursor
+        loop = asyncio.get_running_loop()
         while True:
-            events = await asyncio.to_thread(
+            # off the default executor: parked followers there starved the run's own db writes.
+            events = await loop.run_in_executor(
+                _EVENT_WAIT_EXECUTOR,
                 db.wait_for_events,
                 run_id,
                 cursor,
                 15,
             )
+            # Not the wait executor: this read is short, and queueing it behind parked waits
+            # would delay every follower once the pool is full.
             snapshot = await asyncio.to_thread(db.get_run, run_id)
             if snapshot is None:
                 return

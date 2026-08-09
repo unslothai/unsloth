@@ -75,6 +75,7 @@ import {
   exportConversationShareGPT,
   exportConversationRawJsonl,
   exportConversationCsv,
+  exportConversationMarkdown,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import {
   listPromptEntries,
@@ -88,6 +89,12 @@ import {
   DeepResearchComposerButton,
   DeepResearchWebsiteAccessDialog,
 } from "@/features/chat/components/deep-research-composer-button";
+import {
+  type NativeIntent,
+  useNativeAttachmentTargetKey,
+  useNativeIntentStore,
+} from "@/features/native-intents";
+import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -112,6 +119,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
   PLUS_MENU_ORDER,
+  CONVERSATION_MARKDOWN_LABEL,
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
   addQueuedChatRunSettingsThreadIds,
@@ -159,6 +167,7 @@ import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-b
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
+import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
@@ -2095,7 +2104,7 @@ const Composer: FC<{
         },
         () =>
           toast.error("Could not paste files.", {
-            description: "The clipboard item is unsupported, unreadable, or over 20 MB.",
+            description: "The clipboard item is unsupported, unreadable, or exceeds its size limit.",
           }),
       );
     },
@@ -2145,6 +2154,173 @@ const Composer: FC<{
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
   );
+  const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
+  const nativeAttachmentTargetKeyRef = useRef(nativeAttachmentTargetKey);
+  nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
+  const hasPendingImageAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingImageAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
+    ),
+  );
+  const registeringImageDrops = useNativeIntentStore(
+    (s) => s.registeringImageDrops > 0,
+  );
+  const [materializingDroppedImages, setMaterializingDroppedImages] =
+    useState(false);
+  // A parked send must not fire on a failed drop: the user is owed the toast and
+  // their text, not a send of the text alone. Assigned below, once the callback exists.
+  const cancelQueuedSendRef = useRef<(() => void) | null>(null);
+  // Which composer is mounted, for deciding where a drain puts work back.
+  const composerIdentityRef = useRef("");
+  const imageDropFailures = useNativeIntentStore(
+    (s) => (nativeAttachmentTargetKey ? s.imageDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
+  );
+  const seenImageDropFailuresRef = useRef(imageDropFailures);
+  // Registration fails before an intent exists, so the drain never sees it.
+  // Cancel here or the parked send goes out with the text alone.
+  useEffect(() => {
+    if (seenImageDropFailuresRef.current === imageDropFailures) return;
+    seenImageDropFailuresRef.current = imageDropFailures;
+    cancelQueuedSendRef.current?.();
+  }, [imageDropFailures]);
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) {
+      return;
+    }
+    const targetKey = nativeAttachmentTargetKey;
+    const identityAtSetup = composerIdentityRef.current;
+    useNativeIntentStore
+      .getState()
+      .claimImageAttachments(identityAtSetup, targetKey);
+    let disposed = false;
+    let draining = false;
+
+    // A fresh chat re-keys from "single:new" to its thread id under the same
+    // composer, so follow it; a real thread switch keeps the original target.
+    const stillThisComposer = () =>
+      composerIdentityRef.current === identityAtSetup;
+    const requeueKey = () =>
+      stillThisComposer()
+        ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
+        : targetKey;
+    // A fresh chat persisting remounts this composer, so the key it moves to is
+    // not visible here. Tag the batch instead; the next instance claims it.
+    const requeue = (intents: NativeIntent[]) => {
+      const key = requeueKey();
+      const store = useNativeIntentStore.getState();
+      store.addImageAttachments(key, intents);
+      store.noteImageDropOwner(key, identityAtSetup);
+    };
+
+    const drainPendingImages = async () => {
+      if (disposed || draining) {
+        return;
+      }
+      draining = true;
+      setMaterializingDroppedImages(true);
+      let readFailures = 0;
+      let lastReadError: unknown;
+      try {
+        while (!disposed) {
+          const intents = useNativeIntentStore
+            .getState()
+            .takeImageAttachments(targetKey);
+          if (intents.length === 0) {
+            break;
+          }
+          for (let index = 0; index < intents.length; index += 1) {
+            if (disposed) {
+              requeue(intents.slice(index));
+              return;
+            }
+            const intent = intents[index]!;
+            let file: File;
+            try {
+              file = await nativeAttachmentIntentToFile(intent);
+            } catch (error) {
+              // Report once below rather than one toast per file: a whole batch
+              // can go unreadable at once (volume ejected, tokens expired).
+              readFailures += 1;
+              lastReadError = error;
+              continue;
+            }
+            if (
+              disposed ||
+              nativeAttachmentTargetKeyRef.current !== targetKey
+            ) {
+              requeue(intents.slice(index));
+              return;
+            }
+            try {
+              await aui.composer().addAttachment(file);
+            } catch {
+              // Chat-wide, not per file (no vision model, or none loaded). The
+              // adapter toasted, and the rest would fail alike: stop quietly.
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              return;
+            }
+          }
+        }
+      } finally {
+        draining = false;
+        if (readFailures > 0) {
+          toast.error("Could not attach dropped images", {
+            description:
+              lastReadError instanceof Error
+                ? lastReadError.message
+                : String(lastReadError),
+          });
+          // A re-key still owns the parked send; a real thread switch does not.
+          if (stillThisComposer()) cancelQueuedSendRef.current?.();
+        }
+        // A drain for a target the composer has already left must not touch the
+        // flag: cleanup cleared it, and the live target may have set it again.
+        if (disposed) {
+          return;
+        }
+        const pending =
+          useNativeIntentStore.getState().pendingImageAttachments[targetKey]
+            ?.length ?? 0;
+        if (pending > 0) {
+          void drainPendingImages();
+        } else {
+          setMaterializingDroppedImages(false);
+        }
+      }
+    };
+
+    const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      // The predecessor's requeue can land after the claim at setup, so keep
+      // watching rather than claiming once.
+      const orphaned = Object.entries(state.imageDropOwners).some(
+        ([key, owner]) => owner === identityAtSetup && key !== targetKey,
+      );
+      if (orphaned) {
+        useNativeIntentStore
+          .getState()
+          .claimImageAttachments(identityAtSetup, targetKey);
+        return;
+      }
+      const pending =
+        state.pendingImageAttachments[targetKey]?.length ?? 0;
+      if (pending > 0) {
+        void drainPendingImages();
+      }
+    });
+
+    void drainPendingImages();
+
+    return () => {
+      disposed = true;
+      setMaterializingDroppedImages(false);
+      unsubscribe();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
+  const hasMaterializingImageAttachments =
+    registeringImageDrops ||
+    hasPendingImageAttachments ||
+    materializingDroppedImages;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemId = useAuiState(
     ({ threadListItem }) => threadListItem.id,
@@ -2184,6 +2360,7 @@ const Composer: FC<{
     !hasPendingAudio &&
     !isComposing &&
     !hasPendingAttachments &&
+    !hasMaterializingImageAttachments &&
     !disabled &&
     !overlay;
 
@@ -2654,28 +2831,75 @@ const Composer: FC<{
     }
   }, []);
 
+  // Declared here because cancelQueuedSend has to clear the dictation hold too.
+  const sendAfterDictationRef = useRef(false);
+  // Composer text while a send waits on dictationBlocked, so an edit can drop it.
+  const heldTextRef = useRef<string | null>(null);
+
   const cancelQueuedSend = useCallback(() => {
     pendingSendRef.current = false;
     setPendingSend(false);
+    // A dictation send held behind the same block would otherwise fire alone.
+    sendAfterDictationRef.current = false;
+    heldTextRef.current = null;
     dismissWaitToast();
   }, [dismissWaitToast]);
+  cancelQueuedSendRef.current = cancelQueuedSend;
 
-  const enqueueSend = useCallback(() => {
-    if (pendingSendRef.current) return;
-    pendingSendRef.current = true;
-    setPendingSend(true);
-    waitToastRef.current = toast("Waiting for documents to finish indexing", {
-      description:
-        "Your message will send automatically once indexing finishes.",
-      duration: Infinity,
-      cancel: { label: "Cancel", onClick: cancelQueuedSend },
-    });
-  }, [cancelQueuedSend]);
+  const enqueueSend = useCallback(
+    (waitingOn: "indexing" | "images" = "indexing") => {
+      if (pendingSendRef.current) return;
+      pendingSendRef.current = true;
+      setPendingSend(true);
+      const title =
+        waitingOn === "images"
+          ? "Waiting for dropped images"
+          : "Waiting for documents to finish indexing";
+      waitToastRef.current = toast(title, {
+        description: "Your message will send automatically once they are ready.",
+        duration: Infinity,
+        cancel: { label: "Cancel", onClick: cancelQueuedSend },
+      });
+    },
+    [cancelQueuedSend],
+  );
+
+  // A materializing image is a wait, not a refusal: park the send. Both gates
+  // route through here so they cannot disagree on what is recoverable.
+  const parkIfWaitingOnImages = useCallback(() => {
+    if (
+      disabled ||
+      overlay ||
+      !hasMaterializingImageAttachments ||
+      !hasSendableContent ||
+      isComposingRef.current ||
+      hasPendingAttachments
+    ) {
+      return;
+    }
+    enqueueSend("images");
+  }, [
+    disabled,
+    overlay,
+    hasMaterializingImageAttachments,
+    hasSendableContent,
+    hasPendingAttachments,
+    isComposingRef,
+    enqueueSend,
+  ]);
 
   const shouldBlockSend = useCallback(
     () =>
-      !hasSendableContent || isComposingRef.current || hasPendingAttachments,
-    [hasPendingAttachments, hasSendableContent, isComposingRef],
+      !hasSendableContent ||
+      isComposingRef.current ||
+      hasPendingAttachments ||
+      hasMaterializingImageAttachments,
+    [
+      hasMaterializingImageAttachments,
+      hasPendingAttachments,
+      hasSendableContent,
+      isComposingRef,
+    ],
   );
 
   const sendReservedComposer = useCallback(() => {
@@ -2726,6 +2950,7 @@ const Composer: FC<{
     (event: { preventDefault: () => void }) => {
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
+        parkIfWaitingOnImages();
         return true;
       }
       if (indexingActive && !overlay) {
@@ -2735,13 +2960,31 @@ const Composer: FC<{
       }
       return false;
     },
-    [disabled, shouldBlockSend, indexingActive, overlay, enqueueSend],
+    [
+      disabled,
+      shouldBlockSend,
+      indexingActive,
+      overlay,
+      enqueueSend,
+      parkIfWaitingOnImages,
+    ],
   );
 
   // Fire the parked send once indexing clears, unless the user emptied the
-  // composer while waiting (then drop it quietly).
+  // composer while waiting (then drop it quietly). An image dropped after the
+  // send was parked has to land first, or indexing finishing early sends the
+  // text without it and the image attaches to the next draft.
   useEffect(() => {
-    if (!pendingSend || indexingActive) return;
+    // pendingSendRef too: a cancel earlier in this same commit has already
+    // dropped the send, while `pendingSend` still reads true from this render.
+    if (
+      !pendingSend ||
+      !pendingSendRef.current ||
+      indexingActive ||
+      hasMaterializingImageAttachments
+    ) {
+      return;
+    }
     const { text, attachments } = aui.composer().getState();
     pendingSendRef.current = false;
     setPendingSend(false);
@@ -2753,6 +2996,7 @@ const Composer: FC<{
   }, [
     pendingSend,
     indexingActive,
+    hasMaterializingImageAttachments,
     aui,
     clearStoredDraft,
     dismissWaitToast,
@@ -2772,7 +3016,17 @@ const Composer: FC<{
   // lands. Going through the form keeps queueing, indexing holds and draft
   // clearing identical to a typed send.
   const formRef = useRef<HTMLFormElement | null>(null);
-  const sendAfterDictationRef = useRef(false);
+  // Mirrored into state so the publish effect re-runs when the node mounts: a
+  // ref mutation does not re-render. See usePublishedFrame.
+  const [composerEl, setComposerEl] = useState<HTMLFormElement | null>(null);
+  const attachComposer = useCallback((node: HTMLFormElement | null) => {
+    formRef.current = node;
+    setComposerEl(node);
+  }, []);
+  // The composer docks to the bottom of the viewport once a thread has turns,
+  // in the same column the corner overlay stack occupies. Published so the
+  // stack lifts above it rather than covering the Send button.
+  usePublishedFrame(composerEl);
   const dictationBaseTextRef = useRef("");
   const dictationComposerRef = useRef("");
   // Thread switches reuse this composer, so the send has to know where it
@@ -2780,6 +3034,7 @@ const Composer: FC<{
   // id, not referenceThreadId: that one moves from null to the remote id when
   // a new chat first persists, which is the same composer.
   const composerIdentity = threadListItemId ?? "";
+  composerIdentityRef.current = composerIdentity;
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     dictationComposerRef.current = composerIdentity;
@@ -2790,7 +3045,7 @@ const Composer: FC<{
   // a pending send when the composer changes under it after the press.
   const dictationBlocked = dictationSendBlocked({
     composerDisabled: Boolean(disabled),
-    uploading: hasPendingAttachments,
+    uploading: hasPendingAttachments || hasMaterializingImageAttachments,
     researchActive: isResearchActive,
     runActive: threadIsRunning || promptQueueActive,
     queueDisabled: Boolean(disableQueue),
@@ -2799,8 +3054,6 @@ const Composer: FC<{
     hasPendingAudio,
   });
   const wasDictatingRef = useRef(false);
-  // Composer text while a send waits on dictationBlocked, so an edit can drop it.
-  const heldTextRef = useRef<string | null>(null);
   useEffect(() => {
     if (isDictating) {
       if (wasDictatingRef.current) return;
@@ -2867,6 +3120,7 @@ const Composer: FC<{
       }
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
+        parkIfWaitingOnImages();
         return;
       }
 
@@ -3000,6 +3254,7 @@ const Composer: FC<{
       interceptSend,
       isResearchActive,
       overlay,
+      parkIfWaitingOnImages,
       promptQueueActive,
       promptQueueThreadIds,
       preStreamThreadIds,
@@ -3176,7 +3431,7 @@ const Composer: FC<{
   return (
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
-      ref={formRef}
+      ref={attachComposer}
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
@@ -4247,6 +4502,16 @@ const ComposerToolsMenu: FC<{
             }}
           >
             ShareGPT JSONL
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationMarkdown(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
+            }}
+          >
+            {CONVERSATION_MARKDOWN_LABEL}
           </DropdownMenuItem>
         </DropdownMenuSubContent>
       </DropdownMenuSub>

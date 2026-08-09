@@ -379,9 +379,7 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         );
         return None;
     };
-    let Some(mut stdout) = child.stdout.take() else {
-        return None;
-    };
+    let mut stdout = child.stdout.take()?;
 
     match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
         Ok(Ok(status)) if status.success() => {}
