@@ -36,6 +36,7 @@ import os
 import tempfile
 import threading
 import time
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -43,8 +44,10 @@ from typing import Any, Optional
 from loggers import get_logger
 
 from .diffusion_attention import (
+    SDPA_MATH_ONLY_MESSAGE,
     apply_attention_backend,
     install_hunyuan_attention_trim,
+    sdpa_math_only,
     select_attention_backend,
 )
 from .diffusion_cache import (
@@ -462,6 +465,80 @@ def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
     if fam.is_moe and getattr(pipe, "transformer_2", None) is not None:
         return (pipe, _SecondDiTView(pipe))
     return (pipe,)
+
+
+def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseException) -> None:
+    """Record WHAT was being generated when it failed, next to the exception.
+
+    ``video.generate_failed`` logs the error and nothing else, which for the OOM in #8225 meant the
+    only server-side evidence was "Tried to allocate 66.54 GiB" -- the resolution and frame count
+    behind it had to be recovered by dividing that number by the head count. This is the missing
+    half of that record.
+
+    Cancels and "not loaded" are outcomes, not failures, so they are not reported. Never raises:
+    logging a failure must not replace it with a different one."""
+    if request_shape is None:
+        return
+    try:
+        if str(exc) in (VIDEO_CANCELLED_MSG, VIDEO_NOT_LOADED_MSG):
+            return
+        if type(exc).__name__ == "_VideoGenerationCancelled":
+            return
+        # A ValueError is client input feedback here, exactly as _run_generate treats it: it is
+        # returned to the caller as a validation message and deliberately gets no
+        # video.generate_failed record. Logging the request shape at ERROR for one would turn a
+        # rejected resolution or frame count into a server-error entry.
+        if isinstance(exc, ValueError):
+            return
+        logger.error(
+            "video.generate_failed_request: %s",
+            " ".join(f"{k}={v}" for k, v in request_shape.items()),
+        )
+        # An OOM under the math SDPA backend is the #8225 shape exactly: the score matrix is
+        # quadratic in the token count, so the fix is fewer tokens, not a smaller checkpoint.
+        # Named here so the next report arrives with the diagnosis already in it.
+        #
+        # Only when the run was on NATIVE SDPA. A recorded attention_backend means an explicit
+        # kernel (AITER, xFormers, ...) engaged and torch's own dispatch was not what ran, so
+        # probing native kernels would answer about code this generation never executed -- on a
+        # ROCm card with AITER active that turns every OOM into a confident false diagnosis.
+        if (
+            _is_out_of_memory(exc)
+            and request_shape.get("attention_backend") is None
+            and sdpa_math_only(_probe_target(request_shape))
+        ):
+            logger.error("video.generate_failed_request: %s", SDPA_MATH_ONLY_MESSAGE)
+    except Exception:  # noqa: BLE001 — diagnostics never mask the real failure
+        pass
+
+
+def _is_out_of_memory(exc: BaseException) -> bool:
+    """Whether ``exc`` is an allocator failure, by name and text rather than by class: torch
+    raises ``torch.OutOfMemoryError`` on CUDA and a plain RuntimeError on some backends."""
+    if any(cls.__name__ in ("OutOfMemoryError", "OutOfMemoryError_") for cls in type(exc).__mro__):
+        return True
+    text = str(exc).lower()
+    return "out of memory" in text or "tried to allocate" in text
+
+
+def _probe_target(request_shape: dict[str, Any]) -> Any:
+    """A minimal device target for the SDPA probe, built from the recorded request.
+
+    Carries the dtype the failed generation actually ran in. Leaving it None defaults the probe to
+    fp16, but every video family promotes a resolved fp16 to fp32, so the probe would answer for a
+    precision the run never used -- and the fused kernels are half-precision only, so that is the
+    difference between "fused kernels exist here" and "this run had none"."""
+    dtype = None
+    recorded = request_shape.get("dtype")
+    if recorded:
+        try:
+            import torch
+            candidate = getattr(torch, str(recorded).replace("torch.", ""), None)
+            if isinstance(candidate, torch.dtype):
+                dtype = candidate
+        except Exception:  # noqa: BLE001 — fall back to the probe's own default
+            dtype = None
+    return types.SimpleNamespace(device = request_shape.get("device"), dtype = dtype)
 
 
 class VideoBackend:
@@ -1705,6 +1782,11 @@ class VideoBackend:
                     target, attention_backend, speed_active = effective_speed != SPEED_OFF
                 ),
                 logger = logger,
+                # The probe behind this must see the dtype the pipeline actually RUNS in. Every
+                # video family promotes a resolved fp16 to fp32 above, and the fused SDPA kernels
+                # are half-precision only, so probing the pre-promotion fp16 would report a healthy
+                # device for a generation that is in fact dispatching to the quadratic math backend.
+                target = types.SimpleNamespace(device = target.device, dtype = dtype),
             )
             applied = apply_speed_optims(
                 view,
@@ -2090,6 +2172,9 @@ class VideoBackend:
                 if state is None:
                     raise RuntimeError(VIDEO_NOT_LOADED_MSG)
                 self._active_generate_cancel = cancel
+            # Bound below, once the request is resolved. None means the failure beat the
+            # resolution, and there is nothing truthful to report.
+            request_shape: Optional[dict[str, Any]] = None
             try:
                 fam = state.family
                 width, height = snap_video_size(
@@ -2112,6 +2197,32 @@ class VideoBackend:
                 if seed is None:
                     seed = int(generator.seed()) % (2**53)
                 generator = generator.manual_seed(int(seed))
+
+                # The RESOLVED request, snapshotted the moment it is known, so a failure logs what
+                # actually ran rather than the caller's Nones. Without it the whole server-side
+                # record of a failed video is the exception string: #8225 reported an OOM whose
+                # resolution and frame count had to be reverse-engineered out of the allocation
+                # size by hand. No prompt text -- a length is enough to tell an empty prompt from
+                # a long one, and the log is not the place for user content.
+                request_shape = {
+                    "family": fam.name,
+                    "repo_id": state.repo_id,
+                    "gguf": state.gguf_filename,
+                    "width": width,
+                    "height": height,
+                    "frames": frames,
+                    "fps": out_fps,
+                    "steps": steps,
+                    "guidance": guidance,
+                    "guidance_2": guidance_2,
+                    "seed": int(seed),
+                    "prompt_chars": len(prompt or ""),
+                    "negative_prompt_chars": len(negative_prompt or ""),
+                    "device": state.device,
+                    "dtype": state.dtype,
+                    "offload": state.offload_policy,
+                    "attention_backend": state.attention_backend,
+                }
 
                 pipe = state.pipe
                 call_params = inspect.signature(pipe.__call__).parameters
@@ -2262,8 +2373,9 @@ class VideoBackend:
                     "memory_mode": state.memory_mode,
                     "offload_policy": state.offload_policy,
                 }
-            except Exception:
+            except Exception as exc:
                 self._gen = {"active": False}
+                _log_failed_generation(request_shape, exc)
                 raise
             finally:
                 with self._lock:
