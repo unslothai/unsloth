@@ -3156,6 +3156,126 @@ def test_run_load_flags_the_transformer_prefetched_from_the_staged_file_list(mon
     assert seen == [expected for _files, expected in cases]
 
 
+def test_run_load_counts_a_complete_local_base_as_staged(monkeypatch, tmp_path):
+    # A base given as a local diffusers DIRECTORY has no Hub listing -- model_info raises on a
+    # path, the estimate returns nothing -- yet its shards are already there and nothing can be
+    # downloaded. Reading that empty list as "the plan refused the shards" declines the fast path
+    # for weights the user already has.
+    local = tmp_path / "Z-Image-Turbo"
+    (local / "transformer").mkdir(parents = True)
+    (local / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    seen: list[bool] = []
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: str(local))
+    monkeypatch.setattr(
+        DiffusionBackend, "_te_prequant_plan_files", staticmethod(lambda *a, **k: {})
+    )
+    monkeypatch.setattr(DiffusionBackend, "_prefetch_files", lambda self, *a, **k: None)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_estimate_download_bytes",
+        staticmethod(lambda *a, **k: (0, [])),
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "load_pipeline",
+        lambda self, **kw: seen.append(kw["_transformer_prefetched"]),
+    )
+    DiffusionBackend()._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q8_0.gguf",
+        model_kind = "gguf",
+    )
+    assert seen == [True]
+    # An empty directory is not a staged base, and neither is a bare Hub id.
+    (local / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
+    from core.inference import diffusion as dmod
+
+    assert dmod._local_base_transformer_present(str(local)) is False
+    assert dmod._local_base_transformer_present("Tongyi-MAI/Z-Image-Turbo") is False
+    assert dmod._local_base_transformer_present(None) is False
+
+
+def test_the_widening_decision_is_taken_on_the_repo_listing(monkeypatch):
+    # The widening turns on which repo the fetch resolves to and on whether EVERY transformer shard
+    # is cached, and only the base repo's listing answers either. So the estimate defers to a
+    # callable and hands it that listing, split either side of transformer/.
+    import types
+
+    from core.inference import diffusion as dmod
+
+    siblings = [
+        types.SimpleNamespace(rfilename = name, size = 1)
+        for name in (
+            "model_index.json",
+            "vae/config.json",
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+            "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+        )
+    ]
+
+    class _Api:
+        def model_info(self, repo_id, **kw):
+            return types.SimpleNamespace(siblings = siblings, sha = "abc")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    calls: list = []
+
+    def _decide(companions, transformer_files):
+        calls.append((tuple(companions), tuple(transformer_files)))
+        return len(calls) == 1
+
+    widened = DiffusionBackend._estimate_download_bytes(
+        "unsloth/Z-Image-Turbo-GGUF",
+        None,
+        "Tongyi-MAI/Z-Image-Turbo",
+        None,
+        include_transformer = _decide,
+    )[1]
+    narrow = DiffusionBackend._estimate_download_bytes(
+        "unsloth/Z-Image-Turbo-GGUF",
+        None,
+        "Tongyi-MAI/Z-Image-Turbo",
+        None,
+        include_transformer = _decide,
+    )[1]
+    # Called once per estimate, with both shards and no companion leaking into either side.
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert all(not f.startswith("transformer/") for f in calls[0][0])
+    assert calls[0][1] == (
+        "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+        "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+    )
+    assert any(f.startswith("transformer/") for f in widened)
+    assert all(not f.startswith("transformer/") for f in narrow)
+
+
+def test_a_cached_prequant_survives_the_resolvers_free_disk_gate(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # resolve_dense_quant_candidate returns None from a gate sized for the DOWNLOAD the dense build
+    # would make, and a prequant already on disk downloads nothing. Reading that None as "dense"
+    # sent a ready checkpoint to the GGUF because the model cache was too full for bytes it was
+    # never going to fetch.
+    from core.inference import diffusion as dmod
+
+    _stub_hosted_prequant(monkeypatch, cached = True)
+    monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", lambda **kw: None)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        _transformer_prefetched = False,
+    )
+
+    assert len(_dense_calls(calls, backend)) == 1
+
+
 # ── P1-2: the reported precision must be the precision that ran ───────────────
 
 
@@ -4255,7 +4375,7 @@ def _stub_dense_transformer_cached(monkeypatch, *, cached: bool):
     Same rule as the hosted prequant above, applied to the base repo's own shards: uncached, an
     auto quant must not buy a second denoiser for a GGUF pick."""
     from core.inference import diffusion as dmod
-    monkeypatch.setattr(dmod, "_dense_transformer_cached", lambda base_repo: cached)
+    monkeypatch.setattr(dmod, "_dense_transformer_cached", lambda *a, **k: cached)
 
 
 def _stub_dense_candidate(monkeypatch, *, prequant: bool):
@@ -4717,13 +4837,15 @@ def test_an_uncached_prequant_still_declines_before_the_candidate_is_asked(
 
 
 def test_a_resolver_with_no_answer_reads_as_the_dense_base(fake_runtime, tmp_path, monkeypatch):
-    # None is "no basis at all" (no size entry, or the model cache is too full for the artifact),
-    # not "a prequant". The plan declines to stage transformer/ in exactly that case too, so
-    # reading None as dense is what keeps the two in step; reading it as a prequant would send the
-    # load down a path whose shards nobody staged.
+    # None with nothing else to go on is "no basis at all" (no size entry), not "a prequant". The
+    # plan declines to stage transformer/ in exactly that case too, so reading None as dense is
+    # what keeps the two in step; reading it as a prequant would send the load down a path whose
+    # shards nobody staged.
     from core.inference import diffusion as dmod
 
     _stub_hosted_prequant(monkeypatch, cached = True)
+    # No prequant source at all, so the None has no cached checkpoint hiding behind it.
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", lambda **kw: None)
     calls = _spy_dense_quant(monkeypatch)
     backend = DiffusionBackend()
@@ -4795,25 +4917,83 @@ def test_the_plan_and_the_load_agree_on_a_cached_prequant(fake_runtime, tmp_path
     assert len(_dense_calls(calls, backend)) == 1
 
 
-def test_dense_transformer_cached_reads_the_mirror_too(fake_runtime, monkeypatch, tmp_path):
-    # A gated base is staged under the unsloth mirror, so probing the vendor id alone reads zero
-    # and would decline the fast path for a user who already has the weights.
+def test_dense_transformer_cached_asks_the_repo_the_fetch_will_use(
+    fake_runtime, monkeypatch, tmp_path
+):
+    # A gated base and its ungated mirror are two independently addressed caches, and
+    # prefer_ungated_mirror picks between them from the COMPANION listing. Shards resident under
+    # the upstream id spare nothing when the fetch resolves to the mirror, so the probe has to
+    # follow that decision rather than union the two.
     from core.inference import diffusion as dmod
 
-    seen: list = []
+    asked: list = []
 
-    def _bytes(base, staged_dir = None):
-        seen.append(base)
-        return 4096 if base == "unsloth/FLUX.2-dev" else 0
+    def _holds(repo_id, files):
+        asked.append((repo_id, tuple(files)))
+        return repo_id == "black-forest-labs/FLUX.2-dev"
 
-    monkeypatch.setattr(DiffusionBackend, "_dense_transformer_resident_bytes", staticmethod(_bytes))
+    monkeypatch.setattr(dmod, "cache_holds_files", _holds)
+    monkeypatch.setattr(
+        dmod,
+        "prefer_ungated_mirror",
+        lambda base, *a, files = None: (
+            base if files and "vae/config.json" in files else "unsloth/FLUX.2-dev"
+        ),
+    )
 
-    assert dmod._dense_transformer_cached("black-forest-labs/FLUX.2-dev") is True
-    assert seen == ["black-forest-labs/FLUX.2-dev", "unsloth/FLUX.2-dev"]
-    # No id, and a repo with no mirror and nothing on disk, both read as uncached.
-    assert dmod._dense_transformer_cached(None) is False
-    assert dmod._dense_transformer_cached("  ") is False
+    shards = ("transformer/diffusion_pytorch_model-00001-of-00002.safetensors",)
+    # The companions decide upstream, which is where the shards are: a hit.
+    assert (
+        dmod._dense_transformer_cached(
+            "black-forest-labs/FLUX.2-dev",
+            companion_files = ("vae/config.json",),
+            transformer_files = shards,
+        )
+        is True
+    )
+    # The same shards, but the companions send the fetch to the mirror, which does not have them.
+    assert (
+        dmod._dense_transformer_cached(
+            "black-forest-labs/FLUX.2-dev",
+            companion_files = ("text_encoder/model.safetensors",),
+            transformer_files = shards,
+        )
+        is False
+    )
+    assert asked[0][0] == "black-forest-labs/FLUX.2-dev"
+    assert asked[1][0] == "unsloth/FLUX.2-dev"
+
+
+def test_dense_transformer_cached_requires_every_shard(fake_runtime, monkeypatch, tmp_path):
+    # A cancelled pull leaves whatever finished behind. Reading that as a cache hit widens the
+    # prefetch and downloads the REST of the transformer -- tens of GB, for a pick whose GGUF is
+    # already on disk and is the only denoiser that will be opened.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_families import cache_holds_files
+
+    resident = {"transformer/model-00001-of-00002.safetensors"}
+    monkeypatch.setattr(
+        dmod,
+        "cache_holds_files",
+        lambda repo_id, files: bool(files) and set(files) <= resident,
+    )
+    both = (
+        "transformer/model-00001-of-00002.safetensors",
+        "transformer/model-00002-of-00002.safetensors",
+    )
+    assert dmod._dense_transformer_cached("Qwen/Qwen-Image-Edit-2511", transformer_files = both) is (
+        False
+    )
+    resident.add("transformer/model-00002-of-00002.safetensors")
+    assert dmod._dense_transformer_cached("Qwen/Qwen-Image-Edit-2511", transformer_files = both) is (
+        True
+    )
+    # No listing is no evidence, and no evidence declines.
     assert dmod._dense_transformer_cached("Qwen/Qwen-Image-Edit-2511") is False
+    assert dmod._dense_transformer_cached(None, transformer_files = both) is False
+    assert dmod._dense_transformer_cached("  ", transformer_files = both) is False
+    # The real helper agrees that an empty ask is not a hit.
+    assert cache_holds_files("Qwen/Qwen-Image-Edit-2511", ()) is False
 
 
 def test_dense_transformer_cached_survives_an_unreadable_cache(fake_runtime, monkeypatch):
@@ -4821,11 +5001,17 @@ def test_dense_transformer_cached_survives_an_unreadable_cache(fake_runtime, mon
     # raise out of the download plan.
     from core.inference import diffusion as dmod
 
-    def _boom(base, staged_dir = None):
+    def _boom(repo_id, files):
         raise OSError("cache is on fire")
 
-    monkeypatch.setattr(DiffusionBackend, "_dense_transformer_resident_bytes", staticmethod(_boom))
-    assert dmod._dense_transformer_cached("Qwen/Qwen-Image-Edit-2511") is False
+    monkeypatch.setattr(dmod, "cache_holds_files", _boom)
+    assert (
+        dmod._dense_transformer_cached(
+            "Qwen/Qwen-Image-Edit-2511",
+            transformer_files = ("transformer/model.safetensors",),
+        )
+        is False
+    )
 
 
 def test_diffusion_status_response_carries_resolved():
