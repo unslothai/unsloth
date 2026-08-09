@@ -4515,6 +4515,8 @@ def test_h3_vae_trim_keeps_the_encoder_for_the_workflows_that_encode():
     vae = _vae()
     assert trim_h3_video_vae(vae, workflow = "t2va")["encoder_freed"] > 0
     assert vae.encoder is None
+
+
 # ── a failed video must say what it was rendering (#8225) ────────────────────────
 
 
