@@ -1318,8 +1318,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // was already past its last cancellation check -- means the run was NOT stopped, so an error it
   // raises afterwards is a real failure and not the user's own Stop coming back.
   const cancelAcked = useRef(false);
-  // A Stop already on the wire. Without this each extra click posts again, and a late duplicate
-  // can land after the run settled and stop whichever generation is running by then.
+  // A Stop already on the wire FOR THIS RUN. Without it each extra click posts again, and a late
+  // duplicate can land after the run settled and stop whichever generation is running by then.
+  // Reset per run, so a slow cancel left over from the previous one cannot swallow this run's Stop.
   const cancelInFlight = useRef(false);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
@@ -2575,6 +2576,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
     cancelAcked.current = false;
+    // Per-run, like the two above. A cancel POST still outstanding from the PREVIOUS run (a 401
+    // refresh-and-replay is the slow case) would otherwise leave the guard set and swallow this
+    // run's own Stop entirely.
+    cancelInFlight.current = false;
     // Poll the backend's per-step progress across the whole run so the bar tracks live denoising steps. A named poll body
     // (guarded against overlap) also serves the visibilitychange listener, so a throttled tab catches up when visible.
     let pollInFlight = false;
