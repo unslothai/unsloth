@@ -488,15 +488,16 @@ def _dense_bf16_gb(spec, base_model: str) -> float:
     16-24 GB GPU and the dense load OOMs -- the run fails before the first step.
 
     The inference auto-policy already keeps per-base overrides for exactly this, so read them
-    here instead of adding a second table that can drift. Falls back to the family number for
-    any base without an override, which is every single-size family. Never raises: a sizing
-    lookup must not be able to fail a run that would otherwise train."""
+    here instead of adding a second table that can drift. Reads the per-base OVERRIDES only,
+    never the family table underneath them: this spec's own number is the family default, and
+    the two are independently maintained, so falling through to the shared family entry would
+    silently re-size every base that has no override (klein's 4B default from 8.1 to 7.8, which
+    moves the bf16 band by half a GB). Never raises: a sizing lookup must not be able to fail a
+    run that would otherwise train."""
     try:
-        from core.inference.diffusion_auto_policy import family_bf16_components_gb
-        from core.inference.diffusion_families import detect_family
+        from core.inference.diffusion_auto_policy import base_repo_bf16_components_gb
 
-        fam = detect_family("", override = spec.family)
-        components = family_bf16_components_gb(fam, base_model) if fam is not None else None
+        components = base_repo_bf16_components_gb(base_model)
         if components:
             return float(components[0])
     except Exception:  # noqa: BLE001 -- table miss / import failure -> the family number

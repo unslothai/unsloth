@@ -439,14 +439,39 @@ def test_auto_still_picks_bf16_for_the_klein_4b_default(monkeypatch):
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "bf16"
 
 
-def test_dense_bf16_gb_keeps_every_single_size_family_where_it_was():
-    # Only flux.2-klein has more than one size under its entry. Every other family must keep the
-    # number its spec already carried (the shared table is the same figure), and an unknown base
-    # must fall back rather than raise -- otherwise this lookup could fail a run that would train.
-    for name in ("flux.1", "qwen-image", "z-image", "krea-2", "flux.2-dev"):
+def test_the_klein_4b_bf16_band_edge_does_not_move(monkeypatch):
+    # The band edge is dense_gb * 1.5, so a 12 GB card sits right on top of it for the 4B:
+    # 8.1 -> 12.15 keeps int8, and the family table's 7.8 -> 11.70 would flip it to bf16 and
+    # hand a 12 GB GPU a dense load with no room left. Pin the edge so the per-base lookup can
+    # never widen it for a base it has no size for.
+    spec = dit._SPECS["flux.2-klein"]
+    _fake_cuda_with_free_gb(monkeypatch, 12.0)
+    cfg = _cfg(
+        base_model = "black-forest-labs/FLUX.2-klein-4B",
+        base_precision = "auto",
+        mixed_precision = "bf16",
+    )
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
+
+
+def test_dense_bf16_gb_keeps_every_base_without_an_override_exactly_where_it_was():
+    # Only the klein 9B pair has a per-base override. EVERY other base -- including klein's own
+    # 4B default -- must come back with the spec's own number untouched, bit for bit: the shared
+    # family table is maintained separately (it records klein at 7.8 GB against this spec's 8.1),
+    # so reading through to it would quietly move the auto bands of families this PR never
+    # touched. An unknown base must fall back rather than raise, or the lookup could fail a run
+    # that would otherwise train.
+    for name in ("flux.1", "qwen-image", "z-image", "krea-2", "flux.2-dev", "flux.2-klein"):
         spec = dit._SPECS[name]
         for base in ("some/unknown-base", spec.family, ""):
-            assert dit._dense_bf16_gb(spec, base) == pytest.approx(spec.dense_bf16_gb, rel = 0.05)
+            assert dit._dense_bf16_gb(spec, base) == spec.dense_bf16_gb
+    klein = dit._SPECS["flux.2-klein"]
+    for base in (
+        "black-forest-labs/FLUX.2-klein-4B",
+        "black-forest-labs/FLUX.2-klein-base-4B",
+        "unsloth/FLUX.2-klein-4B",
+    ):
+        assert dit._dense_bf16_gb(klein, base) == klein.dense_bf16_gb
 
 
 def test_dense_bf16_gb_survives_a_broken_lookup(monkeypatch):
@@ -457,7 +482,7 @@ def test_dense_bf16_gb_survives_a_broken_lookup(monkeypatch):
     def _boom(*_a, **_kw):
         raise RuntimeError("table unavailable")
 
-    monkeypatch.setattr(ap, "family_bf16_components_gb", _boom)
+    monkeypatch.setattr(ap, "base_repo_bf16_components_gb", _boom)
     spec = dit._SPECS["flux.2-klein"]
     assert dit._dense_bf16_gb(spec, "unsloth/FLUX.2-klein-base-9B") == pytest.approx(
         spec.dense_bf16_gb

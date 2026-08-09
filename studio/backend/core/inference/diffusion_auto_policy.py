@@ -80,17 +80,31 @@ _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
 }
 
 
+def base_repo_bf16_components_gb(
+    base_repo: Optional[str],
+) -> Optional[tuple[float, float, float]]:
+    """The per-base override for ``base_repo``, or None when it has none.
+
+    No family fallback, unlike ``family_bf16_components_gb``: a caller that already holds a
+    better number for the family default needs to know whether this particular base was
+    actually named in the table, not receive the family figure back."""
+    if not base_repo:
+        return None
+    # Keyed on UPSTREAM ids, so mirrors have to be normalised before the lookup.
+    from .diffusion_families import canonical_base
+
+    return _BASE_REPO_BF16_GB.get(canonical_base(base_repo))
+
+
 def family_bf16_components_gb(
     fam: Any, base_repo: Optional[str] = None
 ) -> Optional[tuple[float, float, float]]:
     """(transformer, text encoders, VAE) bf16-resident sizes in GB, or None when the family isn't
     in the table (callers fall back to file-size estimates)."""
-    if base_repo:
-        # Keyed on UPSTREAM ids, and a miss falls through quietly to the coarser family table.
-        from .diffusion_families import canonical_base
-        override = _BASE_REPO_BF16_GB.get(canonical_base(base_repo))
-        if override is not None:
-            return override
+    # A per-base miss falls through quietly to the coarser family table.
+    override = base_repo_bf16_components_gb(base_repo)
+    if override is not None:
+        return override
     name = getattr(fam, "name", None)
     return _FAMILY_BF16_GB.get(name) if name else None
 
