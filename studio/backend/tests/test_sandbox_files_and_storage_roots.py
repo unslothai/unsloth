@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import sys
+import time
 import platform
 from pathlib import Path
 
@@ -267,10 +268,13 @@ def test_a_windows_device_name_never_becomes_a_directory(tmp_path, monkeypatch):
     from core.inference import tools
 
     tools._workdirs.clear()
+    seen = set()
     for reserved in ("con", "NUL", "aux", "COM1", "lpt9", "nul.txt"):
         workdir = Path(tools.get_sandbox_workdir(reserved))
-        assert workdir.name == "_invalid", reserved
-        assert tools.remove_session_sandbox(reserved, delete_files = True) is False
+        assert workdir.name.startswith("_id-"), reserved
+        seen.add(workdir.name)
+        assert tools.remove_session_sandbox(reserved, delete_files = True) is True
+    assert len(seen) == 6, "reserved names shared a directory"
 
 
 def test_reading_a_sandbox_never_creates_it(tmp_path, monkeypatch):
@@ -411,8 +415,9 @@ def test_clearing_all_chats_cleans_up_their_sandboxes(tmp_path, monkeypatch):
     assert not empty.exists()
 
 
-def test_the_legacy_migration_runs_for_a_read_too(tmp_path, monkeypatch):
-    """Right after an upgrade, opening a file must not 404 until a tool runs."""
+def test_the_legacy_migration_is_startup_work(tmp_path, monkeypatch):
+    """Across filesystems it copies every session, which is not something a
+    listing or a download can wait on: those run on the event loop."""
     home = tmp_path / "home"
     fake_home = tmp_path / "userprofile"
     fake_home.mkdir()
@@ -429,6 +434,15 @@ def test_the_legacy_migration_runs_for_a_read_too(tmp_path, monkeypatch):
 
     tools._workdirs.clear()
     tools._legacy_sandbox_migrated = False
+    # A read does not move anything.
+    Path(tools.resolve_sandbox_workdir("__LOCALID_upgrade"))
+    assert (legacy / "sales.csv").is_file()
+
+    tools.migrate_legacy_sandbox_in_background()
+    for _ in range(50):
+        if not legacy.exists():
+            break
+        time.sleep(0.05)
     resolved = Path(tools.resolve_sandbox_workdir("__LOCALID_upgrade"))
     assert (resolved / "sales.csv").is_file(), "the file did not follow the migration"
 
@@ -656,6 +670,7 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
 
     tools._workdirs.clear()
     tools._legacy_sandbox_migrated = False
+    tools._migrate_legacy_sandbox(tools.sandbox_root())
     resolved = tools.resolve_sandbox_workdir("__LOCALID_evil")
     assert Path(resolved).name == "_invalid", resolved
     assert not str(Path(resolved).resolve()).startswith(str(outside.resolve()))
@@ -2123,6 +2138,9 @@ def test_a_half_finished_migration_is_finished_later(tmp_path, monkeypatch):
     partial.mkdir(parents = True)
     # What the interrupted copy got through, and no claim: it never finished.
     (partial / "already_there.csv").write_text("newer", encoding = "utf-8")
+    # The record the move writes before it starts, which is what says this
+    # directory is the one it was in the middle of filling.
+    tools._record_workdir(tools._MIGRATING + "__LOCALID_part111", str(partial))
 
     tools._migrate_legacy_sandbox(str(root))
 
@@ -2155,6 +2173,7 @@ def test_a_partial_move_is_claimed_even_with_a_duplicate_left_below(tmp_path, mo
     partial = root / "__LOCALID_dup222"
     partial.mkdir()
     (partial / "kept.csv").write_text("newer", encoding = "utf-8")
+    tools._record_workdir(tools._MIGRATING + "__LOCALID_dup222", str(partial))
 
     tools._migrate_legacy_sandbox(str(root))
     assert (partial / tools._SANDBOX_MARKER).is_file(), "the destination was left unclaimed"
@@ -2226,6 +2245,82 @@ def test_an_empty_compile_location_is_not_an_override(tmp_path, monkeypatch):
     pinned = os.environ["UNSLOTH_COMPILE_LOCATION"]
     assert pinned.strip(), "the cache was left unpinned"
     assert Path(pinned).is_dir()
+
+
+def test_a_sandbox_survives_a_marker_a_tool_deleted(tmp_path, monkeypatch):
+    """The marker sits where tool code runs. The record does not, so losing one
+    must not send the chat to a fresh directory and orphan its files."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_lost11"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "results.csv").write_text("a,b\n", encoding = "utf-8")
+    (workdir / tools._SANDBOX_MARKER).unlink()
+
+    tools._workdirs.clear()  # what the next launch starts with
+    assert Path(tools.resolve_sandbox_workdir(session)) == workdir
+    assert Path(tools.get_sandbox_workdir(session)) == workdir
+    assert (workdir / "results.csv").is_file()
+    # Deletable too: the record is ownership just as much as the marker.
+    assert tools.remove_session_sandbox(session, delete_files = True) is True
+
+
+def test_an_id_the_filesystem_cannot_hold_still_gets_its_own_directory(tmp_path, monkeypatch):
+    """These come from API clients. One shared bucket meant every such chat
+    could read, and delete, every other one's files."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    first = Path(tools.get_sandbox_workdir("chat.one"))
+    second = Path(tools.get_sandbox_workdir("chat.two"))
+    assert first != second
+    assert first.name.startswith("_id-") and second.name.startswith("_id-")
+    (first / "mine.csv").write_text("mine", encoding = "utf-8")
+
+    # Stable across a restart, so a download chip still resolves.
+    tools._workdirs.clear()
+    assert Path(tools.resolve_sandbox_workdir("chat.one")) == first
+    # And nothing traverses: the name is derived, not the id.
+    escape = Path(tools.get_sandbox_workdir("../../etc"))
+    assert escape.parent == Path(tools.sandbox_root())
+
+
+def test_a_foreign_folder_is_not_taken_for_an_interrupted_move(tmp_path, monkeypatch):
+    """Entry names overlapping is not provenance: only the record written
+    before a move says the directory was ours to fill."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox" / "shared_name"
+    legacy.mkdir(parents = True)
+    (legacy / "notes.txt").write_text("mine", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    root = tmp_path / "shared"
+    root.mkdir()
+    theirs = root / "shared_name"
+    theirs.mkdir()
+    # A subset of the legacy names, which used to be enough to look partial.
+    (theirs / "notes.txt").write_text("theirs", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    tools._migrate_legacy_sandbox(str(root))
+
+    assert not (theirs / tools._SANDBOX_MARKER).exists(), "claimed a folder we never made"
+    assert (theirs / "notes.txt").read_text(encoding = "utf-8") == "theirs"
 
 
 if __name__ == "__main__":

@@ -13518,18 +13518,6 @@ _SANDBOX_MEDIA_TYPES = {
 }
 
 
-def _require_usable_session(session_id: str) -> None:
-    """Ids a tool call could never have used are not served.
-
-    Everything unusable collapses into one shared ``_invalid`` directory, so
-    answering for those ids would hand any caller the files of every other
-    session that had been given one.
-    """
-    from core.inference.tools import _usable_session_id
-    if not session_id or not _usable_session_id(session_id):
-        raise HTTPException(status_code = 404, detail = "Not found")
-
-
 def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
     """The session's sandbox directory.
 
@@ -13630,7 +13618,6 @@ async def list_sandbox_files(
     one was to search the filesystem by hand.
     """
     await _authenticate_header_or_query(request, token)
-    _require_usable_session(session_id)
 
     sandbox_dir = _sandbox_dir_for(session_id, create = False)
     files = []
@@ -13674,8 +13661,6 @@ async def serve_sandbox_file(
 
     # ── Authentication (header or query param) ──────────────────
     await _authenticate_header_or_query(request, token)
-
-    _require_usable_session(session_id)
 
     # ── Filename sanitization + path containment ────────────────
     safe_filename = os.path.basename(filename)

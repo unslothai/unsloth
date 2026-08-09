@@ -608,10 +608,15 @@ async def lifespan(app: FastAPI):
     _lifespan_log = _structlog.get_logger(__name__)
     clear_unsloth_compiled_cache()
 
-    # Finish any sandbox delete a previous run was killed in the middle of.
+    # Finish any sandbox delete a previous run was killed in the middle of, and
+    # move the legacy sandbox up here rather than from the first request.
     try:
-        from core.inference.tools import sweep_detached_sandboxes
+        from core.inference.tools import (
+            migrate_legacy_sandbox_in_background,
+            sweep_detached_sandboxes,
+        )
         sweep_detached_sandboxes()
+        migrate_legacy_sandbox_in_background()
     except Exception:  # noqa: BLE001
         pass
 

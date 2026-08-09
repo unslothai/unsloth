@@ -80,7 +80,10 @@ def test_a_session_id_cannot_escape_the_sandbox_root(workdir, tmp_path, session_
     resolved = workdir(session_id) if session_id else workdir(None)
     root = os.path.realpath(str(tmp_path / "sandbox"))
     assert os.path.realpath(resolved).startswith(root + os.sep)
-    assert os.path.basename(resolved) in {"_invalid", "_default"}
+    # A name the filesystem can hold, derived from the id rather than the id
+    # itself, so nothing in it can traverse and no two ids share it.
+    name = os.path.basename(resolved)
+    assert name == "_default" if not session_id else name.startswith("_id-")
 
 
 def test_no_session_id_falls_back_to_default(workdir):
