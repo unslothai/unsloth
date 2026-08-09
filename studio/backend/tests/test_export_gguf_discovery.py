@@ -318,3 +318,24 @@ def test_cleanup_failure_does_not_lose_reported_files(monkeypatch, tmp_path):
     success, message, _p = backend.export_gguf(str(save_dir), "q5_k_m")
     assert success is True, message
     assert (save_dir / "MyModel.Q5_K_M.gguf").is_file()
+
+
+def test_materialized_imatrix_is_not_exported_as_a_model(monkeypatch, tmp_path):
+    """unsloth copies a *.gguf_file imatrix next to the model as *.gguf; it is not an output."""
+
+    class _Model:
+        def save_pretrained_gguf(
+            self, model_save_path, tokenizer, quantization_method, imatrix_file = None
+        ):
+            # _materialize_imatrix copies into the model dir, renaming .gguf_file -> .gguf.
+            _gguf(Path(model_save_path) / "imatrix_unsloth.gguf", b"IMATRIX")
+            quant = _gguf(Path(f"{model_save_path}_gguf") / "MyModel.Q5_K_M.gguf")
+            return {"gguf_files": [str(quant)]}
+
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
+
+    success, message, _p = backend.export_gguf(str(save_dir), "q5_k_m", imatrix_file = True)
+
+    assert success is True, message
+    assert (save_dir / "MyModel.Q5_K_M.gguf").is_file()
+    assert not (save_dir / "imatrix_unsloth.gguf").exists()

@@ -191,6 +191,21 @@ def _reported_gguf_files(result):
     return resolved or None
 
 
+def _materialized_imatrix_name(imatrix_file):
+    """Filename unsloth gives a `*.gguf_file` imatrix it copies beside the model, else None.
+
+    `_materialize_imatrix` drops that copy in the model directory, so the owned-root scan
+    would otherwise relocate an importance matrix as if it were a converted model.
+    """
+    if imatrix_file is True:
+        return "imatrix_unsloth.gguf"  # the upstream imatrix_unsloth.gguf_file, renamed
+    if isinstance(imatrix_file, (str, os.PathLike)):
+        base = os.path.basename(os.fspath(imatrix_file))
+        if base.endswith(".gguf_file"):
+            return base[: -len(".gguf_file")] + ".gguf"
+    return None
+
+
 def _compressed_export_supported():
     """True if the installed unsloth build can do FP8/NVFP4 compressed-tensors export."""
     try:
@@ -1077,8 +1092,10 @@ class ExportBackend:
 
                     # Scan only the owned root; exact reported paths cover external outputs.
                     reported = result if isinstance(result, dict) else {}
+                    imatrix_name = _materialized_imatrix_name(imatrix_file)
                     produced = {p for p in model_tmp_path.rglob("*.gguf") if p.is_file()}
                     produced.update(Path(f) for f in _reported_gguf_files(result) or [])
+                    produced = {p for p in produced if p.name != imatrix_name}
                     modelfiles = {p for p in model_tmp_path.rglob("Modelfile") if p.is_file()}
                     reported_modelfile = reported.get("modelfile_location")
                     if reported_modelfile and Path(reported_modelfile).is_file():
