@@ -202,3 +202,26 @@ test("a monitor away from the corner no longer lifts the stack", () => {
   assert.ok(geometry.maxHeight < CHAT_H - 16 - 16);
   assert.ok(geometry.maxHeight <= CHAT_H - 16 - middle.bottom);
 });
+
+// The capped branch used to be reachable with a floor that did not fit: a box
+// ending just above the old cutoff was left uncapped-in-practice, and the
+// stack's guaranteed MIN_STACK_ROOM put its top back over the box by up to
+// 24px. The cutoff is derived from the cap now, so the two cannot disagree.
+test("a capped stack always fits under the box it is capped by", () => {
+  for (let bottom = 100; bottom <= CHAT_H - 16; bottom += 1) {
+    const frame = {
+      left: 996,
+      top: Math.max(0, bottom - 260),
+      right: 1264,
+      bottom,
+    };
+    const geometry = stackGeometry(frame, CHAT_W, CHAT_H);
+    // Lifted boxes sit under the stack by design; only the capped ones apply.
+    if (geometry.bottom !== 16) continue;
+    const stackTop = CHAT_H - geometry.bottom - geometry.maxHeight;
+    assert.ok(
+      stackTop >= bottom,
+      `a box ending at ${bottom} left the stack top at ${stackTop}`,
+    );
+  }
+});

@@ -71,9 +71,6 @@ const STACK_GAP = 8;
 const STACK_WIDTH = 448;
 // Never lift so far that the stack itself is pushed off the top.
 const MIN_STACK_ROOM = 120;
-// Shortest the stack ever is: the collapsed card on its own. An obstacle above
-// this strip is not covering the stack, whatever else it overlaps.
-const MIN_STACK_HEIGHT = 96;
 
 /**
  * How far above the bottom edge the overlay stack must sit to clear the Live
@@ -88,17 +85,33 @@ function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
 }
 
 /**
- * Whether the box reaches down into the strip the stack sits in. Anything
- * higher leaves the corner free, however far down the screen it starts.
+ * Whether the box leaves the stack too little room to sit under it, in which
+ * case the stack has to go over it instead. Anything higher leaves the corner
+ * usable, however far down the screen it starts.
  *
  * This is the whole difference between the two composer layouts. Docked under a
- * thread it reaches the corner and has to be dodged, or the card covers Send.
- * On an empty chat the welcome layout pads it well clear of the bottom, and
+ * thread it crowds the corner and has to be dodged, or the card covers Send. On
+ * an empty chat the welcome layout pads it well clear of the bottom, and
  * lifting over it there is what put the banners in the middle of the page with
  * the corner underneath them empty.
+ *
+ * Derived from the cap rather than guessed, so the two cannot disagree: the
+ * space below the box is what stackMaxHeight allows, and it refuses to go below
+ * MIN_STACK_ROOM. Read as a bare "is it near the bottom" instead, boxes ending
+ * just above the cutoff were left in the capped branch with a floor that did
+ * not fit under them, and the stack overlapped them by up to 24px.
  */
 function reachesStack(frame: MonitorFrame, viewportHeight: number): boolean {
-  return frame.bottom > viewportHeight - STACK_INSET - MIN_STACK_HEIGHT;
+  return roomBelow(frame, viewportHeight, STACK_INSET) < MIN_STACK_ROOM;
+}
+
+/** Height available between the box and the stack sitting on `bottomInset`. */
+function roomBelow(
+  frame: MonitorFrame,
+  viewportHeight: number,
+  bottomInset: number,
+): number {
+  return viewportHeight - bottomInset - frame.bottom - STACK_GAP;
 }
 
 export function stackBottomInset(
@@ -139,8 +152,9 @@ export function stackMaxHeight(
   if (!frame || !inStackColumn(frame, viewportWidth)) return ownMargin;
   // The lifted case: already accounted for by bottomInset.
   if (reachesStack(frame, viewportHeight)) return ownMargin;
-  const belowMonitor = viewportHeight - bottomInset - frame.bottom - STACK_GAP;
-  return Math.max(MIN_STACK_ROOM, Math.min(ownMargin, belowMonitor));
+  // At least MIN_STACK_ROOM by construction: anything tighter reaches, and was
+  // lifted instead of capped.
+  return Math.min(ownMargin, roomBelow(frame, viewportHeight, bottomInset));
 }
 
 export type StackGeometry = { bottom: number; maxHeight: number };
