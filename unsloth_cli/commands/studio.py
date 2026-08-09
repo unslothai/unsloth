@@ -2844,13 +2844,33 @@ _PS_PROXY_PROBE = (
     "New-Object System.Text.UTF8Encoding $false } catch { }; "
     "try { $OutputEncoding = [Console]::OutputEncoding } catch { }; "
     "$PSModuleAutoLoadingPreference = 'All'; "
+    # This process is pwsh.exe / powershell.exe, so PowerShell ran the CONSOLEHOST profile --
+    # and a caller in the VS Code Integrated Console or the ISE keeps its proxy defaults in
+    # Microsoft.VSCode_profile.ps1 / Microsoft.PowerShellISE_profile.ps1 instead, which this
+    # process never loads. The probe then reported no proxy and the -NoProfile setup child
+    # could not download anything on exactly the host that needed it. Dot-source the caller's
+    # other CurrentUser host profiles, from their own directory only, each failure ignored.
+    "try { $__unslothProfile = $PROFILE.CurrentUserCurrentHost; "
+    "if ($__unslothProfile) { "
+    "$__unslothProfileDir = Split-Path -Parent $__unslothProfile; "
+    "foreach ($__unslothHostProfile in @(Get-ChildItem -LiteralPath $__unslothProfileDir "
+    "-Filter 'Microsoft.*_profile.ps1' -File -ErrorAction SilentlyContinue)) { "
+    "if ($__unslothHostProfile.FullName -ne $__unslothProfile) { "
+    "try { . $__unslothHostProfile.FullName } catch { } } } } } catch { }; "
     "$out = @{}; "
     "foreach ($k in @($PSDefaultParameterValues.Keys)) { "
     "if ($k -is [string] -and [regex]::IsMatch($k, ':Proxy(Credential|UseDefaultCredentials)?$', "
     "[System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) { "
     "$v = $PSDefaultParameterValues[$k]; "
     "if ($v -is [uri]) { $out[$k] = $v.AbsoluteUri } "
-    "elseif ($v -is [string] -or $v -is [bool]) { $out[$k] = $v } } }; "
+    "elseif ($v -is [string] -or $v -is [bool]) { $out[$k] = $v } "
+    # A script block is PowerShell's supported form for a DYNAMIC default -- e.g.
+    # { [uri]$env:CORP_PROXY } -- and Invoke-WebRequest evaluates it per call. Dropping it
+    # handed the -NoProfile child no proxy on a host whose caller downloads fine. Evaluate it
+    # here and serialize the RESULT: executable code must not cross the handoff.
+    "elseif ($v -is [scriptblock]) { try { $r = & $v; "
+    "if ($r -is [uri]) { $out[$k] = $r.AbsoluteUri } "
+    "elseif ($r -is [string] -or $r -is [bool]) { $out[$k] = $r } } catch { } } } }; "
     # FRAMED, not bare: the profile has already run by this point and is free to print a
     # banner, a MOTD or a "loading modules" line. With the record bare, that output arrived
     # ahead of the JSON, the parse threw, and the whole answer was discarded -- so on exactly
@@ -2991,6 +3011,12 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
 
 _PS_PROXY_DEFAULTS_PRELUDE = (
     "$__unslothProxyDefaults = $env:_UNSLOTH_PS_PROXY_DEFAULTS; "
+    # Read once, then GONE from the environment. A profile proxy can carry credentials
+    # (http://user:secret@proxy is the ordinary corporate form), and every native process the
+    # setup script starts -- package managers, build tools, anything they start in turn --
+    # inherits the environment it was launched with. The value is needed by this session's
+    # $PSDefaultParameterValues, which is not inherited, and nowhere below it.
+    "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue; "
     "if ($__unslothProxyDefaults) { try { "
     "(ConvertFrom-Json $__unslothProxyDefaults).PSObject.Properties | ForEach-Object { "
     "$PSDefaultParameterValues[$_.Name] = $_.Value } } catch { } }; "

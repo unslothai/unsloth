@@ -95,6 +95,21 @@ function Install-UnslothStudio {
             $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultValue.AbsoluteUri
         } elseif ($_UnslothDefaultValue -is [string] -or $_UnslothDefaultValue -is [bool]) {
             $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultValue
+        } elseif ($_UnslothDefaultValue -is [scriptblock]) {
+            # A script block is PowerShell's supported form for a DYNAMIC default, e.g.
+            # { [uri]$env:CORP_PROXY }, and Invoke-WebRequest evaluates it per call -- so the
+            # installer's own downloads work while the -NoProfile setup child got nothing.
+            # Evaluate it here and hand over the RESULT: executable code must not cross into
+            # the child, and the block may read state that only exists in this session.
+            try {
+                $_UnslothDefaultResolved = & $_UnslothDefaultValue
+                if ($_UnslothDefaultResolved -is [uri]) {
+                    $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultResolved.AbsoluteUri
+                } elseif ($_UnslothDefaultResolved -is [string] -or
+                          $_UnslothDefaultResolved -is [bool]) {
+                    $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultResolved
+                }
+            } catch { }
         }
     }
     # Held, not published. Under "irm ... | iex" this runs in the caller's own session, so an

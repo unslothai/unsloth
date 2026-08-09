@@ -1288,3 +1288,54 @@ def test_a_non_ascii_banner_does_not_cost_the_proxy(monkeypatch):
 
     merged = studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"])
     assert json.loads(merged) == {"invoke-webrequest:proxy": "http://proxy.corp:8080"}
+
+
+def test_the_setup_child_does_not_hand_the_proxy_secret_to_its_descendants():
+    """A profile proxy is routinely an authenticated URI (http://user:secret@proxy). The prelude
+    copies it into $PSDefaultParameterValues, which is NOT inherited -- but the environment
+    variable it read from is, so every native process setup.ps1 starts, and everything they
+    start in turn, saw the plaintext credential. It is removed the moment it has been read."""
+    from unsloth_cli.commands.studio import _PS_PROXY_DEFAULTS_PRELUDE
+
+    prelude = _PS_PROXY_DEFAULTS_PRELUDE
+    read_at = prelude.find("$env:_UNSLOTH_PS_PROXY_DEFAULTS")
+    removed_at = prelude.find("Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS")
+    assert read_at >= 0, "the prelude must still read the handoff"
+    assert removed_at > read_at, "and must clear it straight after reading it"
+    # Before anything that could start a child process -- i.e. before the defaults are applied,
+    # which is the last thing the prelude does.
+    assert removed_at < prelude.find("$PSDefaultParameterValues[$_.Name]")
+
+
+def test_the_probe_loads_the_callers_host_specific_profile():
+    """pwsh.exe and powershell.exe run the CONSOLEHOST profile. A caller in the VS Code
+    Integrated Console or the ISE keeps its defaults in Microsoft.VSCode_profile.ps1 or
+    Microsoft.PowerShellISE_profile.ps1, which those executables never load -- so the probe
+    reported no proxy and the -NoProfile child could not download on the one host that needed
+    it."""
+    from unsloth_cli.commands.studio import _PS_PROXY_PROBE
+
+    assert "Microsoft.*_profile.ps1" in _PS_PROXY_PROBE
+    assert "CurrentUserCurrentHost" in _PS_PROXY_PROBE
+    # From the user's own profile directory only, and never the one already loaded.
+    assert "Split-Path -Parent $__unslothProfile" in _PS_PROXY_PROBE
+    assert "-ne $__unslothProfile" in _PS_PROXY_PROBE
+    # And before the table is read, or it would snapshot the defaults the extra profiles set.
+    assert _PS_PROXY_PROBE.find("Microsoft.*_profile.ps1") < _PS_PROXY_PROBE.find("$out = @{}")
+
+
+def test_a_script_block_proxy_default_is_evaluated_not_dropped():
+    """{ [uri]$env:CORP_PROXY } is PowerShell's supported form for a dynamic default and
+    Invoke-WebRequest evaluates it per call, so the caller downloads fine while the handoff
+    silently omitted it. Both serializers evaluate the block and carry the RESULT -- executable
+    code must not cross into the child."""
+    from unsloth_cli.commands.studio import _PS_PROXY_PROBE
+
+    assert "[scriptblock]" in _PS_PROXY_PROBE
+    assert "& $v" in _PS_PROXY_PROBE, "the block has to be invoked, not serialized"
+    assert '$out[$k] = $r.AbsoluteUri' in _PS_PROXY_PROBE
+
+    installer = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert "$_UnslothDefaultValue -is [scriptblock]" in installer
+    assert "& $_UnslothDefaultValue" in installer
+    assert "$_UnslothDefaultResolved.AbsoluteUri" in installer
