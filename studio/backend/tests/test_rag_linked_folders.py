@@ -1709,10 +1709,7 @@ def test_startup_restores_project_scope_retired_before_project_delete_commit(rag
         lambda project_id: studio_db.get_chat_project(project_id) is not None
     )
 
-    assert reconciled == {
-        "restored": [store.project_scope(project["id"])],
-        "deleted": [],
-    }
+    assert reconciled == {"restored": [store.project_scope(project["id"])], "deleted": []}
     assert folder_sync.scope_retired(store.project_scope(project["id"])) is False
     restored = folder_sync.get_folder(folder["id"])
     assert restored["auto_sync"] == folder["auto_sync"]
@@ -1781,7 +1778,9 @@ def test_retired_scope_cleanup_keeps_retry_state_when_file_removal_fails(
     assert folder_sync.get_folder(folder["id"])["status"] == "retired"
     conn = rag_db.get_connection()
     try:
-        assert conn.execute("SELECT 1 FROM documents WHERE scope=?", (scope,)).fetchone() is not None
+        assert (
+            conn.execute("SELECT 1 FROM documents WHERE scope=?", (scope,)).fetchone() is not None
+        )
     finally:
         conn.close()
 
@@ -1999,9 +1998,7 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
     monkeypatch.setattr(
         folder_sync,
         "delete_retired_scope",
-        lambda scope, **kwargs: (_ for _ in ()).throw(
-            sqlite3.OperationalError("database is busy")
-        ),
+        lambda scope, **kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("database is busy")),
     )
     assert rag_routes.delete_knowledge_base("knowledge", subject = "test") == {"ok": True}
 

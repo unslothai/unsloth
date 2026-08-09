@@ -716,8 +716,7 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
     conn = _retirement_connection()
     try:
         scopes = [
-            row["scope"]
-            for row in conn.execute("SELECT scope FROM linked_folder_retired_scopes")
+            row["scope"] for row in conn.execute("SELECT scope FROM linked_folder_retired_scopes")
         ]
     finally:
         conn.close()
