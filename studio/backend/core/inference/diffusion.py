@@ -1162,6 +1162,53 @@ class DiffusionBackend:
         except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
             return False
 
+    @staticmethod
+    def _auto_prequant_retry_scheme(
+        target: Any,
+        fam: Any,
+        requested: Optional[str],
+        chosen: Optional[str],
+        *,
+        base_repo: Optional[str],
+        path_override: Optional[str],
+        loras: Any,
+    ) -> Optional[str]:
+        """A lower auto rung than ``chosen`` that HAS a usable prequant, or None.
+
+        Only when ``auto`` was requested: an explicit scheme is honored or refused, never
+        swapped. A baked LoRA takes the dense path regardless, so it gets no retry."""
+        if normalize_transformer_quant(requested) != TQ_AUTO or _has_active_lora(loras):
+            return None
+        try:
+            from .diffusion_transformer_quant import auto_scheme_candidates
+            candidates = auto_scheme_candidates(target, getattr(fam, "name", None))
+        except Exception:  # noqa: BLE001 -- no candidates is just "no retry"
+            return None
+        seen_chosen = False
+        for candidate in candidates:
+            if candidate == chosen:
+                seen_chosen = True
+                continue
+            # Strictly BELOW the winner: a higher rung was already rejected by the ladder.
+            if not seen_chosen:
+                continue
+            source = usable_prequant_source(
+                fam, candidate, path_override = path_override, base_repo = base_repo
+            )
+            if source is None:
+                continue
+            # Same cached-only rule _uncached_prequant_repo applies to the winner. That guard runs
+            # select_transformer_quant_scheme, which only ever sees the winner, so a retry that
+            # returned an UNCACHED repo would smuggle past it and download a second multi-GB
+            # denoiser for a pick that already has its GGUF. A local override is the operator's own
+            # file and costs no bytes.
+            if source.kind == "repo" and not prequant_checkpoint_cached(
+                source, cache_dir = hub_cache_dir()
+            ):
+                continue
+            return candidate
+        return None
+
     def _prefetch_files(
         self,
         repo_id: str,
@@ -2427,6 +2474,32 @@ class DiffusionBackend:
                             force_dense = _has_active_lora(loras),
                             logger = logger,
                         )
+
+                        # Defined OUTSIDE the candidate check: the retry below rebinds ``candidate``
+                        # and calls this, and that retry is reached precisely when the first
+                        # resolve returned None (a free-disk gate skipping the dense download while
+                        # a lower cached prequant still passes). Nested, the name would be unbound
+                        # there and the retry would raise UnboundLocalError under the load lock
+                        # instead of loading the cached rung. Reads ``candidate`` at CALL time, so
+                        # every call still sizes whichever candidate is current.
+                        def _replan_candidate():
+                            return self._plan_memory(
+                                target,
+                                single_file_path,
+                                base,
+                                fam,
+                                memory_mode,
+                                cpu_offload,
+                                kind = kind,
+                                repo_id = repo_id,
+                                fetch_base = fetch_base,
+                                transformer_resident_override_mib = (
+                                    candidate.transient_transformer_mib
+                                ),
+                                # Pass the companion estimate so prefetched base shards aren't double-counted.
+                                companion_override_mib = candidate.companions_mib,
+                            )
+
                         if candidate is None:
                             # No basis to re-plan (no size entry, or the model cache is too full for
                             # the artifact), so the GGUF plan's offload stands and the quant cannot.
@@ -2436,25 +2509,6 @@ class DiffusionBackend:
                                 "the server log)"
                             )
                         if candidate is not None:
-
-                            def _replan_candidate():
-                                return self._plan_memory(
-                                    target,
-                                    single_file_path,
-                                    base,
-                                    fam,
-                                    memory_mode,
-                                    cpu_offload,
-                                    kind = kind,
-                                    repo_id = repo_id,
-                                    fetch_base = fetch_base,
-                                    transformer_resident_override_mib = (
-                                        candidate.transient_transformer_mib
-                                    ),
-                                    # Pass the companion estimate so prefetched base shards aren't double-counted.
-                                    companion_override_mib = candidate.companions_mib,
-                                )
-
                             replanned = _replan_candidate()
                             if (
                                 replanned.offload_policy != OFFLOAD_NONE
@@ -2488,6 +2542,52 @@ class DiffusionBackend:
                                 # The GGUF plan declined resident; a prequant-sized replan says nothing about the dense build.
                                 if candidate.prequant:
                                     dense_fallback_allowed = False
+                        if quant_plan is None:
+                            # Nothing resident for auto's WINNER, either because it has no candidate
+                            # at all or because its replan still offloads. Without this the load
+                            # leaves quant_plan unset and the gate below skips the dense/prequant
+                            # path entirely, so a lower rung whose checkpoint is CACHED and would
+                            # fit never gets looked at. Same retry as the resident branch, just
+                            # reached from the side where the GGUF plan already wanted offload.
+                            retry = self._auto_prequant_retry_scheme(
+                                target,
+                                fam,
+                                transformer_quant,
+                                select_transformer_quant_scheme(
+                                    target,
+                                    transformer_quant,
+                                    family = getattr(fam, "name", None),
+                                ),
+                                base_repo = base,
+                                path_override = transformer_prequant_path,
+                                loras = loras,
+                            )
+                            retry_candidate = (
+                                resolve_dense_quant_candidate(
+                                    fam = fam,
+                                    target = target,
+                                    requested = retry,
+                                    base_repo = base,
+                                    prequant_path = transformer_prequant_path,
+                                    force_dense = _has_active_lora(loras),
+                                    logger = logger,
+                                )
+                                if retry is not None
+                                else None
+                            )
+                            if retry_candidate is not None:
+                                candidate = retry_candidate
+                                retry_plan = _replan_candidate()
+                                if retry_plan.offload_policy == OFFLOAD_NONE:
+                                    logger.info(
+                                        "diffusion.transformer_quant: auto's pick does not fit "
+                                        "resident; retrying at %s, whose checkpoint is cached",
+                                        retry,
+                                    )
+                                    transformer_quant = retry
+                                    quant_plan = retry_plan
+                                    if candidate.prequant:
+                                        dense_fallback_allowed = False
                     else:
                         # This materialises the dense bf16 transformer, so re-check the fit rather than OOMing after eviction (skipped for a prequant).
                         scheme = select_transformer_quant_scheme(
@@ -2517,6 +2617,11 @@ class DiffusionBackend:
                             self._dense_transformer_resident_bytes(fetch_base, _base_local_dir)
                             // (1024 * 1024)
                         )
+                        dense_possible = True
+                        # Why the dense bf16 build is out, in the caller's terms, filled in by
+                        # whichever branch below rules it out. Only becomes the load's decline
+                        # reason if the auto retry then fails to find a rung that does fit.
+                        dense_decline_reason: Optional[str] = None
                         if dense_mib > 0:
                             dense_plan = self._plan_memory(
                                 target,
@@ -2534,16 +2639,105 @@ class DiffusionBackend:
                                 base_local_dir = _base_local_dir,
                             )
                             if dense_plan.offload_policy != OFFLOAD_NONE:
+                                dense_possible = False
                                 dense_fallback_allowed = False
-                                # No prequant source: a dense misfit skips the fast path; with one, only the dense fallback is forbidden.
-                                if prequant is None:
-                                    dense_declined = True
-                                    transformer_quant_decline = (
-                                        "the dense bf16 transformer this quant is built from does "
-                                        f"not fit resident ({dense_mib} MiB; the plan picked "
-                                        f"'{dense_plan.offload_policy}' offload), and no hosted "
-                                        "pre-quantised checkpoint is available to build it from"
-                                    )
+                                dense_decline_reason = (
+                                    "the dense bf16 transformer this quant is built from does not "
+                                    f"fit resident ({dense_mib} MiB; the plan picked "
+                                    f"'{dense_plan.offload_policy}' offload)"
+                                )
+                        elif not _transformer_prefetched:
+                            # dense_mib == 0 with nothing staged is not "no information": the
+                            # prefetch's capacity gate DECLINED the base transformer/ shards, so the
+                            # dense bf16 build cannot run at all. Reading it as unknown and skipping
+                            # the retry left the regression alive on the fresh Qwen cache this was
+                            # written for: fp8 wins, only int8 is published, the load runs fp8 with
+                            # no prequant and no dense fallback, and drops straight to GGUF.
+                            dense_possible = False
+                            dense_decline_reason = (
+                                "the base transformer this quant is built from was not staged (the "
+                                "prefetch's capacity gate declined its shards), so the dense bf16 "
+                                "build cannot run on this host"
+                            )
+                        # A dense misfit with a prequant source only forbids the dense fallback; with
+                        # none, auto could still have picked a DIFFERENT scheme that does have a
+                        # hosted checkpoint. auto returns one winner, and a winner with no published
+                        # prequant that also cannot build dense would drop the whole pick to GGUF
+                        # even though a lower rung would have loaded. Only for auto: an explicit
+                        # scheme is never swapped (same contract as select_transformer_quant_scheme).
+                        if not dense_possible and prequant is None:
+                            retry = self._auto_prequant_retry_scheme(
+                                target,
+                                fam,
+                                transformer_quant,
+                                scheme,
+                                base_repo = base,
+                                path_override = transformer_prequant_path,
+                                loras = loras,
+                            )
+                            # Existence is not fit: an int8 checkpoint can outweigh the Q4 GGUF that
+                            # planned resident, so a host that fits the GGUF need not fit the rung
+                            # being retried. Size it and replan, exactly as the offload branch does,
+                            # or the load moves it onto CUDA after eviction under a GGUF-sized
+                            # budget and OOMs there.
+                            retry_candidate = (
+                                resolve_dense_quant_candidate(
+                                    fam = fam,
+                                    target = target,
+                                    requested = retry,
+                                    base_repo = base,
+                                    prequant_path = transformer_prequant_path,
+                                    force_dense = _has_active_lora(loras),
+                                    logger = logger,
+                                )
+                                if retry is not None
+                                else None
+                            )
+                            retry_plan = (
+                                self._plan_memory(
+                                    target,
+                                    single_file_path,
+                                    base,
+                                    fam,
+                                    memory_mode,
+                                    cpu_offload,
+                                    kind = kind,
+                                    repo_id = repo_id,
+                                    fetch_base = fetch_base,
+                                    transformer_resident_override_mib = (
+                                        retry_candidate.transient_transformer_mib
+                                    ),
+                                    companion_override_mib = retry_candidate.companions_mib,
+                                )
+                                if retry_candidate is not None
+                                else None
+                            )
+                            if retry_plan is not None and retry_plan.offload_policy == OFFLOAD_NONE:
+                                logger.info(
+                                    "diffusion.transformer_quant: %s has no prequant and cannot "
+                                    "build dense; retrying auto at %s, whose checkpoint is cached "
+                                    "and plans resident",
+                                    scheme,
+                                    retry,
+                                )
+                                # Pin it: the load below re-selects from this value.
+                                transformer_quant = retry
+                                quant_plan = retry_plan
+                                dense_fallback_allowed = False
+                            else:
+                                # No prequant source and no retry rung that fits: the fast path is
+                                # out, so say which of the two halves failed. The reason reaches the
+                                # caller as the 409 detail on an explicit pin, and as the "Auto: OFF"
+                                # badge otherwise, so "no hosted checkpoint" alone would leave a user
+                                # who has one wondering why it was ignored.
+                                dense_declined = True
+                                transformer_quant_decline = (
+                                    f"{dense_decline_reason}, and no hosted pre-quantised "
+                                    "checkpoint is available to build it from"
+                                    if dense_decline_reason
+                                    else "no hosted pre-quantised checkpoint is available and the "
+                                    "dense bf16 transformer cannot be built on this host"
+                                )
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
@@ -2986,7 +3180,9 @@ class DiffusionBackend:
                             ),
                             "transformer_quant": (
                                 # The RAW request, not the tri-state rewrite: an "Auto: OFF" badge
-                                # and a declined "FP8" must not look the same.
+                                # and a declined "FP8" must not look the same. Captured before the
+                                # rewrite, so it is also immune to the auto retries pinning a
+                                # concrete rung: a pick that fell back to a lower rung is still auto.
                                 transformer_quant_requested,
                                 transformer_quant_engaged or "off",
                                 # A recorded decline wins: it names WHY, where the generic strings
