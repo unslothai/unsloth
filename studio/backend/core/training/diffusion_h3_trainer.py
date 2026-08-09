@@ -392,7 +392,7 @@ def _row_timesteps(layout, num_text_tokens: int, t_video: float, t_audio: float,
     return timestep.to(device), timestep_indices.to(device)
 
 
-def _save_lora(out_dir: str, layers: dict) -> None:
+def _save_lora(out_dir: str, layers: dict, adapter_config: Optional[dict] = None) -> None:
     """Write the adapter as ``pytorch_lora_weights.safetensors``.
 
     Diffusers ships no ``MiniMaxH3LoraLoaderMixin``, so there is no
@@ -400,12 +400,29 @@ def _save_lora(out_dir: str, layers: dict) -> None:
     ``pipe.load_lora_weights`` to read it back. The file this writes is nonetheless the
     ordinary diffusers single-file layout with the ``transformer.`` prefix every mixin uses, so
     it loads with ``transformer.load_lora_adapter(path, prefix="transformer")`` today and will
-    load with ``load_lora_weights`` unchanged the day that mixin lands."""
+    load with ``load_lora_weights`` unchanged the day that mixin lands.
+
+    ``adapter_config`` is the PEFT config, written as safetensors metadata in the layout
+    ``_save_lora_weights`` uses: the JSON under ``lora_adapter_metadata``, every key packed with
+    the same ``transformer.`` prefix, because ``load_lora_adapter`` strips the prefix off the
+    metadata exactly as it does off the tensors. Without it the loader falls through to
+    ``get_peft_kwargs``, which reads the rank off the B matrices and then sets
+    ``lora_alpha = r`` -- so an adapter trained at rank 16 / alpha 32 came back at half the
+    strength it was trained with, silently."""
+    import json
+
     from safetensors.torch import save_file
 
     Path(out_dir).mkdir(parents = True, exist_ok = True)
     state = {f"transformer.{k}": v.to("cpu").contiguous() for k, v in layers.items()}
-    save_file(state, str(Path(out_dir) / DEFAULT_LORA_FILENAME))
+    metadata = {"format": "pt"}
+    if adapter_config:
+        packed = {
+            f"transformer.{key}": list(value) if isinstance(value, set) else value
+            for key, value in adapter_config.items()
+        }
+        metadata["lora_adapter_metadata"] = json.dumps(packed, indent = 2, sort_keys = True)
+    save_file(state, str(Path(out_dir) / DEFAULT_LORA_FILENAME), metadata = metadata)
 
 
 def run_h3_lora_training(
@@ -451,6 +468,14 @@ def run_h3_lora_training(
             "row layout is set by the clip's own geometry and its caption's length. Use "
             "gradient_accumulation_steps to raise the effective batch."
         )
+    # The two image-LoRA augmentation knobs are fixed for a clip dataset, not honoured: every
+    # frame goes through the same centre cover-crop (_cover_resize), and nothing is flipped --
+    # a per-frame flip would tear a clip, and a per-clip one has nowhere to live, since the
+    # cached tensors carry no variant axis. Both SCHEMA defaults disagree with that
+    # (center_crop=False, random_flip=True), so the config is normalised here rather than
+    # refused: refusing would 422 every default request, and leaving it would have the run
+    # record describe augmentation that did not happen.
+    cfg = replace(cfg, center_crop = True, random_flip = False)
 
     import torch
 
@@ -604,7 +629,11 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             f"would train nothing."
         )
     if base_precision == "int8":
-        _int8_quantize_base(transformer)
+        # WITH the family. H3's adaln_proj is Linear(2688 -> 96768), so it clears the 512-feature
+        # floor and gets quantized, then runs at M = 1 and raises "self.size(0) needs to be
+        # greater than 16" on the first step -- after the whole 66.3 GB base has loaded. The
+        # family also carries the pad list (context_embedder, token_refiner) the helper applies.
+        _int8_quantize_base(transformer, cfg.resolved_family)
 
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
     optimizer = _make_optimizer(lora_params, cfg.learning_rate)
@@ -749,12 +778,18 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     ema_path: Optional[str] = None
     if not (stopped and not _save_on_stop()):
         layers = get_peft_model_state_dict(transformer)
-        _save_lora(str(out_dir), layers)
+        # The trained config, so the alpha survives the round trip rather than being re-derived
+        # as the rank. ``default`` is the adapter name add_adapter used.
+        adapter_config = dict(transformer.peft_config["default"].to_dict())
+        _save_lora(str(out_dir), layers, adapter_config)
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
         if ema is not None and ema.updates > 0:
             try:
                 ema_dir = save_ema_adapter(
-                    ema, transformer, lambda _pipe, d, l: _save_lora(d, l), str(out_dir)
+                    ema,
+                    transformer,
+                    lambda _pipe, d, l: _save_lora(d, l, adapter_config),
+                    str(out_dir),
                 )
                 ema_path = str(Path(ema_dir) / DEFAULT_LORA_FILENAME)
             except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved

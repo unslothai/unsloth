@@ -339,8 +339,18 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
     ``family`` selects the per-family small-M exclusions on top of those. Passing it is what
     keeps training and inference on the same list: without it LTX-2's one-token audio stream
     (and Qwen-Image's unpadded text stream) is quantized here and the first forward raises,
-    after the whole base has been loaded."""
-    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme, make_filter_fn
+    after the whole base has been loaded.
+
+    The family's PAD list is applied for the same reason, and the same way the inference path
+    applies it: a small-M Linear is either excluded or padded, and a family that chose padding
+    (MiniMax-H3's context_embedder and token_refiner blocks) has those names in neither the
+    generic nor the family exclusions, so without this they are quantized bare and raise on the
+    first forward exactly like an unexcluded one."""
+    from core.inference.diffusion_transformer_quant import (
+        apply_small_m_padding,
+        exclude_tokens_for_scheme,
+        make_filter_fn,
+    )
     from torchao.quantization import Int8WeightOnlyConfig, quantize_
 
     quantize_(
@@ -350,6 +360,10 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
             512, exclude_name_tokens = exclude_tokens_for_scheme("int8", family)
         ),
     )
+    # After quantize_, as the helper requires: it reparents the Linears it wraps. Not
+    # best-effort -- a raise means the base is quantized but not safely runnable, which is the
+    # one state worse than either end.
+    apply_small_m_padding(transformer, "int8", family)
 
 
 def _fp8_module_filter(mod, fqn: str) -> bool:

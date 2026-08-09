@@ -863,3 +863,157 @@ def test_an_image_family_keeps_its_checkpointing():
         save_steps = 50,
     ).normalized()
     assert cfg.save_steps == 50
+
+
+# ── the four review fixes ────────────────────────────────────────────────────
+
+
+def test_int8_training_applies_h3s_small_m_guards():
+    """Without the family, ``adaln_proj`` (Linear(2688 -> 96768) on the dense checkpoint) clears
+    the 512-feature floor, gets quantized, then runs at M = 1 and raises
+    ``self.size(0) needs to be greater than 16`` on the first step -- after the whole 66.3 GB
+    base has loaded. The family also carries the PAD list, which is the other half of the same
+    contract: context_embedder and the two token_refiner blocks are in neither exclusion list
+    precisely because they are meant to be padded instead."""
+    from core.inference.diffusion_transformer_quant import (
+        exclude_tokens_for_scheme,
+        pad_tokens_for_scheme,
+    )
+    from core.training import diffusion_dit_trainer as dit
+    from core.training import diffusion_h3_trainer as h3
+
+    assert "adaln_proj" in exclude_tokens_for_scheme("int8", "minimax-h3")
+    assert "adaln_proj" not in exclude_tokens_for_scheme("int8", None)
+    assert pad_tokens_for_scheme("int8", "minimax-h3")
+
+    # The trainer hands the family down, and the shared helper reads BOTH lists off it.
+    src = Path(h3.__file__).read_text()
+    assert "_int8_quantize_base(transformer, cfg.resolved_family)" in src
+    dit_src = Path(dit.__file__).read_text()
+    body = dit_src.split("def _int8_quantize_base", 1)[1].split("\ndef ", 1)[0]
+    assert "exclude_tokens_for_scheme(\"int8\", family)" in body
+    assert "apply_small_m_padding(transformer, \"int8\", family)" in body
+
+
+def test_int8_quantize_base_pads_the_families_small_m_linears(monkeypatch):
+    # The behavioural half: the helper must call the padding pass, with the family, AFTER
+    # quantize_ (which is what reparents the Linears the pass wraps).
+    import torch.nn as nn
+
+    from core.training import diffusion_dit_trainer as dit
+
+    order: list = []
+    fake_ao = types.ModuleType("torchao.quantization")
+    fake_ao.Int8WeightOnlyConfig = lambda: "int8cfg"
+    fake_ao.quantize_ = lambda model, cfg, filter_fn = None: order.append("quantize")
+    monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
+    monkeypatch.setitem(sys.modules, "torchao.quantization", fake_ao)
+    monkeypatch.setattr(
+        "core.inference.diffusion_transformer_quant.apply_small_m_padding",
+        lambda transformer, scheme, family, **kw: order.append(("pad", scheme, family)),
+    )
+
+    dit._int8_quantize_base(nn.Linear(4, 4), "minimax-h3")
+    assert order == ["quantize", ("pad", "int8", "minimax-h3")]
+
+
+def test_a_non_default_lora_alpha_survives_the_export(tmp_path):
+    """``load_lora_adapter`` reads the rank off the B matrices and then sets
+    ``lora_alpha = r`` unless the file carries adapter metadata, so an adapter trained at
+    rank 16 / alpha 32 used to come back at half its trained strength. The metadata layout is
+    diffusers' own: JSON under ``lora_adapter_metadata``, every key packed with the same
+    ``transformer.`` prefix the tensors carry, because the loader strips it off both."""
+    from safetensors import safe_open
+
+    from core.training.diffusion_h3_trainer import _save_lora
+
+    _save_lora(
+        str(tmp_path),
+        {"transformer_blocks.0.attn.to_q.lora_A.weight": torch.zeros(2, 2)},
+        {"r": 16, "lora_alpha": 32, "target_modules": {"to_q"}},
+    )
+    with safe_open(str(tmp_path / "pytorch_lora_weights.safetensors"), framework = "pt") as f:
+        meta = f.metadata()
+    assert meta["format"] == "pt"
+    recorded = json.loads(meta["lora_adapter_metadata"])
+    assert recorded["transformer.lora_alpha"] == 32
+    assert recorded["transformer.r"] == 16
+    # A set is not JSON-serialisable; diffusers lists them, and so must this.
+    assert recorded["transformer.target_modules"] == ["to_q"]
+
+
+def test_the_export_without_a_config_still_writes_a_plain_file(tmp_path):
+    # The EMA path and the existing callers pass no config; that must stay a valid file.
+    from safetensors.torch import load_file
+
+    from core.training.diffusion_h3_trainer import _save_lora
+
+    _save_lora(str(tmp_path), {"transformer_blocks.0.attn.to_q.lora_A.weight": torch.zeros(2, 2)})
+    assert list(load_file(str(tmp_path / "pytorch_lora_weights.safetensors"))) == [
+        "transformer.transformer_blocks.0.attn.to_q.lora_A.weight"
+    ]
+
+
+def test_a_mostly_silent_soundtrack_is_refused_rather_than_padded(tmp_path):
+    """The mandatory-audio check only asks whether the container declares an audio stream, and
+    the pad had no ceiling, so a clip carrying a fraction of a second of sound was accepted and
+    zero-padded out to the whole window -- training the shared adapter on the silence the check
+    exists to keep out."""
+    import numpy as np
+
+    from core.training import diffusion_h3_clips as clips
+
+    target = clips.h3_audio_sample_count(clips.H3_FRAMES_PER_CHUNK)
+
+    class _Resampler:
+        def resample(self, frame):
+            return [] if frame is None else [frame]
+
+    class _Container:
+        def __init__(self, n):
+            self._n = n
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def decode(self, audio = 0):
+            block = types.SimpleNamespace(
+                to_ndarray = lambda: np.zeros(
+                    (self._n * clips.H3_AUDIO_CHANNELS,), dtype = "float32"
+                )
+            )
+            return [block]
+
+    def fake_av(n):
+        return types.SimpleNamespace(
+            AudioResampler = lambda **kw: _Resampler(),
+            open = lambda path: _Container(n),
+        )
+
+    # A tail a few milliseconds short is still padded, as the comment promises.
+    short_tail = target - int(0.002 * clips.H3_AUDIO_SAMPLING_RATE)
+    out = clips._decode_clip_audio(tmp_path / "a.mp4", target, fake_av(short_tail), np)
+    assert out.shape == (clips.H3_AUDIO_CHANNELS, target)
+
+    # A soundtrack that is materially shorter is refused instead.
+    with pytest.raises(ValueError, match = "of audio for a"):
+        clips._decode_clip_audio(tmp_path / "a.mp4", target, fake_av(target // 10), np)
+
+
+def test_the_augmentation_knobs_record_what_h3_actually_does():
+    """Every frame goes through the same centre cover-crop and nothing is flipped, but the
+    schema defaults say the opposite (center_crop=False, random_flip=True), so an untouched
+    request described augmentation that never happened. Normalised rather than refused: a
+    refusal would 422 every default request."""
+    from dataclasses import replace as _replace
+
+    from core.training import diffusion_h3_trainer as h3
+
+    src = Path(h3.__file__).read_text()
+    assert "cfg = replace(cfg, center_crop = True, random_flip = False)" in src
+    # And the two fields really are settable on the config the trainer normalises.
+    cfg = _replace(_h3_cfg(), center_crop = True, random_flip = False)
+    assert cfg.center_crop is True and cfg.random_flip is False

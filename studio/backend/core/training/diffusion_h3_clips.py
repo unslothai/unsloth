@@ -44,6 +44,10 @@ H3_CANVAS_MULTIPLE = H3_SPATIAL_COMPRESSION * H3_PATCH_W
 H3_AUDIO_SAMPLING_RATE = 32000
 H3_AUDIO_LATENTS_PER_SECOND = 40
 H3_AUDIO_CHANNELS = 2
+# How much of a clip's audio window may be zero-padded before the clip is refused. 1% of a 5.17s
+# window is ~52ms, which covers the few-millisecond tail a container routinely ends short by
+# while still refusing a stream that is mostly silence.
+_MAX_AUDIO_PAD_FRACTION = 0.01
 H3_AUDIO_LATENT_CHANNELS = 32
 H3_VIDEO_LATENT_CHANNELS = 24
 # Per-row modality tags, which index the transformer's AdaLN table.
@@ -323,6 +327,12 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
     zero-padded to exactly the sample count the packed layout reserves audio rows for. A short
     tail is padded rather than refused: the video stream is the authority on the clip's length
     and containers routinely end their audio a few milliseconds early.
+
+    That tolerance is bounded. Padding a materially short soundtrack out to the full window
+    trains the shared adapter on a target that is mostly silence, which is the exact failure the
+    "must have sound" check above exists to prevent -- and a stream carrying a fraction of a
+    second passed it, because the check only asks whether the container declares one.
+    ``_MAX_AUDIO_PAD_FRACTION`` is the container-tail allowance, not an augmentation budget.
     """
     resampler = av.AudioResampler(format = "flt", layout = "stereo", rate = H3_AUDIO_SAMPLING_RATE)
     chunks = []
@@ -336,5 +346,15 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
         raise ValueError(f"{Path(path).name} decoded to no audio samples.")
     samples = np.concatenate(chunks, axis = 0).astype("float32")[:target_samples]
     if samples.shape[0] < target_samples:
-        samples = np.pad(samples, ((0, target_samples - samples.shape[0]), (0, 0)))
+        missing = target_samples - samples.shape[0]
+        if missing > _MAX_AUDIO_PAD_FRACTION * target_samples:
+            have_s = samples.shape[0] / H3_AUDIO_SAMPLING_RATE
+            want_s = target_samples / H3_AUDIO_SAMPLING_RATE
+            raise ValueError(
+                f"{Path(path).name} carries {have_s:.2f}s of audio for a {want_s:.2f}s clip. "
+                f"MiniMax-H3 denoises video and audio together, so padding the rest with "
+                f"silence would train the adapter to stop generating sound. Use a clip whose "
+                f"soundtrack runs its full length."
+            )
+        samples = np.pad(samples, ((0, missing), (0, 0)))
     return np.ascontiguousarray(samples.T)
