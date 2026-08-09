@@ -150,6 +150,35 @@ def _variant_bytes_on_disk(
     return _materialized_bytes(snapshot_dir, variant_file_matcher)
 
 
+def _variant_main_shard_present(
+    snapshot_dir: Optional[Path],
+    variant_file_matcher: Optional["VariantFileMatcher"],
+) -> Optional[bool]:
+    """Whether the variant's OWN files are in the snapshot dir. None when unanswerable.
+
+    The narrower question ``companions = False`` asks: shared companions belong to every quant
+    in the repo, so their presence says nothing about this one. Used on the path where the blob
+    hashes could not be resolved -- the snapshot dir is still named per file, so it can settle
+    absence even when the hash filter cannot, and an unreadable or absent dir stays unknown.
+    """
+    if snapshot_dir is None or variant_file_matcher is None:
+        return None
+    try:
+        entries = list(snapshot_dir.rglob("*"))
+    except OSError:
+        return None
+    for path in entries:
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        relative = path.relative_to(snapshot_dir).as_posix()
+        if variant_file_matcher(relative, companions = False):
+            return True
+    return False
+
+
 def _materialized_bytes(snapshot_dir: Path, variant_file_matcher: "VariantFileMatcher") -> int:
     """Bytes the variant's files present in the snapshot dir.
 
@@ -406,6 +435,19 @@ def compute_snapshot_progress(
             target_present = bool(
                 completed_bytes or in_progress_bytes or entry_manifest.get() is not None
             )
+        elif variant is not None:
+            # An unresolvable file set does not have to mean unknown. The byte reading above
+            # already walked the snapshot dir, whose entries are named per file, so it can
+            # answer the narrower question the hash filter could not: is a main shard of THIS
+            # quant here? Without this, a repo dir kept alive by a sibling read as "zero bytes,
+            # cache_path names a directory", which hydration adopts as a resumable phantom and
+            # which then blocks a fresh download of the deleted quant until the idle grace runs
+            # out -- the same trap as above, on the metadata-unavailable path.
+            scanned = _variant_main_shard_present(snapshot_dir.get(), variant_file_matcher)
+            if scanned is True or entry_manifest.get() is not None:
+                target_present = True
+            elif scanned is False:
+                target_present = False
         readings.append(
             (
                 completed_bytes,
@@ -440,6 +482,12 @@ def compute_snapshot_progress(
         return empty
 
     completed_bytes, in_progress_bytes, cache_path, complete_on_disk, target_present = selected
+    # Presence is a property of the SET of caches, not of the one that happened to hold the most
+    # bytes. A sibling-only repo dir and a cache that still holds this variant's manifest both
+    # read as zero bytes, so root order alone could pick the False and retire a job whose target
+    # another scanned cache proves is there. A positive reading anywhere wins.
+    if any(reading[4] is True for reading in readings):
+        target_present = True
     downloaded_bytes = completed_bytes + in_progress_bytes
     # A reading taken while some root could not be listed is only ever a LOWER bound. The
     # active root raising EACCES/EIO while a remembered cache still holds the repo dir (with a

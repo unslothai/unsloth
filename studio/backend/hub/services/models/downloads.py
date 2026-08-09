@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Optional, Sequence, TYPE_CHECKING
 
 from fastapi import HTTPException
@@ -492,7 +493,11 @@ async def get_model_transport_status_response(
 
 
 def _variant_manifest_in_any_cache(
-    repo_id: str, variant: str
+    repo_id: str,
+    variant: str,
+    *,
+    force_active: bool = False,
+    active_root: Optional[Path] = None,
 ) -> Optional[download_manifest.Manifest]:
     """The variant's manifest from whichever cache dir on disk holds it.
 
@@ -510,14 +515,26 @@ def _variant_manifest_in_any_cache(
     # hashes to a remembered cache that has the complete variant, and filters every blob of it
     # out. That is the same wrong answer as two remembered caches disagreeing.
     found: list[download_manifest.Manifest] = []
-    active_manifest = download_manifest.read_manifest("model", repo_id, variant)
+    # ``active_root`` is the root the job records, which is the one snapshot_progress scans; it
+    # is not necessarily the configured default (a cache moved mid-download), and reading the
+    # default there would be another cache's answer again.
+    active_manifest = download_manifest.read_manifest(
+        "model", repo_id, variant, hub_cache = active_root
+    )
     if active_manifest is not None:
         found.append(active_manifest)
     # The active cache was just probed by the call above and a state-dir miss is not free, so
     # skip the entry that repeats it. In the common case preferred_repo_cache_dirs returns only
     # that entry and this loop does no work at all.
-    active = download_manifest._canonical_hub_cache()
-    for entry in preferred_repo_cache_dirs("model", repo_id):
+    active = download_manifest._canonical_hub_cache(active_root)
+    # The SAME cache dirs snapshot_progress will scan. A running or cancelling job writes into
+    # the active root and is read only from there, so a remembered cache's manifest for the same
+    # variant is not merely a second opinion -- its hashes would be applied to the active root's
+    # blobs and filter out every byte the live download has written, leaving the card at 0 B
+    # until Hub metadata comes back.
+    for entry in preferred_repo_cache_dirs(
+        "model", repo_id, force_active = force_active, active_root = active_root
+    ):
         if active is not None and download_manifest._canonical_hub_cache(entry.parent) == active:
             if active_manifest is None:
                 # The cache snapshot_progress will scan, with no manifest of its own. Anything
@@ -590,7 +607,20 @@ async def get_gguf_download_progress_response(
         )
         if requirement is not None:
             return requirement.download_size_bytes, requirement.required_hashes
-        manifest = _variant_manifest_in_any_cache(resolved_repo_id, progress_variant)
+        job_key = _download_job_key(resolved_repo_id, progress_variant)
+        job = _registry.get_job(job_key)
+        # getattr, the same way snapshot_progress reads it: a registry without the accessor
+        # simply has no recorded root, which is the "use the configured one" case.
+        get_job_metadata = getattr(_registry, "get_job_metadata", None)
+        job_metadata = get_job_metadata(job_key) if callable(get_job_metadata) else None
+        hub_cache = getattr(job_metadata, "hub_cache", None)
+        manifest = _variant_manifest_in_any_cache(
+            resolved_repo_id,
+            progress_variant,
+            # Same scoping rule snapshot_progress applies to its own scan.
+            force_active = job.state in {"running", "cancelling"},
+            active_root = Path(hub_cache) if hub_cache else None,
+        )
         if manifest is not None:
             return (
                 sum(max(0, int(file.size or 0)) for file in manifest.expected_files),
