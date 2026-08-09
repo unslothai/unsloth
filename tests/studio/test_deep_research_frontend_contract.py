@@ -21,7 +21,8 @@ def test_research_api_is_isolated_and_cursor_based() -> None:
     assert "runs.at(-1) ?? null" in api
     assert "getResearchThreadState" in api
     assert "/events?after=${Math.max(0, after)}" in api
-    assert 'headers: { accept: "text/event-stream" }' in api
+    # POST, not GET: proxies that buffer a streamed GET leave the activity panel empty.
+    assert 'method: "POST", headers: { accept: "text/event-stream" }' in api
     assert "export async function* followResearchRun" in api
     assert "Math.min(8_000, 500 * 2 ** (failures - 1))" in api
     assert "for await (const event of streamResearchEvents" in api

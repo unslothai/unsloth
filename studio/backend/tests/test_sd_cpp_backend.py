@@ -1360,3 +1360,32 @@ def test_the_worker_publishes_the_real_encoder_repos_before_fetching(monkeypatch
     assert nine_b <= set(
         seen_at_fetch[0]
     ), "the delete guard did not name the encoders this load is about to write"
+
+
+def test_generate_reports_the_build_the_recipe_persists():
+    # The route writes the recipe straight off these keys, so a key the native result omits is
+    # persisted as null. The engine has no dense quant and no memory planner (honest nulls), but
+    # the offload it ran under is real -- and every native image recorded it as "unknown".
+    b = _loaded_backend()
+    s = b._state
+    b._state = bk._SdState(
+        repo_id = s.repo_id,
+        base_repo = s.base_repo,
+        family = s.family,
+        device = "cuda",
+        files = s.files,
+        vae_format = s.vae_format,
+        sampling_method = s.sampling_method,
+        flow_shift = s.flow_shift,
+        mode = s.mode,
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        offload_flags = ("--vae-on-cpu", "--clip-on-cpu"),
+    )
+    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    assert out["model_kind"] == "gguf"
+    assert out["gguf_filename"] == "z-image-turbo-Q4_K_M.gguf"
+    assert out["offload_policy"] == "active"
+    # Same derivation status() uses, so the recipe and the Loaded build panel cannot disagree.
+    assert out["offload_policy"] == b.status()["offload_policy"]
+    assert out["transformer_quant"] is None and out["text_encoder_quant"] is None
+    assert out["memory_mode"] is None

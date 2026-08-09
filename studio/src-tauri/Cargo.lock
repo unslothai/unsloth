@@ -5759,7 +5759,9 @@ dependencies = [
  "time",
  "tokio",
  "webkit2gtk-sys",
+ "webview2-com",
  "windows 0.62.2",
+ "windows-core 0.61.2",
  "windows-sys 0.61.2",
  "winreg 0.55.0",
 ]
