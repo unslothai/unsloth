@@ -4326,8 +4326,13 @@ def test_auto_quant_declines_dense_fallback_when_no_prequant_exists(
     assert _FakeTransformer.last["path"]
 
 
+@pytest.mark.parametrize(
+    "cached_repo",
+    ["Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"],
+    ids = ["upstream", "fetch-mirror"],
+)
 def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_exists(
-    fake_runtime, tmp_path, monkeypatch
+    cached_repo, fake_runtime, tmp_path, monkeypatch
 ):
     import json
 
@@ -4345,12 +4350,12 @@ def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_ex
         *(f"transformer/{name}" for name in shard_names),
     ]
     _fake_hub_cache(
-        monkeypatch, tmp_path / "hub", base_repo, files, revision = revision, ref = revision
+        monkeypatch, tmp_path / "hub", cached_repo, files, revision = revision, ref = revision
     )
     index = (
         tmp_path
         / "hub"
-        / "models--Qwen--Qwen-Image-Edit-2511"
+        / f"models--{cached_repo.replace('/', '--')}"
         / "snapshots"
         / revision
         / "transformer"
@@ -4361,12 +4366,12 @@ def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_ex
         encoding = "utf-8",
     )
     cached_root = index.parents[1]
-    assert DiffusionBackend._complete_dense_transformer_root(base_repo) == str(cached_root)
+    assert DiffusionBackend._complete_dense_transformer_root(cached_repo) == str(cached_root)
     missing_shard = cached_root / "transformer" / shard_names[1]
     missing_shard.unlink()
-    assert DiffusionBackend._complete_dense_transformer_root(base_repo) is None
+    assert DiffusionBackend._complete_dense_transformer_root(cached_repo) is None
     missing_shard.write_bytes(b"x")
-    assert DiffusionBackend._complete_dense_transformer_root(base_repo) == str(cached_root)
+    assert DiffusionBackend._complete_dense_transformer_root(cached_repo) == str(cached_root)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"

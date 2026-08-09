@@ -836,6 +836,7 @@ def _auto_gguf_dense_download_reason(
     base_repo: Optional[str],
     prequant_path: Optional[str],
     base_local_dir: Optional[str] = None,
+    fetch_repo: Optional[str] = None,
 ) -> Optional[str]:
     """Why an AUTO-derived dense quant would DOWNLOAD a second denoiser, or None when safe.
 
@@ -856,10 +857,11 @@ def _auto_gguf_dense_download_reason(
             fam, scheme, path_override = prequant_path, base_repo = base_repo
         )
         if source is None:
-            if base_repo and DiffusionBackend._complete_dense_transformer_root(
-                base_repo, base_local_dir
-            ):
-                return None
+            if fetch_repo is None and base_repo:
+                fetch_repo = prefer_ungated_mirror(base_repo)
+            for repo in dict.fromkeys(repo for repo in (fetch_repo, base_repo) if repo):
+                if DiffusionBackend._complete_dense_transformer_root(repo, base_local_dir):
+                    return None
             return "the base repository's dense transformer"
         # A usable local override is the operator's own file, so it never downloads.
         if source.kind != "repo":
@@ -2468,6 +2470,9 @@ class DiffusionBackend:
                 # progress already reported 100%.
                 dense_fallback_allowed = bool(
                     _transformer_prefetched
+                    or DiffusionBackend._complete_dense_transformer_root(
+                        fetch_base, _base_local_dir
+                    )
                     or DiffusionBackend._complete_dense_transformer_root(base, _base_local_dir)
                 )
                 # A GGUF pick with the scheme left to us may use a replacement only when it is
@@ -2484,6 +2489,7 @@ class DiffusionBackend:
                         base_repo = base,
                         prequant_path = transformer_prequant_path,
                         base_local_dir = _base_local_dir,
+                        fetch_repo = fetch_base,
                     )
                     if dense_download_reason is not None:
                         logger.info(
