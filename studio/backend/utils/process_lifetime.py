@@ -645,8 +645,11 @@ def _write_breadcrumb() -> None:
             "owner_pid": os.getpid(),
             "owner_identity": _own_identity(),
             "children": [
-                {"pid": pid, "identity": _refreshed_identity(pid, identity),
-                 "pgid": _tracked_pgids.get(pid)}
+                {
+                    "pid": pid,
+                    "identity": _refreshed_identity(pid, identity),
+                    "pgid": _tracked_pgids.get(pid),
+                }
                 for pid, identity in _tracked_pids.items()
             ],
         }
