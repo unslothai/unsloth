@@ -2591,8 +2591,16 @@ class VideoBackend:
         transformer_gb, text_encoder_gb, vae_gb = components
         # Only a scheme with a hosted checkpoint replaces the dense denoiser; anything else (auto
         # included) keeps the released bfloat16 components, which is what the modular loader does.
+        #
+        # Its MEASURED size when the family publishes one, not the generic steady factor: H3's
+        # hosted denoisers are quantized AND structurally pruned (the curve-form adaLN), so 0.55 x
+        # 66.3 GB reads 36.5 GB against a real ~20.3 GB, and the 16 GB gap is enough to refuse a
+        # supported prequant load that fits on a 128 GB Mac.
+        measured = getattr(fam, "prequant_resident_gb", None) if scheme else None
         factor = _QUANT_STEADY_FACTOR.get(scheme) if scheme else None
-        if factor is not None:
+        if measured:
+            transformer_gb = float(measured)
+        elif factor is not None:
             transformer_gb *= factor
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         plan = plan_diffusion_memory(

@@ -5311,12 +5311,17 @@ def test_the_h3_modular_refusal_prices_a_seeded_prequant_denoiser(fake_runtime, 
     monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", lambda t: None)
     monkeypatch.setattr(video_mod, "raise_on_unified_memory_shortfall", lambda *a, **k: None)
 
+    # The MEASURED hosted size, not the generic 0.55 steady factor: H3's checkpoints are
+    # quantized AND structurally pruned, so the factor reads 36.5 GB against a real ~20.3 GB and
+    # the 16 GB gap refuses a supported prequant load that fits on a 128 GB Mac.
+    assert fam.prequant_resident_gb == 20.3
     for scheme, expected_transformer in (
         (None, transformer_gb),
-        ("fp8", transformer_gb * 0.55),
-        # An unknown scheme has no factor, so it falls back to the dense figure rather than
-        # inventing a saving.
-        ("bogus", transformer_gb),
+        ("fp8", fam.prequant_resident_gb),
+        ("int8", fam.prequant_resident_gb),
+        # An unknown scheme still takes the family's hosted size when it publishes one; the
+        # generic factor is only the fallback for a family that does not.
+        ("bogus", fam.prequant_resident_gb),
     ):
         VideoBackend._raise_on_modular_unified_shortfall(
             fam,
@@ -5329,3 +5334,38 @@ def test_the_h3_modular_refusal_prices_a_seeded_prequant_denoiser(fake_runtime, 
         assert seen[-1] == int(
             (expected_transformer + te_gb + vae_gb) * (1000.0**3 / (1024.0 * 1024.0))
         ), scheme
+    # The whole point: on a unified-memory host big enough for the ~20.3 GB checkpoint but not
+    # for the 36.5 GB the generic factor invents, the fp8 pick must NOT be refused. 160 GiB at
+    # 80% free is inside that window (the dense set is refused there either way).
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    from core.inference.diffusion_memory import (
+        DeviceMemory,
+        estimate_video_runtime_mib,
+        plan_diffusion_memory,
+    )
+
+    mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+    total = 160 * 1024
+    memory = DeviceMemory("mps", "mps", "unified_memory", int(total * 0.80), total)
+    device = type("T", (), {"supports_model_cpu_offload": True, "device": "mps"})()
+    headroom = estimate_video_runtime_mib(
+        width = fam.resolution_presets[0][0],
+        height = fam.resolution_presets[0][1],
+        num_frames = fam.default_num_frames,
+    )
+    for gb, refused in (
+        (fam.prequant_resident_gb + te_gb + vae_gb, False),
+        # What the generic 0.55 factor would have budgeted: refused, for 16 GB that do not exist.
+        (transformer_gb * 0.55 + te_gb + vae_gb, True),
+        (sum(fam.bf16_components_gb), True),
+    ):
+        plan = plan_diffusion_memory(
+            target = device,
+            device_memory = memory,
+            model_dense_mib = int(gb * mib_per_gb),
+            runtime_headroom_mib = headroom,
+        )
+        assert (
+            unified_memory_shortfall_message(plan, family = fam.name) is not None
+        ) is refused, gb
