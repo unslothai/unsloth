@@ -873,7 +873,9 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
         "apply_speed_optims",
         lambda pipe, target, **k: {"compiled": k.get("speed_mode") == "default"},
     )
-    monkeypatch.setattr(dmod, "apply_attention_backend", lambda pipe, backend, logger = None: backend)
+    monkeypatch.setattr(
+        dmod, "apply_attention_backend", lambda pipe, backend, logger = None, target = None: backend
+    )
     monkeypatch.setattr(
         dmod,
         "select_attention_backend",
@@ -1001,7 +1003,9 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
         "apply_speed_optims",
         lambda pipe, target, **k: {"compiled": k.get("speed_mode") == "default"},
     )
-    monkeypatch.setattr(dmod, "apply_attention_backend", lambda pipe, backend, logger = None: backend)
+    monkeypatch.setattr(
+        dmod, "apply_attention_backend", lambda pipe, backend, logger = None, target = None: backend
+    )
 
     # A select mock that HONORS an explicit request: only an unset request upgrades to cuDNN.
     def fake_select(
@@ -6789,3 +6793,584 @@ def test_download_plan_skips_nothing_when_the_hub_reports_no_commit(monkeypatch)
         "unsloth/FLUX.1-dev-GGUF",
         "unsloth/FLUX.1-dev",
     }
+
+
+# ── the variant hint feeding the runtime-headroom estimate ────────────────────
+
+
+def test_variant_hint_carries_both_the_repo_id_and_the_base():
+    # `repo_id or base` dropped the base whenever a repo id existed, which is every GGUF load, and
+    # the base is exactly where the distilled marker lives: unsloth/Z-Image-GGUF says nothing while
+    # Tongyi-MAI/Z-Image-Turbo says turbo, so the 0.85 discount never fired for these models.
+    from core.inference.diffusion import _image_variant_hint
+    from core.inference.diffusion_memory import estimate_image_runtime_mib
+
+    hint = _image_variant_hint(
+        "z-image", "Z-Image-Q4_K_S.gguf", "unsloth/Z-Image-GGUF", "Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert "unsloth/Z-Image-GGUF" in hint and "Tongyi-MAI/Z-Image-Turbo" in hint
+    # Worth ~1.2 GB of headroom on a card where 1.2 GB decides the offload tier.
+    assert estimate_image_runtime_mib(width = None, height = None, family = hint) == 6963
+    assert estimate_image_runtime_mib(width = None, height = None, family = "") == 8192
+
+
+def test_variant_hint_is_deduplicated_and_order_stable():
+    # A pipeline load passes the same id as both repo and base; the hint must not repeat it, and
+    # the order must be a pure function of the load so two identical loads plan identically.
+    from core.inference.diffusion import _image_variant_hint
+
+    assert (
+        _image_variant_hint("z-image", None, "Tongyi-MAI/Z-Image-Turbo", "Tongyi-MAI/Z-Image-Turbo")
+        == "z-image Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert _image_variant_hint("z-image", "  ", None, None) == "z-image"
+    assert _image_variant_hint(None, None, None, None) == ""
+
+
+# ── the text-encoder share of the companion total ─────────────────────────────
+
+
+def _base_snapshot_with_sizes(tmp_path, monkeypatch, sizes):
+    """A base repo cached only under the other cache root, with the given ``{relative path: MiB}``."""
+    _live, other = _split_cache_roots(tmp_path, monkeypatch)
+    snapshot = other / "models--bfl--base" / "snapshots" / ("a" * 40)
+    for rel, mib in sizes.items():
+        path = snapshot / rel
+        path.parent.mkdir(parents = True, exist_ok = True)
+        with open(path, "wb") as fh:
+            fh.truncate(mib * 1024 * 1024)
+    return snapshot
+
+
+def test_text_encoder_cache_bytes_is_a_subset_of_the_companion_total(tmp_path, monkeypatch):
+    # The planner SUBTRACTS this from the companion total, so it has to come off the same walk:
+    # a second, independent derivation could see a file the companion walk did not and drive the
+    # difference negative.
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/model.safetensors": 150,
+            "text_encoder_2/model.safetensors": 90,
+            "vae/diffusion_pytorch_model.safetensors": 50,
+            # Never a companion on a GGUF load: the single file supplies the transformer.
+            "transformer/diffusion_pytorch_model.safetensors": 4096,
+        },
+    )
+    sizes = DiffusionBackend._local_dir_text_encoder_sizes(snapshot)
+    # Both encoder folders, and nothing else.
+    assert sorted(sizes) == ["text_encoder/model.safetensors", "text_encoder_2/model.safetensors"]
+    assert DiffusionBackend._text_encoder_cache_bytes(str(snapshot)) == 240 * 1024 * 1024
+    assert DiffusionBackend._companion_cache_bytes(str(snapshot)) == 290 * 1024 * 1024
+
+
+def test_plan_memory_hands_the_planner_the_text_encoder_split(monkeypatch, tmp_path):
+    # 150 MiB of encoders inside a 200 MiB companion total, so the streamed-encoder floor is the
+    # VAE (50) + headroom (100) + overhead (2048).
+    from core.inference.diffusion_memory import OFFLOAD_GROUP
+
+    snapshot = _other_root_base_snapshot(tmp_path, monkeypatch)
+    target = _small_card(monkeypatch)
+
+    plan = DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "flux.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 300,
+        base_local_dir = str(snapshot),
+    )
+    assert plan.estimates["companion_dense_mib"] == 200
+    assert plan.estimates["text_encoder_dense_mib"] == 150
+    assert plan.estimates["group_floor_streamed_te_mib"] == 2198
+    # The companions fit as they are, so the cheaper tier still wins and nothing streams.
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_text_encoders is False
+
+
+def test_plan_memory_streams_the_text_encoders_instead_of_offloading_everything(
+    monkeypatch, tmp_path
+):
+    # 8081's shape at this fixture's scale: a text encoder that alone busts the group floor. Before
+    # the split that meant whole-module offload of every component, measured at 48m25s for a
+    # 20-step 1024x1024 image; the VAE-only floor of 2198 fits the 2952 MiB budget.
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/model.safetensors": 2800,
+            "vae/diffusion_pytorch_model.safetensors": 50,
+        },
+    )
+    target = _small_card(monkeypatch)
+    from core.inference.diffusion_memory import OFFLOAD_GROUP
+
+    def _plan(**kw):
+        return DiffusionBackend()._plan_memory(
+            target,
+            None,
+            "bfl/base",
+            types.SimpleNamespace(name = "flux.1"),
+            None,
+            False,
+            kind = "gguf",
+            transformer_resident_override_mib = 300,
+            base_local_dir = str(snapshot),
+            **kw,
+        )
+
+    plan = _plan()
+    # group floor 2850 + 100 + 2048 = 4998, over the 2952 budget: this is the whole-module case.
+    assert plan.estimates["group_floor_mib"] == 4998
+    assert plan.estimates["group_floor_streamed_te_mib"] == 2198
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_text_encoders is True
+
+
+def test_plan_memory_keeps_the_split_on_the_dense_candidate_path(monkeypatch, tmp_path):
+    # The reported plan came from the dense int8 candidate replan, which overrides the companion
+    # total from the family component table. Without the matching text-encoder override that path
+    # keeps landing on whole-module offload however good the cache-walk split is.
+    from core.inference.diffusion_memory import OFFLOAD_GROUP
+
+    _base_snapshot_with_sizes(tmp_path, monkeypatch, {})
+    target = _small_card(monkeypatch)
+
+    plan = DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "flux.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 300,
+        companion_override_mib = 2850,
+        text_encoder_override_mib = 2800,
+    )
+    assert plan.estimates["text_encoder_dense_mib"] == 2800
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_text_encoders is True
+
+
+def test_dense_quant_estimate_carries_the_text_encoder_share():
+    # The override above is only as good as the table it comes from: companions minus text encoders
+    # has to be the VAE and nothing else, or the streamed floor is wrong on every dense candidate.
+    from core.inference.diffusion_auto_policy import estimate_dense_quant
+
+    estimate = estimate_dense_quant(types.SimpleNamespace(name = "z-image"), "int8")
+    # The reported numbers: transformer 6451 int8, companions 7820, of which 7629 is the encoders.
+    assert estimate.steady_transformer_mib == 6451
+    assert estimate.companions_mib == 7820
+    assert estimate.text_encoders_mib == 7629
+    assert estimate.companions_mib - estimate.text_encoders_mib == 191  # the VAE
+
+
+# ── generate(): the resolution-aware re-check ─────────────────────────────────
+# The load-time plan budgets the 1024x1024 default because load time cannot know the request. At
+# 1088x1920 the pass needs ~2x that, and on Windows WDDM the overrun does not raise: the driver
+# serves it from system RAM, so ~27 GB lands on a 16 GB card with no exception and the desktop
+# stops responding. generate() re-checks with the real dimensions before it samples.
+
+# The reported card: free 15,870 of 16,305 MiB, so the safe budget is 13,822 MiB.
+_ROCM_16G = (15_870, 16_305)
+
+
+def _loaded_backend_on_a_16g_card(
+    tmp_path,
+    monkeypatch,
+    *,
+    base_repo = "base/repo",
+):
+    """A loaded GGUF pipeline, then a 16 GB discrete-CUDA memory snapshot. Patched AFTER the load
+    so the load itself still plans against the fixture's CPU target and is unaffected."""
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_memory import DeviceMemory
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = base_repo,
+        family_override = "z-image",
+    )
+    free, total = _ROCM_16G
+    snapshot = lambda target, **kw: DeviceMemory("cuda", "cuda", "discrete_vram", free, total)
+    monkeypatch.setattr(dmod, "settled_snapshot_device_memory", snapshot)
+    # The generate-time guard reads the RECLAIMABLE snapshot (no empty_cache on a per-image path),
+    # so pin that one too or it falls through to the host's real card.
+    monkeypatch.setattr(dmod, "reclaimable_snapshot_device_memory", snapshot)
+    return backend
+
+
+def test_generate_refuses_a_resolution_whose_activations_cannot_fit(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError) as excinfo:
+        backend.generate(prompt = "a sloth", width = 1088, height = 1920, steps = 4)
+    message = str(excinfo.value)
+    # ValueError, so /images/generate answers 400 with this text rather than a 500 or, worse,
+    # nothing at all while the machine swaps itself to death.
+    assert "1088x1920" in message
+    assert "smaller resolution" in message
+    assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE" in message
+
+    # The same model on the same card at the default resolution is untouched.
+    assert len(backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 4)["images"]) == 1
+
+
+def test_generate_guard_measures_the_input_image_not_the_sliders(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # img2img / inpaint / upscale / edit take their OUTPUT size from the uploaded image, so reading
+    # the width/height kwargs would check a frame this call never renders. A 2048x2048 upload with
+    # the sliders left at 1024 is four times the planned area.
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match = "2048x2048"):
+        backend.generate(
+            prompt = "a sloth",
+            width = 1024,
+            height = 1024,
+            steps = 4,
+            init_image = _png_b64(2048),
+        )
+
+
+def test_generate_guard_uses_the_hint_the_load_planned_with(fake_runtime, tmp_path, monkeypatch):
+    # The distilled discount has to apply at generate time too, or a turbo model is budgeted 18%
+    # high and refused where it would have run. Same hint, stored on the load state.
+    backend = _loaded_backend_on_a_16g_card(
+        tmp_path, monkeypatch, base_repo = "Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert "Tongyi-MAI/Z-Image-Turbo" in backend._state.variant_hint
+
+    # 1280x1280 is 1.5625x the default: 12,800 MiB of activations undiscounted, which with the
+    # 2048 MiB base overhead is 14,848 against a 13,822 MiB budget and would be refused. With the
+    # distilled discount the same request is 10,880 + 2048 = 12,928 and goes straight through.
+    assert len(backend.generate(prompt = "a sloth", width = 1280, height = 1280, steps = 4)["images"]) == 1
+    # The reported 1088x1920 needs 13,872 MiB even discounted, so it is still refused.
+    with pytest.raises(ValueError, match = "1088x1920"):
+        backend.generate(prompt = "a sloth", width = 1088, height = 1920, steps = 4)
+
+
+def test_generate_guard_fails_open_when_the_probe_raises(fake_runtime, tmp_path, monkeypatch):
+    # A broken memory probe must never cost a user a generation that would have worked.
+    from core.inference import diffusion as dmod
+
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+
+    def _boom(target, **kw):
+        raise RuntimeError("mem_get_info exploded")
+
+    monkeypatch.setattr(dmod, "reclaimable_snapshot_device_memory", _boom)
+    assert len(backend.generate(prompt = "a sloth", width = 1088, height = 1920, steps = 4)["images"]) == 1
+
+
+def test_generate_guard_env_override(fake_runtime, tmp_path, monkeypatch):
+    from core.inference.diffusion_memory import OVERSIZED_GENERATE_ENV
+
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+    monkeypatch.setenv(OVERSIZED_GENERATE_ENV, "1")
+    assert len(backend.generate(prompt = "a sloth", width = 1088, height = 1920, steps = 4)["images"]) == 1
+
+
+def test_generate_guard_leaves_a_large_batch_to_the_oom_backoff(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The chunk loop halves a failed multi-image forward down to singletons, so budgeting the whole
+    # chunk here would refuse batches that complete today (the measured batch-32 fast path). The
+    # guard budgets one image, the case no backoff can rescue.
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+    out = backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 4, batch_size = 8)
+    assert len(out["images"]) == 8
+
+
+def test_dense_quant_candidate_replan_prices_the_streamed_encoder_tier(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # 8081's reported plan came from THIS path, not the cache walk: transformer 6451 at int8 and
+    # companions 7820 are the family component table's numbers, supplied as overrides. The
+    # text-encoder share has to be threaded through the same override or the streamed-encoder tier
+    # is unreachable on exactly the path that produced the 48-minute load.
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            transient_transformer_mib = 6_451,
+            companions_mib = 7_820,
+            text_encoders_mib = 7_629,
+            prequant = True,
+        ),
+    )
+    seen = []
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            # Initial GGUF plan: force offload so the candidate replan branch is entered.
+            return dataclasses.replace(real, offload_policy = "model")
+        seen.append(k.get("text_encoder_override_mib"))
+        return dataclasses.replace(real, offload_policy = "model")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_load_dense_quant_pipeline",
+        lambda self, *a, **k: (_ for _ in ()).throw(
+            RuntimeError("test: stop after reaching the fast path")
+        ),
+    )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    # The spy forces offload on every replan, so the EXPLICIT int8 ends in the strict-precision
+    # refusal. Immaterial here: the replan calls this asserts on all happen before it.
+    with pytest.raises(RuntimeError, match = "transformer_quant='int8'"):
+        backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            transformer_quant = "int8",
+        )
+    assert seen and all(value == 7_629 for value in seen)
+
+
+def test_the_activation_guard_budgets_the_real_batch_on_windows(monkeypatch):
+    """The singleton floor rests on the OOM backoff halving a failed forward, and under WDDM
+    there is no OOM to catch: the driver serves the overflow from system RAM, the desktop stops
+    responding and nothing recovers it. So Windows budgets the largest chunk it will actually
+    run, while every other platform keeps the batch-32 fast path it measures today."""
+    from core.inference import diffusion as dmod
+
+    chunks = [[object()] * 8, [object()] * 3]
+    monkeypatch.setattr(dmod.sys, "platform", "linux")
+    assert dmod._activation_guard_batch(chunks) == 1
+    assert dmod._activation_guard_batch([]) == 1
+    monkeypatch.setattr(dmod.sys, "platform", "win32")
+    assert dmod._activation_guard_batch(chunks) == 8
+    assert dmod._activation_guard_batch([[object()]]) == 1
+    # An empty job list is still a valid batch of one, never a zero passed to the estimator.
+    assert dmod._activation_guard_batch([]) == 1
+
+
+# ── generate cancellation (issue #8187) ──────────────────────────────────────
+#
+# The denoise loop already honoured the per-generation cancel event, but only unload() and a
+# superseding load could set it, so there was no way for a user to stop a run. These cover the
+# public cancel_generate() across EVERY image workflow, since all five UI surfaces (Create,
+# Transform, Inpaint, Extend, Upscale) funnel through the same generate() and would otherwise
+# be assumed to work from a Create-only test.
+
+
+def _stepping_call(record):
+    """A pipeline __call__ that actually steps, so a cancel can be observed mid-denoise.
+
+    The fake pipes return immediately, which cannot distinguish "the sampler stopped" from
+    "the sampler finished". This mirrors diffusers: invoke callback_on_step_end each step and
+    break out when the callback sets ``_interrupt``, exactly as the real denoise loop does."""
+
+    def _call(
+        self,
+        *,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        record["steps_run"] = 0
+        self._interrupt = False
+        for index in range(record["total_steps"]):
+            if callback_on_step_end is not None:
+                callback_on_step_end(self, index, index, {})
+            record["steps_run"] = index + 1
+            record["reached"].set()
+            if getattr(self, "_interrupt", False):
+                break
+            record["resume"].wait(5)
+        n = kwargs.get("num_images_per_prompt", 1)
+        return types.SimpleNamespace(images = [_FakeImage() for _ in range(n)])
+
+    return _call
+
+
+@pytest.mark.parametrize(
+    "surface,gen_kwargs",
+    [
+        ("create", {}),
+        ("transform", {"init_image": _tiny_png_b64(), "strength": 0.5}),
+        # Extend is the Images page's outpaint tab: it pads the canvas client-side and sends the
+        # result down the SAME inpaint path, so inpaint covers both surfaces.
+        ("inpaint", {"init_image": _tiny_png_b64(), "mask_image": _mask_b64(64)}),
+        ("extend", {"init_image": _tiny_png_b64(), "mask_image": _mask_b64(64)}),
+        ("upscale", {"init_image": _tiny_png_b64(), "upscale": 2.0}),
+    ],
+)
+def test_cancel_generate_stops_every_workflow(
+    fake_runtime, tmp_path, monkeypatch, surface, gen_kwargs
+):
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+
+    record = {
+        "total_steps": 8,
+        "steps_run": 0,
+        "reached": threading.Event(),
+        "resume": threading.Event(),
+    }
+    stepping = _stepping_call(record)
+    for cls in (_FakePipe, _FakeImg2ImgPipe, _FakeInpaintPipe):
+        monkeypatch.setattr(cls, "__call__", stepping)
+
+    # Nothing in flight yet, so there is nothing to stop.
+    assert backend.cancel_generate() is False
+
+    outcome: dict = {}
+
+    def _run():
+        try:
+            outcome["result"] = backend.generate(
+                prompt = "a sloth", steps = record["total_steps"], **gen_kwargs
+            )
+        except BaseException as exc:  # noqa: BLE001 -- the test asserts on the exact type/text
+            outcome["error"] = exc
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    assert record["reached"].wait(5), f"{surface}: the denoise never started"
+
+    assert backend.cancel_generate() is True
+    record["resume"].set()
+    worker.join(10)
+    assert not worker.is_alive(), f"{surface}: the denoise did not unwind"
+
+    # The sampler stopped rather than ran to completion, and nothing was returned to persist.
+    assert "result" not in outcome, f"{surface}: a cancelled run still produced images"
+    assert isinstance(outcome["error"], RuntimeError)
+    assert str(outcome["error"]) == DIFFUSION_CANCELLED_MSG
+    assert record["steps_run"] < record["total_steps"], (
+        f"{surface}: ran {record['steps_run']}/{record['total_steps']} steps, so the cancel "
+        "never reached the sampler"
+    )
+    # The progress state is cleared on every exit, so the page does not stay stuck at "generating".
+    assert backend.generate_progress()["active"] is False
+    # Deregistered, so a second cancel does not poke a finished generation.
+    assert backend.cancel_generate() is False
+
+
+def test_cancel_generate_lands_at_the_next_step_boundary(fake_runtime, tmp_path, monkeypatch):
+    # The contract is best-effort at the NEXT step boundary, the same one the video backend
+    # documents. Pin it: a cancel raised during step 1 must not let step 3 run.
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+
+    seen: list[int] = []
+
+    def _call(
+        self,
+        *,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        self._interrupt = False
+        for index in range(20):
+            if callback_on_step_end is not None:
+                callback_on_step_end(self, index, index, {})
+            seen.append(index)
+            if getattr(self, "_interrupt", False):
+                break
+            if index == 1:
+                backend.cancel_generate()
+        return types.SimpleNamespace(images = [_FakeImage()])
+
+    monkeypatch.setattr(_FakePipe, "__call__", _call)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "x", steps = 20)
+    # Cancelled during step index 1: index 2 is the step whose callback observes it, and nothing runs after.
+    assert seen == [0, 1, 2]
+
+
+def test_cancel_generate_during_the_post_denoise_save_still_cancels(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The cancel event stays registered through the compile-cache save, and progress still reads
+    # active, so the page still shows Stop. Before the final recheck, a Stop landing there was
+    # answered cancelled = true and then contradicted: generate() returned the images and the
+    # route persisted them. The two answers have to agree, so the run unwinds as cancelled.
+    from core.inference import diffusion_compile_cache as compile_cache
+
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+
+    def _save(ctx, logger = None):
+        # Stop pressed while the bundle is being written: the route's cancel reaches the SAME
+        # event, and it must still be registered here or the button would have reported False.
+        assert backend.cancel_generate() is True
+
+    monkeypatch.setattr(compile_cache, "save", _save)
+
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.generate(prompt = "x", steps = 2)
+
+
+def test_a_completed_generation_stops_advertising_itself_as_cancellable(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The final check and the deregistration are one critical section under the same lock
+    # cancel_generate takes, so there is no sliver between "the result is committed" and "the
+    # event is gone" in which Stop could answer true for a generation that then returns images.
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+
+    from core.inference import diffusion as diffusion_module
+
+    seen: list[bool] = []
+    real_baked = diffusion_module._baked_lora_names
+
+    def _baked(pipe):
+        # Runs after the final check, while the old code still had the event registered.
+        seen.append(backend.cancel_generate())
+        return real_baked(pipe)
+
+    monkeypatch.setattr(diffusion_module, "_baked_lora_names", _baked)
+
+    out = backend.generate(prompt = "x", steps = 2)
+    assert out["images"]
+    assert seen == [False]
+
+
+def test_cancel_generate_is_a_no_op_without_a_load(fake_runtime):
+    # The route calls this unconditionally, so an idle backend must answer False, not raise.
+    assert DiffusionBackend().cancel_generate() is False

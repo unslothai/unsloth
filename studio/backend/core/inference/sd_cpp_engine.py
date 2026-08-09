@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
-from utils.process_lifetime import child_popen_kwargs
+from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 from utils.native_path_leases import child_env_without_native_path_secret
 from core.inference.sd_cpp_args import (
     SdCppGenParams,
@@ -535,6 +535,9 @@ class SdCppEngine:
             # Bind the child to the parent's lifetime (PR_SET_PDEATHSIG) so a parent crash cannot orphan sd-cli holding VRAM/RAM.
             **child_popen_kwargs(),
         )
+        # The kwargs above are empty on macOS, so record it too: a crash mid-generation
+        # would otherwise leave sd-cli holding VRAM with nothing able to find it.
+        adopt_pid(proc.pid)
         # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT printing (a plain `for line in proc.stdout` blocks until EOF). Lines, then a None sentinel, go to a queue the main loop polls against a wall-clock deadline.
         # iter_sd_cpp_records also splits sd-cli's in-place progress redraws, which carry no newline of their own, so sampling progress reaches on_log while sampling is still running.
         tail: list[str] = []
@@ -582,6 +585,10 @@ class SdCppEngine:
         finally:
             if proc.poll() is None:
                 _terminate(proc)
+            # Only once it has actually exited: a pid still running has to stay
+            # recorded, or the next startup has no handle on it.
+            if proc.poll() is not None:
+                forget_pid(proc.pid)
 
         if ret != 0:
             raise RuntimeError(f"sd-cli exited {ret}. Last output:\n" + "\n".join(tail[-12:]))

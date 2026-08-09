@@ -1268,8 +1268,17 @@ class SdCppDiffusionBackend:
                         lora_resolved = lora_resolved,
                         cancel = cancel,
                     )
-                if cancel.is_set():
-                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                # Check and deregister under _lock, the lock cancel_generate takes, so the two
+                # cannot interleave: a cancel that saw this event registered ran strictly before
+                # the check and the run unwinds as cancelled, and one arriving after finds nothing
+                # to set and answers false. Same critical section as DiffusionBackend.generate;
+                # /images/generate/cancel resolves through the engine router, so a native host has
+                # to give the same answer. The finally repeats the clear for every other exit.
+                with self._lock:
+                    if cancel.is_set():
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                    if self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
                 # ``seeds`` is the per-image seed (image i used seed+i) for the route to persist.
                 return {
                     "images": images,
@@ -1584,6 +1593,19 @@ class SdCppDiffusionBackend:
             "fraction": min(gen.step / gen.total_steps, 1.0),
             "eta_seconds": gen.eta_seconds,
         }
+
+    def cancel_generate(self) -> bool:
+        """Signal the in-flight generation to stop, matching DiffusionBackend.cancel_generate.
+
+        The native engine is stricter than best-effort: the runner polls this event and kills
+        the sd-cli process tree, so the stop lands within the poll interval rather than at the
+        next step boundary. Returns False when nothing is running."""
+        with self._lock:
+            cancel = self._active_generate_cancel
+            if cancel is None:
+                return False
+            cancel.set()
+            return True
 
     # ── Unload / status ──────────────────────────────────────────────────────
 

@@ -120,6 +120,12 @@ class _Run:
         )
 
 
+@pytest.fixture(autouse = True)
+def _healthy_diffusers(healthy_diffusers):
+    """The resume route runs the same preflight as start, which asserts the family's pipeline
+    class strictly; these tests are about resume, not about the runner's diffusers."""
+
+
 @pytest.fixture
 def run_dir(tmp_path, monkeypatch):
     """A run output directory inside the (per-test) Studio outputs root, since the resume

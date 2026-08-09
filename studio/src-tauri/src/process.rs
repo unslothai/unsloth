@@ -1109,6 +1109,20 @@ pub fn start_backend(
     #[cfg(windows)]
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
+    // A backend started while the job is disarmed is the orphan this guards
+    // against. The UI gate is per update action, and a webview remount starts
+    // one on its own, so the check belongs on the path that actually spawns.
+    #[cfg(windows)]
+    if !crate::windows_job::kill_on_close_armed().unwrap_or(false) {
+        crate::windows_job::resume_after_update_installer().map_err(|error| {
+            format!("Refusing to start the backend with crash cleanup disarmed: {error}")
+        })?;
+        // The same pair the UI's resume does: the pre-exit hook has already run
+        // its cleanup, and leaving that guard set means the next attempt's hook
+        // suspends kill-on-close without stopping this backend first.
+        crate::reset_termination_cleanup();
+    }
+
     let bin = match resolve_backend_binary() {
         Ok(bin) => bin,
         Err(msg) => {
