@@ -1326,6 +1326,87 @@ def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, mo
     assert "nvfp4" in resp.json()["detail"]
 
 
+def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypatch):
+    # One of the quant-keyed refusals is task-keyed: the hosted pre-quantized H3 checkpoints are
+    # fl2va denoisers, so a quantized ref2va would seed the wrong partition. Validation only sees
+    # that when the route forwards h3_task, and this is the route that stages the download -- so
+    # without it the plan pulls the 66 GB dense transformer_ref/ AND the incompatible fl2va quant
+    # before /video/load rejects the identical request.
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(
+        backend,
+        "validate_load_request",
+        video_module.VideoBackend.validate_load_request.__get__(backend),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be reached")),
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "MiniMaxAI/MiniMax-H3",
+            "model_kind": "pipeline",
+            "transformer_quant": "fp8",
+            "h3_task": "ref2va",
+        },
+    )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "fp8" in detail
+    # Naming the way out, not just the dead end.
+    assert "keyframe" in detail
+
+
+def test_video_download_plan_hands_the_h3_task_to_validation(client, monkeypatch):
+    # The other side of the same gate. The refusal above would still pass if a refactor dropped
+    # the forwarding and something else happened to reject that pick, so assert the forwarding
+    # itself -- and that fl2va, which is exactly what the hosted checkpoints are, still plans.
+    #
+    # Validation is stubbed rather than real here because its later transformer_class probe
+    # imports the family's diffusers module, which is an environment question and not this
+    # test's; the negative case above exercises the real validator, since the ref2va refusal
+    # fires before that probe.
+    backend = video_module.get_video_backend()
+    fam = video_module._detect_load_family("MiniMaxAI/MiniMax-H3", None, None)
+    assert fam is not None
+    seen: dict = {}
+
+    def _validate(model_path, **kwargs):
+        seen["validate"] = kwargs
+        return fam
+
+    def _plan(model_path, **kwargs):
+        seen["plan"] = kwargs
+        return {"files": [], "total_bytes": 0, "cached_bytes": 0}
+
+    monkeypatch.setattr(backend, "validate_load_request", _validate, raising = False)
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda *a, **k: None, raising = False
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "MiniMaxAI/MiniMax-H3",
+            "model_kind": "pipeline",
+            "transformer_quant": "fp8",
+            "h3_task": "fl2va",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert seen["validate"]["h3_task"] == "fl2va"
+    assert seen["validate"]["transformer_quant"] == "fp8"
+    assert seen["plan"]["h3_task"] == "fl2va"
+
+
 def test_the_training_guard_runs_before_the_precision_probe(client, monkeypatch):
     # The precision gate's support check quantises a real Linear on the GPU and synchronises, so
     # running it first initialises a CUDA context and allocates next to the training subprocess
