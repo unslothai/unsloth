@@ -967,6 +967,22 @@ def _stream_te_kwargs(monkeypatch, **call_kw):
     return seen
 
 
+def test_the_split_leaves_the_weights_only_estimate_terms_untouched():
+    # The unified-memory load refusal sizes a load from `model_dense_mib + base_overhead_mib`
+    # against `safe_device_budget_mib`, and deliberately excludes the soft runtime headroom. The
+    # text-encoder split adds a NEW term and a new floor; it must not move any of those three, or
+    # a refusal calibrated against them would silently change meaning.
+    without = _zimage_plan(None).estimates
+    with_split = _zimage_plan(_ZIMAGE_TEXT_ENCODER_MIB).estimates
+    for key in ("safe_device_budget_mib", "model_dense_mib", "base_overhead_mib"):
+        assert without[key] == with_split[key], key
+    # The split itself is additive: it is visible, and the pre-existing floor is unchanged.
+    assert without["group_floor_mib"] == with_split["group_floor_mib"]
+    assert without["text_encoder_dense_mib"] is None
+    assert with_split["text_encoder_dense_mib"] == _ZIMAGE_TEXT_ENCODER_MIB
+    assert with_split["group_floor_streamed_te_mib"] < with_split["group_floor_mib"]
+
+
 def test_streaming_the_text_encoders_does_not_pin_host_memory(monkeypatch):
     # diffusers pins EVERY offloaded parameter in host RAM on the copy-stream path. That is a fair
     # trade when group offload was already the plan, but this tier is only ever a rescue FROM
