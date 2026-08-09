@@ -1389,5 +1389,23 @@ def test_an_exited_child_is_not_probed_again(monkeypatch):
     assert calls == []
 
 
+def test_adoption_installs_the_fork_reset(monkeypatch):
+    """The Linux spawn path is the only other place that registers it, so on
+    macOS nothing would have."""
+    from utils import process_lifetime as pl
+
+    monkeypatch.setattr(pl, "_fork_reset_installed", False)
+    registered = []
+    monkeypatch.setattr(os, "register_at_fork", lambda **kw: registered.append(kw))
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "started-at")
+    monkeypatch.setattr(pl, "_own_process_group", lambda pid: None)
+    monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
+    monkeypatch.setattr(pl, "_is_windows", lambda: False)
+
+    pl.adopt_pid(os.getpid())
+    assert registered and registered[0]["after_in_child"] is pl._reset_after_fork
+    pl.forget_pid(os.getpid())
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

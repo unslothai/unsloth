@@ -777,6 +777,10 @@ def adopt_pid(pid: Optional[int]) -> None:
     Tolerates a None or already-exited pid."""
     if not pid:
         return
+    # Here as well as in the Linux spawn path: this is the first thing that
+    # writes a record, and without the handler a fork child keeps this
+    # process's children and later claims them as its own.
+    _adopt_fork_reset()
     identity = _identity_for_record(pid)
     pgid = _own_process_group(pid)
     with _record_lock:
