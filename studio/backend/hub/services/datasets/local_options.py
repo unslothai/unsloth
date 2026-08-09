@@ -612,9 +612,11 @@ def _unreadable_metadata(snapshot: Path, name: str) -> bool:
     """Whether the file is there but _snapshot_metadata_file refused it, for being too big
     or for pointing out of the cache. The loader still reads it, so we cannot ignore it.
     An empty file is refused too, but it declares nothing and so blocks nothing."""
-    return _metadata_present(snapshot, name) and _snapshot_metadata_file(
-        snapshot, name
-    ) is None and _nonempty(snapshot, name)
+    return (
+        _metadata_present(snapshot, name)
+        and _snapshot_metadata_file(snapshot, name) is None
+        and _nonempty(snapshot, name)
+    )
 
 
 def _declares_configs(snapshot: Path, name: str) -> bool:
@@ -679,10 +681,7 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             # dataset_info carrying only a feature schema names no config, so datasets
             # still resolves the files by pattern and inference has to run.
             declared = (
-                declared
-                or len(options) > named
-                or _malformed_info(info)
-                or _declares_splits(info)
+                declared or len(options) > named or _malformed_info(info) or _declares_splits(info)
             )
 
     for filename in ("dataset_infos.json", "dataset_info.json"):
