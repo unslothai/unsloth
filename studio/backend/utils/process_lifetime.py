@@ -910,13 +910,25 @@ def terminate_pid(pid: "Optional[int]", timeout: float = 5.0) -> None:
     """
     if not pid:
         return
+    with _record_lock:
+        pgid = _tracked_pgids.get(pid)
+    tree_stands = False
     try:
         if _is_windows():
-            _windows_terminate_tree(pid)
+            # False is "only the leader was signalled": nothing else names those
+            # workers, so the record has to outlive this call.
+            tree_stands = not _windows_terminate_tree(pid)
         else:
             _posix_terminate(pid, timeout)
+            # A leader that exited first takes getpgid with it, so _posix_terminate
+            # signals the dead pid alone; the recorded group is the only handle
+            # left on the session it started.
+            if _group_has_members(pgid):
+                _reap_orphaned_group(pgid, pid, timeout)
     except Exception:  # noqa: BLE001 - best effort, like the rest of this
         pass
+    if tree_stands:
+        return
     forget_pid(pid)  # keeps the record if its group is still up
 
 

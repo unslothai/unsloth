@@ -286,6 +286,34 @@ def rocm_install_args(asset: Optional[str]) -> list[str]:
     return ["--has-rocm"]
 
 
+class AnnouncedChildren:
+    """The pids the installer reported started, drained one at a time.
+
+    Two threads drain it: the timeout watchdog, and the reader thread in its
+    `finally` (``Timer.cancel()`` does not stop a callback that has already
+    begun). A bare ``while pids: pids.pop()`` raises KeyError out of the loser
+    of that race, replacing the installer error the caller is meant to see, so
+    emptiness and the take are decided together.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pids: set[int] = set()
+
+    def add(self, pid: int) -> None:
+        with self._lock:
+            self._pids.add(pid)
+
+    def discard(self, pid: int) -> None:
+        with self._lock:
+            self._pids.discard(pid)
+
+    def take(self) -> Optional[int]:
+        """One pid, or None once there are none left."""
+        with self._lock:
+            return self._pids.pop() if self._pids else None
+
+
 def stream_installer(
     cmd: list[str],
     env: dict[str, str],
@@ -325,15 +353,18 @@ def stream_installer(
     adopt_pid(proc.pid)
     timed_out = threading.Event()
 
-    announced: set[int] = set()
+    announced = AnnouncedChildren()
 
     def _stop_announced() -> None:
         # This process keeps running after an installer error, so no startup
         # sweep is coming and its own record shields these from one anyway: a
         # validation server left here holds the GPU and the staged files
         # through the retry that follows.
-        while announced:
-            terminate_pid(announced.pop())
+        while True:
+            pid = announced.take()
+            if pid is None:
+                return
+            terminate_pid(pid)
 
     def _kill_on_timeout() -> None:
         timed_out.set()

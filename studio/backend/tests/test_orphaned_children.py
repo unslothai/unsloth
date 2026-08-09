@@ -2160,5 +2160,189 @@ def test_a_server_the_installer_reported_stopped_is_not_killed_twice(monkeypatch
     assert terminated == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "posix process groups")
+def test_terminate_pid_takes_the_group_once_its_leader_has_gone(tmp_path, monkeypatch):
+    """The installer announces a server that has already exited while a child of
+    its own still holds the GPU. getpgid stops answering for the reaped leader,
+    so only the recorded group can still reach that child, and this backend
+    keeps running: no sweep is coming to catch it."""
+    from utils import process_lifetime as lifetime
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path))
+    leader = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys;"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']);",
+        ],
+        start_new_session = True,
+    )
+    survivor = None
+    try:
+        lifetime.adopt_pid(leader.pid)  # while it still leads a group we can read
+        assert lifetime._tracked_pgids.get(leader.pid) == leader.pid
+        leader.wait(timeout = 30)  # the leader goes and is reaped; its child stays
+        members = lifetime._group_member_pids(leader.pid) or []
+        survivor = next((pid for pid in members if pid != leader.pid), None)
+        assert survivor, members
+
+        lifetime.terminate_pid(leader.pid, timeout = 5.0)
+        for _ in range(100):
+            if not _alive(survivor):
+                break
+            time.sleep(0.05)
+        assert not _alive(survivor), "left a group member holding the GPU"
+    finally:
+        try:
+            os.killpg(leader.pid, signal.SIGKILL)
+        except Exception:
+            pass
+        if leader.poll() is None:
+            leader.kill()
+            leader.wait(timeout = 5)
+        with lifetime._record_lock:
+            lifetime._tracked_pids.clear()
+            lifetime._tracked_pgids.clear()
+
+
+def test_terminate_pid_keeps_a_record_taskkill_could_not_confirm(monkeypatch):
+    """Windows has no group to fall back on, so a tree kill that failed leaves
+    the record as the only thing naming those workers."""
+    from utils import process_lifetime as lifetime
+
+    monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
+    monkeypatch.setattr(lifetime, "_group_has_members", lambda pgid: False)
+    monkeypatch.setattr(lifetime, "_write_breadcrumb", lambda: None)
+
+    state = {"tree": False}
+    monkeypatch.setattr(lifetime, "_windows_terminate_tree", lambda pid: state["tree"])
+
+    def track():
+        with lifetime._record_lock:
+            lifetime._tracked_pids.clear()
+            lifetime._tracked_pgids.clear()
+            lifetime._tracked_pids[999_301] = "1"
+
+    try:
+        track()
+        lifetime.terminate_pid(999_301, timeout = 1.0)
+        assert 999_301 in lifetime._tracked_pids, "dropped the only handle on a live tree"
+
+        state["tree"] = True  # and a confirmed kill still consumes the record
+        track()
+        lifetime.terminate_pid(999_301, timeout = 1.0)
+        assert 999_301 not in lifetime._tracked_pids
+    finally:
+        with lifetime._record_lock:
+            lifetime._tracked_pids.clear()
+            lifetime._tracked_pgids.clear()
+
+
+def test_announced_children_survive_two_threads_draining_at_once():
+    """The watchdog and the reader thread both drain this set, and cancelling a
+    timer does not stop a callback that already began. A bare
+    `while announced: announced.pop()` raises KeyError out of whichever thread
+    loses that race, replacing the installer error the caller should see."""
+    import inspect
+
+    from utils.prebuilt import update_flow
+
+    announced = update_flow.AnnouncedChildren()
+    assert announced.take() is None, "an empty drain must end the loop, not raise"
+
+    pids = list(range(9000, 9500))
+    for pid in pids:
+        announced.add(pid)
+
+    taken: list[int] = []
+    failures: list[BaseException] = []
+    guard = threading.Lock()
+    start = threading.Barrier(4)
+
+    def drain():
+        try:
+            start.wait(timeout = 10)
+            while True:
+                pid = announced.take()
+                if pid is None:
+                    return
+                with guard:
+                    taken.append(pid)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            failures.append(exc)
+
+    threads = [threading.Thread(target = drain) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 30)
+
+    assert not failures, failures
+    assert sorted(taken) == pids, "a pid was taken twice or lost"
+
+    # And the installer stream drains through it rather than a bare set.
+    source = inspect.getsource(update_flow.stream_installer)
+    assert "AnnouncedChildren()" in source
+    assert "announced.take()" in source
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PR_SET_PDEATHSIG")
+def test_a_validation_server_dies_with_a_killed_installer(tmp_path):
+    """The server runs in a session of its own, which takes it out of the group
+    the desktop stop path kills, so it arms the parent-death signal instead: a
+    SIGKILL mid-validation must not leave it holding the GPU and the staged
+    files until some later startup sweeps the breadcrumb."""
+    studio_dir = Path(__file__).resolve().parents[2]
+    script = tmp_path / "spawn_validation_server.py"
+    script.write_text(
+        "import importlib.util, os, subprocess, sys, time\n"
+        "studio = sys.argv[1]\n"
+        "sys.path.insert(0, studio)\n"
+        "spec = importlib.util.spec_from_file_location(\n"
+        "    'installer_under_test', os.path.join(studio, 'install_llama_prebuilt.py')\n"
+        ")\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['installer_under_test'] = module\n"
+        "spec.loader.exec_module(module)\n"
+        "child = subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import time; time.sleep(120)'],\n"
+        "    **module._validation_server_kwargs(),\n"
+        ")\n"
+        "print(child.pid, flush = True)\n"
+        "time.sleep(120)\n",
+        encoding = "utf-8",
+    )
+
+    installer = subprocess.Popen(
+        [sys.executable, str(script), str(studio_dir)],
+        stdout = subprocess.PIPE,
+        text = True,
+    )
+    server_pid = None
+    try:
+        line = installer.stdout.readline().strip()
+        assert line.isdigit(), f"the installer never started a server: {line!r}"
+        server_pid = int(line)
+        assert _alive(server_pid)
+
+        installer.kill()  # the crash case: no cooperative shutdown runs
+        installer.wait(timeout = 10)
+        for _ in range(200):
+            if not _alive(server_pid):
+                break
+            time.sleep(0.05)
+        assert not _alive(server_pid), "outlived the installer that started it"
+    finally:
+        if installer.poll() is None:
+            installer.kill()
+            installer.wait(timeout = 5)
+        if server_pid is not None and _alive(server_pid):
+            try:
+                os.kill(server_pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

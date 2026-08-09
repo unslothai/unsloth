@@ -5271,10 +5271,7 @@ def validate_server(
                     stderr = subprocess.STDOUT,
                     text = True,
                     env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
-                    # Its own group, so whatever it starts is reachable through
-                    # the leader alone. Not shared with this script: Studio kills
-                    # the installer's group, and this server has to go with it.
-                    **({"start_new_session": True} if os.name == "posix" else {}),
+                    **_validation_server_kwargs(),
                     **windows_hidden_subprocess_kwargs(),
                 )
                 # For the caller that spawned this script: a validation server is
@@ -5352,6 +5349,43 @@ def validate_server(
     if last_failure is not None:
         raise last_failure
     raise PrebuiltFallback("llama-server validation failed unexpectedly")
+
+
+_PR_SET_PDEATHSIG = 1
+
+
+def _validation_server_kwargs() -> "dict[str, Any]":
+    """Popen kwargs tying a validation server to this installer's lifetime.
+
+    Its own group keeps whatever the server starts reachable through the leader
+    alone, but it also takes the server out of the group Studio force-kills, so
+    on Linux the parent-death signal is armed as well: an installer that is
+    killed mid-validation must not leave a server holding the GPU and the
+    staged files until some later startup sweeps the breadcrumb.
+    """
+    if os.name != "posix":
+        return {}
+    kwargs: "dict[str, Any]" = {"start_new_session": True}
+    if not sys.platform.startswith("linux"):
+        return kwargs  # macOS has no equivalent; the breadcrumb is its only reaper
+    owner_pid = os.getpid()  # read pre-fork, so the child can tell reparenting apart
+
+    def _arm_parent_death() -> None:
+        # Post-fork, pre-exec: fork clears the setting, and subprocess runs
+        # preexec_fn after setsid, neither of which undoes it (a plain execve
+        # preserves it too). getppid closes the race where the installer was
+        # already gone by the time this ran.
+        try:
+            import ctypes
+
+            ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+            if os.getppid() != owner_pid:
+                os._exit(1)
+        except Exception:
+            pass
+
+    kwargs["preexec_fn"] = _arm_parent_death
+    return kwargs
 
 
 def _announce_child(state: str, pid: int) -> None:
