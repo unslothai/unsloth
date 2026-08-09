@@ -326,6 +326,11 @@ class DiffusionTrainingService:
         self._reserved = False
         # Dataset mutations in flight. A start refuses while any is open and a mutation refuses once a start is reserved, both under _lock, so neither slips through the other's check-then-act window.
         self._dataset_mutations = 0
+        # "Stop without saving" for the CURRENT job, remembered in the parent. The trainer
+        # reports it on its completion event, but a child that is killed or OOMs after the
+        # request never emits one -- and the unexpected-exit path then recorded a resumable
+        # error run, re-offering Resume from the very checkpoint the user asked to discard.
+        self._discard_requested = False
         # GPU load admissions in flight (a load between its training guard and its arbiter registration). Same two-sided rule as the dataset mutations.
         self._gpu_admissions = 0
         self._proc: Any = None
@@ -461,6 +466,7 @@ class DiffusionTrainingService:
                 raise RuntimeError("A diffusion training job is already running.")
 
             job_id = uuid.uuid4().hex
+            self._discard_requested = False
             event_queue = self._ctx.Queue()
             self._stop_queue = self._ctx.Queue()
             self._proc = self._ctx.Process(
@@ -511,6 +517,10 @@ class DiffusionTrainingService:
                 self._stop_queue.put(True if save else {"save": False})
             except Exception:  # noqa: BLE001
                 return False
+            if not save:
+                # Remembered here so a child that dies before its discarded completion still
+                # blocks the resume the user threw away.
+                self._discard_requested = True
             self._state["message"] = (
                 "Stop requested; finishing the current step and saving a partial adapter..."
                 if save
@@ -550,6 +560,13 @@ class DiffusionTrainingService:
                                 status = "error",
                                 message = "Training process exited unexpectedly.",
                                 updated_at = time.time(),
+                            )
+                        if self._discard_requested:
+                            # The user asked to throw this run away and the child died before
+                            # it could say so. Whatever periodic bundle it had written is not
+                            # something to offer back.
+                            self._state["resume_blocked_reason"] = (
+                                "This run was stopped without saving, so it was discarded."
                             )
                     _ = drained
                     self._persist_run_record()

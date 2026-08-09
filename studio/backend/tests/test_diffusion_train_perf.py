@@ -456,3 +456,53 @@ def test_sdxl_cache_force_bypasses_gate(monkeypatch):
     cache = _build_fake_sdxl_cache(monkeypatch, num_images = 3, latent_shape = (1, 4, 8, 8))
     assert cache is not LATENT_CACHE_OVER_BUDGET and cache is not None
     assert len(cache) == 3
+
+
+def test_a_no_save_stop_survives_a_child_that_dies_before_reporting_it():
+    """The trainer reports the discard on its completion event, but a child that OOMs or is
+    killed after the request never emits one. The unexpected-exit path then recorded a plain
+    error run with the last periodic checkpoint intact, so the history offered Resume from the
+    very bundle the user asked to throw away. The intent is remembered in the parent."""
+
+    class _DeadProc:
+        def is_alive(self) -> bool:
+            return False
+
+    svc = DiffusionTrainingService()
+    svc._proc = _AliveProc()
+    svc._stop_queue = _StopQueue()
+    svc._apply_event({"type": "checkpoint_saved", "checkpoint_path": "/o/checkpoint-40", "step": 40})
+    assert svc.status()["resume_blocked_reason"] is None
+
+    assert svc.stop(save = False) is True
+    # ...and the child dies without a completion event.
+    dead = _DeadProc()
+    svc._proc = dead
+
+    class _EmptyQueue:
+        def get(self, timeout = None):
+            raise RuntimeError("empty")
+
+        def get_nowait(self):
+            raise RuntimeError("empty")
+
+    svc._pump_loop(_EmptyQueue(), dead)
+
+    state = svc.status()
+    assert state["status"] == "error"
+    assert "stopped without saving" in (state["resume_blocked_reason"] or "")
+
+
+def test_a_fresh_job_forgets_the_previous_no_save_stop():
+    """The flag is per job. Carrying it across would block a resume the next run legitimately
+    offers."""
+    import inspect
+
+    svc = DiffusionTrainingService()
+    assert svc._discard_requested is False
+    svc._proc = _AliveProc()
+    svc._stop_queue = _StopQueue()
+    assert svc.stop(save = False) is True
+    assert svc._discard_requested is True
+    # start() clears it for the next job, so a discarded run cannot block the next one's resume.
+    assert "_discard_requested = False" in inspect.getsource(DiffusionTrainingService.start)

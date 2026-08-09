@@ -1222,6 +1222,34 @@ def retire_own_checkpoints(
     _retire_replaced_slots(root, restore = False)
 
 
+def discard_preexisting_checkpoints(
+    output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]"
+) -> None:
+    """Remove the bundles this run FOUND, keeping the ones it wrote. The inverse of
+    ``clear_own_checkpoints``.
+
+    For a fresh retrain that stops WITH save: it owns the directory (it overwrites the published
+    adapter there), and its stop bundle is a lower step than an earlier run's leftovers. Resume
+    by directory picks the newest bundle by step, so those leftovers outrank the partial the user
+    just saved and a Resume continues the wrong training. A run that RESUMED here does not call
+    this: the bundles it found include the one it continued from, which is not its to spend.
+    """
+    root = Path(output_dir).expanduser()
+    keep: dict[Path, Optional[tuple]] = {}
+    for entry in preexisting:
+        if isinstance(entry, tuple):
+            path, identity = entry
+            keep[Path(path)] = identity
+        else:
+            keep[Path(entry)] = _bundle_identity(Path(entry))
+    for stale in list_checkpoints(root):
+        # Identity, not pathname: a bundle this run WROTE OVER one that was here is this run's,
+        # and deleting it would throw away the stop checkpoint the user asked for.
+        if stale in keep and keep[stale] == _bundle_identity(stale):
+            shutil.rmtree(stale, ignore_errors = True)
+    _retire_replaced_slots(root, restore = False)
+
+
 def clear_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]") -> None:
     """Remove the bundles THIS run wrote, leaving the ones it found.
 

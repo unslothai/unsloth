@@ -63,6 +63,7 @@ from core.training.diffusion_train_common import (
 )
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
+    discard_preexisting_checkpoints,
     retire_own_checkpoints,
     resumed_into_this_dir,
     snapshot_checkpoints,
@@ -1688,7 +1689,9 @@ def _train_dit(
                     stopped = True,
                     steps_run = 0,
                     # As above: a discard is a discard however early the stop lands.
-                    discarded = not save_on_stop,
+                    # _save_on_stop is the accessor this function is handed; the flag itself
+                    # lives in the caller's scope.
+                    discarded = not _save_on_stop(),
                 )
                 return str(out_dir)
     if latent_cache is not None and vae is not None:
@@ -2010,6 +2013,12 @@ def _train_dit(
             # iteration writes no bundle, so save_steps leaves the run's own checkpoint-400
             # behind for a later resume to roll back to. An earlier run's bundles stay.
             retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
+        elif not resumed_here:
+            # Stopped WITH save on a fresh retrain: the stop bundle is a LOWER step than
+            # the leftovers of the earlier run in this directory, and resume-by-directory
+            # picks the newest by step -- so those would outrank the partial just saved
+            # and continue the wrong training. A resumed run keeps what it found.
+            discard_preexisting_checkpoints(out_dir, preexisting_checkpoints)
     else:
         # Discarded: the user asked to throw this run away. Before periodic checkpoints
         # existed a discard left nothing behind, because the output directory was only ever

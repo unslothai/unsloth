@@ -71,6 +71,7 @@ from core.training.diffusion_train_common import (  # noqa: F401
 )
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
+    discard_preexisting_checkpoints,
     retire_own_checkpoints,
     resumed_into_this_dir,
     snapshot_checkpoints,
@@ -722,6 +723,12 @@ def run_diffusion_lora_training(
                 # model, optimizer, scheduler, sampler and RNG back and retrained 401-500.
                 # Only this run's own bundles go; an earlier run's stay resumable.
                 retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
+            elif not resumed_here:
+                # Stopped WITH save on a fresh retrain: the stop bundle is a LOWER step than
+                # the leftovers of the earlier run in this directory, and resume-by-directory
+                # picks the newest by step -- so those would outrank the partial just saved
+                # and continue the wrong training. A resumed run keeps what it found.
+                discard_preexisting_checkpoints(out_dir, preexisting_checkpoints)
         else:
             # Discarded: the user asked to throw this run away. Before periodic checkpoints
             # existed a discard left nothing behind, because the output directory was only

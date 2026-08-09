@@ -2375,24 +2375,85 @@ def test_every_completion_reports_whether_the_run_was_discarded(module):
     attempt discarded, and describe_resume_state's source fallback offered the bundle the run
     had been validated against -- so the UI showed Resume for an attempt the user had explicitly
     thrown away."""
+    import builtins
     import importlib
     from pathlib import Path as _Path
 
     source = _Path(importlib.import_module(module).__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
     completions = [
         node
-        for node in ast.walk(ast.parse(source))
+        for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "_emit"
         and any(isinstance(arg, ast.Constant) and arg.value == "complete" for arg in node.args)
     ]
     assert completions, f"{module} must emit a completion"
+    # Every name the discarded expression reads has to be bound in the function it sits in (or
+    # in an enclosing one). Passing `save_on_stop` inside a helper whose flag is really the
+    # caller's `_save_on_stop` accessor is a NameError raised INSTEAD of the terminal stopped
+    # event, which the service then records as a training failure for a user-requested stop.
+    scopes: dict[ast.AST, set[str]] = {}
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        bound = {a.arg for a in func.args.args + func.args.kwonlyargs}
+        bound |= {a.arg for a in (func.args.posonlyargs or [])}
+        for node in ast.walk(func):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                bound.add(node.id)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound.add(node.name)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                bound.update(node.names)
+        scopes[func] = bound
+    # TOP-LEVEL only: a name assigned inside some other function is not visible here, and
+    # walking the whole tree for them is exactly what would hide the bug this checks for.
+    module_level: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            module_level.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.For, ast.With)):
+            module_level |= {
+                n.id
+                for n in ast.walk(node)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+            }
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            module_level |= {(a.asname or a.name).split(".")[0] for a in node.names}
+        elif isinstance(node, ast.Try):
+            module_level |= {
+                n.id
+                for n in ast.walk(node)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+            }
+            module_level |= {
+                (a.asname or a.name).split(".")[0]
+                for imp in ast.walk(node)
+                if isinstance(imp, (ast.Import, ast.ImportFrom))
+                for a in imp.names
+            }
+
+    def _visible(call):
+        seen = set(module_level)
+        for func, bound in scopes.items():
+            if any(node is call for node in ast.walk(func)):
+                seen |= bound
+        return seen
+
     for call in completions:
-        assert any(kw.arg == "discarded" for kw in call.keywords), (
+        keyword = next((kw for kw in call.keywords if kw.arg == "discarded"), None)
+        assert keyword is not None, (
             f"a completion in {module} at line {call.lineno} does not say whether the run was "
             "discarded"
         )
+        visible = _visible(call) | set(dir(builtins))
+        for name in {n.id for n in ast.walk(keyword.value) if isinstance(n, ast.Name)}:
+            assert name in visible, (
+                f"the completion in {module} at line {call.lineno} reads '{name}', which is not "
+                "bound in any function it sits in -- a NameError instead of a terminal event"
+            )
 
 
 def test_a_branched_resume_does_not_prune_the_bundles_it_found(run_dir):
@@ -2446,3 +2507,49 @@ def test_the_tf32_setting_is_part_of_the_identity(run_dir):
         dc.preflight_resume(path, identity = default, target_steps = 500)
     # And the matching setting still resumes.
     assert dc.preflight_resume(path, identity = strict.identity, target_steps = 500)[1] == 4
+
+
+def test_a_stopped_retrain_fences_the_older_runs_checkpoints(run_dir):
+    """A fresh retrain into a directory that still holds an earlier run's higher-step bundle,
+    stopped WITH save. The stop bundle is a lower step, resume-by-directory picks the newest by
+    step, and the leftovers therefore outranked the partial the user had just saved -- a Resume
+    continued the wrong training. A run that RESUMED here keeps what it found; this one does
+    not, because it has just overwritten the adapter those bundles belong to."""
+    earlier = _Run(run_dir, save_total_limit = 0)
+    for step in (20, 30):
+        earlier.step_once(0.5)
+        earlier.save(step)
+    preexisting = dc.snapshot_checkpoints(run_dir)
+
+    retrain = _Run(run_dir, seed = 7)
+    retrain.step_once(1.5)
+    stop_bundle, error = retrain.save(5, preexisting = preexisting)
+    assert error is None and stop_bundle is not None
+
+    dc.discard_preexisting_checkpoints(run_dir, preexisting)
+
+    survivors = {p.name for p in dc.list_checkpoints(run_dir)}
+    assert survivors == {"checkpoint-5"}, survivors
+    assert dc.latest_valid_checkpoint(run_dir)[0].name == "checkpoint-5"
+
+
+def test_the_fencing_keeps_a_bundle_this_run_wrote_over_an_old_one(run_dir):
+    """Identity, not pathname. A retrain that saves at a step an earlier run already used owns
+    the bundle now sitting there, and deleting it by name would throw away the stop checkpoint
+    the user asked for."""
+    earlier = _Run(run_dir, save_total_limit = 0)
+    earlier.step_once(0.5)
+    earlier.save(5)
+    preexisting = dc.snapshot_checkpoints(run_dir)
+
+    retrain = _Run(run_dir, seed = 7)
+    retrain.step_once(1.5)
+    retrain.save(5, preexisting = preexisting)
+    mine = (run_dir / "checkpoint-5" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
+
+    dc.discard_preexisting_checkpoints(run_dir, preexisting)
+
+    assert (run_dir / "checkpoint-5").is_dir(), "the run's own stop bundle must survive"
+    assert (run_dir / "checkpoint-5" / dc.TRAINER_STATE_FILENAME).read_text(
+        encoding = "utf-8"
+    ) == mine
