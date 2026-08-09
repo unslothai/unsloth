@@ -135,9 +135,7 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     # A path-qualified variant key names its own folder; its quant token belongs to
     # sibling checkpoints too, so it must not reach for a <quant>/ dir it does not own.
     variant_key = (
-        variant.lower()
-        if "/" in variant
-        else (extract_quant_token(variant) or variant).lower()
+        variant.lower() if "/" in variant else (extract_quant_token(variant) or variant).lower()
     )
     removed = 0
     failures: list[str] = []
