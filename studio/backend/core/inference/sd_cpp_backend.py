@@ -480,7 +480,6 @@ class SdCppDiffusionBackend:
         # companions too. Best-effort bookkeeping; never fails a load.
         try:
             from hub.utils.companion_assets import record_companion_link
-
             record_companion_link(repo_id, base)
         except Exception as exc:  # noqa: BLE001
             logger.debug("sd_cpp.companion_link_record_failed: %s", exc)
