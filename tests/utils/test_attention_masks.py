@@ -16,6 +16,7 @@
 """Unit tests for packed-attention mask helpers with sliding-window logic."""
 
 import math
+import weakref
 
 import torch
 
@@ -457,4 +458,30 @@ def test_the_window_mask_is_built_once_per_shape(monkeypatch):
     assert [bool(v) for v in third[0, 0, 5]] == [False, False, False, False, True, True]
     # ...and so is a different shape.
     assert attention_dispatch._windowed_causal_mask(4, 4, 3, torch.device("cpu")) is not third
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+
+
+def test_the_outgoing_window_mask_is_freed_before_its_replacement(monkeypatch):
+    """A shape change must not hold two dense masks at once. Dynamic-length training walks
+    through shapes, and at 32K each mask is 1 GiB on top of the construction temporaries."""
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+    device = torch.device("cpu")
+    first = attention_dispatch._windowed_causal_mask(6, 6, 3, device)
+    live = weakref.ref(first)
+    del first
+
+    cached_during_build = []
+    real_arange = torch.arange
+
+    def _observing_arange(*args, **kwargs):
+        cached_during_build.append(live() is not None)
+        return real_arange(*args, **kwargs)
+
+    monkeypatch.setattr(attention_dispatch.torch, "arange", _observing_arange)
+    attention_dispatch._windowed_causal_mask(8, 8, 3, device)
+
+    assert cached_during_build, "the replacement must actually have been built"
+    assert not any(cached_during_build), (
+        "the previous mask was still alive while its replacement was allocated"
+    )
     attention_dispatch._WINDOW_MASK_CACHE.clear()

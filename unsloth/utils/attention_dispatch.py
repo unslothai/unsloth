@@ -188,6 +188,10 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
     entry = _WINDOW_MASK_CACHE.get(device)
     if entry is not None and entry["params"] == params:
         return entry["mask"]
+    # Drop the outgoing mask first. It is dead either way, and holding it while the replacement
+    # and its temporaries are allocated would make a shape change peak a whole mask higher.
+    _WINDOW_MASK_CACHE.pop(device, None)
+    entry = None
     q_pos = torch.arange(k_len - q_len, k_len, device = device)
     k_pos = torch.arange(k_len, device = device)
     mask = (
