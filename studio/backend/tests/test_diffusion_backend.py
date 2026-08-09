@@ -4687,7 +4687,9 @@ def test_the_plan_and_the_load_agree_on_a_cached_prequant(fake_runtime, tmp_path
     # no quant" is exactly the disagreement this branch exists to prevent.
     _stub_hosted_prequant(monkeypatch, cached = True)
     _stub_dense_candidate(monkeypatch, prequant = True)
-    _stub_dense_transformer_cached(monkeypatch, cached = False)
+    # Dense shards on disk too, so the plan gets all the way to the candidate and declines for the
+    # one reason under test: a prequant needs no transformer/, not that a download was refused.
+    _stub_dense_transformer_cached(monkeypatch, cached = True)
     calls = _spy_dense_quant(monkeypatch)
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
