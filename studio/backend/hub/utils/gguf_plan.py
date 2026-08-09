@@ -178,9 +178,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     return plans
 
 
-def plan_for_variant(
-    plans: dict[str, GgufVariantPlan], variant: str
-) -> Optional[GgufVariantPlan]:
+def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optional[GgufVariantPlan]:
     """The plan for *variant*, accepting a bare quant when exactly one plan carries it.
 
     A repo that files every variant under one shared container (``weights/model-Q4_K_M.gguf``)
