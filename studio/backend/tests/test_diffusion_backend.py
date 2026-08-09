@@ -6913,6 +6913,35 @@ def test_cancel_generate_during_the_post_denoise_save_still_cancels(
         backend.generate(prompt = "x", steps = 2)
 
 
+def test_a_completed_generation_stops_advertising_itself_as_cancellable(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The final check and the deregistration are one critical section under the same lock
+    # cancel_generate takes, so there is no sliver between "the result is committed" and "the
+    # event is gone" in which Stop could answer true for a generation that then returns images.
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+
+    from core.inference import diffusion as diffusion_module
+
+    seen: list[bool] = []
+    real_baked = diffusion_module._baked_lora_names
+
+    def _baked(pipe):
+        # Runs after the final check, while the old code still had the event registered.
+        seen.append(backend.cancel_generate())
+        return real_baked(pipe)
+
+    monkeypatch.setattr(diffusion_module, "_baked_lora_names", _baked)
+
+    out = backend.generate(prompt = "x", steps = 2)
+    assert out["images"]
+    assert seen == [False]
+
+
 def test_cancel_generate_is_a_no_op_without_a_load(fake_runtime):
     # The route calls this unconditionally, so an idle backend must answer False, not raise.
     assert DiffusionBackend().cancel_generate() is False
