@@ -365,6 +365,38 @@ def test_resolve_auto_int8_band_gates_on_torchao(monkeypatch):
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
 
 
+def test_resolve_auto_uses_klein_variant_size(monkeypatch):
+    import torch
+
+    spec = dit._SPECS["flux.2-klein"]
+
+    class _FakeCuda:
+        @staticmethod
+        def mem_get_info():
+            return (int(20 * 1e9), int(24 * 1e9))
+
+        @staticmethod
+        def get_device_capability():
+            return (10, 0)
+
+    monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+
+    four_b = _cfg(
+        base_model = "black-forest-labs/FLUX.2-klein-base-4B",
+        base_precision = "auto",
+        mixed_precision = "bf16",
+    )
+    nine_b = _cfg(
+        base_model = "unsloth/FLUX.2-klein-base-9B",
+        base_precision = "auto",
+        mixed_precision = "bf16",
+    )
+
+    assert dit._resolve_base_precision(four_b, spec, "cuda") == "bf16"
+    assert dit._resolve_base_precision(nine_b, spec, "cuda") == "nf4"
+
+
 def test_resolve_auto_int8_band_treats_stub_as_absent(monkeypatch):
     # Simulate the Windows-ROCm torchao STUB (find_spec succeeds but quantize_ is a no-op), so the int8 band must fall to nf4.
     import torch

@@ -57,6 +57,11 @@ def test_base_repo_override_wins_over_the_family_default():
     assert nine_b is not None and default is not None
     assert nine_b[0] > 2 * default[0]
 
+    base_nine_b = family_bf16_components_gb(
+        _fam("flux.2-klein"), base_repo = "unsloth/FLUX.2-klein-base-9B"
+    )
+    assert base_nine_b == nine_b
+
 
 # ── the estimator ─────────────────────────────────────────────────────────────
 def test_estimate_int8_steady_is_roughly_half_bf16():

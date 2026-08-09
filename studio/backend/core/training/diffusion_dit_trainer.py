@@ -37,6 +37,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core._torchao_stub import is_stubbed
+from core.inference.diffusion_auto_policy import family_bf16_components_gb
+from core.inference.diffusion_families import detect_family
 from core.training.diffusion_train_common import (
     DEFAULT_LORA_FILENAME,
     DEFAULT_LORA_TARGETS,
@@ -536,8 +538,11 @@ def _resolve_base_precision(cfg, spec, device) -> str:
             has_fp8 = hasattr(torch, "float8_e4m3fn")
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
             pass
+    family = detect_family(cfg.base_model, override = spec.family)
+    components = family_bf16_components_gb(family, cfg.base_model) if family is not None else None
+    dense_bf16_gb = components[0] if components is not None else spec.dense_bf16_gb
     return _pick_auto_precision(
-        prequant, device, free_gb, spec.dense_bf16_gb, capability, has_fp8, has_torchao
+        prequant, device, free_gb, dense_bf16_gb, capability, has_fp8, has_torchao
     )
 
 
@@ -931,14 +936,24 @@ def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
 # ── FLUX.2 (dev + Klein) ──────────────────────────────────────────────────────
 # Both variants share Flux2Transformer2DModel and the upstream DreamBooth packing/forward conventions, differing only in the conditioning
 # stack (dev: Mistral-3-Small; Klein: Qwen3) and size. Latents train patchified and batch-norm-normalised, from the posterior MODE (deterministic).
-_FLUX2_TARGETS = (
+_FLUX2_COMMON_TARGETS = (
     # Double-stream blocks: separate q/k/v plus the ModuleList out proj.
     "to_k",
     "to_q",
     "to_v",
     "to_out.0",
-    # Single-stream blocks: the fused qkv+mlp input projection carries most of the capacity. Their out proj is a plain Linear named to_out, whose suffix also matches the double-stream container, so it stays dense.
+    # Single-stream blocks use one fused qkv+mlp input projection.
     "to_qkv_mlp_proj",
+)
+# Their output projection is a plain Linear called ``to_out``. A bare suffix also matches the
+# double-stream ModuleList, which PEFT cannot wrap, so the upstream trainers name each single block
+# explicitly: 24 possible blocks for Klein and 48 for dev. Missing high indexes are harmless on the
+# smaller Klein-4B layout, which has 20 single blocks.
+_FLUX2_KLEIN_TARGETS = _FLUX2_COMMON_TARGETS + tuple(
+    f"single_transformer_blocks.{i}.attn.to_out" for i in range(24)
+)
+_FLUX2_DEV_TARGETS = _FLUX2_COMMON_TARGETS + tuple(
+    f"single_transformer_blocks.{i}.attn.to_out" for i in range(48)
 )
 # The references train dev with its guidance-distillation vector at 3.5 (Klein applies it only when the variant config carries guidance_embeds).
 _FLUX2_TRAIN_GUIDANCE = 3.5
@@ -1130,7 +1145,7 @@ _SPECS: dict[str, _FamilySpec] = {
     ),
     "flux.2-klein": _FamilySpec(
         family = "flux.2-klein",
-        lora_targets = _FLUX2_TARGETS,
+        lora_targets = _FLUX2_KLEIN_TARGETS,
         # The upstream references train in bf16; fp16 is unvalidated on the FLUX.2 stack.
         force_bf16 = True,
         dense_bf16_gb = 8.1,
@@ -1145,7 +1160,7 @@ _SPECS: dict[str, _FamilySpec] = {
     ),
     "flux.2-dev": _FamilySpec(
         family = "flux.2-dev",
-        lora_targets = _FLUX2_TARGETS,
+        lora_targets = _FLUX2_DEV_TARGETS,
         force_bf16 = True,
         # 32B DiT; the Mistral conditioning stack (~46 GB bf16) is loaded, encoded and freed BEFORE this lands on the device (the shared phased load).
         dense_bf16_gb = 64.5,

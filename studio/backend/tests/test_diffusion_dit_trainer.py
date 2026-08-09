@@ -15,7 +15,8 @@ import types
 import pytest
 
 from core.training.diffusion_dit_trainer import (
-    _FLUX2_TARGETS,
+    _FLUX2_DEV_TARGETS,
+    _FLUX2_KLEIN_TARGETS,
     _FLUX_TARGETS,
     _GATED_TRAIN_REPOS,
     _QWEN_TARGETS,
@@ -61,13 +62,16 @@ def test_specs_cover_the_dit_families():
 
 
 def test_flux2_specs_share_targets_and_split_conditioners():
-    # dev and Klein share the transformer (so the LoRA target set) but load different conditioning pipelines and save through their own class.
+    # dev and Klein share the transformer class but have different single-block counts.
     klein, dev = _SPECS["flux.2-klein"], _SPECS["flux.2-dev"]
-    assert klein.lora_targets == dev.lora_targets == _FLUX2_TARGETS
-    # The fused single-stream projection is targeted; the plain to_out suffix is not (it also matches the double-stream ModuleList, which peft cannot wrap).
-    assert "to_qkv_mlp_proj" in _FLUX2_TARGETS
-    assert "to_out.0" in _FLUX2_TARGETS
-    assert "to_out" not in _FLUX2_TARGETS
+    assert klein.lora_targets == _FLUX2_KLEIN_TARGETS
+    assert dev.lora_targets == _FLUX2_DEV_TARGETS
+    # The upstream trainers pair the fused input with every plain single-stream output projection.
+    assert "to_qkv_mlp_proj" in _FLUX2_KLEIN_TARGETS
+    assert "to_out.0" in _FLUX2_KLEIN_TARGETS
+    assert "single_transformer_blocks.23.attn.to_out" in _FLUX2_KLEIN_TARGETS
+    assert "single_transformer_blocks.24.attn.to_out" not in _FLUX2_KLEIN_TARGETS
+    assert "single_transformer_blocks.47.attn.to_out" in _FLUX2_DEV_TARGETS
     assert klein.load_conditioners is not dev.load_conditioners
     assert klein.save is not dev.save
     assert klein.load_transformer is dev.load_transformer
@@ -149,7 +153,8 @@ def test_flux2_bases_pass_the_trusted_base_gate():
     # The FLUX.2 bases are training-side additions to the loader's trust allowlist, so the pre-download trust gate must accept them.
     from core.training.diffusion_train_common import _assert_trusted_base_model
 
-    _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-4B")
+    _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-base-4B")
+    _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-base-9B")
     _assert_trusted_base_model("black-forest-labs/FLUX.2-dev")
     with pytest.raises(ValueError, match = "untrusted"):
         _assert_trusted_base_model("someone/random-flux2-finetune")
@@ -164,7 +169,7 @@ def test_every_train_base_is_deployable_as_an_inference_pipeline():
         if not fam.trainable:
             continue
         for base in fam.train_base_repos:
-            deploy_base = fam.deploy_base_repo or base
+            deploy_base = fam.deploy_base_for(base)
             assert _is_trusted_diffusion_repo(
                 deploy_base
             ), f"{fam.name}: deploy base {deploy_base!r} is not loadable for inference"
@@ -199,8 +204,22 @@ def test_family_train_infos_lists_dit_families(dit_train_host):
     assert "gated" in infos["flux.1"]["vram_note"].lower()
     assert infos["flux.2-dev"]["default_base"] == "black-forest-labs/FLUX.2-dev"
     assert "gated" in infos["flux.2-dev"]["vram_note"].lower()
-    # Klein-4B is open.
-    assert infos["flux.2-klein"]["default_base"] == "black-forest-labs/FLUX.2-klein-4B"
+    # Klein trains on the undistilled bases and deploys each size on its distilled partner.
+    klein = infos["flux.2-klein"]
+    assert klein["default_base"] == "black-forest-labs/FLUX.2-klein-base-4B"
+    assert klein["base_repos"] == [
+        "black-forest-labs/FLUX.2-klein-base-4B",
+        "black-forest-labs/FLUX.2-klein-base-9B",
+    ]
+    assert klein["deploy_bases"]["black-forest-labs/FLUX.2-klein-base-4B"] == (
+        "black-forest-labs/FLUX.2-klein-4B"
+    )
+    assert klein["deploy_bases"]["black-forest-labs/FLUX.2-klein-base-9B"] == (
+        "black-forest-labs/FLUX.2-klein-9B"
+    )
+    assert klein["deploy_bases"]["unsloth/FLUX.2-klein-base-9B"] == (
+        "unsloth/FLUX.2-klein-9B"
+    )
     assert "gated" not in infos["flux.2-klein"]["vram_note"].lower()
     # Z-Image defaults to the prequant nf4 repo for QLoRA.
     assert "4bit" in infos["z-image"]["default_base"].lower()

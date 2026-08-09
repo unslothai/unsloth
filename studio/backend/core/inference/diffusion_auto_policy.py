@@ -72,6 +72,7 @@ _FAMILY_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
 # Base-repo overrides for families offering multiple sizes under one entry (the table carries the family default).
 _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
     "black-forest-labs/FLUX.2-klein-9B": (18.2, 16.4, 0.2),
+    "black-forest-labs/FLUX.2-klein-base-9B": (18.2, 16.4, 0.2),
 }
 
 

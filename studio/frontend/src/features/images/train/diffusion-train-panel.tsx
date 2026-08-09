@@ -99,6 +99,7 @@ import {
   buildDiffusionResumePayload,
   resumeActionLabel,
 } from "./resume-diffusion-run";
+import { resolveDiffusionDeployBase } from "./diffusion-train-deploy";
 
 // The families the Train tab can train, in popularity order; a fallback for an older backend whose /info reports none.
 type FamilyPreset = {
@@ -1135,13 +1136,12 @@ export function DiffusionTrainPanel({
     [poll],
   );
 
-  // Resolve the repo an adapter should be PREVIEWED on: a family that trains on one checkpoint but runs adapters on another
-  // declares a deploy_base. Only a recognised training base is overridden; a custom typed repo is respected as-is.
+  // Resolve the repo an adapter should be previewed on. Variant-specific pairs cover FLUX.2
+  // Klein's 4B and 9B bases; the scalar fallback keeps older backends and Krea 2 working.
   const deployBaseFor = useCallback(
     (trainedBase: string, famName: string): string => {
       const rec = info?.families?.find((f) => f.name === famName);
-      if (rec?.deploy_base && rec.base_repos.includes(trainedBase)) return rec.deploy_base;
-      return trainedBase;
+      return resolveDiffusionDeployBase(rec, trainedBase);
     },
     [info?.families],
   );

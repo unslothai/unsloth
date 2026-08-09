@@ -82,6 +82,18 @@ class DiffusionFamily:
     train_base_repos: tuple[str, ...] = field(default_factory = tuple)
     # When set, deploying a LoRA trained on this family loads THIS repo instead (Krea: train on Raw, preview on Turbo). Same precision both sides.
     deploy_base_repo: Optional[str] = None
+    # Variant-specific training-base to inference-base mappings. FLUX.2 Klein trains on an
+    # undistilled base and runs the adapter on the matching 4-step checkpoint, so its 4B and 9B
+    # variants cannot share the single family-wide deploy_base_repo above.
+    deploy_base_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+
+    def deploy_base_for(self, trained_base: str) -> str:
+        """The inference checkpoint paired with ``trained_base``, or the input unchanged."""
+        key = canonical_base(trained_base).lower()
+        for training_repo, inference_repo in self.deploy_base_repos:
+            if canonical_base(training_repo).lower() == key:
+                return inference_repo
+        return self.deploy_base_repo or trained_base
 
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry covers Turbo/full, schnell/dev.
@@ -131,9 +143,23 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/FLUX.2-klein-4B-FP8"),
         ),
         aliases = ("flux2-klein",),
-        # LoRA training via the DiT trainer (QLoRA nf4 by default); klein-4B is not gated.
+        # Train the undistilled bases, then preview their adapters on the matching 4-step models.
+        # Both vendor ids resolve through the ungated mirrors at fetch time.
         trainable = True,
-        train_base_repos = ("black-forest-labs/FLUX.2-klein-4B",),
+        train_base_repos = (
+            "black-forest-labs/FLUX.2-klein-base-4B",
+            "black-forest-labs/FLUX.2-klein-base-9B",
+        ),
+        deploy_base_repos = (
+            (
+                "black-forest-labs/FLUX.2-klein-base-4B",
+                "black-forest-labs/FLUX.2-klein-4B",
+            ),
+            (
+                "black-forest-labs/FLUX.2-klein-base-9B",
+                "black-forest-labs/FLUX.2-klein-9B",
+            ),
+        ),
         # Flux2KleinPipeline takes reference image(s) via `image`, so it exposes a "reference" workflow atop text-to-image. Inpaint but no img2img.
         reference = True,
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
@@ -712,7 +738,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.1-schnell", 4, 0.0),
     ("kontext", 28, 2.5),  # editing: before the generic flux.1
     ("flux.1", 28, 3.5),
-    ("flux.2-klein", 4, 0.0),
+    # The undistilled base variants need their model-card 50-step CFG recipe. Keep this before
+    # the generic distilled key, which covers both 4B and 9B 4-step checkpoints.
+    ("flux.2-klein-base", 50, 4.0),
+    ("flux.2-klein", 4, 1.0),
     ("flux.2-dev", 28, 4.0),  # full (non-distilled)
     ("qwen-image", 20, 4.0),
     ("z-image", 20, 4.0),

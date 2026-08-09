@@ -550,7 +550,7 @@ def family_train_infos() -> list[dict[str, Any]]:
     """Describe every trainable family for the Train UI: name, label, the default + allowed
     base repos, the recommended starting hyperparameters, and a VRAM/access note. Built from
     the family registry so it stays in sync with what the trainers actually support."""
-    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_families import detect_family, mirror_repo
     from core.inference.diffusion_transformer_quant import _family_train_denied
 
     dit_modes, dit_recommended = train_precision_modes()
@@ -575,6 +575,14 @@ def family_train_infos() -> list[dict[str, Any]]:
         else:
             fam_modes = [m for m in dit_modes if not _family_train_denied(name, m)]
         spec = _FAMILY_TRAIN_SPECS.get(name, {})
+        deploy_bases: dict[str, str] = {}
+        for training_repo, inference_repo in fam.deploy_base_repos:
+            deploy_bases[training_repo] = inference_repo
+            # A custom base entered with the public mirror id must follow the same pairing as the
+            # advertised vendor id. Return the inference mirror too, so Deploy stays ungated.
+            training_mirror = mirror_repo(training_repo)
+            if training_mirror:
+                deploy_bases[training_mirror] = mirror_repo(inference_repo) or inference_repo
         infos.append(
             {
                 "name": name,
@@ -594,6 +602,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "supports_compile": bool(not dit_block),
                 # Krea trains on Raw but previews adapters on Turbo; None elsewhere.
                 "deploy_base": fam.deploy_base_repo,
+                # Families with several train/deploy pairs cannot use the scalar above.
+                "deploy_bases": deploy_bases,
             }
         )
     return infos
@@ -1182,7 +1192,8 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
 _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
     {
         "black-forest-labs/flux.2-dev",
-        "black-forest-labs/flux.2-klein-4b",
+        "black-forest-labs/flux.2-klein-base-4b",
+        "black-forest-labs/flux.2-klein-base-9b",
     }
 )
 

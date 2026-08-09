@@ -627,6 +627,8 @@ export interface DiffusionTrainableFamily {
   supports_compile?: boolean;
   // When set, deploying a LoRA trained on this family previews it on this repo instead of the checkpoint it trained on (Krea trains on Raw, runs on Turbo).
   deploy_base?: string | null;
+  // Variant-specific training-base to inference-base pairs, including public mirror ids.
+  deploy_bases?: Record<string, string>;
 }
 
 // Where diffusion training reads/writes on this Studio, plus usable dataset folders.
