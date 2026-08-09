@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Free Cloudflare temporary tunnel for Unsloth's 0.0.0.0 launches.
+"""Cloudflare tunnel lifecycle for Unsloth's remote Studio access.
 
 The raw http://<ip>:<port> is often unreachable (https-vs-http, blocked ports,
-closed security groups); a cloudflared temporary tunnel gives a free
-https://*.trycloudflare.com URL that works anywhere, with no account or domain.
+closed security groups). Launches default to a free Temporary tunnel; settings can
+instead run a previously provisioned custom tunnel at the user's custom hostname.
 
 Best-effort throughout: any failure collapses to "no URL" and Unsloth keeps
 running. Stdlib only (back-end imports are lazy) so it is safe to import early.
@@ -879,6 +879,10 @@ def get_studio_tunnel_status() -> dict:
             "error": _tunnel_error,
             "port": _tunnel_port,
             "stop_pending": bool(_tunnels_pending_stop_snapshot()),
+            "connector_registered": bool(
+                _active_tunnel and getattr(_active_tunnel, "ready", False)
+            ),
+            "tunnel_serving": _tunnel_state == "online",
             "dns": _tunnel_dns[1] if _tunnel_dns[0] == _tunnel_generation else "unknown",
         }
 
@@ -981,22 +985,22 @@ def start_studio_tunnel(
     *,
     managed_by: str = "launch",
     admission: Optional[Tuple[int, int]] = None,
+    kind: str = "temporary",
 ) -> Optional[str]:
-    """Start a temporary tunnel and return its public URL once it is actually
-    serving, or None (best-effort).
+    """Start the requested tunnel kind and return its URL once it is serving.
 
-    Waits for cloudflared to both mint the URL and register an edge connection,
-    then fetches /api/health over the public URL, so the caller never advertises
-    a link that yields Cloudflare error 1033 (HTTP 530) or an unresolvable host.
-    If a URL is minted but no connection registers within the window (e.g. quic
-    is blocked on this network), retries once forcing the http2 protocol. On any
-    failure the tunnel is stopped and None is returned.
+    Waits for an edge connection, then fetches /api/health over the public URL,
+    so the caller never advertises a link that yields Cloudflare error 1033. A
+    Temporary tunnel must first mint its URL and may retry with HTTP/2; a custom tunnel
+    has a configured URL and makes one connector attempt. Any failure returns None.
     """
     global _active_tunnel, _shutdown_requested, _tunnel_generation
     global _tunnel_state, _tunnel_owner, _tunnel_url, _tunnel_error, _tunnel_port
     global _tunnel_kind
     if managed_by not in _TUNNEL_OWNERS:
         raise ValueError(f"Unknown Cloudflare tunnel owner: {managed_by}")
+    if kind not in TUNNEL_KINDS:
+        raise ValueError(f"Unknown Cloudflare tunnel kind: {kind}")
     with _active_lock:
         if not _accepting_starts or _tunnel_state == "stopping" or _tunnels_pending_stop_snapshot():
             return None
@@ -1008,6 +1012,7 @@ def start_studio_tunnel(
             if (
                 _tunnel_state == "online"
                 and _tunnel_owner == managed_by
+                and _tunnel_kind == kind
                 and _tunnel_port == port
                 and _active_tunnel is not None
             ):
@@ -1024,9 +1029,10 @@ def start_studio_tunnel(
             _tunnel_generation += 1
             generation = _tunnel_generation
             prior_at_start, _active_tunnel = _active_tunnel, None
+            prior_owner, prior_kind, prior_port = _tunnel_owner, _tunnel_kind, _tunnel_port
             _tunnel_state = "starting"
             _tunnel_owner = managed_by
-            _tunnel_kind = "temporary"
+            _tunnel_kind = kind
             _set_tunnel_url_locked(None)
             _tunnel_error = None
             _tunnel_port = port
@@ -1035,6 +1041,7 @@ def start_studio_tunnel(
                 if generation == _tunnel_generation:
                     _active_tunnel = prior_at_start
                     _tunnel_state = "error"
+                    _tunnel_owner, _tunnel_kind, _tunnel_port = prior_owner, prior_kind, prior_port
                     _tunnel_error = "cloudflared could not be stopped"
             return None
 
@@ -1043,13 +1050,58 @@ def start_studio_tunnel(
             _set_failed(generation, managed_by, port, "cloudflared is unavailable")
             return None
 
-        for protocol in (None, "http2"):
+        identity = None
+        if kind == "custom":
+            identity = read_identity()
+            if not identity_is_runnable(identity):
+                _set_failed(
+                    generation, managed_by, port, "Custom Cloudflare tunnel is not configured"
+                )
+                return None
+
+        for protocol in (None,) if kind == "custom" else (None, "http2"):
+            prepared = None
+            if kind == "custom":
+                reservation = reserve_connector()
+                if reservation is None:
+                    _set_failed(
+                        generation,
+                        managed_by,
+                        port,
+                        "Custom Cloudflare connector is already running",
+                    )
+                    return None
+                try:
+                    config = write_custom_ingress(port, identity, protocol)
+                    prepared = CloudflareTunnel(
+                        port,
+                        binary,
+                        kind = kind,
+                        args = custom_tunnel_args(config, identity["tunnel_id"]),
+                        url = f"https://{identity['hostname']}",
+                        reservation = reservation,
+                    )
+                except Exception:
+                    reservation.release()
+                    _set_failed(
+                        generation,
+                        managed_by,
+                        port,
+                        "Custom Cloudflare tunnel could not be prepared",
+                    )
+                    return None
+            cancelled = False
             with _active_lock:
                 if _shutdown_requested or generation != _tunnel_generation:
                     _active_tunnel = None
-                    return None
-                tunnel = CloudflareTunnel(port, binary, protocol = protocol)
-                prior, _active_tunnel = _active_tunnel, tunnel
+                    cancelled = True
+                else:
+                    tunnel = prepared or CloudflareTunnel(port, binary, protocol = protocol)
+                    prior, _active_tunnel = _active_tunnel, tunnel
+            if cancelled:
+                if prepared is not None:
+                    prepared.stop()
+                return None
             if prior is not None and prior.stop() is False:
                 with _active_lock:
                     if generation == _tunnel_generation and _active_tunnel is tunnel:
@@ -1137,7 +1189,7 @@ def start_studio_tunnel(
                         # Attempt 1's teardown parked the state at "stopping".
                         # Leaving it there for the http2 retry makes
                         # stop_studio_tunnel() early-return and stop nothing.
-                        if _tunnel_state == "stopping" and protocol is None:
+                        if _tunnel_state == "stopping" and kind == "temporary" and protocol is None:
                             _tunnel_state = "starting"
                     else:
                         _active_tunnel = tunnel
@@ -1157,13 +1209,17 @@ def start_studio_tunnel(
         return None
 
 
-def stop_studio_tunnel(*, admission: Optional[Tuple[int, int]] = None) -> None:
+def stop_studio_tunnel(
+    *, admission: Optional[Tuple[int, int]] = None, kind: Optional[str] = None
+) -> None:
     """Terminate the active tunnel, if any. Idempotent."""
     global _active_tunnel, _shutdown_requested, _tunnel_generation
     global _tunnel_state, _tunnel_owner, _tunnel_url, _tunnel_error, _tunnel_port
     global _tunnel_kind
     with _active_lock:
         if admission is not None and admission != (_tunnel_lifecycle, _tunnel_generation):
+            return
+        if kind is not None and _tunnel_kind != kind:
             return
         if _tunnel_state == "stopping":
             _shutdown_requested = True
@@ -1283,9 +1339,12 @@ def _chmod(path: Path, mode: int) -> None:
         os.chmod(path, mode)
 
 
-def _unlink(path: Path) -> None:
-    with suppress(OSError):
+def _unlink(path: Path, *, required: bool = False) -> None:
+    if required:
         path.unlink(missing_ok = True)
+    else:
+        with suppress(OSError):
+            path.unlink(missing_ok = True)
 
 
 def _load(path: Path) -> Optional[object]:
@@ -1314,14 +1373,18 @@ def _write(name: str, payload: object) -> None:
     _store(_state_dir() / name, payload)
 
 
-def _discard(name: str) -> None:
-    _unlink(_state_dir() / name)
+def _discard(name: str, *, required: bool = False) -> None:
+    _unlink(_state_dir() / name, required = required)
 
 
-def _digest(path: Path) -> Optional[str]:
+def _digest(path: Path, *, required: bool = False) -> Optional[str]:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
     except OSError:
+        if required:
+            raise
         return None
 
 
@@ -1333,6 +1396,21 @@ def _string_list(name: str) -> list:
 def read_identity() -> Optional[dict]:
     record = _read(_IDENTITY)
     return record if isinstance(record, dict) and record.get("hostname") else None
+
+
+def identity_is_runnable(identity: object = None) -> bool:
+    record = read_identity() if identity is None else identity
+    if not isinstance(record, dict):
+        return False
+    required = (record.get("hostname"), record.get("tunnel_name"), record.get("tunnel_id"))
+    credentials = record.get("credentials")
+    return all(isinstance(value, str) and value for value in required) and (
+        isinstance(credentials, str) and Path(credentials).is_file()
+    )
+
+
+def orphaned_hostnames() -> list:
+    return _string_list(_ORPHANS)
 
 
 def _set_orphan(hostname: str, *, stranded: bool) -> None:
@@ -1805,27 +1883,62 @@ def _reap_login_child(record: dict) -> None:
         pass
 
 
-def _delete_our_certificate(record: dict) -> None:
+def _delete_our_certificate(record: dict, *, required: bool = False) -> None:
     path = origin_cert_path()
-    if record.get("cert_digest") and _digest(path) == record["cert_digest"]:
-        _unlink(path)
+    digest = record.get("cert_digest")
+    if not digest:
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as certificate:
+            actual = hashlib.sha256(certificate.read()).hexdigest()
+            opened = os.fstat(certificate.fileno())
+            current = path.stat(follow_symlinks = False)
+            if actual == digest and (opened.st_dev, opened.st_ino) == (
+                current.st_dev,
+                current.st_ino,
+            ):
+                _unlink(path, required = required)
+    except FileNotFoundError:
+        return
+    except OSError:
+        if required:
+            raise
 
 
-def _settle(binary: Optional[str]) -> None:
+def _settle(
+    binary: Optional[str], *, clear_auto_start: Optional[Callable[[], object]] = None
+) -> bool:
     record = _read(_RECORD)
     if not isinstance(record, dict):
         if (_state_dir() / _RECORD).exists():
             logger.warning("Cloudflare setup record is unreadable; leaving it in place.")
-        return
+        return False
     _reap_login_child(record)
-    if read_identity() is None:
+    identity = read_identity()
+    teardown = record.get("operation") == "teardown"
+    if teardown:
+        if record.get("hostname"):
+            _set_orphan(str(record["hostname"]), stranded = True)
+        if record.get("tunnel_deleted") is not True:
+            _abandon(binary, record.get("tunnel_names") or ())
+        if clear_auto_start is not None:
+            clear_auto_start()
+        credentials = record.get("credentials") or (
+            identity.get("credentials") if identity else None
+        )
+        if credentials:
+            _unlink(Path(str(credentials)), required = True)
+        _discard(_IDENTITY, required = True)
+    elif identity is None:
         if record.get("route_attempted") and record.get("hostname"):
             _set_orphan(str(record["hostname"]), stranded = True)
         _abandon(binary, record.get("tunnel_names") or ())
         if record.get("credentials"):
             _unlink(Path(str(record["credentials"])))
-    _delete_our_certificate(record)
-    _discard(_RECORD)
+    _delete_our_certificate(record, required = teardown)
+    _discard(_RECORD, required = teardown)
+    return teardown
 
 
 def _provision(
@@ -1879,3 +1992,54 @@ def provision_custom_tunnel(
         finally:
             _settle(binary)
     return read_identity()
+
+
+def teardown_custom_tunnel(
+    *,
+    binary: Optional[str],
+    on_login_url: Optional[Callable[[str], None]] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
+    clear_auto_start: Optional[Callable[[], object]] = None,
+) -> bool:
+    """Delete the configured tunnel when authorized and clear local access."""
+    reservation = reserve_connector()
+    if reservation is None:
+        raise ProvisioningError(
+            "connector_in_use", "Another backend is running this Cloudflare connector."
+        )
+    try:
+        with certificate_state_claim("teardown"):
+            identity = read_identity()
+            if identity is None:
+                return False
+            hostname = str(identity.get("hostname") or "")
+            name = identity.get("tunnel_name")
+            credentials = identity.get("credentials")
+            record = {
+                "operation": "teardown",
+                "hostname": hostname,
+                "tunnel_names": [name],
+                "credentials": credentials,
+            }
+            _write(_RECORD, record)
+            deleted = False
+            try:
+                if not binary:
+                    raise ProvisioningError(
+                        "cloudflared_unreachable", "cloudflared is unavailable."
+                    )
+                if origin_cert_path().exists():
+                    raise ProvisioningError("certificate_exists", str(origin_cert_path()))
+                _run_login(record, binary, on_login_url, cancelled)
+                deleted = _delete_tunnel(binary, name)
+                if not deleted:
+                    raise ProvisioningError(
+                        "tunnel_delete_failed", "Cloudflare did not confirm tunnel deletion."
+                    )
+                record["tunnel_deleted"] = True
+                _write(_RECORD, record)
+            finally:
+                _settle(None, clear_auto_start = clear_auto_start)
+            return deleted
+    finally:
+        reservation.release()

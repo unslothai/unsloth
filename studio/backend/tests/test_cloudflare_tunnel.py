@@ -1839,6 +1839,21 @@ def test_a_successful_run_records_the_identity_and_removes_the_certificate(cf):
     assert 999_000 not in process_lifetime._tracked_pids
 
 
+def test_teardown_does_not_delete_a_certificate_replaced_after_proof(cf, monkeypatch):
+    _provision()
+    original_fstat = ct.os.fstat
+
+    def _replace(fd):
+        replacement = _cert(cf).with_suffix(".foreign")
+        replacement.write_text("user-owned", encoding = "utf-8")
+        replacement.replace(_cert(cf))
+        return original_fstat(fd)
+
+    monkeypatch.setattr(ct.os, "fstat", _replace)
+    assert ct.teardown_custom_tunnel(binary = "cloudflared") is True
+    assert _cert(cf).read_text(encoding = "utf-8") == "user-owned"
+
+
 def test_a_dns_conflict_is_refused_and_leaves_nothing_to_clean_up(cf):
     cf.route_outcome = (1, "code: 1003, reason: A CNAME record with that host already exists")
     with pytest.raises(ct.ProvisioningError) as excinfo:
