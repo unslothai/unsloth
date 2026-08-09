@@ -2456,8 +2456,11 @@ def test_snapshot_options_accept_the_one_csv_header_string(tmp_path):
 
 def test_snapshot_options_accept_a_negative_decimal_scale(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n"
-                    "    dtype: 'decimal128(10, -2)'\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n"
+        "    dtype: 'decimal128(10, -2)'\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.csv").write_text("text\n1E+2\n", encoding = "utf-8")
 
@@ -2466,8 +2469,11 @@ def test_snapshot_options_accept_a_negative_decimal_scale(tmp_path):
 
 def test_snapshot_options_reject_a_feature_class_missing_its_arguments(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
-                    "    dtype:\n      array2_d: {}\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+        "    dtype:\n      array2_d: {}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"x":1}\n', encoding = "utf-8")
 
@@ -2476,8 +2482,11 @@ def test_snapshot_options_reject_a_feature_class_missing_its_arguments(tmp_path)
 
 def test_snapshot_options_reject_a_class_label_with_no_way_to_size_it(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
-                    "    dtype:\n      class_label: {}\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+        "    dtype:\n      class_label: {}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
 
@@ -2486,8 +2495,11 @@ def test_snapshot_options_reject_a_class_label_with_no_way_to_size_it(tmp_path):
 
 def test_snapshot_options_reject_class_label_keys_naming_one_id(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
-                    "    dtype:\n      class_label:\n        names:\n          '0': a\n          '00': b\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+        "    dtype:\n      class_label:\n        names:\n          '0': a\n          '00': b\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
 
@@ -2496,8 +2508,11 @@ def test_snapshot_options_reject_class_label_keys_naming_one_id(tmp_path):
 
 def test_snapshot_options_infer_from_the_last_config_of_a_repeated_name(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: train.jsonl\n"
-                    "- config_name: cfg\n  data_dir: d\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_files: train.jsonl\n"
+        "- config_name: cfg\n  data_dir: d\n",
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     (snapshot / "d").mkdir()
     (snapshot / "d" / "test.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
@@ -2524,7 +2539,12 @@ def test_snapshot_options_reject_a_legacy_dataset_infos_field_it_cannot_build(tm
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     (snapshot / "dataset_infos.json").write_text(
         json.dumps(
-            {"default": {"version": "bad", "splits": {"train": {"name": "train", "num_examples": 1}}}}
+            {
+                "default": {
+                    "version": "bad",
+                    "splits": {"train": {"name": "train", "num_examples": 1}},
+                }
+            }
         ),
         encoding = "utf-8",
     )
@@ -2534,7 +2554,10 @@ def test_snapshot_options_reject_a_legacy_dataset_infos_field_it_cannot_build(tm
 
 def test_snapshot_options_read_a_mapping_dataset_info_as_one_entry(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n  cfg:\n    splits: []\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n  cfg:\n    splits: []\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -2544,7 +2567,10 @@ def test_snapshot_options_read_a_mapping_dataset_info_as_one_entry(tmp_path):
 
 def test_snapshot_options_reject_every_config_when_one_data_dir_is_missing(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: good\n  data_dir: d\n- config_name: bad\n  data_dir: missing\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: good\n  data_dir: d\n- config_name: bad\n  data_dir: missing\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -2555,7 +2581,10 @@ def test_snapshot_options_reject_every_config_when_one_data_dir_is_missing(tmp_p
 
 def test_snapshot_options_reject_every_config_when_one_data_dir_is_empty(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: good\n  data_dir: d\n- config_name: bad\n  data_dir: e\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: good\n  data_dir: d\n- config_name: bad\n  data_dir: e\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     (snapshot / "e").mkdir()

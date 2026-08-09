@@ -71,9 +71,7 @@ _FEATURE_TYPE_NAMES = frozenset(
 # A card can alias a feature node into itself, so the walk is bounded rather than trusting
 # the tree to end. Nothing real nests anywhere near this deep.
 _MAX_FEATURE_DEPTH = 64
-_PARAMETERLESS_FEATURES = frozenset(
-    "translationvariablelanguages audio image video pdf".split()
-)
+_PARAMETERLESS_FEATURES = frozenset("translationvariablelanguages audio image video pdf".split())
 # What each feature class cannot be built without. ClassLabel takes any one of its three,
 # the rest take all of theirs.
 _REQUIRED_FEATURE_ARGS = {
@@ -425,7 +423,9 @@ def _valid_feature_node(node: Any, depth: int = 0) -> bool:
     if name not in _FEATURE_TYPE_NAMES or not isinstance(node[role], dict):
         return False
     if name == "classlabel":
-        return any(key in node[role] for key in _CLASS_LABEL_ARGS) and _valid_class_label(node[role])
+        return any(key in node[role] for key in _CLASS_LABEL_ARGS) and _valid_class_label(
+            node[role]
+        )
     return all(key in node[role] for key in _REQUIRED_FEATURE_ARGS.get(name, ()))
 
 
@@ -1579,7 +1579,10 @@ def _counted_split(item: Any) -> bool:
 
 
 def _info_split_sets(
-    payload: Any, declared: dict[str, Optional[set[str]]], *, keyed: bool = False
+    payload: Any,
+    declared: dict[str, Optional[set[str]]],
+    *,
+    keyed: bool = False,
 ) -> None:
     """Record the splits dataset_info promises per config, or None when it promises a size
     the data cannot match. datasets verifies the built splits against these, so a promise
