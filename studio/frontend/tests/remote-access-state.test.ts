@@ -14,12 +14,14 @@ import {
   normalizeRemoteAccessStatus,
   remoteAccessAutoStartKind,
   remoteAccessAutoStartReadOnly,
-  remoteAccessBlockMessage,
   remoteAccessBlockMessageId,
   remoteAccessHeaderActionDisabled,
+  remoteAccessIsReady,
   remoteAccessPollDelay,
   remoteAccessPreferredKind,
+  remoteAccessProgressSteps,
   remoteAccessSelfStopPoll,
+  remoteAccessShowsCustomPanel,
   remoteAccessStopDisconnectsOrigin,
   remoteApiOrigin,
 } from "../src/features/settings/api/remote-access-state.ts";
@@ -87,6 +89,8 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       // biome-ignore lint/style/useNamingConvention: API schema
       custom_hostname: "studio.example.com",
       // biome-ignore lint/style/useNamingConvention: API schema
+      custom_tunnel_name: "unsloth-AB12CD",
+      // biome-ignore lint/style/useNamingConvention: API schema
       custom_runnable: true,
       // biome-ignore lint/style/useNamingConvention: API schema
       login_url: "https://dash.cloudflare.com/login",
@@ -98,8 +102,6 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       custom_error_phase: "provision",
       // biome-ignore lint/style/useNamingConvention: API schema
       custom_error_settled: true,
-      // biome-ignore lint/style/useNamingConvention: API schema
-      orphaned_hostnames: ["old.example.com"],
     }),
   );
   assert.deepEqual(s, {
@@ -124,13 +126,13 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     autoStartBlockReason: "launch_managed",
     customState: "configured",
     customHostname: "studio.example.com",
+    customTunnelName: "unsloth-AB12CD",
     customRunnable: true,
     loginUrl: "https://dash.cloudflare.com/login",
     customError: "dns_conflict",
     customErrorDetail: "record exists",
     customErrorPhase: "provision",
     customErrorSettled: true,
-    orphanedHostnames: ["old.example.com"],
   });
   // No field may normalize to undefined -- a wrong key would silently do so.
   for (const [k, v] of Object.entries(s)) {
@@ -154,13 +156,13 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.equal(s.autoStartBlockReason, null);
   assert.equal(s.customState, "unconfigured");
   assert.equal(s.customHostname, null);
+  assert.equal(s.customTunnelName, null);
   assert.equal(s.customRunnable, false);
   assert.equal(s.loginUrl, null);
   assert.equal(s.customError, null);
   assert.equal(s.customErrorDetail, null);
   assert.equal(s.customErrorPhase, null);
   assert.equal(s.customErrorSettled, false);
-  assert.deepEqual(s.orphanedHostnames, []);
 });
 
 test("passwordPending is strict: only a real true counts", () => {
@@ -210,6 +212,47 @@ test("poll delay is fast while a lifecycle or custom transition is in flight", (
   }
 });
 
+test("connection progress follows each method until it is ready", () => {
+  const temporary = normalizeRemoteAccessStatus(
+    apiStatus({
+      state: "starting",
+      kind: "temporary",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      tunnel_serving: true,
+    }),
+  );
+  assert.deepEqual(remoteAccessProgressSteps(temporary), [
+    { id: "connecting", complete: false },
+    { id: "openingLink", complete: true },
+  ]);
+  assert.equal(remoteAccessIsReady(temporary), false);
+
+  const custom = normalizeRemoteAccessStatus(
+    apiStatus({
+      state: "online",
+      kind: "custom",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      connector_registered: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      tunnel_serving: false,
+      dns: "pending",
+    }),
+  );
+  assert.deepEqual(remoteAccessProgressSteps(custom), [
+    { id: "connecting", complete: true },
+    { id: "openingLink", complete: false },
+    { id: "checkingHostname", complete: false },
+  ]);
+  assert.equal(remoteAccessIsReady(custom), false);
+
+  const ready = { ...custom, tunnelServing: true, dns: "resolved" as const };
+  assert.deepEqual(remoteAccessProgressSteps(ready), []);
+  assert.equal(remoteAccessIsReady(ready), true);
+  assert.deepEqual(remoteAccessProgressSteps({ ...ready, state: "stopping" }), [
+    { id: "disconnecting", complete: false },
+  ]);
+});
+
 test("the saved method is authoritative even when Custom is configured", () => {
   const temporary = normalizeRemoteAccessStatus(
     // biome-ignore lint/style/useNamingConvention: API schema
@@ -224,6 +267,31 @@ test("the saved method is authoritative even when Custom is configured", () => {
   assert.equal(remoteAccessPreferredKind(custom), "custom");
   assert.equal(remoteAccessAutoStartKind(custom), "custom");
   assert.equal(remoteAccessHeaderActionDisabled(custom, false), true);
+});
+
+test("an active Custom operation stays visible after a concurrent method change", () => {
+  const provisioning = normalizeRemoteAccessStatus(
+    apiStatus({
+      method: "temporary",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_state: "provisioning",
+    }),
+  );
+  assert.equal(remoteAccessShowsCustomPanel(provisioning), true);
+  assert.equal(
+    remoteAccessShowsCustomPanel({
+      ...provisioning,
+      customState: "tearing_down",
+    }),
+    true,
+  );
+  assert.equal(
+    remoteAccessShowsCustomPanel({
+      ...provisioning,
+      customState: "configured",
+    }),
+    false,
+  );
 });
 
 test("start and auto-start requests leave method selection to the saved setting", async () => {
@@ -371,38 +439,6 @@ test("the pending-password message is desktop-aware", () => {
   assert.notEqual(desktop, web);
   assert.equal(desktop, "passwordDesktop");
   assert.equal(web, "passwordWeb");
-});
-
-test("the legacy block-message export preserves its English guidance", () => {
-  const cases = [
-    ["server_starting", false, "Unsloth is still starting."],
-    [
-      "admin_password_change_required",
-      true,
-      "Set a remote password before exposing this server.",
-    ],
-    [
-      "admin_password_change_required",
-      false,
-      "Change the administrator password before exposing this server. In the desktop app, run unsloth studio reset-password.",
-    ],
-    [
-      "explicitly_disabled",
-      false,
-      "This launch used --no-cloudflare. Restart without it to enable remote access.",
-    ],
-    ["launch_managed", false, "This tunnel is managed by the launch command."],
-    ["colab_managed", false, "This tunnel is managed by the Colab runtime."],
-    [
-      "colab",
-      false,
-      "Remote access settings are managed by the Colab runtime.",
-    ],
-  ] as const;
-  for (const [reason, desktop, message] of cases) {
-    assert.equal(remoteAccessBlockMessage(reason, desktop), message);
-  }
-  assert.equal(remoteAccessBlockMessage("something_new", false), null);
 });
 
 test("an unknown or absent reason yields no message", () => {

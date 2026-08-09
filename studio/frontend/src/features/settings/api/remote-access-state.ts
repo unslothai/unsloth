@@ -16,6 +16,11 @@ export type CustomTunnelState =
   | "tearing_down"
   | "error";
 export type RemoteAccessDns = "unknown" | "pending" | "resolved";
+export type RemoteAccessProgressStepId =
+  | "connecting"
+  | "openingLink"
+  | "checkingHostname"
+  | "disconnecting";
 export type RemoteAccessOperation =
   | "start"
   | "stop"
@@ -68,13 +73,13 @@ export type RemoteAccessStatus = {
   autoStartBlockReason: string | null;
   customState: CustomTunnelState;
   customHostname: string | null;
+  customTunnelName: string | null;
   customRunnable: boolean;
   loginUrl: string | null;
   customError: string | null;
   customErrorDetail: string | null;
   customErrorPhase: CustomTunnelErrorPhase | null;
   customErrorSettled: boolean;
-  orphanedHostnames: string[];
 };
 
 export type ApiRemoteAccessStatus = {
@@ -114,6 +119,8 @@ export type ApiRemoteAccessStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   custom_hostname?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
+  custom_tunnel_name?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
   custom_runnable?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   login_url?: string | null;
@@ -125,14 +132,13 @@ export type ApiRemoteAccessStatus = {
   custom_error_phase?: CustomTunnelErrorPhase | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   custom_error_settled?: boolean;
-  // biome-ignore lint/style/useNamingConvention: API schema
-  orphaned_hostnames?: string[];
 };
 
 export function normalizeRemoteAccessStatus(
   status: ApiRemoteAccessStatus,
 ): RemoteAccessStatus {
-  const { method = "temporary" } = status;
+  const { method = "temporary", custom_tunnel_name: customTunnelName = null } =
+    status;
   return {
     state: status.state,
     url: status.url ?? null,
@@ -155,13 +161,13 @@ export function normalizeRemoteAccessStatus(
     autoStartBlockReason: status.auto_start_block_reason ?? null,
     customState: status.custom_state ?? "unconfigured",
     customHostname: status.custom_hostname ?? null,
+    customTunnelName,
     customRunnable: status.custom_runnable === true,
     loginUrl: status.login_url ?? null,
     customError: status.custom_error ?? null,
     customErrorDetail: status.custom_error_detail ?? null,
     customErrorPhase: status.custom_error_phase ?? null,
     customErrorSettled: status.custom_error_settled === true,
-    orphanedHostnames: status.orphaned_hostnames ?? [],
   };
 }
 
@@ -184,6 +190,14 @@ export function remoteAccessCustomOperationInFlight(
   );
 }
 
+export function remoteAccessShowsCustomPanel(
+  status: RemoteAccessStatus | null,
+): boolean {
+  return (
+    status?.method === "custom" || remoteAccessCustomOperationInFlight(status)
+  );
+}
+
 export function remoteAccessPreferredKind(
   status: RemoteAccessStatus | null,
 ): RemoteAccessKind {
@@ -199,23 +213,47 @@ export function remoteAccessUsableUrl(
   return status?.url ?? null;
 }
 
-export function remoteAccessCustomReadiness(status: RemoteAccessStatus): {
-  active: boolean;
-  connectorReady: boolean;
-  tunnelReady: boolean;
-  dnsReady: boolean;
-} {
-  const custom = status.kind === "custom";
-  return {
-    active:
-      custom &&
-      (status.state === "starting" ||
-        status.state === "online" ||
-        status.state === "stopping"),
-    connectorReady: custom && status.connectorRegistered,
-    tunnelReady: custom && status.tunnelServing,
-    dnsReady: custom && status.dns === "resolved",
-  };
+export function remoteAccessIsReady(
+  status: RemoteAccessStatus | null,
+): boolean {
+  if (status?.state !== "online") {
+    return false;
+  }
+  return (
+    status.kind !== "custom" ||
+    (status.connectorRegistered &&
+      status.tunnelServing &&
+      status.dns === "resolved")
+  );
+}
+
+export function remoteAccessProgressSteps(
+  status: RemoteAccessStatus | null,
+): { id: RemoteAccessProgressStepId; complete: boolean }[] {
+  if (status?.state === "stopping") {
+    return [{ id: "disconnecting", complete: false }];
+  }
+  if (
+    status?.state !== "starting" &&
+    !(
+      status?.kind === "custom" &&
+      status.state === "online" &&
+      !remoteAccessIsReady(status)
+    )
+  ) {
+    return [];
+  }
+  if (status.kind === "custom") {
+    return [
+      { id: "connecting", complete: status.connectorRegistered },
+      { id: "openingLink", complete: status.tunnelServing },
+      { id: "checkingHostname", complete: status.dns === "resolved" },
+    ];
+  }
+  return [
+    { id: "connecting", complete: status.connectorRegistered },
+    { id: "openingLink", complete: status.tunnelServing },
+  ];
 }
 
 export function remoteAccessOperationRevision(
@@ -243,6 +281,7 @@ export function remoteAccessOperationRevision(
     return JSON.stringify([
       status.customState,
       status.customHostname,
+      status.customTunnelName,
       status.customRunnable,
       status.loginUrl,
       status.customError,
@@ -404,31 +443,6 @@ export function remoteAccessBlockMessageId(
       return "colabManaged";
     case "colab":
       return "colab";
-    default:
-      return null;
-  }
-}
-
-// Compatibility for consumers that still render the pre-localization English copy.
-export function remoteAccessBlockMessage(
-  reason: string | null,
-  isDesktop: boolean,
-): string | null {
-  switch (remoteAccessBlockMessageId(reason, isDesktop)) {
-    case "serverStarting":
-      return "Unsloth is still starting.";
-    case "passwordDesktop":
-      return "Set a remote password before exposing this server.";
-    case "passwordWeb":
-      return "Change the administrator password before exposing this server. In the desktop app, run unsloth studio reset-password.";
-    case "explicitlyDisabled":
-      return "This launch used --no-cloudflare. Restart without it to enable remote access.";
-    case "launchManaged":
-      return "This tunnel is managed by the launch command.";
-    case "colabManaged":
-      return "This tunnel is managed by the Colab runtime.";
-    case "colab":
-      return "Remote access settings are managed by the Colab runtime.";
     default:
       return null;
   }

@@ -37,6 +37,7 @@ import {
 import {
   type RemoteAccessBlockMessageId,
   type RemoteAccessOperation,
+  type RemoteAccessProgressStepId,
   type RemoteAccessRequestAxis,
   type RemoteAccessStatus,
   remoteAccessAutoStartKind,
@@ -44,16 +45,18 @@ import {
   remoteAccessBlockMessageId,
   remoteAccessCustomActionsDisabled,
   remoteAccessCustomOperationInFlight,
-  remoteAccessCustomReadiness,
   remoteAccessCustomTeardownMessageId,
   remoteAccessDnsConflictHostname,
   remoteAccessHeaderActionDisabled,
+  remoteAccessIsReady,
   remoteAccessOperationRevision,
   remoteAccessPollDelay,
   remoteAccessPreferredKind,
+  remoteAccessProgressSteps,
   remoteAccessRequestMessageId,
   remoteAccessSelfStopPoll,
   remoteAccessShouldClearRequestError,
+  remoteAccessShowsCustomPanel,
   remoteAccessStopDisconnectsOrigin,
   remoteAccessTeardownNeedsLocalOrigin,
   remoteAccessUsableUrl,
@@ -77,6 +80,11 @@ import { ChangePasswordDialog } from "./change-password-dialog";
 import { SettingsRow } from "./settings-row";
 
 type Translate = ReturnType<typeof useT>;
+
+const CLOUDFLARE_TUNNELS_URL =
+  "https://dash.cloudflare.com/?to=/:account/tunnels";
+const CLOUDFLARE_DNS_URL =
+  "https://dash.cloudflare.com/?to=/:account/:zone/dns/records";
 
 const BLOCK_MESSAGE_KEYS: Record<RemoteAccessBlockMessageId, TranslationKey> = {
   serverStarting: "settings.general.remoteAccess.blockServerStarting",
@@ -119,6 +127,10 @@ function localizedCustomError(
     }
     case "invalid_hostname":
       return t("settings.general.remoteAccess.errorInvalidHostname");
+    case "hostname_not_authorized":
+      return t("settings.general.remoteAccess.errorWrongDomain", {
+        hostname: status.customErrorDetail ?? status.customHostname ?? "",
+      });
     case "certificate_exists": {
       return t("settings.general.remoteAccess.errorCertificateExists", {
         path: status.customErrorDetail ?? "~/.cloudflared/cert.pem",
@@ -142,12 +154,26 @@ function localizedCustomError(
     case "route_failed":
       return t("settings.general.remoteAccess.errorSetupFailed");
     case "connector_stop_failed":
-    case "tunnel_delete_failed":
     case "teardown_failed":
       return t("settings.general.remoteAccess.errorTeardownFailed");
     default:
       return t("settings.general.remoteAccess.errorUnknown");
   }
+}
+
+function localizedRuntimeError(
+  status: RemoteAccessStatus | null,
+  t: Translate,
+): string | null {
+  if (!status?.error) {
+    return null;
+  }
+  if (status.error === "custom_hostname_unreachable") {
+    return t("settings.general.remoteAccess.errorHostnameUnreachable", {
+      hostname: status.customHostname ?? "",
+    });
+  }
+  return t("settings.general.remoteAccess.runtimeFailed");
 }
 
 function localizedRequestError(error: unknown, t: Translate): string {
@@ -166,43 +192,71 @@ function localizedRequestError(error: unknown, t: Translate): string {
   }
 }
 
-function stateDotClass(state?: RemoteAccessStatus["state"]): string {
-  if (state === "online") {
-    return "bg-emerald-500";
-  }
-  if (state === "starting" || state === "stopping") {
-    return "animate-pulse bg-blue-500";
-  }
-  return state === "error" ? "bg-red-500" : "bg-muted-foreground";
-}
+const PROGRESS_MESSAGE_KEYS: Record<
+  RemoteAccessProgressStepId,
+  TranslationKey
+> = {
+  connecting: "settings.general.remoteAccess.progressConnecting",
+  openingLink: "settings.general.remoteAccess.progressOpeningLink",
+  checkingHostname: "settings.general.remoteAccess.progressCheckingHostname",
+  disconnecting: "settings.general.remoteAccess.progressDisconnecting",
+};
 
-function AccessStatus({ status }: { status: RemoteAccessStatus | null }) {
+function ConnectionProgress({ status }: { status: RemoteAccessStatus | null }) {
   const t = useT();
-  const labels: Record<RemoteAccessStatus["state"], string> = {
-    off: t("settings.general.remoteAccess.stateOff"),
-    starting: t("settings.general.remoteAccess.stateStarting"),
-    online: t("settings.general.remoteAccess.stateOnline"),
-    stopping: t("settings.general.remoteAccess.stateStopping"),
-    error: t("common.error"),
-  };
-  const owners = {
-    launch: t("settings.general.remoteAccess.ownerLaunch"),
-    settings: t("settings.general.remoteAccess.ownerSettings"),
-    colab: t("settings.general.remoteAccess.ownerColab"),
-  };
-  const owner = status?.managedBy ? owners[status.managedBy] : null;
+  const ready = remoteAccessIsReady(status);
+  const steps = remoteAccessProgressSteps(status);
+  const [showReady, setShowReady] = useState(false);
+  useEffect(() => {
+    if (!ready) {
+      setShowReady(false);
+      return;
+    }
+    setShowReady(true);
+    const timer = window.setTimeout(() => setShowReady(false), 3200);
+    return () => window.clearTimeout(timer);
+  }, [ready]);
+  if (showReady) {
+    return (
+      <output
+        className="flex items-center gap-1.5 text-xs text-emerald-600"
+        aria-live="polite"
+      >
+        <HugeiconsIcon icon={Tick02Icon} className="size-3.5" />
+        {t("settings.general.remoteAccess.ready")}
+      </output>
+    );
+  }
+  if (steps.length === 0) {
+    return null;
+  }
+  const activeStep = steps.findIndex((step) => !step.complete);
   return (
     <output
-      className="flex items-center gap-1.5 text-xs text-muted-foreground"
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground"
       aria-live="polite"
     >
-      <span
-        className={cn("size-2 rounded-full", stateDotClass(status?.state))}
-      />
-      {status
-        ? labels[status.state]
-        : t("settings.general.remoteAccess.unavailable")}
-      {owner ? ` · ${owner}` : ""}
+      {steps.map((step, index) => (
+        <span
+          key={step.id}
+          className={cn(
+            "flex items-center gap-1.5",
+            step.complete && "text-emerald-600",
+          )}
+        >
+          {step.complete ? (
+            <HugeiconsIcon icon={Tick02Icon} className="size-3.5" />
+          ) : (
+            <span
+              className={cn(
+                "size-2 rounded-full bg-muted-foreground/40",
+                index === activeStep && "animate-pulse bg-blue-500",
+              )}
+            />
+          )}
+          {t(PROGRESS_MESSAGE_KEYS[step.id])}
+        </span>
+      ))}
     </output>
   );
 }
@@ -412,32 +466,6 @@ function RemoteAccessMethodControl({
   );
 }
 
-function ReadinessItem({
-  label,
-  ready,
-  active,
-  waitingLabel,
-}: {
-  label: string;
-  ready: boolean;
-  active: boolean;
-  waitingLabel?: string;
-}) {
-  const t = useT();
-  return (
-    <li className="flex items-center justify-between gap-3 text-xs">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={ready ? "text-emerald-600" : "text-muted-foreground"}>
-        {ready
-          ? t("settings.general.remoteAccess.ready")
-          : active
-            ? (waitingLabel ?? t("settings.general.remoteAccess.waiting"))
-            : t("settings.general.remoteAccess.stateOff")}
-      </span>
-    </li>
-  );
-}
-
 function CustomTunnelSetup({
   status,
   hostname,
@@ -452,42 +480,75 @@ function CustomTunnelSetup({
   onProvision: () => void;
 }) {
   const t = useT();
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const disabled = remoteAccessCustomActionsDisabled(status, busy !== null);
   return (
-    <form
-      className="mt-3 flex flex-col gap-2 sm:flex-row"
-      onSubmit={(event) => {
-        event.preventDefault();
-        onProvision();
-      }}
-    >
-      <Input
-        value={hostname}
-        onChange={(event) => setHostname(event.target.value)}
-        placeholder={t("settings.general.remoteAccess.hostnamePlaceholder")}
-        aria-label={t("settings.general.remoteAccess.hostnameLabel")}
-        disabled={disabled}
-      />
-      <Button
-        type="submit"
-        size="sm"
-        className="shrink-0"
-        disabled={disabled || hostname.trim().length === 0}
+    <>
+      <form
+        className="mt-3 flex gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setConfirmOpen(true);
+        }}
       >
-        {busy === "provision"
-          ? t("settings.general.remoteAccess.settingUp")
-          : t("settings.general.remoteAccess.setupAction")}
-      </Button>
-    </form>
+        <Input
+          value={hostname}
+          onChange={(event) => setHostname(event.target.value)}
+          placeholder={t("settings.general.remoteAccess.hostnamePlaceholder")}
+          aria-label={t("settings.general.remoteAccess.hostnameLabel")}
+          disabled={disabled}
+        />
+        <Button
+          type="submit"
+          size="sm"
+          className="shrink-0"
+          disabled={disabled || hostname.trim().length === 0}
+        >
+          {busy === "provision"
+            ? t("settings.general.remoteAccess.settingUp")
+            : t("settings.general.remoteAccess.setupAction")}
+        </Button>
+      </form>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("settings.general.remoteAccess.setupConfirmTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-3">
+              <span className="block">
+                {t("settings.general.remoteAccess.setupConfirmDescription")}
+              </span>
+              <code className="block break-all rounded-md bg-muted px-3 py-2 font-mono text-xs text-foreground">
+                {hostname.trim()}
+              </code>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setConfirmOpen(false);
+                onProvision();
+              }}
+            >
+              {t("settings.general.remoteAccess.setupConfirmAction")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
 function CustomTunnelProgress({
   status,
+  hostname,
   busy,
   onCancel,
 }: {
   status: RemoteAccessStatus;
+  hostname: string;
   busy: RemoteAccessOperation | null;
   onCancel: () => void;
 }) {
@@ -500,27 +561,33 @@ function CustomTunnelProgress({
     >
       <p className="text-xs leading-snug text-muted-foreground">
         {status.customState === "tearing_down"
-          ? t("settings.general.remoteAccess.teardownProgress")
-          : t("settings.general.remoteAccess.provisionProgress")}
+          ? t("settings.general.remoteAccess.removeProgress")
+          : status.loginUrl
+            ? t("settings.general.remoteAccess.setupAuthorize", {
+                hostname: status.customHostname ?? hostname,
+              })
+            : t("settings.general.remoteAccess.setupPreparing")}
       </p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {status.loginUrl ? (
-          <Button asChild={true} type="button" size="sm">
-            <a href={status.loginUrl} target="_blank" rel="noreferrer">
-              {t("settings.general.remoteAccess.openCloudflare")}
-            </a>
+      {status.customState === "provisioning" ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {status.loginUrl ? (
+            <Button asChild={true} type="button" size="sm">
+              <a href={status.loginUrl} target="_blank" rel="noreferrer">
+                {t("settings.general.remoteAccess.openCloudflare")}
+              </a>
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onCancel}
+            disabled={busy !== null}
+          >
+            {t("common.cancel")}
           </Button>
-        ) : null}
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={onCancel}
-          disabled={busy !== null}
-        >
-          {t("common.cancel")}
-        </Button>
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -535,7 +602,6 @@ function CustomTunnelIdentity({
   onTeardown: () => void;
 }) {
   const t = useT();
-  const readiness = remoteAccessCustomReadiness(status);
   const teardownDisconnectsOrigin = remoteAccessTeardownNeedsLocalOrigin(
     status,
     typeof window === "undefined" ? "" : window.location.origin,
@@ -546,68 +612,86 @@ function CustomTunnelIdentity({
       aria-live="polite"
       aria-atomic="true"
     >
-      <code className="break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
-        {status.customHostname}
-      </code>
-      <ul className="flex flex-col gap-1.5">
-        <ReadinessItem
-          label={t("settings.general.remoteAccess.connectorReady")}
-          ready={readiness.connectorReady}
-          active={readiness.active}
-        />
-        <ReadinessItem
-          label={t("settings.general.remoteAccess.tunnelReady")}
-          ready={readiness.tunnelReady}
-          active={readiness.active}
-        />
-        <ReadinessItem
-          label={t("settings.general.remoteAccess.dnsReady")}
-          ready={readiness.dnsReady}
-          active={readiness.active}
-          waitingLabel={
-            status.dns === "pending"
-              ? t("settings.general.remoteAccess.dnsPending")
-              : t("settings.general.remoteAccess.dnsUnknown")
-          }
-        />
-      </ul>
-      {readiness.active && status.dns !== "resolved" ? (
-        <p className="text-xs leading-snug text-muted-foreground">
-          {t("settings.general.remoteAccess.dnsLinkWaiting")}
-        </p>
-      ) : null}
-      <AlertDialog>
-        <AlertDialogTrigger asChild={true}>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="self-start text-destructive hover:text-destructive"
-            disabled={
-              remoteAccessCustomActionsDisabled(status, busy !== null) ||
-              teardownDisconnectsOrigin
-            }
-          >
-            {t("settings.general.remoteAccess.removeAction")}
-          </Button>
-        </AlertDialogTrigger>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {t("settings.general.remoteAccess.removeTitle")}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {t("settings.general.remoteAccess.removeDescription")}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={onTeardown}>
-              {t("settings.general.remoteAccess.removeConfirm")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <div className="flex items-center gap-2">
+        <code className="min-w-0 flex-1 break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+          {status.customHostname}
+        </code>
+        <AlertDialog>
+          <AlertDialogTrigger asChild={true}>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="shrink-0 text-destructive hover:text-destructive"
+              disabled={
+                remoteAccessCustomActionsDisabled(status, busy !== null) ||
+                teardownDisconnectsOrigin
+              }
+            >
+              {t("settings.general.remoteAccess.removeAction")}
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {t("settings.general.remoteAccess.removeTitle")}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {t("settings.general.remoteAccess.removeDescription")}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-3 text-sm">
+              <div className="space-y-2 rounded-md border border-border p-3">
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.general.remoteAccess.removeTunnelHint")}
+                </p>
+                <code className="block break-all font-mono text-xs text-foreground">
+                  {status.customTunnelName ??
+                    t("settings.general.remoteAccess.tunnelNameUnavailable")}
+                </code>
+                <Button
+                  asChild={true}
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                >
+                  <a
+                    href={CLOUDFLARE_TUNNELS_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {t("settings.general.remoteAccess.openCloudflareTunnels")}
+                  </a>
+                </Button>
+              </div>
+              <div className="space-y-2 rounded-md border border-border p-3">
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.general.remoteAccess.removeDnsHint")}
+                </p>
+                <code className="block break-all font-mono text-xs text-foreground">
+                  {status.customHostname}
+                </code>
+                <Button
+                  asChild={true}
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                >
+                  <a href={CLOUDFLARE_DNS_URL} target="_blank" rel="noreferrer">
+                    {t("settings.general.remoteAccess.openCloudflareDns")}
+                  </a>
+                </Button>
+              </div>
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+              <AlertDialogAction variant="destructive" onClick={onTeardown}>
+                {t("settings.general.remoteAccess.removeConfirm")}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
       {teardownDisconnectsOrigin ? (
         <p className="text-xs leading-snug text-muted-foreground">
           {t("settings.general.remoteAccess.removeLocally")}
@@ -628,13 +712,6 @@ function CustomTunnelMessages({ status }: { status: RemoteAccessStatus }) {
         >
           <p>{localizedCustomError(status, t)}</p>
         </div>
-      ) : null}
-      {status.orphanedHostnames.length > 0 ? (
-        <p className="mt-3 text-xs leading-snug text-muted-foreground">
-          {t("settings.general.remoteAccess.orphanedRecords", {
-            hostnames: status.orphanedHostnames.join(", "),
-          })}
-        </p>
       ) : null}
     </>
   );
@@ -667,10 +744,10 @@ function CustomTunnelPanel({
     <div className="border-t border-border/60 p-4">
       <div className="flex flex-col gap-1">
         <h3 className="text-sm font-medium text-foreground">
-          {t("settings.general.remoteAccess.stableTitle")}
+          {t("settings.general.remoteAccess.customHostnameTitle")}
         </h3>
         <p className="text-xs leading-snug text-muted-foreground">
-          {t("settings.general.remoteAccess.stableDescription")}
+          {t("settings.general.remoteAccess.customHostnameDescription")}
         </p>
       </div>
 
@@ -685,7 +762,12 @@ function CustomTunnelPanel({
       )}
 
       {operating ? (
-        <CustomTunnelProgress status={status} busy={busy} onCancel={onCancel} />
+        <CustomTunnelProgress
+          status={status}
+          hostname={hostname.trim()}
+          busy={busy}
+          onCancel={onCancel}
+        />
       ) : null}
 
       {hasIdentity && !operating ? (
@@ -895,6 +977,10 @@ export function RemoteAccessSection() {
           : remoteAccessPreferredKind(status) === "custom"
             ? t("settings.general.remoteAccess.connectAction")
             : t("settings.general.remoteAccess.temporaryAction");
+  const showHeaderAction =
+    stopAction ||
+    remoteAccessPreferredKind(status) === "temporary" ||
+    status?.customRunnable === true;
 
   return (
     <section
@@ -914,32 +1000,30 @@ export function RemoteAccessSection() {
               <h2 className="text-base font-semibold font-heading text-foreground">
                 {t("settings.general.remoteAccess.sectionTitle")}
               </h2>
-              <AccessStatus status={status} />
+              <ConnectionProgress status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
               {t("settings.general.remoteAccess.description")}
             </p>
           </div>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant={stopAction ? "outline" : "default"}
-          className="min-w-20 shrink-0"
-          onClick={stopAction ? stop : start}
-          disabled={actionDisabled}
-        >
-          {actionLabel}
-        </Button>
+        {showHeaderAction ? (
+          <Button
+            type="button"
+            size="sm"
+            variant={stopAction ? "outline" : "default"}
+            className="min-w-20 shrink-0"
+            onClick={stopAction ? stop : start}
+            disabled={actionDisabled}
+          >
+            {actionLabel}
+          </Button>
+        ) : null}
       </div>
 
       <StatusMessage
         message={
-          blockMessage ??
-          requestError ??
-          (status?.error
-            ? t("settings.general.remoteAccess.runtimeFailed")
-            : null)
+          blockMessage ?? requestError ?? localizedRuntimeError(status, t)
         }
         destructive={!blockMessage}
       />
@@ -949,18 +1033,6 @@ export function RemoteAccessSection() {
           : ""}
       </output>
       <RemoteUrlPanel status={status} />
-
-      {status ? (
-        <CustomTunnelPanel
-          status={status}
-          hostname={hostname}
-          setHostname={setHostname}
-          busy={busy}
-          onProvision={provision}
-          onCancel={cancel}
-          onTeardown={teardown}
-        />
-      ) : null}
 
       <div className="border-t border-border/60 px-4 py-1">
         <SettingsRow
@@ -977,7 +1049,21 @@ export function RemoteAccessSection() {
             onChange={setMethod}
           />
         </SettingsRow>
+      </div>
 
+      {remoteAccessShowsCustomPanel(status) && status ? (
+        <CustomTunnelPanel
+          status={status}
+          hostname={hostname}
+          setHostname={setHostname}
+          busy={busy}
+          onProvision={provision}
+          onCancel={cancel}
+          onTeardown={teardown}
+        />
+      ) : null}
+
+      <div className="border-t border-border/60 px-4 py-1">
         <RemotePasswordRow status={status} onDone={refreshStatus} />
 
         <SettingsRow
