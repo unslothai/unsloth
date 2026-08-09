@@ -185,3 +185,34 @@ test("no effect resets the grant, which would leave a stale render", () => {
   source.forEachChild(visit);
   assert.ok(!resetInEffect, "the grant must not be reset from an effect");
 });
+
+const URI_CAP = /current\.uris\.length >= BLOCKED_URIS_TRACKED/;
+const BAILS_OUT = /\?\s*current/;
+
+/** The updater passed to the lone `setBlocked(...)` that appends a URI. */
+function readBlockedAppendUpdater(): string {
+  const source = sourceFile(FRAME);
+  let text: string | undefined;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText() === "setBlocked" &&
+      node.arguments[0]?.getText().includes("current.uris")
+    ) {
+      text = node.arguments[0].getText();
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  if (!text) throw new Error("no setBlocked updater appends to uris");
+  return text;
+}
+
+// The canvas picks the blocked URIs, so an uncapped list is memory growth and a
+// parent re-render per message, both driven from inside the sandbox. Returning
+// `current` past the cap is what makes React bail out of the re-render too.
+test("blocked-resource state is capped against the untrusted canvas", () => {
+  const updater = readBlockedAppendUpdater();
+  assert.match(updater, URI_CAP);
+  assert.match(updater, BAILS_OUT);
+});

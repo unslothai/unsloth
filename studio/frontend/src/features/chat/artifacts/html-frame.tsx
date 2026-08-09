@@ -14,6 +14,9 @@ import { hashArtifactCode } from "./types";
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
 const HTML_FRAME_MAX_HEIGHT = 900;
 const BLOCKED_HOSTS_SHOWN = 3;
+// Far above what a real page trips, so the banner's count stays exact in
+// practice; it only saturates for a canvas manufacturing violations.
+const BLOCKED_URIS_TRACKED = 100;
 
 function blockedHost(uri: string): string | null {
   try {
@@ -108,7 +111,11 @@ export function ArtifactHtmlFrame({
         const host = blockedHost(uri);
         if (!host) return;
         setBlocked((current) =>
-          current.uris.includes(uri)
+          // Both arms return `current` so React bails out of the re-render. The
+          // canvas is untrusted and picks these URIs, so without the cap it can
+          // grow this state and re-render the parent without bound.
+          current.uris.includes(uri) ||
+          current.uris.length >= BLOCKED_URIS_TRACKED
             ? current
             : {
                 uris: [...current.uris, uri],
