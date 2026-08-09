@@ -3338,8 +3338,7 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
                     rel = f.relative_to(root).as_posix()
                 except ValueError:
                     rel = f.name
-                q = _main_variant_gguf_label(rel)
-                if q is None or _normalized_quant_label(q) != want:
+                if want not in _main_variant_names(rel):
                     continue
                 try:
                     total += f.stat().st_size
@@ -3649,6 +3648,20 @@ def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
     if _is_big_endian_gguf_path(rel_path, label):
         return None
     return label
+
+
+def _main_variant_names(rel_path: str) -> tuple[str, ...]:
+    """Every spelling that names this file's variant, normalised for comparison.
+
+    The quant label alone is ambiguous in a repo holding several checkpoints at one
+    quant, so the file's own variant key counts too.
+    """
+    label = _main_variant_gguf_label(rel_path)
+    if label is None:
+        return ()
+    return tuple(
+        {_normalized_quant_label(label), _normalized_quant_label(_gguf_variant_key(rel_path))}
+    )
 
 
 def _normalized_quant_label(label: str) -> str:
@@ -4431,8 +4444,7 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
                         rel = p.relative_to(snapshot).as_posix()
                     except ValueError:
                         pass
-                label = _main_variant_gguf_label(rel)
-                if label is None or _normalized_quant_label(label) != want:
+                if want not in _main_variant_names(rel):
                     continue
                 if p.exists() or p.is_symlink():
                     matches.append((rel, p))
