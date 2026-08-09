@@ -2797,20 +2797,26 @@ def test_a_delete_waits_for_a_call_running_in_another_studio(tmp_path, monkeypat
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
 
     # What the other process leaves in the ledger while its tool runs.
-    tools._record_workdir(session, f"{os.getpid() + 1}:{time.time():.0f}", tools._BUSY)
+    tools._record_workdir(
+        tools._session_key(session), f"{os.getpid() + 1}:{time.time():.0f}", tools._BUSY,
+    )
     assert tools.remove_session_sandbox(session, delete_files = True) is False
     assert (workdir / "report.csv").is_file(), "removed under another process's call"
-    assert tools._recorded_workdir(session, tools._PENDING_DELETE) == "1"
+    assert tools._recorded_workdir(
+        tools._session_key(session), tools._PENDING_DELETE,
+    ) == f"1|{session}"
 
     # Once that process is gone, the next startup carries it out.
-    tools._record_workdir(session, None, tools._BUSY)
+    tools._record_workdir(tools._session_key(session), None, tools._BUSY)
     tools.sweep_pending_deletes()
     for _ in range(50):
         if not workdir.exists():
             break
         time.sleep(0.05)
     assert not workdir.exists()
-    assert tools._recorded_workdir(session, tools._PENDING_DELETE) is None
+    assert tools._recorded_workdir(
+        tools._session_key(session), tools._PENDING_DELETE,
+    ) is None
 
 
 def test_a_stale_busy_entry_does_not_keep_a_sandbox_forever(tmp_path, monkeypatch):
@@ -2823,7 +2829,9 @@ def test_a_stale_busy_entry_does_not_keep_a_sandbox_forever(tmp_path, monkeypatc
     session = "__LOCALID_stale22"
     workdir = Path(tools.get_sandbox_workdir(session))
     long_ago = time.time() - tools._BUSY_TTL_SECONDS - 60
-    tools._record_workdir(session, f"{os.getpid() + 1}:{long_ago:.0f}", tools._BUSY)
+    tools._record_workdir(
+        tools._session_key(session), f"{os.getpid() + 1}:{long_ago:.0f}", tools._BUSY,
+    )
 
     assert tools._busy_elsewhere(session) is False
     assert tools.remove_session_sandbox(session) is True
@@ -2844,7 +2852,9 @@ def test_our_own_call_still_uses_the_in_memory_count(tmp_path, monkeypatch):
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
 
     with tools._session_in_flight(session):
-        assert tools._recorded_workdir(session, tools._BUSY), "did not say it was busy"
+        assert tools._recorded_workdir(
+            tools._session_key(session), tools._BUSY,
+        ), "did not say it was busy"
         assert tools._busy_elsewhere(session) is False
         assert tools.remove_session_sandbox(session, delete_files = True) is False
     # Queued in memory, so it happens as the call ends, not at the next startup.
@@ -2853,7 +2863,7 @@ def test_our_own_call_still_uses_the_in_memory_count(tmp_path, monkeypatch):
             break
         time.sleep(0.05)
     assert not workdir.exists()
-    assert tools._recorded_workdir(session, tools._BUSY) is None
+    assert tools._recorded_workdir(tools._session_key(session), tools._BUSY) is None
 
 
 def test_a_migration_is_only_visible_once_it_has_finished(tmp_path, monkeypatch):
@@ -2889,6 +2899,125 @@ def test_a_migration_is_only_visible_once_it_has_finished(tmp_path, monkeypatch)
     assert seen and all(tools._STAGING_SUFFIX in name for name in seen), seen
     assert (root / "__LOCALID_stage11" / "big.bin").read_bytes() == b"x" * 4096
     assert not list(root.glob(f"*{tools._STAGING_SUFFIX}*")), "a staging directory was left"
+
+
+def test_a_record_cannot_name_a_similar_chats_directory(tmp_path, monkeypatch):
+    """Ids a and ab are different chats, and the ledger is reachable from a
+    sandbox, so a prefix test let one of them name the other's folder."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    victim = Path(tools.get_sandbox_workdir("ab"))
+    (victim / "private.csv").write_text("theirs", encoding = "utf-8")
+    Path(tools.get_sandbox_workdir("a"))
+
+    # What a tool in "a" can do to the ledger: drop ab's record, point a there.
+    tools._record_workdir("ab", None)
+    tools._record_workdir("a", str(victim))
+    tools._workdirs.clear()
+
+    landed = Path(tools.get_sandbox_workdir("a"))
+    assert landed != victim, "took the other chat's directory"
+    assert not (landed / "private.csv").exists()
+    assert Path(tools.resolve_sandbox_workdir("a")) != victim
+    assert (victim / "private.csv").is_file()
+
+
+def test_two_processes_in_one_sandbox_both_hold_it(tmp_path, monkeypatch):
+    """The one that finishes first must not clear the other's note."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_share11"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    other = os.getpid() + 1
+    tools._record_workdir(
+        tools._session_key(session), f"{other}:{time.time():.0f}", tools._BUSY,
+    )
+    with tools._session_in_flight(session):
+        owners = tools._busy_owners(session)
+        assert set(owners) == {str(other), str(os.getpid())}, owners
+    # Ours is gone, theirs is not, so the sandbox is still held.
+    assert set(tools._busy_owners(session)) == {str(other)}
+    assert tools._busy_elsewhere(session) is True
+    assert tools.remove_session_sandbox(session, delete_files = True) is False
+    assert (workdir / "report.csv").is_file()
+
+
+def test_a_busy_note_keyed_by_case_is_seen_by_the_other_casing(tmp_path, monkeypatch):
+    """One directory on Windows and on a default macOS volume, so the note has
+    to be keyed the way the in-memory count is."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("CaseBusy"))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    tools._record_workdir(
+        tools._session_key("casebusy"), f"{os.getpid() + 1}:{time.time():.0f}", tools._BUSY,
+    )
+    assert tools._busy_elsewhere("CaseBusy") is True
+    assert tools.remove_session_sandbox("CaseBusy", delete_files = True) is False
+    assert (workdir / "report.csv").is_file()
+
+
+def test_a_delete_left_by_another_studio_happens_when_our_call_ends(tmp_path, monkeypatch):
+    """Both processes can stay up, and the startup sweep would never run."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_hand111"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    with tools._session_in_flight(session):
+        # What the other Studio writes when it finds us busy.
+        tools._record_workdir(
+            tools._session_key(session), f"1|{session}", tools._PENDING_DELETE,
+        )
+    for _ in range(50):
+        if not workdir.exists():
+            break
+        time.sleep(0.05)
+    assert not workdir.exists(), "the handed-over delete never happened"
+
+
+def test_a_move_staged_but_never_renamed_is_finished_later(tmp_path, monkeypatch):
+    """The legacy entry is gone by then, so nothing else would look at it."""
+    fake_home = tmp_path / "userprofile"
+    (fake_home / "studio_sandbox").mkdir(parents = True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    root = Path(tools.sandbox_root())
+    root.mkdir(parents = True, exist_ok = True)
+    staged = root / f"__LOCALID_crash11{tools._STAGING_SUFFIX}0a1b2c3d"
+    staged.mkdir()
+    (staged / "sales.csv").write_text("a,b\n", encoding = "utf-8")
+
+    tools._migrate_legacy_sandbox(str(root))
+    assert not staged.exists(), "the staged copy was left hidden"
+    assert (root / "__LOCALID_crash11" / "sales.csv").is_file()
+    assert Path(tools.get_sandbox_workdir("__LOCALID_crash11")) == root / "__LOCALID_crash11"
 
 
 if __name__ == "__main__":

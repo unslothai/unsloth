@@ -618,7 +618,7 @@ async def lifespan(app: FastAPI):
         )
 
         sweep_detached_sandboxes()
-        sweep_pending_deletes()
+        sweep_pending_deletes()  # deletes another Studio left for us
         migrate_legacy_sandbox_in_background()
     except Exception:  # noqa: BLE001
         pass

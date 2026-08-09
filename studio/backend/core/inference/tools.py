@@ -7121,43 +7121,74 @@ _pending_removals: "dict[str, dict[str, bool]]" = {}
 _active_sessions_lock = threading.Lock()
 
 
-def _mark_busy(session_id: str, busy: bool) -> None:
-    """Note in the ledger that this process is running in that sandbox."""
+def _busy_owners(session_id: str) -> "dict[str, float]":
+    """pid -> when it said so, for everything still holding this sandbox."""
     import time
-    _record_workdir(
-        session_id,
-        f"{os.getpid()}:{time.time():.0f}" if busy else None,
-        _BUSY,
-    )
+
+    entry = _recorded_workdir(_session_key(session_id), _BUSY)
+    owners: "dict[str, float]" = {}
+    now = time.time()
+    for part in (entry or "").split(","):
+        pid, _, when = part.partition(":")
+        if not pid:
+            continue
+        try:
+            at = float(when)
+        except ValueError:
+            continue
+        # Older than a tool call can run: whoever wrote it is not coming back.
+        if now - at < _BUSY_TTL_SECONDS:
+            owners[pid] = at
+    return owners
+
+
+def _mark_busy(session_id: str, busy: bool) -> None:
+    """Note in the ledger that this process is running in that sandbox.
+
+    One entry per process: two Studios can be in the same sandbox, and the one
+    that finishes first must not clear the other's note.
+    """
+    import time
+
+    mine = str(os.getpid())
+    with _busy_lock:
+        owners = _busy_owners(session_id)
+        if busy:
+            owners[mine] = time.time()
+        else:
+            owners.pop(mine, None)
+        _record_workdir(
+            _session_key(session_id),
+            ",".join(f"{pid}:{at:.0f}" for pid, at in owners.items()) or None,
+            _BUSY,
+        )
 
 
 def _busy_elsewhere(session_id: str) -> bool:
     """Whether another process says it is running a call for this session."""
-    import time
+    return any(pid != str(os.getpid()) for pid in _busy_owners(session_id))
 
-    entry = _recorded_workdir(session_id, _BUSY)
-    if not entry:
-        return False
-    pid, _, when = entry.partition(":")
-    if pid == str(os.getpid()):
-        return False  # ours, and the in-memory count is the accurate answer
+
+def _drain_pending_delete(key: str) -> None:
+    """Carry out a delete left for whoever is still up, if nobody holds it now."""
+    wanted = _recorded_workdir(key, _PENDING_DELETE)
+    if not wanted or _busy_owners(key):
+        return
+    flag, _, session_id = wanted.partition("|")
+    if not session_id:
+        return
+    _record_workdir(key, None, _PENDING_DELETE)
     try:
-        return (time.time() - float(when)) < _BUSY_TTL_SECONDS
-    except ValueError:
-        return False
+        remove_session_sandbox(session_id, delete_files = flag == "1")
+    except Exception:  # noqa: BLE001 - best effort, like the rest of this
+        logger.debug("deferred sandbox delete failed", exc_info = True)
 
 
 def sweep_pending_deletes() -> None:
     """Carry out deletes that were left to whoever outlived the busy process."""
     entries = _owners_read(_owners_path()).get(_PENDING_DELETE)
-    for name, wanted in list(entries.items() if isinstance(entries, dict) else []):
-        if _busy_elsewhere(name):
-            continue
-        _record_workdir(name, None, _PENDING_DELETE)
-        try:
-            remove_session_sandbox(name, delete_files = wanted == "1")
-        except Exception:  # noqa: BLE001 - best effort, like the rest of this
-            logger.debug("deferred sandbox delete failed", exc_info = True)
+    for key in list(entries.keys() if isinstance(entries, dict) else []):
+        _drain_pending_delete(key)
 
 
 def _session_key(session_id: "str | None") -> str:
@@ -7192,6 +7223,8 @@ def _session_in_flight(session_id: "str | None"):
                 _active_sessions[key] -= 1
         if last and session_id:
             _mark_busy(session_id, False)
+            # Ours was maybe the call another Studio's delete was waiting on.
+            _drain_pending_delete(key)
 
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
@@ -7263,6 +7296,9 @@ _PENDING_DELETE = "pending_delete"
 # Longer than a tool call can run, so a process that died holding an entry does
 # not keep a folder alive for good.
 _BUSY_TTL_SECONDS = 900
+# Serialises this process's read-modify-write of its own busy entry; the file
+# lock inside _record_workdir covers the other processes.
+_busy_lock = threading.Lock()
 _SESSIONS = "sessions"
 _owners_lock = threading.Lock()
 
@@ -7451,7 +7487,12 @@ def _trusted_record(root: str, session_id: str) -> "str | None":
         return None
     if not _contained_in_root(recorded, root) or os.path.dirname(recorded) != root:
         return None
-    if not os.path.basename(recorded).startswith(_sandbox_name(session_id)):
+    # A name this session could have been given, exactly: ids a and ab are
+    # different chats, and a prefix test let one of them name the other's
+    # directory. A marker naming us covers the fresh names we fall back to.
+    name = _sandbox_name(session_id)
+    allowed = {name, os.path.basename(_disambiguated_session_dir(root, session_id))}
+    if os.path.basename(recorded) not in allowed and _marker_owner(recorded) != name:
         return None
     if _claimed_by_other(recorded, session_id):
         return None
@@ -7613,6 +7654,27 @@ def _migrate_legacy_sandbox(root: str) -> None:
             _legacy_sandbox_migrated = True
 
 
+def _promote_staged_moves(root: str) -> None:
+    """Put a move that was interrupted between the copy and the rename in place.
+
+    The legacy entry is already gone by then, so nothing else would ever look
+    at the staging directory again.
+    """
+    try:
+        names = [n for n in os.listdir(root) if _STAGING_SUFFIX in n]
+    except OSError:
+        return
+    for name in names:
+        staged = os.path.join(root, name)
+        target = os.path.join(root, name.rsplit(_STAGING_SUFFIX, 1)[0])
+        if not os.path.isdir(staged) or os.path.islink(staged) or os.path.exists(target):
+            continue
+        try:
+            os.rename(staged, target)
+        except OSError as error:
+            logger.warning("Could not finish a staged sandbox move: %s", error)
+
+
 def _finish_partial_move(source: str, target: str) -> bool:
     """Move what is left of *source* into *target*. True when nothing remains.
 
@@ -7672,6 +7734,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
         if os.path.realpath(legacy) == os.path.realpath(root) or not os.path.isdir(legacy):
             return True
         os.makedirs(root, exist_ok = True)
+        _promote_staged_moves(root)
         moved = 0
         complete = True
         for name in os.listdir(legacy):
@@ -8002,7 +8065,12 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     if _busy_elsewhere(session_id):
         # Another Studio is running in there. Left for whichever process is
         # still up when that call ends, rather than pulled out from under it.
-        _record_workdir(session_id, "1" if delete_files else "0", _PENDING_DELETE)
+        # The id rides along: the key is folded, and the removal is not.
+        _record_workdir(
+            _session_key(session_id),
+            f"{'1' if delete_files else '0'}|{session_id}",
+            _PENDING_DELETE,
+        )
         return False
     key = _session_key(session_id)
     with _active_sessions_lock:
