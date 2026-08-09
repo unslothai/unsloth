@@ -17,6 +17,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNSLOTH_INIT = REPO_ROOT / "unsloth" / "__init__.py"
@@ -293,17 +295,22 @@ def test_mlx_branch_reports_unsloth_version_not_zoo():
     assert resolved == expected, f"MLX reported {resolved!r}, expected {expected!r}"
 
 
-def test_mlx_version_reads_the_source_beside_it_not_installed_metadata(tmp_path):
+@pytest.mark.parametrize("literal", ['__version__ = "9999.1.2"', "__version__ = '9999.1.2'"])
+def test_mlx_version_reads_the_source_beside_it_not_installed_metadata(tmp_path, literal):
     """The version must track the imported tree, so it agrees with the GPU path.
 
     An editable install that has moved on, or this checkout on PYTHONPATH beside
     another installed unsloth, both leave `importlib.metadata` describing a
     different tree. Point the helper at a package whose literal is a sentinel:
     reading distribution metadata returns the real version and fails here.
+
+    Both quote styles are valid Python and the packaging metadata reads either,
+    so recognising only one turns a reformat of that single line into a silent
+    fall-through to installed metadata.
     """
     package = tmp_path / "unsloth"
     (package / "models").mkdir(parents = True)
-    (package / "models" / "_utils.py").write_text('__version__ = "9999.1.2"\n', encoding = "utf-8")
+    (package / "models" / "_utils.py").write_text(literal + "\n", encoding = "utf-8")
     init = package / "__init__.py"
     init.write_text("", encoding = "utf-8")
 

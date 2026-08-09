@@ -96,11 +96,16 @@ def _unsloth_version():
     _utils = _os.path.join(_os.path.dirname(__file__), "models", "_utils.py")
     try:
         with open(_utils, encoding = "utf-8") as _f:
-            _match = _re.search(r'^__version__\s*=\s*"([^"]+)"', _f.read(), _re.MULTILINE)
+            # Either quote style: matching only one would silently fall through to
+            # metadata the day someone reformats that line, which is the exact
+            # mismatch this function exists to prevent.
+            _match = _re.search(
+                r"""^__version__\s*=\s*(["'])([^"']+)\1""", _f.read(), _re.MULTILINE
+            )
     except OSError:
         _match = None
     if _match:
-        return _match.group(1)
+        return _match.group(2)
     from importlib.metadata import PackageNotFoundError, version as _dist_version
 
     try:
