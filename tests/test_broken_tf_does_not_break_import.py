@@ -637,3 +637,91 @@ def test_the_default_snapshot_is_not_an_opt_in():
     _exec_guard({"transformers": object(), "transformers.utils.import_utils": import_utils}, {})
     assert import_utils._tf_available is False
     assert import_utils._flax_available is False
+
+
+def test_the_snapshot_is_overwritten_while_import_utils_is_mid_body():
+    """The window between Transformers' two reads of its own decision.
+
+    `import_utils` copies the environment into `USE_TF` / `USE_JAX` at the top and
+    only derives `_tf_available` / `_flax_available` from those globals ~150 lines
+    later. A guard that lands in between finds the environment already spent and no
+    flag to clear, so writing only those two left the cached `AUTO` to mark a broken
+    backend available. The constant is the one thing still read after this point.
+    """
+    import_utils = types.ModuleType("transformers.utils.import_utils")
+    import_utils.USE_TF = "AUTO"
+    import_utils.FORCE_TF_AVAILABLE = "AUTO"
+    import_utils.USE_JAX = "AUTO"
+    _exec_guard({"transformers": object(), "transformers.utils.import_utils": import_utils}, {})
+    assert import_utils.USE_TF == "0"
+    assert import_utils.USE_JAX == "0"
+    # Not a blunter write than the flag clearing: the same opt-outs still hold.
+    for modules, environ, kept in (
+        ({"tensorflow": object()}, {}, "USE_TF"),
+        ({"jax": object()}, {}, "USE_JAX"),
+        ({}, {"USE_TF": "1"}, "USE_TF"),
+        ({}, {"FORCE_TF_AVAILABLE": "1"}, "USE_TF"),
+        ({}, {"USE_FLAX": "1"}, "USE_JAX"),
+    ):
+        import_utils.USE_TF = import_utils.USE_JAX = "AUTO"
+        _exec_guard(
+            dict(
+                modules,
+                **{"transformers": object(), "transformers.utils.import_utils": import_utils},
+            ),
+            dict(environ),
+        )
+        assert getattr(import_utils, kept) == "AUTO", (modules, environ)
+
+
+def test_a_broken_backend_loses_inside_the_real_import_utils_window(tmp_path):
+    """The same window, against the installed Transformers rather than a stand-in.
+
+    Runs the real `import_utils.py` in two halves -- constants, then the flag
+    derivation -- with the guard in between, which is exactly what another thread
+    part-way through `import transformers` exposes. Without the constant write this
+    ends `_tf_available = True` with an unimportable TensorFlow on the path.
+    """
+    _needs_v4_flag("USE_TF")
+    out = _run(
+        """
+        import ast, pathlib, sys, types
+        from transformers.utils import import_utils as real
+
+        source = pathlib.Path(real.__file__).read_text(encoding = "utf-8")
+        head, tail = source.split("\\n_torch_available = False", 1)
+        tail = "\\n_torch_available = False" + tail
+        assert "USE_TF = os.environ" in head and "_tf_available = False" in tail
+
+        # Republish Transformers as a package that has only got as far as the top
+        # of `import_utils`, keeping the real __path__ so its own imports resolve.
+        package = pathlib.Path(real.__file__).parent
+        for name in [n for n in sys.modules if n == "transformers" or n.startswith("transformers.")]:
+            del sys.modules[name]
+        for name, path in (("transformers", package.parent), ("transformers.utils", package)):
+            module = types.ModuleType(name)
+            module.__path__ = [str(path)]
+            sys.modules[name] = module
+        window = types.ModuleType("transformers.utils.import_utils")
+        window.__file__ = str(real.__file__)
+        window.__package__ = "transformers.utils"
+        sys.modules["transformers.utils.import_utils"] = window
+        exec(compile(head, real.__file__, "exec"), window.__dict__)
+        print("WINDOW", window.USE_TF, hasattr(window, "_tf_available"))
+
+        block = None
+        for node in ast.parse(pathlib.Path({root!r}, "unsloth", "__init__.py").read_text()).body:
+            if isinstance(node, ast.If) and "sys.modules" in ast.unparse(node.test):
+                block = node
+                break
+        import os
+        exec(compile(ast.unparse(block), "<guard>", "exec"), {{"os": os, "sys": sys}})
+
+        exec(compile(tail, real.__file__, "exec"), window.__dict__)
+        print("TF", window.__dict__["_tf_available"])
+        """.format(root = str(_ROOT)),
+        site = _fake_tensorflow(tmp_path),
+    )
+    assert out.returncode == 0, out.stderr[-3000:]
+    assert "WINDOW AUTO False" in out.stdout, out.stdout
+    assert "TF False" in out.stdout, out.stdout

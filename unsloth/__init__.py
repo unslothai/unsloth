@@ -70,15 +70,23 @@ else:
     # from module scope is a deadlock, not a fix.
     _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
     _import_utils = sys.modules.get("transformers.utils.import_utils")
-    for _var, _flag, _modules, _opt_ins, _cached in (
+    for _var, _flag, _const, _modules, _opt_ins, _cached in (
         (
             "USE_TF",
             "_tf_available",
+            "USE_TF",
             ("tensorflow",),
             ("USE_TF", "FORCE_TF_AVAILABLE"),
             ("USE_TF", "FORCE_TF_AVAILABLE"),
         ),
-        ("USE_FLAX", "_flax_available", ("flax", "jax"), ("USE_FLAX",), ("USE_JAX",)),
+        (
+            "USE_FLAX",
+            "_flax_available",
+            "USE_JAX",
+            ("flax", "jax"),
+            ("USE_FLAX",),
+            ("USE_JAX",),
+        ),
     ):
         if any(_m in sys.modules for _m in _modules):
             continue
@@ -95,12 +103,20 @@ else:
             continue
         os.environ[_var] = "0"
         try:
+            # `import_utils` can itself be mid-body: it copies the environment into
+            # `USE_TF` / `USE_JAX` at the top and derives the flag from those same
+            # globals ~150 lines later, so between the two the environment is spent
+            # and the flag does not exist yet -- the only lever left is the constant.
+            # Present means 4.x already ran that copy, so the write is inert once the
+            # flag has been derived and decisive before it. 5.x has neither name.
+            if hasattr(_import_utils, _const):
+                setattr(_import_utils, _const, "0")
             # Absent on 5.x, and a module proxy can refuse the write.
             if getattr(_import_utils, _flag, False):
                 setattr(_import_utils, _flag, False)
         except (AttributeError, TypeError):
             pass
-    del _TRUE, _import_utils, _var, _flag, _modules, _opt_ins, _cached
+    del _TRUE, _import_utils, _var, _flag, _const, _modules, _opt_ins, _cached
 
 # Relax Metal's context-store timeout before MLX modules can initialize Metal.
 # Keep an explicit user value authoritative.
