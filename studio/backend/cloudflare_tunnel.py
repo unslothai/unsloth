@@ -25,6 +25,7 @@ import hashlib
 
 import errno
 
+import json
 import os
 import platform
 import re
@@ -33,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
@@ -53,6 +55,8 @@ _REGISTERED_MARKER = "Registered tunnel connection"
 _RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/download"
 
 _READY_TIMEOUT = 15.0  # seconds to wait for the URL + a registered edge connection
+# cloudflared drains in-flight requests for thirty seconds before it goes.
+_CONNECTOR_DRAIN_WAIT = 35.0
 _DOWNLOAD_TIMEOUT = 60  # urlopen timeout for the one-time binary download
 
 # A registered edge connection does not mean the hostname resolves yet, so the
@@ -422,6 +426,56 @@ def temporary_tunnel_args(port: int, protocol: Optional[str] = None) -> list:
     return args
 
 
+def _end_unrecorded_connector(proc: subprocess.Popen) -> bool:
+    with suppress(Exception):
+        proc.terminate()
+        try:
+            proc.wait(timeout = _CONNECTOR_DRAIN_WAIT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            with suppress(Exception):
+                proc.wait(timeout = 5)
+    return _process_exited(proc)
+
+
+def write_custom_ingress(
+    port: int,
+    identity: dict,
+    protocol: Optional[str] = None,
+) -> Path:
+    path = state_root() / "ingress.yml"
+    # Run by UUID because provisioning deletes the account certificate.
+    lines = [
+        f"tunnel: {identity['tunnel_id']}",
+        f"credentials-file: {json.dumps(str(identity['credentials']))}",
+    ]
+    if protocol:
+        lines.append(f"protocol: {protocol}")
+    lines += [
+        "ingress:",
+        f"  - hostname: {identity['hostname']}",
+        f"    service: http://localhost:{port}",
+        "  - service: http_status:404",
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding = "utf-8")
+    with suppress(OSError):
+        os.chmod(path, 0o600)
+    return path
+
+
+def custom_tunnel_args(config_path: Path, tunnel_id: str) -> list:
+    return [
+        "tunnel",
+        "--config",
+        str(config_path),
+        "--no-autoupdate",
+        "--metrics",
+        "127.0.0.1:0",
+        "run",
+        tunnel_id,
+    ]
+
+
 class CloudflareTunnel:
     """A running cloudflared connector. Best-effort throughout.
 
@@ -438,9 +492,15 @@ class CloudflareTunnel:
         kind: str = "temporary",
         args: Optional[list] = None,
         url: Optional[str] = None,
+        reservation = None,
     ):
         if kind not in TUNNEL_KINDS:
             raise ValueError(f"Unknown Cloudflare tunnel kind: {kind}")
+        if kind == "custom":
+            if args is None or url is None:
+                raise ValueError(f"Cloudflare tunnel kind {kind} does not match its arguments")
+        elif args is not None:
+            raise ValueError(f"Cloudflare tunnel kind {kind} does not match its arguments")
         self.port = port
         self.binary = binary
         self.kind = kind
@@ -456,15 +516,32 @@ class CloudflareTunnel:
         self.on_exit: Optional[Callable[["CloudflareTunnel"], None]] = None
         self._reader_exited = False
         self._runtime_active = False
+        self._reservation = reservation
+
+    def _env(self) -> Optional[dict]:
+        if self.kind != "custom":
+            return None
+        if self._reservation is None:
+            raise RuntimeError("a custom Cloudflare tunnel needs a connector reservation")
+
+        return _child_env(self._reservation.token)
+
+    def _release_reservation(self) -> None:
+        with self._lock:
+            reservation, self._reservation = self._reservation, None
+        if reservation is not None:
+            with suppress(Exception):
+                reservation.release()
 
     def start(self) -> None:
         cmd = [self.binary, *self._args]
+        unrecorded = failure = None
         with self._lock:
             # A stop() that landed before us (e.g. a shutdown in the caller's
             # register->start window) marks the tunnel stopped; spawning now would
-            # orphan a process nobody owns, so refuse.
             if self._stopped:
                 return
+            env = self._env()
             _set_studio_tunnel_runtime_active(self, True)
             try:
                 # PDEATHSIG binds to the forking thread, so spawning from the
@@ -479,6 +556,7 @@ class CloudflareTunnel:
                         encoding = "utf-8",
                         errors = "replace",
                         bufsize = 1,
+                        env = env,
                         **_windows_hidden_kwargs(),
                         **_lifetime_kwargs(),
                     )
@@ -486,11 +564,20 @@ class CloudflareTunnel:
             except Exception:
                 _set_studio_tunnel_runtime_active(self, False)
                 raise
-            # Adopted before the lock drops: a stop() that got in first would
-            # otherwise reap and forget it while nothing was tracked, and this
-            # would then record whatever inherited the pid.
-            _adopt_pid(proc.pid)
-            self._proc = proc
+            if self.kind == "custom":
+                try:
+                    self._reservation.record_connector(proc.pid)
+                except Exception as error:
+                    unrecorded, failure = proc, error
+            if unrecorded is None:
+                # Adopted before the lock drops: a stop() that got in first would
+                # otherwise reap and forget it while nothing was tracked, and this
+                # would then record whatever inherited the pid.
+                _adopt_pid(proc.pid)
+                self._proc = proc
+        if unrecorded is not None:
+            self._settle_connector(unrecorded, _end_unrecorded_connector(unrecorded))
+            raise failure
         threading.Thread(
             target = self._reader, args = (proc,), name = "cloudflared-reader", daemon = True
         ).start()
@@ -550,6 +637,8 @@ class CloudflareTunnel:
             active = _studio_tunnel_runtime_active(self)
             if active:
                 _retain_studio_tunnel_for_stop(self)
+            else:
+                self._release_reservation()
             return not active
         try:
             if proc.poll() is None:
@@ -564,18 +653,19 @@ class CloudflareTunnel:
                         pass
         except Exception:
             pass
-        if _process_exited(proc):
-            _forget_pid(proc.pid)
+        return self._settle_connector(proc, _process_exited(proc))
+
+    def _settle_connector(self, proc: subprocess.Popen, confirmed: bool) -> bool:
+        if confirmed:
             _set_studio_tunnel_runtime_active(self, False)
+            _forget_pid(proc.pid)
+            self._release_reservation()
             return True
-        else:
-            # Preserve both the stop handle and the fail-closed trust state when
-            # termination could not be confirmed. A later stop can retry.
-            with self._lock:
-                if self._proc is None:
-                    self._proc = proc
-            _retain_studio_tunnel_for_stop(self)
-            return False
+        with self._lock:
+            if self._proc is None:
+                self._proc = proc
+        _retain_studio_tunnel_for_stop(self)
+        return False
 
     def is_running(self) -> bool:
         with self._lock:
@@ -1392,7 +1482,6 @@ def _output(result) -> str:
 
 def _error_summary(text: str) -> str:
     text = _LOGIN_URL_RE.sub("", text or "")
-    # Run by UUID because provisioning deletes the account certificate.
     lines = [line.strip() for line in text.splitlines() if line.strip()] or [""]
     _, advised, cause = lines[-1].partition(_ROUTE_ADVICE)
     return (cause.lstrip(": ").strip() if advised else lines[-1])[:300]

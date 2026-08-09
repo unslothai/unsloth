@@ -1515,6 +1515,53 @@ def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachabl
     assert "local network only" not in out
 
 
+class _Reservation:
+    def __init__(self):
+        self.token = "a-connector-token"
+        self.recorded = []
+        self.released = 0
+
+    def record_connector(self, pid):
+        self.recorded.append(pid)
+
+    def release(self):
+        self.released += 1
+
+
+class _Proc:
+    stdout = None
+    pid = 4242
+
+    def __init__(
+        self,
+        alive = True,
+        dies = True,
+        killable = True,
+    ):
+        self.alive, self.dies, self.killable = alive, dies, killable
+        self.terminated = self.killed = False
+        self.waited, self.kills = [], 0
+
+    def poll(self):
+        return None if self.alive else 0
+
+    def terminate(self):
+        self.terminated = True
+        if self.dies:
+            self.alive = False
+
+    def kill(self):
+        self.killed, self.kills = True, self.kills + 1
+        if self.killable:
+            self.alive = False
+
+    def wait(self, timeout = None):
+        self.waited.append(timeout)
+        if self.alive:
+            raise ct.subprocess.TimeoutExpired("cloudflared", timeout)
+        return 0
+
+
 _TUNNEL_ID = "11111111-2222-3333-4444-5555aabbccdd"
 _HOST = "studio.example.com"
 _LOGIN_URL, _PROMPT = "https://dash.fed.cloudflare.com/argotunnel?aud=x", "Please open this URL:"
