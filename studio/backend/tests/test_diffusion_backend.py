@@ -7520,3 +7520,91 @@ def test_cancel_generate_is_a_no_op_without_a_load(fake_runtime):
     # The route calls this unconditionally, so an idle backend must answer False, not raise.
     assert DiffusionBackend().cancel_generate() is False
 
+
+
+def test_unified_memory_declines_a_prequant_that_outweighs_the_gguf(
+    fake_runtime, monkeypatch, tmp_path
+):
+    """A GGUF pick on unified memory can still be upsized by the dense fast path: the hosted
+    fp8/int8 artifact is roughly 0.55x bf16 against a Q4's ~0.3x, so it can be twice the file that
+    just passed the load-level refusal. The planner returns 'none' for any size on unified memory,
+    so the OFFLOAD_NONE gate cannot catch that, and the prequant path skips the dense-size check
+    (it never builds dense). Without an explicit size the load materialises it and is OS-killed."""
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_auto_policy import DenseQuantEstimate
+
+    backend = _oversized_gguf(monkeypatch, tmp_path, 32, resident_mib = 8 * 1024)
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    # A hosted pre-cast checkpoint IS available, which is what skips the dense-size check.
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **kw: "unsloth/Z-Image-FP8")
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: DenseQuantEstimate(
+            scheme = "fp8",
+            steady_transformer_mib = 40 * 1024,
+            transient_transformer_mib = 40 * 1024,  # far past a 32 GiB pool's safe budget
+            companions_mib = 2 * 1024,
+            prequant = True,
+        ),
+    )
+
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        family_override = "z-image",
+        model_kind = "gguf",
+    )
+    # The GGUF fits and loads; the oversized quant is declined rather than materialised.
+    assert status["loaded"] is True
+    assert status["transformer_quant"] is None
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["value"] == "off"
+    assert "unified memory" in (resolved["reason"] or "")
+
+
+def test_unified_memory_keeps_a_prequant_that_fits(fake_runtime, monkeypatch, tmp_path):
+    # The same shape with an artifact that fits must be untouched: this guard only ever removes a
+    # candidate the device cannot hold, never one it can.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_auto_policy import DenseQuantEstimate
+
+    backend = _oversized_gguf(monkeypatch, tmp_path, 32, resident_mib = 8 * 1024)
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **kw: "unsloth/Z-Image-FP8")
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: DenseQuantEstimate(
+            scheme = "fp8",
+            steady_transformer_mib = 6 * 1024,
+            transient_transformer_mib = 6 * 1024,
+            companions_mib = 2 * 1024,
+            prequant = True,
+        ),
+    )
+    calls: list = []
+
+    def _record(self, *a, **kw):
+        calls.append("built")
+        # Raising here keeps the stub out of pipeline assembly; the loader's own handler falls
+        # back to the GGUF, and reaching this line at all is the assertion.
+        raise RuntimeError("stub")
+
+    monkeypatch.setattr(dmod.DiffusionBackend, "_load_dense_quant_pipeline", _record)
+
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        family_override = "z-image",
+        model_kind = "gguf",
+    )
+    assert calls == ["built"], "a prequant that fits must still reach the dense fast path"

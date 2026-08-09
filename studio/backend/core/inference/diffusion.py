@@ -2777,6 +2777,60 @@ class DiffusionBackend:
                                 "prefetch's capacity gate declined its shards), so the dense bf16 "
                                 "build cannot run on this host"
                             )
+                        # A hosted prequant never builds dense, so the check above says nothing
+                        # about what actually lands. On unified memory that gap is a hole: the
+                        # OFFLOAD_NONE gate below is satisfied for ANY size there, and an fp8/int8
+                        # artifact can outweigh the packed GGUF that just passed the load-level
+                        # refusal (0.55x bf16 against a Q4's ~0.3x), so the load would materialise
+                        # an unsized transformer and be OS-killed. Size the artifact itself and
+                        # decline to the GGUF when it does not fit. Unified only: off it, the
+                        # OFFLOAD_NONE test already carries this and the extra resolve is waste.
+                        if (
+                            prequant is not None
+                            and getattr(plan.device_memory, "memory_kind", None)
+                            == "unified_memory"
+                        ):
+                            prequant_candidate = resolve_dense_quant_candidate(
+                                fam = fam,
+                                target = target,
+                                requested = transformer_quant,
+                                base_repo = base,
+                                prequant_path = transformer_prequant_path,
+                                force_dense = _has_active_lora(loras),
+                                logger = logger,
+                            )
+                            if prequant_candidate is not None and unified_memory_shortfall_message(
+                                self._plan_memory(
+                                    target,
+                                    single_file_path,
+                                    base,
+                                    fam,
+                                    memory_mode,
+                                    cpu_offload,
+                                    kind = kind,
+                                    repo_id = repo_id,
+                                    fetch_base = fetch_base,
+                                    transformer_resident_override_mib = (
+                                        prequant_candidate.transient_transformer_mib
+                                    ),
+                                    companion_override_mib = prequant_candidate.companions_mib,
+                                ),
+                                family = getattr(fam, "name", None),
+                            ) is not None:
+                                dense_declined = True
+                                dense_possible = False
+                                dense_fallback_allowed = False
+                                transformer_quant_decline = (
+                                    "the pre-quantised transformer does not fit this device's "
+                                    "unified memory, where offloading it would free nothing, so "
+                                    "the packed GGUF was loaded instead"
+                                )
+                                logger.info(
+                                    "diffusion.transformer_quant_declined: the pre-quantised "
+                                    "transformer (%s MiB) does not fit unified memory; "
+                                    "loading the GGUF",
+                                    prequant_candidate.transient_transformer_mib,
+                                )
                         # A dense misfit with a prequant source only forbids the dense fallback; with
                         # none, auto could still have picked a DIFFERENT scheme that does have a
                         # hosted checkpoint. auto returns one winner, and a winner with no published
@@ -2830,7 +2884,16 @@ class DiffusionBackend:
                                 if retry_candidate is not None
                                 else None
                             )
-                            if retry_plan is not None and retry_plan.offload_policy == OFFLOAD_NONE:
+                            if (
+                                retry_plan is not None
+                                and retry_plan.offload_policy == OFFLOAD_NONE
+                                # Same unified caveat as above: 'none' is not a fit there, so the
+                                # rung being retried has to be sized explicitly before it is pinned.
+                                and unified_memory_shortfall_message(
+                                    retry_plan, family = getattr(fam, "name", None)
+                                )
+                                is None
+                            ):
                                 logger.info(
                                     "diffusion.transformer_quant: %s has no prequant and cannot "
                                     "build dense; retrying auto at %s, whose checkpoint is cached "
