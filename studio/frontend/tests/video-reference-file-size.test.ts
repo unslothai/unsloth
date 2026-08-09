@@ -46,9 +46,28 @@ function withFileReaderSpy<T>(run: (constructed: () => number) => T): T {
   }
 }
 
-test("the raw file limits are three quarters of the backend's base64 caps", () => {
-  assert.equal(MAX_REFERENCE_BYTES.video, 72 * 1024 * 1024);
-  assert.equal(MAX_REFERENCE_BYTES.audio, 24 * 1024 * 1024);
+test("a file at the cap still encodes to a data URL the backend accepts", () => {
+  // models/inference.py bounds the STRING, not the file: 96 MiB for the video field and 32 MiB
+  // for the soundtrack. FileReader emits `data:<mime>;base64,` plus 4 characters per 3 bytes, so
+  // a raw cap of exactly three quarters encodes to exactly the limit and the prefix puts it over.
+  // The picker accepted such a file and request validation then rejected it.
+  const caps = { video: 96 * 1024 * 1024, audio: 32 * 1024 * 1024 } as const;
+  for (const kind of ["video", "audio"] as const) {
+    const raw = MAX_REFERENCE_BYTES[kind];
+    // One of the longer MIME strings the OS can report, not the friendly mp4 case.
+    const prefix = `data:${kind}/x-matroska;base64,`.length;
+    assert.ok(
+      Math.ceil(raw / 3) * 4 + prefix <= caps[kind],
+      `${kind}: ${Math.ceil(raw / 3) * 4 + prefix} exceeds ${caps[kind]}`,
+    );
+    // Three quarters exactly would have failed that, so this is the assertion that moved.
+    assert.ok(Math.ceil((caps[kind] * 3) / 4 / 3) * 4 + prefix > caps[kind]);
+  }
+});
+
+test("the headroom does not move the limit the user is shown", () => {
+  assert.equal(Math.round(MAX_REFERENCE_BYTES.video / (1024 * 1024)), 72);
+  assert.equal(Math.round(MAX_REFERENCE_BYTES.audio / (1024 * 1024)), 24);
 });
 
 test("an oversized reference is refused before a FileReader ever exists", () => {
