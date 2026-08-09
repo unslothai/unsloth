@@ -118,6 +118,29 @@ test("clashes an extension-case pair of one stem spelling, as _shares_sidecar do
   assert.deepEqual(selectDatasetFiles([picked("Cat.png"), picked("cat.PNG")]).collisions, []);
 });
 
+test("compares every accepted variant, since the stem exemption is not transitive", () => {
+  // Cat.png exempts cat.PNG and cat.png individually, but those two share an exact stem and
+  // training.py compares each new name against every earlier one.
+  const result = selectDatasetFiles([picked("Cat.png"), picked("cat.PNG"), picked("cat.png")]);
+
+  assert.deepEqual(result.collisions, [
+    { kind: "stem", first: "cat.PNG", second: "cat.png" },
+  ]);
+});
+
+test("skips names the upload refuses outright, before any slice is committed", () => {
+  // Path(".png").suffix is empty and the endpoint rejects any name holding "..", so accepting
+  // either here would commit earlier slices and then fail on a later one.
+  const result = selectDatasetFiles([
+    picked("cat.png"),
+    picked(".png"),
+    picked("photo..png"),
+  ]);
+
+  assert.deepEqual(result.files.map((f) => f.name), ["cat.png"]);
+  assert.equal(result.skipped, 2);
+});
+
 test("keeps a dotfile named in the file dialog, where the user chose it deliberately", () => {
   // no webkitRelativePath means a plain multi-select, unlike a tree walk that surfaces .thumbs.
   const result = selectDatasetFiles([picked(".cover.png"), picked("cat.png")]);

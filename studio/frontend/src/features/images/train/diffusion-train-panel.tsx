@@ -407,6 +407,8 @@ export function DiffusionTrainPanel({
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const folderTarget = useRef("");
   const [dropActive, setDropActive] = useState(false);
+  // the authoritative in-flight guard: `uploading` is render state and reads stale in a closure.
+  const uploadInFlight = useRef(false);
   const [gridOpen, setGridOpen] = useState(false);
   const [gridRefresh, setGridRefresh] = useState(0);
   const [examples, setExamples] = useState<DiffusionDatasetExample[]>([]);
@@ -769,9 +771,14 @@ export function DiffusionTrainPanel({
       // appear yet rather than refusing a captions-first upload.
       const newCaptionsOnly =
         imageCount === 0 && !(info?.datasets ?? []).some((d) => d.name === name);
-      const misKeyed = await metadataKeyedOnSubfolders(files);
+      if (uploadInFlight.current) {
+        toast.error("An upload is already running. Wait for it to finish, then try again.");
+        return;
+      }
+      uploadInFlight.current = true;
       setUploading(true);
       try {
+        const misKeyed = await metadataKeyedOnSubfolders(files);
         // the endpoint accumulates into the same folder, so a tree past the multipart part or
         // byte cap goes up in slices rather than being refused outright.
         const limit = await loadUploadLimitSettings().catch(() => null);
@@ -828,6 +835,7 @@ export function DiffusionTrainPanel({
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Upload failed");
       } finally {
+        uploadInFlight.current = false;
         setUploading(false);
       }
     },
@@ -848,12 +856,13 @@ export function DiffusionTrainPanel({
       if (!event.dataTransfer.types.includes("Files")) return;
       event.preventDefault();
       setDropActive(false);
-      if (uploading) {
+      if (uploadInFlight.current) {
         toast.error("An upload is already running. Wait for it to finish, then drop again.");
         return;
       }
       let dropped: File[];
       // held across the walk too: a big tree takes seconds, and every control is live until then.
+      uploadInFlight.current = true;
       setUploading(true);
       try {
         dropped = await filesFromDataTransfer(event.dataTransfer);
@@ -864,6 +873,8 @@ export function DiffusionTrainPanel({
         );
         return;
       } finally {
+        // uploadTo re-takes it synchronously below, so no await sits in the gap.
+        uploadInFlight.current = false;
         setUploading(false);
       }
       if (dropped.length === 0) {
@@ -872,7 +883,7 @@ export function DiffusionTrainPanel({
       }
       await uploadTo(dropTarget, dropped);
     },
-    [dropTarget, uploadTo, uploading],
+    [dropTarget, uploadTo],
   );
 
   const onStart = useCallback(async () => {

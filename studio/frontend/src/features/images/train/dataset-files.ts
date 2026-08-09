@@ -86,9 +86,10 @@ export function destinationName(file: File): string {
   return base.trim().replace(/\0/g, "");
 }
 
+// mirrors Path(name).suffix.lower(): a leading dot starts the stem, so ".png" has no suffix.
 function extensionOf(name: string): string {
   const dot = name.lastIndexOf(".");
-  return dot < 0 ? "" : name.slice(dot).toLowerCase();
+  return dot < 1 ? "" : name.slice(dot).toLowerCase();
 }
 
 /** where a picked file sat: the folder-relative path when a folder pick supplied one. */
@@ -130,7 +131,7 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
   const files: File[] = [];
   const collisions: DatasetCollision[] = [];
   const seen = new Map<string, string>();
-  const imageStems = new Map<string, { name: string; stem: string; path: string }>();
+  const imageStems = new Map<string, Array<{ name: string; stem: string; path: string }>>();
   let imageCount = 0;
   let captionCount = 0;
   let skipped = 0;
@@ -140,7 +141,7 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
     // keyed on the stored name, so " cat.png" and "cat.png" are seen as one destination
     const dest = destinationName(file);
     const ext = extensionOf(dest);
-    if (!ACCEPTED.has(ext)) {
+    if (!dest || dest.includes("..") || !ACCEPTED.has(ext)) {
       skipped += 1;
       continue;
     }
@@ -159,15 +160,16 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
     const stem = isImage ? dest.slice(0, dest.length - ext.length) : null;
     if (stem !== null) {
       const key = stem.toLowerCase();
-      const clash = imageStems.get(key);
-      if (
-        clash !== undefined &&
-        (clash.stem === stem || clash.name.toLowerCase() !== dest.toLowerCase())
-      ) {
+      const variants = imageStems.get(key) ?? [];
+      const clash = variants.find(
+        (v) => v.stem === stem || v.name.toLowerCase() !== dest.toLowerCase(),
+      );
+      if (clash !== undefined) {
         collisions.push({ kind: "stem", first: clash.path, second: path });
         continue;
       }
-      if (clash === undefined) imageStems.set(key, { name: dest, stem, path });
+      variants.push({ name: dest, stem, path });
+      imageStems.set(key, variants);
     }
     seen.set(dest, path);
     files.push(file);
