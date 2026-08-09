@@ -652,6 +652,11 @@ pub struct BackendProcess {
     pub generation: u64,
     pub diagnostics_session: Option<BackendLog>,
     pub adopted_watchdog_generation: Option<u64>,
+    /// Set by the start watchdog, under this mutex, once it has committed to
+    /// emitting server-start-timeout for the current generation. Port
+    /// validation refuses to claim afterwards, so the window never receives
+    /// server-port behind an error it has no handler to clear.
+    pub start_timed_out: bool,
 }
 
 impl BackendProcess {
@@ -703,6 +708,7 @@ pub(crate) fn adopt_verified_backend(
     proc.intentional_stop = false;
     proc.diagnostics_session = None;
     proc.adopted_watchdog_generation = None;
+    proc.start_timed_out = false;
     proc.owned = Some(OwnedBackendHandle::adopted(
         verified.owner,
         verified.port,
@@ -836,6 +842,7 @@ impl Default for BackendProcess {
             generation: 0,
             diagnostics_session: None,
             adopted_watchdog_generation: None,
+            start_timed_out: false,
         }
     }
 }
@@ -1182,6 +1189,7 @@ pub fn start_backend(
         proc.intentional_stop = false;
         proc.diagnostics_session = None;
         proc.adopted_watchdog_generation = None;
+        proc.start_timed_out = false;
         proc.owned = None;
         let generation = proc.generation;
 
@@ -1274,6 +1282,10 @@ pub fn start_backend(
 
     info!("{}", start_line);
     diagnostics::append_phase_line(&backend_log.handle, "meta", &start_line);
+    // One deadline for this start, shared with the watchdog below. Port
+    // validation must not outlive it: the watchdog's server-start-timeout puts
+    // the window in an error state that a later server-port does not clear.
+    let start_deadline = std::time::Instant::now() + BACKEND_START_DEADLINE;
     start_watchdog(app, state, shutdown, generation, &backend_log);
 
     if let Some(stdout) = stdout {
@@ -1290,6 +1302,7 @@ pub fn start_backend(
                 &backend_log_clone,
                 false,
                 generation,
+                start_deadline,
             );
         });
     }
@@ -1308,6 +1321,7 @@ pub fn start_backend(
                 &backend_log_clone,
                 true,
                 generation,
+                start_deadline,
             );
         });
     }
@@ -1395,6 +1409,17 @@ async fn generic_backend_health_ok(port: u16) -> bool {
     live && service
 }
 
+/// Backoff between port-verification probes, doubling from min to max.
+///
+/// A probe is not free: it costs a liveness request plus a desktop-login
+/// request, each up to LOCAL_HTTP_TIMEOUT, against a backend that is by
+/// definition busy. Polling at a fixed short interval would add load to the
+/// slow start it is waiting on. Starting small still wins the common race,
+/// where the backend is a few hundred ms from ready, while the cap keeps a
+/// long torch import down to a handful of probes rather than dozens.
+const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
+const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
+
 async fn validate_candidate_port(
     app: AppHandle,
     state: BackendState,
@@ -1402,6 +1427,7 @@ async fn validate_candidate_port(
     session_id: String,
     generation: u64,
     port: u16,
+    deadline: std::time::Instant,
 ) {
     let started = std::time::Instant::now();
     let owner = {
@@ -1421,19 +1447,80 @@ async fn validate_candidate_port(
         }
     };
 
-    let valid = if let Some(owner) = owner {
-        matches!(
-            crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false).await,
-            crate::desktop_backend_owner::OwnedBackendProbe::Verified(
-                crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
-            ) if verified_port == port
-        )
-    } else {
-        generic_backend_health_ok(port).await
+    // The backend announces its port once. That line arrives while it is still
+    // importing torch, so a single probe races a backend that cannot answer
+    // inside LOCAL_HTTP_TIMEOUT yet: on a cold CPU-only machine /api/liveness
+    // has been seen taking 2.1 s against a 2 s budget. Discarding the only
+    // announcement left the window waiting out the start deadline on the port
+    // the backend had already reported it could not bind. Keep probing until
+    // the backend answers or that deadline, shared with the watchdog, passes.
+    let mut delay = PORT_VALIDATION_RETRY_MIN;
+    let mut attempts = 0u32;
+    let mut verified_late = false;
+    let valid = loop {
+        // Before the probe, not just after a failed one: the announcement
+        // itself can arrive past the deadline on a very slow start, and the
+        // watchdog does not kill the backend when it times out.
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        attempts += 1;
+        let ok = if let Some(owner) = owner.clone() {
+            matches!(
+                crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false)
+                    .await,
+                crate::desktop_backend_owner::OwnedBackendProbe::Verified(
+                    crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
+                ) if verified_port == port
+            )
+        } else {
+            generic_backend_health_ok(port).await
+        };
+        if ok {
+            // A probe that started in time can still finish late. Emitting
+            // server-port after the watchdog's server-start-timeout strands the
+            // window in an error state it has no handler to leave.
+            if std::time::Instant::now() < deadline {
+                break true;
+            }
+            verified_late = true;
+            break false;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break false;
+        }
+        tokio::time::sleep(delay.min(remaining)).await;
+        delay = (delay * 2).min(PORT_VALIDATION_RETRY_MAX);
+        // Stop once this generation is gone or another path claimed the port,
+        // so a restarted backend does not keep an old probe alive. Bound the
+        // guard to this statement: the future must stay Send across the await.
+        let still_current = match state.lock() {
+            Ok(proc) => proc.generation == generation && proc.port.is_none(),
+            Err(_) => false,
+        };
+        if !still_current {
+            return;
+        }
     };
 
     if !valid {
-        warn!("Ignoring unverified TAURI_PORT candidate {}", port);
+        if verified_late {
+            warn!(
+                "Backend port {} verified after the start deadline; not emitting",
+                port
+            );
+        } else if attempts == 0 {
+            warn!(
+                "TAURI_PORT candidate {} arrived after the start deadline",
+                port
+            );
+        } else {
+            warn!(
+                "Ignoring unverified TAURI_PORT candidate {} after {} attempts",
+                port, attempts
+            );
+        }
         return;
     }
 
@@ -1445,7 +1532,9 @@ async fn validate_candidate_port(
                 return;
             }
         };
-        if proc.generation != generation || proc.port.is_some() {
+        // start_timed_out is the watchdog's claim, taken under this same lock,
+        // so exactly one of the two outcomes reaches the window.
+        if proc.generation != generation || proc.port.is_some() || proc.start_timed_out {
             false
         } else if matches!(proc.owned, Some(OwnedBackendHandle::Spawned { .. })) {
             proc.port = Some(port);
@@ -1531,7 +1620,7 @@ fn start_watchdog(
         }
 
         let (still_ours, tail) = match state.lock() {
-            Ok(proc) => {
+            Ok(mut proc) => {
                 // Same three conditions as the loop. Dropping has_owned_backend here
                 // would let a crash in the last second be overwritten by a message
                 // claiming the backend is still running.
@@ -1539,6 +1628,11 @@ fn start_watchdog(
                 {
                     (false, String::new())
                 } else {
+                    // Claim the outcome while still holding the lock. Deciding
+                    // here and emitting after the unlock would otherwise let a
+                    // port validation that succeeded in between emit
+                    // server-port on top of this timeout.
+                    proc.start_timed_out = true;
                     let skip = proc.logs.len().saturating_sub(20);
                     let tail: Vec<String> = proc.logs.iter().skip(skip).cloned().collect();
                     (true, tail.join("\n"))
@@ -1579,6 +1673,7 @@ fn read_output_stream<R: std::io::Read>(
     backend_log: &BackendLog,
     is_stderr: bool,
     generation: u64,
+    start_deadline: std::time::Instant,
 ) {
     let mut reader = std::io::BufReader::new(stream);
     let port_re = Regex::new(r"TAURI_PORT=(\d+)").unwrap();
@@ -1653,6 +1748,7 @@ fn read_output_stream<R: std::io::Read>(
                             session_id,
                             generation,
                             port,
+                            start_deadline,
                         )
                         .await;
                     });

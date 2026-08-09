@@ -1,5 +1,6 @@
 """Permission-boundary checks for the desktop release workflow."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,39 @@ def test_only_publish_job_can_write_repository_contents():
         if job.get("permissions", {}).get("contents") == "write"
     ]
     assert write_jobs == ["publish-release"]
+
+
+def _poll_loop_body(script):
+    """Return the body of the first live `while ...; do ... done` loop.
+
+    Assertions about a wait have to land inside the loop that waits, not
+    anywhere in the step, and that loop has to be one the shell actually
+    enters: `while false; do` keeps a textually perfect body while skipping
+    every API read and status check, and the step falls straight through to a
+    download that races the matrix. So the condition must be the unconditional
+    `:` or `true` that a poll exiting via `break` uses. Nesting is tracked by
+    depth; every opener in this workflow ends its line with `do`.
+    """
+    lines = script.split("\n")
+    opener = re.compile(r"\s*while\s+(?P<condition>.*?)\s*;\s*do\s*$")
+    starts = [
+        index
+        for index, line in enumerate(lines)
+        if (match := opener.match(line)) and match.group("condition") in (":", "true")
+    ]
+    assert starts, f"no live (`while :` / `while true`) poll loop in the wait step:\n{script}"
+
+    start = starts[0]
+    depth = 0
+    for index in range(start, len(lines)):
+        line = lines[index]
+        if re.search(r"(?:^|;)\s*do\s*$", line):
+            depth += 1
+        if re.match(r"\s*done\b", line):
+            depth -= 1
+            if depth == 0:
+                return "\n".join(lines[start + 1 : index])
+    raise AssertionError(f"unterminated `while` loop in the wait step:\n{script}")
 
 
 def test_build_matrix_hands_off_assets_without_release_credentials():
@@ -78,8 +112,31 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     # Every one of those refusals has to be terminal.
     assert wait_run.count("exit 1") >= 3
 
+    # Assert the mechanism, not just the error strings: those survive a step
+    # that no longer loops or no longer reads a conclusion, and then the
+    # download races the matrix. Everything below is checked inside the loop
+    # body, because a one-shot `gh api` read beside a dead `while` would satisfy
+    # the same substrings while waiting for nothing.
+    loop_body = _poll_loop_body(wait_run)
+    assert "actions/runs/${GITHUB_RUN_ID}/jobs" in loop_body, wait_run
+    assert ".status" in loop_body and ".conclusion" in loop_body, wait_run
+    # Not finished yet is "keep waiting"; finished but not `success` is a refusal.
+    assert re.search(r'!=\s*"completed"', loop_body), wait_run
+    assert re.search(r'!=\s*"success"', loop_body), wait_run
+    # A loop that never sleeps is a spin, and one that never breaks never ends.
+    assert re.search(r"^\s*sleep\b", loop_body, re.MULTILINE), wait_run
+    assert re.search(r"^\s*break\b", loop_body, re.MULTILINE), wait_run
+
     names = [step.get("name") for step in publish["steps"]]
     assert names.index("Wait for the build matrix") < names.index("Create versioned release")
+    # And it has to clear before the assets are pulled, or the download races the
+    # legs and publish-release dies on artifacts that do not exist yet.
+    download = next(
+        index
+        for index, step in enumerate(publish["steps"])
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    )
+    assert names.index("Wait for the build matrix") < download, names
 
     # Creating a missing release is a separate step gated on validation, so a
     # non-draft release is never reserved before its assets are ready to upload.

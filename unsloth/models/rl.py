@@ -1468,6 +1468,21 @@ _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_
 _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
 
 
+def _module_returns_logits(module):
+    # get_output_embeddings() is None on the decoder bodies (Qwen2Model, ...) and the
+    # head module on the *ForCausalLM wrappers, so it finds the head owner by behaviour
+    # rather than by a model-name list.
+    if module is None:
+        return False
+    get_output_embeddings = getattr(module, "get_output_embeddings", None)
+    if not callable(get_output_embeddings):
+        return False
+    try:
+        return get_output_embeddings() is not None
+    except Exception:
+        return False
+
+
 def _grpo_hidden_states_wrap_target(model):
     if model is None:
         return None
@@ -1478,8 +1493,15 @@ def _grpo_hidden_states_wrap_target(model):
             return base_model
     for attr in ("base_model", "model"):
         child = getattr(model, attr, None)
-        if child is not None and child is not model and hasattr(child, "forward"):
-            return child
+        if child is None or child is model or not hasattr(child, "forward"):
+            continue
+        # Descend only into an adapter that still owns the head. A bare *ForCausalLM
+        # (what TRL builds GRPO's ref_model as) also has a `.model`, but that is its
+        # decoder body, and wrapping it leaves the head above running untouched: the
+        # fallback becomes a silent no-op returning [B, T, vocab], not [B, T, hidden].
+        if not _module_returns_logits(child):
+            continue
+        return child
     return model
 
 
@@ -1586,6 +1608,12 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     model_name = type(target_model).__name__
 
     def wrapped_forward(*args, **kwargs):
+        # accelerate's extract_model_from_parallel(keep_fp32_wrapper = False), which the
+        # GRPO loop calls every step, rebinds an instance-level forward as
+        # MethodType(forward, model), so the module arrives as a leading positional
+        # argument. `original_forward` is already bound, so drop it.
+        while len(args) != 0 and args[0] is target_model:
+            args = args[1:]
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
             return original_forward(*args, **kwargs)
 
@@ -1950,8 +1978,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # bf16 (V100/T4) keep them in float32 so they never autocast to fp16. On a bf16 GPU,
             # full finetuning can still use bf16 autocast (master weights stay float32), which is
             # faster and uses less memory; LoRA/QLoRA keep float32 when forced.
-            "full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
-            "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1' and not (full_finetuning and _bf16_supported()):\n"
+            # Stamped by from_pretrained: the env is process wide, so a LoRA model
+            # loaded after this one would cost this trainer its bfloat16.
+            "full_finetuning = getattr(model, '_unsloth_full_finetuning', None)\n"
+            "if full_finetuning is None: full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
+            # Stamped by from_pretrained: the env is process wide, so a forced family
+            # loaded earlier would answer here for a model that is not forced at all.
+            "model_forced_float32 = getattr(model, '_unsloth_forced_float32', None)\n"
+            "if model_forced_float32 is None: model_forced_float32 = os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'\n"
+            "if model_forced_float32 and not (full_finetuning and _bf16_supported()):\n"
             "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"
             "    force_float32 = True\n"
             "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"
@@ -1961,6 +1996,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
             "bfloat16 = dtype == torch.bfloat16\n"
+            "float32 = dtype == torch.float32\n"
+            # Set only when the caller passed dtype = torch.float32 themselves: a
+            # request, not a side effect of upcasting, and immune to a second load.
+            "user_float32 = bool(getattr(model, '_unsloth_user_float32', False))\n"
             "if full_finetuning:\n"
             "    if bfloat16 and use_fp16: use_fp16 = False\n"
             "    if float16 and use_bf16: use_bf16 = False\n"
@@ -1973,6 +2012,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
             "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
+            "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32' and float32 and user_float32 and not _bf16_supported():\n"
+            # Without bf16 the only autocast is float16, whose narrower exponent range
+            # overflows float32 values to inf then NaN. Gated on the explicit request:
+            # full finetuning upcasts to float32 itself, and float16 autocast over
+            # float32 master weights is the normal V100/T4 recipe (see #4082).
+            "    print('Unsloth: Model is in float32 and this GPU has no bfloat16 support, so training stays in float32. Pass fp16 = True to force float16 mixed precision instead.')\n"
+            "    args.fp16 = False\n"
+            "    args.bf16 = False\n"
+            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"
             "    # Mixed precision training. bf16 only if the GPU supports it; V100/T4 use fp16.\n"
             "    use_bf16_amp = (not float16) and _bf16_supported()\n"
