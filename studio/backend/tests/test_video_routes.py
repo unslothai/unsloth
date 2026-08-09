@@ -122,7 +122,8 @@ class _FakeBackend(video_module.VideoBackend):
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
         # Non-GGUF loads are gated to unsloth/* repos, the official bases, and existing local paths.
-        trusted = model_path.lower().startswith(("unsloth/", "lightricks/")) or (
+        # minimaxai/: the real gate trusts MiniMaxAI/MiniMax-H3 as an official family base repo.
+        trusted = model_path.lower().startswith(("unsloth/", "lightricks/", "minimaxai/")) or (
             Path(model_path).expanduser().exists()
         )
         if kind != "gguf" and not trusted:
@@ -1203,6 +1204,37 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
 
     assert resp.status_code == 200
     assert seen["transformer_quant"] == "int8"
+
+
+def test_video_download_plan_forwards_the_h3_task(client, monkeypatch):
+    # The task picks WHICH MiniMax-H3 denoiser is staged: transformer/ (fl2va) and
+    # transformer_ref/ (ref2va) are 66.28 GB each and the load builds exactly one. Without this
+    # forwarding a References pick staged the keyframe partition and the load then fetched the
+    # reference one inline, outside this manager's disk preflight, progress and cancellation.
+    backend = video_module.get_video_backend()
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "MiniMaxAI/MiniMax-H3",
+            "family_override": "minimax-h3",
+            "model_kind": "pipeline",
+            "h3_task": "ref2va",
+        },
+    )
+
+    assert resp.status_code == 200, resp.json()
+    assert seen["h3_task"] == "ref2va"
 
 
 def test_video_download_plan_refuses_an_unsupported_combination_before_staging(client, monkeypatch):

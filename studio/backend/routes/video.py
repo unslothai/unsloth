@@ -149,6 +149,11 @@ async def video_download_plan(
             # checkpoint replaces the dense DiT, so without this the plan stages 66.3 GB of shards
             # the load never opens.
             transformer_quant = request.transformer_quant,
+            # And the MiniMax-H3 task, which picks WHICH denoiser partition: transformer/ (fl2va)
+            # and transformer_ref/ (ref2va) are 66.28 GB each and the load builds exactly one, so
+            # without this a References pick staged the keyframe denoiser and the load then
+            # fetched the reference one inline, outside this manager.
+            h3_task = request.h3_task,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
