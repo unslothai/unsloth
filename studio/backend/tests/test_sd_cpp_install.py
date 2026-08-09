@@ -395,9 +395,7 @@ def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
     assert eng.find_sd_cpp_binary() == str(binary)
 
 
-def test_managed_root_is_under_the_studio_home_like_every_other_component(
-    tmp_path, monkeypatch
-):
+def test_managed_root_is_under_the_studio_home_like_every_other_component(tmp_path, monkeypatch):
     """The sd.cpp tree installs *under* the Studio home, not beside it.
 
     llama.cpp (``default_managed_llama_dir``), whisper.cpp and node all place their tree at
@@ -436,9 +434,7 @@ def test_a_relative_studio_home_does_not_put_the_install_in_the_working_director
         assert root != (tmp_path / "stable-diffusion.cpp").resolve()
 
 
-def test_the_legacy_sibling_tree_is_adopted_only_when_it_carries_the_marker(
-    tmp_path, monkeypatch
-):
+def test_the_legacy_sibling_tree_is_adopted_only_when_it_carries_the_marker(tmp_path, monkeypatch):
     """An install an older build really made is still found; a bare checkout is not.
 
     Back-compat is marker-gated on purpose: the old location is ``<home>/../stable-diffusion.cpp``,
