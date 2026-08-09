@@ -284,11 +284,14 @@ def test_clear_blocks_a_stale_recreate_of_a_deleted_thread(tmp_path, monkeypatch
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("thread-1"))
 
-    studio_db.clear_chat_history()
+    studio_db.clear_chat_history_with_active_research_runs(["pending-thread"])
 
     with pytest.raises(studio_db.ChatThreadDeletedError):
         studio_db.upsert_chat_thread(_thread("thread-1"))
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("pending-thread"))
     assert studio_db.get_chat_thread("thread-1") is None
+    assert studio_db.get_chat_thread("pending-thread") is None
 
 
 def test_chat_project_delete_files_removes_workspace(

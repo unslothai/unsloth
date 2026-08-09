@@ -3,6 +3,7 @@
 
 import {
   buildBackendChatExport,
+  ChatThreadDeletedError,
   clearBackendChats,
   deleteChatProject,
   deleteChatThreads,
@@ -37,6 +38,7 @@ import {
 import { classifyChatClearThreads } from "./chat-clear-classification";
 import {
   isChatThreadDeleted,
+  markChatThreadDeleted,
   markChatThreadsDeleted,
 } from "./chat-thread-tombstones";
 import { KeyedWriteQueue } from "./keyed-write-queue";
@@ -121,7 +123,7 @@ export function trackStoredChatThreadRecord(
   enqueueStoredChatThreadWrite(threadId, createRecord).then(
     () => failedThreadRecordByThreadId.delete(threadId),
     () => {
-      if (epoch === threadRecordClearEpoch) {
+      if (epoch === threadRecordClearEpoch && !isChatThreadDeleted(threadId)) {
         failedThreadRecordByThreadId.set(threadId, createRecord);
       }
     },
@@ -310,7 +312,10 @@ function importLegacyThread(
 async function importLegacyThreadRow(
   thread: ThreadRecord,
 ): Promise<ThreadRecord | undefined> {
-  const saved = await saveChatThread(thread);
+  const saved = await saveLegacyChatThread(thread);
+  if (!saved) {
+    return undefined;
+  }
   // A point lookup can import a row too, and a listing mid-flight has to re-read to see it.
   legacyChatImportGeneration += 1;
   const legacyMessages = await db.messages
@@ -323,6 +328,21 @@ async function importLegacyThreadRow(
     });
   }
   return saved;
+}
+
+/** A backend tombstone is authoritative: retire the stale browser row instead of retrying it. */
+async function saveLegacyChatThread(
+  thread: ThreadRecord,
+): Promise<ThreadRecord | undefined> {
+  try {
+    return await saveChatThread(thread);
+  } catch (error) {
+    if (!(error instanceof ChatThreadDeletedError)) {
+      throw error;
+    }
+    markChatThreadDeleted(thread.id);
+    return undefined;
+  }
 }
 
 async function backfillLegacyThreadFields(
@@ -474,7 +494,13 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
     for (const thread of unimportedThreads) {
       const backendThread = backendThreadsById.get(thread.id);
       if (!backendThread) {
-        await saveChatThread(thread);
+        const saved = await saveLegacyChatThread(thread);
+        if (!saved) {
+          // Record the authoritative deletion in the migration ledger too, so another browser's
+          // stale Dexie copy does not keep attempting the same forbidden import.
+          newlyImportedIds.push(thread.id);
+          continue;
+        }
         backendThreadsById.set(thread.id, thread);
         legacyChatImportGeneration += 1;
       } else {
@@ -851,7 +877,14 @@ export async function saveStoredChatThread(
   if (isChatThreadDeleted(thread.id)) {
     throw new Error(`Thread ${thread.id} was deleted`);
   }
-  return saveChatThread(thread);
+  try {
+    return await saveChatThread(thread);
+  } catch (error) {
+    if (error instanceof ChatThreadDeletedError) {
+      markChatThreadDeleted(thread.id);
+    }
+    throw error;
+  }
 }
 
 export async function updateStoredChatThread(
@@ -917,23 +950,6 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
   failedThreadRecordByThreadId.clear();
   const pendingThreadIds = threadWriteQueue.keys();
   const pendingThreadIdSet = new Set(pendingThreadIds);
-  let pendingCleanupConfirmation: Promise<boolean> | null = null;
-  if (pendingThreadIds.length > 0) {
-    const queuedCleanup = threadWriteQueue.enqueue(pendingThreadIds, () =>
-      deleteChatThreads(pendingThreadIds),
-    );
-    // A request can commit on the backend while its client promise remains wedged forever. Keep
-    // the ordered cleanup above, but issue one independent batch delete after the bounded wait so
-    // that lost response cannot let the row reappear after clear-all returns.
-    pendingCleanupConfirmation = waitForSettledOrRunFallback(
-      queuedCleanup,
-      () => deleteChatThreads(pendingThreadIds),
-      THREAD_WRITE_WAIT_MS,
-    ).then(
-      () => true,
-      () => false,
-    );
-  }
   // Clear both sides independently and report each outcome so the toast
   // can distinguish full vs partial success.
   const [backendThreadsResult, legacyThreads] = await Promise.all([
@@ -960,7 +976,10 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
   try {
     // Defer the history refresh until Dexie clear and tombstones finalize,
     // so listeners never observe the composite clear mid-flight.
-    await clearBackendChats({ notify: false });
+    await clearBackendChats({
+      notify: false,
+      tombstoneThreadIds: pendingThreadIds,
+    });
     result.backend = "cleared";
   } catch (error) {
     result.backend = "failed";
@@ -978,10 +997,6 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     console.error("clearStoredChats: legacy Dexie clear failed", error);
   }
 
-  const pendingCleanupConfirmed =
-    result.backend !== "cleared" && pendingCleanupConfirmation !== null
-      ? await pendingCleanupConfirmation
-      : false;
   const classification = classifyChatClearThreads({
     allThreadIds,
     backendThreadIds,
@@ -990,7 +1005,6 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     backendInventoryLoaded,
     backendCleared: result.backend === "cleared",
     legacyCleared: result.legacy === "cleared",
-    pendingCleanupConfirmed,
   });
   result.deletedThreadIds = classification.deletedThreadIds;
   result.failedThreadIds = classification.failedThreadIds;

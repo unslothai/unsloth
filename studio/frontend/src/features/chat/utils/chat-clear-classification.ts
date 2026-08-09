@@ -9,7 +9,6 @@ export interface ChatClearClassificationInput {
   backendInventoryLoaded: boolean;
   backendCleared: boolean;
   legacyCleared: boolean;
-  pendingCleanupConfirmed: boolean;
 }
 
 export function classifyChatClearThreads({
@@ -20,22 +19,19 @@ export function classifyChatClearThreads({
   backendInventoryLoaded,
   backendCleared,
   legacyCleared,
-  pendingCleanupConfirmed,
 }: ChatClearClassificationInput): {
   deletedThreadIds: string[];
   failedThreadIds: string[];
 } {
   const deletedThreadIds = allThreadIds.filter((id) => {
-    const pendingBackendDeleteConfirmed =
-      pendingThreadIds.has(id) && pendingCleanupConfirmed;
+    const pendingBackendWrite = pendingThreadIds.has(id);
     const absentFromStableBackendInventory =
-      !pendingThreadIds.has(id) &&
+      !pendingBackendWrite &&
       backendInventoryLoaded &&
       !backendThreadIds.has(id);
-    const backendDeleted =
-      backendCleared ||
-      pendingBackendDeleteConfirmed ||
-      absentFromStableBackendInventory;
+    // The clear transaction receives pending ids and tombstones them, so its confirmation fences
+    // both existing rows and creates that have not committed yet.
+    const backendDeleted = backendCleared || absentFromStableBackendInventory;
     const legacyDeleted = !legacyThreadIds.has(id) || legacyCleared;
     return backendDeleted && legacyDeleted;
   });

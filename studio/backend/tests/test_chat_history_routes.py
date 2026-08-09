@@ -158,6 +158,50 @@ def test_save_thread_message_does_not_mask_an_unrelated_integrity_error(monkeypa
     assert exc_info.value is failure
 
 
+def test_save_thread_distinguishes_a_tombstone_from_an_unknown_id(monkeypatch):
+    def reject_deleted_thread(_thread):
+        raise chat_history.ChatThreadDeletedError("thread-1")
+
+    monkeypatch.setattr(chat_history, "upsert_chat_thread", reject_deleted_thread)
+    payload = chat_history.ChatThread(
+        id = "thread-1",
+        title = "Deleted",
+        modelType = "base",
+        modelId = "model-1",
+        createdAt = 1,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        chat_history.save_thread(payload, current_subject = "test-user")
+
+    assert exc_info.value.status_code == 410
+    assert exc_info.value.detail == "Thread thread-1 was deleted"
+
+
+def test_clear_history_fences_pending_thread_ids(monkeypatch):
+    captured: list[str] = []
+
+    def clear_with_ids(thread_ids):
+        captured.extend(thread_ids)
+        return []
+
+    monkeypatch.setattr(
+        chat_history,
+        "clear_chat_history_with_active_research_runs",
+        clear_with_ids,
+    )
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+
+    response = chat_history.clear_history(
+        request,
+        chat_history.ChatDeleteRequest(ids = ["pending-thread"]),
+        current_subject = "test-user",
+    )
+
+    assert response == {"status": "deleted"}
+    assert captured == ["pending-thread"]
+
+
 def test_project_delete_cancels_research_before_workspace_cleanup(monkeypatch):
     project = {
         "id": "project-1",

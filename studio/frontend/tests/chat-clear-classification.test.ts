@@ -8,10 +8,8 @@ import { classifyChatClearThreads } from "../src/features/chat/utils/chat-clear-
 
 const classifyPendingThread = ({
   backendCleared = false,
-  pendingCleanupConfirmed = false,
 }: {
   backendCleared?: boolean;
-  pendingCleanupConfirmed?: boolean;
 }) =>
   classifyChatClearThreads({
     allThreadIds: ["pending"],
@@ -21,7 +19,6 @@ const classifyPendingThread = ({
     backendInventoryLoaded: true,
     backendCleared,
     legacyCleared: true,
-    pendingCleanupConfirmed,
   });
 
 test("does not classify an absent pending create after a failed clear", () => {
@@ -31,14 +28,7 @@ test("does not classify an absent pending create after a failed clear", () => {
   });
 });
 
-test("classifies a pending create after its cleanup confirms", () => {
-  assert.deepEqual(classifyPendingThread({ pendingCleanupConfirmed: true }), {
-    deletedThreadIds: ["pending"],
-    failedThreadIds: [],
-  });
-});
-
-test("classifies a pending create after the backend clear confirms", () => {
+test("classifies a pending create after the fencing backend clear confirms", () => {
   assert.deepEqual(classifyPendingThread({ backendCleared: true }), {
     deletedThreadIds: ["pending"],
     failedThreadIds: [],
@@ -55,7 +45,6 @@ test("still trusts absence for ids with no pending backend write", () => {
       backendInventoryLoaded: true,
       backendCleared: false,
       legacyCleared: true,
-      pendingCleanupConfirmed: false,
     }),
     { deletedThreadIds: ["stable"], failedThreadIds: [] },
   );

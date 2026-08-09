@@ -1841,13 +1841,18 @@ def delete_chat_threads(ids: list[str]) -> None:
     delete_chat_threads_with_active_research_runs(ids)
 
 
-def clear_chat_history_with_active_research_runs() -> list[str]:
+def clear_chat_history_with_active_research_runs(
+    additional_thread_ids: Iterable[str] = (),
+) -> list[str]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
         active_research_run_ids = _active_research_run_ids(conn)
-        thread_ids = {row["id"] for row in conn.execute("SELECT id FROM chat_threads").fetchall()}
+        thread_ids = set(additional_thread_ids)
+        thread_ids.update(
+            row["id"] for row in conn.execute("SELECT id FROM chat_threads").fetchall()
+        )
         _tombstone_chat_threads(conn, thread_ids)
         conn.execute("DELETE FROM chat_attachment_tombstones")
         conn.execute("DELETE FROM chat_threads")

@@ -719,6 +719,13 @@ export async function getChatThread(
   return parseJsonOrThrow<ThreadRecord>(response);
 }
 
+export class ChatThreadDeletedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatThreadDeletedError";
+  }
+}
+
 export async function saveChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
@@ -727,6 +734,10 @@ export async function saveChatThread(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(thread),
   });
+  if (response.status === 410) {
+    const body = await response.json().catch(() => null);
+    throw new ChatThreadDeletedError(parseErrorText(response.status, body));
+  }
   const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
   notifyChatHistoryUpdated();
   return savedThread;
@@ -979,9 +990,13 @@ export async function countBackendChats(): Promise<number> {
 }
 
 export async function clearBackendChats(
-  options: { notify?: boolean } = {},
+  options: { notify?: boolean; tombstoneThreadIds?: string[] } = {},
 ): Promise<void> {
-  const response = await authFetch("/api/chat", { method: "DELETE" });
+  const response = await authFetch("/api/chat", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: options.tombstoneThreadIds ?? [] }),
+  });
   await parseJsonOrThrow<unknown>(response);
   if (options.notify !== false) {
     notifyChatHistoryUpdated();

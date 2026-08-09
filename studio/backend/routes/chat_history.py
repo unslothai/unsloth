@@ -285,6 +285,10 @@ def _missing_thread_error(thread_id: str) -> HTTPException:
     return HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
 
 
+def _deleted_thread_error(thread_id: str) -> HTTPException:
+    return HTTPException(status_code = 410, detail = f"Thread {thread_id} was deleted")
+
+
 @router.post("/threads", response_model = ChatThread)
 def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
     if payload.projectId and get_chat_project(payload.projectId) is None:
@@ -292,7 +296,7 @@ def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_
     try:
         return ChatThread(**upsert_chat_thread(payload.model_dump()))
     except ChatThreadDeletedError as exc:
-        raise _missing_thread_error(payload.id) from exc
+        raise _deleted_thread_error(payload.id) from exc
     except sqlite3.IntegrityError as exc:
         # The project can be deleted between the check above and this insert, and the foreign key
         # then fails. Report the same 404 rather than surfacing a 500.
@@ -735,8 +739,16 @@ def record_import_ledger(
 
 
 @router.delete("")
-def clear_history(request: Request, current_subject: str = Depends(get_current_subject)):
-    deleted_research_run_ids = clear_chat_history_with_active_research_runs()
+def clear_history(
+    request: Request,
+    payload: Optional[ChatDeleteRequest] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    # Pending frontend creators may not have rows yet. Tombstone their known ids in the same
+    # transaction so a successful clear also fences any POST that commits afterward.
+    deleted_research_run_ids = clear_chat_history_with_active_research_runs(
+        payload.ids if payload else ()
+    )
     _cancel_deleted_research_runs(request, deleted_research_run_ids)
     return {"status": "deleted"}
 
@@ -818,7 +830,7 @@ def fork_thread(
             id_factory = lambda: str(uuid.uuid4()),
         )
     except ChatThreadDeletedError as exc:
-        raise _missing_thread_error(payload.newThreadId) from exc
+        raise _deleted_thread_error(payload.newThreadId) from exc
     if forked is None:
         # The source can be deleted between the reads above and the fork transaction, which the
         # threadpool lets run concurrently. Report it gone rather than as a server fault.
