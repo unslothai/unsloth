@@ -114,6 +114,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.title",
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
+    "settings.general.remoteAccess.sectionTitle",
   ],
   agents: [
     // Every key needs a rendered data-settings-label, or a hit has nothing to scroll to.
