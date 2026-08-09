@@ -1468,6 +1468,21 @@ _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_
 _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
 
 
+def _module_returns_logits(module):
+    # get_output_embeddings() is None on the decoder bodies (Qwen2Model, ...) and the
+    # head module on the *ForCausalLM wrappers, so it finds the head owner by behaviour
+    # rather than by a model-name list.
+    if module is None:
+        return False
+    get_output_embeddings = getattr(module, "get_output_embeddings", None)
+    if not callable(get_output_embeddings):
+        return False
+    try:
+        return get_output_embeddings() is not None
+    except Exception:
+        return False
+
+
 def _grpo_hidden_states_wrap_target(model):
     if model is None:
         return None
@@ -1478,8 +1493,15 @@ def _grpo_hidden_states_wrap_target(model):
             return base_model
     for attr in ("base_model", "model"):
         child = getattr(model, attr, None)
-        if child is not None and child is not model and hasattr(child, "forward"):
-            return child
+        if child is None or child is model or not hasattr(child, "forward"):
+            continue
+        # Descend only into an adapter that still owns the head. A bare *ForCausalLM
+        # (what TRL builds GRPO's ref_model as) also has a `.model`, but that is its
+        # decoder body, and wrapping it leaves the head above running untouched: the
+        # fallback becomes a silent no-op returning [B, T, vocab], not [B, T, hidden].
+        if not _module_returns_logits(child):
+            continue
+        return child
     return model
 
 
@@ -1586,6 +1608,12 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     model_name = type(target_model).__name__
 
     def wrapped_forward(*args, **kwargs):
+        # accelerate's extract_model_from_parallel(keep_fp32_wrapper = False), which the
+        # GRPO loop calls every step, rebinds an instance-level forward as
+        # MethodType(forward, model), so the module arrives as a leading positional
+        # argument. `original_forward` is already bound, so drop it.
+        while len(args) != 0 and args[0] is target_model:
+            args = args[1:]
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
             return original_forward(*args, **kwargs)
 
