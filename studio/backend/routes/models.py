@@ -3331,20 +3331,25 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
         best_total = 0
         best_first: Optional[str] = None
         for root in roots:
-            matches: list[tuple[str, Path]] = []
-            total = 0
+            ranked: dict[int, list[tuple[str, Path, int]]] = {0: [], 1: []}
             for f in _iter_gguf_paths(root):
                 try:
                     rel = f.relative_to(root).as_posix()
                 except ValueError:
                     rel = f.name
-                if want not in _main_variant_names(rel):
+                rank = _main_variant_rank(rel, want)
+                if rank is None:
                     continue
                 try:
-                    total += f.stat().st_size
+                    size = f.stat().st_size
                 except OSError:
                     continue
-                matches.append((rel, f))
+                ranked[rank].append((rel, f, size))
+            # Exact keys alone when any exist: summing them with the label matches counts other
+            # checkpoints' bytes into this row's estimate and can reveal one of their files.
+            chosen = ranked[0] or ranked[1]
+            matches = [(rel, f) for rel, f, _size in chosen]
+            total = sum(size for _rel, _f, size in chosen)
             # Prefer the most complete snapshot so a partial older revision can't underestimate bytes.
             if matches and total > best_total:
                 matches.sort(key = lambda m: m[0])
@@ -3650,20 +3655,24 @@ def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
     return label
 
 
-def _main_variant_names(rel_path: str) -> tuple[str, ...]:
-    """Every spelling that names this file's variant, normalised for comparison.
+def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
+    """How well *want* names this file's variant: 0 for its own key, 1 for the legacy
+    quant-label spelling, None for neither.
 
-    The quant label alone is ambiguous in a repo holding several checkpoints at one
-    quant, so the file's own variant key counts too.
+    Both spellings have to resolve -- a stored pin predates the qualified keys -- but they
+    cannot rank equally. In a repo holding several checkpoints at one quant the bare label
+    names every one of them, so a request for the repo-root ``Q6_K`` matched the qualified
+    files too and then took whichever sorted first. Exact keys are used alone whenever any
+    exist, and the label is the fallback for the rows that have no qualified spelling.
     """
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
     if label is None:
-        return ()
-    return tuple(
-        {_normalized_quant_label(label), _normalized_quant_label(_gguf_variant_key(rel_path))}
-    )
+        return None
+    if _normalized_quant_label(_gguf_variant_key(rel_path)) == want:
+        return 0
+    return 1 if _normalized_quant_label(label) == want else None
 
 
 def _normalized_quant_label(label: str) -> str:
@@ -4437,7 +4446,7 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
         )
         for rev in candidate_revisions:
             snapshot = getattr(rev, "snapshot_path", None)
-            matches = []
+            ranked: dict[int, list[tuple[str, Path]]] = {0: [], 1: []}
             for f in rev.files:
                 p = Path(f.file_path)
                 rel = f.file_name
@@ -4446,10 +4455,13 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
                         rel = p.relative_to(snapshot).as_posix()
                     except ValueError:
                         pass
-                if want not in _main_variant_names(rel):
+                rank = _main_variant_rank(rel, want)
+                if rank is None:
                     continue
                 if p.exists() or p.is_symlink():
-                    matches.append((rel, p))
+                    ranked[rank].append((rel, p))
+            # Exact keys alone when any exist, else the legacy label spelling.
+            matches = ranked[0] or ranked[1]
             if matches:
                 # Path-sorted so a sharded quant deterministically yields its first split.
                 return sorted(matches, key = lambda m: m[0].lower())[0][1]

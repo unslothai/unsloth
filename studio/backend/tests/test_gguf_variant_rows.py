@@ -366,3 +366,101 @@ def test_an_unqualified_row_still_reports_no_display_label():
 
     row = RouteDetail(filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 1)
     assert row.model_dump()["display_label"] is None
+
+
+# --------------------------------------------------------------------------------------
+# A row must not reach outside its own checkpoint
+# --------------------------------------------------------------------------------------
+
+
+def test_a_discarded_shard_family_leaves_the_download_targets_too():
+    """Narrowing only ``main_files`` left the copy in ``target_filenames`` /
+    ``required_hashes`` / ``download_size_bytes``. The worker fetched both copies, reclaim
+    then deleted the unchosen one (it is absent from the narrowed ``main_hashes``), and the
+    manifest still required it -- so the finished job reported partial and re-downloaded a
+    multi-gigabyte checkpoint on every retry."""
+    from hub.utils.download_manifest import ExpectedFile
+    from hub.utils.gguf_plan import plan_from_expected_files
+
+    expected = [
+        ExpectedFile(path = "BF16/QwQ-32B-BF16-00001-of-00002.gguf", size = 50, sha256 = "a1"),
+        ExpectedFile(path = "BF16/QwQ-32B-BF16-00002-of-00002.gguf", size = 15, sha256 = "a2"),
+        ExpectedFile(path = "BF16/QwQ-32B.BF16-00001-of-00002.gguf", size = 50, sha256 = "b1"),
+        ExpectedFile(path = "BF16/QwQ-32B.BF16-00002-of-00002.gguf", size = 15, sha256 = "b2"),
+        ExpectedFile(path = "mmproj-F16.gguf", size = 5, sha256 = "c1"),
+    ]
+    plan = plan_from_expected_files("bf16", expected)
+
+    assert plan.main_filenames == {
+        "BF16/QwQ-32B-BF16-00001-of-00002.gguf",
+        "BF16/QwQ-32B-BF16-00002-of-00002.gguf",
+    }
+    # Everything the worker fetches and the manifest checks agrees with that choice.
+    assert set(plan.target_filenames) == plan.main_filenames | {"mmproj-F16.gguf"}
+    assert plan.required_hashes == frozenset({"a1", "a2", "c1"})
+    assert plan.download_size_bytes == 70
+    assert plan.main_size_bytes == 65
+
+
+def test_a_genuine_split_keeps_every_shard_in_the_plan():
+    """The narrowing must stay blind to shard count: one family is one checkpoint."""
+    from hub.utils.download_manifest import ExpectedFile
+    from hub.utils.gguf_plan import plan_from_expected_files
+
+    expected = [
+        ExpectedFile(path = f"BF16/DeepSeek-R1-BF16-0000{n}-of-00003.gguf", size = 10, sha256 = f"h{n}")
+        for n in (1, 2, 3)
+    ]
+    plan = plan_from_expected_files("bf16", expected)
+    assert len(plan.main_filenames) == 3
+    assert set(plan.target_filenames) == plan.main_filenames
+    assert plan.download_size_bytes == 30
+
+
+def test_a_qualified_key_is_an_explicit_checkpoint_request():
+    """``resolve_local_gguf`` falls back to the first local variant for a ``:tag`` that
+    names no quant, which is right for ``:latest`` and wrong for one of our own rows. The
+    full-match rejected every slash-qualified key, so asking for an absent checkpoint was
+    answered by whichever one happened to be downloaded, under the requested model id."""
+    from core.inference.openai_auto_download import looks_like_quant
+
+    assert looks_like_quant("distilled/ltx-2.3-22b-distilled-Q6_K") is True
+    assert looks_like_quant("distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K") is True
+    # Unchanged for the spellings it already judged.
+    assert looks_like_quant("Q6_K") is True
+    assert looks_like_quant("IQ4_XS-3.53bpw") is True
+    assert looks_like_quant("latest") is False
+    assert looks_like_quant("8b") is False
+    assert looks_like_quant(None) is False
+
+
+def test_the_exact_key_wins_over_the_bare_quant_label():
+    """A bare label names every checkpoint carrying that quant, so the repo-root ``Q6_K``
+    row matched the qualified files too and then took whichever sorted first -- reporting
+    the sum of every checkpoint as its size and revealing another one's file."""
+    from routes.models import _main_variant_rank, _normalized_quant_label
+
+    want = _normalized_quant_label("Q6_K")
+    assert _main_variant_rank("ltx-2.3-22b-dev-Q6_K.gguf", want) == 0
+    assert _main_variant_rank("distilled/ltx-2.3-22b-distilled-Q6_K.gguf", want) == 1
+    assert _main_variant_rank("ltx-2.3-22b-dev-Q4_K_M.gguf", want) is None
+    # And the qualified row is exact under its own key, while the root file is not a match.
+    qualified = _normalized_quant_label("distilled/ltx-2.3-22b-distilled-Q6_K")
+    assert _main_variant_rank("distilled/ltx-2.3-22b-distilled-Q6_K.gguf", qualified) == 0
+    assert _main_variant_rank("ltx-2.3-22b-dev-Q6_K.gguf", qualified) is None
+
+
+def test_two_checkpoints_in_one_directory_get_distinguishable_labels():
+    """Two rows labelled ``Q6_K · experiments`` are two rows a user cannot tell apart."""
+    paths = ("experiments/model-a-Q6_K.gguf", "experiments/model-b-Q6_K.gguf")
+    variants = [
+        GgufVariantInfo(filename = path, quant = gguf_variant_key(path), size_bytes = 1)
+        for path in paths
+    ]
+    _apply_gguf_display_labels(variants)
+    labels = [v.display_label for v in variants]
+    assert labels == [
+        "Q6_K · experiments/model-a-Q6_K",
+        "Q6_K · experiments/model-b-Q6_K",
+    ]
+    assert len(set(labels)) == 2

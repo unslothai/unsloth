@@ -148,6 +148,13 @@ def looks_like_quant(variant: Optional[str]) -> bool:
         return False
     # _extract_quant_label can append a bpw modifier (IQ4_XS-3.53bpw); still a quant.
     label = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", variant.strip(), flags = re.IGNORECASE)
+    # A path-qualified variant key (``distilled/model-Q6_K``) is one of OUR advertised rows: a
+    # repo with several checkpoints at one quant keys each on its path. No foreign tag has that
+    # shape -- Ollama's is ``:latest``, LiteLLM's namespace sits before the colon -- so it must
+    # be read as an explicit checkpoint request and MISS when absent. Falling through instead
+    # served the caller a different checkpoint under the model id they asked for.
+    if "/" in label.replace("\\", "/"):
+        return True
     return _GGUF_KNOWN_QUANT_RE.fullmatch(label) is not None
 
 

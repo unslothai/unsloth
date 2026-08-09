@@ -313,10 +313,19 @@ def gguf_variant_key(filename: str) -> str:
     return quant
 
 
-def _variant_scope_label(filename: str) -> str:
-    """The part of a qualified variant's path that tells it apart from its namesakes."""
+def _variant_scope_label(filename: str, *, with_stem: bool = False) -> str:
+    """The part of a qualified variant's path that tells it apart from its namesakes.
+
+    The directory alone reads best and is enough for the usual shape, where each checkpoint
+    has its own. ``with_stem`` adds the filename back for the case where it is not: two
+    checkpoints in ONE directory at one quant are two rows, and a label naming only the
+    directory would print the same text on both.
+    """
     parents = filename.replace("\\", "/").rpartition("/")[0].strip("/")
-    return parents or _gguf_stem(filename)
+    stem = _gguf_stem(filename)
+    if not parents:
+        return stem
+    return f"{parents}/{stem}" if with_stem else parents
 
 
 def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
@@ -324,13 +333,27 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
         variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
     ambiguous = len(unknown_variants) > 1
+    qualified = [
+        variant
+        for variant in variants
+        if (token := extract_quant_token(variant.filename)) is not None
+        and variant.quant.lower() != token.lower()
+    ]
+    # A scope shared by two rows does not tell them apart, so those rows show the file too.
+    scopes: dict[str, int] = {}
+    for variant in qualified:
+        scope = _variant_scope_label(variant.filename).lower()
+        scopes[scope] = scopes.get(scope, 0) + 1
     for variant in variants:
         token = extract_quant_token(variant.filename)
         if token is None:
             variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
         elif variant.quant.lower() != token.lower():
             # A key qualified by path: show the quant, plus what distinguishes it.
-            variant.display_label = f"{token} · {_variant_scope_label(variant.filename)}"
+            collides = scopes.get(_variant_scope_label(variant.filename).lower(), 0) > 1
+            variant.display_label = (
+                f"{token} · {_variant_scope_label(variant.filename, with_stem = collides)}"
+            )
 
 
 def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
