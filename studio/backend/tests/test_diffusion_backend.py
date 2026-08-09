@@ -3836,7 +3836,6 @@ def _stub_dense_transformer_cached(monkeypatch, *, cached: bool):
     Same rule as the hosted prequant above, applied to the base repo's own shards: uncached, an
     auto quant must not buy a second denoiser for a GGUF pick."""
     from core.inference import diffusion as dmod
-
     monkeypatch.setattr(dmod, "_dense_transformer_cached", lambda base_repo: cached)
 
 

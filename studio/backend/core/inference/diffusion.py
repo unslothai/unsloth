@@ -1008,8 +1008,10 @@ class DiffusionBackend:
             # Qwen-Image-Edit's Q6_K is 16.9 GB and the base transformer is another 40.9 GB.
             # Cached shards cost nothing, so anyone who already has the dense base keeps the fast
             # path, and an EXPLICIT transformer_quant still opts in as before.
-            if auto and not _has_active_lora(kwargs.get("loras")) and not _dense_transformer_cached(
-                kwargs.get("base_repo")
+            if (
+                auto
+                and not _has_active_lora(kwargs.get("loras"))
+                and not _dense_transformer_cached(kwargs.get("base_repo"))
             ):
                 return False
             # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
