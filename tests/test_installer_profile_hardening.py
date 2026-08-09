@@ -1404,14 +1404,15 @@ def test_the_setup_child_does_not_hand_the_proxy_secret_to_its_descendants():
     assert removed_at < prelude.find("$PSDefaultParameterValues[$_.Name]")
 
 
-def test_the_probe_loads_only_the_callers_own_host_profile(monkeypatch):
+def test_the_probe_adds_the_callers_host_profile_beside_the_current_host_one(monkeypatch):
     """pwsh.exe and powershell.exe run the CONSOLEHOST profile, so a caller in the VS Code
     Integrated Console -- whose defaults live in Microsoft.VSCode_profile.ps1 -- got no proxy
     and the -NoProfile child could not download.
 
-    Only THAT profile, though, and only when the caller can be identified. Sourcing every
-    Microsoft.*_profile.ps1 in the directory ran profiles for hosts nobody was using, which can
-    overwrite the console's own defaults, have side effects, or exit before the record."""
+    Added beside the current-host profile, never in place of it: TERM_PROGRAM=vscode is set by
+    every VS Code integrated terminal, so substitution robbed a plain pwsh terminal there of the
+    only profile it has. Named hosts only, since a directory-wide sweep of
+    Microsoft.*_profile.ps1 ran profiles for hosts nobody was using."""
     from unsloth_cli.commands import studio as studio_cmd
 
     probe = studio_cmd._PS_PROXY_PROBE
@@ -1423,6 +1424,13 @@ def test_the_probe_loads_only_the_callers_own_host_profile(monkeypatch):
     assert "Split-Path -Parent $PROFILE.CurrentUserCurrentHost" in probe
     # ...and before the table is read, or it would snapshot the wrong defaults.
     assert probe.find("_UNSLOTH_PS_HOST_PROFILE") < probe.find("$out = @{}")
+    # Unconditional and last, so the profile the probe's own host would have loaded is still
+    # there and still gets the final word on a key both of them set.
+    for scope in ("AllUsersCurrentHost", "CurrentUserCurrentHost"):
+        named = probe.find(f"Split-Path -Parent $PROFILE.{scope}")
+        plain = probe.find(f"$__unslothProfiles += $PROFILE.{scope};")
+        assert named >= 0, f"the caller's own host profile is named beside {scope}"
+        assert plain > named, f"{scope} is kept and runs after it"
 
     # The caller's host is named from the environment it announces itself in.
     monkeypatch.setenv("TERM_PROGRAM", "vscode")
