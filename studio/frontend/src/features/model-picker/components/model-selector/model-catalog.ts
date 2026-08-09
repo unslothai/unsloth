@@ -4,6 +4,7 @@
 // One canonical name per diffusion model, its published artifacts (GGUF quants, prequant FP8 / bnb-4bit repos, official BF16 pipelines), and a deterministic router picking the best artifact for the device.
 // Pure helpers, no React/DOM deps. See model-catalog.check.ts (`npm run catalog:check`).
 
+import type { ModelCapabilities } from "./model-capabilities";
 import type { ModelOption } from "./types";
 
 export type ArtifactFormat = "gguf" | "fp8" | "bnb-4bit" | "bf16";
@@ -25,6 +26,12 @@ export interface ModelArtifact {
   offloadFitTiers?: readonly { gpuGb: number; systemRamGb: number }[];
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
+  /** Parameter count of THIS artifact's checkpoint, for the row's size chip.
+   * Only a fallback: the Hub listing's own `expand=gguf` total wins wherever it
+   * reports one. Rows the listing never returns (a repo it does not index, a
+   * non-unsloth owner, one this account cannot see) have no other source, and
+   * ids like "MiniMax-H3-GGUF" carry no "<n>B" token to guess from. */
+  totalParams?: number;
   /** Gated on the Hub (license + token). A bare group click skips it when not downloaded and falls through to an open artifact (e.g. the GGUF); an already-downloaded gated artifact is still returned. */
   gated?: boolean;
 }
@@ -40,6 +47,11 @@ export interface CatalogGroup {
   artifacts: ModelArtifact[];
   /** Cross-owner ids that resolve to this group. Suffix stripping never merges two owners on its own. */
   aliases?: readonly string[];
+  /** What the model can do, for the row's capability glyphs. Same fallback rule as
+   * `ModelArtifact.totalParams`: the Hub listing's tags win where it returns the row.
+   * `detectCapabilities` reads tags then repo-name keywords, and a name like
+   * "MiniMax-H3-GGUF" says nothing about the audio track the model actually emits. */
+  capabilities?: Partial<ModelCapabilities>;
 }
 
 // ── artifact constructors (keep the data tables terse) ─────────────────────────
@@ -331,6 +343,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     description: "Text-to-video with synchronized audio",
     scope: "video",
     aliases: ["Comfy-Org/MiniMax-H3"],
+    capabilities: { audio: true },
     artifacts: [
       bf16Pipeline("MiniMaxAI/MiniMax-H3", 145, {
         // Cluster measurements at the default 1344x768, 124-frame preset. The
@@ -341,7 +354,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
           { gpuGb: 123, systemRamGb: 80 },
         ],
       }),
-      gguf("unsloth/MiniMax-H3-GGUF"),
+      // The FL2VA denoiser this repo publishes, summed off its GGUF tensor shapes.
+      gguf("unsloth/MiniMax-H3-GGUF", { totalParams: 20_111_438_744 }),
     ],
   },
   {
@@ -351,6 +365,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     displayName: "LTX 2.3 distilled",
     description: "Text-to-video with audio",
     scope: "video",
+    capabilities: { audio: true },
     artifacts: [
       bf16Single(
         "Lightricks/LTX-2.3",
@@ -358,7 +373,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         90,
       ),
       // No FP8 artifact: the LTX-2.3 loader refuses the official scaled-FP8 single file (it carries .weight_scale/.input_scale), so a click would start a ~76 GB download that always fails.
-      gguf("unsloth/LTX-2.3-GGUF"),
+      // 21.0B is what the Hub reports for this repo; carrying it keeps the row identical when the listing is unavailable (offline, rate-limited).
+      gguf("unsloth/LTX-2.3-GGUF", { totalParams: 21_005_004_544 }),
     ],
   },
   {
@@ -366,6 +382,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     displayName: "LTX 2 (base)",
     description: "Text-to-video with audio",
     scope: "video",
+    capabilities: { audio: true },
     artifacts: [bf16Pipeline("Lightricks/LTX-2", 90)],
   },
   {
@@ -530,6 +547,34 @@ export function curatedSizeBytesFor(
 ): number | undefined {
   const gb = artifactForRepoId(repoId, catalog)?.artifact.approxSizeGb;
   return gb && gb > 0 ? gb * BYTES_PER_GB : undefined;
+}
+
+/** Curated parameter count for an exact artifact id, or undefined when the catalog
+ * carries none. A FALLBACK for rows the Hub listing does not return: callers must
+ * prefer the listing's own total wherever it reports one. */
+export function curatedTotalParamsFor(
+  repoId: string,
+  catalog: CatalogGroup[],
+): number | undefined {
+  const params = artifactForRepoId(repoId, catalog)?.artifact.totalParams;
+  return params && params > 0 ? params : undefined;
+}
+
+/** Curated capabilities for any id belonging to a group that declares them, or
+ * undefined. Same fallback rule as `curatedTotalParamsFor`: the listing's tags win.
+ * Group-level, not artifact-level: every artifact of a model can do what the model
+ * can do. */
+export function curatedCapabilitiesFor(
+  repoId: string,
+  catalog: CatalogGroup[],
+): ModelCapabilities | undefined {
+  const declared = groupForRepoId(repoId, catalog)?.capabilities;
+  if (!declared) return undefined;
+  return {
+    vision: declared.vision ?? false,
+    reasoning: declared.reasoning ?? false,
+    audio: declared.audio ?? false,
+  };
 }
 
 /** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT. */

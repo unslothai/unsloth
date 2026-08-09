@@ -222,6 +222,33 @@ export function searchRowFitsDevice<
   );
 }
 
+/** The id pool the Recommended SEARCH matches a query against: the curated seeds the
+ * unfiltered list paints, then the listing ids, each id once and seeds first (the
+ * order `orderRecommendedRows` renders them in).
+ *
+ * The listing pool drops every id already on disk, because a downloaded model has its
+ * own On Device row. The seed pool does not, and the unfiltered Recommended list keeps
+ * painting a downloaded curated model (badged "downloaded"), so search has to keep it
+ * too. Without this a curated pick disappears from Recommended search the moment it is
+ * downloaded, and the only thing that can bring it back is a live Hub listing row --
+ * which a repo the listing does not return (new, non-unsloth owner, invisible to this
+ * account) never gets. The row then sits in the unfiltered list yet cannot be found by
+ * typing its name. */
+export function searchableRecommendedIds(
+  seedIds: readonly string[],
+  listingIds: readonly string[],
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of [...seedIds, ...listingIds]) {
+    const key = id.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(id);
+  }
+  return out;
+}
+
 /** Order Recommended: curated seeds first in catalog order, then the rest of the
  * listing, each id once. A seed hands off only to a row that survived `keep`, so
  * a painted curated row does not vanish when the listing reports it with

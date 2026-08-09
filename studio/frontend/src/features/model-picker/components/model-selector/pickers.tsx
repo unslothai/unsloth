@@ -124,6 +124,7 @@ import {
   orderRecommendedRows,
   paramsFromId,
   searchRowFitsDevice,
+  searchableRecommendedIds,
 } from "./recommended-fit";
 import {
   ggufVariantsMatchForPicker,
@@ -155,7 +156,9 @@ import type {
 import {
   type CatalogGroup,
   artifactForRepoId,
+  curatedCapabilitiesFor,
   curatedSizeBytesFor,
+  curatedTotalParamsFor,
 } from "./model-catalog";
 import { describeVariantListingError } from "./variant-listing-error";
 import {
@@ -2381,8 +2384,16 @@ export function HubModelPicker({
         // most curated ids and wrong for others (Wan2.2-TI2V-5B is 30 GB, not 2),
         // and non-unsloth ids never get a listing row to correct it.
         curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,
+        // Same reason the size is curated: a seed the listing does not return has no
+        // other source for its param chip, and most curated ids carry no "<n>B" token.
+        totalParams: catalog ? curatedTotalParamsFor(id, catalog) : undefined,
       }));
   }, [catalog, models, formatFilter, isKnownGgufRepo, isMac, task]);
+
+  const catalogSeedIds = useMemo(
+    () => catalogSeedRows.map((row) => row.id),
+    [catalogSeedRows],
+  );
 
   // Recommended suggests GGUF anywhere; on Mac also MLX and safetensors. The
   // "recommended" sort also drops models too big for the device. Already-
@@ -2431,13 +2442,16 @@ export function HubModelPicker({
     catalog,
   ]);
 
-  // Per-row meta + VRAM badge from the recommended listing's own metadata.
+  // Per-row meta + VRAM badge from the recommended listing's own metadata, with the
+  // curated seeds behind it: a listing row wins wherever there is one, and a curated
+  // row the listing never returns still gets its size chip instead of rendering bare.
   const recommendedMeta = useMemo(() => {
     const map = new Map<
       string,
       { meta: string | null; status: VramFitStatus | null; est: number }
     >();
-    for (const r of recommendedSearch.results) {
+    for (const r of [...recommendedSearch.results, ...catalogSeedRows]) {
+      if (map.has(r.id)) continue;
       const isG = isKnownGgufRepo(r.id);
       // GGUF param count comes from the repo name or the GGUF metadata, so even
       // repos with no "<n>B" token (Kimi, MiniMax) show a param chip.
@@ -2495,10 +2509,18 @@ export function HubModelPicker({
       map.set(r.id, { meta, status, est });
     }
     return map;
-  }, [recommendedSearch.results, isKnownGgufRepo, gpu, inferenceGpu]);
+  }, [
+    recommendedSearch.results,
+    catalogSeedRows,
+    isKnownGgufRepo,
+    gpu,
+    inferenceGpu,
+  ]);
 
-  // Tag-accurate capabilities keyed by repo id, pooled from both HF listings.
-  // Rows look it up by id and fall back to name detection when absent.
+  // Tag-accurate capabilities keyed by repo id, pooled from both HF listings, then the
+  // catalog for curated ids neither listing returned. Rows look it up by id and fall
+  // back to repo-name detection when absent, which cannot see an audio track a name
+  // does not mention. Listings first: real tags outrank curated data.
   const capsById = useMemo(() => {
     const map = new Map<string, ModelCapabilities>();
     for (const r of [...results, ...recommendedSearch.results]) {
@@ -2512,8 +2534,15 @@ export function HubModelPicker({
         }),
       );
     }
+    if (catalog) {
+      for (const row of catalogSeedRows) {
+        if (map.has(row.id)) continue;
+        const curated = curatedCapabilitiesFor(row.id, catalog);
+        if (curated) map.set(row.id, curated);
+      }
+    }
     return map;
-  }, [results, recommendedSearch.results]);
+  }, [results, recommendedSearch.results, catalog, catalogSeedRows]);
 
   // Ordered by the On Device dropdown (recent/download date/size/name). The gate keeps diffusion GGUFs in the Images/Video picker and out of chat.
   const sortedCachedGguf = useMemo(
@@ -2883,7 +2912,14 @@ export function HubModelPicker({
       searchRowFitsDevice(
         {
           ...row,
-          totalParams: row.totalParams ?? recommendedParamCountById.get(row.id),
+          // Curated params last, same rule as the curated size below: a listing
+          // total wins, but a repo no listing returns must still be sizable or
+          // `requireKnown` hides it from search while the unfiltered Recommended
+          // list, which reads the seed row's own metadata, keeps painting it.
+          totalParams:
+            row.totalParams ??
+            recommendedParamCountById.get(row.id) ??
+            (catalog ? curatedTotalParamsFor(row.id, catalog) : undefined),
         },
         {
           isGguf: isKnownGgufRepo(row.id),
@@ -2910,7 +2946,10 @@ export function HubModelPicker({
     if (!showHfSection) return [];
     const q = normalizeForSearch(debouncedQuery.trim());
     return (
-      recommendedIds
+      // Seeds included: recommendedIds hides downloaded models, which the unfiltered
+      // Recommended list still paints, so without them a curated pick vanishes from
+      // search the moment it is on disk unless a Hub listing row happens to carry it.
+      searchableRecommendedIds(catalogSeedIds, recommendedIds)
         .filter((id) => normalizeForSearch(id).includes(q))
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
@@ -2927,6 +2966,7 @@ export function HubModelPicker({
   }, [
     showHfSection,
     debouncedQuery,
+    catalogSeedIds,
     recommendedIds,
     formatFilter,
     isKnownGgufRepo,
@@ -4856,10 +4896,14 @@ export function HubModelPicker({
                             hubUrl={hubRepoUrl(id)}
                             alignMeta="hub"
                             showSize={hubRowsShowSize}
+                            downloaded={downloadedSet.has(id.toLowerCase())}
                             capabilities={capsById.get(id)}
+                            // Same meta the unfiltered Recommended row shows, so a
+                            // model does not lose its size chip just because it was
+                            // reached by typing its name.
                             meta={
                               isKnownGgufRepo(id)
-                                ? "GGUF"
+                                ? (recommendedMeta.get(id)?.meta ?? "GGUF")
                                 : (vram?.detail ?? extractParamLabel(id))
                             }
                             selected={value === id}
