@@ -70,9 +70,28 @@ _FAMILY_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
 }
 
 # Base-repo overrides for families offering multiple sizes under one entry (the table carries the family default).
+# flux.2-klein ships FOUR checkpoints under one entry: 4B / base-4B (the family default, Qwen3-4B encoder) and
+# 9B / base-9B (18.2 GB transformer, Qwen3-8B encoder). The 9B pair needs an override on BOTH ids: sizing
+# klein-BASE-9B off the family default understates it by 2.3x, and the base variants are the ones the upstream
+# guidance points fine-tuning at, so it is the likelier of the two to be loaded.
 _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
     "black-forest-labs/FLUX.2-klein-9B": (18.2, 16.4, 0.2),
+    "black-forest-labs/FLUX.2-klein-base-9B": (18.2, 16.4, 0.2),
 }
+
+
+def base_repo_bf16_components_gb(base_repo: Optional[str]) -> Optional[tuple[float, float, float]]:
+    """The per-base override for ``base_repo``, or None when it has none.
+
+    No family fallback, unlike ``family_bf16_components_gb``: a caller that already holds a
+    better number for the family default needs to know whether this particular base was
+    actually named in the table, not receive the family figure back."""
+    if not base_repo:
+        return None
+    # Keyed on UPSTREAM ids, so mirrors have to be normalised before the lookup.
+    from .diffusion_families import canonical_base
+
+    return _BASE_REPO_BF16_GB.get(canonical_base(base_repo))
 
 
 def family_bf16_components_gb(
@@ -80,12 +99,10 @@ def family_bf16_components_gb(
 ) -> Optional[tuple[float, float, float]]:
     """(transformer, text encoders, VAE) bf16-resident sizes in GB, or None when the family isn't
     in the table (callers fall back to file-size estimates)."""
-    if base_repo:
-        # Keyed on UPSTREAM ids, and a miss falls through quietly to the coarser family table.
-        from .diffusion_families import canonical_base
-        override = _BASE_REPO_BF16_GB.get(canonical_base(base_repo))
-        if override is not None:
-            return override
+    # A per-base miss falls through quietly to the coarser family table.
+    override = base_repo_bf16_components_gb(base_repo)
+    if override is not None:
+        return override
     name = getattr(fam, "name", None)
     return _FAMILY_BF16_GB.get(name) if name else None
 
@@ -106,6 +123,11 @@ class DenseQuantEstimate:
     companions_mib: int
     prequant: bool
     download_transformer_mib: int = 0
+    # The TEXT-ENCODER share of ``companions_mib``. The memory planner needs it to price the
+    # group tier that streams the encoders instead of keeping them resident, and this table is
+    # the only place the split exists on the dense-candidate path. Defaulted so any construction
+    # that predates it still works (the planner reads a 0 split as "no split", i.e. no new tier).
+    text_encoders_mib: int = 0
 
     @property
     def transient_total_mib(self) -> int:
@@ -141,6 +163,9 @@ def estimate_dense_quant(
         companions_mib = companions,
         prequant = prequant_available,
         download_transformer_mib = int(transformer_gb * hub_factor * _MIB_PER_GB),
+        # Same conversion as `companions`, of which this is the text-encoder half, so the planner's
+        # `companions - text_encoders` is the VAE and nothing else.
+        text_encoders_mib = int(text_encoders_gb * _MIB_PER_GB),
     )
 
 
@@ -192,18 +217,35 @@ def resolve_dense_quant_candidate(
     if scheme is None:
         return None
     prequant_available = False
+    prequant_cached = False
     # force_dense: the loader will SKIP the prequant shortcut (e.g. a LoRA bake), so size the candidate for the dense build.
     if not force_dense:
         try:
-            from .diffusion_prequant import usable_prequant_source
+            from .diffusion_prequant import prequant_checkpoint_cached, usable_prequant_source
 
             # usable_ (not resolve_): a local path override counts only when the loader will accept it (allowlisted AND present), else it rebuilds dense after eviction.
             src = usable_prequant_source(
                 fam, scheme, path_override = prequant_path, base_repo = base_repo
             )
             prequant_available = src is not None
+            if src is not None and getattr(src, "kind", None) == "path":
+                # A local override is the operator's own file on disk: it downloads nothing, so the
+                # space gate has no claim on it. prequant_checkpoint_cached only answers for hosted
+                # repos (_cached_in_root returns None for any other kind), so asking it here would
+                # report False and re-apply the gate to a file that costs no bytes, which is the
+                # opposite of what the retry assumes about local paths.
+                prequant_cached = True
+            elif src is not None:
+                # Pin the ACTIVE root, as the retry and the loader both do. Unpinned,
+                # cached_checkpoint_path searches only huggingface_hub's import-time constant, so
+                # after a cache-folder change the retry proves the checkpoint cached in the live
+                # root and this would still call it uncached and re-apply the gate. Imported from
+                # utils rather than diffusion.hub_cache_dir, which would be a circular import.
+                from utils.hf_cache_settings import active_hf_hub_cache
+                prequant_cached = prequant_checkpoint_cached(src, cache_dir = active_hf_hub_cache())
         except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
             prequant_available = False
+            prequant_cached = False
     estimate = estimate_dense_quant(
         fam, scheme, base_repo = base_repo, prequant_available = prequant_available
     )
@@ -217,9 +259,12 @@ def resolve_dense_quant_candidate(
             estimate.companions_mib,
             prequant_available,
         )
-    if estimate is not None:
-        # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly full disk; a cached re-download is a no-op, so
-        # this only trips on an already-critical disk. Size it by what lands on DISK: a prequant fetches the quantised checkpoint, else the base repo's.
+    # A cached prequant checkpoint downloads nothing, so the space gate has no claim on it. The
+    # gate used to run anyway, which discarded exactly the candidate the auto retry exists to find:
+    # that retry only ever proposes a rung whose checkpoint is already cached, so on a low-disk or
+    # moved-cache install every retry fell back to the GGUF despite a resident-fit local artifact.
+    if estimate is not None and not (estimate.prequant and prequant_cached):
+        # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly full disk. Size it by what lands on DISK: a prequant fetches the quantised checkpoint, else the base repo's.
         needed_mib = (
             estimate.steady_transformer_mib
             if estimate.prequant

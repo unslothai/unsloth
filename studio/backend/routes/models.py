@@ -3796,6 +3796,17 @@ _VIDEO_GEN_TASK = "text-to-video"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 
 
+def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
+    """True when a name hint is one of the MiniMax-H3 GGUF bundle repos (video, never chat)."""
+    if not hint:
+        return False
+    try:
+        from hub.utils.gguf import is_h3_bundle_repo
+        return is_h3_bundle_repo(hint)
+    except Exception:  # noqa: BLE001 -- never misclassify a model over a probe failure
+        return False
+
+
 def _gguf_architecture(path: str) -> Optional[str]:
     """The GGUF ``general.architecture``, or None. Delegates to the shared,
     bounds-checked header reader (cached by path/mtime/size)."""
@@ -3845,6 +3856,13 @@ def _video_family_buildable(fam) -> bool:
 
 
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
+    # MiniMax-H3's GGUFs carry NO metadata keys at all -- every file in the bundle, denoisers and
+    # the Qwen conditioner alike, has kv_count 0, so general.architecture is absent where LTX-2 and
+    # Wan GGUFs declare "ltxv"/"wan". The arch read therefore classifies the whole repo as unknown,
+    # and an unknown task is dropped from the Video picker's On Device list while the chat picker
+    # still offers the video DiT. Key the bundle repos by id instead, before the arch is consulted.
+    if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
+        return _VIDEO_GEN_TASK
     if arch is None:
         return None
     a = arch.lower()
