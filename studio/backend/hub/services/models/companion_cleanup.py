@@ -222,23 +222,26 @@ def _orphan_companions_blocking() -> dict:
         # derived answer to "did the user ask for this repo, or did a GGUF drag it in".
         if any(_repo_blob_bytes(r, only = _holds_denoiser) for r in repos):
             continue
-        size = sum(_repo_blob_bytes(r) for r in repos)
-        if size <= 0:
-            continue
-        # The repo dir itself, not its parent: ``scoped_delete_root`` resolves the owning cache
-        # by walking up to the ``models--`` component, so a bare root resolves to nothing and the
-        # delete comes back "Invalid cache_path". Passing it scopes the removal to this one cache.
-        try:
-            cache_path = str(Path(getattr(repos[0], "repo_path")))
-        except (TypeError, OSError):
-            cache_path = None
-        orphans.append(
-            {
-                "repo_id": str(getattr(repos[0], "repo_id", base_key)),
-                "size_bytes": size,
-                "cache_path": cache_path,
-            }
-        )
+        # One row per cache root. A delete is scoped to a single cache, so pooling copies from
+        # several would promise bytes one removal cannot deliver.
+        for repo in repos:
+            size = _repo_blob_bytes(repo)
+            if size <= 0:
+                continue
+            # The repo dir itself, not its parent: ``scoped_delete_root`` resolves the owning
+            # cache by walking up to the ``models--`` component, so a bare root resolves to
+            # nothing and the delete comes back "Invalid cache_path".
+            try:
+                cache_path = str(Path(getattr(repo, "repo_path")))
+            except (TypeError, OSError):
+                cache_path = None
+            orphans.append(
+                {
+                    "repo_id": str(getattr(repo, "repo_id", base_key)),
+                    "size_bytes": size,
+                    "cache_path": cache_path,
+                }
+            )
     return {
         "companions": orphans,
         "total_bytes": sum(o["size_bytes"] for o in orphans),

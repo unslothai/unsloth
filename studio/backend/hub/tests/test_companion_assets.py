@@ -294,3 +294,22 @@ def test_recording_a_link_keeps_the_ones_already_there():
     # Re-recording the same pair is a no-op rather than a duplicate.
     assert companion_assets.record_companion_link(GGUF_REPO, BASE_REPO) is False
     assert companion_assets.read_companion_links()[GGUF_REPO.lower()] == [BASE_REPO]
+
+
+def test_orphan_listing_reports_one_row_per_cache(monkeypatch):
+    """A delete is scoped to a single cache, so two copies must not be pooled into one row that
+    promises bytes one removal cannot deliver."""
+    first = _base_repo()
+    second = _repo(
+        BASE_REPO,
+        [("model_index.json", 460), ("vae/diffusion_pytorch_model.safetensors", 900_000)],
+        cache = "/other-cache",
+    )
+    _install(monkeypatch, first, second)
+    result = asyncio.run(companion_cleanup.orphan_companions_response())
+    assert [c["cache_path"] for c in result["companions"]] == [
+        "/cache/models--black-forest-labs--FLUX.2-klein-4B",
+        "/other-cache/models--black-forest-labs--FLUX.2-klein-4B",
+    ]
+    assert [c["size_bytes"] for c in result["companions"]] == [COMPANION_BYTES, 900_460]
+    assert result["total_bytes"] == COMPANION_BYTES + 900_460
