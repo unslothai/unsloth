@@ -418,7 +418,8 @@ jobs:
   build:
     strategy:
       fail-fast: false
-      max-parallel: 1
+      # Legs run in parallel: they share no state, only upload per-platform
+      # artifacts, and publish-release does every release mutation once.
       matrix:
         include:
           - platform: macos-latest
@@ -949,9 +950,8 @@ jobs:
         if: matrix.platform == 'macos-latest'
         shell: bash
         # `--timeout` below caps the polling, but not the upload that precedes
-        # it. Without a step-level backstop a stuck Notary service would hold
-        # `max-parallel: 1` for the whole job budget and discard the Linux and
-        # Windows builds with it, so cap it tighter than the job here.
+        # it. Without a step-level backstop a stuck Notary service would burn
+        # the whole job budget, so cap it tighter than the job here.
         timeout-minutes: 45
         env:
           ARTIFACT_PATHS: ${{ steps.build_macos.outputs.artifactPaths }}
@@ -1458,12 +1458,18 @@ jobs:
   # Draft runs do not advance the public desktop-latest channel.
   publish-release:
     name: Publish desktop release
-    needs: [prepare-version, build]
+    # Only prepare-version, so this starts alongside the build matrix and
+    # queues for its runner during the build instead of after it. "Wait for the
+    # build matrix" below restores the gate `needs: build` gave away. The cost
+    # is one runner slot held for the length of the run.
+    needs: [prepare-version]
     runs-on: ubuntu-latest
-    # Artifact download plus release upload; observed 17-40s.
-    timeout-minutes: 20
+    # Waits out the build (legs cap at 60) then downloads and uploads; the
+    # publish steps themselves are 17-40s.
+    timeout-minutes: 90
     permissions:
       contents: write  # create the versioned Release and replace updater-channel metadata
+      actions: read    # the waiter reads this run's job list
     env:
       GH_REPO: ${{ github.repository }}
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
@@ -1478,6 +1484,84 @@ jobs:
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: audit
+
+      # Replaces the `needs: build` gate dropped above, and must be at least as
+      # strict: publishing a partial release is far worse than publishing late.
+      - name: Wait for the build matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # The three matrix legs, by their `name:` (Build <matrix.label>).
+          LEGS=('Build macOS (Apple Silicon)' 'Build Linux (x64)' 'Build Windows (x64)')
+          POLL=30
+          DEADLINE=$(( $(date +%s) + 75 * 60 ))
+          # Matrix job records appear with the run, so a leg still missing well
+          # after the start is a real problem, not a slow API.
+          STARTUP_DEADLINE=$(( $(date +%s) + 15 * 60 ))
+          API_FAILS=0
+
+          while :; do
+            if ! JOBS="$(gh api --paginate \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+                  --jq '.jobs[] | [.name, .status, (.conclusion // "none")] | @tsv' 2>/dev/null)"; then
+              # A blip in the jobs API must not throw away a finished build.
+              API_FAILS=$(( API_FAILS + 1 ))
+              if [ "$API_FAILS" -ge 10 ]; then
+                echo "ERROR: jobs API failed 10 times running; cannot confirm the build matrix finished" >&2
+                exit 1
+              fi
+              echo "jobs API call failed (${API_FAILS}/10); retrying in ${POLL}s"
+              sleep "$POLL"
+              continue
+            fi
+            API_FAILS=0
+
+            MISSING=""
+            PENDING=0
+            BAD=""
+            for leg in "${LEGS[@]}"; do
+              ROW="$(printf '%s\n' "$JOBS" | awk -F'\t' -v n="$leg" '$1 == n {print; exit}')"
+              if [ -z "$ROW" ]; then
+                MISSING="${MISSING} '${leg}'"
+                continue
+              fi
+              STATUS="$(printf '%s' "$ROW" | cut -f2)"
+              CONCL="$(printf '%s' "$ROW" | cut -f3)"
+              if [ "$STATUS" != "completed" ]; then
+                PENDING=$(( PENDING + 1 ))
+              elif [ "$CONCL" != "success" ]; then
+                BAD="${BAD}${leg} (${CONCL}); "
+              fi
+            done
+
+            # Fail on the first finished leg that did not succeed rather than
+            # holding a runner to reach the same answer later.
+            if [ -n "$BAD" ]; then
+              echo "ERROR: refusing to publish, these build jobs did not succeed: ${BAD}" >&2
+              exit 1
+            fi
+            if [ -n "$MISSING" ]; then
+              if [ "$(date +%s)" -gt "$STARTUP_DEADLINE" ]; then
+                echo "ERROR: no job record for:${MISSING}; refusing to publish without confirming they ran" >&2
+                exit 1
+              fi
+              echo "waiting for job records to appear for:${MISSING}"
+              sleep "$POLL"
+              continue
+            fi
+            if [ "$PENDING" -eq 0 ]; then
+              echo "all ${#LEGS[@]} build legs finished and succeeded"
+              break
+            fi
+            if [ "$(date +%s)" -gt "$DEADLINE" ]; then
+              echo "ERROR: timed out waiting for the build matrix; ${PENDING} leg(s) still running" >&2
+              exit 1
+            fi
+            echo "${PENDING} of ${#LEGS[@]} build legs still running; polling again in ${POLL}s"
+            sleep "$POLL"
+          done
 
       # This job publishes artifacts built elsewhere, so it historically needed no
       # source tree. The VirusTotal step runs a repo script, so it does now. Sparse:

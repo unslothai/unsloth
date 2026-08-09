@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
@@ -139,8 +140,10 @@ export async function listLoras(
   return parseJsonOrThrow<ListLorasResponse>(response);
 }
 
-export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
-  const response = await authFetch("/api/inference/status");
+export async function getInferenceStatus(
+  signal?: AbortSignal,
+): Promise<InferenceStatusResponse> {
+  const response = await authFetch("/api/inference/status", { signal });
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
@@ -192,17 +195,22 @@ export async function loadModel(
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
     });
-  const response = await authFetch("/api/inference/load", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...payload,
-      hf_token: preparedToken.token,
-      native_path_lease: payload.nativePathLease ?? null,
-      nativePathLease: undefined,
-    }),
+  // Announced after the token prompt, so a cancelled load never shows a row.
+  // The indicator otherwise had nothing to show until its next 5s poll, while
+  // the toast reported the load immediately.
+  return withModelLoadNotice("chat", payload.model_path ?? null, async () => {
+    const response = await authFetch("/api/inference/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        hf_token: preparedToken.token,
+        native_path_lease: payload.nativePathLease ?? null,
+        nativePathLease: undefined,
+      }),
+    });
+    return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
   });
-  return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
 }
 
 export async function countChatInputTokens(payload: {

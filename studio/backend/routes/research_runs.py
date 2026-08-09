@@ -427,7 +427,10 @@ async def retry_research_run(
     return run
 
 
-@router.get("/{run_id}/events")
+# POST too: proxies that stream /v1/chat/completions still buffer a streamed GET until it closes.
+@router.post("/{run_id}/events")
+# Separate registration, out of the schema: one api_route would give both verbs one operationId.
+@router.get("/{run_id}/events", include_in_schema = False)
 async def research_events(
     run_id: str,
     request: Request,
