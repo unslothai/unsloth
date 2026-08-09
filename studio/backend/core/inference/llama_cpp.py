@@ -1723,6 +1723,19 @@ def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     return sorted(f for f in files if f != first_shard and sibling_pat.match(f))
 
 
+def _quant_label_for_endian(path: str) -> Optional[str]:
+    """The file's own quant label, for ``_is_big_endian_gguf_path``, or None when unreadable.
+
+    Best-effort: with no label the caller keeps its previous argument rather than dropping the
+    endian test, which would admit a genuinely big-endian build."""
+    try:
+        from hub.utils.gguf import extract_quant_token
+
+        return extract_quant_token(path)
+    except Exception:  # noqa: BLE001 -- an unreadable label must not sink the resolution
+        return None
+
+
 def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     """Return main GGUF files matching a requested variant.
 
@@ -1735,7 +1748,13 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
         for f in files
         if f.lower().endswith(".gguf")
         and not _is_companion_gguf_path(f)
-        and not _is_big_endian_gguf_path(f, variant_key)
+        # The endian predicate reads a quant TOKEN -- it decides whether the quant came from the
+        # parent directory only -- so it gets the file's own label, never the requested key. Handed
+        # a path-qualified key it cannot find that string in either the basename or the parent and
+        # reads distilled/Q4_K_M/foo-be.gguf as big-endian, dropping the one file the key owns:
+        # the row is advertised and downloadable but never resolves for loading. Same reason
+        # gguf_plan and the auto-download map pass the label here.
+        and not _is_big_endian_gguf_path(f, _quant_label_for_endian(f) or variant_key)
     ]
     if not variant_key:
         return sorted(main_files)

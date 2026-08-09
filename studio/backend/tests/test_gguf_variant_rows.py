@@ -775,3 +775,26 @@ def test_a_bare_quant_that_is_its_own_key_still_deletes_only_itself(tmp_path):
     _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "distilled" / "model-Q4_K_M.gguf").is_symlink()
+
+
+def test_a_qualified_key_whose_basename_ends_in_be_still_resolves_for_loading():
+    """The endian predicate reads a quant TOKEN -- whether the quant came from the parent
+    directory only. Handed the path-qualified key instead, it cannot find that string in the
+    basename or the parent and reads distilled/Q4_K_M/foo-be.gguf as a big-endian build, dropping
+    the one file the key owns: the row is advertised and downloadable but never loadable."""
+    files = [
+        "distilled/Q4_K_M/foo-be.gguf",
+        "other/Q4_K_M/bar.gguf",
+        "stories260K.gguf",
+        "stories260K-be.gguf",
+    ]
+    assert _gguf_files_for_variant(files, "distilled/Q4_K_M/foo-be") == [
+        "distilled/Q4_K_M/foo-be.gguf"
+    ]
+    assert _gguf_files_for_variant(files, "other/Q4_K_M/bar") == ["other/Q4_K_M/bar.gguf"]
+    # A genuinely big-endian build is still dropped: the -be file never joins the row.
+    assert _gguf_files_for_variant(files, "stories260K") == ["stories260K.gguf"]
+    # ... and the plan and the lister agree the qualified file is a normal parent-quant one.
+    assert is_main_gguf_variant_path(
+        "distilled/Q4_K_M/foo-be.gguf", gguf_variant_key("distilled/Q4_K_M/foo-be.gguf")
+    )
