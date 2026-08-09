@@ -23,7 +23,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 @pytest.fixture(autouse = True)
 def _known_cache_root(monkeypatch, tmp_path):
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
 
 
 def _load_route_module(name: str):
