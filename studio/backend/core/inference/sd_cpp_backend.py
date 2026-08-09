@@ -517,7 +517,10 @@ class SdCppDiffusionBackend:
                 "resident server is stopped",
                 accelerator,
             )
-            return ensure_sd_server_binary(allow_install = True, accelerator = accelerator) or server_binary
+            return (
+                ensure_sd_server_binary(allow_install = True, accelerator = accelerator)
+                or server_binary
+            )
         except Exception as exc:  # noqa: BLE001 -- an upgrade may never fail the load
             logger.warning("sd-server accelerator upgrade failed: %s", exc)
             return server_binary
