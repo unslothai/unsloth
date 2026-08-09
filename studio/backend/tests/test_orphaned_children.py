@@ -1543,7 +1543,8 @@ def test_a_live_leader_answers_without_scanning_every_process(monkeypatch):
     from utils import process_lifetime as lifetime
 
     leader = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session = True,
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session = True,
     )
     try:
         for _ in range(50):
