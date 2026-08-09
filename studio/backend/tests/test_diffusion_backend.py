@@ -5625,6 +5625,95 @@ _ZIMAGE_BASE_SIBLINGS = [
 ]
 
 
+_QWEN_EDIT_Q6 = "qwen-image-edit-2511-Q6_K.gguf"
+_QWEN_EDIT_BASE_SIBLINGS = [
+    _FakeSibling("model_index.json", 516),
+    # Qwen's dense denoiser is the extra ~40.9 GB that turns the base-repo pull into ~58 GB.
+    _FakeSibling("transformer/diffusion_pytorch_model-00001-of-00005.safetensors", 9_973_578_592),
+    _FakeSibling("transformer/diffusion_pytorch_model-00002-of-00005.safetensors", 9_987_326_072),
+    _FakeSibling("transformer/diffusion_pytorch_model-00003-of-00005.safetensors", 9_987_307_440),
+    _FakeSibling("transformer/diffusion_pytorch_model-00004-of-00005.safetensors", 9_930_685_712),
+    _FakeSibling("transformer/diffusion_pytorch_model-00005-of-00005.safetensors", 982_130_472),
+    # The ordinary companion footprint: Qwen2.5-VL text encoder + VAE and small configs.
+    _FakeSibling("text_encoder/model-00001-of-00004.safetensors", 4_968_243_304),
+    _FakeSibling("text_encoder/model-00002-of-00004.safetensors", 4_991_495_816),
+    _FakeSibling("text_encoder/model-00003-of-00004.safetensors", 4_932_751_040),
+    _FakeSibling("text_encoder/model-00004-of-00004.safetensors", 1_691_924_384),
+    _FakeSibling("vae/diffusion_pytorch_model.safetensors", 253_806_966),
+    _FakeSibling("processor/merges.txt", 1_671_853),
+    _FakeSibling("processor/tokenizer.json", 11_421_896),
+    _FakeSibling("processor/vocab.json", 2_776_833),
+]
+
+
+def test_qwen_edit_q6_auto_large_gpu_requests_the_dense_transformer_but_speed_off_does_not(
+    fake_runtime, monkeypatch
+):
+    """Reproduce the reported Q6 -> 58 GB second download without transferring model bytes.
+
+    A large CUDA device lets the default Auto fast path replace the selected GGUF with a dense
+    transformer that is quantized in memory. The download plan must then include the base repo's
+    transformer shards. Speed=off is the causal control: it pins the selected GGUF and leaves only
+    the text encoder, VAE, tokenizer and configuration files in the base-repo request.
+    """
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_memory as dmem
+
+    checkpoint_repo = "unsloth/Qwen-Image-Edit-2511-GGUF"
+    base_repo = "Qwen/Qwen-Image-Edit-2511"
+    q6_bytes = 16_900_000_000
+    _fake_hf_api(
+        monkeypatch,
+        {
+            checkpoint_repo: [_FakeSibling(_QWEN_EDIT_Q6, q6_bytes)],
+            base_repo: _QWEN_EDIT_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base_repo)
+    _no_cache(monkeypatch)
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    # Simulate an 80 GB CUDA card where the post-quant dense build fits. Qwen Image Edit has no
+    # hosted pre-quant shortcut, so Auto falls through to the dense BF16 materialisation path.
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(prequant = False, steady_total_mib = 39_900),
+    )
+    monkeypatch.setattr(
+        dmem,
+        "snapshot_device_memory",
+        lambda target: types.SimpleNamespace(
+            total_mib = 81_920, free_mib = 80_000, memory_kind = "discrete_vram"
+        ),
+    )
+
+    auto = backend.download_plan(
+        checkpoint_repo,
+        gguf_filename = _QWEN_EDIT_Q6,
+    )
+    auto_base = next(e for e in auto["entries"] if e["repo_id"] == base_repo)
+    auto_transformer = [f for f in auto_base["files"] if f.startswith("transformer/")]
+    assert len(auto_transformer) == 5
+    assert 55_000_000_000 < auto_base["bytes"] < 60_000_000_000
+
+    pinned = backend.download_plan(
+        checkpoint_repo,
+        gguf_filename = _QWEN_EDIT_Q6,
+        speed_mode = "off",
+    )
+    pinned_base = next(e for e in pinned["entries"] if e["repo_id"] == base_repo)
+    assert not any(f.startswith("transformer/") for f in pinned_base["files"])
+    assert 16_000_000_000 < pinned_base["bytes"] < 18_000_000_000
+
+    print(
+        "QWEN_Q6_REPRO "
+        f"auto_base_bytes={auto_base['bytes']} auto_transformer_shards={len(auto_transformer)} "
+        f"speed_off_base_bytes={pinned_base['bytes']} speed_off_transformer_shards=0"
+    )
+
+
 def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkeypatch):
     # The plan drives the download manager, so it must agree with the load: a declined prequant
     # stages neither its .pt nor the base transformer/ shards the dense build wanted.

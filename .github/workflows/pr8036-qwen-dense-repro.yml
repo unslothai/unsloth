@@ -1,0 +1,60 @@
+# Disposable repro workflow. Delete after validation.
+
+name: "PR 8036 Qwen Q6 Dense Download Repro"
+
+on:
+  push:
+    branches:
+      - "fix/pr8036-qwen-dense-repro-ci"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: "Targeted repro"
+    runs-on: "ubuntu-latest"
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+
+      - name: "Install focused backend test dependencies"
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r studio/backend/requirements/studio.txt
+          pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth unpdf requests 'numpy<3' pytest pytest-asyncio httpx
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
+          pip install 'transformers>=4.51,<5.5'
+
+      - name: "Verify live Qwen repository size decomposition"
+        shell: bash
+        run: |
+          python - <<'PY'
+          from huggingface_hub import HfApi
+          api = HfApi()
+          checkpoint = api.model_info('unsloth/Qwen-Image-Edit-2511-GGUF', files_metadata=True)
+          base = api.model_info('Qwen/Qwen-Image-Edit-2511', files_metadata=True)
+          q6 = sum((f.size or 0) for f in checkpoint.siblings if f.rfilename == 'qwen-image-edit-2511-Q6_K.gguf')
+          transformer = sum((f.size or 0) for f in base.siblings if f.rfilename.startswith('transformer/'))
+          companions = sum((f.size or 0) for f in base.siblings if not f.rfilename.startswith(('transformer/', 'assets/')) and (f.rfilename == 'model_index.json' or '/' in f.rfilename))
+          full_required_base = transformer + companions
+          print(f'QWEN_LIVE_MANIFEST q6_bytes={q6} transformer_bytes={transformer} companion_bytes={companions} base_required_bytes={full_required_base}')
+          assert 15_000_000_000 < q6 < 19_000_000_000
+          assert 38_000_000_000 < transformer < 44_000_000_000
+          assert 15_000_000_000 < companions < 20_000_000_000
+          assert 55_000_000_000 < full_required_base < 65_000_000_000
+          PY
+
+      - name: "Reproduce Auto dense request versus Speed off"
+        shell: bash
+        run: |
+          cd studio/backend
+          python -m pytest tests/test_diffusion_backend.py -q -s -k qwen_edit_q6_auto_large_gpu_requests_the_dense_transformer_but_speed_off_does_not --tb=short
