@@ -89,6 +89,7 @@ def te_prequant_budget_scale(fam: Any, *, te_quant_mode: Optional[str], target: 
         return 1.0
     return TE_PREQUANT_BUDGET_SCALE if sources else 1.0
 
+
 # Bases whose text-encoder weights are VERIFIED byte-identical (every shard LFS sha256 compared on 2026-07-18), so one hosted artifact serves them all. The validator accepts a base_model_id from the same group; anything else keeps the strict refusal.
 _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
     # Qwen2.5-VL-7B text encoder: 4 shards, 16,584,414,544 bytes, identical sha256 set.

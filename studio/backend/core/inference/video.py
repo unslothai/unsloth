@@ -1167,9 +1167,7 @@ class VideoBackend:
         # families widen it), so only components[1] is scaled.
         from .diffusion_te_prequant import te_prequant_budget_scale
 
-        te_scale = te_prequant_budget_scale(
-            fam, te_quant_mode = text_encoder_quant, target = target
-        )
+        te_scale = te_prequant_budget_scale(fam, te_quant_mode = text_encoder_quant, target = target)
         text_encoder_gb = components[1] * te_scale if components is not None else 0.0
         companions_gb = text_encoder_gb + components[2] if components is not None else 0.0
         if te_scale != 1.0 and components is not None:
