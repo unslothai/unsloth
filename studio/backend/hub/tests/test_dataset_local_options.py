@@ -2733,7 +2733,10 @@ def test_snapshot_options_reject_a_compressed_file_it_cannot_open(tmp_path):
 @pytest.mark.parametrize("dtype", ["duration[ms, tz=UTC]", "time32[s, tz=UTC]"])
 def test_snapshot_options_reject_a_timezone_on_a_non_timestamp(tmp_path, dtype):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: t\n    dtype: '{dtype}'\n")
+    _card(
+        snapshot,
+        f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: t\n    dtype: '{dtype}'\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"t":1}\n', encoding = "utf-8")
 
@@ -2742,8 +2745,11 @@ def test_snapshot_options_reject_a_timezone_on_a_non_timestamp(tmp_path, dtype):
 
 def test_snapshot_options_reject_a_value_mapping_naming_an_unknown_dtype(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: t\n"
-                    "    dtype:\n      value:\n        dtype: nope\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: t\n"
+        "    dtype:\n      value:\n        dtype: nope\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"t":1}\n', encoding = "utf-8")
 
@@ -2752,8 +2758,11 @@ def test_snapshot_options_reject_a_value_mapping_naming_an_unknown_dtype(tmp_pat
 
 def test_snapshot_options_accept_a_value_mapping_naming_a_known_dtype(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n"
-                    "    dtype:\n      value:\n        dtype: string\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n"
+        "    dtype:\n      value:\n        dtype: string\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -2762,8 +2771,11 @@ def test_snapshot_options_accept_a_value_mapping_naming_a_known_dtype(tmp_path):
 
 def test_snapshot_options_accept_a_dynamic_first_array_dimension(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
-                    "    dtype:\n      array2_d:\n        shape: [null, 2]\n        dtype: int32\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+        "    dtype:\n      array2_d:\n        shape: [null, 2]\n        dtype: int32\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"x":[[1,2]]}\n', encoding = "utf-8")
 
@@ -2772,8 +2784,11 @@ def test_snapshot_options_accept_a_dynamic_first_array_dimension(tmp_path):
 
 def test_snapshot_options_reject_a_dynamic_later_array_dimension(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
-                    "    dtype:\n      array2_d:\n        shape: [2, null]\n        dtype: int32\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+        "    dtype:\n      array2_d:\n        shape: [2, null]\n        dtype: int32\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"x":[[1,2],[3,4]]}\n', encoding = "utf-8")
 
@@ -2790,8 +2805,11 @@ def test_snapshot_options_reject_a_declared_split_with_an_empty_file(tmp_path):
 
 def test_snapshot_options_drop_only_the_empty_declared_split(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_files:\n  - split: train\n    path: a.jsonl\n"
-                    "  - split: test\n    path: b.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_files:\n  - split: train\n    path: a.jsonl\n"
+        "  - split: test\n    path: b.jsonl\n",
+    )
     (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     (snapshot / "b.jsonl").write_text("", encoding = "utf-8")
 
@@ -2848,7 +2866,10 @@ def test_snapshot_options_still_check_the_version_when_the_walk_is_truncated(tmp
 
 def test_snapshot_options_reject_every_config_when_a_wildcard_data_dir_misses(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: good\n  data_dir: d\n- config_name: bad\n  data_dir: 'zz*'\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: good\n  data_dir: d\n- config_name: bad\n  data_dir: 'zz*'\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 

@@ -1453,9 +1453,7 @@ def _misversioned_configs(collapsed: dict[str, dict[str, Any]]) -> set[str]:
         name
         for name, item in collapsed.items()
         if "version" in item
-        and (
-            not isinstance(item["version"], str) or _VERSION_RE.fullmatch(item["version"]) is None
-        )
+        and (not isinstance(item["version"], str) or _VERSION_RE.fullmatch(item["version"]) is None)
     }
 
 
@@ -1517,10 +1515,7 @@ def _mismatched_configs(
 
 
 def _empty_declared_options(
-    collapsed: dict[str, dict[str, Any]],
-    required: str,
-    files: _DeclaredFiles,
-    snapshot: Path,
+    collapsed: dict[str, dict[str, Any]], required: str, files: _DeclaredFiles, snapshot: Path
 ) -> set[tuple[str, str]]:
     """Declared splits holding nothing the builder can read. A declaration names its files
     outright, so they go through the same payload check inference already applies."""
