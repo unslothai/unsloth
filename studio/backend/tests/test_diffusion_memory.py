@@ -1007,6 +1007,8 @@ def test_guard_counts_the_base_overhead_alongside_the_activations():
     # out left the guard silent by a few hundred MiB on the exact card #8188 was reported from:
     # a 15.92 GiB card gives a 14,254 MiB budget, which 13,872 MiB of activations fits and
     # 13,872 + 2048 does not.
+    from core.inference.diffusion_memory import _safe_device_budget_mib
+
     reported_card = _discrete(16_302, 16_302)  # idle 15.92 GiB card
     assert _safe_device_budget_mib(reported_card) == 14_254
     assert _shortfall(1088, 1920, memory = reported_card) is not None

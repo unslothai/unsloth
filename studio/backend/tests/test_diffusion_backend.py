@@ -6160,9 +6160,10 @@ def test_generate_guard_uses_the_hint_the_load_planned_with(fake_runtime, tmp_pa
     )
     assert "Tongyi-MAI/Z-Image-Turbo" in backend._state.variant_hint
 
-    # 1408x1408 is 1.89x the default: 15,486 MiB undiscounted (refused) but 13,163 with the
-    # discount, which fits the 13,822 MiB budget.
-    assert len(backend.generate(prompt = "a sloth", width = 1408, height = 1408, steps = 4)["images"]) == 1
+    # 1280x1280 is 1.5625x the default: 12,800 MiB of activations undiscounted, which with the
+    # 2048 MiB base overhead is 14,848 against a 13,822 MiB budget and would be refused. With the
+    # distilled discount the same request is 10,880 + 2048 = 12,928 and goes straight through.
+    assert len(backend.generate(prompt = "a sloth", width = 1280, height = 1280, steps = 4)["images"]) == 1
     # The reported 1088x1920 needs 13,872 MiB even discounted, so it is still refused.
     with pytest.raises(ValueError, match = "1088x1920"):
         backend.generate(prompt = "a sloth", width = 1088, height = 1920, steps = 4)
