@@ -1047,6 +1047,7 @@ def _prune_staging(root: Path) -> None:
         entries = list(root.glob(f"{_STAGING_PREFIX}*"))
     except OSError:
         return
+
     # Newest first, so a stacked slot gets its immediate predecessor back rather than whichever
     # entry the filesystem happened to list first.
     def _written_at(path: Path) -> float:
@@ -1073,7 +1074,9 @@ def _prune_staging(root: Path) -> None:
 _LIVE_REPLACEMENT_GRACE_SECONDS = 5.0
 
 
-def _recover_orphaned_slots(root: Path, *, min_age: float = _LIVE_REPLACEMENT_GRACE_SECONDS) -> None:
+def _recover_orphaned_slots(
+    root: Path, *, min_age: float = _LIVE_REPLACEMENT_GRACE_SECONDS
+) -> None:
     """Hand every stale orphan back to its empty slot. Read paths call this before deciding a
     run has nothing to resume; it never deletes anything.
 
