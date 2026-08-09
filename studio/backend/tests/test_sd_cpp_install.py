@@ -1535,10 +1535,11 @@ def test_an_archive_without_a_server_drops_the_previous_one(tmp_path, monkeypatc
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(f"bin/{cli_name}", "new")
     buf.seek(0)
+    before = sdmod._managed_executables(target)
     with zipfile.ZipFile(buf) as zf:
-        assert sdmod._archive_ships_sd_server(zf) is False
+        supplied = sdmod._archive_executables(zf, target)
 
-    sdmod._discard_stale_sd_server(target)
+    sdmod._discard_superseded_executables(target, supplied, before)
     assert not stale.exists()
     assert sdmod._locate_sd_server(target) is None
 
@@ -1546,13 +1547,60 @@ def test_an_archive_without_a_server_drops_the_previous_one(tmp_path, monkeypatc
 def test_an_archive_that_does_ship_a_server_keeps_it(tmp_path):
     """The removal must key on the archive's member list, not on what is on disk: a bundle that
     ships its own sd-server has just written it, and deleting that would break every upgrade."""
+    target = tmp_path / "sd"
     server_name = "sd-server.exe" if sys.platform == "win32" else "sd-server"
+    (target / "bin").mkdir(parents = True)
+    server = target / "bin" / server_name
+    server.write_bytes(b"old-cpu-server")
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(f"bin/{server_name}", "new")
     buf.seek(0)
+    before = sdmod._managed_executables(target)
     with zipfile.ZipFile(buf) as zf:
-        assert sdmod._archive_ships_sd_server(zf) is True
+        supplied = sdmod._archive_executables(zf, target)
+
+    # Same path, so the archive has overwritten it rather than left it behind.
+    sdmod._discard_superseded_executables(target, supplied, before)
+    assert server.exists()
+
+
+def test_a_relaid_out_archive_drops_the_binaries_it_did_not_overwrite(tmp_path):
+    """The case the ships-a-server test above cannot reach. When an upgrade's archive uses a
+    different layout it extracts ALONGSIDE the old binaries, and the stale copy at the
+    higher-priority path keeps winning _layout_candidates: the record then names the new
+    accelerator while the old build is what actually runs, indefinitely. Both binaries, not just
+    the server."""
+    target = tmp_path / "sd"
+    cli_name = "sd-cli.exe" if sys.platform == "win32" else "sd-cli"
+    server_name = "sd-server.exe" if sys.platform == "win32" else "sd-server"
+    old = target / "build" / "bin"
+    old.mkdir(parents = True)
+    (old / cli_name).write_bytes(b"old-cpu-cli")
+    (old / server_name).write_bytes(b"old-cpu-server")
+
+    new_dir = target / "sd-master-813" / "bin"
+    new_dir.mkdir(parents = True)
+    (new_dir / cli_name).write_bytes(b"new-cuda-cli")
+    (new_dir / server_name).write_bytes(b"new-cuda-server")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"sd-master-813/bin/{cli_name}", "new")
+        zf.writestr(f"sd-master-813/bin/{server_name}", "new")
+    buf.seek(0)
+    # before is the whole tree here, because the snapshot in install() is taken ahead of the
+    # extract; the two old copies are the ones outside supplied.
+    before = sdmod._managed_executables(target)
+    with zipfile.ZipFile(buf) as zf:
+        supplied = sdmod._archive_executables(zf, target)
+
+    sdmod._discard_superseded_executables(target, supplied, before)
+    assert not (old / cli_name).exists()
+    assert not (old / server_name).exists()
+    assert (new_dir / cli_name).read_bytes() == b"new-cuda-cli"
+    assert (new_dir / server_name).read_bytes() == b"new-cuda-server"
 
 
 def test_the_stop_is_reserved_before_the_server_is_unpublished(tmp_path, monkeypatch):
@@ -1643,6 +1691,37 @@ def test_a_stale_unwritable_record_does_not_outrank_what_was_just_installed(tmp_
     assert sdmod.installed_accelerator(root) == "cuda"
 
 
+def test_a_record_written_elsewhere_takes_the_answer_back_from_the_memo(tmp_path, monkeypatch):
+    """The memo is in-process, the managed root is not. The installer CLI and a second Studio
+    write the same record, and a memo that outranked them unconditionally hid the newer install
+    for the life of this process: after memoising cpu, an external cuda install still read as cpu
+    here, so a later cpu selection called the cuda binaries a match and silently ran the wrong
+    accelerator build. The memo only outranks the file while the file has not moved."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:
+        json.dump({"accelerator": "cpu", "repo": "r", "tag": "old"}, f)
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+
+    real_open = builtins.open
+
+    def _readonly_record(file, mode = "r", *a, **k):
+        if str(file).endswith(sdmod.INSTALL_RECORD) and "w" in mode:
+            raise OSError("permission denied")
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _readonly_record)
+    sdmod._write_install_record(root, accelerator = "cpu", repo = "r", tag = "t")
+    monkeypatch.setattr(builtins, "open", real_open)
+    assert sdmod.installed_accelerator(root) == "cpu"
+
+    # Now somebody else installs cuda into the same root and succeeds where we could not.
+    with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:
+        json.dump({"accelerator": "cuda", "repo": "r", "tag": "new"}, f)
+
+    assert sdmod.installed_accelerator(root) == "cuda", "the newer on-disk record must win"
+
+
 def test_a_stale_server_that_cannot_be_removed_fails_the_install(tmp_path, monkeypatch):
     """A leftover server is still RUNNABLE, so no downstream probe repairs it, and a record naming
     the new accelerator would make _accelerator_changed trust it forever. Withhold both."""
@@ -1656,5 +1735,5 @@ def test_a_stale_server_that_cannot_be_removed_fails_the_install(tmp_path, monke
 
     monkeypatch.setattr(Path, "unlink", _no_unlink)
     with pytest.raises(RuntimeError) as exc:
-        sdmod._discard_stale_sd_server(root)
-    assert "superseded sd-server" in str(exc.value)
+        sdmod._discard_superseded_executables(root, set(), {stale.resolve()})
+    assert "superseded" in str(exc.value) and stale.name in str(exc.value)
