@@ -85,9 +85,7 @@ def _write_install_record(root: Path, *, accelerator: str, repo: str, tag: Optio
     change, which is exactly the pre-record behaviour, so it must never fail the install."""
     try:
         with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
-            json.dump(
-                {"accelerator": accelerator_class(accelerator), "repo": repo, "tag": tag}, f
-            )
+            json.dump({"accelerator": accelerator_class(accelerator), "repo": repo, "tag": tag}, f)
     except OSError:
         pass
 

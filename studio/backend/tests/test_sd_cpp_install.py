@@ -503,7 +503,14 @@ def test_upstream_fallback_asks_for_the_translated_pin_not_latest(monkeypatch):
     monkeypatch.setattr(sdmod.platform, "machine", lambda: "x86_64")
     seen = []
 
-    def fake_fetch(tag = None, *, repo = None, token = None, timeout = 30.0, allow_latest = True):
+    def fake_fetch(
+        tag = None,
+        *,
+        repo = None,
+        token = None,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
         seen.append((repo, tag))
         if repo == sdmod.UPSTREAM_FALLBACK_REPO and tag == "master-813-bfbef5b":
             return {
@@ -512,7 +519,10 @@ def test_upstream_fallback_asks_for_the_translated_pin_not_latest(monkeypatch):
             }
         # The mirror serves the pin but builds no Vulkan asset; every other request 404s.
         if repo == sdmod.DEFAULT_REPO and tag == "master-813-bfbef5b-u13b9d92":
-            return {"tag_name": tag, "assets": [{"name": f"sd-{tag}-bin-Linux-Ubuntu-22.04-x86_64.zip"}]}
+            return {
+                "tag_name": tag,
+                "assets": [{"name": f"sd-{tag}-bin-Linux-Ubuntu-22.04-x86_64.zip"}],
+            }
         raise urllib.error.HTTPError(f"https://api/{repo}", 404, "not found", None, None)
 
     monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
@@ -890,7 +900,11 @@ def test_install_records_the_accelerator_it_installed(tmp_path, monkeypatch):
     assert sdmod.installed_accelerator(tmp_path / "nothing-here") is None
 
 
-def _managed_tree(tmp_path, monkeypatch, accelerator = None):
+def _managed_tree(
+    tmp_path,
+    monkeypatch,
+    accelerator = None,
+):
     """A Studio-owned install tree, optionally carrying an install record."""
     root = tmp_path / "sd-home" / "stable-diffusion.cpp"
     (root / "sd-bin").mkdir(parents = True)
