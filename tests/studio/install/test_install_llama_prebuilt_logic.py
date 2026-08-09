@@ -3457,6 +3457,86 @@ def test_lazy_validation_model_downloads_once_on_first_use(tmp_path, monkeypatch
     assert len(downloads) == 1       # and repeat use is served from the first fetch
 
 
+def test_probe_rate_limit_no_longer_forces_a_source_build(tmp_path, monkeypatch):
+    # End to end over install_prebuilt: the probe download used to run before the
+    # release loop, so a huggingface.co 429 raised PrebuiltFallback and cost a
+    # multi-minute source build over a file an approved bundle never opens.
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "llama-b9001-bin-ubuntu-x64.tar.gz",
+        url = "https://example.com/llama-b9001-bin-ubuntu-x64.tar.gz",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+        expected_sha256 = "a" * 64,
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            choice.name: ApprovedArtifactHash(
+                asset_name = choice.name,
+                sha256 = choice.expected_sha256,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-prebuilt",
+            ),
+        },
+    )
+    plan = INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        attempts = [choice],
+        approved_checksums = checksums,
+    )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "resolve_simple_install_release_plans",
+        lambda llama_tag, host, published_repo, published_release_tag: ("latest", [plan]),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            urllib.error.HTTPError(
+                INSTALL_LLAMA_PREBUILT.TEST_MODEL_URL, 429, "Too Many Requests", None, None
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_prebuilt_attempts",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("reached the install flow")),
+    )
+
+    # Reaching validate_prebuilt_attempts is the point: the rate limit no longer
+    # short-circuits into SystemExit(EXIT_FALLBACK) before the release loop runs.
+    with pytest.raises(AssertionError, match = "reached the install flow"):
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+
 def test_staged_validation_enabled_default_off(monkeypatch):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
     monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
