@@ -519,3 +519,20 @@ def test_the_auto_download_map_is_keyed_like_the_plan():
     assert "distilled/ltx-2.3-22b-distilled-Q6_K" in sizes
     # Each row is sized for its own checkpoint, not the sum of every checkpoint at that quant.
     assert all(size > 0 for size in sizes.values())
+
+
+def test_an_unknown_layout_row_keeps_the_label_it_always_had(tmp_path):
+    """The qualified key is for several checkpoints sharing one quant, nothing else. A file with
+    no recognised quant token has always been listed here under this module's label (the last
+    hyphenated segment) rather than the whole stem, and renaming those rows would break every pin
+    that holds one -- for no benefit, since there is no ambiguity to resolve."""
+    from utils.models.model_config import list_local_gguf_variants
+
+    snapshot = tmp_path / "snap"
+    (snapshot / "BF16").mkdir(parents = True)
+    (snapshot / "Qwen3.6-27B-MTP-001-of-002.gguf").write_bytes(b"x" * 100)
+    (snapshot / "BF16" / "gemma-4-12b-it-Q8_0-001-of-002.gguf").write_bytes(b"x" * 40)
+    (snapshot / "config.json").write_text("{}")
+
+    variants, _ = list_local_gguf_variants(str(snapshot))
+    assert sorted(v.quant for v in variants) == ["MTP", "Q8_0"]

@@ -2358,6 +2358,25 @@ def _gguf_variant_key(filename: str) -> str:
     return quant
 
 
+def _qualified_variant_name(filename: str, label: str) -> str:
+    """The name these listers advertise for *filename*, given its quant *label*.
+
+    The path-qualified key when a recognised quant token is qualified by a non-quant directory,
+    because there the label alone names several checkpoints at once and the consumers reading
+    these listers -- the /v1 local index, the remote VRAM preflight -- would never see the row
+    they are asked for.
+
+    The label everywhere else, INCLUDING a file with no recognised quant token at all. This
+    module's label for those is the last hyphenated segment while the variant key is the whole
+    stem, and that difference is old, deliberate elsewhere, and nothing to do with several
+    checkpoints sharing a quant. Changing it here would rename every such row and break the pins
+    that hold them (``Qwen3.6-27B-MTP-001-of-002.gguf`` is listed as ``MTP``).
+    """
+    if _gguf_variant_token(filename) is None:
+        return label
+    return _gguf_variant_key(filename)
+
+
 def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
     normalized = path.replace("\\", "/")
     name = normalized.rsplit("/", 1)[-1]
@@ -2547,13 +2566,10 @@ def list_gguf_variants(
         if _is_mtp_drafter(fname):
             continue
 
-        # The endian test reads a quant TOKEN, so it keeps the label; the row identity is the
-        # variant key, so a repo holding several checkpoints at one quant advertises one row per
-        # checkpoint here too. Identical for every repo whose quant token already names its file.
         label = _extract_quant_label(fname)
         if _is_big_endian_gguf_path(fname, label):
             continue
-        quant = _gguf_variant_key(fname)
+        quant = _qualified_variant_name(fname, label)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         if quant not in quant_first_file:
             quant_first_file[quant] = fname
@@ -2632,14 +2648,10 @@ def list_local_gguf_variants(
         rel = f.relative_to(p).as_posix()
         if _is_local_mtp_drafter(f, root, rel):
             continue
-        # Same split as the remote lister: label for the endian test, key for the row identity.
-        # The /v1 resolver indexes entry.variants from here, so a key it never advertises is a
-        # request that misses -- and a slash-qualified suffix is now an explicit variant, so that
-        # miss is a 404 rather than a fallback to some other checkpoint.
         label = _extract_quant_label(rel)
         if _is_big_endian_gguf_path(rel, label):
             continue
-        quant = _gguf_variant_key(rel)
+        quant = _qualified_variant_name(rel, label)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         if quant not in quant_first_file:
             quant_first_file[quant] = rel
