@@ -271,7 +271,6 @@ def known_companion_base_ids() -> set[str]:
     # the orphan listing skips any repo holding a GGUF, so it is never offered as a leftover.
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
-
         bases |= set(sd_cpp_companion_only_repo_ids())
     except Exception as exc:  # noqa: BLE001 -- one missing table never hides the rest
         logger.debug("sd.cpp companion table unavailable: %s", exc)
