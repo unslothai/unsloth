@@ -3,7 +3,6 @@
 
 """Export backend - exports models in various formats."""
 
-import glob
 import json
 import structlog
 import tempfile
@@ -190,6 +189,26 @@ def _reported_gguf_files(result):
         if path.lower().endswith(".gguf") and os.path.isfile(path):
             resolved.append(path)
     return resolved or None
+
+
+def _materialized_imatrix_path(model_dir, imatrix_file):
+    """Where unsloth copies a `*.gguf_file` imatrix beside the model, else None.
+
+    `_materialize_imatrix` drops that copy in the model directory, so the owned-root scan
+    would otherwise relocate an importance matrix as if it were a converted model. Matching
+    the full path, not the basename: an imatrix named after the quant would otherwise
+    suppress the real output in `model_gguf/` as well.
+    """
+    if imatrix_file is True:
+        name = "imatrix_unsloth.gguf"  # the upstream imatrix_unsloth.gguf_file, renamed
+    elif isinstance(imatrix_file, (str, os.PathLike)):
+        base = os.path.basename(os.fspath(imatrix_file))
+        if not base.endswith(".gguf_file"):
+            return None
+        name = base[: -len(".gguf_file")] + ".gguf"
+    else:
+        return None
+    return Path(model_dir) / name
 
 
 def _compressed_export_supported():
@@ -1023,7 +1042,6 @@ class ExportBackend:
         imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file is not None else {}
 
         output_path: Optional[str] = None
-        model_tmp_to_cleanup: Optional[str] = None
         try:
             # Normalize to a lowercased list so multiple quants come from one model load.
             if isinstance(quantization_method, (list, tuple)):
@@ -1065,99 +1083,75 @@ class ExportBackend:
                 # On WSL, patch out sudo check before llama.cpp build
                 _apply_wsl_sudo_patch()
 
-                # convert_to_gguf writes output relative to cwd (repo root);
-                # snapshot existing .gguf so we can diff and relocate afterwards.
-                cwd = os.getcwd()
-                pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
-
-                pre_existing_subs = {d.name for d in Path(abs_save_dir).iterdir() if d.is_dir()}
-
-                # Avoid clobbering an existing user-owned model/ directory.
-                import uuid
-
-                _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
-                model_tmp_to_cleanup = _model_tmp
-                _gguf_result = self.current_model.save_pretrained_gguf(
-                    _model_tmp,
-                    self.current_tokenizer,
-                    quantization_method = quant_method,
-                    **imatrix_kw,
-                )
-
-                # Trust what unsloth reports over guessing: the heuristics below only
-                # check cwd, new subdirs of the save dir, and the checkpoint sibling,
-                # so anything written elsewhere was silently lost (#7897). Relocate
-                # first, before the flatten pass rmtree's the temp dir it lives in.
-                for src in _reported_gguf_files(_gguf_result) or []:
-                    dest = os.path.join(abs_save_dir, os.path.basename(src))
-                    if os.path.abspath(src) == os.path.abspath(dest):
-                        continue
-                    try:
-                        shutil.move(src, dest)
-                    except FileNotFoundError:
-                        continue
-                    logger.info(
-                        f"Relocated GGUF (reported by unsloth): "
-                        f"{os.path.basename(src)} → {abs_save_dir}/"
+                # Keep all intermediates under an export-owned root.
+                model_tmp_root = tempfile.mkdtemp(prefix = "_tmp_model_", dir = abs_save_dir)
+                model_tmp_path = Path(model_tmp_root)
+                _model_tmp = os.path.join(model_tmp_root, "model")
+                # Needed by the cleanup below too, so resolve it before anything can raise.
+                imatrix_path = _materialized_imatrix_path(_model_tmp, imatrix_file)
+                try:
+                    result = self.current_model.save_pretrained_gguf(
+                        _model_tmp,
+                        self.current_tokenizer,
+                        quantization_method = quant_method,
+                        **imatrix_kw,
                     )
 
-                # The Modelfile lands in the temp *_gguf dir, which the flatten pass
-                # deletes after moving only *.gguf.
-                _modelfile = (
-                    _gguf_result.get("modelfile_location")
-                    if isinstance(_gguf_result, dict)
-                    else None
-                )
-                if (
-                    isinstance(_modelfile, str)
-                    and os.path.isfile(_modelfile)
-                    and os.path.dirname(os.path.abspath(_modelfile)) != abs_save_dir
-                ):
-                    try:
-                        shutil.move(_modelfile, os.path.join(abs_save_dir, "Modelfile"))
-                        logger.info(f"Relocated Modelfile → {abs_save_dir}/")
-                    except OSError:
-                        pass
+                    # Scan only the owned root; exact reported paths cover external outputs.
+                    reported = result if isinstance(result, dict) else {}
+                    produced = {p for p in model_tmp_path.rglob("*.gguf") if p.is_file()}
+                    produced.update(Path(f) for f in _reported_gguf_files(result) or [])
+                    produced = {p for p in produced if p != imatrix_path}
+                    modelfiles = {p for p in model_tmp_path.rglob("Modelfile") if p.is_file()}
+                    reported_modelfile = reported.get("modelfile_location")
+                    if reported_modelfile and Path(reported_modelfile).is_file():
+                        modelfiles.add(Path(os.path.abspath(os.fspath(reported_modelfile))))
 
-                # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
-                new_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
-                for src in sorted(new_ggufs):
-                    dest = os.path.join(abs_save_dir, os.path.basename(src))
-                    shutil.move(src, dest)
-                    logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
-
-                # Flatten GGUF files from subdirs created during this export.
-                for sub in list(Path(abs_save_dir).iterdir()):
-                    if not sub.is_dir():
-                        continue
-                    if sub.name in pre_existing_subs:
-                        continue
-                    # rglob: the rmtree below is unconditional, so a GGUF one level
-                    # deeper (sharded output) would otherwise be destroyed.
-                    for src in sorted(sub.rglob("*.gguf")):
+                    relocated_ggufs = []
+                    for src in sorted(produced):
+                        if src.is_symlink():
+                            raise RuntimeError(
+                                f"GGUF conversion produced a symlink, refusing to relocate it: {src}"
+                            )
                         dest = os.path.join(abs_save_dir, src.name)
                         shutil.move(str(src), dest)
+                        relocated_ggufs.append(dest)
                         logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
-                    shutil.rmtree(str(sub), ignore_errors = True)
-                    logger.info(f"Cleaned up subdirectory: {sub.name}")
+                    if not relocated_ggufs:
+                        raise RuntimeError(
+                            "GGUF conversion produced no files: no .gguf outputs for "
+                            f"{abs_save_dir}"
+                        )
 
-                # For non-PEFT models, save_pretrained_gguf leaves a *_gguf dir at
-                # the checkpoint path; relocate its GGUFs and clean it up.
-                if self.current_checkpoint:
-                    ckpt = Path(self.current_checkpoint)
-                    gguf_dir = ckpt.parent / f"{ckpt.name}_gguf"
-                    if gguf_dir.is_dir() and gguf_dir.resolve() != Path(abs_save_dir).resolve():
-                        for src in gguf_dir.glob("*.gguf"):
-                            dest = os.path.join(abs_save_dir, src.name)
-                            shutil.move(str(src), dest)
-                            logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
-                        # Also relocate Ollama Modelfile if present
-                        modelfile = gguf_dir / "Modelfile"
-                        if modelfile.is_file():
+                    if modelfiles:
+                        modelfile = sorted(modelfiles)[0]
+                        if modelfile.is_symlink():
+                            raise RuntimeError(
+                                "GGUF conversion produced a symlinked Modelfile, "
+                                f"refusing to relocate it: {modelfile}"
+                            )
+                        # Optional artifact: unsloth generates it best-effort, so a locked or
+                        # read-only destination must not fail an export whose GGUFs all landed.
+                        try:
                             shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
-                        shutil.rmtree(str(gguf_dir), ignore_errors = True)
-                        logger.info(f"Cleaned up intermediate GGUF dir: {gguf_dir}")
+                        except OSError as exception:
+                            logger.warning(f"Could not relocate the Modelfile: {exception}")
+                finally:
+                    # Preserve any GGUF that could not be relocated. The imatrix is an input,
+                    # so counting it would retain the merged checkpoint on every such export.
+                    unrelocated = []
+                    if model_tmp_path.is_dir():
+                        unrelocated = sorted(
+                            str(p) for p in model_tmp_path.rglob("*.gguf") if p != imatrix_path
+                        )
+                    if unrelocated:
+                        logger.error(
+                            "Kept GGUF files that could not be relocated: %s",
+                            ", ".join(unrelocated),
+                        )
+                    else:
+                        shutil.rmtree(model_tmp_root, ignore_errors = True)
 
                 # iterdir, not glob.glob: glob hides dot-leading names, so an empty
                 # model stem's ".Q4_K_M.gguf" got reported as "(none)".
@@ -1173,7 +1167,7 @@ class ExportBackend:
                 )
                 if not final_ggufs:
                     # Reporting success over an empty directory is what hid #7897.
-                    shutil.rmtree(model_tmp_to_cleanup, ignore_errors = True)
+                    # The owned temp root is already gone: the finally above drops it.
                     return (
                         False,
                         f"GGUF conversion reported success but wrote no .gguf file to "
@@ -1213,8 +1207,6 @@ class ExportBackend:
             )
 
         except Exception as e:
-            if model_tmp_to_cleanup:
-                shutil.rmtree(model_tmp_to_cleanup, ignore_errors = True)
             logger.error(f"Error exporting GGUF model: {e}")
             import traceback
 

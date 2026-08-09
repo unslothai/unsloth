@@ -576,7 +576,7 @@ NUM_PROC_WHERE = "sft_prepare_dataset dataset_num_proc selection"
 
 # The helpers that decide whether a source edit lands. Named here so the tests
 # below fail loudly if they are renamed rather than quietly testing nothing.
-ANCHOR_HELPERS = ("_require_replace", "_replace_or_fallback")
+ANCHOR_HELPERS = ("_require_replace", "_replace_or_fallback", "_same_source")
 
 # The module-level regex the narrow fallback anchor uses.
 NARROW_ANCHOR_NAME = "_ZOO_MAP_NUM_PROC_ASSIGNMENT"

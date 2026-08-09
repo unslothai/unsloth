@@ -4386,6 +4386,7 @@ class DiffusionBackend:
                 "device": None,
                 "dtype": None,
                 "model_kind": None,
+                "gguf_variant": None,
                 "cpu_offload": False,
                 "offload_policy": None,
                 "vae_tiling": False,
@@ -4402,6 +4403,7 @@ class DiffusionBackend:
                 "resolved": None,
             }
         from core.inference import diffusion_controlnet, diffusion_lora
+        from hub.utils.gguf import extract_quant_token
 
         return {
             "loaded": True,
@@ -4411,6 +4413,11 @@ class DiffusionBackend:
             "device": state.device,
             "dtype": state.dtype,
             "model_kind": state.kind,
+            "gguf_variant": (
+                extract_quant_token(state.gguf_filename)
+                if state.kind == "gguf" and state.gguf_filename
+                else None
+            ),
             "cpu_offload": state.cpu_offload,
             "offload_policy": state.offload_policy,
             "vae_tiling": state.vae_tiling,
