@@ -1699,7 +1699,10 @@ def test_a_dummy_pipeline_export_is_not_treated_as_importable():
             del sys.modules["diffusers"]
     msg = str(excinfo.value)
     assert "placeholder" in msg
-    assert "torch" in msg and "transformers" in msg  # names what to install
+    assert "requires: torch, transformers" in msg  # what the class needs, not a diagnosis
+    # _backends is diffusers' full requirement list, not a list of failed probes, so the message
+    # must not declare a working torch missing or prescribe reinstalling it.
+    assert "missing: torch" not in msg and "pip install -U torch" not in msg
 
 
 def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatch):

@@ -852,8 +852,13 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
     )
 
 
-def _missing_backends(cls: object) -> tuple[str, ...]:
-    """The backends diffusers says ``cls`` needs, when ``cls`` is one of its placeholders.
+def _dummy_required_backends(cls: object) -> tuple[str, ...]:
+    """The backends diffusers says ``cls`` REQUIRES, when ``cls`` is one of its placeholders.
+
+    Required, not missing: ``_backends`` is the class's full requirement list, so a placeholder
+    standing in because transformers is absent still lists torch beside it. Naming them all as
+    missing, and prescribing a reinstall, is how you tell someone with a working ROCm or CUDA
+    build of torch to replace it.
 
     With a required backend absent (torch, transformers, ...), diffusers still EXPORTS every
     pipeline name, as a ``DummyObject``-metaclassed stand-in from ``diffusers.utils.dummy_*``
@@ -900,7 +905,7 @@ def assert_pipeline_class_available(
     try:
         import diffusers
         present = hasattr(diffusers, pipeline_class)
-        dummy_backends = _missing_backends(getattr(diffusers, pipeline_class, None))
+        dummy_backends = _dummy_required_backends(getattr(diffusers, pipeline_class, None))
     except Exception as exc:  # noqa: BLE001 -- see below: this check must never raise anything but its own ValueError
         # Not this check's business under the default: it answers "is the installed diffusers new enough for this
         # family", and with nothing importable there is no version to judge. Refusing would also break the native
@@ -929,8 +934,9 @@ def assert_pipeline_class_available(
             return
         raise ValueError(
             f"'{family_name}' needs diffusers ({pipeline_class}), but this diffusers exports it as "
-            f"a placeholder because these backends are missing: {', '.join(dummy_backends)}. "
-            f"Install them (pip install -U {' '.join(dummy_backends)}) and try again."
+            f"a placeholder, which it does when a backend it requires is unavailable. That class "
+            f"requires: {', '.join(dummy_backends)}. Check which of those this environment is "
+            f"missing and install it."
         )
 
     if present:
