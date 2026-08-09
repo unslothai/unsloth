@@ -1852,5 +1852,92 @@ def test_rearming_on_backend_start_also_clears_the_cleanup_guard():
     )
 
 
+def test_a_tree_taskkill_could_not_take_keeps_its_record(tmp_path, monkeypatch):
+    """This fallback runs when the job object was unavailable, so the record is
+    the only handle on those workers: reading the dead leader as the tree being
+    gone would strand them for good."""
+    from utils import process_lifetime as lifetime
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path))
+    monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
+    monkeypatch.setattr(lifetime, "_identity_or_none", lambda pid: "1")
+    monkeypatch.setattr(lifetime, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(lifetime, "_reap_orphaned_group", lambda pgid, pid, timeout: False)
+    monkeypatch.setattr(lifetime, "_group_has_members", lambda pgid: False)
+
+    # Alive until it is signalled, gone afterwards: the leader dies, and only
+    # taskkill's exit status says whether its workers went with it.
+    state = {"leader": True, "tree": False}
+    monkeypatch.setattr(lifetime, "_pid_alive", lambda pid: state["leader"])
+
+    def fake_tree(pid):
+        state["leader"] = False
+        return state["tree"]
+
+    monkeypatch.setattr(lifetime, "_windows_terminate_tree", fake_tree)
+
+    def write_record():
+        (tmp_path / "previous.json").write_text(
+            json.dumps({
+                "owner_pid": 999_101,
+                "owner_identity": "an-owner-that-is-gone",
+                "children": [{"pid": 999_102, "identity": "1", "pgid": None}],
+            }),
+            encoding = "utf-8",
+        )
+
+    write_record()
+    assert lifetime.reap_recorded_children(timeout = 1.0) == [999_102]
+    assert (tmp_path / "previous.json").exists(), "dropped the only handle on a live tree"
+
+    # And once taskkill takes the tree, the record is consumed.
+    state.update(leader = True, tree = True)
+    write_record()
+    assert lifetime.reap_recorded_children(timeout = 1.0) == [999_102]
+    assert not (tmp_path / "previous.json").exists()
+
+
+def test_a_failed_tree_kill_keeps_the_pid_in_the_shutdown_record(monkeypatch):
+    """terminate_all reports what is still up so the caller can keep it in the
+    crash record; a leader-only kill leaves the workers with nothing naming
+    them."""
+    from utils import process_lifetime as lifetime
+
+    monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
+    monkeypatch.setattr(lifetime, "_pid_identity", lambda pid: "1")
+    monkeypatch.setattr(lifetime, "_identity_or_none", lambda pid: "1")
+    monkeypatch.setattr(lifetime, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(lifetime, "_group_has_members", lambda pgid: False)
+    monkeypatch.setattr(lifetime, "_write_breadcrumb", lambda: None)
+
+    state = {"leader": True, "tree": False}
+    monkeypatch.setattr(lifetime, "_pid_alive", lambda pid: state["leader"])
+
+    def fake_tree(pid):
+        state["leader"] = False
+        return state["tree"]
+
+    monkeypatch.setattr(lifetime, "_windows_terminate_tree", fake_tree)
+
+    def track():
+        with lifetime._record_lock:
+            lifetime._tracked_pids.clear()
+            lifetime._tracked_pgids.clear()
+            lifetime._tracked_pids[999_201] = "1"
+
+    track()
+    assert lifetime.terminate_all(timeout = 1.0) == [999_201]
+    assert 999_201 in lifetime._tracked_pids, "stopped tracking a tree that may still be up"
+
+    state.update(leader = True, tree = True)
+    track()
+    assert lifetime.terminate_all(timeout = 1.0) == []
+    assert 999_201 not in lifetime._tracked_pids
+
+    with lifetime._record_lock:
+        lifetime._tracked_pids.clear()
+        lifetime._tracked_pgids.clear()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

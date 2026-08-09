@@ -874,11 +874,12 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
                     if pgid is not None:
                         _tracked_pgids[pid] = pgid
             continue
+        tree_stands = False
         try:
             if _is_windows():
                 # The tree: a leader killed alone strands its workers, and the
                 # record naming them is cleared right after.
-                _windows_terminate_tree(pid)
+                tree_stands = not _windows_terminate_tree(pid)
             else:
                 _posix_terminate(pid, timeout)
         except Exception:
@@ -890,8 +891,9 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
             and current_now is not None
             and _same_identity(identity, current_now)
         )
-        # Or the leader went and its group did not: same loss of the only handle.
-        if still_ours or _group_has_members(pgid):
+        # Or the leader went and its group did not: same loss of the only handle,
+        # which on Windows is a tree taskkill could not take.
+        if still_ours or tree_stands or _group_has_members(pgid):
             survivors.append(pid)
             with _record_lock:
                 _tracked_pids[pid] = identity
@@ -999,14 +1001,19 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
             continue
         if not _same_identity(identity, current):
             continue  # recycled by an unrelated process
+        tree_stands = False
         if _is_windows():
             # The tree, not the leader: this fallback runs when the Job Object
             # is unavailable, and killing a leader alone strands its workers
             # while the record that named them is deleted.
-            _windows_terminate_tree(pid)
+            tree_stands = not _windows_terminate_tree(pid)
         else:
             _posix_terminate(pid, timeout = timeout)
         killed.append(pid)
+        if tree_stands:
+            # Workers may still be running with nothing else naming them, so
+            # this record has to survive for the next launch to retry.
+            unresolved = True
         # These belong to a process that is gone, so they cannot be our zombies;
         # one still running means the kill did not take, and the record is the
         # only handle the next launch would have on it.
@@ -1100,9 +1107,15 @@ def _reap_orphaned_group(pgid: object, pid: int, timeout: float) -> bool:
         return True
 
 
-def _windows_terminate_tree(pid: int) -> None:
-    """``taskkill /T /F``, falling back to the leader alone. Caller has already
-    verified the pid's identity."""
+def _windows_terminate_tree(pid: int) -> bool:
+    """``taskkill /T /F``. True when the whole tree is gone.
+
+    False means only the leader was signalled and its workers may still be
+    running. This is the fallback for a root with no job object, so the record
+    naming it is the only handle left on them: the caller keeps it rather than
+    reading the dead leader as the tree being gone. Caller has already verified
+    the pid's identity.
+    """
     import subprocess
 
     try:
@@ -1115,13 +1128,14 @@ def _windows_terminate_tree(pid: int) -> None:
         # check = False does not raise, so the status is the only signal that
         # the tree is still standing. 128 is "already gone".
         if completed.returncode in (0, 128):
-            return
+            return True
     except (OSError, subprocess.SubprocessError):
         pass
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:
         pass
+    return False
 
 
 def _unlink(path) -> None:
