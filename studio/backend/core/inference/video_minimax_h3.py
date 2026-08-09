@@ -32,13 +32,93 @@ H3_QWEN_Q4 = "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
 H3_DIFFUSERS_VRAM_BASE_GB = 68.5
 H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME = 0.08
 
+# The terms H3_DIFFUSERS_VRAM_BASE_GB is built from, so a load that shrinks one of the big
+# components can rebuild the floor from what it actually holds instead of the released sizes.
+#
+# With everything under enable_auto_cpu_offload the base is the LARGEST SINGLE RESIDENT COMPONENT
+# plus runtime overhead, not the sum: at any instant one component is on the device and the rest
+# are parked on the host. That is exactly why seeding a 20 GB pre-quantized denoiser moved this
+# number by nothing -- the 66.7 GB conditioner was already the larger of the two and simply took
+# over as the maximum. Both have to shrink before the floor does.
+#
+# ONE case breaks the max, and it is the case a pre-quantized denoiser creates. A torchao module
+# does not survive being moved mid-block, so _load_h3_modular_pipeline PINS it to the device and
+# takes it out of the offload rotation (see pin_prequantized_module). It is then resident for the
+# whole generation and the floor becomes additive: denoiser + whichever offloaded component is
+# largest. Measured at 960x544x124 with the int8 denoiser pinned, torch.cuda.max_memory_allocated:
+#
+#   bfloat16 conditioner   94.62 GB   =  20.3 + 66.7 + 5.18 activations + 2.44
+#   int8 conditioner       55.20 GB   =  20.3 + 27.1 + 5.18 activations + 2.58
+#
+# so 2.6 covers the pinned overhead on the conservative side of both. Note what the first row says
+# about the shipped constant: a pinned denoiser and a dense conditioner really need ~95 GB, and the
+# flat 68.5 under-states that by 26 GB. Rebuilding the floor from the resident components fixes
+# that under-estimate in the same stroke as crediting the saving.
+H3_DIFFUSERS_VRAM_OVERHEAD_GB = 1.8
+H3_DIFFUSERS_VRAM_PINNED_OVERHEAD_GB = 2.6
+H3_TEXT_ENCODER_BF16_GB = 66.7
+H3_TRANSFORMER_BF16_GB = 66.3
+# Video + audio VAE, from the family's bf16_components_gb. Only a floor for the offloaded term: it
+# stops a very small conditioner from claiming a base no component rotation could actually fit in.
+H3_VAE_RESIDENT_GB = 11.1
 
-def estimate_h3_diffusers_vram_gb(width: int, height: int, num_frames: int) -> float:
-    """Measured available-VRAM floor for an H3 Diffusers generation."""
+
+# Resident decimal GB of each hosted pre-quantized denoiser, from the artifact sizes in
+# unsloth/MiniMax-H3-FP8 (MiniMax-H3-INT8.pt 18.86 GiB, MiniMax-H3-FP8.pt 18.87 GiB). Both are the
+# PRUNED (curve-form adaLN) partition, which is why they are so far under half the 66.3 GB dense
+# denoiser rather than at it.
+H3_TRANSFORMER_PREQUANT_GB: dict[str, float] = {"int8": 20.3, "fp8": 20.3}
+
+
+def h3_transformer_resident_gb(scheme: Optional[str]) -> float:
+    """Resident decimal GB of the denoiser this load holds: the hosted pre-quantized size for an
+    ENGAGED scheme, else the released bfloat16 one."""
+    return H3_TRANSFORMER_PREQUANT_GB.get(scheme or "", H3_TRANSFORMER_BF16_GB)
+
+
+def h3_diffusers_vram_base_gb(
+    *,
+    text_encoder_gb: Optional[float] = None,
+    transformer_gb: Optional[float] = None,
+    transformer_pinned: bool = False,
+) -> float:
+    """The resident-weights floor for an H3 Diffusers load.
+
+    Every argument defaults to today's behaviour -- the RELEASED bfloat16 sizes and no pinning --
+    so the no-argument call reproduces ``H3_DIFFUSERS_VRAM_BASE_GB`` exactly and nothing that does
+    not pass a size changes.
+
+    ``transformer_pinned`` is the ENGAGED fact, not the request: only a denoiser that
+    ``pin_prequantized_module`` actually pinned is resident alongside the offload rotation."""
+    text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
+    transformer = H3_TRANSFORMER_BF16_GB if transformer_gb is None else float(transformer_gb)
+    if transformer_pinned:
+        offloaded = max(text_encoder, H3_VAE_RESIDENT_GB)
+        return transformer + offloaded + H3_DIFFUSERS_VRAM_PINNED_OVERHEAD_GB
+    return max(text_encoder, transformer) + H3_DIFFUSERS_VRAM_OVERHEAD_GB
+
+
+def estimate_h3_diffusers_vram_gb(
+    width: int,
+    height: int,
+    num_frames: int,
+    *,
+    text_encoder_gb: Optional[float] = None,
+    transformer_gb: Optional[float] = None,
+    transformer_pinned: bool = False,
+) -> float:
+    """Measured available-VRAM floor for an H3 Diffusers generation.
+
+    ``text_encoder_gb`` / ``transformer_gb`` are the RESIDENT sizes this load actually holds and
+    ``transformer_pinned`` whether the denoiser was taken out of the offload rotation; all unset
+    keeps the released-bfloat16 floor this shipped with."""
     volume_mpixel_frames = width * height * num_frames / 1_000_000
-    return H3_DIFFUSERS_VRAM_BASE_GB + (
-        H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames
+    base = h3_diffusers_vram_base_gb(
+        text_encoder_gb = text_encoder_gb,
+        transformer_gb = transformer_gb,
+        transformer_pinned = transformer_pinned,
     )
+    return base + (H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames)
 
 
 def estimate_h3_diffusers_host_ram_gb(available_vram_gb: float) -> float:
