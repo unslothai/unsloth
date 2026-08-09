@@ -105,10 +105,16 @@ def _assert_family_pipeline_available(fam: Any) -> None:
     loaded model and THEN failing is the worst ordering available, so assert here, while
     ``resolve_trainable_family`` still runs ahead of every teardown.
 
+    ``strict`` for the same reason. Inference lets an unimportable diffusers pass because the
+    native sd.cpp engine serves GGUF picks without it; training has no such fallback -- its child
+    is an ``mp.get_context("spawn")`` process in the SAME interpreter, so a diffusers that cannot
+    be imported here cannot be imported there either, and staying silent would buy nothing but the
+    teardown this gate exists to prevent.
+
     Family-agnostic on purpose: it reads ``fam.pipeline_class`` off whatever spec it is handed, so
     the image registry and the separate video registry share one gate rather than one each."""
     from core.inference.diffusion_families import assert_pipeline_class_available
-    assert_pipeline_class_available(fam.pipeline_class, fam.name)
+    assert_pipeline_class_available(fam.pipeline_class, fam.name, strict = True)
 
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
