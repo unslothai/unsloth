@@ -1363,11 +1363,13 @@ def test_an_installer_launch_with_no_proxy_still_skips_the_probe(monkeypatch):
     with -NoProfile or by the desktop app -- went off and reloaded the very profiles it had
     deliberately discarded, reapplying a stale proxy during setup."""
     installer = INSTALL_PS1.read_text(encoding = "utf-8")
-    handoff = installer[installer.index("$previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS") :]
+    handoff = installer[
+        installer.index("$previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS") :
+    ]
     handoff = handoff[: handoff.index("try {")]
-    assert "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS" not in handoff, (
-        "the installer must publish an explicit empty handoff, not remove the variable"
-    )
+    assert (
+        "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS" not in handoff
+    ), "the installer must publish an explicit empty handoff, not remove the variable"
     assert "'{}'" in handoff
 
     # And the CLI keys on presence, so "{}" means "the installer looked, there is none".
