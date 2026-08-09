@@ -28,6 +28,7 @@ from storage.studio_db import (
     count_chat_threads,
     count_forks_for_message,
     delete_chat_attachment,
+    delete_chat_project_workspace,
     delete_chat_threads_with_active_research_runs,
     delete_chat_project_with_active_research_runs,
     ensure_chat_project_workspace,
@@ -562,15 +563,17 @@ def delete_project(
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
-    project, deleted_research_run_ids = delete_chat_project_with_active_research_runs(
-        project_id, delete_files = delete_files
-    )
+    project, deleted_research_run_ids = delete_chat_project_with_active_research_runs(project_id)
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
     _cancel_deleted_research_runs(request, deleted_research_run_ids)
+    # Cancellation must happen before fallible workspace cleanup. The database transaction has
+    # already removed these runs, so a cleanup error cannot be allowed to strand their workers.
+    if delete_files:
+        delete_chat_project_workspace(project)
     # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
     try:
         import os

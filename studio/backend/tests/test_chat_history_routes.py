@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import sys
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -155,6 +156,41 @@ def test_save_thread_message_does_not_mask_an_unrelated_integrity_error(monkeypa
         )
 
     assert exc_info.value is failure
+
+
+def test_project_delete_cancels_research_before_workspace_cleanup(monkeypatch):
+    project = {
+        "id": "project-1",
+        "name": "Project",
+        "createdAt": 1,
+        "updatedAt": 1,
+    }
+    cancelled: list[str] = []
+    monkeypatch.setattr(
+        chat_history,
+        "delete_chat_project_with_active_research_runs",
+        lambda _project_id: (project, ["run-1"]),
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "_cancel_deleted_research_runs",
+        lambda _request, run_ids: cancelled.extend(run_ids),
+    )
+
+    def fail_workspace_cleanup(_project):
+        raise OSError("workspace is busy")
+
+    monkeypatch.setattr(chat_history, "delete_chat_project_workspace", fail_workspace_cleanup)
+
+    with pytest.raises(OSError, match = "workspace is busy"):
+        chat_history.delete_project(
+            "project-1",
+            SimpleNamespace(),
+            delete_files = True,
+            current_subject = "test-user",
+        )
+
+    assert cancelled == ["run-1"]
 
 
 # ---------------------------------------------------------------------------

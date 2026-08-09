@@ -124,7 +124,7 @@ def _ensure_project_workspace(root_path: str) -> str:
     return str(root_resolved)
 
 
-def _delete_project_workspace(project: dict) -> None:
+def delete_chat_project_workspace(project: dict) -> None:
     root_path = project.get("rootPath")
     if not root_path:
         return
@@ -1981,9 +1981,7 @@ def list_chat_projects(include_archived: bool = False) -> list[dict]:
         conn.close()
 
 
-def delete_chat_project_with_active_research_runs(
-    id: str, delete_files: bool = False
-) -> tuple[Optional[dict], list[str]]:
+def delete_chat_project_with_active_research_runs(id: str) -> tuple[Optional[dict], list[str]]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -2007,8 +2005,6 @@ def delete_chat_project_with_active_research_runs(
         conn.execute("DELETE FROM chat_projects WHERE id = ?", (id,))
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
-        if delete_files:
-            _delete_project_workspace(project)
         return project, active_research_run_ids
     except Exception:
         conn.rollback()
@@ -2018,7 +2014,9 @@ def delete_chat_project_with_active_research_runs(
 
 
 def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
-    project, _ = delete_chat_project_with_active_research_runs(id, delete_files = delete_files)
+    project, _ = delete_chat_project_with_active_research_runs(id)
+    if project is not None and delete_files:
+        delete_chat_project_workspace(project)
     return project
 
 
