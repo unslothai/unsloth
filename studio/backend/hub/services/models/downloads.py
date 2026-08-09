@@ -627,16 +627,21 @@ async def get_gguf_download_progress_response(
         )
         return requirement.expected_files if requirement is not None else ()
 
-    def _variant_file_matcher(path: str) -> bool:
+    def _variant_file_matcher(path: str, *, companions: bool = True) -> bool:
         # Which snapshot files a quant owns, for the reading snapshot_progress
         # falls back to when the blob hashes cannot be resolved. Main shards are
         # matched by quant label; mmproj and the MTP drafter are downloaded with
         # every variant, so they belong to whichever one is being polled.
+        #
+        # ``companions`` False asks the narrower question -- does this path prove the quant
+        # ITSELF is here -- which the caller uses first: shared companions belong to every
+        # quant in the repo, so counting them for a variant whose main shard was deleted
+        # reported bytes for a file that is gone.
         if progress_variant is None:
             return False
-        return gguf_plan.is_main_gguf_variant_path(
-            path, progress_variant
-        ) or gguf_plan.is_companion_gguf_path(path)
+        if gguf_plan.is_main_gguf_variant_path(path, progress_variant):
+            return True
+        return companions and gguf_plan.is_companion_gguf_path(path)
 
     return await snapshot_progress.snapshot_progress_response(
         repo_type = "model",

@@ -61,8 +61,6 @@ def hf_cache_root(
         try:
             root.mkdir(parents = True, exist_ok = True)
         except OSError as exc:
-            if scan_errors is not None:
-                scan_errors.append(exc)
             return None
         return root
     return root if _safe_is_dir(root, scan_errors) else None
@@ -80,7 +78,13 @@ def hf_cache_roots(scan_errors: Optional[list] = None) -> list[Path]:
             return
         try:
             key = str(path.resolve())
-        except OSError:
+        except OSError as exc:
+            # A root that stats but will not resolve -- an intermittent network mount, a
+            # Windows reparse point -- is a root we could not read, not a root that is gone.
+            # Dropping it silently let the progress scan answer "measured, no cache", which
+            # hydration acts on by retiring a download whose files may be entirely intact.
+            if scan_errors is not None:
+                scan_errors.append(exc)
             return
         if key in seen:
             return

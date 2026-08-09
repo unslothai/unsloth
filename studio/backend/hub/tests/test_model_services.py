@@ -5539,6 +5539,58 @@ def test_snapshot_progress_complete_with_manifest_synthesized_from_disk(monkeypa
     assert result["progress"] == 1.0
 
 
+def test_a_shared_companion_alone_is_not_evidence_the_quant_is_here(tmp_path):
+    """mmproj and the MTP drafter are downloaded with every quant in a repo, so on their own
+    they say nothing about THIS one. Deleting a quant while a sibling kept its companion left
+    a positive byte reading for the deleted variant, and hydration reads any positive reading
+    as active: it re-adopts the stale job and blocks a fresh download of the same quant."""
+    snap = tmp_path / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (snap / "mmproj-F16.gguf").write_bytes(b"m" * 64)
+
+    def matcher(path, *, companions = True):
+        if path.endswith("Q4_K_M.gguf"):
+            return True
+        return companions and path.startswith("mmproj")
+
+    assert snapshot_progress._materialized_bytes(snap, matcher) == 0
+
+    # With the quant's own shard present, the companion counts again.
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"q" * 32)
+    assert snapshot_progress._materialized_bytes(snap, matcher) == 96
+
+    # A matcher that does not take the keyword keeps the old behaviour.
+    assert snapshot_progress._materialized_bytes(snap, lambda path: path.startswith("mmproj")) == 64
+
+
+def test_a_root_that_will_not_resolve_is_a_scan_error(monkeypatch, tmp_path):
+    """A root that stats but will not resolve -- an intermittent network mount, a Windows
+    reparse point -- was dropped silently, so the scan answered "measured, no cache" and
+    hydration retired a download whose files may be entirely intact."""
+    from hub.utils import hf_cache_state as state
+
+    root = tmp_path / "hub"
+    root.mkdir()
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches", lambda: [root], raising = False
+    )
+    monkeypatch.setattr(state, "_safe_is_dir", lambda path, scan_errors = None: path == root)
+
+    real_resolve = Path.resolve
+
+    def _boom(self, *args, **kwargs):
+        if self == root:
+            raise OSError("network mount unavailable")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", _boom)
+    errors: list = []
+    assert state.hf_cache_roots(errors) == []
+    assert any("network mount unavailable" in str(e) for e in errors), (
+        "the unreadable root has to be reported, not silently dropped"
+    )
+
+
 def test_a_partial_scan_cannot_report_the_target_as_gone(monkeypatch, tmp_path):
     """One unreadable root plus one readable one is a LOWER bound, not an absence.
 

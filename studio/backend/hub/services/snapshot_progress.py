@@ -161,15 +161,44 @@ def _materialized_bytes(snapshot_dir: Path, variant_file_matcher: "VariantFileMa
     download finished. ``stat`` follows the link, so a blob that was written but
     never linked contributes nothing, and the Windows copy layout is read as is.
     """
-    total = 0
     try:
-        entries = snapshot_dir.rglob("*")  # unordered: the result is a sum
+        entries = list(snapshot_dir.rglob("*"))  # unordered: the result is a sum
     except OSError:
         return 0
+
+    def _accepts(relative: str, *, companions: bool) -> bool:
+        # A matcher that understands the distinction gets asked for it; an older one is
+        # answered as before. Only the GGUF matcher takes the keyword today.
+        try:
+            return bool(variant_file_matcher(relative, companions = companions))
+        except TypeError:
+            return bool(variant_file_matcher(relative))
+
+    # Companions (mmproj, the MTP drafter) are shared by every quant in the repo, so on their
+    # own they are not evidence that THIS one is here. Deleting a quant while a sibling keeps
+    # its companion left a positive reading for the deleted variant, which hydration reads as
+    # active: it re-adopts the stale job and blocks a fresh download of the same quant.
+    owns_a_main = False
     for path in entries:
         try:
             relative = path.relative_to(snapshot_dir).as_posix()
-            if not variant_file_matcher(relative) or not path.is_file():
+        except ValueError:
+            continue
+        if _accepts(relative, companions = False):
+            try:
+                if path.is_file():
+                    owns_a_main = True
+                    break
+            except OSError:
+                continue
+    if not owns_a_main:
+        return 0
+
+    total = 0
+    for path in entries:
+        try:
+            relative = path.relative_to(snapshot_dir).as_posix()
+            if not _accepts(relative, companions = True) or not path.is_file():
                 continue
             total += path.stat().st_size
         except (OSError, ValueError):
