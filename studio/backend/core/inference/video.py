@@ -491,7 +491,16 @@ def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseExc
         # An OOM under the math SDPA backend is the #8225 shape exactly: the score matrix is
         # quadratic in the token count, so the fix is fewer tokens, not a smaller checkpoint.
         # Named here so the next report arrives with the diagnosis already in it.
-        if _is_out_of_memory(exc) and sdpa_math_only(_probe_target(request_shape)):
+        #
+        # Only when the run was on NATIVE SDPA. A recorded attention_backend means an explicit
+        # kernel (AITER, xFormers, ...) engaged and torch's own dispatch was not what ran, so
+        # probing native kernels would answer about code this generation never executed -- on a
+        # ROCm card with AITER active that turns every OOM into a confident false diagnosis.
+        if (
+            _is_out_of_memory(exc)
+            and request_shape.get("attention_backend") is None
+            and sdpa_math_only(_probe_target(request_shape))
+        ):
             logger.error("video.generate_failed_request: %s", SDPA_MATH_ONLY_MESSAGE)
     except Exception:  # noqa: BLE001 — diagnostics never mask the real failure
         pass
@@ -507,8 +516,24 @@ def _is_out_of_memory(exc: BaseException) -> bool:
 
 
 def _probe_target(request_shape: dict[str, Any]) -> Any:
-    """A minimal device target for the SDPA probe, built from the recorded request."""
-    return types.SimpleNamespace(device = request_shape.get("device"), dtype = None)
+    """A minimal device target for the SDPA probe, built from the recorded request.
+
+    Carries the dtype the failed generation actually ran in. Leaving it None defaults the probe to
+    fp16, but every video family promotes a resolved fp16 to fp32, so the probe would answer for a
+    precision the run never used -- and the fused kernels are half-precision only, so that is the
+    difference between "fused kernels exist here" and "this run had none"."""
+    dtype = None
+    recorded = request_shape.get("dtype")
+    if recorded:
+        try:
+            import torch
+
+            candidate = getattr(torch, str(recorded).replace("torch.", ""), None)
+            if isinstance(candidate, torch.dtype):
+                dtype = candidate
+        except Exception:  # noqa: BLE001 — fall back to the probe's own default
+            dtype = None
+    return types.SimpleNamespace(device = request_shape.get("device"), dtype = dtype)
 
 
 class VideoBackend:
@@ -1713,7 +1738,11 @@ class VideoBackend:
                     target, attention_backend, speed_active = effective_speed != SPEED_OFF
                 ),
                 logger = logger,
-                target = target,
+                # The probe behind this must see the dtype the pipeline actually RUNS in. Every
+                # video family promotes a resolved fp16 to fp32 above, and the fused SDPA kernels
+                # are half-precision only, so probing the pre-promotion fp16 would report a healthy
+                # device for a generation that is in fact dispatching to the quadratic math backend.
+                target = types.SimpleNamespace(device = target.device, dtype = dtype),
             )
             applied = apply_speed_optims(
                 view,
@@ -2146,6 +2175,7 @@ class VideoBackend:
                     "prompt_chars": len(prompt or ""),
                     "negative_prompt_chars": len(negative_prompt or ""),
                     "device": state.device,
+                    "dtype": state.dtype,
                     "offload": state.offload_policy,
                     "attention_backend": state.attention_backend,
                 }

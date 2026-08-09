@@ -961,3 +961,25 @@ def test_apply_does_not_warn_when_a_real_backend_engaged(monkeypatch):
         == "_native_cudnn"
     )
     assert seen == [] and logged == []
+
+
+def test_an_unanswerable_probe_is_not_memoised(monkeypatch):
+    """A probe that could not RUN is not an answer about the hardware. Caching it disabled the
+    warning for the rest of the process, including after the memory that broke it was freed --
+    and a device under memory pressure is exactly when this warning matters."""
+    calls: list = []
+
+    def _flaky(device, dtype):
+        calls.append(dtype)
+        if len(calls) == 1:
+            raise RuntimeError("CUDA out of memory while allocating the probe tensor")
+        return ("flash", "math")
+
+    monkeypatch.setattr(att, "_probe_sdpa_kernels", _flaky)
+
+    assert att.available_sdpa_kernels(_target()) == ()
+    assert att.sdpa_math_only(_target()) is False  # silence is still not evidence
+    # The retry answers, and only that answer is kept.
+    assert att.available_sdpa_kernels(_target()) == ("flash", "math")
+    assert att.available_sdpa_kernels(_target()) == ("flash", "math")
+    assert len(calls) == 2, "the answer must be memoised; the failure must not be"

@@ -191,6 +191,13 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
         available = _probe_sdpa_kernels(device, dtype)
     except Exception:  # noqa: BLE001 — a probe is a diagnostic; it may never fail a load
         available = ()
+    # Memoize only an ANSWER. The "kernels cannot change under a running interpreter" argument
+    # justifies caching what the probe found, not caching its failure to run: an empty result means
+    # the probe itself could not complete (a transient allocator failure while the device was full
+    # -- exactly when this warning matters most), and caching that would disable the warning for
+    # the rest of the process even after memory frees.
+    if not available:
+        return ()
     with _SDPA_PROBE_LOCK:
         _SDPA_PROBE_CACHE.setdefault(key, available)
         return _SDPA_PROBE_CACHE[key]

@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import types
+from dataclasses import replace
 
 import pytest
 
@@ -2658,3 +2659,80 @@ def test_out_of_memory_is_recognised_by_text_not_only_by_class(exc, expected):
     # an isinstance check alone would miss exactly the reports this is for.
     import core.inference.video as video_mod
     assert video_mod._is_out_of_memory(exc) is expected
+
+
+def test_the_oom_diagnosis_is_skipped_when_an_external_backend_ran(fake_runtime, tmp_path, monkeypatch):
+    """AITER / xFormers replace torch's own dispatch, so probing native SDPA answers about code the
+    generation never executed. On a ROCm card with AITER engaged that turned every OOM into a
+    confident false statement that attention ran on the quadratic math backend."""
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    backend._state = replace(backend._state, attention_backend = "aiter")
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("HIP out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    probed: list = []
+
+    def _never(target):
+        probed.append(target)
+        return True
+
+    monkeypatch.setattr(video_mod, "sdpa_math_only", _never)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    assert probed == [], "an engaged external backend must not be diagnosed as native SDPA"
+    assert not any(video_mod.SDPA_MATH_ONLY_MESSAGE in line for line in records)
+    # The request record itself is still logged; only the diagnosis is withheld.
+    assert any("family=ltx-2" in line for line in records)
+
+
+def test_the_oom_probe_uses_the_dtype_the_run_actually_used(fake_runtime, tmp_path, monkeypatch):
+    """Video families promote a resolved fp16 to fp32, and the fused SDPA kernels are
+    half-precision only. A dtypeless probe target defaults to fp16, so it would answer for a
+    precision the run never used."""
+    import torch
+
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    backend._state = replace(backend._state, dtype = "float32", attention_backend = None)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    seen: list = []
+    monkeypatch.setattr(
+        video_mod, "sdpa_math_only", lambda target: seen.append(target) or True
+    )
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    # The run's dtype reaches the record, which is what the probe target is built from.
+    assert any("dtype=float32" in line for line in records)
+    assert len(seen) == 1
+
+
+def test_the_probe_target_resolves_the_recorded_dtype():
+    """The other half: that recorded string becomes the real torch dtype the probe asks about."""
+    import torch
+
+    import core.inference.video as video_mod
+
+    assert video_mod._probe_target({"device": "cuda", "dtype": "float32"}).dtype is torch.float32
+    assert video_mod._probe_target({"device": "cuda", "dtype": "bfloat16"}).dtype is torch.bfloat16
+    # No recorded dtype keeps the probe's own half-precision default.
+    assert video_mod._probe_target({"device": "cuda"}).dtype is None
+    # A junk value, or a torch attribute that is not a dtype, can never become a bogus dtype.
+    assert video_mod._probe_target({"device": "cuda", "dtype": "nonsense"}).dtype is None
+    assert video_mod._probe_target({"device": "cuda", "dtype": "nn"}).dtype is None
