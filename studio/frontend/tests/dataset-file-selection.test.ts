@@ -9,6 +9,7 @@ import {
   DATASET_IMAGE_EXTS,
   DATASET_TEXT_EXTS,
   chunkDatasetUpload,
+  existingStemClash,
   filesFromDataTransfer,
   metadataKeyedOnSubfolders,
   oversizedChunk,
@@ -316,6 +317,25 @@ test("names a chunk no split can fit, so the slices before it are never committe
   );
   assert.equal(oversizedChunk(chunks, 500 * mb), "huge.png");
   assert.equal(oversizedChunk(chunks.slice(0, 1), 500 * mb), null);
+});
+
+test("reports a stem the dataset folder already holds, which a split top-up would 400", () => {
+  const held = ["cat.png", "dog.png"];
+
+  assert.deepEqual(existingStemClash([picked("cat.jpg", "top-up/cat.jpg")], held), {
+    kind: "stem",
+    first: "cat.png",
+    second: "top-up/cat.jpg",
+  });
+  // a repeat upload of the same name is how the endpoint accumulates, so it must stay allowed
+  assert.equal(existingStemClash([picked("cat.png")], held), null);
+  // an exact stem match still clashes, extension case notwithstanding
+  assert.equal(existingStemClash([picked("cat.PNG")], held)?.first, "cat.png");
+  // only a differing stem case is exempt, which is where _shares_sidecar stops
+  assert.equal(existingStemClash([picked("Cat.png")], held), null);
+  // a caption never shares a sidecar with an image
+  assert.equal(existingStemClash([picked("cat.txt")], held), null);
+  assert.equal(existingStemClash([picked("bird.png")], held), null);
 });
 
 test("flags metadata keyed on a subfolder, which flattening would silently unmatch", async () => {

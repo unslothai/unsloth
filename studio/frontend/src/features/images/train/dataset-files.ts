@@ -116,6 +116,17 @@ function inHiddenPath(file: File): boolean {
   return relative ? relative.split("/").slice(1).some(isHidden) : false;
 }
 
+/** whether two image names resolve to one `<stem>.txt` sidecar, as `_shares_sidecar` does:
+ *  the stems clash on an exact match, so only an extension-case pair of one spelling is exempt. */
+function sharesSidecar(other: string, name: string): boolean {
+  const otherExt = extensionOf(other);
+  if (other === name || !DATASET_IMAGE_EXTS.includes(otherExt)) return false;
+  const otherStem = other.slice(0, other.length - otherExt.length);
+  const stem = name.slice(0, name.length - extensionOf(name).length);
+  if (otherStem.toLowerCase() !== stem.toLowerCase()) return false;
+  return otherStem === stem || other.toLowerCase() !== name.toLowerCase();
+}
+
 /** two picked paths the flat dataset folder cannot hold apart; `kind` picks the wording. */
 export interface DatasetCollision {
   kind: "name" | "stem";
@@ -138,7 +149,7 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
   const files: File[] = [];
   const collisions: DatasetCollision[] = [];
   const seen = new Map<string, string>();
-  const imageStems = new Map<string, Array<{ name: string; stem: string; path: string }>>();
+  const imageStems = new Map<string, Array<{ name: string; path: string }>>();
   let imageCount = 0;
   let captionCount = 0;
   let skipped = 0;
@@ -162,20 +173,16 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
     }
     const isImage = DATASET_IMAGE_EXTS.includes(ext);
     // two images sharing a stem resolve to one <stem>.txt caption, which the backend refuses.
-    // _shares_sidecar clashes on an exact stem match or a differing casefolded name, so only an
-    // extension-case pair of one stem spelling is exempt.
-    const stem = isImage ? dest.slice(0, dest.length - ext.length) : null;
-    if (stem !== null) {
-      const key = stem.toLowerCase();
+    // every accepted variant is kept and compared, since the exemption is not transitive.
+    if (isImage) {
+      const key = dest.slice(0, dest.length - ext.length).toLowerCase();
       const variants = imageStems.get(key) ?? [];
-      const clash = variants.find(
-        (v) => v.stem === stem || v.name.toLowerCase() !== dest.toLowerCase(),
-      );
+      const clash = variants.find((v) => sharesSidecar(v.name, dest));
       if (clash !== undefined) {
         collisions.push({ kind: "stem", first: clash.path, second: path });
         continue;
       }
-      variants.push({ name: dest, stem, path });
+      variants.push({ name: dest, path });
       imageStems.set(key, variants);
     }
     seen.set(dest, path);
@@ -185,6 +192,19 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
   }
 
   return { files, imageCount, captionCount, skipped, collisions };
+}
+
+/** the first selected image the dataset folder already holds under a sidecar-sharing name, or
+ *  null. the backend compares each upload against the folder, so on a chunked top-up that 400
+ *  lands with the slices before it already written. `existing` is the folder's image names. */
+export function existingStemClash(files: File[], existing: string[]): DatasetCollision | null {
+  for (const file of files) {
+    const dest = destinationName(file);
+    if (!DATASET_IMAGE_EXTS.includes(extensionOf(dest))) continue;
+    const clash = existing.find((name) => sharesSidecar(name, dest));
+    if (clash !== undefined) return { kind: "stem", first: clash, second: displayPath(file) };
+  }
+  return null;
 }
 
 // readEntries yields at most 100 entries per call and ends with an empty batch.

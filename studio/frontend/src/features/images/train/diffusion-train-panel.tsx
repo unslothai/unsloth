@@ -72,6 +72,7 @@ import {
   getDiffusionTrainingRun,
   getDiffusionTrainingStatus,
   listDiffusionDatasetExamples,
+  listDiffusionDatasetImages,
   listDiffusionTrainingRuns,
   startDiffusionTraining,
   stopDiffusionTraining,
@@ -82,6 +83,7 @@ import {
   DATASET_FILE_ACCEPT,
   DATASET_IMAGE_EXTS,
   chunkDatasetUpload,
+  existingStemClash,
   filesFromDataTransfer,
   metadataKeyedOnSubfolders,
   oversizedChunk,
@@ -795,6 +797,21 @@ export function DiffusionTrainPanel({
               "uploaded. Raise the limit in Settings, or leave that file out.",
           );
           return;
+        }
+        // one request is all-or-nothing on the backend, so only a split top-up needs the folder
+        // checked as well: there a stem it already holds would 400 a later slice, mid-commit.
+        if (chunks.length > 1 && (info?.datasets ?? []).some((d) => d.name === name)) {
+          const held = await listDiffusionDatasetImages(name).catch(() => null);
+          const clash =
+            held && existingStemClash(files, held.images.map((i) => i.filename));
+          if (clash) {
+            toast.error(
+              `"${clash.second}" and "${clash.first}", already in "${name}", differ only by ` +
+                "extension, so they would share one caption file. Nothing was uploaded; rename " +
+                "it and try again.",
+            );
+            return;
+          }
         }
         let res = await uploadDiffusionDataset(name, chunks[0]);
         let sent = res.uploaded;
