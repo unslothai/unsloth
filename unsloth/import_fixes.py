@@ -1026,12 +1026,35 @@ def _is_broken_torchvision_error(error) -> bool:
 # prerelease, whose stable-looking companion is synthesised from the release
 # numbers alone.
 _TORCH_BACKEND_INDEX = re.compile(r"cpu|xpu|cu\d+|rocm\d+(?:\.\d+)*", re.IGNORECASE)
+# conda keeps the backend in the build string (`py3.12_cuda12.4_cudnn9_0`) and
+# leaves the version plain, so a conda torch is indistinguishable from a PyPI
+# one by version alone. Its own ledger tells them apart:
+# `conda-meta/<name>-<version>-<build>.json`, one per installed package.
+_CONDA_TORCH_PACKAGES = ("pytorch", "pytorch-cpu", "pytorch-gpu", "libtorch")
 
 
 def _torch_local_tag(torch_version_raw):
     if not torch_version_raw or "+" not in torch_version_raw:
         return ""
     return torch_version_raw.split("+", 1)[1]
+
+
+def _torch_is_conda_managed(torch_version_raw):
+    """Did conda install this torch, rather than pip?"""
+    conda_meta = os.path.join(sys.prefix, "conda-meta")
+    # A conda version never carries the `+tag`, but strip it so a pip torch
+    # sitting in a conda prefix is still matched on its release numbers.
+    version = (torch_version_raw or "").split("+", 1)[0]
+    if not version or not os.path.isdir(conda_meta):
+        return False
+    # Pinned to this exact version, so an unrelated `pytorch-lightning-*.json`
+    # cannot answer for torch.
+    prefixes = tuple(f"{name}-{version}-" for name in _CONDA_TORCH_PACKAGES)
+    try:
+        entries = os.listdir(conda_meta)
+    except OSError:
+        return False
+    return any(e.endswith(".json") and e.startswith(prefixes) for e in entries)
 
 
 def _has_no_matching_public_wheel(torch_version_raw):
@@ -1043,7 +1066,12 @@ def _has_no_matching_public_wheel(torch_version_raw):
     except Exception:
         return True
     local = _torch_local_tag(torch_version_raw)
-    return bool(local) and not _TORCH_BACKEND_INDEX.fullmatch(local)
+    if not local:
+        # An absent tag means PyPI for a pip install, but conda never writes one
+        # either, and its torch may be CPU, ROCm or a CUDA family PyPI does not
+        # ship. `--no-deps` would leave that torch beside PyPI's torchvision.
+        return _torch_is_conda_managed(torch_version_raw)
+    return not _TORCH_BACKEND_INDEX.fullmatch(local)
 
 
 def _torchvision_repair_advice(required = None, torch_version_raw = None):

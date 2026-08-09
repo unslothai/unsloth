@@ -291,3 +291,36 @@ def test_a_build_no_public_index_carries_is_not_sent_to_pip():
         text = advice(raw, required)
         assert "pip install" not in text, text
         assert f"torch=={raw}" in text, text
+
+
+def test_a_conda_torch_is_not_sent_to_pypis_torchvision(tmp_path):
+    """conda records the backend in the build string and leaves the version
+    plain, so a conda CPU or ROCm torch reaches the tag check looking exactly
+    like a PyPI one. `--no-deps` then keeps that torch beside PyPI's CUDA-only
+    torchvision, which is the mismatch the command is handed out to clear."""
+    conda_meta = tmp_path / "conda-meta"
+    conda_meta.mkdir()
+    (conda_meta / "pytorch-2.5.1-py3.12_cuda12.4_cudnn9_0.json").write_text("{}")
+    # Same version, unrelated package: it must not answer for torch.
+    (conda_meta / "pytorch-lightning-2.5.1-pyhd8ed1ab_0.json").write_text("{}")
+
+    def advice(torch_raw):
+        with pytest.raises(ImportError) as excinfo:
+            _probe_with_import_raising(
+                _NMS,
+                required = (0, 20, 1),
+                torch_version_raw = torch_raw,
+                torchvision_version_raw = "0.20.1",
+            )
+        return str(excinfo.value)
+
+    with mock.patch.object(sys, "prefix", str(tmp_path)):
+        conda = advice("2.5.1")
+        assert "pip install" not in conda, conda
+        assert "torch==2.5.1" in conda, conda
+        # A different version in the same prefix is pip's, and still gets pip's
+        # command: only the exact match is conda's.
+        assert "pip install" in advice("2.6.0")
+
+    # Without the ledger nothing changes: an absent tag still means PyPI.
+    assert "pip install" in advice("2.5.1")
