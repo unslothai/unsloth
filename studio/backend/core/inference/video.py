@@ -1328,6 +1328,28 @@ class VideoBackend:
             return None
 
     @staticmethod
+    def _h3_te_index_source(pipe: Any) -> Optional[str]:
+        """The repo THIS pipeline's own modular index names as the source of its ``text_encoder``.
+
+        ``modular_model_index.json`` records a ``pretrained_model_name_or_path`` per component, and
+        diffusers has already parsed it by the time the pipeline exists, so this is free and cannot
+        disagree with what ``load_components`` would have fetched. ``repo`` is the field's
+        deprecated spelling; ``ComponentSpec.__post_init__`` folds it into the new name, and the
+        fallback here covers a spec built by hand.
+
+        None means the question could not be answered. The caller treats that as a refusal: not
+        knowing which conditioner a pipeline uses is not a licence to substitute one."""
+        try:
+            spec = pipe.get_component_spec("text_encoder")
+        except Exception:  # noqa: BLE001 -- no spec, no substitution
+            return None
+        source = getattr(spec, "pretrained_model_name_or_path", None) or getattr(
+            spec, "repo", None
+        )
+        # A list means several sources for one component; nothing here can vouch for that.
+        return source if isinstance(source, str) and source else None
+
+    @staticmethod
     def _h3_te_quant_hub_files(
         scheme: Optional[str], api: Any
     ) -> tuple[Optional[str], list[tuple[str, int]]]:
@@ -2808,21 +2830,45 @@ class VideoBackend:
         # Base-gated, through the same resolver the plan and the pre-fetch use, so a derivative
         # base that keeps its own conditioner can never be handed this one.
         te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base)
+        # And gated a second time, on the identity the base NAME cannot establish. That resolver
+        # compares repo ids, so a derivative stored under a directory (or repo) whose last segment
+        # is also MiniMax-H3 passes it. This pipeline's own modular index names the repo its
+        # conditioner would have come from, which is the actual question: a derivative that
+        # retrained the encoder ships it under its own id and says so here, while one that reuses
+        # the released encoder still points at it, and quantizing exactly those weights is what
+        # the hosted artifact IS. Free, and it cannot disagree with the load, because it reads what
+        # diffusers already parsed for it. Unanswerable is a refusal, not a pass.
+        te_index_source = self._h3_te_index_source(pipe) if te_scheme is not None else None
+        te_index_declined = False
+        if te_scheme is not None:
+            from .diffusion_te_prequant import te_base_equivalent
+
+            if te_index_source is None or not te_base_equivalent(
+                fam.base_repo, te_index_source
+            ):
+                te_scheme = None
+                te_index_declined = True
         if text_encoder_quant is not None and te_scheme is None:
             # A valid request this workflow has no hosted artifact for, or one it has but not for
-            # THIS base. Say which; do NOT erase the request.
-            text_encoder_quant_reason = (
-                (
+            # THIS pipeline's conditioner. Say which; do NOT erase the request.
+            if te_index_declined:
+                text_encoder_quant_reason = (
+                    f"this pipeline's conditioner comes from "
+                    f"{te_index_source or 'a source that could not be read'}, not {fam.base_repo}, "
+                    f"so the hosted quantized {text_encoder_quant} conditioner is not its "
+                    f"quantization; loaded this pipeline's own bfloat16 encoder instead"
+                )
+            elif h3_te_quant_scheme(text_encoder_quant) is not None:
+                text_encoder_quant_reason = (
                     f"the hosted quantized {text_encoder_quant} conditioner is cut from "
                     f"{fam.base_repo}, not {base}; loaded this pipeline's own bfloat16 encoder "
                     f"instead"
                 )
-                if h3_te_quant_scheme(text_encoder_quant) is not None
-                else (
+            else:
+                text_encoder_quant_reason = (
                     f"no hosted quantized {text_encoder_quant} conditioner for {fam.name}; "
                     f"loaded the released bfloat16 encoder instead"
                 )
-            )
         elif te_scheme is not None:
             from .video_minimax_h3_te import load_h3_quantized_text_encoder
             text_encoder = load_h3_quantized_text_encoder(

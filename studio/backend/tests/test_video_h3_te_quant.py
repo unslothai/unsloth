@@ -455,3 +455,54 @@ def test_a_declined_request_reads_as_a_fallback_not_as_never_asked():
     assert entry["requested"] == "fp8"
     assert entry["value"] == "off"
     assert entry["status"] != "as_requested"
+
+
+# ── the identity gate the base NAME cannot make ──────────────────────────────────
+def test_the_index_names_the_conditioner_a_pipeline_would_have_loaded():
+    """A repo-id comparison cannot tell a derivative stored as .../MiniMax-H3 from the real one.
+    The pipeline's own modular index can: it records where each component comes from, and a
+    derivative that retrained the conditioner ships it under its own id."""
+
+    def _pipe(source):
+        spec = types.SimpleNamespace(pretrained_model_name_or_path = source)
+        return types.SimpleNamespace(get_component_spec = lambda name: spec)
+
+    assert VideoBackend._h3_te_index_source(_pipe(H3_BASE)) == H3_BASE
+    assert VideoBackend._h3_te_index_source(_pipe("someone/MiniMax-H3")) == "someone/MiniMax-H3"
+    # Unanswerable is None, and the caller reads None as a refusal.
+    assert VideoBackend._h3_te_index_source(_pipe(None)) is None
+    assert VideoBackend._h3_te_index_source(_pipe(["a", "b"])) is None
+    assert VideoBackend._h3_te_index_source(_pipe("")) is None
+    assert VideoBackend._h3_te_index_source(object()) is None
+
+    # The deprecated spelling, for a spec built by hand rather than parsed from the index.
+    legacy = types.SimpleNamespace(repo = H3_BASE, pretrained_model_name_or_path = None)
+    assert (
+        VideoBackend._h3_te_index_source(
+            types.SimpleNamespace(get_component_spec = lambda name: legacy)
+        )
+        == H3_BASE
+    )
+
+
+def test_the_real_index_records_where_the_conditioner_comes_from():
+    """Pinned against the shape MiniMaxAI/MiniMax-H3 actually ships, so a schema change is caught
+    here rather than by silently declining every quantized conditioner."""
+    entry = [
+        "transformers",
+        "Qwen3VLForConditionalGeneration",
+        {
+            "type_hint": ["transformers", "Qwen3VLForConditionalGeneration"],
+            "pretrained_model_name_or_path": H3_BASE,
+            "subfolder": "text_encoder",
+            "variant": None,
+            "revision": None,
+        },
+    ]
+    from core.inference.diffusion_te_prequant import te_base_equivalent
+
+    source = entry[2]["pretrained_model_name_or_path"]
+    assert te_base_equivalent("MiniMaxAI/MiniMax-H3", source)
+    # A derivative that retrained its conditioner names itself here and is refused, even though
+    # its own repo id would pass the tail-segment comparison.
+    assert not te_base_equivalent("MiniMaxAI/MiniMax-H3", "someone/MiniMax-H3-anime")
