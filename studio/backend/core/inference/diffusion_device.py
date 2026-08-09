@@ -119,7 +119,9 @@ def install_decoder_sync(
         budget = torch.mps.recommended_max_memory() * DECODE_SYNC_FRACTION
     except Exception as exc:  # noqa: BLE001 -- torch < 2.5 has no such reading
         if logger is not None:
-            logger.info("video.decoder_sync: no memory reading (%s); synchronising every decode", exc)
+            logger.info(
+                "video.decoder_sync: no memory reading (%s); synchronising every decode", exc
+            )
 
     def _sync(_module, _args, _output) -> None:
         if budget is not None:
