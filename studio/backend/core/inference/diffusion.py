@@ -957,9 +957,7 @@ def _dense_candidate_is_prequant(
         if scheme is None:
             return False
         return (
-            usable_prequant_source(
-                fam, scheme, path_override = prequant_path, base_repo = base_repo
-            )
+            usable_prequant_source(fam, scheme, path_override = prequant_path, base_repo = base_repo)
             is not None
         )
     except Exception:  # noqa: BLE001 — a probe that cannot answer keeps the decline
