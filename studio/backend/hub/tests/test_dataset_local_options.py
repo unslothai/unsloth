@@ -2728,3 +2728,128 @@ def test_snapshot_options_reject_a_compressed_file_it_cannot_open(tmp_path):
     (snapshot / "train.csv.gz").write_bytes(b"not really gzip")
 
     assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("dtype", ["duration[ms, tz=UTC]", "time32[s, tz=UTC]"])
+def test_snapshot_options_reject_a_timezone_on_a_non_timestamp(tmp_path, dtype):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: t\n    dtype: '{dtype}'\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"t":1}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_value_mapping_naming_an_unknown_dtype(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: t\n"
+                    "    dtype:\n      value:\n        dtype: nope\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"t":1}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_accept_a_value_mapping_naming_a_known_dtype(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n"
+                    "    dtype:\n      value:\n        dtype: string\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_accept_a_dynamic_first_array_dimension(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+                    "    dtype:\n      array2_d:\n        shape: [null, 2]\n        dtype: int32\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"x":[[1,2]]}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_dynamic_later_array_dimension(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+                    "    dtype:\n      array2_d:\n        shape: [2, null]\n        dtype: int32\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"x":[[1,2],[3,4]]}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_declared_split_with_an_empty_file(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: train.csv\n")
+    (snapshot / "train.csv").write_text("", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_drop_only_the_empty_declared_split(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files:\n  - split: train\n    path: a.jsonl\n"
+                    "  - split: test\n    path: b.jsonl\n")
+    (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b.jsonl").write_text("", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_declared_split_whose_payload_is_empty(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: train.csv.gz\n")
+    snapshot.mkdir(parents = True, exist_ok = True)
+    (snapshot / "train.csv.gz").write_bytes(gzip.compress(b""))
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("parameter", ["chunksize: 0", "chunksize: -5", "block_size: 0"])
+def test_snapshot_options_reject_a_builder_parameter_out_of_range(tmp_path, parameter):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  {parameter}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_negative_csv_skipfooter(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  skipfooter: -1\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_accept_a_builder_parameter_in_range(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  chunksize: 100\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_still_check_the_version_when_the_walk_is_truncated(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_options, "_MAX_SNAPSHOT_DATA_FILES", 1)
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: train.jsonl\n  version: nope\n")
+    for name in ("train.jsonl", "extra.jsonl"):
+        (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # The loader parses the version before it looks at a file, so no scan is needed.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_every_config_when_a_wildcard_data_dir_misses(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: good\n  data_dir: d\n- config_name: bad\n  data_dir: 'zz*'\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()

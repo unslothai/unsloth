@@ -192,6 +192,8 @@ _MODULE_EXTENSIONS = {
 # builder config, so one of the wrong type raises while the split generates. Types as pinned
 # at datasets 4.3.0; None means the loader refuses the parameter whatever its value.
 _TEXT_PARAMETERS = {"encoding": str, "encoding_errors": str, "chunksize": int}
+# Parameters the builder also needs within a range, as their smallest allowed value.
+_PARAMETER_MINIMUMS = {"chunksize": 1, "block_size": 1, "skipfooter": 0}
 _BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
     "json": {
         **_TEXT_PARAMETERS,
@@ -370,14 +372,17 @@ def _known_dtype(dtype: str) -> bool:
     units = _DTYPE_UNITS.get(parameterised.group(1))
     if units is None:
         return False
-    # A timestamp may carry a timezone after its unit, and nothing else.
+    # A timestamp may carry a timezone after its unit, and nothing else may.
     parameters = [part.strip() for part in parameterised.group(2).split(",")]
     if parameters[0] not in units:
         return False
     if len(parameters) == 1:
         return True
     return (
-        len(parameters) == 2 and parameters[1].startswith("tz=") and len(parameters[1]) > len("tz=")
+        parameterised.group(1) == "timestamp"
+        and len(parameters) == 2
+        and parameters[1].startswith("tz=")
+        and len(parameters[1]) > len("tz=")
     )
 
 
@@ -387,7 +392,9 @@ def _valid_array(spec: dict[str, Any], rank: int) -> bool:
     shape = spec.get("shape")
     if not isinstance(shape, list) or len(shape) != rank:
         return False
-    if not all(isinstance(size, int) and not isinstance(size, bool) and size > 0 for size in shape):
+    # datasets takes a null first dimension as a dynamic one; the rest are fixed.
+    sizes = shape[1:] if shape[0] is None else shape
+    if not all(isinstance(size, int) and not isinstance(size, bool) and size > 0 for size in sizes):
         return False
     return isinstance(spec.get("dtype"), str) and _known_dtype(spec["dtype"])
 
@@ -456,6 +463,8 @@ def _valid_feature_node(node: Any, depth: int = 0) -> bool:
         return "names" in node[role] and _valid_class_label(node[role])
     if not all(key in node[role] for key in _REQUIRED_FEATURE_ARGS.get(name, ())):
         return False
+    if name == "value":
+        return isinstance(node[role]["dtype"], str) and _known_dtype(node[role]["dtype"])
     rank = _ARRAY_RANKS.get(name)
     return rank is None or _valid_array(node[role], rank)
 
@@ -1153,27 +1162,36 @@ def _offerable_split(
     return trainable and not (empty and module != "json")
 
 
-def _declared_path_groups(item: dict[str, Any]) -> list[list[str]]:
-    """The globs a config declares, grouped the way sanitize_patterns groups them by split.
-
-    Each group is resolved on its own, so a group that comes back empty is what raises.
+def _declared_split_groups(item: dict[str, Any]) -> list[tuple[str, list[str]]]:
+    """Each split a config declares with the globs that make it up, grouped the way
+    sanitize_patterns groups them. Each group is resolved on its own, so one that comes
+    back empty is what raises.
     """
     entries = item.get("data_files")
     if isinstance(entries, str):
-        return [[entries]]
+        return [("train", [entries])]
     if not isinstance(entries, list):
         return []
-    groups: list[list[Any]] = []
+    groups: list[tuple[Any, list[Any]]] = []
     plain: list[Any] = []
     for entry in entries:
         if isinstance(entry, dict):
             value = entry.get("path")
-            groups.append(list(value) if isinstance(value, list) else [value])
+            groups.append((entry.get("split"), list(value) if isinstance(value, list) else [value]))
         else:
             plain.append(entry)
     if plain:
-        groups.append(plain)
-    return [[value for value in group if isinstance(value, str)] for group in groups]
+        groups.append(("train", plain))
+    return [
+        (split, [value for value in paths if isinstance(value, str)])
+        for split, paths in groups
+        if isinstance(split, str)
+    ]
+
+
+def _declared_path_groups(item: dict[str, Any]) -> list[list[str]]:
+    """The globs a config declares, with the split each belongs to dropped."""
+    return [paths for _split, paths in _declared_split_groups(item)]
 
 
 def _declared_paths(item: dict[str, Any]) -> list[str]:
@@ -1406,6 +1424,11 @@ def _valid_parameter(rule: Any, value: Any) -> bool:
     return bool(types) and isinstance(value, types)
 
 
+def _in_parameter_range(key: str, value: Any) -> bool:
+    minimum = _PARAMETER_MINIMUMS.get(key)
+    return minimum is None or not isinstance(value, int) or value >= minimum
+
+
 def _misparameterised_configs(collapsed: dict[str, dict[str, Any]], module: str) -> set[str]:
     """Configs handing the chosen builder a parameter it cannot use. It takes them without
     complaint and then raises while the split generates, so the option is dead."""
@@ -1416,7 +1439,22 @@ def _misparameterised_configs(collapsed: dict[str, dict[str, Any]], module: str)
         name
         for name, item in collapsed.items()
         if any(
-            key in rules and not _valid_parameter(rules[key], value) for key, value in item.items()
+            key in rules
+            and not (_valid_parameter(rules[key], value) and _in_parameter_range(key, value))
+            for key, value in item.items()
+        )
+    }
+
+
+def _misversioned_configs(collapsed: dict[str, dict[str, Any]]) -> set[str]:
+    """Configs datasets cannot even name a cache directory for. It parses this field into a
+    Version before it looks at a file, so the check needs no scan."""
+    return {
+        name
+        for name, item in collapsed.items()
+        if "version" in item
+        and (
+            not isinstance(item["version"], str) or _VERSION_RE.fullmatch(item["version"]) is None
         )
     }
 
@@ -1429,11 +1467,6 @@ def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _Declared
         if _config_root(item, files) is None:
             dead.add(name)
             continue
-        if "version" in item and (
-            not isinstance(item["version"], str) or _VERSION_RE.fullmatch(item["version"]) is None
-        ):
-            # datasets parses this into a Version for the cache directory and raises there.
-            dead.add(name)
         entries = item.get("data_files")
         if entries is not None and not entries:
             dead.add(name)
@@ -1481,6 +1514,28 @@ def _mismatched_configs(
         if module != required or not all(_readable_by(path, required) for path in resolved):
             mismatched.add(name)
     return mismatched
+
+
+def _empty_declared_options(
+    collapsed: dict[str, dict[str, Any]],
+    required: str,
+    files: _DeclaredFiles,
+    snapshot: Path,
+) -> set[tuple[str, str]]:
+    """Declared splits holding nothing the builder can read. A declaration names its files
+    outright, so they go through the same payload check inference already applies."""
+    dead = set()
+    for name, item in collapsed.items():
+        root = _config_root(item, files)
+        if root is None:
+            continue
+        for split, patterns in _declared_split_groups(item):
+            resolved = [path for pattern in patterns for path in files.resolve(pattern, root)]
+            if resolved and not _offerable_split(
+                [(path, _file_module(path.name)) for path in resolved], snapshot, "", required
+            ):
+                dead.add((name, split))
+    return dead
 
 
 def _grouped_splits(files: list[_DataFile]) -> Optional[dict[str, list[_DataFile]]]:
@@ -1552,6 +1607,9 @@ def _resolved_data_dir(snapshot: Path, raw: str, directories: list[str]) -> Opti
             and _explicit_parts(relative + "/x", "__") == _explicit_parts(pattern + "/x", "__")
             and _explicit_parts(relative, ".") == _explicit_parts(pattern, ".")
         )
+        if not matched:
+            # No directory at all is the loader's empty case, not an indeterminate union.
+            return _MISSING_DIR
         return matched[0] if len(matched) == 1 else None
     if not (snapshot / raw).is_dir():
         return _MISSING_DIR
@@ -1748,8 +1806,12 @@ def _snapshot_card_options(
         if scanned is None:
             # Too large to index. Explicit declarations stand on their own, but a literal one
             # still has to be there, and that is a lookup rather than a scan.
-            missing = _missing_literal_configs(collapsed, snapshot)
-            return {(config, split) for config, split in options if config not in missing}
+            dead = (
+                _missing_literal_configs(collapsed, snapshot)
+                | _misversioned_configs(collapsed)
+                | _emptied_configs(info)
+            )
+            return {(config, split) for config, split in options if config not in dead}
         declared_files = _DeclaredFiles(*scanned)
         unresolvable = _unresolvable_configs(collapsed, declared_files)
         if next(iter(collapsed)) in unresolvable or _mixed_declared_splits(
@@ -1767,11 +1829,17 @@ def _snapshot_card_options(
             return options
         dead = (
             unresolvable
+            | _misversioned_configs(collapsed)
             | _misparameterised_configs(collapsed, required)
             | _mismatched_configs(collapsed, required, declared_files)
             | _emptied_configs(info)
         )
-        options = {(config, split) for config, split in options if config not in dead}
+        options = {
+            entry
+            for entry in options
+            if entry[0] not in dead
+            and entry not in _empty_declared_options(collapsed, required, declared_files, snapshot)
+        }
         pending = [entry for entry in pending if entry[0] not in dead]
         if pending:
             inferred = _inferred_snapshot_options(snapshot, pending, required, scans)
