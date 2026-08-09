@@ -7879,6 +7879,18 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
         return _remove_session_sandbox_locked(session_id, delete_files)
 
 
+def _forget_removed(session_id: str, target: str) -> bool:
+    """Drop the record once the directory is really gone, and not before.
+
+    Keeping the files means keeping the only note of where they are: without it
+    a card still pointing at this session resolves to nothing.
+    """
+    if os.path.isdir(target):
+        return False
+    _record_workdir(session_id, None)
+    return True
+
+
 def _holds_no_user_files(target: str) -> bool:
     """Whether a sandbox holds nothing but (possibly empty) directories.
 
@@ -7916,7 +7928,7 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     target = os.path.realpath(entry)
     if os.path.dirname(target) != root or not os.path.isdir(target):  # contained
         return False
-    if not _sandbox_is_ours(target) and _recorded_workdir(session_id) != target:
+    if not _sandbox_is_ours(target) and _trusted_record(root, session_id) != target:
         return False
     # Made for a different id: the same directory on a case-insensitive volume,
     # and those files are the other chat's.
@@ -7924,7 +7936,6 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     if owner is not None and owner != _sandbox_name(session_id):
         return False
     _workdirs.pop(session_id, None)
-    _record_workdir(session_id, None)
     try:
         if delete_files:
             # Renamed while locked, deleted after: rmtree of a large tree would
@@ -7935,13 +7946,14 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
                 os.rename(target, detached)
             except OSError:
                 shutil.rmtree(target, ignore_errors = True)
-                return not os.path.isdir(target)
+                return _forget_removed(session_id, target)
             threading.Thread(
                 target = _delete_detached,
                 args = (detached, root),
                 name = "sandbox-delete",
                 daemon = True,
             ).start()
+            _record_workdir(session_id, None)
             return True
         # Empty means no files of the user's: a tool that only ran mkdir, or
         # deleted what it wrote, leaves directories behind, and the chat record
@@ -7949,8 +7961,7 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         if not _holds_no_user_files(target):
             return False
         shutil.rmtree(target, ignore_errors = True)
-        return not os.path.isdir(target)
-        return True
+        return _forget_removed(session_id, target)
     except OSError:
         return False
 

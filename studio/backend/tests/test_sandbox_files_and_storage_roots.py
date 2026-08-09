@@ -2645,5 +2645,36 @@ def test_a_migration_target_from_another_root_is_not_used(tmp_path, monkeypatch)
     assert Path(tools.get_sandbox_workdir("__LOCALID_stale11")) == new_root / "__LOCALID_stale11"
 
 
+def test_keeping_the_files_keeps_the_note_of_where_they_are(tmp_path, monkeypatch):
+    """A refused delete must not drop the record: it is the only thing left
+    saying the directory is this session's once a tool has taken the marker."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_keep111"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    (workdir / tools._SANDBOX_MARKER).unlink()
+
+    # Files kept, so nothing is removed and the record stays.
+    assert tools.remove_session_sandbox(session) is False
+    assert tools._recorded_workdir(session) == str(workdir)
+    tools._workdirs.clear()
+    assert Path(tools.resolve_sandbox_workdir(session)) == workdir
+
+    # And it is dropped once the directory really goes.
+    assert tools.remove_session_sandbox(session, delete_files = True) is True
+    for _ in range(50):
+        if tools._recorded_workdir(session) is None:
+            break
+        time.sleep(0.05)
+    assert tools._recorded_workdir(session) is None
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
