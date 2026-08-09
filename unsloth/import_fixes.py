@@ -1161,7 +1161,13 @@ def check_transformers_dependency_versions():
         "true",
     ):
         return
-    if importlib.util.find_spec("transformers") is None:
+    try:
+        # find_spec RAISES ValueError, rather than returning None, for a transformers
+        # in sys.modules whose `__spec__` is None or unset - a stub module, or one
+        # mid-teardown. Nothing here is worth failing `import unsloth` over.
+        if importlib.util.find_spec("transformers") is None:
+            return
+    except Exception:
         return
 
     try:

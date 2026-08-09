@@ -15,6 +15,7 @@ Runs under the GPU-free ``tests/conftest.py``.
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.util
 import logging
 
 import pytest
@@ -380,3 +381,20 @@ def test_check_warns_rather_than_raises_on_a_violation(monkeypatch, caplog):
     )
     IF.check_transformers_dependency_versions()  # no exception
     assert len(_run_check(caplog)) == 1
+
+
+def test_a_transformers_stub_in_sys_modules_does_not_break_the_import(monkeypatch, caplog):
+    """`find_spec` RAISES on a module in sys.modules whose `__spec__` is None or unset,
+    rather than returning None (documented behaviour, CPython Lib/importlib/util.py).
+    An unguarded probe there turns a warn-only check into a failed `import unsloth`.
+    """
+    import sys
+    import types
+
+    _install_env(monkeypatch, ["safetensors>=0.8.0"], {"transformers": "5.15.0.dev0"})
+    for stub in (types.ModuleType("transformers"), types.SimpleNamespace()):
+        monkeypatch.setitem(sys.modules, "transformers", stub)
+        with pytest.raises(ValueError):
+            importlib.util.find_spec("transformers")   # __spec__ None / not set
+        IF.check_transformers_dependency_versions()    # must not raise
+        assert _warnings(caplog) == []
