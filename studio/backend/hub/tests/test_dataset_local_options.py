@@ -707,3 +707,52 @@ def test_snapshot_options_ignore_a_dangling_link_beside_a_good_file(tmp_path):
     # resolve_pattern keeps a link only when its target is a file, so the loader
     # never sees this one and the surviving split still loads.
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_drop_a_header_only_csv_split(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+    (snapshot / "test.csv").write_text("text\n", encoding = "utf-8")
+
+    # The header alone yields no row, and datasets still builds train around it.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_offer_nothing_when_every_csv_is_header_only(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "train.csv").write_text("text\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_stand_down_beside_an_empty_split_declaration(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _card(snapshot, "dataset_info:\n  splits: {}\n")
+    _rows(snapshot, "train.jsonl")
+
+    # datasets treats the empty declaration as authoritative and exposes no config.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_skip_file_checks_for_an_untrainable_builder(tmp_path, monkeypatch):
+    snapshot = _snapshot(tmp_path)
+    for index in range(8):
+        (snapshot / f"img{index}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("resolved every file for a builder that trains nothing")
+
+    monkeypatch.setattr(local_options, "_offerable", _fail)
+
+    # imagefolder wins, so no file can be offered and none needs opening to say so.
+    assert local_options._inferred_snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_a_compressed_csv_split(tmp_path):
+    import gzip
+
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "train.csv.gz").write_bytes(gzip.compress(b"text\nrow\n"))
+
+    # Compressed bytes say nothing about the rows inside, so the split still stands.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}

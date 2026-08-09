@@ -318,6 +318,10 @@ _EXTENSION_MODULES = {
 # datasets infers a split's module from its first 200 files, in resolved (sorted) order.
 _MAX_MODULE_INFERENCE_FILES = 200
 # datasets' tie-break once the counts are level, then the extension string itself.
+# TRAINING_DATA_EXTS only ever resolves to these, so any other builder means the
+# snapshot holds nothing trainable and no file needs opening to find that out.
+_TRAINABLE_MODULES = frozenset({"csv", "json", "parquet"})
+_ROW_PROBE_BYTES = 8192
 _EXTENSION_PRIORITY = (".parquet", ".jsonl", ".json", ".csv")
 # Folder-builder metadata loses every tie-break, so it never decides a split's builder.
 _METADATA_FILENAMES = frozenset({"metadata.csv", "metadata.jsonl", "metadata.parquet"})
@@ -530,12 +534,35 @@ def _offerable(entries: list[PurePosixPath], snapshot: Path, module: str) -> Opt
         if _empty_payload(resolved):
             empty = True
             continue
+        if _rowless(resolved, path.name, module):
+            continue
         trainable = True
     # Every builder but json fails outright on a file with no rows, and datasets prepares
     # every split before handing one back, so such a file condemns its siblings too.
     if empty and module != "json":
         return None
     return trainable
+
+
+def _rowless(path: Path, name: str, module: str) -> bool:
+    """Whether the builder would read this file and find no row in it, as it does for a
+    csv holding only its header. That split is dropped, but unlike a file it cannot read
+    at all, datasets still builds the rest of the dataset around it."""
+    suffixes = PurePosixPath(name).suffixes
+    if module not in {"csv", "json"} or (
+        suffixes and suffixes[-1].lower() in _COMPRESSION_EXTENSIONS | _UNREADABLE_COMPRESSION
+    ):
+        # Compressed bytes say nothing about the rows inside without decompressing them.
+        return False
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(_ROW_PROBE_BYTES)
+    except OSError:
+        return True
+    if module == "json":
+        return not head.strip()
+    # A header with no row under it. Anything longer than the probe has one.
+    return len(head) < _ROW_PROBE_BYTES and len([x for x in head.splitlines() if x.strip()]) < 2
 
 
 def _empty_payload(path: Path) -> bool:
@@ -553,7 +580,7 @@ def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         return set()
     grouped = _grouped_splits(files)
     module = _one_module(grouped) if grouped is not None else None
-    if grouped is None or module is None:
+    if grouped is None or module is None or module not in _TRAINABLE_MODULES:
         return set()
     offerable = {split: _offerable(entries, snapshot, module) for split, entries in grouped.items()}
     if any(state is None for state in offerable.values()):
@@ -614,6 +641,13 @@ def _declares_configs(snapshot: Path, name: str) -> bool:
     return bool(payload.get("configs"))
 
 
+def _declares_splits(payload: Any) -> bool:
+    """Whether dataset_info states its splits. An empty statement is still authoritative:
+    datasets exposes no config at all rather than falling back to the files."""
+    entries = payload if isinstance(payload, list) else [payload]
+    return any(isinstance(item, dict) and "splits" in item for item in entries)
+
+
 def _malformed_info(payload: Any) -> bool:
     """A dataset_info list holding anything but mappings, which datasets calls .get on."""
     return isinstance(payload, list) and any(not isinstance(item, dict) for item in payload)
@@ -644,7 +678,12 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             _add_dataset_info_options(options, info)
             # dataset_info carrying only a feature schema names no config, so datasets
             # still resolves the files by pattern and inference has to run.
-            declared = declared or len(options) > named or _malformed_info(info)
+            declared = (
+                declared
+                or len(options) > named
+                or _malformed_info(info)
+                or _declares_splits(info)
+            )
 
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)
