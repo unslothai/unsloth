@@ -890,35 +890,24 @@ class TestWorkflowOrdering:
         assert job["needs"] == ["publish-release"]
 
     def test_the_scan_job_is_not_conditioned_away(self):
-        # `needs:` alone carries GitHub's default `success()` gating, which is
-        # what stops the scan from shipping build artifacts to a third party
-        # after a publish-release that failed. A job-level `if:` replaces that
-        # gating, so the job may carry none, as it does today, or one that keeps
-        # `success()` conjunctively. Conjunctively is the point: a substring
-        # check would wave through `success() || inputs.scan_anyway`, which
-        # still runs on a failed publish. Requiring no `||` and a leading
-        # `success() &&` keeps every accepted form narrower than the default.
+        # `needs:` alone carries GitHub's default `success()` gating, so whether
+        # the scan runs is decided by publish-release and nothing else. The job
+        # therefore carries no `if:` at all, and this rejects every one rather
+        # than trying to sort the safe conditions from the unsafe.
+        #
+        # Sorting them does not work. A job-level `if:` fails in both directions:
+        # `always()` or `success() || inputs.scan_anyway` sends build artifacts
+        # to a third party after a publish that failed, while `${{ false }}` or
+        # `success() && <anything falsey>` silently skips the sweep after a
+        # publish that succeeded. Any rule permissive enough to admit an
+        # arbitrary trailing predicate admits the second kind, so the contract
+        # is simply that reaching this job is `needs:`'s decision alone.
         job = self._scan_job()
-        condition = job.get("if")
-        if condition is not None:
-            normalised = str(condition).strip()
-            if normalised.startswith("${{") and normalised.endswith("}}"):
-                normalised = normalised[3:-2]
-            normalised = "".join(normalised.split())
-            assert "||" not in normalised, (
-                f"virustotal-scan carries `if: {condition}`; a disjunction can run the "
-                "scan on a branch where publish-release did not succeed"
-            )
-            assert normalised == "success()" or normalised.startswith("success()&&"), (
-                f"virustotal-scan carries `if: {condition}`, which does not require "
-                "success() conjunctively and so drops the gating that "
-                "needs: [publish-release] provides by default"
-            )
-            for override in ("always()", "failure()", "cancelled()"):
-                assert override not in normalised, (
-                    f"virustotal-scan carries `if: {condition}`, which runs the scan "
-                    "for outcomes other than a successful publish-release"
-                )
+        assert "if" not in job, (
+            f"virustotal-scan carries `if: {job.get('if')}`; a job-level condition "
+            "either runs the scan without a successful publish-release or skips it "
+            "after one, and `needs:` already gates it correctly"
+        )
 
         # Nor may the individual steps be skipped, except the summary, which is
         # `if: always()` precisely so the evidence survives a failed scan.

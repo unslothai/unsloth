@@ -28,15 +28,24 @@ def test_only_publish_job_can_write_repository_contents():
 
 
 def _poll_loop_body(script):
-    """Return the body of the first `while ...; do ... done` loop in `script`.
+    """Return the body of the first live `while ...; do ... done` loop.
 
     Assertions about a wait have to land inside the loop that waits, not
-    anywhere in the step. Nesting is tracked by depth; every opener in this
-    workflow ends its line with `do`.
+    anywhere in the step, and that loop has to be one the shell actually
+    enters: `while false; do` keeps a textually perfect body while skipping
+    every API read and status check, and the step falls straight through to a
+    download that races the matrix. So the condition must be the unconditional
+    `:` or `true` that a poll exiting via `break` uses. Nesting is tracked by
+    depth; every opener in this workflow ends its line with `do`.
     """
     lines = script.split("\n")
-    starts = [index for index, line in enumerate(lines) if re.match(r"\s*while\b", line)]
-    assert starts, f"no `while` loop in the wait step:\n{script}"
+    opener = re.compile(r"\s*while\s+(?P<condition>.*?)\s*;\s*do\s*$")
+    starts = [
+        index
+        for index, line in enumerate(lines)
+        if (match := opener.match(line)) and match.group("condition") in (":", "true")
+    ]
+    assert starts, f"no live (`while :` / `while true`) poll loop in the wait step:\n{script}"
 
     start = starts[0]
     depth = 0
