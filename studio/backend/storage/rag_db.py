@@ -313,6 +313,21 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def get_metadata_connection() -> sqlite3.Connection:
+    """Open rag.db without loading sqlite-vec.
+
+    This connection is only for ordinary SQLite metadata tables. It lets lifecycle
+    tombstones remain writable when the optional native vector extension is temporarily
+    unavailable. Callers must not query or mutate the vec0 virtual table.
+    """
+    db_path = rag_db_path()
+    ensure_dir(db_path.parent)
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
+
+
 def vec_table_dim(conn: sqlite3.Connection) -> int | None:
     """Embedding width baked into ``chunks_vec``, or None when absent."""
     row = conn.execute(

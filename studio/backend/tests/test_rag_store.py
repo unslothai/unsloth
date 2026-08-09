@@ -4,6 +4,9 @@
 """Store tests: incremental writes, dedupe, delete, scope, dense + lexical."""
 
 import math
+import sqlite3
+
+import pytest
 
 from core.rag import store
 from core.rag.chunking import Chunk
@@ -123,3 +126,33 @@ def test_kb_crud_and_delete_cascades(rag_conn):
     assert store.get_kb(rag_conn, "K1") is None
     assert store.list_documents(rag_conn, scope) == []
     assert store.search_lexical(rag_conn, scope, "alpha", 10) == []
+
+
+def test_kb_delete_rolls_back_when_document_cleanup_fails(rag_conn, monkeypatch):
+    store.create_kb(rag_conn, name = "My KB", kb_id = "K1")
+    scope = store.kb_scope("K1")
+    _add_doc(rag_conn, scope, "doc1", "one.txt", "h1", ["alpha bravo"])
+    _add_doc(rag_conn, scope, "doc2", "two.txt", "h2", ["charlie delta"])
+    original_delete = store.delete_document
+    calls = []
+
+    def fail_after_delete(
+        conn,
+        document_id,
+        *,
+        commit = True,
+    ):
+        calls.append((document_id, commit))
+        original_delete(conn, document_id, commit = commit)
+        raise sqlite3.OperationalError("database is busy")
+
+    monkeypatch.setattr(store, "delete_document", fail_after_delete)
+    with pytest.raises(sqlite3.OperationalError, match = "database is busy"):
+        store.delete_kb(rag_conn, "K1")
+
+    assert calls == [("doc1", False)]
+    assert store.get_kb(rag_conn, "K1") is not None
+    assert sorted(document["id"] for document in store.list_documents(rag_conn, scope)) == [
+        "doc1",
+        "doc2",
+    ]

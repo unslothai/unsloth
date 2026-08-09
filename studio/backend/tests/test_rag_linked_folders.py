@@ -1170,7 +1170,7 @@ def test_project_rag_cleanup_runs_off_the_event_loop(monkeypatch):
     assert result.id == "p1"
     assert [call[0] for call in calls] == ["retire", "delete", "cleanup"]
     assert calls[0][1] != event_loop_thread
-    assert calls[1][1] == event_loop_thread
+    assert calls[1][1] != event_loop_thread
     assert calls[2][1] != event_loop_thread
     assert calls[2][2] == [dict(id = "f1")]
 
@@ -1198,7 +1198,7 @@ def test_project_rag_retirement_failure_prevents_project_deletion(monkeypatch):
     assert deleted == []
 
 
-def test_project_deletion_skips_runtime_unavailable_rag(monkeypatch):
+def test_project_postcommit_file_cleanup_failure_keeps_scope_retired(monkeypatch):
     from routes import chat_history
 
     project = {
@@ -1207,12 +1207,50 @@ def test_project_deletion_skips_runtime_unavailable_rag(monkeypatch):
         "createdAt": 1,
         "updatedAt": 1,
     }
+    project_reads = iter((project, None))
+    restored = []
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: next(project_reads))
+    monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
+    monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
+    monkeypatch.setattr(chat_history, "_retire_project_rag_sources", lambda project_id: [])
+    monkeypatch.setattr(
+        chat_history,
+        "_restore_project_rag_sources",
+        lambda project_id, folders: restored.append(project_id),
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "delete_chat_project",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("workspace cleanup failed")),
+    )
+
+    with pytest.raises(OSError, match = "workspace cleanup failed"):
+        asyncio.run(chat_history.delete_project("p1", SimpleNamespace(), current_subject = "test"))
+
+    assert restored == []
+
+
+@requires_sqlite_vec
+def test_project_deletion_persists_retirement_when_rag_runtime_is_unavailable(
+    rag_home, monkeypatch
+):
+    from routes import chat_history
+
+    project = {
+        "id": "p1",
+        "name": "Project",
+        "createdAt": 1,
+        "updatedAt": 1,
+    }
+    source = rag_home / "unavailable-project"
+    source.mkdir()
+    folder = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(source))
     deleted = []
     monkeypatch.setattr(rag_db, "rag_available", lambda: False)
     monkeypatch.setattr(
-        folder_sync,
-        "retire_scope",
-        lambda scope: pytest.fail("runtime-unavailable RAG must not retire a scope"),
+        rag_db,
+        "get_connection",
+        lambda: (_ for _ in ()).throw(rag_db.RagExtensionUnavailable("unavailable")),
     )
     monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: project)
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
@@ -1228,6 +1266,58 @@ def test_project_deletion_skips_runtime_unavailable_rag(monkeypatch):
     )
     assert result.id == "p1"
     assert deleted == [True]
+    metadata = rag_db.get_metadata_connection()
+    try:
+        retired = metadata.execute(
+            "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?",
+            (store.project_scope("p1"),),
+        ).fetchone()
+        persisted = metadata.execute(
+            "SELECT auto_sync, status FROM linked_folders WHERE id=?", (folder["id"],)
+        ).fetchone()
+    finally:
+        metadata.close()
+    assert retired is not None
+    assert dict(persisted) == {"auto_sync": 0, "status": "retired"}
+
+
+@requires_sqlite_vec
+def test_project_deletion_restores_scope_when_project_delete_fails(rag_home, monkeypatch):
+    from routes import chat_history
+
+    project = {
+        "id": "p1",
+        "name": "Project",
+        "createdAt": 1,
+        "updatedAt": 1,
+    }
+    source = rag_home / "failed-project-delete"
+    source.mkdir()
+    folder = folder_sync.create_folder(
+        scope_type = "project",
+        scope_id = "p1",
+        path = str(source),
+        auto_sync = False,
+    )
+    pending_job = folder_sync.request_sync(folder["id"])
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: project)
+    monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
+    monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
+    monkeypatch.setattr(
+        chat_history,
+        "delete_chat_project",
+        lambda *args, **kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("database is busy")),
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match = "database is busy"):
+        asyncio.run(chat_history.delete_project("p1", SimpleNamespace(), current_subject = "test"))
+
+    assert folder_sync.scope_retired(store.project_scope("p1")) is False
+    restored = folder_sync.get_folder(folder["id"])
+    assert restored["auto_sync"] == folder["auto_sync"]
+    assert restored["status"] == folder["status"]
+    assert restored["last_error"] == folder["last_error"]
+    assert folder_sync.get_job(pending_job)["status"] == "pending"
 
 
 def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home, monkeypatch):
@@ -1357,6 +1447,50 @@ def test_kb_deletion_retires_scope_before_best_effort_folder_cleanup(
         folder_sync.create_folder(
             scope_type = "knowledge_base", scope_id = "knowledge", path = str(replacement)
         )
+
+
+@requires_sqlite_vec
+def test_kb_deletion_restores_scope_before_any_folder_cleanup_on_failure(rag_home, monkeypatch):
+    from routes import rag as rag_routes
+
+    conn = rag_db.get_connection()
+    try:
+        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    finally:
+        conn.close()
+    source = rag_home / "failed-kb-delete"
+    source.mkdir()
+    folder = folder_sync.create_folder(
+        scope_type = "knowledge_base",
+        scope_id = "knowledge",
+        path = str(source),
+        auto_sync = False,
+    )
+    cleaned = []
+    monkeypatch.setattr(
+        rag_routes.store,
+        "delete_kb",
+        lambda *args, **kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("database is busy")),
+    )
+    monkeypatch.setattr(
+        rag_routes.folder_sync,
+        "delete_folder",
+        lambda folder_id: cleaned.append(folder_id),
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match = "database is busy"):
+        rag_routes.delete_knowledge_base("knowledge", subject = "test")
+
+    assert cleaned == []
+    assert folder_sync.scope_retired(store.kb_scope("knowledge")) is False
+    restored = folder_sync.get_folder(folder["id"])
+    assert restored["auto_sync"] == folder["auto_sync"]
+    assert restored["status"] == folder["status"]
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_kb(conn, "knowledge") is not None
+    finally:
+        conn.close()
 
 
 @requires_sqlite_vec

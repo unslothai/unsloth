@@ -87,14 +87,20 @@ def get_kb(conn: sqlite3.Connection, kb_id: str) -> dict | None:
 
 def delete_kb(conn: sqlite3.Connection, kb_id: str) -> None:
     """Delete a knowledge base and every document (+ chunks) under it."""
-    scope = kb_scope(kb_id)
-    doc_ids = [
-        r["id"] for r in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall()
-    ]
-    for doc_id in doc_ids:
-        delete_document(conn, doc_id)
-    conn.execute("DELETE FROM knowledge_bases WHERE id=?", (kb_id,))
-    conn.commit()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        scope = kb_scope(kb_id)
+        doc_ids = [
+            r["id"]
+            for r in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall()
+        ]
+        for doc_id in doc_ids:
+            delete_document(conn, doc_id, commit = False)
+        conn.execute("DELETE FROM knowledge_bases WHERE id=?", (kb_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def create_document(

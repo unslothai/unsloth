@@ -552,13 +552,32 @@ async def patch_project(
 
 def _retire_project_rag_sources(project_id: str) -> list[dict]:
     """Prevent new RAG sources from being linked while a project is deleted."""
-    from storage import rag_db
+    from core.rag import folder_sync, store as rag_store
+    return folder_sync.retire_scope(rag_store.project_scope(project_id))
 
-    if not rag_db.rag_available():
-        return []
+
+def _restore_project_rag_sources(project_id: str, folders: list[dict]) -> None:
+    """Restore project RAG sources after the project database rolls back."""
+    from core.rag import folder_sync, store as rag_store
+    folder_sync.restore_scope(rag_store.project_scope(project_id), folders)
+
+
+def _delete_project_with_rag_retirement(
+    project_id: str, *, delete_files: bool
+) -> tuple[dict | None, list[dict]]:
+    """Serialize retirement and project deletion under the RAG scope lock."""
     from core.rag import folder_sync, store as rag_store
 
-    return folder_sync.retire_scope(rag_store.project_scope(project_id))
+    scope = rag_store.project_scope(project_id)
+    with folder_sync.scope_lock(scope):
+        folders = _retire_project_rag_sources(project_id)
+        try:
+            project = delete_chat_project(project_id, delete_files = delete_files)
+        except Exception:
+            if get_chat_project(project_id) is not None:
+                _restore_project_rag_sources(project_id, folders)
+            raise
+        return project, folders
 
 
 def _delete_project_rag_sources(project_id: str, folders: list[dict] | None = None) -> None:
@@ -611,8 +630,11 @@ async def delete_project(
     _cancel_active_research(
         request, [thread["id"] for thread in list_chat_threads(project_id = project_id)]
     )
-    retired_folders = await asyncio.to_thread(_retire_project_rag_sources, project_id)
-    project = delete_chat_project(project_id, delete_files = delete_files)
+    project, retired_folders = await asyncio.to_thread(
+        _delete_project_with_rag_retirement,
+        project_id,
+        delete_files = delete_files,
+    )
     if project is None:
         raise HTTPException(
             status_code = 404,
