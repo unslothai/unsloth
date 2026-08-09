@@ -22,7 +22,6 @@ import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain
 import {
   applyCustomizationToDocument,
   useAppearanceCustomStore,
-  useStackGeometry,
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
@@ -241,7 +240,6 @@ function TauriUpdateLayer({
   appContent: ReactNode;
 }) {
   const update = useTauriUpdate(isExternalServer);
-  const stack = useStackGeometry();
   const isUpdating =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
@@ -260,10 +258,7 @@ function TauriUpdateLayer({
     />
   ) : (
     // Capped like the browser stack: the download panel shares it, so both must fit.
-    <div
-      className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
-      style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
-    >
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
       <UpdateBanner
         status={update.status}
         info={update.info}
@@ -376,7 +371,6 @@ function DesktopChromeVarsEffect({
 
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const stack = useStackGeometry();
   const {
     status,
     logs,
@@ -510,10 +504,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             corner, banners above, each owning its width. */}
         {/* Capped to the viewport, or a long download list plus expanded notes
             pushes the top of the stack off screen. */}
-        <div
-          className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
-          style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
-        >
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
           <WebUpdateBanner
             positioned={false}
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}
@@ -545,10 +536,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         </>
       }
     >
-      <LlamaUpdateBanner
-        positioned={false}
-        enabled={!hidesTitlebarSidebar}
-      />
+      <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
       <DownloadManagerPanel positioned={false} />
       <LoadedModelsIndicator positioned={false} />
     </TauriUpdateLayer>
@@ -590,10 +578,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           }
           style={
             nativeMacControlsHidden
-              ? {
+              ? ({
                   ...MAC_NATIVE_CHROME_STYLE,
                   "--studio-mac-traffic-light-inset": "6px",
-                } as CSSProperties
+                } as CSSProperties)
               : MAC_NATIVE_CHROME_STYLE
           }
         >
