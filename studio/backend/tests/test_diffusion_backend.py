@@ -4335,8 +4335,9 @@ def test_auto_quant_declines_dense_fallback_when_no_prequant_exists(
     ["Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"],
     ids = ["upstream", "fetch-mirror"],
 )
+@pytest.mark.parametrize("weight_format", ["safetensors", "bin"])
 def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_exists(
-    cached_repo, fake_runtime, tmp_path, monkeypatch
+    cached_repo, weight_format, fake_runtime, tmp_path, monkeypatch
 ):
     import json
 
@@ -4345,12 +4346,13 @@ def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_ex
     base_repo = "Qwen/Qwen-Image-Edit-2511"
     revision = "cached-dense"
     shard_names = [
-        "diffusion_pytorch_model-00001-of-00002.safetensors",
-        "diffusion_pytorch_model-00002-of-00002.safetensors",
+        f"diffusion_pytorch_model-00001-of-00002.{weight_format}",
+        f"diffusion_pytorch_model-00002-of-00002.{weight_format}",
     ]
+    index_name = f"diffusion_pytorch_model.{weight_format}.index.json"
     files = [
         "transformer/config.json",
-        "transformer/diffusion_pytorch_model.safetensors.index.json",
+        f"transformer/{index_name}",
         *(f"transformer/{name}" for name in shard_names),
     ]
     _fake_hub_cache(
@@ -4363,7 +4365,7 @@ def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_ex
         / "snapshots"
         / revision
         / "transformer"
-        / "diffusion_pytorch_model.safetensors.index.json"
+        / index_name
     )
     index.write_text(
         json.dumps({"weight_map": {"a": shard_names[0], "b": shard_names[1]}}),
@@ -4375,8 +4377,14 @@ def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_ex
     missing_shard.unlink()
     assert DiffusionBackend._complete_dense_transformer_root(cached_repo) is None
     for name in shard_names:
-        _safetensors_with_params(cached_root / "transformer" / name, 1_000_000)
+        shard = cached_root / "transformer" / name
+        if weight_format == "safetensors":
+            _safetensors_with_params(shard, 1_000_000)
+        else:
+            with open(shard, "wb") as fh:
+                fh.truncate(2_000_000)
     assert DiffusionBackend._complete_dense_transformer_root(cached_repo) == str(cached_root)
+    assert DiffusionBackend._dense_transformer_resident_bytes(cached_repo) == 4_000_000
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"

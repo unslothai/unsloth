@@ -2318,22 +2318,36 @@ class DiffusionBackend:
         preflight. That fast path loads the transformer at the compute dtype (bf16, 2
         bytes/param) before quantizing, so budget num_params * 2 -- NOT the on-disk bytes,
         which for an F32 base (e.g. Z-Image) are ~2x the resident size. Read from the
-        safetensors shard headers. Returns 0 when no ``transformer/*.safetensors`` shards
-        are present (an uncached base, or a .bin-only transformer); the caller then gates
-        the fast path on the plain plan -- so a base whose shards this misses skips the fit
-        check entirely and lets the dense build OOM under a plan sized for the GGUF."""
+        safetensors shard headers. PyTorch ``.bin`` files have no cheap tensor header, so use
+        their on-disk size as a conservative practical proxy (and an upper bound for ordinary fp32
+        checkpoints), without deserializing a multi-GB model merely to plan it.
 
-        def _params(d: Path) -> dict[str, int]:
+        Returns 0 only when neither format is present. A cached format missed here skips the fit
+        check entirely and can wrongly disable or OOM the dense build under a GGUF-sized plan."""
+
+        def _resident_bytes(d: Path) -> dict[str, int]:
             tdir = d / "transformer"
             if not tdir.is_dir():
                 return {}
-            return {
-                f"transformer/{s.name}": DiffusionBackend._safetensors_param_count(s)
-                for s in tdir.glob("*.safetensors")
-            }
+            safetensors = list(tdir.glob("*.safetensors"))
+            if safetensors:
+                # bf16: 2 bytes/param. Key by stem so equivalent .bin/.safetensors shards found
+                # across cache roots remain one logical file rather than inflating the estimate.
+                return {
+                    f"transformer/{shard.stem}": (
+                        DiffusionBackend._safetensors_param_count(shard) * 2
+                    )
+                    for shard in safetensors
+                }
+            sizes: dict[str, int] = {}
+            for shard in tdir.glob("*.bin"):
+                try:
+                    sizes[f"transformer/{shard.stem}"] = shard.stat().st_size
+                except OSError:
+                    continue
+            return sizes
 
-        # bf16: 2 bytes/param
-        return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
+        return DiffusionBackend._union_over_cached_revs(base, _resident_bytes, staged_dir)
 
     # ── Synchronous load / generate / unload ───────────────────────────────
 
