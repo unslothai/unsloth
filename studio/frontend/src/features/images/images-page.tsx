@@ -109,6 +109,10 @@ import {
   loadDiffusionModel,
   unloadDiffusionModel,
 } from "./api";
+import {
+  shouldContinueGenerating,
+  shouldReportGenerateError,
+} from "./lib/generation-stop";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -2424,11 +2428,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
       for (let i = 0; i < runs; i++) {
-        // The page truly unmounted mid-run: stop issuing more GPU generations. A plain tab switch keeps it mounted.
-        if (!isMounted.current) break;
-        // Stop pressed: the backend cancels only the denoise in flight, so the remaining runs of a
-        // count > 1 request would start one after another unless the loop stops here too.
-        if (cancelRequested.current) break;
+        // Stop issuing more GPU generations once the page truly unmounted (a plain tab switch
+        // keeps it mounted), or once Stop was pressed: the backend cancel only reaches the denoise
+        // in flight, so the remaining runs of a count > 1 request would otherwise start anyway.
+        if (
+          !shouldContinueGenerating({
+            mounted: isMounted.current,
+            stopRequested: cancelRequested.current,
+          })
+        )
+          break;
         let res: DiffusionGenerateResponse;
         try {
           res = await generateDiffusionImage({
@@ -2496,7 +2505,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const msg = err instanceof Error ? err.message : "Image generation failed";
       // The user's own Stop comes back as the backend's cancelled sentinel (409). Not an error,
       // so do not toast it. Same treatment the video page gives its Cancel.
-      if (!cancelRequested.current && !msg.toLowerCase().includes("cancelled")) toast.error(msg);
+      if (shouldReportGenerateError({ message: msg, stopRequested: cancelRequested.current }))
+        toast.error(msg);
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
