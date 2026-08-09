@@ -469,6 +469,7 @@ def test_status_loaded_shape():
     assert st["engine"] == "sd_cpp"
     assert st["family"] == "z-image"
     assert st["device"] == "cpu"
+    assert st["gguf_variant"] is None
     # diffusers-only fields are present (route response parity) but null.
     for k in ("transformer_quant", "attention_backend", "transformer_cache", "text_encoder_quant"):
         assert st[k] is None
@@ -750,6 +751,7 @@ def _run_server_load(
     servers,
     fam_name = "z-image",
     device = "cpu",
+    gguf_filename = "z.gguf",
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -775,7 +777,7 @@ def _run_server_load(
     b._load_token = 1
     b._run_load(
         repo_id = "unsloth/Z-Image-Turbo-GGUF",
-        gguf_filename = "z.gguf",
+        gguf_filename = gguf_filename,
         base = fam.base_repo,
         fam = fam,
         hf_token = None,
@@ -791,6 +793,13 @@ def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
     assert servers[0].started is not None  # the model is loaded once, at spawn
     assert b._state is not None and b._state.mode == "server" and b._state.server is servers[0]
     assert b.status()["native_mode"] == "server"
+
+
+def test_server_status_reports_selected_gguf_quant(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, gguf_filename = "z-image-turbo-Q8_0.gguf")
+    assert b.status()["gguf_variant"] == "Q8_0"
 
 
 def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):

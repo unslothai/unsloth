@@ -2969,9 +2969,12 @@ class DiffusionStatusResponse(BaseModel):
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
     )
+    gguf_variant: Optional[str] = Field(
+        None, description = "Selected GGUF quantisation variant (for example Q8_0)"
+    )
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
-        None, description = "Resolved offload policy: none | group | model | sequential"
+        None, description = "Resolved offload policy: none | group | model | streaming | sequential"
     )
     vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
     memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
@@ -3416,6 +3419,9 @@ class VideoStatusResponse(BaseModel):
     dtype: Optional[str] = Field(None, description = "Compute dtype")
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
+    )
+    gguf_variant: Optional[str] = Field(
+        None, description = "Selected GGUF quantisation variant (for example Q8_0)"
     )
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | sequential"
