@@ -3201,9 +3201,7 @@ class DiffusionBackend:
                 # trees, so the subtraction the planner does is exact rather than two estimates
                 # meeting in the middle. 0 bytes reads as "nothing cached", i.e. no split.
                 text_encoder = self._text_encoder_cache_bytes(fetch_base or base, base_local_dir)
-                text_encoder_mib = (
-                    int(text_encoder // (1024 * 1024)) if text_encoder else None
-                )
+                text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
             model_dense_mib = None
             if transformer_resident is not None:
                 model_dense_mib = transformer_resident + (companion_mib or 0)
