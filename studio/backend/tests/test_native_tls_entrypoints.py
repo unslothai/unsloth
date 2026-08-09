@@ -30,9 +30,9 @@ _ENTRYPOINTS = [
     "core/data_recipe/jobs/worker.py",
 ]
 
-# `python -c` children cannot import backend modules, so they carry the gate as
-# source. Read the assembled script off the module: it is built by concatenation,
-# so scraping the literals out of the AST would miss the generated part.
+# `python -c` children carry the gate as source. Read the assembled script off
+# the module: it is concatenated, so scraping AST literals would miss the
+# generated part.
 _PROBE_SCRIPTS = [
     ("utils.transformers_version", "_PROBE_CONFIG_SCRIPT"),
     ("utils.models.model_config", "_VISION_CHECK_SCRIPT"),

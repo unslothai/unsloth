@@ -31,8 +31,7 @@ def _reset_activation(monkeypatch):
     for key in ("UNSLOTH_STUDIO_NATIVE_TLS", "UV_SYSTEM_CERTS", "UV_NATIVE_TLS"):
         monkeypatch.delenv(key, raising = False)
     yield
-    # monkeypatch records no undo for vars that were absent, so drop the ones
-    # activate_native_tls() setdefaults or they leak into later tests.
+    # monkeypatch cannot undo vars that were absent, so drop what setdefault added.
     for key in ("UV_SYSTEM_CERTS", "UV_NATIVE_TLS"):
         os.environ.pop(key, None)
 
@@ -97,8 +96,7 @@ def test_activate_keeps_explicit_uv_override(monkeypatch):
 
     assert native_tls.activate_native_tls() is True
     assert os.environ["UV_SYSTEM_CERTS"] == "0"
-    # uv treats either var as an opt-in, so the legacy name must mirror the
-    # opt-out rather than default to "1" and re-enable it (matches install.sh).
+    # uv takes either var as an opt-in, so the legacy name must mirror the opt-out.
     assert os.environ["UV_NATIVE_TLS"] == "0"
 
 

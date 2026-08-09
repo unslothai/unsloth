@@ -15,10 +15,8 @@ repos:
         language: python
         types: [python]
         # Mirror ruff's [tool.ruff] extend-exclude so this hook does not
-        # half-process files ruff itself skips (which produced churn). The
-        # vendor path must be listed here too: enforce_kwargs_spacing.py runs
-        # either side of ruff and does not read ruff's config, so ruff's own
-        # exclude alone would still let it rewrite the vendored bytes.
+        # half-process files ruff itself skips (which produced churn). vendor/ is
+        # repeated here because this hook does not read ruff's config.
         exclude: '(chat_templates|ollama_template_mappers|_auto_install|mapper)\.py$|^studio/backend/vendor/'
         additional_dependencies:
           - ruff==0.6.9

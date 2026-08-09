@@ -11,8 +11,7 @@ datasets==4.3.0
 pyjwt
 # gradio>=4.0.0                  # 148 MB - Unsloth uses React + FastAPI, not Gradio
 huggingface-hub==0.36.2
-# truststore is deliberately NOT here: it is vendored at backend/vendor/ so no
-# Studio user gains a package for a proxy they do not have. See its README.
+# truststore is vendored at backend/vendor/, deliberately not a dependency.
 structlog>=24.1.0
 diceware
 ddgs

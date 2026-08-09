@@ -27,8 +27,7 @@ from typing import Any
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
-# Fresh spawned interpreter: re-apply the OS-trust-store injection before any Hub
-# call (see utils/native_tls.py).
+# Fresh spawned interpreter: re-apply the OS-trust-store injection.
 from utils.native_tls import activate_native_tls
 
 activate_native_tls()

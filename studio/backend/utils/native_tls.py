@@ -47,8 +47,8 @@ _DEFAULT_ON_PLATFORMS = ("darwin", "win32")
 _TRUTHY = ("1", "true", "yes")
 _FALSEY = ("0", "false", "no")
 
-# Resolved from this file, so it is right in a checkout and in an installed
-# wheel alike. Never build it from the cwd or a hardcoded "studio/backend".
+# Resolved from this file so it is right in a checkout and an installed wheel
+# alike. Never build it from the cwd or a hardcoded "studio/backend".
 _VENDOR_DIR = str(Path(__file__).resolve().parent.parent / "vendor")
 
 _logger = logging.getLogger(__name__)
@@ -65,13 +65,11 @@ def native_tls_enabled() -> bool:
     return sys.platform in _DEFAULT_ON_PLATFORMS
 
 
-# Children that cannot import this module carry the gate as source instead: the
-# `python -c` probes, and prebuilt_core.py, which is vendored standalone beside
-# the backend. Generating it from the same constants is what stops the copies
-# drifting from native_tls_enabled(); the child only needs os and sys imported,
-# plus _TRUSTSTORE_VENDOR, which it defines itself because each child locates
-# the vendor directory differently. Keeping that out of the rendered text is
-# what lets every child share one byte-identical gate.
+# Children that cannot import this module (the `python -c` probes,
+# prebuilt_core.py) carry the gate as source; generating it from the same
+# constants stops it drifting from native_tls_enabled(). The child supplies os,
+# sys and _TRUSTSTORE_VENDOR itself, which is what keeps the gate identical
+# everywhere despite each child locating the vendor directory differently.
 _INLINE_GATE = """\
 _flag = os.environ.get({env!r}, '').strip().lower()
 if _flag in {truthy!r} or (_flag not in {falsey!r} and sys.platform in {platforms!r}):
@@ -115,23 +113,19 @@ def activate_native_tls() -> bool:
         return True
     if not native_tls_enabled():
         return False
-    # uv child installers do their own TLS: rustls ignores in-process injection,
-    # so point them at the OS store too (uv >= 0.11 reads UV_SYSTEM_CERTS, older
-    # reads UV_NATIVE_TLS). Mirror one resolved value across both rather than
-    # defaulting each to "1": uv takes either var as an opt-in, so an opt-out in
-    # one spelling has to carry to the other or the unset name re-enables it.
+    # uv's rustls ignores in-process injection (uv >= 0.11 reads UV_SYSTEM_CERTS,
+    # older reads UV_NATIVE_TLS). Mirror one value across both: uv takes either as
+    # an opt-in, so an opt-out in one spelling must carry to the other.
     os.environ.setdefault("UV_SYSTEM_CERTS", os.environ.get("UV_NATIVE_TLS", "1"))
     os.environ.setdefault("UV_NATIVE_TLS", os.environ["UV_SYSTEM_CERTS"])
-    # append, NOT insert(0, ...) as everywhere else in the backend: a truststore
-    # the user installed themselves must keep winning over the vendored copy.
+    # append, not insert(0): a user-installed truststore must win over the vendored copy.
     if _VENDOR_DIR not in sys.path:
         sys.path.append(_VENDOR_DIR)
     try:
         import truststore
         truststore.inject_into_ssl()
     except Exception as exc:  # noqa: BLE001
-        # Warn loudly: a silent certifi fallback is what this exists to prevent.
-        # One line, no traceback -- truststore is simply absent on Python 3.9.
+        # Warn, no traceback: a silent certifi fallback is what this exists to prevent.
         _logger.warning("native TLS unavailable (%s); TLS keeps certifi defaults", exc)
         return False
     _activated = True
