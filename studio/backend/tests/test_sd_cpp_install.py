@@ -1194,3 +1194,119 @@ def test_an_idle_backend_installs_the_matching_build_immediately(tmp_path, monke
     assert mode == "server" and resolved == str(server)
     assert [k["accelerator"] for k in installs] == ["cuda"]
     assert backend._deferred_accelerator_install is False
+
+
+def test_the_router_entry_point_cannot_replace_a_running_server(tmp_path, monkeypatch):
+    """select_and_activate_engine calls ensure_sd_server_binary DIRECTLY, before begin_load stops
+    anything, so a deferral that lives only in _resolve_backend does not cover it: a /images/load
+    that resolves to CUDA while the managed CPU server is resident would extract over the running
+    executable. The refusal therefore lives in _accelerator_changed, where every caller passes."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    installs: list = []
+
+    def _install(**kwargs):
+        installs.append(kwargs)
+        server.write_bytes(b"cuda-build")
+        sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
+        return root / "sd-bin" / "sd-cli"
+
+    monkeypatch.setattr(sdmod, "install", _install)
+
+    resident = bk.SdCppDiffusionBackend()
+    resident._state = types.SimpleNamespace(server = object())
+    monkeypatch.setattr(bk, "_sd_cpp_backend", resident)
+
+    # The router's own call, verbatim: no backend instance in sight.
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+    assert installs == [], "the running server's file may not be overwritten"
+    assert server.read_bytes() == b"cpu-build"
+
+    # With nothing resident the same call upgrades as before.
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+    assert [k["accelerator"] for k in installs] == ["cuda"]
+
+
+def test_the_one_shot_fallback_keeps_the_requested_accelerator(tmp_path, monkeypatch):
+    """_resolve_engine is also the fallback a GPU sd-server that would not start lands on. It
+    asked for the default "cpu", which -- now that a recorded GPU install counts as a mismatch
+    against a CPU request -- would reinstall the plain bundle over the working GPU one and run the
+    whole generation on the CPU because of an unrelated server startup failure."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cuda")
+    cli = root / "sd-bin" / "sd-cli"
+    cli.write_bytes(b"cuda-build")
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(backend = "cuda")
+    )
+    monkeypatch.setattr(bk, "SdCppEngine", lambda binary: types.SimpleNamespace(
+        binary = binary, is_available = lambda: True, version = lambda: "x"
+    ))
+
+    def _install(**kwargs):
+        raise AssertionError(f"no reinstall may happen here (asked for {kwargs['accelerator']})")
+
+    monkeypatch.setattr(sdmod, "install", _install)
+
+    backend = bk.SdCppDiffusionBackend()
+    assert backend._resolve_engine().binary == str(cli)
+    assert cli.read_bytes() == b"cuda-build"
+
+
+def test_a_serverless_deferred_install_still_lands_after_teardown(tmp_path, monkeypatch):
+    """The serverless branch: only sd-cli is installed, so the deferral resolves the load to
+    one-shot, and gating the post-teardown retry on mode == "server" skipped it for good. The
+    archive carries the sd-cli this load generates with, so the install has to run anyway."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    cli = root / "sd-bin" / "sd-cli"
+    cli.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)  # serverless install
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(backend = "cuda")
+    )
+    installs: list = []
+
+    def _install(**kwargs):
+        installs.append(kwargs)
+        cli.write_bytes(b"cuda-build")
+        sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
+        return cli
+
+    monkeypatch.setattr(sdmod, "install", _install)
+
+    backend = bk.SdCppDiffusionBackend()
+    backend._state = types.SimpleNamespace(server = None)
+    backend._active_generate_cancel = threading.Event()  # a one-shot sd-cli is still running
+    mode, server_binary, _engine = backend._resolve_backend()
+    assert mode == "oneshot" and server_binary is None
+    assert installs == [] and backend._deferred_accelerator_install is True
+
+    # After the teardown the tree is free, and the install lands even though the load resolved to
+    # one-shot: sd-cli comes out of the same archive.
+    backend._state = None
+    backend._active_generate_cancel = None
+    assert backend._upgrade_server_after_teardown(None) is None  # this archive ships no server
+    assert [k["accelerator"] for k in installs] == ["cuda"], "the sd-cli still has to be upgraded"
+    assert cli.read_bytes() == b"cuda-build"
+
+    # And a matching tree is not reinstalled on the next deferred load.
+    assert backend._upgrade_server_after_teardown(None) is None
+    assert len(installs) == 1

@@ -187,6 +187,32 @@ def _note_failed_upgrade(accelerator: str) -> None:
         pass
 
 
+def _tree_in_use(backend: Any) -> bool:
+    """True while ``backend`` may still have a native process executing out of the managed tree:
+    a resident sd-server, or a generation that has been signalled to cancel but not yet finished."""
+    if backend is None:
+        return False
+    state = getattr(backend, "_state", None)
+    if state is not None and getattr(state, "server", None) is not None:
+        return True  # the resident sd-server is executing its own file
+    return getattr(backend, "_active_generate_cancel", None) is not None
+
+
+def _managed_tree_in_use() -> bool:
+    """True while a native process may still be executing out of the managed install tree.
+
+    An accelerator upgrade REPLACES the binaries in that tree, and Linux refuses to open a running
+    executable for writing (ETXTBSY) while Windows locks it, so an install attempted now fails and
+    can leave the tree half-written. The load path knows when it is safe and retries after its own
+    teardown, but it is not the only entry point: the engine router calls ``ensure_sd_server_binary``
+    / ``ensure_sd_cpp_binary`` directly, BEFORE ``begin_load`` stops anything. Answering here, at
+    the one place that decides an install is needed, covers every caller instead of one.
+
+    Reads the singleton without a lock on purpose: a stale answer either defers an upgrade to the
+    next load (harmless) or lets one through in a window the load path guards anyway."""
+    return _tree_in_use(_sd_cpp_backend)
+
+
 def _accelerator_changed(binary: str, accelerator: str) -> bool:
     """True when ``binary`` is a managed install built for a DIFFERENT accelerator than the one
     now asked for, so reusing it would silently run the wrong build.
@@ -208,6 +234,8 @@ def _accelerator_changed(binary: str, accelerator: str) -> bool:
     case, where the install almost certainly is the CPU one already."""
     if not is_managed_binary(binary):
         return False
+    if _managed_tree_in_use():
+        return False  # an install now would overwrite a running binary; the load retries after teardown
     try:
         mod = _installer_module()
         want = mod.accelerator_class(accelerator)
@@ -459,11 +487,28 @@ class SdCppDiffusionBackend:
     def is_loaded(self) -> bool:
         return self._state is not None
 
+    @staticmethod
+    def _resolved_accelerator() -> str:
+        """The installer accelerator this host's device target resolves to (cpu / cuda / rocm /
+        vulkan). Lazy import avoids an import cycle with the engine router."""
+        from core.inference.diffusion_engine_router import _install_accelerator_for
+
+        return _install_accelerator_for(
+            getattr(resolve_diffusion_device_target(), "backend", "cpu")
+        )
+
     def _resolve_engine(self) -> SdCppEngine:
         """The SdCppEngine, installing the binary on first use. Raises if unusable."""
         if self._engine is not None and self._engine.is_available():
             return self._engine
-        binary = ensure_sd_cpp_binary(allow_install = _install_allowed())
+        # The accelerator this host resolves to, never the "cpu" default: this is also the
+        # one-shot FALLBACK path (a GPU sd-server that would not start lands here), and asking
+        # for the CPU build there would reinstall the plain bundle over the working GPU one and
+        # run the whole generation on the CPU.
+        binary = ensure_sd_cpp_binary(
+            allow_install = _install_allowed() and not _tree_in_use(self),
+            accelerator = self._resolved_accelerator(),
+        )
         if not binary:
             raise RuntimeError("sd-cli (stable-diffusion.cpp) binary is unavailable.")
         self._engine = SdCppEngine(binary = binary)
@@ -482,25 +527,17 @@ class SdCppDiffusionBackend:
         """
         if self._engine_injected and self._engine is not None:
             return "oneshot", None, self._resolve_engine()
-        # Install the server build matching the resolved backend (ROCm/Vulkan/CUDA), not the default CPU build. Lazy import avoids an import cycle.
-        from core.inference.diffusion_engine_router import _install_accelerator_for
-
-        accelerator = _install_accelerator_for(
-            getattr(resolve_diffusion_device_target(), "backend", "cpu")
-        )
-        # An accelerator upgrade REPLACES the sd-server file, and this runs before the load stops
-        # the resident one -- which is executing that exact path. Linux refuses to open a running
-        # executable for writing (ETXTBSY) and Windows locks it, so installing here would fail
-        # every time a native model is loaded. Defer it: resolve against what is on disk now, and
-        # let the load re-run this once the old server is stopped (see _upgrade_server_after_teardown).
-        #
-        # A one-shot load holds the tree just as hard: begin_load only SIGNALS the in-flight
-        # generation to cancel and this runs before the load waits on _generate_lock, so the
-        # previous sd-cli can still be executing out of the managed tree. Defer for an active
-        # generation too, in either mode.
-        upgrade_pending = (self._state is not None and self._state.server is not None) or (
-            self._active_generate_cancel is not None
-        )
+        accelerator = self._resolved_accelerator()
+        # An accelerator upgrade REPLACES the binaries in the managed tree, and this runs before
+        # the load stops the resident server (which is executing its own file) or waits out an
+        # in-flight one-shot sd-cli. Linux refuses to open a running executable for writing
+        # (ETXTBSY) and Windows locks it, so an install here fails and can leave the tree
+        # half-written. _accelerator_changed refuses the upgrade while the tree is in use, whoever
+        # asks; record that it did, so this load retries it after its own teardown, when the tree
+        # is the only thing that has changed.
+        # _managed_tree_in_use covers the singleton for callers that never see this instance (the
+        # engine router); this load's own state is the authority for this load.
+        upgrade_pending = _tree_in_use(self) or _managed_tree_in_use()
         self._deferred_accelerator_install = upgrade_pending
         server_binary = ensure_sd_server_binary(
             allow_install = _install_allowed() and not upgrade_pending, accelerator = accelerator
@@ -513,33 +550,34 @@ class SdCppDiffusionBackend:
         return "oneshot", None, self._resolve_engine()
 
     def _upgrade_server_after_teardown(self, server_binary: Optional[str]) -> Optional[str]:
-        """Retry the accelerator-matched install now the resident server has been stopped.
+        """Land the install this load deferred, now the managed tree is free.
 
-        A no-op unless the binary on disk was built for a different accelerator than this host now
-        asks for. Returns the upgraded path, or the one passed in when nothing changed or the
-        install could not deliver -- never None while a usable binary exists, so a failed upgrade
-        keeps the load running on the build it already had."""
-        if server_binary is None or not _install_allowed():
+        Called under both locks with the old server stopped and the previous generation finished,
+        which is the only moment nothing is executing out of the tree. ``server_binary`` is None on
+        a serverless install (one-shot sd-cli only): the install still has to run, since the same
+        archive carries the sd-cli this load is about to generate with -- skipping it there is what
+        left a CUDA request committing the old CPU CLI. Returns the upgraded path, the one passed
+        in when nothing changed or the install could not deliver, or None when there was no server
+        and the archive has none: never worse than what the load already had."""
+        if not _install_allowed():
             return server_binary
         try:
-            from core.inference.diffusion_engine_router import _install_accelerator_for
-
-            accelerator = _install_accelerator_for(
-                getattr(resolve_diffusion_device_target(), "backend", "cpu")
-            )
-            if not _accelerator_changed(server_binary, accelerator):
+            accelerator = self._resolved_accelerator()
+            # Judge the tree by whatever binary it holds: on a serverless install that is the
+            # sd-cli, and without this the retry would reinstall on every deferred load, matching
+            # accelerator or not.
+            probe = server_binary or find_sd_cpp_binary()
+            if probe is None or not _accelerator_changed(probe, accelerator):
                 return server_binary
             logger.info(
-                "sd-server was built for a different accelerator; installing the %s build now the "
-                "resident server is stopped",
-                accelerator,
+                "installing the %s sd.cpp build now the managed tree is free", accelerator
             )
             return (
                 ensure_sd_server_binary(allow_install = True, accelerator = accelerator)
                 or server_binary
             )
         except Exception as exc:  # noqa: BLE001 -- an upgrade may never fail the load
-            logger.warning("sd-server accelerator upgrade failed: %s", exc)
+            logger.warning("sd.cpp accelerator upgrade failed: %s", exc)
             return server_binary
 
     # ── Background load + progress ─────────────────────────────────────────
@@ -733,11 +771,16 @@ class SdCppDiffusionBackend:
                     self._state = None  # the old model is being torn down
                 if old_state is not None and old_state.server is not None:
                     old_state.server.stop()
-                # The tree is free now, so an accelerator upgrade deferred in _resolve_backend can
-                # land: this runs under both locks, the old server is stopped, the previous
-                # generation has finished and no new one can start.
-                if mode == "server" and self._deferred_accelerator_install:
-                    server_binary = self._upgrade_server_after_teardown(server_binary)
+                # The tree is free now, so an install deferred in _resolve_backend can land: this
+                # runs under both locks, the old server is stopped, the previous generation has
+                # finished and no new one can start. Not gated on the resolved mode: a serverless
+                # install resolves to one-shot precisely BECAUSE the deferral suppressed the
+                # install, and its sd-cli comes out of the same archive.
+                if self._deferred_accelerator_install:
+                    self._deferred_accelerator_install = False
+                    upgraded = self._upgrade_server_after_teardown(server_binary)
+                    if mode == "server":
+                        server_binary = upgraded
                 # A new checkpoint earns a fresh attempt on the GPU backend: the previous abort says nothing about this graph.
                 self._cpu_backend_forced = False
                 server: Optional[SdCppServer] = None
