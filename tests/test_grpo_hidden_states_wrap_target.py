@@ -3,24 +3,11 @@
 
 """The GRPO hidden-states fallback must wrap the module that owns the head.
 
-`_install_grpo_hidden_states_forward_wrapper` is the safety net for a model
-whose forward does not honour UNSLOTH_RETURN_HIDDEN_STATES. TRL builds GRPO's
-`ref_model` with a plain `architecture.from_pretrained(model_id)`, so on every
-non-PEFT (full finetuning) GRPO run the net has to catch a bare
-`*ForCausalLM`.
-
-`_grpo_hidden_states_wrap_target` walked `("base_model", "model")` to find the
-adapter's wrapped model. A bare `*ForCausalLM` also has `.model` -- its decoder
-body -- so the wrapper landed on the decoder. The decoder returns no `.logits`
-at all, the head above it then ran untouched, and the caller got
-[B, T, vocab] where it expects [B, T, hidden]. No warning was emitted, because
-from the wrapper's point of view nothing had failed.
-
-Downstream that is the lm_head matmul in
-`chunked_hidden_states_selective_log_softmax`:
-
-    a and b must have same reduction dim, but got
-    [((s47*s87 + 255)//256), s33] X [1536, 151936]
+TRL builds GRPO's `ref_model` as a bare `*ForCausalLM`, and that also has a
+`.model`, so walking `("base_model", "model")` landed the wrapper on the decoder
+body. Nothing raised: the head above ran untouched and the caller silently got
+[B, T, vocab] where it expects [B, T, hidden], which blows up later as a reduction
+dim mismatch in `chunked_hidden_states_selective_log_softmax`.
 """
 
 import contextlib
@@ -61,8 +48,7 @@ def _tiny_causal_lm():
 
 @contextlib.contextmanager
 def _return_hidden_states(value):
-    """Pin the switch for the block, then restore the caller's environment
-    exactly -- including having had it unset."""
+    """Pin the switch, then restore the caller's environment exactly, unset included."""
     previous = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
     os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = value
     try:
@@ -115,8 +101,8 @@ def test_plain_causal_lm_returns_hidden_states_after_the_wrapper():
         config.hidden_size,
     ), f"expected hidden states of width {config.hidden_size}, got {tuple(wrapped.shape)}"
 
-    # The hidden states must be the ones the head consumes, or every logprob
-    # computed from them is wrong rather than merely differently shaped.
+    # Must be the hidden states the head consumes, or the logprobs are wrong rather
+    # than merely mis-shaped.
     with _return_hidden_states("0"), torch.no_grad():
         reference = model(input_ids = input_ids).logits
     lm_head = model.get_output_embeddings().weight
@@ -136,11 +122,9 @@ def test_the_switch_is_still_honoured():
 
 
 def test_survives_the_accelerate_forward_rebind():
-    """accelerate's `extract_model_from_parallel(keep_fp32_wrapper = False)`
-    rebinds an instance-level forward as `MethodType(forward, model)`, and the
-    GRPO loop unwraps that way on every step. The wrapper then arrives with the
-    module as its leading positional argument, which the head owner forwards on
-    as `input_ids`."""
+    """accelerate's `extract_model_from_parallel(keep_fp32_wrapper = False)`, which the
+    GRPO loop calls every step, rebinds an instance forward as `MethodType(forward,
+    model)`, so the module arrives as a leading positional argument."""
     model, config = _tiny_causal_lm()
     assert _install_grpo_hidden_states_forward_wrapper(model) is True
     model.forward = MethodType(model.forward, model)

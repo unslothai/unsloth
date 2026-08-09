@@ -1469,10 +1469,9 @@ _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_
 
 
 def _module_returns_logits(module):
-    # A module whose forward produces `.logits`, i.e. one that owns an output
-    # head. PreTrainedModel.get_output_embeddings returns None for the decoder
-    # bodies (Qwen2Model, LlamaModel, ...) and the head module for the
-    # *ForCausalLM wrappers, so it separates the two without a name list.
+    # get_output_embeddings() is None on the decoder bodies (Qwen2Model, ...) and the
+    # head module on the *ForCausalLM wrappers, so it finds the head owner by behaviour
+    # rather than by a model-name list.
     if module is None:
         return False
     get_output_embeddings = getattr(module, "get_output_embeddings", None)
@@ -1496,13 +1495,10 @@ def _grpo_hidden_states_wrap_target(model):
         child = getattr(model, attr, None)
         if child is None or child is model or not hasattr(child, "forward"):
             continue
-        # Only descend into an adapter/wrapper that still owns the output head.
-        # A bare *ForCausalLM also has a `.model`, but that is its decoder body:
-        # it returns hidden states and no `.logits` at all, so wrapping it lets
-        # the head above run untouched and the fallback becomes a silent no-op.
-        # TRL builds GRPO's `ref_model` with a plain
-        # `architecture.from_pretrained(...)`, which is exactly that shape, and
-        # the caller then receives [B, T, vocab] where it expects [B, T, hidden].
+        # Descend only into an adapter that still owns the head. A bare *ForCausalLM
+        # (what TRL builds GRPO's ref_model as) also has a `.model`, but that is its
+        # decoder body, and wrapping it leaves the head above running untouched: the
+        # fallback becomes a silent no-op returning [B, T, vocab], not [B, T, hidden].
         if not _module_returns_logits(child):
             continue
         return child
@@ -1612,10 +1608,10 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     model_name = type(target_model).__name__
 
     def wrapped_forward(*args, **kwargs):
-        # accelerate's extract_model_from_parallel(keep_fp32_wrapper = False) rebinds an
-        # instance-level forward as MethodType(forward, model), so this plain function is
-        # re-entered with the module as its leading positional argument. TRL's GRPO loop
-        # unwraps exactly that way on every step, and `original_forward` is already bound.
+        # accelerate's extract_model_from_parallel(keep_fp32_wrapper = False), which the
+        # GRPO loop calls every step, rebinds an instance-level forward as
+        # MethodType(forward, model), so the module arrives as a leading positional
+        # argument. `original_forward` is already bound, so drop it.
         while len(args) != 0 and args[0] is target_model:
             args = args[1:]
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
