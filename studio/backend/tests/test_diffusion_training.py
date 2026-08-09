@@ -1540,6 +1540,22 @@ def test_route_start_still_runs_when_the_install_does_have_the_pipeline(
     assert client._fake.started_with["base_model"] == "krea/Krea-2-Raw"
 
 
+def _pretend_this_host_has_an_accelerator(monkeypatch) -> None:
+    """Let a DiT start reach the pipeline-import guard on a machine with no GPU.
+
+    ``training_precision_preflight_error`` runs first and refuses every DiT family outright
+    when the host has no CUDA / XPU / MPS, because nf4 is not a CPU fallback. That refusal is
+    correct and has its own test (test_route_start_refuses_a_dit_family_without_a_gpu_before_
+    freeing), but on a GPU-less runner it fires before the import guard and swallows the
+    assertion the tests below are about. MPS rather than CUDA: ``bf16_unsupported_reason``
+    only consults compute capability when CUDA reports available, and a spoofed CUDA on a
+    CPU-only wheel has no capability to report, so it would trade one masking refusal for
+    another."""
+    import torch
+
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+
+
 def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(client, monkeypatch):
     # diffusers' top level is lazy, so the guard's attribute probe is what actually imports the
     # pipeline's submodule, and a partially usable install raises RuntimeError("Failed to import
@@ -1559,6 +1575,7 @@ def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(clie
             raise RuntimeError(f"Failed to import diffusers.pipelines.{name.lower()}")
 
     freed = []
+    _pretend_this_host_has_an_accelerator(monkeypatch)
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
 
@@ -1589,6 +1606,7 @@ def test_route_start_refuses_training_when_diffusers_is_absent(client, monkeypat
         return real_import(name, *args, **kwargs)
 
     freed = []
+    _pretend_this_host_has_an_accelerator(monkeypatch)
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
     monkeypatch.setattr(builtins, "__import__", _no_diffusers)
