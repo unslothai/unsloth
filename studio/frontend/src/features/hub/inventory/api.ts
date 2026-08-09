@@ -280,6 +280,59 @@ export async function deleteCachedDataset(
   bumpInventoryVersion();
 }
 
+export interface CompanionAssetInfo {
+  repo_id: string;
+  size_bytes: number;
+  needed_by: string[];
+}
+
+export interface DeleteImpact {
+  repo_id: string;
+  variant?: string | null;
+  reclaimed_bytes: number;
+  retained_companions: CompanionAssetInfo[];
+  freeable_companions: CompanionAssetInfo[];
+  blocked_by: string[];
+}
+
+/** What a delete would actually reclaim and leave behind. Never throws: the confirm dialog
+ * still has to open if this preview is unavailable, it just falls back to the plain wording. */
+export async function fetchDeleteImpact(
+  repoId: string,
+  variant?: string | null,
+): Promise<DeleteImpact | null> {
+  try {
+    const response = await authFetch("/api/hub/delete-impact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        variant ? { repo_id: repoId, variant } : { repo_id: repoId },
+      ),
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as DeleteImpact;
+  } catch {
+    return null;
+  }
+}
+
+export interface OrphanCompanion {
+  repo_id: string;
+  size_bytes: number;
+  cache_path?: string | null;
+}
+
+export async function fetchOrphanCompanions(): Promise<{
+  companions: OrphanCompanion[];
+  total_bytes: number;
+}> {
+  const response = await authFetch("/api/hub/orphan-companions");
+  return await parseJsonOrThrow<{
+    companions: OrphanCompanion[];
+    total_bytes: number;
+  }>(response);
+}
+
 export async function deleteCachedModel(
   repoId: string,
   variant?: string,

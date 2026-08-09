@@ -65,6 +65,7 @@ import {
 } from "./download-card";
 import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
 
@@ -263,6 +264,7 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
+  const deleteImpact = useDeleteImpact(deleteOpen && Boolean(repoId), repoId ?? "");
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
@@ -720,6 +722,7 @@ export function LocalOnDeviceCard({
             This will remove{" "}
             <span className="font-medium text-foreground">{repoId}</span> and
             its downloaded files from disk. You can re-download it later.
+            <DeleteImpactSummary impact={deleteImpact} />
           </>
         }
       />
