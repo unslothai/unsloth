@@ -2476,6 +2476,10 @@ def _allow_te_prequant(monkeypatch, *, injects = True):
     import core.inference.diffusion_precision as precision
     import core.inference.diffusion_te_prequant as tpq
 
+    # These tests are about the BUDGET the plan is built from, not about the cast. The CPU stub
+    # pipeline carries no encoder the quantiser can cast, and the strict default refuses an
+    # explicit precision it cannot honour, so keep the legacy silent fallback here.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
     injected = {"text_encoder": object()} if injects else {}
     monkeypatch.setattr(tpq, "te_prequant_pipe_kwargs", lambda *a, **k: dict(injected))
