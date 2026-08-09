@@ -42,8 +42,8 @@ peft>=0.18.0,!=0.11.0
 huggingface_hub>=1.23.0,<2.0; python_version >= "3.10"
 huggingface_hub==0.36.2; python_version < "3.10"
 hf_transfer
-diffusers @ https://github.com/huggingface/diffusers/archive/f53d552036a0d1bd5570782a39cd40cfabf112bc.zip; python_version >= "3.10"
-diffusers; python_version < "3.10"
+# diffusers: see diffusers-pin.txt, installed by its own step (this file is
+# installed --no-deps, and the pin has to apply on the torch path too).
 
 # Transitive deps required because this file is installed with --no-deps.
 # Without these, `from transformers import AutoConfig` fails at import time.
