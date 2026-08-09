@@ -569,7 +569,7 @@ def _delete_project_with_rag_retirement(
     from core.rag import folder_sync, store as rag_store
 
     scope = rag_store.project_scope(project_id)
-    with folder_sync.scope_lock(scope):
+    with folder_sync.scope_retirement_lock(scope):
         folders = []
         retired = False
 

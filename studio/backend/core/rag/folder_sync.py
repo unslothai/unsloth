@@ -13,7 +13,8 @@ import threading
 import time
 import uuid
 import weakref
-from contextlib import ExitStack
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -465,8 +466,9 @@ def _retire_scope_rows(conn, scope: str, folders: list[dict]) -> None:
         )
 
 
-def retire_scope(scope: str) -> list[dict]:
-    """Stop all future work, even when the vector extension cannot load."""
+@contextmanager
+def scope_retirement_lock(scope: str) -> Iterator[list[dict]]:
+    """Freeze a scope's folder set and wait for active reconciliation to finish."""
     with _scope_lock(scope), ExitStack() as locks:
         conn = _retirement_connection()
         try:
@@ -482,6 +484,12 @@ def retire_scope(scope: str) -> list[dict]:
             conn.close()
         for folder in sorted(folders, key = lambda row: row["id"]):
             locks.enter_context(_folder_lock(folder["id"]))
+        yield folders
+
+
+def retire_scope(scope: str) -> list[dict]:
+    """Stop all future work, even when the vector extension cannot load."""
+    with scope_retirement_lock(scope) as folders:
         conn = _retirement_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")

@@ -1391,6 +1391,86 @@ def test_project_writer_contention_fails_before_rag_retirement(rag_home, monkeyp
         blocker.close()
 
 
+@requires_sqlite_vec
+def test_project_deletion_waits_for_folder_sync_before_studio_transaction(rag_home, monkeypatch):
+    from routes import chat_history
+    from storage import studio_db
+
+    project = studio_db.upsert_chat_project(
+        {
+            "id": "p1",
+            "name": "Project",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    source = rag_home / "syncing-project-delete"
+    source.mkdir()
+    folder = folder_sync.create_folder(
+        scope_type = "project", scope_id = project["id"], path = str(source)
+    )
+    original_folder_lock = folder_sync._folder_lock
+    original_get_connection = studio_db.get_connection
+    sync_started = threading.Event()
+    release_sync = threading.Event()
+    folder_lock_attempted = threading.Event()
+    outcome = {}
+
+    def observed_folder_lock(folder_id):
+        folder_lock_attempted.set()
+        return original_folder_lock(folder_id)
+
+    def short_timeout_connection():
+        conn = original_get_connection()
+        conn.execute("PRAGMA busy_timeout = 10")
+        return conn
+
+    def active_sync():
+        with original_folder_lock(folder["id"]):
+            sync_started.set()
+            release_sync.wait(5)
+
+    def delete_project():
+        try:
+            outcome["result"] = chat_history._delete_project_with_rag_retirement(
+                project["id"], delete_files = False
+            )
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    sync = threading.Thread(target = active_sync)
+    sync.start()
+    assert sync_started.wait(2)
+    monkeypatch.setattr(folder_sync, "_folder_lock", observed_folder_lock)
+    monkeypatch.setattr(studio_db, "get_connection", short_timeout_connection)
+    deletion = threading.Thread(target = delete_project)
+    deletion.start()
+    try:
+        assert folder_lock_attempted.wait(2)
+        unrelated = studio_db.upsert_chat_project(
+            {
+                "id": "p2",
+                "name": "Unrelated",
+                "createdAt": 2,
+                "updatedAt": 2,
+            }
+        )
+        assert unrelated["id"] == "p2"
+    finally:
+        release_sync.set()
+        sync.join(5)
+        deletion.join(5)
+
+    assert not sync.is_alive()
+    assert not deletion.is_alive()
+    assert "error" not in outcome
+    deleted, folders = outcome["result"]
+    assert deleted["id"] == project["id"]
+    assert [row["id"] for row in folders] == [folder["id"]]
+    assert studio_db.get_chat_project(project["id"]) is None
+    assert folder_sync.scope_retired(store.project_scope(project["id"])) is True
+
+
 def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home, monkeypatch):
     from routes import rag as rag_routes
     from storage import studio_db
