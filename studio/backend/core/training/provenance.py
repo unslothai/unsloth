@@ -840,9 +840,7 @@ def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, str]:
     return model_snapshot, dataset_snapshot
 
 
-def _provenance_awaiting_attestation(
-    marker: dict[str, Any], config: dict[str, Any]
-) -> bool:
+def _provenance_awaiting_attestation(marker: dict[str, Any], config: dict[str, Any]) -> bool:
     """Training stopped before the worker attested loaded hub resources.
 
     Stop-and-save can finish while provenance is still the initial ``pending`` marker
