@@ -85,7 +85,7 @@ import {
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
 import {
-  awaitStoredChatThreadRecordBounded,
+  awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatMessage,
@@ -1394,7 +1394,7 @@ function useStudioRuntimeAdapters(
           const { remoteId } = await initializeThread;
           // Bounded: this promise is tracked by chatHistoryClearBoundary, whose waitForPending is
           // unbounded, so a wedged row write here would hang "clear all chats" outright.
-          await awaitStoredChatThreadRecordBounded(remoteId);
+          await awaitStoredChatThreadWrites(remoteId);
           if (isChatThreadDeleted(remoteId)) {
             await deleteStoredChatThreads([remoteId]);
             return;

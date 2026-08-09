@@ -74,82 +74,76 @@ let legacyChatImportPromise: Promise<void> | null = null;
 // Bumped whenever a backend thread row is created or backfilled, so a listing can tell whether its read raced one.
 let legacyChatImportGeneration = 0;
 
-// Thread rows whose write is still in flight, keyed by thread id. The runtime starts one without
-// waiting so a new chat's first message can render, so every read-modify-write below has to.
-const pendingThreadRecordByThreadId = new Map<string, Promise<void>>();
+// Every row write and delete for a thread runs on that thread's queue. Ordering is then a property
+// of the queue rather than of whether a caller remembered to wait: a delete enqueued after a
+// create cannot overtake it, and a create enqueued later cannot slip past a delete.
+const threadWriteQueues = new Map<string, Promise<unknown>>();
 
 // Creators whose last write failed. assistant-ui caches a resolved initialize(), so it never asks
 // for the row again, and without this every later write to that thread would keep 404ing.
 const failedThreadRecordByThreadId = new Map<string, () => Promise<void>>();
 
-// Bumped by a history clear. A write in flight across one must not record its creator when it
-// later rejects, or a retry would recreate a thread the user just removed.
+// Bumped by a history clear, retiring creators captured before it so a retry cannot resurrect a
+// thread the user removed.
 let threadRecordClearEpoch = 0;
 
-/** Register an in-flight thread row write so later writes to that thread wait for it. */
+// authFetch sets no request timeout, so every wait on a queue is bounded. Work already queued
+// still runs; only the waiting stops, which keeps one wedged request from hanging a delete, a
+// clear, or the send that the clear boundary tracks.
+const THREAD_WRITE_WAIT_MS = 5000;
+
+/** Resolve when `work` settles, or after `ms`, whichever comes first. */
+function settleWithin(work: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, Math.max(ms, 0));
+    const finish = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    work.then(finish, finish);
+  });
+}
+
+/** Run `write` after everything already queued for this thread, and hand back its outcome. */
+export function enqueueStoredChatThreadWrite<T>(
+  threadId: string,
+  write: () => Promise<T>,
+): Promise<T> {
+  const tail = threadWriteQueues.get(threadId) ?? Promise.resolve();
+  const result = tail.then(write, write);
+  const queued = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  threadWriteQueues.set(threadId, queued);
+  queued.then(() => {
+    if (threadWriteQueues.get(threadId) === queued) {
+      threadWriteQueues.delete(threadId);
+    }
+  });
+  return result;
+}
+
+/** Wait, bounded, for the writes queued for this thread so far. Their outcome is the caller's. */
+export function awaitStoredChatThreadWrites(threadId: string): Promise<void> {
+  const tail = threadWriteQueues.get(threadId);
+  return tail ? settleWithin(tail, THREAD_WRITE_WAIT_MS) : Promise.resolve();
+}
+
+/** Queue a thread's row write. Nothing awaits it here, so the first message can render at once. */
 export function trackStoredChatThreadRecord(
   threadId: string,
   createRecord: () => Promise<void>,
 ): void {
   const epoch = threadRecordClearEpoch;
-  const create = createRecord();
-  create.catch(() => {
-    if (epoch === threadRecordClearEpoch) {
-      failedThreadRecordByThreadId.set(threadId, createRecord);
-    }
-  });
-  const inFlight = pendingThreadRecordByThreadId.get(threadId);
-  // Overlapping initializations chain rather than replace: waiting on only the newest upsert lets
-  // the slower one land afterwards and overwrite the row a caller has since corrected.
-  const tracked = inFlight
-    ? Promise.allSettled([inFlight, create]).then((results) => {
-        // Only a thread nobody managed to write is a failure worth propagating.
-        if (results.every((result) => result.status === "rejected")) {
-          throw (results[0] as PromiseRejectedResult).reason;
-        }
-      })
-    : create;
-  pendingThreadRecordByThreadId.set(threadId, tracked);
-  // One creator succeeding retires the others' retry callbacks: the row exists, so a later retry
-  // would recreate a thread that something else has since deleted.
-  tracked.then(
+  enqueueStoredChatThreadWrite(threadId, createRecord).then(
     () => failedThreadRecordByThreadId.delete(threadId),
-    () => undefined,
+    () => {
+      if (epoch === threadRecordClearEpoch) {
+        failedThreadRecordByThreadId.set(threadId, createRecord);
+      }
+    },
   );
-  const forget = () => {
-    if (pendingThreadRecordByThreadId.get(threadId) === tracked) {
-      pendingThreadRecordByThreadId.delete(threadId);
-    }
-  };
-  tracked.then(forget, forget);
-}
-
-/** Resolves once the thread's row is written, or immediately when nothing is in flight. */
-export async function awaitStoredChatThreadRecord(
-  threadId: string,
-): Promise<void> {
-  // A creator registered while this was waiting replaces the entry, so drain until it stops
-  // changing. Reporting only the last outcome keeps "nothing wrote the row" the failure case.
-  let tracked = pendingThreadRecordByThreadId.get(threadId);
-  let failure: unknown;
-  let failed = false;
-  while (tracked) {
-    try {
-      await tracked;
-      failed = false;
-    } catch (error) {
-      failure = error;
-      failed = true;
-    }
-    const next = pendingThreadRecordByThreadId.get(threadId);
-    if (next === undefined || next === tracked) {
-      break;
-    }
-    tracked = next;
-  }
-  if (failed) {
-    throw failure;
-  }
 }
 
 interface ExportedChat {
@@ -585,11 +579,9 @@ export async function ensureStoredChatThread(
   // on every autosave (runStart/runEnd) and message append.
   if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
-  // Wait for an in-flight write without adopting its failure: rethrowing here
-  // would skip the retryFailedThreadRecord branch below for exactly the callers
-  // already waiting when the write rejected. Bounded, because the history append reaches this
-  // through saveStoredChatMessage and the clear boundary waits on that append with no deadline.
-  await awaitStoredChatThreadRecordBounded(threadId);
+  // Outcome ignored on purpose: adopting the failure here would skip the retryFailedThreadRecord
+  // branch below for exactly the callers already waiting when the write rejected.
+  await awaitStoredChatThreadWrites(threadId);
   const legacyThread = fallback ?? (await db.threads.get(threadId));
   let backendThread: ThreadRecord | null;
   try {
@@ -609,104 +601,27 @@ export async function ensureStoredChatThread(
   return importLegacyThread(legacyThread).catch(() => legacyThread);
 }
 
-// authFetch sets no timeout, so a wedged request would block a delete or a clear
-// for as long as the browser takes to give up. Bounded instead, and whatever outran
-// the bound is deleted again once it settles by deleteLateThreadRecords.
-const THREAD_RECORD_DRAIN_TIMEOUT_MS = 5000;
-
-/** Resolve when `promise` settles, or after `ms`, whichever comes first. */
-function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, Math.max(ms, 0));
-    const finish = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    promise.then(finish, finish);
-  });
-}
-
-const THREAD_RECORD_TIMED_OUT = Symbol("thread record wait timed out");
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, Math.max(ms, 0)));
-}
-
-/** Bounded, but a stalled or failed write still throws: callers must not read it as success. */
-async function awaitStoredChatThreadRecordOrThrow(threadId: string): Promise<void> {
-  const wait = awaitStoredChatThreadRecord(threadId);
-  // Handled here so losing the race below cannot surface as an unhandled rejection.
-  wait.catch(() => undefined);
-  const outcome = await Promise.race([
-    wait.then(() => undefined),
-    delay(THREAD_RECORD_DRAIN_TIMEOUT_MS).then(() => THREAD_RECORD_TIMED_OUT),
-  ]);
-  if (outcome === THREAD_RECORD_TIMED_OUT) {
-    throw new Error(`Thread ${threadId} row write did not settle in time`);
-  }
-}
-
-/** Wait for a thread's row write, bounded, so a wedged request cannot stall a delete. */
-export function awaitStoredChatThreadRecordBounded(
-  threadId: string,
-): Promise<void> {
-  return settleWithin(
-    awaitStoredChatThreadRecord(threadId),
-    THREAD_RECORD_DRAIN_TIMEOUT_MS,
-  );
-}
-
-/** Ids whose row write is still unsettled, captured before a delete is issued. */
-function captureLateThreadRecords(ids: string[]): string[] {
-  return ids.filter((id) => pendingThreadRecordByThreadId.has(id));
-}
-
-/** Delete again once a write that outran the bounded wait commits, so the row cannot come back. */
-function deleteLateThreadRecords(ids: string[]): void {
-  for (const id of ids) {
-    // Drains until the tracked entry stops changing, so a creator chained on after this point is
-    // covered too. A local tombstone only hides the row here; the backend keeps serving it to
-    // every other client until this lands.
-    awaitStoredChatThreadRecord(id)
-      .catch(() => undefined)
-      .then(() => deleteChatThreads([id]).catch(() => undefined));
-  }
-}
-
-/** Wait for every tracked row write, so a clear cannot race one that is still in flight. */
-async function drainPendingStoredChatThreadRecords(): Promise<void> {
-  const deadline = Date.now() + THREAD_RECORD_DRAIN_TIMEOUT_MS;
-  // A write that never settles must not turn "clear all chats" into a hang.
-  while (pendingThreadRecordByThreadId.size > 0 && Date.now() < deadline) {
-    await settleWithin(
-      Promise.allSettled([...pendingThreadRecordByThreadId.values()]),
-      deadline - Date.now(),
-    );
-  }
-  // Retrying one of these later would recreate a thread the clear just removed. The epoch also
-  // retires writes still in flight, whose rejection would otherwise record a creator after this.
-  threadRecordClearEpoch += 1;
-  failedThreadRecordByThreadId.clear();
-}
-
 /** Re-run a row write that failed, for a thread the reads above could not find. */
 async function retryFailedThreadRecord(
   threadId: string,
 ): Promise<ThreadRecord | undefined> {
   const createRecord = failedThreadRecordByThreadId.get(threadId);
+  const queued = threadWriteQueues.has(threadId);
   if (createRecord) {
     failedThreadRecordByThreadId.delete(threadId);
-    trackStoredChatThreadRecord(threadId, createRecord);
-  } else if (!pendingThreadRecordByThreadId.has(threadId)) {
-    // The write can commit between the caller's read and this check, which clears the tracker.
-    // Re-read rather than reporting a row that now exists as missing.
-    return (await getChatThread(threadId)) ?? undefined;
+    enqueueStoredChatThreadWrite(threadId, createRecord).catch(() => undefined);
+  } else if (!queued) {
+    return undefined;
   }
-  // Rethrows on purpose. A caller handed undefined reads it as "no row to update" and drops its
-  // patch silently, which is how the prompt queue loses its model correction. Bounded too, since
-  // the clear boundary blocks on the append that reaches here.
-  await awaitStoredChatThreadRecordOrThrow(threadId);
-  return (await getChatThread(threadId)) ?? undefined;
+  await awaitStoredChatThreadWrites(threadId);
+  const thread = await getChatThread(threadId);
+  if (thread) {
+    return thread;
+  }
+  // Only reachable once a write for this thread has failed or outrun the wait. Throwing keeps a
+  // caller from reading the missing row as nothing to do and dropping its update, which is how
+  // the prompt queue used to lose its model correction.
+  throw new Error(`Thread ${threadId} could not be persisted`);
 }
 
 export async function listStoredChatMessages(
@@ -798,7 +713,7 @@ export async function listStoredChatThreads(
     // A point import can have committed its row while its bump is still pending, and another can
     // start while this waits, so drain until none remain. Bounded: authFetch sets no request
     // timeout, and one wedged import must not hang every sidebar, count and search listing.
-    const importDeadline = Date.now() + THREAD_RECORD_DRAIN_TIMEOUT_MS;
+    const importDeadline = Date.now() + THREAD_WRITE_WAIT_MS;
     while (pendingLegacyThreadImports.size > 0 && Date.now() < importDeadline) {
       await settleWithin(
         Promise.allSettled([...pendingLegacyThreadImports]),
@@ -972,14 +887,17 @@ export async function deleteStoredChatThreads(
   // event it would fire) when the active temporary chat is closed.
   const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
   if (ids.length === 0) return;
-  // A row write already in flight would land after the delete and resurrect the
-  // thread. Bounded: a wedged request must not leave the user unable to delete.
-  await Promise.all(ids.map((id) => awaitStoredChatThreadRecordBounded(id)));
-  // Captured before the delete: the tracker drops a write that settles while the DELETE is in
-  // flight, and a check afterwards would find nothing left to follow up on.
-  const lateIds = captureLateThreadRecords(ids);
-  await deleteChatThreads(ids);
-  deleteLateThreadRecords(lateIds);
+  // Queued per thread rather than raced against the writes: FIFO puts each delete after any row
+  // write already in flight, so one landing late cannot resurrect the thread. The wait is bounded
+  // and the delete stays queued regardless, so a wedged write only delays it.
+  await settleWithin(
+    Promise.all(
+      ids.map((id) =>
+        enqueueStoredChatThreadWrite(id, () => deleteChatThreads([id])),
+      ),
+    ),
+    THREAD_WRITE_WAIT_MS,
+  );
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();
@@ -1001,15 +919,16 @@ export interface ClearStoredChatsResult {
 }
 
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
-  // Drain first: a row write still in flight would land after the clear, and the inventory below
-  // would never have seen it to tombstone it.
-  const drainingThreadIds = [...pendingThreadRecordByThreadId.keys()];
-  await drainPendingStoredChatThreadRecords();
-  // Union, not the pre-drain snapshot: a chat initialized during the drain whose write also
-  // outlives the deadline reaches neither list on its own.
-  const lateThreadIds = [
-    ...new Set([...drainingThreadIds, ...pendingThreadRecordByThreadId.keys()]),
-  ];
+  // Retire creators captured before this clear, then queue a delete behind every write still in
+  // flight. Nothing is awaited: FIFO already guarantees each delete runs after the write it sits
+  // behind, so a row landing late cannot outlive the clear without stalling it either.
+  threadRecordClearEpoch += 1;
+  failedThreadRecordByThreadId.clear();
+  for (const threadId of [...threadWriteQueues.keys()]) {
+    enqueueStoredChatThreadWrite(threadId, () =>
+      deleteChatThreads([threadId]),
+    ).catch(() => undefined);
+  }
   // Clear both sides independently and report each outcome so the toast
   // can distinguish full vs partial success.
   const [backendThreadsResult, legacyThreads] = await Promise.all([
@@ -1033,14 +952,10 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     deletedThreadIds: [],
     failedThreadIds: [],
   };
-  // Captured before the clear: a write that settles while the request is in flight is dropped
-  // from the tracker, and checking afterwards would find nothing to follow up on.
-  const lateIds = captureLateThreadRecords(lateThreadIds);
   try {
     // Defer the history refresh until Dexie clear and tombstones finalize,
     // so listeners never observe the composite clear mid-flight.
     await clearBackendChats({ notify: false });
-    deleteLateThreadRecords(lateIds);
     result.backend = "cleared";
   } catch (error) {
     result.backend = "failed";
