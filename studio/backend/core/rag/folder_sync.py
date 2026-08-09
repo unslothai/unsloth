@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import sqlite3
 import stat
 import threading
 import time
@@ -706,6 +707,7 @@ def _scan(
         raise RuntimeError("Linked folder root identity changed")
 
     found: dict[str, dict] = {}
+    visited_directories = {identity}
     pending = [root]
     while pending:
         directory = pending.pop()
@@ -722,6 +724,11 @@ def _scan(
                         or is_denied_system_path(resolved)
                     ):
                         continue
+                    directory_stat = entry.stat(follow_symlinks = False)
+                    directory_identity = (directory_stat.st_dev, directory_stat.st_ino)
+                    if directory_identity in visited_directories:
+                        continue
+                    visited_directories.add(directory_identity)
                     pending.append(full)
                     continue
                 if not entry.is_file(follow_symlinks = False):
@@ -1527,8 +1534,13 @@ def _recover_startup_state() -> None:
 
 def start_auto_sync(*, admission_lock = None, admit = None) -> bool:
     global _thread, _thread_stop
-    if not rag_db.rag_available():
-        return False
+    try:
+        if not rag_db.rag_available():
+            return False
+    except sqlite3.OperationalError:
+        # The worker retries initialization, so transient database contention must
+        # not turn a one-shot startup preflight into a process-lifetime outage.
+        pass
     with _thread_lock:
         retired = _thread if _thread is not None and _thread.is_alive() else None
         if retired is not None and not _stop.is_set():

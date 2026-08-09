@@ -191,6 +191,31 @@ def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(rag_home,
         conn.close()
 
 
+def test_scan_skips_revisited_directory_identity(rag_home, monkeypatch):
+    source = rag_home / "cycle"
+    loop = source / "loop"
+    loop.mkdir(parents = True)
+    (source / "notes.txt").write_text("alpha", encoding = "utf-8")
+    original_scandir = os.scandir
+    scanned = []
+
+    def cycle_scandir(path):
+        path = os.fspath(path)
+        scanned.append(path)
+        if path == str(loop):
+            if scanned.count(path) > 1:
+                raise AssertionError("revisited directory identity")
+            return original_scandir(source)
+        return original_scandir(path)
+
+    monkeypatch.setattr(folder_sync.os, "scandir", cycle_scandir)
+
+    found, _ = folder_sync._scan(str(source))
+
+    assert set(found) == {"notes.txt"}
+    assert scanned.count(str(loop)) == 1
+
+
 @requires_sqlite_vec
 def test_reconcile_pins_one_embedding_model_for_every_file(rag_home, stub_embeddings, monkeypatch):
     source, folder = _folder(rag_home)
@@ -1110,6 +1135,44 @@ def test_start_auto_sync_skips_runtime_unavailable_rag(monkeypatch):
     )
 
     assert folder_sync.start_auto_sync() is False
+
+
+def test_start_auto_sync_launches_worker_after_transient_database_error(monkeypatch):
+    created = []
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            self.started = False
+            created.append(self)
+
+        def start(self):
+            self.started = True
+
+        def is_alive(self):
+            return self.started
+
+    def unavailable_while_locked():
+        raise sqlite3.OperationalError("database is locked")
+
+    original_thread = folder_sync._thread
+    original_thread_stop = folder_sync._thread_stop
+    original_stop = folder_sync._stop.is_set()
+    monkeypatch.setattr(folder_sync.rag_db, "rag_available", unavailable_while_locked)
+    monkeypatch.setattr(folder_sync.threading, "Thread", FakeThread)
+    folder_sync._thread = None
+    folder_sync._thread_stop = None
+    folder_sync._stop.clear()
+    try:
+        assert folder_sync.start_auto_sync() is True
+        assert len(created) == 1
+        assert created[0].started is True
+    finally:
+        if original_stop:
+            folder_sync._stop.set()
+        else:
+            folder_sync._stop.clear()
+        folder_sync._thread = original_thread
+        folder_sync._thread_stop = original_thread_stop
 
 
 @requires_sqlite_vec
