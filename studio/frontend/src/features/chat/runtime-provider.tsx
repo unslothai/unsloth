@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   AssistantRuntimeProvider,
   type Attachment,
@@ -176,7 +177,12 @@ class VisionImageAdapter implements AttachmentAdapter {
     const activeModel = state.models.find((m) => m.id === checkpoint);
     const externalSelection = parseExternalModelId(checkpoint);
     const isExternalModel = externalSelection !== null;
-    const modelLoaded = !!checkpoint && !state.modelLoading;
+    const modelLoaded = chatModelLoaded({
+      checkpoint,
+      modelLoading: state.modelLoading,
+      isExternalModel,
+      residentCheckpoint: state.residentCheckpoint,
+    });
     let externalSupportsVision: boolean | null = null;
     let externalModelLabel: string | null = null;
     if (externalSelection !== null) {

@@ -3982,6 +3982,32 @@ def test_partial_gguf_reconstruction_dedupes_variant_casing(monkeypatch):
     assert [variant.quant for variant in variants] == ["Q4_K_M"]
 
 
+def test_partial_gguf_reconstruction_drops_a_variant_read_off_the_filename(monkeypatch):
+    # An unreadable payload leaves the reader the filename, whose digest fragment
+    # names nothing and would re-key to a further hash on resume. A variant genuinely
+    # called sha256-<32 hex> reads the same but is stored under the hash of itself, so
+    # the file it came from tells them apart where the spelling cannot.
+    digest = "sha256-" + "0" * 32
+    entries = [
+        # variant, the file it was recovered from
+        (f"@{digest}", Path(f"repo--variant--@{digest}.json")),  # scope, payload lost
+        (digest, Path(f"repo--variant--{digest}.json")),  # ditto, older tag
+        (digest, Path("repo--variant--@sha256-" + "c" * 32 + ".json")),  # real, payload intact
+        ("Q4_K_M", Path("repo--variant--q4_k_m.json")),
+    ]
+    monkeypatch.setattr(
+        download_manifest, "iter_variant_manifests", lambda *_a, **_k: iter(entries)
+    )
+    monkeypatch.setattr(download_manifest, "iter_variant_markers", lambda *_a, **_k: iter(()))
+    monkeypatch.setattr(download_manifest, "read_manifest", lambda *_a, **_k: None)
+
+    result = gguf.list_partial_gguf_variants_from_state("Org/Repo")
+
+    assert result is not None
+    variants, _has_vision = result
+    assert sorted(variant.quant for variant in variants) == ["Q4_K_M", digest]
+
+
 def test_download_registry_serializes_cross_transport_variant_downloads():
     # An HTTP append-resume and an XET rewrite of the same shared blob would
     # corrupt each other, so different-transport variants are serialized.

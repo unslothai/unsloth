@@ -28,7 +28,18 @@
 #      environment (the test fixture installs a MetaPathFinder that
 #      blocks `import mlx.core` for "no-mlx" profiles, faithfully
 #      simulating a Mac without mlx even when mlx IS installed).
-#   4. End-to-end MLX training + inference smoke test:
+#   4. The Mac capability verdict /api/health publishes. Whether
+#      the sidebar's Train and Video rows are enabled, greyed out
+#      behind "Training needs MLX", or still spinning is decided by
+#      that one reply, and the decision reads a real `import
+#      mlx.core` and a real background reinstall. The unit tests
+#      drive it with a fake clock and a stand-in worker; only here
+#      is the host Apple Silicon and the MLX stack genuinely
+#      present or genuinely absent. mac_capability_verdict_smoke.py
+#      boots the server and judges every reply from the first one,
+#      because the reported bug was a verdict that was wrong for a
+#      while and right afterwards.
+#   5. End-to-end MLX training + inference smoke test:
 #      run_real_mlx_smoke.py trains unsloth/gemma-3-270m-it for 7
 #      deterministic LoRA steps on a single repeated text row, then
 #      verifies the trained model can complete the prompt and that
@@ -68,6 +79,13 @@ on:
       - 'studio/backend/utils/hardware/**'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
+      # The capability verdict is decided across these three: hardware/** measures it,
+      # mlx_repair.py says whether a self-heal can still overturn it, and main.py holds
+      # it back while one can. main.py is the studio's front door and is edited often,
+      # so listing it does cost macOS slots on PRs that never touch the verdict -- but a
+      # gate that cannot be triggered by the file the logic lives in is not a gate.
+      - 'studio/backend/main.py'
+      - 'studio/backend/utils/mlx_repair.py'
       # test_hardware_dispatch_matrix.py and test_is_mlx_dispatch_gate.py are
       # deliberately absent: this workflow no longer runs them (see the AST
       # contract step below), so booting a macOS runner when only those files
@@ -76,7 +94,12 @@ on:
       # already triggers on them.
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
+      - 'tests/studio/mac_capability_verdict_smoke.py'
       - 'tests/conftest.py'
+      # Every capability-verdict boot below shells out to these two, so an edit to
+      # either changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
       - '.github/workflows/mlx-ci.yml'
   push:
     branches: [main]
@@ -86,9 +109,14 @@ on:
       - 'studio/backend/utils/hardware/**'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
+      - 'studio/backend/main.py'
+      - 'studio/backend/utils/mlx_repair.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
+      - 'tests/studio/mac_capability_verdict_smoke.py'
       - 'tests/conftest.py'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
       - '.github/workflows/mlx-ci.yml'
 
 concurrency:
@@ -106,10 +134,14 @@ jobs:
   dispatch:
     name: dispatch
     runs-on: macos-15
-    # 25 min: dispatch + spoofed matrix + 7-step real LoRA training is
+    # 40 min: dispatch + spoofed matrix + 7-step real LoRA training is
     # under 2 min; GGUF export builds llama.cpp via cmake on Apple
-    # Silicon (~5-7 min), so we budget headroom.
-    timeout-minutes: 25
+    # Silicon (~5-7 min), so we budget headroom. The capability-verdict
+    # boots add roughly ten more: two settle in seconds, but the in-flight
+    # one has to wait out the whole torch warm before the self-heal is even
+    # scheduled, and then the length of the install it is holding a verdict
+    # against.
+    timeout-minutes: 40
     steps:
       # harden-runner v2.20.0 supports blocking mode on GitHub-hosted macOS
       # runners. Keep this job in audit while its egress destinations are
@@ -339,6 +371,82 @@ jobs:
                    mlx_workdir/gguf_reload_metrics.json; do
             echo "=== $f ==="
             cat "$f" 2>/dev/null || echo "(missing)"
+            echo
+          done
+
+      # ---------------------------------------------------------------
+      # The Mac capability verdict, on a real Apple Silicon host.
+      #
+      # /api/health is what decides whether the sidebar's Train and Video rows
+      # are enabled, greyed out behind "Training needs MLX. Run `unsloth studio
+      # update`", or still spinning. That decision reads a real `import
+      # mlx.core` and waits on a real background reinstall, and the unit tests
+      # for it necessarily fake both. Here the host is Apple Silicon and the
+      # MLX stack is genuinely present (first step) or genuinely unimportable
+      # (last two), so this is the only place the verdict is judged against the
+      # thing it is a verdict about.
+      #
+      # Three boots, one per step: the self-heal is once per process, so the
+      # opted-out and the in-flight cases cannot share a server.
+      # ---------------------------------------------------------------
+      - name: Provision a Studio venv for the capability-verdict boots
+        run: |
+          set -euo pipefail
+          # `unsloth studio` re-execs into $STUDIO_HOME/unsloth_studio and refuses to
+          # start without it ("Unsloth Studio not set up. Run install.sh first."), so a
+          # bare `pip install -e .` cannot boot a server. install.sh --local builds that
+          # venv, but it also reinstalls the whole stack for ten minutes, and
+          # studio-mac-ui-smoke.yml already pays that on every studio/** PR. Building the
+          # venv over this job's site-packages gets the same launch path -- no re-exec,
+          # the real run.py, the real uvicorn -- for the cost of a virtualenv.
+          STUDIO_VENV="$HOME/.unsloth/studio/unsloth_studio"
+          rm -rf "$STUDIO_VENV"
+          python -m venv --system-site-packages "$STUDIO_VENV"
+          "$STUDIO_VENV/bin/pip" install --no-deps -e .
+          "$STUDIO_VENV/bin/unsloth" --help > /dev/null
+          echo "studio venv ready at $STUDIO_VENV"
+
+      # PATH is set per step rather than through $GITHUB_PATH: the llama.cpp steps
+      # below deliberately run under the job's own interpreter, and a venv exported
+      # for the rest of the job would quietly move them.
+      - name: "Mac capability verdict: real MLX must never look chat-only"
+        env:
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          export PATH="$HOME/.unsloth/studio/unsloth_studio/bin:$PATH"
+          python tests/studio/mac_capability_verdict_smoke.py real-mlx \
+            --port 18901 \
+            --log logs/studio_verdict_real_mlx.log \
+            --workdir logs/verdict_real_mlx
+
+      - name: "Mac capability verdict: no MLX, self-heal opted out, must still settle"
+        env:
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          export PATH="$HOME/.unsloth/studio/unsloth_studio/bin:$PATH"
+          python tests/studio/mac_capability_verdict_smoke.py no-mlx-settles \
+            --port 18902 \
+            --log logs/studio_verdict_no_mlx.log \
+            --workdir logs/verdict_no_mlx
+
+      - name: "Mac capability verdict: no MLX, self-heal in flight, must not publish"
+        env:
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          export PATH="$HOME/.unsloth/studio/unsloth_studio/bin:$PATH"
+          python tests/studio/mac_capability_verdict_smoke.py no-mlx-repair \
+            --port 18903 \
+            --log logs/studio_verdict_repairing.log \
+            --workdir logs/verdict_repairing
+
+      - name: "Mac capability verdict: server logs"
+        if: always()
+        run: |
+          for f in logs/studio_verdict_real_mlx.log \
+                   logs/studio_verdict_no_mlx.log \
+                   logs/studio_verdict_repairing.log; do
+            echo "=== $f ==="
+            tail -60 "$f" 2>/dev/null || echo "(missing)"
             echo
           done
 

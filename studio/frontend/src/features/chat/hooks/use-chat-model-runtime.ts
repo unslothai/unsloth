@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
-import { createElement, useCallback, useRef, useState } from "react";
+import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   confirmTransformersUpgradeIfNeeded,
@@ -66,9 +67,7 @@ import {
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
-import {
-  isMultimodalResponse,
-} from "../types/api";
+import { type CpuFallbackReason, isMultimodalResponse } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import {
   applyPerModelConfigToRuntime,
@@ -287,12 +286,23 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
  * is a thin wrapper over it. External selections are left untouched since they
  * have no backend mirror.
  */
+// Bumped by every call. Two refreshes can be in flight at once -- a media load
+// announces itself before its POST and again once the backend has committed the
+// eviction -- and they read the status at different moments. Completion order is
+// not the order they were issued in, so without this the older one could land
+// last and re-pin the model the newer one had just seen released, leaving chat
+// claiming a model that 400s on send until the load finally settled.
+let syncGeneration = 0;
+
 async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
+  // Last issued wins: it read the freshest status, whichever answers first.
+  const generation = ++syncGeneration;
+  const superseded = () => generation !== syncGeneration;
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
@@ -305,7 +315,9 @@ async function syncInferenceStatusToStore(options?: {
 
     // Cancellation can land while the requests above are in flight. Bail
     // before writing backend state back -- cancelLoading already cleared it.
-    if (signal?.aborted) return;
+    // Same for a refresh that a later one has already superseded: its answer
+    // describes a moment that has passed.
+    if (signal?.aborted || superseded()) return;
 
     setModels(listRes.models.map(toChatModelSummary));
     if (lorasRes) {
@@ -351,17 +363,41 @@ async function syncInferenceStatusToStore(options?: {
         }
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
+      // Loading an image or video model evicts the chat one (the GPU arbiter
+      // allows a single owner), and nothing else here would say so: the picker
+      // keeps the selection, so the header would go on claiming it is loaded
+      // and the next prompt would come back a bare 400.
+      const { residentCheckpoint: wasResident, modelLoading } =
+        useChatRuntimeStore.getState();
       // specFallbackReason survives here, so clearing activeModelIsLocal
       // alone would flip a local model's warning to "download failed". Every
       // load path and clearCheckpoint set it, so leave it consistent.
       useChatRuntimeStore.setState({
+        residentCheckpoint: null,
         modelRequiresTrustRemoteCode: false,
         loadedIsMultimodal: false,
         loadedIsDiffusion: false,
       });
+      // Known resident a moment ago, and nothing loading now. Both matter: a
+      // load in flight has no active model yet either, and clearing there would
+      // wipe the pick the user just made.
+      if (wasResident && selectedCheckpoint && !modelLoading) {
+        // Already the clean id the header shows: resolveInferenceCheckpointId
+        // put it there, not a load path.
+        toast.info(`${wasResident} is no longer loaded`, {
+          description:
+            "The server released it, which loading an image or video model does. Pick it again to keep chatting.",
+        });
+        // Drop the pick too, which is what a server-side unload already does.
+        // Dimming the tick was not enough: the name alone reads as "this is my
+        // model" whatever the tick does, and sending to it returns a bare 400.
+        useChatRuntimeStore.getState().clearCheckpoint();
+      }
     }
   } catch (error) {
-    if (signal?.aborted) return;
+    // A superseded refresh reports nothing, or a stale failure would raise a
+    // toast about a read whose answer would have been discarded anyway.
+    if (signal?.aborted || superseded()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);
@@ -480,6 +516,26 @@ export function useChatModelRuntime() {
     (options?: { signal?: AbortSignal; includeLoras?: boolean }) =>
       syncInferenceStatusToStore(options),
     [],
+  );
+
+  // Nothing here polls /status: refresh runs on mount and when the model lists
+  // change, never on a timer. So an image or video load evicting the chat model
+  // (the GPU arbiter allows one owner) went unseen, and the header went on
+  // showing the evicted model as loaded until something else happened to
+  // refresh. Re-read whenever another runtime finishes a load.
+  useEffect(
+    () =>
+      subscribeModelLifecycle(({ runtime }) => {
+        // Dictation is a sidecar and takes no GPU ownership, so it evicts
+        // nothing. Chat's own loads already reconcile themselves.
+        if (runtime === "chat" || runtime === "stt") return;
+        // Both edges, not only the settle. The arbiter evicts chat inside the
+        // image or video load POST, before the download starts, so waiting for
+        // the load to finish left the picker and the header naming a model that
+        // had already gone and that 400s on send, for the whole download.
+        void refresh({ includeLoras: false });
+      }),
+    [refresh],
   );
 
   const cancelLoading = useCallback(() => {
@@ -767,6 +823,7 @@ export function useChatModelRuntime() {
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
       const postLoadRefresh = { needed: false };
+      let cpuFallbackReason: CpuFallbackReason | null = null;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -1226,6 +1283,7 @@ export function useChatModelRuntime() {
               gpu_ids: loadSelectedGpuIds ?? undefined,
               force_cancel_active: forceCancelActive,
             });
+            cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
 
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
@@ -1516,6 +1574,9 @@ export function useChatModelRuntime() {
                   // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+                  // A recovered Vulkan model needs its staged CPU-only runtime back
+                  // after the failed target load unloaded the live server.
+                  cpu_fallback: stateBeforeUnload.loadedCpuFallback,
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
@@ -1844,15 +1905,23 @@ export function useChatModelRuntime() {
           await performLoad();
           // User cancelled mid-refresh; cancelLoading handles teardown.
           if (abortCtrl.signal.aborted) return;
+          const loadedTitle = cpuFallbackReason
+            ? `${toastDisplayName} loaded on CPU`
+            : `${toastDisplayName} loaded`;
+          const loadedDescription = cpuFallbackReason
+            ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
+            : undefined;
+          const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
           if (loadToastDismissedRef.current) {
-            toast.success(`${toastDisplayName} loaded`, {
+            showLoadedToast(loadedTitle, {
+              description: loadedDescription,
               closeButton: true,
               duration: 8000,
             });
           } else {
-            toast.success(`${toastDisplayName} loaded`, {
+            showLoadedToast(loadedTitle, {
               id: toastId,
-              description: undefined,
+              description: loadedDescription,
               cancel: undefined,
               closeButton: true,
               duration: 8000,
