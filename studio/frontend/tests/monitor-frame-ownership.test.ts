@@ -175,19 +175,16 @@ test("dropping one publisher leaves the other's box intact", () => {
   assert.deepEqual(published(), [composerBox]);
 });
 
-// A composer that is hidden measures 0x0, and publishing that would pull the
-// union out to the top-left corner and pin the stack there.
-test("the publish hook drops an unmeasurable box rather than publishing it", () => {
-  const HOOK = readFileSync(
+// The composer used to publish too, which lifted the whole corner stack: it
+// docks to the bottom of that column on every thread, so the update banners and
+// the download panel sat in the middle of the page rather than in the corner.
+// Only the Live monitor publishes now, and it is transient.
+test("only the Live monitor publishes a box", () => {
+  const THREAD = readFileSync(
     fileURLToPath(
-      new URL(
-        "../src/features/settings/hooks/use-published-frame.ts",
-        import.meta.url,
-      ),
+      new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
     ),
     "utf8",
   );
-  assert.match(HOOK, /box\.width === 0 && box\.height === 0/);
-  assert.match(HOOK, /observer\?\.disconnect\(\)/, "and it must unsubscribe");
-  assert.match(HOOK, /clearFrame\(publisher\);\s*\n\s*\};/, "and clear on unmount");
+  assert.doesNotMatch(THREAD, /usePublishedFrame/);
 });
