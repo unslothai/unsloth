@@ -18,6 +18,8 @@ shared helpers both trainers call. The one bitsandbytes case skips without CUDA.
 from __future__ import annotations
 
 import ast
+import time
+import os
 import json
 from pathlib import Path
 
@@ -2710,3 +2712,71 @@ def test_the_first_preflight_does_not_pin_the_bundle_it_accepted(run_dir):
     start = inspect.getsource(__import__("routes.training", fromlist = ["x"]))
     first = start.index("0 if normalized_cfg.num_epochs > 0 else normalized_cfg.train_steps")
     assert "pin = False" in start[first : first + 400]
+
+
+def test_a_read_does_not_undo_a_promotion_in_flight(run_dir):
+    """_promote leaves the slot empty for the instant between the swap-aside and the rename. A
+    history or detail read landing there used to hand the displaced bundle back, and the
+    writer's own os.replace then failed against a directory that had reappeared -- losing the
+    periodic or stop-and-save checkpoint and marking the run unresumable from its latest work."""
+    run = _Run(run_dir, save_total_limit = 0)
+    run.save(4)
+    # The exact mid-swap state: the old bundle moved aside, the slot empty, moments ago.
+    in_flight = run_dir / f"{dc._STAGING_PREFIX}replaced-4-cafebabe"
+    dc.os.replace(run_dir / "checkpoint-4", in_flight)
+
+    dc._recover_orphaned_slots(run_dir)
+
+    assert in_flight.is_dir(), "a live replacement must be left to its writer"
+    assert not (run_dir / "checkpoint-4").exists()
+
+    # Once it is plainly not in flight any more, the same read repairs it.
+    old = time.time() - (dc._LIVE_REPLACEMENT_GRACE_SECONDS + 60)
+    os.utime(in_flight, (old, old))
+    dc._recover_orphaned_slots(run_dir)
+    assert (run_dir / "checkpoint-4").is_dir()
+    assert not in_flight.exists()
+
+
+def test_read_side_recovery_restores_the_newest_stacked_bundle(run_dir):
+    """Filesystem order would restore whichever hidden bundle appeared first. With otherwise
+    identical identities the resume scan then accepts an older branch's adapter, optimizer,
+    scheduler and RNG instead of the one that was in the slot immediately before the crash."""
+    run = _Run(run_dir, save_total_limit = 0)
+    run.save(6)
+    older = run_dir / f"{dc._STAGING_PREFIX}replaced-6-aaaaaaaa"
+    dc.os.replace(run_dir / "checkpoint-6", older)
+    older_state = (older / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
+
+    run.step_once(1.0)
+    run.save(6)
+    newer = run_dir / f"{dc._STAGING_PREFIX}replaced-6-bbbbbbbb"
+    dc.os.replace(run_dir / "checkpoint-6", newer)
+    newer_state = (newer / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
+    assert newer_state != older_state
+
+    # Both plainly abandoned, and the newer one really is newer on disk.
+    stale = time.time() - (dc._LIVE_REPLACEMENT_GRACE_SECONDS + 600)
+    os.utime(older, (stale, stale))
+    os.utime(newer, (stale + 60, stale + 60))
+
+    dc._recover_orphaned_slots(run_dir)
+
+    settled = (run_dir / "checkpoint-6" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
+    assert settled == newer_state, "the bundle that was in the slot last is the one to restore"
+
+
+def test_a_checkpoint_with_no_rng_state_is_not_written(run_dir, monkeypatch):
+    """capture_rng_state never raises -- it returns what it managed to read -- so a torch
+    generator it could not snapshot produced a bundle with no rng file. The write returned
+    happily, the service emitted checkpoint_saved, and the history advertised a resumable stop
+    that the preflight then refuses the moment the user clicks Resume."""
+    run = _Run(run_dir)
+    monkeypatch.setattr(dc, "capture_rng_state", lambda streams = None: {"json": {}, "tensors": {}})
+
+    path, error = run.save(4)
+
+    assert path is None, "an unresumable bundle must not be advertised as saved"
+    assert error is not None and "random-number state" in error
+    assert dc.list_checkpoints(run_dir) == []
+    assert list(run_dir.glob(f"{dc._STAGING_PREFIX}*")) == []

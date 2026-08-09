@@ -497,12 +497,6 @@ class DiffusionTrainingService:
 
             job_id = uuid.uuid4().hex
             self._discard_requested = False
-            # The route has already validated and PINNED a source bundle by this point, so its
-            # identity is known before the child starts. Seeding it here means a resume that
-            # dies during the model load -- before the trainer can emit "resumed" -- still has
-            # the timestamp its fallback is checked against, instead of trusting the pathname
-            # and offering back whatever later occupies that slot.
-            self._seed_source_identity(config)
             self._own_checkpoints = []
             event_queue = self._ctx.Queue()
             self._stop_queue = self._ctx.Queue()
@@ -533,6 +527,13 @@ class DiffusionTrainingService:
                 started_at = now,
                 updated_at = now,
             )
+            # AFTER the reset above, which replaces the whole state dict. The route has already
+            # validated and PINNED a source bundle, so its identity is known before the child
+            # runs: recording it here means a resume that dies during the model load -- before
+            # the trainer can emit "resumed" -- still has the timestamp its fallback is checked
+            # against, instead of trusting the pathname and offering back whatever later
+            # occupies that slot.
+            self._seed_source_identity(config)
             # Keep the config (minus secrets) for the persisted run record.
             self._config = {k: v for k, v in dict(config).items() if k != "hf_token"}
             self._pump = threading.Thread(

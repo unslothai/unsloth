@@ -803,9 +803,19 @@ def save_checkpoint(
         if rng:
             rng_json = rng.get("json")
             rng_tensors = rng.get("tensors") or {}
-            if rng_tensors:
-                _torch_save(torch, rng_tensors, staging / RNG_FILENAME)
-                files["rng"] = RNG_FILENAME
+            if not rng_tensors:
+                # capture_rng_state never raises -- it returns what it managed to read -- so a
+                # torch generator it could not snapshot produced a bundle with no rng file at
+                # all. save_checkpoint returned happily, the service emitted checkpoint_saved,
+                # and the history advertised a resumable stop that _assert_required_state then
+                # refuses the moment the user clicks Resume. Fail the WRITE instead, which the
+                # caller reports as resume_blocked_reason.
+                raise RuntimeError(
+                    "the run's random-number state could not be captured, so this checkpoint "
+                    "would not be resumable"
+                )
+            _torch_save(torch, rng_tensors, staging / RNG_FILENAME)
+            files["rng"] = RNG_FILENAME
 
         manifest: dict[str, Any] = {
             "format": CHECKPOINT_FORMAT,
@@ -1037,21 +1047,56 @@ def _prune_staging(root: Path) -> None:
         entries = list(root.glob(f"{_STAGING_PREFIX}*"))
     except OSError:
         return
-    for entry in entries:
+    # Newest first, so a stacked slot gets its immediate predecessor back rather than whichever
+    # entry the filesystem happened to list first.
+    def _written_at(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    for entry in sorted(entries, key = _written_at, reverse = True):
         suffix = entry.name[len(_STAGING_PREFIX) :]
         if _recover_orphaned_slot(root, entry) or _REPLACED_SLOT.match(suffix):
             continue
         shutil.rmtree(entry, ignore_errors = True)
 
 
-def _recover_orphaned_slots(root: Path) -> None:
+# How long a ``replaced-`` bundle must have been sitting before a READ path will hand it back.
+# _promote leaves the slot empty for the microseconds between the swap-aside and the rename,
+# and a history or detail read landing in that window moved the old bundle back in -- so the
+# writer's own os.replace then failed against a directory that had reappeared, and the periodic
+# or stop-and-save checkpoint was lost. A few seconds covers a window measured in microseconds
+# while still recovering a genuinely crashed promotion on the user's next poll. Only
+# ``replaced-`` entries wait: a ``stale-`` orphan is from an older build and never in flight,
+# and writers pass 0 because they run after their own promotion.
+_LIVE_REPLACEMENT_GRACE_SECONDS = 5.0
+
+
+def _recover_orphaned_slots(root: Path, *, min_age: float = _LIVE_REPLACEMENT_GRACE_SECONDS) -> None:
     """Hand every stale orphan back to its empty slot. Read paths call this before deciding a
-    run has nothing to resume; it never deletes anything."""
+    run has nothing to resume; it never deletes anything.
+
+    Newest first per slot, for the reason ``_retire_replaced_slots`` sorts: replacements stack,
+    and filesystem order would restore whichever appeared first -- an older branch's adapter,
+    optimizer and RNG rather than the bundle that was in the slot immediately before the crash.
+    """
     try:
         entries = list(root.glob(f"{_STAGING_PREFIX}*"))
     except OSError:
         return
-    for entry in entries:
+
+    def _written_at(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    now = time.time()
+    for entry in sorted(entries, key = _written_at, reverse = True):
+        in_flight_shape = _REPLACED_SLOT.match(entry.name[len(_STAGING_PREFIX) :]) is not None
+        if in_flight_shape and min_age > 0 and (now - _written_at(entry)) < min_age:
+            continue  # possibly a promotion in flight; leave it to the writer
         _recover_orphaned_slot(root, entry)
 
 

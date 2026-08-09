@@ -626,8 +626,11 @@ def test_the_source_identity_is_seeded_before_the_child_starts():
 
     start = inspect.getsource(DiffusionTrainingService.start)
     assert "_seed_source_identity(config)" in start
-    # Before the process is created, or a fast failure beats the seed.
-    assert start.index("_seed_source_identity(config)") < start.index("self._ctx.Process(")
+    seeded = start.index("_seed_source_identity(config)")
+    # AFTER the state reset, which replaces the whole dict and would drop the seed...
+    assert seeded > start.index("self._state = _idle_state()")
+    # ...and before the pump thread starts, which is the only other writer of that state.
+    assert seeded < start.index("self._pump.start()")
 
 
 def test_seeding_reads_the_bundles_own_timestamp(tmp_path, monkeypatch):
