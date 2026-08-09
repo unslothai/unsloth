@@ -2319,3 +2319,76 @@ def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, mon
         assert status["loaded"] is True, mode
         assert calls == [], mode
         assert "hunyuan_attn_trim" not in status["speed_optims"], mode
+
+
+# ── unified-memory oversize refusal, at the video load seam ───────────────────
+
+
+def _unified_snapshot(total_gib):
+    """Stand in for a Mac's memory snapshot: unified pool, 80% of RAM free."""
+    from core.inference.diffusion_memory import DeviceMemory
+
+    total = total_gib * 1024
+    return lambda target: DeviceMemory("mps", "mps", "unified_memory", int(total * 0.80), total)
+
+
+def test_unified_memory_refuses_an_oversized_video_load(fake_runtime, monkeypatch):
+    """A 16 GiB Mac loading LTX-2 (about 65 GiB of weights): the planner has no offload tier to
+    fall back to on unified memory and PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 removes the
+    allocator's limit, so without this refusal the OS kills Studio with no Python exception.
+    _run_load stringifies this onto load_progress, so the text is what the UI toasts."""
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "snapshot_device_memory", _unified_snapshot(16))
+
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")
+    message = str(excinfo.value)
+    assert "ltx-2" in message  # names the family
+    assert "unified memory" in message
+    assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1" in message
+    # Refused BEFORE the pipeline was built: nothing was allocated and nothing is loaded.
+    assert backend.status()["loaded"] is False
+
+
+def test_unified_memory_allows_a_video_load_that_fits(fake_runtime, monkeypatch):
+    # The same family on a 128 GiB Mac fits, so the refusal must stay out of the way.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "snapshot_device_memory", _unified_snapshot(128))
+
+    backend = VideoBackend()
+    status = backend.load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")
+    assert status["loaded"] is True
+
+
+def test_unified_memory_refusal_is_overridable_at_the_video_load_seam(
+    fake_runtime, monkeypatch
+):
+    import core.inference.video as video_mod
+    from core.inference.diffusion_memory import UNIFIED_OVERSIZE_ENV
+
+    monkeypatch.setattr(video_mod, "snapshot_device_memory", _unified_snapshot(16))
+    monkeypatch.setenv(UNIFIED_OVERSIZE_ENV, "1")
+
+    backend = VideoBackend()
+    assert backend.load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")["loaded"] is True
+
+
+def test_discrete_vram_video_load_is_unaffected_by_the_refusal(fake_runtime, monkeypatch):
+    """The same impossible-looking numbers on a discrete card still load: offload streams the
+    weights from host RAM, so refusing there would break a path that works today. (The fake
+    runtime resolves a CPU target, so the policy itself is not meaningful here; what this pins
+    is that a discrete-VRAM snapshot never reaches the refusal.)"""
+    import core.inference.video as video_mod
+    from core.inference.diffusion_memory import DeviceMemory
+
+    monkeypatch.setattr(
+        video_mod,
+        "snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", 13_107, 16_384),
+    )
+
+    backend = VideoBackend()
+    assert backend.load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")["loaded"] is True

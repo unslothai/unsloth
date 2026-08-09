@@ -72,6 +72,7 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
+    raise_on_unified_memory_shortfall,
     settled_snapshot_device_memory,
 )
 from .diffusion_speed import (
@@ -2133,6 +2134,13 @@ class DiffusionBackend:
                     # scans read as zero companions.
                     base_local_dir = _base_local_dir,
                     fetch_base = fetch_base,
+                )
+                # On unified memory the plan above is final -- the quant re-plans below are
+                # CUDA-only -- and its 'none' policy is a placement, not a fit. Refuse here,
+                # after the eviction above freed the previous pipeline (so the free reading is
+                # the memory this load actually gets) and before any weight is materialised.
+                raise_on_unified_memory_shortfall(
+                    plan, family = getattr(fam, "name", None), logger = logger
                 )
 
                 # Dtype tri-state: unset/"auto" -> hardware ladder; "none"/"off" pins GGUF-as-is; an explicit scheme pins it.

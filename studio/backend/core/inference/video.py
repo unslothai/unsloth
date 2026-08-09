@@ -64,6 +64,7 @@ from .diffusion_memory import (
     file_size_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
+    raise_on_unified_memory_shortfall,
     snapshot_device_memory,
 )
 from .diffusion_speed import (
@@ -1233,6 +1234,14 @@ class VideoBackend:
                     )
                     plan = replanned
                     quant_replanned = True
+
+        # On unified memory the plan's 'none' policy is a placement, not a fit: there is no
+        # offload tier left to fall back to, so an oversized load is killed by the OS with no
+        # torch OOM to catch. Refuse now, after the eviction above and after the quant re-plan
+        # (CUDA-only, but check the plan we committed to), before any weight is materialised.
+        raise_on_unified_memory_shortfall(
+            plan, family = getattr(fam, "name", None), logger = logger
+        )
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)

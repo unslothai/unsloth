@@ -615,3 +615,194 @@ def test_plan_fits_total_capacity():
     assert plan_fits_total_capacity(plan(None, 183_359)) is False
     assert plan_fits_total_capacity(plan(90_228, None)) is False
     assert plan_fits_total_capacity(types.SimpleNamespace()) is False
+
+
+# ── the unified-memory oversize refusal ───────────────────────────────────────
+# Apple Silicon shares one CPU/GPU pool, so the planner's OFFLOAD_NONE there is a placement
+# with no fallback tier, and PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 removes the allocator's hard
+# limit: an oversized load is killed by the OS with no Python exception. These cover the
+# load-time refusal that replaces that SIGKILL with a message.
+
+_MPS_TOTAL_MIB = 16 * 1024
+_MPS_FREE_MIB = int(_MPS_TOTAL_MIB * 0.80)  # RAM free once macOS + a browser + Studio are up
+
+
+def _unified_plan(
+    *,
+    model_dense_mib,
+    runtime_headroom_mib = 3072,
+    free_mib = _MPS_FREE_MIB,
+    total_mib = _MPS_TOTAL_MIB,
+    kind = "unified_memory",
+    device = "mps",
+):
+    """A plan straight from the shipped planner, so the budget arithmetic under test is the
+    real arithmetic rather than a hand-written copy of it."""
+    return plan_diffusion_memory(
+        target = _target(device = device, backend = device, supports_offload = False),
+        device_memory = DeviceMemory(device, device, kind, free_mib, total_mib),
+        model_dense_mib = model_dense_mib,
+        runtime_headroom_mib = runtime_headroom_mib,
+    )
+
+
+def test_unified_oversize_refuses_and_names_family_and_both_numbers():
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    # 16 GiB Mac, 12.8 GiB free, 20% unified reserve, so about 9.5 GiB of budget. 24 GiB cannot fit.
+    plan = _unified_plan(model_dense_mib = 24 * 1024)
+    assert plan.offload_policy == OFFLOAD_NONE  # the planner still has no fallback to offer
+    message = unified_memory_shortfall_message(plan, family = "wan2.2-ti2v-5b")
+    assert message is not None
+    assert "wan2.2-ti2v-5b" in message
+    # Weights + the flat base overhead, and the safe budget, both rendered in GB.
+    assert "about 26 GB of memory for its weights" in message  # 24 GiB weights + 2 GiB overhead
+    assert "about 10 GB is usable" in message  # 12.8 GiB free, less 20% of 16 GiB
+    assert "13 GB currently free" in message
+    # The most useful thing the user can change, and the escape hatch.
+    assert "smaller or more quantized model" in message
+    assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1" in message
+
+
+def test_unified_oversize_ignores_the_soft_runtime_headroom():
+    """The refusal budgets WEIGHTS only. A load whose weights fit but whose weights + activation
+    headroom do not is marginal, and VAE tiling/slicing (always on for mps) cuts the decode peak
+    the headroom estimate does not model, so it must NOT be refused."""
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    budget = _MPS_FREE_MIB - max(2048, int(_MPS_TOTAL_MIB * 0.20))
+    weights = budget - 2048  # weights + the 2048 base overhead land exactly on the budget
+    plan = _unified_plan(model_dense_mib = weights, runtime_headroom_mib = 8192)
+    assert plan.estimates["resident_required_mib"] > budget  # refused if headroom counted
+    assert unified_memory_shortfall_message(plan) is None
+    # One MiB more of weights does tip it over.
+    assert unified_memory_shortfall_message(_unified_plan(model_dense_mib = weights + 1)) is not None
+
+
+def test_unified_oversize_never_refuses_discrete_vram():
+    """Discrete VRAM keeps its fallback ladder: an oversized model streams from host RAM under
+    group / whole-module offload, so refusing it would break a load that works today."""
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    plan = plan_diffusion_memory(
+        target = _target(device = "cuda", backend = "cuda", supports_offload = True),
+        device_memory = DeviceMemory("cuda", "cuda", "discrete_vram", 12_000, 16_384),
+        model_dense_mib = 80 * 1024,
+        runtime_headroom_mib = 6963,
+    )
+    assert plan.offload_policy == OFFLOAD_MODEL
+    assert unified_memory_shortfall_message(plan, family = "ltx-2") is None
+
+
+def test_unified_oversize_never_refuses_plain_cpu_system_memory():
+    # A CPU target reports system_memory, has swap, and is an opt-in fringe path: unchanged.
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    plan = _unified_plan(model_dense_mib = 80 * 1024, kind = "system_memory", device = "cpu")
+    assert unified_memory_shortfall_message(plan) is None
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"free_mib": None},  # psutil unavailable: budget unknown
+        {"model_dense_mib": None},  # unscannable checkpoint: size unknown
+    ],
+)
+def test_unified_oversize_fails_open_on_unknown_inputs(kwargs):
+    """Matches the planner's own "budget or model size unknown; staying resident": never turn a
+    failed probe into a refusal."""
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    kwargs = {"model_dense_mib": 80 * 1024, **kwargs}
+    assert unified_memory_shortfall_message(_unified_plan(**kwargs)) is None
+
+
+def test_unified_oversize_env_override_attempts_the_load_anyway(monkeypatch):
+    from core.inference.diffusion_memory import (
+        UNIFIED_OVERSIZE_ENV,
+        raise_on_unified_memory_shortfall,
+        unified_memory_shortfall_message,
+    )
+
+    plan = _unified_plan(model_dense_mib = 80 * 1024)
+    assert unified_memory_shortfall_message(plan) is not None
+    for value in ("1", "true", "YES", "on"):
+        monkeypatch.setenv(UNIFIED_OVERSIZE_ENV, value)
+        assert unified_memory_shortfall_message(plan) is None
+        raise_on_unified_memory_shortfall(plan)  # must not raise
+    monkeypatch.setenv(UNIFIED_OVERSIZE_ENV, "0")
+    assert unified_memory_shortfall_message(plan) is not None
+
+
+def test_unified_oversize_message_survives_a_malformed_plan():
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    assert unified_memory_shortfall_message(types.SimpleNamespace()) is None
+
+
+def test_raise_on_unified_memory_shortfall_raises_runtime_error_with_the_message():
+    """RuntimeError matches the llama.cpp unified-memory APU refusal. Both loaders call this on
+    a worker thread inside load_pipeline, where _run_load stringifies it onto load_progress, so
+    the text reaches the UI toast and the 409 mapping of the synchronous route never applies."""
+    from core.inference.diffusion_memory import (
+        raise_on_unified_memory_shortfall,
+        unified_memory_shortfall_message,
+    )
+
+    plan = _unified_plan(model_dense_mib = 80 * 1024)
+    with pytest.raises(RuntimeError) as excinfo:
+        raise_on_unified_memory_shortfall(plan, family = "ltx-2")
+    assert str(excinfo.value) == unified_memory_shortfall_message(plan, family = "ltx-2")
+    # A plan that fits is a silent no-op.
+    raise_on_unified_memory_shortfall(_unified_plan(model_dense_mib = 1024))
+
+
+def test_unified_oversize_decision_matrix_for_the_real_video_families():
+    """The shipped video family tables against real Mac RAM sizes: the refusal must fire exactly
+    where the weights genuinely cannot fit, and must stay silent where they can.
+
+    ``video_families`` is a pure table module (no torch, no diffusers), so this stays hermetic.
+    ``free`` is modelled at 80% of RAM, the share left once macOS, a browser and Studio are up.
+    """
+    from core.inference.video_families import _FAMILIES
+    from core.inference.diffusion_memory import (
+        DEFAULT_BASE_OVERHEAD_MIB,
+        estimate_video_runtime_mib,
+        unified_memory_shortfall_message,
+    )
+
+    mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)  # the tables are DECIMAL GB
+    # family: the RAM sizes (GiB) at which the load must be REFUSED.
+    expected_refusals = {
+        "ltx-2": {16, 24, 32, 64, 96},
+        "wan2.2-ti2v-5b": {16, 24, 32},
+        "wan2.2-t2v-a14b": {16, 24, 32, 64, 96},
+        "hunyuanvideo-1.5": {16, 24, 32},
+        "hunyuanvideo-1.5-720p": {16, 24, 32},
+    }
+    assert {f.name for f in _FAMILIES} == set(expected_refusals), (
+        "a video family was added or renamed: extend the expected refusal matrix"
+    )
+    for fam in _FAMILIES:
+        width, height = fam.resolution_presets[0]
+        dense = int(sum(fam.bf16_components_gb) * mib_per_gb)
+        headroom = estimate_video_runtime_mib(
+            width = width, height = height, num_frames = fam.default_num_frames
+        )
+        for ram_gib in (16, 24, 32, 64, 96, 128):
+            total = ram_gib * 1024
+            plan = _unified_plan(
+                model_dense_mib = dense,
+                runtime_headroom_mib = headroom,
+                free_mib = int(total * 0.80),
+                total_mib = total,
+            )
+            # The planner never has an alternative to offer on unified memory: that is the bug.
+            assert plan.offload_policy == OFFLOAD_NONE
+            refused = unified_memory_shortfall_message(plan, family = fam.name) is not None
+            assert refused is (ram_gib in expected_refusals[fam.name]), (
+                f"{fam.name} at {ram_gib} GiB: refused={refused}, "
+                f"weights+overhead={dense + DEFAULT_BASE_OVERHEAD_MIB} MiB, "
+                f"budget={plan.estimates['safe_device_budget_mib']} MiB"
+            )

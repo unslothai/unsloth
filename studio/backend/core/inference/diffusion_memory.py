@@ -345,6 +345,100 @@ def plan_fits_total_capacity(plan: Any) -> bool:
     return int(required) <= int((int(total) - _reserve_mib(kind, int(total))) * 0.85)
 
 
+# Opt-in escape hatch for the unified-memory refusal below: the shortfall check is an
+# estimate, so an operator who believes it is wrong can still attempt the load.
+UNIFIED_OVERSIZE_ENV = "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD"
+
+
+def _unified_oversize_override() -> bool:
+    return os.environ.get(UNIFIED_OVERSIZE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def unified_memory_shortfall_message(
+    plan: Any, *, family: Optional[str] = None
+) -> Optional[str]:
+    """On UNIFIED device memory, a user-facing refusal when the WEIGHTS alone cannot fit the
+    safe budget (else None).
+
+    Unified memory is the one placement where the planner has no fallback left. On discrete
+    VRAM an oversized model still loads: it degrades to group / whole-module CPU offload and
+    streams from host RAM. On Apple Silicon (and integrated CUDA) the CPU and GPU share one
+    pool, so offload moves bytes within that pool and frees nothing -- ``plan_diffusion_memory``
+    correctly returns ``none``, and the load then allocates past physical memory. There is no
+    torch OOM to catch, because ``_mps_or_cpu_target`` sets PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0
+    to disable the MPS allocator's hard limit, so the failure is the OS killing the process
+    with no Python exception. Refusing up front is the only way the user learns why.
+
+    Weights only (``model_dense_mib`` + the flat base overhead): the per-call runtime headroom
+    is the SOFT term -- it is a coarse activation / VAE-decode estimate, and the mps path
+    already turns on VAE tiling + slicing, which cuts the decode peak this estimate does not
+    model. Counting it would refuse marginal loads that would in fact complete. The weights are
+    the hard term: they are unavoidable resident bytes, sized from measured per-family
+    component tables or from on-disk checkpoint size, and if they alone do not fit then nothing
+    at generation time can rescue the load. Same reasoning as the llama.cpp APU guard, which
+    budgets weights and lets KV/context auto-reduce.
+
+    Fail-open on anything unknown (no budget, no size), matching the planner's own
+    "budget or model size unknown; staying resident"."""
+    if _unified_oversize_override():
+        return None
+    try:
+        memory = plan.device_memory
+        # ``system_memory`` (plain CPU) is deliberately excluded: it is an opt-in fringe path,
+        # it has swap, and it is not what gets Metal-killed. Only the accelerator-on-system-pool
+        # case is guarded.
+        if getattr(memory, "memory_kind", None) != "unified_memory":
+            return None
+        estimates = plan.estimates
+        budget = estimates.get("safe_device_budget_mib")
+        weights = estimates.get("model_dense_mib")
+        overhead = estimates.get("base_overhead_mib")
+        free = getattr(memory, "free_mib", None)
+    except Exception:  # noqa: BLE001 — malformed plan: never block the load
+        return None
+    if budget is None or weights is None:
+        return None
+    required = int(weights) + int(overhead or 0)
+    if required <= int(budget):
+        return None
+    what = f"'{family}'" if family else "This model"
+    free_note = (
+        f"of the {int(free) / 1024:.0f} GB currently free, after reserving room for the "
+        "operating system"
+        if free is not None
+        else "after reserving room for the operating system"
+    )
+    return (
+        f"{what} needs about {required / 1024:.0f} GB of memory for its weights, but only "
+        f"about {int(budget) / 1024:.0f} GB is usable on this device ({free_note}). This device "
+        "has unified memory, so the CPU and GPU share one pool: offloading weights to the CPU "
+        "frees nothing, and the operating system stops an oversized load outright instead of "
+        "reporting an out-of-memory error. Use a smaller or more quantized model, free memory "
+        f"by closing other applications, or set {UNIFIED_OVERSIZE_ENV}=1 to attempt the load "
+        "anyway."
+    )
+
+
+def raise_on_unified_memory_shortfall(
+    plan: Any, *, family: Optional[str] = None, logger: Any = None
+) -> None:
+    """Refuse a load whose weights cannot fit unified device memory. No-op on every other
+    placement, so the discrete-VRAM path is untouched.
+
+    Lives outside ``plan_diffusion_memory`` on purpose: the planner is a pure sizing function
+    that both loaders call SPECULATIVELY (the image loader re-plans candidate quantisations, and
+    both re-plan against a settled snapshot), and a planner that raised would turn those probes
+    into load failures instead of letting a smaller candidate win. Call this once, on the plan
+    the loader has committed to, after the previous pipeline has been evicted so the free
+    reading is the memory the load actually gets."""
+    message = unified_memory_shortfall_message(plan, family = family)
+    if message is None:
+        return
+    if logger is not None:
+        logger.error("diffusion.memory: refusing oversized unified-memory load: %s", message)
+    raise RuntimeError(message)
+
+
 def _sum_required(*values: Optional[int]) -> Optional[int]:
     total = 0
     for value in values:

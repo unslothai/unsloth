@@ -5914,3 +5914,92 @@ def test_download_plan_skips_nothing_when_the_hub_reports_no_commit(monkeypatch)
         "unsloth/FLUX.1-dev-GGUF",
         "unsloth/FLUX.1-dev",
     }
+
+
+# ── unified-memory oversize refusal, at the image load seam ───────────────────
+# The planner is shared with video, so the image loader needs the same guard: a Mac user
+# picking an oversized image checkpoint hits the identical SIGKILL (no torch OOM to catch,
+# because the mps target disables the MPS allocator's high-watermark limit).
+
+
+def _unified_snapshot(total_gib):
+    from core.inference.diffusion_memory import DeviceMemory
+
+    total = total_gib * 1024
+    return lambda target: DeviceMemory("mps", "mps", "unified_memory", int(total * 0.80), total)
+
+
+def _oversized_gguf(monkeypatch, tmp_path, total_gib, *, resident_mib = 24 * 1024):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    monkeypatch.setattr(
+        "core.inference.diffusion.settled_snapshot_device_memory", _unified_snapshot(total_gib)
+    )
+    # The 7-byte fake checkpoint sizes to 1 MiB; stand in a realistic resident footprint.
+    monkeypatch.setattr(
+        "core.inference.diffusion.estimate_gguf_resident_mib", lambda storage: resident_mib
+    )
+    return DiffusionBackend()
+
+
+def test_unified_memory_refuses_an_oversized_image_load(fake_runtime, monkeypatch, tmp_path):
+    backend = _oversized_gguf(monkeypatch, tmp_path, 16)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "model.gguf",
+            base_repo = "base/repo",
+            family_override = "z-image",
+        )
+    message = str(excinfo.value)
+    assert "z-image" in message
+    assert "unified memory" in message
+    assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1" in message
+    # Refused before the pipeline was built.
+    assert backend.status()["loaded"] is False
+
+
+def test_unified_memory_allows_an_image_load_that_fits(fake_runtime, monkeypatch, tmp_path):
+    backend = _oversized_gguf(monkeypatch, tmp_path, 128)
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    assert status["loaded"] is True
+
+
+def test_unified_memory_image_refusal_is_overridable(fake_runtime, monkeypatch, tmp_path):
+    from core.inference.diffusion_memory import UNIFIED_OVERSIZE_ENV
+
+    backend = _oversized_gguf(monkeypatch, tmp_path, 16)
+    monkeypatch.setenv(UNIFIED_OVERSIZE_ENV, "1")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    assert status["loaded"] is True
+
+
+def test_discrete_vram_image_load_is_unaffected_by_the_refusal(
+    fake_runtime, monkeypatch, tmp_path
+):
+    from core.inference.diffusion_memory import DeviceMemory
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    monkeypatch.setattr(
+        "core.inference.diffusion.settled_snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", 13_107, 16_384),
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion.estimate_gguf_resident_mib", lambda storage: 24 * 1024
+    )
+    status = DiffusionBackend().load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    assert status["loaded"] is True
