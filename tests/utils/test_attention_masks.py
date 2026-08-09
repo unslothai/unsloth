@@ -427,3 +427,34 @@ def test_run_attention_sdpa_ignores_a_zero_window(monkeypatch):
     attention_dispatch.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
     mask = captured["attn_mask"]
     assert mask is None or bool(mask.any()), "a zero window must not mask everything"
+
+
+def test_the_window_mask_is_built_once_per_shape(monkeypatch):
+    """Every layer asks for the identical mask, and at 32K that tensor is 1 GiB with two more
+    alive while it is built. Rebuilding it per layer is how this SDPA fallback OOMs a run that
+    xFormers or flash would have carried."""
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+    built = []
+    real_arange = torch.arange
+
+    def _counting_arange(*args, **kwargs):
+        built.append(1)
+        return real_arange(*args, **kwargs)
+
+    monkeypatch.setattr(attention_dispatch.torch, "arange", _counting_arange)
+
+    first = attention_dispatch._windowed_causal_mask(6, 6, 3, torch.device("cpu"))
+    calls_after_first = len(built)
+    second = attention_dispatch._windowed_causal_mask(6, 6, 3, torch.device("cpu"))
+
+    assert second is first, "the same shape and window must not be rebuilt"
+    assert len(built) == calls_after_first, "a cache hit must allocate nothing"
+    assert [bool(v) for v in first[0, 0, 5]] == [False, False, False, True, True, True]
+
+    # A different window is a different mask, not a stale hit.
+    third = attention_dispatch._windowed_causal_mask(6, 6, 2, torch.device("cpu"))
+    assert third is not first
+    assert [bool(v) for v in third[0, 0, 5]] == [False, False, False, False, True, True]
+    # ...and so is a different shape.
+    assert attention_dispatch._windowed_causal_mask(4, 4, 3, torch.device("cpu")) is not third
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
