@@ -812,7 +812,10 @@ function createStudioDbAdapter(
 
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
       const autoTitle = useChatRuntimeStore.getState().autoTitle;
-      const thread = await getStoredChatThread(remoteId);
+      // The run normally waits for its history append, but a bounded persistence wait can expire
+      // while the creator is still queued. Use the same retry choke point as other mutations so a
+      // temporarily missing row does not permanently skip first-turn title generation.
+      const thread = await ensureStoredChatThread(remoteId);
       const defaultTitle = "New Chat";
 
       function streamTitle(title: string) {

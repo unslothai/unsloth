@@ -30,6 +30,7 @@ import type {
   ProjectRecord,
   ThreadRecord,
 } from "../types";
+import { settleWithin, waitForSettledBatch } from "./bounded-settlement";
 import {
   isChatThreadDeleted,
   markChatThreadsDeleted,
@@ -91,18 +92,6 @@ let threadRecordClearEpoch = 0;
 // still runs; only the waiting stops, which keeps one wedged request from hanging a delete, a
 // clear, or the send that the clear boundary tracks.
 const THREAD_WRITE_WAIT_MS = 5000;
-
-/** Resolve when `work` settles, or after `ms`, whichever comes first. */
-function settleWithin(work: Promise<unknown>, ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, Math.max(ms, 0));
-    const finish = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    work.then(finish, finish);
-  });
-}
 
 /** Run `write` after everything already queued for this thread, and hand back its outcome. */
 export function enqueueStoredChatThreadWrite<T>(
@@ -896,18 +885,9 @@ export async function deleteStoredChatThreads(
     enqueueStoredChatThreadWrite(id, () => deleteChatThreads([id])),
   );
   // Bounded, since a wedged write ahead of a delete only delays it and the delete stays queued.
-  // settleWithin resolves a microtask after `settled` does, so a completed batch always wins.
-  const settled = Promise.allSettled(deletes);
-  const outcomes = await Promise.race([
-    settled,
-    settleWithin(settled, THREAD_WRITE_WAIT_MS).then(() => null),
-  ]);
-  // A failure that did land still propagates: callers roll back their optimistic tombstone and
-  // surface a toast on it.
-  const failure = outcomes?.find((outcome) => outcome.status === "rejected");
-  if (failure) {
-    throw failure.reason;
-  }
+  // Keep early failures even when a sibling is still queued at the deadline. Callers use the
+  // rejection to roll back their optimistic tombstone and surface a toast.
+  await waitForSettledBatch(deletes, THREAD_WRITE_WAIT_MS);
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();
