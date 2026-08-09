@@ -3595,8 +3595,8 @@ def test_probe_failure_does_not_demote_to_a_lower_priority_candidate(tmp_path, m
             ),
         )
 
-    assert attempted == []        # the CPU asset was never reached
-    assert len(fetches) == 1      # and the probe was not retried per candidate
+    assert attempted == []  # the CPU asset was never reached
+    assert len(fetches) == 1  # and the probe was not retried per candidate
 
 
 def test_staged_validation_enabled_default_off(monkeypatch):
