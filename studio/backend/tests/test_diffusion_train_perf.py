@@ -764,8 +764,7 @@ def test_a_failed_checkpoint_write_is_recorded_too(tmp_path, monkeypatch):
     svc = svc_mod.DiffusionTrainingService()
     svc._state.update(job_id = "b" * 32, output_dir = str(tmp_path / "out"), status = "running")
     svc._apply_event(
-        {"type": "checkpoint_saved", "checkpoint_path": str(tmp_path / "checkpoint-40"),
-         "step": 40}
+        {"type": "checkpoint_saved", "checkpoint_path": str(tmp_path / "checkpoint-40"), "step": 40}
     )
     svc._persist_interim = False
 
