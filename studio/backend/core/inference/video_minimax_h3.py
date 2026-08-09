@@ -121,9 +121,44 @@ def estimate_h3_diffusers_vram_gb(
     return base + (H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames)
 
 
-def estimate_h3_diffusers_host_ram_gb(available_vram_gb: float) -> float:
-    """Host-RAM floor for the offload tier selected at the available VRAM."""
-    return 85.0 if available_vram_gb >= 132.0 else 150.0
+# The VRAM at which the offload tier changes, and the host floor of the tier above it. Both are
+# the shipped values, unchanged: that tier is only reachable on a >= 132 GB device, where the
+# component sizes below are not what stands between a load and a generation, and there is no
+# measurement here to justify moving it.
+H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB = 132.0
+H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB = 85.0
+# The offload tier parks every component on the host, so its floor is their SUM (unlike the VRAM
+# floor, which is the largest resident one). Derived, not newly measured: it is the shipped 150.0
+# minus the released component sum, so the released configuration still asks for exactly 150.0 and
+# only a load holding smaller components asks for less.
+H3_DIFFUSERS_HOST_RAM_HEADROOM_GB = 5.9
+
+
+def estimate_h3_diffusers_host_ram_gb(
+    available_vram_gb: float,
+    *,
+    text_encoder_gb: Optional[float] = None,
+    transformer_gb: Optional[float] = None,
+) -> float:
+    """Host-RAM floor for the offload tier selected at the available VRAM.
+
+    ``text_encoder_gb`` / ``transformer_gb`` are the RESIDENT sizes this load actually holds, as
+    for the VRAM floor; unset keeps the released bfloat16 sizes, so the no-argument call is the
+    number this shipped with.
+
+    Sizing this from the released pair while the VRAM floor is sized from the engaged one refuses
+    the exact configuration the hosted quantized components exist for: an 80 GB device holding the
+    int8 conditioner and the int8 denoiser clears the VRAM check at 55 GB and is then told it needs
+    150 GB of system RAM for 47.5 GB of weights.
+
+    A pinned denoiser is still counted here. It lives on the device during the generation, but it
+    was built on the host to get there, and keeping it in the sum errs toward refusing a load that
+    would have fitted rather than admitting one that will not."""
+    if available_vram_gb >= H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB:
+        return H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB
+    text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
+    transformer = H3_TRANSFORMER_BF16_GB if transformer_gb is None else float(transformer_gb)
+    return text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
 
 
 # torch.autocast casts the weight and bias of these module types to the autocast dtype on

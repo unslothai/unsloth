@@ -3376,7 +3376,16 @@ class VideoBackend:
                         host_capacity_gb = (
                             psutil.virtual_memory().available + process_rss
                         ) / 1_000_000_000
-                        required_host_gb = estimate_h3_diffusers_host_ram_gb(available_vram_gb)
+                        # Same engaged components as the VRAM floor above. Sizing one from what
+                        # the load holds and the other from the released pair refuses exactly the
+                        # configuration the quantized components exist for.
+                        required_host_gb = estimate_h3_diffusers_host_ram_gb(
+                            available_vram_gb,
+                            text_encoder_gb = h3_te_resident_gb(
+                                state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
+                            ),
+                            transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
+                        )
                         if host_capacity_gb + 0.5 < required_host_gb:
                             raise RuntimeError(
                                 f"MiniMax-H3 needs about {required_host_gb:.0f} GB available "
