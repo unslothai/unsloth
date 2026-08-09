@@ -24,8 +24,13 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # still wins. Transformers reads these once at import, so this has to land first.
 # 5.x dropped both backends and ignores all of this.
 if "transformers" not in sys.modules:
-    os.environ.setdefault("USE_TF", "0")
-    os.environ.setdefault("USE_FLAX", "0")
+    # Same hands-off rule as the branch below: a backend that is already imported
+    # is one in use, so opting it out would strand a working `from_tf = True`
+    # load in a process that never set the variable itself.
+    if "tensorflow" not in sys.modules:
+        os.environ.setdefault("USE_TF", "0")
+    if not any(_m in sys.modules for _m in ("flax", "jax")):
+        os.environ.setdefault("USE_FLAX", "0")
 else:
     # Too late for the variables, but not for the answer they feed: Transformers
     # decided `_tf_available` / `_flax_available` from `find_spec` alone, without

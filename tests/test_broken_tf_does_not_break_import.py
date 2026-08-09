@@ -56,6 +56,25 @@ def _fake_tensorflow(tmp_path):
     return site
 
 
+def _working_tensorflow(tmp_path):
+    """A `tensorflow` that Transformers detects *and* imports cleanly.
+
+    The counterpart to `_fake_tensorflow`: it stands in for a real, working install
+    the user has deliberately imported. Never touches site-packages.
+    """
+    site = tmp_path / "worksite"
+    package = site / "tensorflow"
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text('__version__ = "2.20.0"\n', encoding = "utf-8")
+    dist = site / "tensorflow-2.20.0.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: tensorflow\nVersion: 2.20.0\n",
+        encoding = "utf-8",
+    )
+    return site
+
+
 def _run(
     code,
     site = None,
@@ -87,6 +106,39 @@ def _unsloth_is_importable():
 def _needs_unsloth():
     if not _unsloth_is_importable():
         pytest.skip("unsloth is not importable in this environment")
+
+
+_V4_ONLY = ("_tf_available", "_flax_available", "USE_TF")
+
+
+@functools.cache
+def _v4_names():
+    """Which v4-only `import_utils` names the installed Transformers still has.
+
+    Transformers 5.x dropped the TF/Flax backends, and with them `_tf_available`,
+    `_flax_available` and `USE_TF`, so reading one there is an `AttributeError`
+    rather than a failing assertion. Probed in a subprocess, once.
+    """
+    out = _run(
+        """
+        from transformers.utils import import_utils
+        for name in {names!r}:
+            print("HAS", name, hasattr(import_utils, name))
+        """.format(names = _V4_ONLY),
+    )
+    if out.returncode != 0:
+        return {}
+    found = {}
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0] == "HAS" and parts[1] in _V4_ONLY:
+            found[parts[1]] = parts[2] == "True"
+    return found
+
+
+def _needs_v4_flag(name):
+    if not _v4_names().get(name, False):
+        pytest.skip(f"transformers here has no import_utils.{name} (5.x dropped TF/Flax)")
 
 
 def _exec_guard(modules, environ):
@@ -137,6 +189,7 @@ def test_an_explicit_choice_is_never_overwritten():
 @pytest.mark.parametrize("value", ["0", "1"])
 def test_transformers_reads_the_variable_from_the_environment(value):
     """The half in Transformers: read once at import, so ours must land first."""
+    _needs_v4_flag("USE_TF")
     env = dict(os.environ, USE_TF = value)
     out = subprocess.run(
         [
@@ -161,43 +214,129 @@ def test_the_variables_are_left_alone_once_transformers_is_loaded():
     assert environ == {}
 
 
+def test_the_environment_branch_honours_an_already_imported_backend():
+    """Nothing imported: opt both out. One imported: leave that one to its user."""
+    for modules, expected in (
+        ({}, {"USE_TF": "0", "USE_FLAX": "0"}),
+        ({"tensorflow": object()}, {"USE_FLAX": "0"}),
+        ({"jax": object()}, {"USE_TF": "0"}),
+        ({"flax": object()}, {"USE_TF": "0"}),
+        ({"tensorflow": object(), "flax": object()}, {}),
+    ):
+        environ = {}
+        _exec_guard(dict(modules), environ)
+        assert environ == expected, modules
+
+
 def test_a_broken_backend_still_loses_when_transformers_came_first(tmp_path):
     """The regression: `_tf_available` was cached True before Unsloth got a say."""
     _needs_unsloth()
+    # `getattr`, because 5.x has no such flag; the "TF never loads" half of the
+    # claim is what matters there and it still gets asserted.
     out = _run(
         """
         import transformers
         from transformers.utils import import_utils
-        assert import_utils._tf_available, "the fake tensorflow was not detected"
+        assert getattr(import_utils, "_tf_available", None) is not False, \\
+            "the fake tensorflow was not detected"
         import sys, unsloth
         print("TF_LOADED", "tensorflow" in sys.modules)
-        print("TF_AVAILABLE", import_utils._tf_available)
+        print("TF_AVAILABLE", getattr(import_utils, "_tf_available", "ABSENT"))
         """,
         site = _fake_tensorflow(tmp_path),
     )
     assert out.returncode == 0, out.stderr[-3000:]
     assert "TF_LOADED False" in out.stdout, out.stdout
-    assert "TF_AVAILABLE False" in out.stdout, out.stdout
+    if _v4_names().get("_tf_available"):
+        assert "TF_AVAILABLE False" in out.stdout, out.stdout
+    else:
+        assert "TF_AVAILABLE ABSENT" in out.stdout, out.stdout
 
 
 def test_the_environment_path_still_covers_the_transformers_not_loaded_case(tmp_path):
     _needs_unsloth()
     out = _run(
         """
-        import unsloth, sys
+        import unsloth, os, sys
         from transformers.utils import import_utils
-        print("USE_TF", import_utils.USE_TF)
+        print("ENV_USE_TF", os.environ.get("USE_TF"))
+        print("USE_TF", getattr(import_utils, "USE_TF", "ABSENT"))
         print("TF_LOADED", "tensorflow" in sys.modules)
         """,
         site = _fake_tensorflow(tmp_path),
     )
     assert out.returncode == 0, out.stderr[-3000:]
-    assert "USE_TF 0" in out.stdout, out.stdout
+    assert "ENV_USE_TF 0" in out.stdout, out.stdout
     assert "TF_LOADED False" in out.stdout, out.stdout
+    if _v4_names().get("USE_TF"):
+        assert "USE_TF 0" in out.stdout, out.stdout
+
+
+def _run_env_branch(tmp_path, preamble, site, **env):
+    """Run the real opt-out block with Transformers not yet imported.
+
+    The `import tensorflow; import unsloth` order in one process cannot be tested
+    end to end here: leaving TensorFlow enabled makes Transformers import
+    `TFPreTrainedModel`, which needs a genuine `tf.keras` (and h5py), not a stub.
+    So the block itself is executed against a real interpreter whose `sys.modules`
+    and environment are exactly what that order produces.
+    """
+    guard = tmp_path / "env_guard.py"
+    guard.write_text(ast.unparse(_guard_block()), encoding = "utf-8")
+    return _run(
+        f"""
+        import os, sys
+        {preamble}
+        assert "transformers" not in sys.modules, "the env-var branch needs it absent"
+        exec(open({str(guard)!r}).read())
+        print("ENV_USE_TF", os.environ.get("USE_TF"))
+        print("ENV_USE_FLAX", os.environ.get("USE_FLAX"))
+        """,
+        site = site,
+        **env,
+    )
+
+
+def test_an_imported_backend_is_not_opted_out_when_transformers_comes_later(tmp_path):
+    """The asymmetry: the env-var branch has to honour an in-use backend too.
+
+    A process that imports a working TensorFlow and only then imports Unsloth,
+    without ever setting USE_TF itself, must keep it. `setdefault` does not help:
+    there is no explicit value for it to defer to.
+    """
+    site = _working_tensorflow(tmp_path)
+    out = _run_env_branch(tmp_path, "import tensorflow", site)
+    assert out.returncode == 0, out.stderr[-3000:]
+    assert "ENV_USE_TF None" in out.stdout, out.stdout
+    # The backend nobody is using still gets opted out.
+    assert "ENV_USE_FLAX 0" in out.stdout, out.stdout
+    # And leaving the variable unset is what preserves it.
+    probe = _run(
+        """
+        from transformers.utils import import_utils
+        print("TF_AVAILABLE", getattr(import_utils, "_tf_available", "ABSENT"))
+        """,
+        site = site,
+    )
+    assert probe.returncode == 0, probe.stderr[-3000:]
+    if _v4_names().get("_tf_available"):
+        assert "TF_AVAILABLE True" in probe.stdout, probe.stdout
+
+
+def test_a_broken_uninvolved_backend_is_still_opted_out(tmp_path):
+    """The protection this file exists for, in the same real-process harness."""
+    out = _run_env_branch(tmp_path, "", _fake_tensorflow(tmp_path))
+    assert out.returncode == 0, out.stderr[-3000:]
+    assert "ENV_USE_TF 0" in out.stdout, out.stdout
+    assert "ENV_USE_FLAX 0" in out.stdout, out.stdout
 
 
 def _run_guard(tmp_path, preamble, **env):
-    """Run the real opt-out block against a real, already-imported Transformers."""
+    """Run the real opt-out block against a real, already-imported Transformers.
+
+    Reads `_tf_available`, so these cases are v4-only: on 5.x they skip.
+    """
+    _needs_v4_flag("_tf_available")
     guard = tmp_path / "guard.py"
     guard.write_text(ast.unparse(_guard_block()), encoding = "utf-8")
     return _run(
@@ -249,6 +388,24 @@ def test_transformers_5x_has_neither_flag_and_nothing_raises():
     _exec_guard(modules, {})
     assert not hasattr(import_utils, "_tf_available")
     assert not hasattr(import_utils, "_flax_available")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        test_an_explicit_opt_in_keeps_the_backend,
+        test_a_backend_already_in_use_is_left_alone,
+        test_the_cached_flag_is_cleared_against_a_real_transformers,
+        test_transformers_reads_the_variable_from_the_environment,
+    ],
+)
+def test_the_v4_only_cases_skip_on_transformers_5x(monkeypatch, tmp_path, case):
+    """With the flags gone, these read a name that no longer exists: skip, not error."""
+    monkeypatch.setattr(sys.modules[__name__], "_v4_names", dict)
+    kwargs = {"tmp_path": tmp_path} if "tmp_path" in case.__code__.co_varnames else {"value": "0"}
+    with pytest.raises(pytest.skip.Exception) as caught:
+        case(**kwargs)
+    assert "5.x dropped TF/Flax" in str(caught.value)
 
 
 def test_a_transformers_without_import_utils_loaded_is_a_no_op():
