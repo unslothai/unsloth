@@ -6112,11 +6112,11 @@ def _loaded_backend_on_a_16g_card(tmp_path, monkeypatch, *, base_repo = "base/re
         family_override = "z-image",
     )
     free, total = _ROCM_16G
-    monkeypatch.setattr(
-        dmod,
-        "settled_snapshot_device_memory",
-        lambda target, **kw: DeviceMemory("cuda", "cuda", "discrete_vram", free, total),
-    )
+    snapshot = lambda target, **kw: DeviceMemory("cuda", "cuda", "discrete_vram", free, total)
+    monkeypatch.setattr(dmod, "settled_snapshot_device_memory", snapshot)
+    # The generate-time guard reads the RECLAIMABLE snapshot (no empty_cache on a per-image path),
+    # so pin that one too or it falls through to the host's real card.
+    monkeypatch.setattr(dmod, "reclaimable_snapshot_device_memory", snapshot)
     return backend
 
 
@@ -6177,7 +6177,7 @@ def test_generate_guard_fails_open_when_the_probe_raises(fake_runtime, tmp_path,
     def _boom(target, **kw):
         raise RuntimeError("mem_get_info exploded")
 
-    monkeypatch.setattr(dmod, "settled_snapshot_device_memory", _boom)
+    monkeypatch.setattr(dmod, "reclaimable_snapshot_device_memory", _boom)
     assert len(backend.generate(prompt = "a sloth", width = 1088, height = 1920, steps = 4)["images"]) == 1
 
 

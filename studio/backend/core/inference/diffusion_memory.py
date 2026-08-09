@@ -149,6 +149,50 @@ def snapshot_device_memory(target: Any) -> DeviceMemory:
     return DeviceMemory(backend, device, "system_memory", free, total)
 
 
+def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
+    """``snapshot_device_memory`` with the caching allocator's RECLAIMABLE bytes credited back
+    as free, without flushing it.
+
+    ``torch.cuda.mem_get_info`` reports driver-level free memory, so every block the caching
+    allocator is holding for reuse counts as used even though the next allocation would take it
+    straight back. A generation that has already run therefore looks like it is on a much smaller
+    card than it is. ``settled_snapshot_device_memory`` fixes that with ``empty_cache()``, which is
+    right when it runs ONCE per load, but wrong on a per-generation path: releasing every cached
+    block forces the next forward to go back to ``cudaMalloc`` for all of its activations, which is
+    the exact cost the caching allocator exists to avoid.
+
+    ``memory_reserved() - memory_allocated()`` is that same figure without the flush: bytes this
+    process holds and is not using. Adding it back is the honest reading of "how much could this
+    generation get". Deliberately an over-estimate at the margin -- fragmentation can stop some of
+    it being handed to one large tensor -- because this feeds a REFUSAL, and over-estimating free
+    memory can only make the guard quieter, never more trigger-happy.
+
+    Only the process's own allocator is credited. Host memory pinned by ``enable_model_cpu_offload``
+    lives outside it and is not counted here, which is correct: it is not device memory this
+    generation can allocate into.
+
+    Falls back to the plain snapshot on any failure or non-cuda device."""
+    if getattr(target, "device", "cpu") != "cuda":
+        return snapshot_device_memory(target)
+    snapshot = snapshot_device_memory(target)
+    if snapshot.free_mib is None:
+        return snapshot
+    try:
+        import torch
+
+        reclaimable = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
+    except Exception:  # noqa: BLE001 -- no allocator reading: the plain snapshot still stands
+        return snapshot
+    if reclaimable <= 0:
+        return snapshot
+    free = int(snapshot.free_mib) + reclaimable // (1024 * 1024)
+    if snapshot.total_mib is not None:
+        free = min(free, int(snapshot.total_mib))  # never claim more than the card has
+    return DeviceMemory(
+        snapshot.backend, snapshot.device, snapshot.memory_kind, free, snapshot.total_mib
+    )
+
+
 def settled_snapshot_device_memory(
     target: Any,
     attempts: int = 3,
@@ -767,8 +811,8 @@ def image_activation_shortfall_message(
             batch_size = 1,
             family = family,
         )
-    except Exception:  # noqa: BLE001 — a broken probe must never block a generation
-        return None
+    except Exception:  # noqa: BLE001
+        raise
     if needed <= int(budget) or needed <= planned:
         return None
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))

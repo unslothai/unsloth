@@ -577,6 +577,82 @@ def test_settled_snapshot_stops_early_when_device_already_idle(monkeypatch):
     assert calls == [1]
 
 
+def _fake_torch_allocator(monkeypatch, *, reserved: int, allocated: int):
+    """Stub torch.cuda's allocator counters for the reclaimable snapshot."""
+    import sys
+
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(
+        memory_reserved = lambda: reserved,
+        memory_allocated = lambda: allocated,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+
+def test_reclaimable_snapshot_credits_cached_blocks_without_flushing(monkeypatch):
+    # mem_get_info counts every block the caching allocator holds for reuse as USED, so a warm
+    # card reads as nearly full. The generate-time guard must not mistake that for a shortfall,
+    # and must not pay empty_cache() per image to find out.
+    from core.inference import diffusion_memory as dm
+
+    monkeypatch.setattr(
+        dm,
+        "snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 2_000, total_mib = 16_302),
+    )
+    # 6 GiB reserved, 2 GiB in live tensors: 4 GiB is cached and reclaimable.
+    _fake_torch_allocator(monkeypatch, reserved = 6 * 1024**3, allocated = 2 * 1024**3)
+    snap = dm.reclaimable_snapshot_device_memory(_target(device = "cuda"))
+    assert snap.free_mib == 2_000 + 4 * 1024
+
+
+def test_reclaimable_snapshot_never_claims_more_than_the_card(monkeypatch):
+    # The credit is arithmetic, so a bogus allocator reading must not invent memory the card
+    # does not have and talk the guard out of a real refusal.
+    from core.inference import diffusion_memory as dm
+
+    monkeypatch.setattr(
+        dm,
+        "snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 15_000, total_mib = 16_302),
+    )
+    _fake_torch_allocator(monkeypatch, reserved = 40 * 1024**3, allocated = 0)
+    assert dm.reclaimable_snapshot_device_memory(_target(device = "cuda")).free_mib == 16_302
+
+
+def test_reclaimable_snapshot_falls_back_when_the_allocator_is_unreadable(monkeypatch):
+    # No allocator reading: the plain driver-level snapshot still stands, unchanged.
+    from core.inference import diffusion_memory as dm
+    import sys
+
+    monkeypatch.setattr(
+        dm,
+        "snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 2_000, total_mib = 16_302),
+    )
+    torch = types.ModuleType("torch")
+
+    def _boom():
+        raise RuntimeError("no cuda context")
+
+    torch.cuda = types.SimpleNamespace(memory_reserved = _boom, memory_allocated = _boom)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    assert dm.reclaimable_snapshot_device_memory(_target(device = "cuda")).free_mib == 2_000
+
+
+def test_reclaimable_snapshot_passthrough_off_cuda(monkeypatch):
+    # Only the CUDA caching allocator is modelled here; every other device keeps its plain read.
+    from core.inference import diffusion_memory as dm
+
+    monkeypatch.setattr(
+        dm,
+        "snapshot_device_memory",
+        lambda target: DeviceMemory("mps", "mps", "unified_memory", free_mib = 8_000, total_mib = 16_000),
+    )
+    _fake_torch_allocator(monkeypatch, reserved = 6 * 1024**3, allocated = 0)
+    assert dm.reclaimable_snapshot_device_memory(_target(device = "mps")).free_mib == 8_000
+
+
 def test_settled_snapshot_passthrough_off_cuda(monkeypatch):
     # Non-cuda targets keep the single-read behaviour (no settle loop).
     from core.inference import diffusion_memory as dm

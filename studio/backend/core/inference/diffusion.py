@@ -73,6 +73,7 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     plan_fits_total_capacity,
     raise_on_image_activation_shortfall,
+    reclaimable_snapshot_device_memory,
     settled_snapshot_device_memory,
 )
 from .diffusion_speed import (
@@ -3931,14 +3932,14 @@ class DiffusionBackend:
                     # case no backoff can rescue, so that is the floor this refuses on.
                     guard_batch = 1
                     raise_on_image_activation_shortfall(
-                        # Settled with a single read: the sync + empty_cache makes the reading
-                        # honest (cached allocator blocks count as used to mem_get_info, and a
-                        # stale cache would fake a shortfall), while attempts=1 keeps the
-                        # multi-second retry loop out of every generation.
-                        device_memory = settled_snapshot_device_memory(
-                            self._resolve_device_target(state.family),
-                            attempts = 1,
-                            delay_s = 0.0,
+                        # NOT the settled snapshot the load uses: that one calls empty_cache(),
+                        # which is right once per load but wrong on a per-generation path -- it
+                        # releases every cached block, so the next forward re-cudaMallocs all of
+                        # its activations, defeating the caching allocator on every image. This
+                        # variant credits the same reclaimable bytes back arithmetically instead,
+                        # so a warm allocator does not read as a full card and nothing is flushed.
+                        device_memory = reclaimable_snapshot_device_memory(
+                            self._resolve_device_target(state.family)
                         ),
                         width = guard_width,
                         height = guard_height,
