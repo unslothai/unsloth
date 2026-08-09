@@ -3329,7 +3329,13 @@ def _nvidia_linux_host():
     )
 
 
-def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256, probe = None):
+def _run_validate_prebuilt_choice(
+    monkeypatch,
+    tmp_path,
+    *,
+    expected_sha256,
+    probe = None,
+):
     """Run validate_prebuilt_choice with heavy steps stubbed; return the quantize/server smoke-test call counts."""
     calls = {"quantize": 0, "server": 0}
     server_path = tmp_path / "install" / "build" / "bin" / "llama-server"
@@ -3434,9 +3440,7 @@ def test_validate_prebuilt_choice_fetches_probe_once_when_validating(tmp_path, m
         fetches.append(1)
         return probe_path
 
-    calls = _run_validate_prebuilt_choice(
-        monkeypatch, tmp_path, expected_sha256 = None, probe = fetch
-    )
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = None, probe = fetch)
     assert calls == {"quantize": 1, "server": 1}
     assert len(fetches) == 1
 
@@ -3451,10 +3455,10 @@ def test_lazy_validation_model_downloads_once_on_first_use(tmp_path, monkeypatch
     probe_path = tmp_path / "stories260K.gguf"
     ensure = INSTALL_LLAMA_PREBUILT.lazy_validation_model(probe_path, tmp_path / "cache.gguf")
 
-    assert downloads == []           # constructing the thunk touches the network never
+    assert downloads == []  # constructing the thunk touches the network never
     assert ensure() == probe_path
     assert ensure() == probe_path
-    assert len(downloads) == 1       # and repeat use is served from the first fetch
+    assert len(downloads) == 1  # and repeat use is served from the first fetch
 
 
 def test_probe_rate_limit_no_longer_forces_a_source_build(tmp_path, monkeypatch):

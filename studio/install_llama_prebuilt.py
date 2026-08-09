@@ -4475,9 +4475,7 @@ def download_validation_model(path: Path, cache_path: Path | None = None) -> Non
 ValidationModelProvider = Union[Path, Callable[[], Path]]
 
 
-def lazy_validation_model(
-    path: Path, cache_path: Path | None = None
-) -> Callable[[], Path]:
+def lazy_validation_model(path: Path, cache_path: Path | None = None) -> Callable[[], Path]:
     """Fetch the tiny GGUF probe on first use, at most once.
 
     An approved bundle proves its integrity by sha256 and so skips the staged smoke
