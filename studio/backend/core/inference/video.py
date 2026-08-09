@@ -3652,32 +3652,51 @@ class VideoBackend:
             init_img = stage(first_frame, "first")
             end_img = stage(last_frame, "last")
             staged = stage_h3_references(references, Path(scratch))
+            # An H3 native run is an sd-cli run out of the managed tree, exactly like a one-shot
+            # image generation, so it takes the same reader claim. Without it an image-engine
+            # request sees no readers, starts an install, and the sweep unlinks the CLI this
+            # runtime resolved at load: on Linux this process survives on the open inode but the
+            # next video request launches a path that is gone, and on Windows the unlink fails and
+            # leaves a mixed tree. A claim held here also makes the install stand down instead.
+            from .sd_cpp_backend import _tree_reader
+
+            binary = getattr(runtime.engine, "binary", None)
             try:
                 try:
-                    generated = runtime.engine.generate_video(
-                        runtime.files,
-                        SdCppVideoGenParams(
-                            prompt = prompt,
-                            width = width,
-                            height = height,
-                            num_frames = frames,
-                            fps = fps,
-                            steps = steps,
-                            cfg_scale = 1.0,
-                            seed = int(seed),
-                            init_img = init_img,
-                            end_img = end_img,
-                            ref_images = staged.images,
-                            ref_videos = staged.videos,
-                            ref_video_audios = staged.video_audios,
-                            ref_audios = staged.audios,
-                            flow_shift = flow_shift,
-                        ),
-                        output_path = str(output_path),
-                        offload = list(runtime.offload_flags),
-                        on_log = on_log,
-                        cancel_event = cancel,
-                    )
+                    with _tree_reader(binary):
+                        if binary and not Path(binary).is_file():
+                            # An install finished while this generation waited for it and took
+                            # the copy this runtime was built on. The engine is committed at
+                            # load, so say that plainly rather than handing a missing path to a
+                            # subprocess and surfacing its ENOENT.
+                            raise RuntimeError(
+                                "The stable-diffusion.cpp binary this model was loaded with was "
+                                "replaced by an install. Reload the model and try again."
+                            )
+                        generated = runtime.engine.generate_video(
+                            runtime.files,
+                            SdCppVideoGenParams(
+                                prompt = prompt,
+                                width = width,
+                                height = height,
+                                num_frames = frames,
+                                fps = fps,
+                                steps = steps,
+                                cfg_scale = 1.0,
+                                seed = int(seed),
+                                init_img = init_img,
+                                end_img = end_img,
+                                ref_images = staged.images,
+                                ref_videos = staged.videos,
+                                ref_video_audios = staged.video_audios,
+                                ref_audios = staged.audios,
+                                flow_shift = flow_shift,
+                            ),
+                            output_path = str(output_path),
+                            offload = list(runtime.offload_flags),
+                            on_log = on_log,
+                            cancel_event = cancel,
+                        )
                 except SdCppCancelled:
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
                 if cancel.is_set():

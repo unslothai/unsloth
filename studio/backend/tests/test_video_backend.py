@@ -5040,3 +5040,66 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
         (transformer_gb * _QUANT_STEADY_FACTOR["int8"] + text_encoder_gb * scale + vae_gb)
         * _MIB_PER_GB
     )
+
+
+def test_a_managed_h3_native_run_holds_the_install_off(monkeypatch, tmp_path):
+    """An H3 native run is an sd-cli run out of the managed tree, so it takes the same reader claim
+    the one-shot image path takes. Without it an image-engine request sees no readers, starts an
+    install, and the sweep unlinks the CLI this runtime resolved at load."""
+    pytest.importorskip("PIL.Image")
+    import core.inference.sd_cpp_backend as bk
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"managed")
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    backend._state.pipe.engine.binary = str(managed)
+
+    held: list = []
+    inner = backend._state.pipe.engine.generate_video
+
+    def _watching(files, params, **kwargs):
+        held.append(bk._tree_readers)
+        # An install decided right now must stand down rather than replace what is executing.
+        with bk._tree_claimed_for_install() as claimed:
+            held.append(claimed)
+        return inner(files, params, **kwargs)
+
+    backend._state.pipe.engine.generate_video = _watching
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    backend.generate(prompt = "p", width = 960, height = 544)
+    assert held == [1, False]
+    # And the claim is released afterwards, so the next install is not blocked forever.
+    assert bk._tree_readers == 0
+
+
+def test_an_unmanaged_h3_native_run_takes_no_claim(monkeypatch, tmp_path):
+    """A user-supplied sd-cli is one the installer cannot replace, so it must not be blocked
+    behind an unrelated managed install."""
+    pytest.importorskip("PIL.Image")
+    import core.inference.sd_cpp_backend as bk
+
+    outside = tmp_path / "mine" / "sd-cli"
+    outside.parent.mkdir(parents = True)
+    outside.write_bytes(b"my own build")
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    backend._state.pipe.engine.binary = str(outside)
+
+    held: list = []
+    inner = backend._state.pipe.engine.generate_video
+
+    def _watching(files, params, **kwargs):
+        held.append(bk._tree_readers)
+        return inner(files, params, **kwargs)
+
+    backend._state.pipe.engine.generate_video = _watching
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    backend.generate(prompt = "p", width = 960, height = 544)
+    assert held == [0]

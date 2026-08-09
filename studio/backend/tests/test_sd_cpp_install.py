@@ -1960,3 +1960,36 @@ def test_a_generation_re_resolves_the_cli_the_install_moved(tmp_path, monkeypatc
         engine = backend._resolve_engine()
     assert engine.binary == str(new)
     assert backend._engine.binary == str(new)
+
+
+def test_a_partial_sweep_never_returns_the_file_it_deleted(tmp_path, monkeypatch):
+    """_discard_superseded_binaries takes sd-cli before sd-server, so it can remove the old CLI and
+    then raise on the old server. The fallback resolved before the install then names a file that
+    is gone, and native routing fails on a path nothing can execute."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    old = root / "build" / "bin" / "sd-cli"
+    old.parent.mkdir(parents = True)
+    old.write_bytes(b"old-cpu-cli")
+    new = root / "sd-bundle-cuda12" / "bin" / "sd-cli"
+    new.parent.mkdir(parents = True)
+
+    resolved = {"path": str(old)}
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: resolved["path"])
+    monkeypatch.setattr(bk, "_usable_or_discard_managed", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+
+    def _sweep_gets_part_way(**_kwargs):
+        old.unlink()                      # the old CLI went
+        new.write_bytes(b"new-cuda-cli")  # the new bundle did extract one
+        resolved["path"] = str(new)
+        raise sdmod.SupersededBinaryError("could not remove the superseded binary sd-server")
+
+    monkeypatch.setattr(sdmod, "install", _sweep_gets_part_way)
+    got = bk.ensure_sd_cpp_binary(accelerator = "cuda")
+    assert got == str(new), "must not hand back the copy the sweep deleted"
+    assert Path(got).is_file()
+    # And it is still not memoised, so the next load retries the sweep.
+    assert bk._failed_accelerator_upgrades == set()

@@ -488,7 +488,13 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-cli auto-install failed: %s", exc)
-                if fallback is not None and not _incomplete_tree_replacement(exc):
+                if _incomplete_tree_replacement(exc):
+                    # The sweep got part way, and it takes sd-cli before sd-server, so the
+                    # fallback resolved before the install may be one of the copies it already
+                    # removed. Re-find, so this returns a file that exists -- often the one the
+                    # new bundle just extracted -- or None, never a path that is gone.
+                    return find_sd_cpp_binary()
+                if fallback is not None:
                     _note_failed_upgrade(accelerator)
                 return fallback
 
@@ -532,9 +538,10 @@ def ensure_sd_server_binary(
                 # Also when only the CLI survives (a legacy server-less tree): the router probes
                 # ensure_sd_cpp_binary immediately after this, and without the record that probe
                 # resolves and downloads the same bundle a second time inside one selection.
-                if (
-                    fallback is not None or find_sd_cpp_binary() is not None
-                ) and not _incomplete_tree_replacement(exc):
+                if _incomplete_tree_replacement(exc):
+                    # As above: the fallback may name a copy the partial sweep removed.
+                    return find_sd_server_binary()
+                if fallback is not None or find_sd_cpp_binary() is not None:
                     _note_failed_upgrade(accelerator)
                 return fallback
         return find_sd_server_binary() or fallback
