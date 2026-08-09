@@ -257,6 +257,7 @@ def _prefer_legacy_lowercase_cache(
     gguf_file = None,
     from_tf = False,
     from_flax = False,
+    can_load_text_only = None,
 ):
     """Use a pre-fix lowercase cache only when offline and no canonical cache exists."""
     if (
@@ -360,6 +361,7 @@ def _prefer_legacy_lowercase_cache(
         if (
             is_vlm
             and require_processor
+            and not (can_load_text_only and can_load_text_only(cache_config))
             and not any(
                 os.path.isfile(os.path.join(snapshot, filename))
                 for filename in ("processor_config.json", "preprocessor_config.json")
@@ -371,23 +373,13 @@ def _prefer_legacy_lowercase_cache(
             import ast
 
             module_files = set()
-            config_names = (
-                "config.json",
-                "tokenizer_config.json",
-                "processor_config.json",
-                "preprocessor_config.json",
-            )
-            for config_name in config_names:
-                try:
-                    with open(os.path.join(snapshot, config_name), encoding = "utf-8") as file:
-                        auxiliary_config = json.load(file)
-                except (OSError, ValueError, TypeError):
-                    continue
+
+            def _add_auto_map_modules(auxiliary_config):
                 auto_map = (
-                    auxiliary_config.get("auto_map") or {}
+                    auxiliary_config.get("auto_map")
                     if isinstance(auxiliary_config, dict)
-                    else {}
-                )
+                    else getattr(auxiliary_config, "auto_map", None)
+                ) or {}
                 references = auto_map.values() if isinstance(auto_map, dict) else ()
                 for reference in references:
                     candidates = reference if isinstance(reference, (list, tuple)) else (reference,)
@@ -400,6 +392,22 @@ def _prefer_legacy_lowercase_cache(
                             continue
                         module = candidate.rsplit(".", 1)[0]
                         module_files.add(module.replace(".", "/") + ".py")
+
+            if model_config is not None:
+                _add_auto_map_modules(model_config)
+            config_names = (
+                "config.json",
+                "tokenizer_config.json",
+                "processor_config.json",
+                "preprocessor_config.json",
+            )
+            for config_name in config_names:
+                try:
+                    with open(os.path.join(snapshot, config_name), encoding = "utf-8") as file:
+                        auxiliary_config = json.load(file)
+                except (OSError, ValueError, TypeError):
+                    continue
+                _add_auto_map_modules(auxiliary_config)
 
             pending = list(module_files)
             checked = set()
@@ -551,6 +559,7 @@ def get_model_name(
     gguf_file = None,
     from_tf = False,
     from_flax = False,
+    can_load_text_only = None,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -597,6 +606,7 @@ def get_model_name(
             gguf_file,
             from_tf,
             from_flax,
+            can_load_text_only,
         )
 
     if (

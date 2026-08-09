@@ -260,10 +260,24 @@ def _get_user_task_config_attrs(user_config):
 
 
 def _loadable_text_config(model_config, model_name):
+    if isinstance(model_config, dict):
+        model_type = model_config.get("model_type")
+        if not model_type:
+            return None
+        try:
+            model_config = AutoConfig.for_model(
+                model_type,
+                **{key: value for key, value in model_config.items() if key != "model_type"},
+            )
+        except (AttributeError, ImportError, KeyError, TypeError, ValueError):
+            return None
     if model_config is None or not hasattr(model_config, "vision_config"):
         return None
-    text_config = _get_text_only_config(model_config, model_name)
-    text_class = resolve_model_class(AutoModelForCausalLM, text_config)
+    try:
+        text_config = _get_text_only_config(model_config, model_name)
+        text_class = resolve_model_class(AutoModelForCausalLM, text_config)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
     if text_class is None or not _is_family_text_decoder(
         getattr(model_config, "model_type", ""),
         getattr(text_config, "model_type", ""),
@@ -603,6 +617,11 @@ class FastLanguageModel(FastLlamaModel):
         cache_processor_name = _resolve_checkpoint_tokenizer_name(
             old_model_name, dict(kwargs), require_processor = True
         )
+        can_load_text_only = (
+            lambda config: _loadable_text_config(config, old_model_name) is not None
+            if text_only
+            else None
+        )
         fp8_mode = None
         if not use_exact_model_name:
             new_model_name, mapper_selected_name = get_model_name(
@@ -616,13 +635,14 @@ class FastLanguageModel(FastLlamaModel):
                 revision = revision,
                 require_tokenizer = cache_tokenizer_name is None,
                 require_config = True,
-                require_processor = not text_only and cache_processor_name is None,
+                require_processor = cache_processor_name is None,
                 subfolder = kwargs.get("subfolder"),
                 variant = kwargs.get("variant"),
                 use_safetensors = kwargs.get("use_safetensors"),
                 gguf_file = kwargs.get("gguf_file"),
                 from_tf = kwargs.get("from_tf", False),
                 from_flax = kwargs.get("from_flax", False),
+                can_load_text_only = can_load_text_only,
                 return_mapper_changed = True,
             )
             if new_model_name is None and load_in_fp8 != False:
@@ -834,13 +854,14 @@ class FastLanguageModel(FastLlamaModel):
                     local_files_only = kwargs.get("local_files_only", False),
                     require_tokenizer = cache_tokenizer_name is None,
                     require_config = True,
-                    require_processor = not text_only and cache_processor_name is None,
+                    require_processor = cache_processor_name is None,
                     subfolder = kwargs.get("subfolder"),
                     variant = kwargs.get("variant"),
                     use_safetensors = kwargs.get("use_safetensors"),
                     gguf_file = kwargs.get("gguf_file"),
                     from_tf = kwargs.get("from_tf", False),
                     from_flax = kwargs.get("from_flax", False),
+                    can_load_text_only = can_load_text_only,
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
@@ -1394,10 +1415,10 @@ class FastModel(FastBaseModel):
         cache_processor_name = _resolve_checkpoint_tokenizer_name(
             old_model_name, dict(kwargs), require_processor = True
         )
-        cache_load_text_only = (
-            text_only
-            and auto_model is None
-            and _loadable_text_config(user_config, old_model_name) is not None
+        can_load_text_only = (
+            lambda config: _loadable_text_config(config, old_model_name) is not None
+            if text_only and auto_model is None
+            else None
         )
         fp8_mode = None
         if not use_exact_model_name:
@@ -1410,7 +1431,7 @@ class FastModel(FastBaseModel):
                 revision = revision,
                 require_tokenizer = cache_tokenizer_name is None,
                 require_config = user_config is None,
-                require_processor = not cache_load_text_only and cache_processor_name is None,
+                require_processor = cache_processor_name is None,
                 subfolder = kwargs.get("subfolder"),
                 variant = kwargs.get("variant"),
                 use_safetensors = kwargs.get("use_safetensors"),
@@ -1420,6 +1441,7 @@ class FastModel(FastBaseModel):
                 gguf_file = kwargs.get("gguf_file"),
                 from_tf = kwargs.get("from_tf", False),
                 from_flax = kwargs.get("from_flax", False),
+                can_load_text_only = can_load_text_only,
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -1831,7 +1853,7 @@ class FastModel(FastBaseModel):
                     local_files_only = kwargs.get("local_files_only", False),
                     require_tokenizer = cache_tokenizer_name is None,
                     require_config = user_config is None,
-                    require_processor = not cache_load_text_only and cache_processor_name is None,
+                    require_processor = cache_processor_name is None,
                     subfolder = kwargs.get("subfolder"),
                     variant = kwargs.get("variant"),
                     use_safetensors = kwargs.get("use_safetensors"),
@@ -1840,6 +1862,7 @@ class FastModel(FastBaseModel):
                     gguf_file = kwargs.get("gguf_file"),
                     from_tf = kwargs.get("from_tf", False),
                     from_flax = kwargs.get("from_flax", False),
+                    can_load_text_only = can_load_text_only,
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)

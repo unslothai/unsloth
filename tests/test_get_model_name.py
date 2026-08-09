@@ -353,6 +353,27 @@ class TestGetModelName(unittest.TestCase):
             self.assertEqual(get_model_name("Qwen/Qwen2.5-VL-3B-Instruct", **kwargs), canonical)
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_cached_config_can_waive_processor_requirement(self):
+        canonical = "unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            snapshot = _write_cached_model(
+                legacy_cache, "legacy-main", vision = True, processor = False
+            )
+            with open(os.path.join(snapshot, "config.json"), "w", encoding = "utf-8") as file:
+                json.dump({"model_type": "gemma3", "vision_config": {}}, file)
+            self.assertEqual(
+                get_model_name(
+                    "Qwen/Qwen2.5-VL-3B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    can_load_text_only = lambda config: config.get("model_type") == "gemma3",
+                ),
+                legacy,
+            )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_external_tokenizer_allows_weight_only_model_cache(self):
         canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
         legacy = canonical.lower()
@@ -562,6 +583,32 @@ class TestGetModelName(unittest.TestCase):
                     cache_dir = cache_dir,
                     local_files_only = True,
                     trust_remote_code = True,
+                ),
+                legacy,
+            )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_remote_code_cache_checks_supplied_config(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            canonical_snapshot = _write_cached_model(canonical_cache, "canonical-main")
+            legacy_snapshot = _write_cached_model(legacy_cache, "legacy-main")
+            for snapshot in (canonical_snapshot, legacy_snapshot):
+                os.remove(os.path.join(snapshot, "config.json"))
+            open(os.path.join(legacy_snapshot, "modeling_custom.py"), "w").close()
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    require_config = False,
+                    trust_remote_code = True,
+                    config = SimpleNamespace(
+                        auto_map = {"AutoModelForCausalLM": "modeling_custom.CustomModel"}
+                    ),
                 ),
                 legacy,
             )
