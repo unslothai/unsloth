@@ -7092,10 +7092,13 @@ def test_dense_quant_candidate_replan_prices_the_streamed_encoder_tier(
         ),
     )
     (tmp_path / "m.gguf").write_bytes(b"x")
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "int8",
-    )
+    # The spy forces offload on every replan, so the EXPLICIT int8 ends in the strict-precision
+    # refusal. Immaterial here: the replan calls this asserts on all happen before it.
+    with pytest.raises(RuntimeError, match = "transformer_quant='int8'"):
+        backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            transformer_quant = "int8",
+        )
     assert seen and all(value == 7_629 for value in seen)
