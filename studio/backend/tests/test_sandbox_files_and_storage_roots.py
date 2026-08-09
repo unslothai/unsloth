@@ -2523,7 +2523,8 @@ def test_a_first_tool_call_does_not_wait_for_the_whole_legacy_tree(tmp_path, mon
     tools._legacy_sandbox_migrated = False
     held = threading.Event()
     monkeypatch.setattr(
-        tools, "migrate_legacy_sandbox_in_background",
+        tools,
+        "migrate_legacy_sandbox_in_background",
         lambda: threading.Thread(target = held.wait),
     )
 
@@ -2552,9 +2553,7 @@ def test_deleting_a_chat_stops_a_generation_that_would_recreate_it(monkeypatch):
 
     from state import active_generations
 
-    monkeypatch.setattr(
-        active_generations, "cancel_thread", lambda tid: cancelled.append(tid) or 1
-    )
+    monkeypatch.setattr(active_generations, "cancel_thread", lambda tid: cancelled.append(tid) or 1)
 
     chat_history._cancel_active_generations(["__LOCALID_gone111", "__LOCALID_gone222"])
     assert cancelled == ["__LOCALID_gone111", "__LOCALID_gone222"]
