@@ -128,6 +128,7 @@ def create_document(
     embedding_model: str | None = None,
     linked_folder_id: str | None = None,
     linked_relative_path: str | None = None,
+    commit: bool = True,
 ) -> str:
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
@@ -150,7 +151,8 @@ def create_document(
             linked_relative_path,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return document_id
 
 

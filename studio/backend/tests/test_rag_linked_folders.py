@@ -53,7 +53,8 @@ def test_schema_is_idempotent_and_persists_folder_tables(rag_home):
         tables = {
             row["name"]
             for row in second.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'linked_folder%'"
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND (name LIKE 'linked_folder%' OR name='rag_job_leases')"
             )
         }
         job_columns = {
@@ -68,6 +69,73 @@ def test_schema_is_idempotent_and_persists_folder_tables(rag_home):
         "linked_folder_retired_scopes",
     } <= tables
     assert "rebuild_requested" in job_columns
+    assert "rag_job_leases" in tables
+
+
+@requires_sqlite_vec
+def test_startup_preserves_foreign_leased_work_until_its_lease_expires(rag_home):
+    from core.rag import ingestion, job_leases
+
+    _, folder = _folder(rag_home)
+    sync_job = folder_sync.request_sync(folder["id"])
+    conn = rag_db.get_connection()
+    try:
+        document_id = store.create_document(
+            conn,
+            scope = folder["scope"],
+            filename = "in-flight.txt",
+            sha256 = "foreign",
+            linked_folder_id = folder["id"],
+            linked_relative_path = "in-flight.txt",
+        )
+        ingestion_job = ingestion._new_job(conn, document_id, folder["scope"])
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (sync_job,)
+        )
+        conn.execute(
+            "UPDATE rag_job_leases SET owner_id='foreign', expires_at='9999-12-31' "
+            "WHERE kind=? AND job_id=?",
+            (job_leases.INGESTION, ingestion_job),
+        )
+        conn.execute(
+            "INSERT INTO rag_job_leases(kind, job_id, owner_id, expires_at) "
+            "VALUES(?,?,'foreign','9999-12-31')",
+            (job_leases.FOLDER_SYNC, sync_job),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    folder_sync._recover_startup_state()
+    assert folder_sync.get_job(sync_job)["status"] == "running"
+    assert folder_sync._claim_job(sync_job) is None
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, document_id) is not None
+        conn.execute(
+            "DELETE FROM rag_job_leases WHERE kind=? AND job_id=?",
+            (job_leases.INGESTION, ingestion_job),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    folder_sync._recover_startup_state()
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, document_id) is not None
+        conn.execute("UPDATE rag_job_leases SET expires_at='2000-01-01'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    folder_sync._recover_startup_state()
+    assert folder_sync.get_job(sync_job)["status"] == "pending"
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, document_id) is None
+    finally:
+        conn.close()
 
 
 @requires_sqlite_vec
@@ -1483,6 +1551,41 @@ def test_unlink_of_another_folder_does_not_wait_for_active_folder(rag_home):
     assert folder_sync.get_folder(second["id"]) is None
 
 
+@requires_sqlite_vec
+def test_unlink_waits_for_a_foreign_sync_lease(rag_home):
+    from core.rag import job_leases
+
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (job_id,))
+        conn.execute(
+            "INSERT INTO rag_job_leases(kind, job_id, owner_id, expires_at) "
+            "VALUES(?,?,'foreign','9999-12-31')",
+            (job_leases.FOLDER_SYNC, job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    deletion = threading.Thread(target = folder_sync.delete_folder, args = (folder["id"],))
+    deletion.start()
+    deadline = time.time() + 2
+    while time.time() < deadline and folder_sync.get_folder(folder["id"])["status"] != "retired":
+        time.sleep(0.01)
+    assert deletion.is_alive()
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("UPDATE rag_job_leases SET expires_at='2000-01-01' WHERE job_id=?", (job_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    deletion.join(2)
+    assert not deletion.is_alive()
+    assert folder_sync.get_folder(folder["id"]) is None
+
+
 def test_project_rag_cleanup_runs_off_the_event_loop(monkeypatch):
     from routes import chat_history
 
@@ -1813,6 +1916,52 @@ def test_startup_deletes_retired_scope_for_deleted_project(rag_home, stub_embedd
     finally:
         conn.close()
     assert not os.path.exists(document["stored_path"])
+
+
+@requires_sqlite_vec
+def test_retired_scope_waits_for_manual_ingestion_before_purging(rag_home, stub_embeddings, monkeypatch):
+    from core.rag import ingestion
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    scope = store.project_scope("uploading-project")
+    upload = ensure_dir(rag_uploads_root()) / "in-flight.txt"
+    upload.write_text("durable in-flight words", encoding = "utf-8")
+    parsing = threading.Event()
+    release = threading.Event()
+    original_parse = ingestion.parsers.parse
+
+    def blocked_parse(path):
+        parsing.set()
+        assert release.wait(5)
+        return original_parse(path)
+
+    monkeypatch.setattr(ingestion.parsers, "parse", blocked_parse)
+    document_id, job_id = ingestion.start_ingestion(
+        scope, None, None, upload.name, str(upload), project_id = "uploading-project"
+    )
+    assert parsing.wait(5)
+    folder_sync.retire_scope(scope)
+    assert folder_sync.delete_retired_scope(scope) is False
+    assert folder_sync.scope_retired(scope) is True
+
+    release.set()
+    deadline = time.time() + 5
+    while time.time() < deadline and ingestion.get_job_status(job_id)["status"] != "completed":
+        time.sleep(0.05)
+    while time.time() < deadline and not folder_sync.delete_retired_scope(scope):
+        time.sleep(0.05)
+
+    assert folder_sync.scope_retired(scope) is False
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, document_id) is None
+        assert conn.execute("SELECT 1 FROM ingestion_jobs WHERE id=?", (job_id,)).fetchone() is None
+        assert conn.execute(
+            "SELECT 1 FROM chunks WHERE document_id=?", (document_id,)
+        ).fetchone() is None
+    finally:
+        conn.close()
+    assert not upload.exists()
 
 
 @requires_sqlite_vec

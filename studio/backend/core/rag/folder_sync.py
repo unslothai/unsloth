@@ -23,7 +23,7 @@ from pathlib import Path, PurePosixPath
 from storage import rag_db
 from utils.paths import ensure_dir, rag_uploads_root
 
-from . import config, ingestion, store
+from . import config, ingestion, job_leases, store
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,10 @@ _MAX_FOLDER_DEPTH = 64
 
 
 class _SyncStopped(Exception):
+    pass
+
+
+class _LeaseLost(Exception):
     pass
 
 
@@ -348,8 +352,10 @@ def _update_folder(
 ) -> dict:
     conn = rag_db.get_connection()
     try:
-        row = conn.execute("SELECT status FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
-        if row is None or row["status"] == "retired":
+        row = conn.execute(
+            "SELECT status, delete_remove_index FROM linked_folders WHERE id=?", (folder_id,)
+        ).fetchone()
+        if row is None or row["status"] == "retired" or row["delete_remove_index"] is not None:
             raise KeyError(folder_id)
         if name is not None:
             clean_name = name.strip()
@@ -398,35 +404,94 @@ def _remove_retired_snapshot(path: str | None) -> None:
         pass
 
 
+def _delete_retired_folder(folder_id: str) -> bool | None:
+    """Finish a durable unlink once no process still owns its sync job."""
+    conn = rag_db.get_connection()
+    snapshots: list[str] = []
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        folder = conn.execute(
+            "SELECT delete_remove_index FROM linked_folders "
+            "WHERE id=? AND delete_remove_index IS NOT NULL",
+            (folder_id,),
+        ).fetchone()
+        if folder is None:
+            conn.rollback()
+            return None
+        if conn.execute(
+            "SELECT 1 FROM linked_folder_sync_jobs j JOIN rag_job_leases l "
+            "ON l.kind=? AND l.job_id=j.id WHERE j.folder_id=? AND l.expires_at>? LIMIT 1",
+            (job_leases.FOLDER_SYNC, folder_id, _now()),
+        ).fetchone():
+            conn.rollback()
+            return False
+        docs = conn.execute(
+            "SELECT d.id, d.stored_path FROM linked_folder_files ff "
+            "JOIN documents d ON d.id=ff.document_id WHERE ff.folder_id=?",
+            (folder_id,),
+        ).fetchall()
+        conn.execute("DELETE FROM linked_folder_files WHERE folder_id=?", (folder_id,))
+        for doc in docs:
+            if folder["delete_remove_index"]:
+                store.delete_document(conn, doc["id"], commit = False)
+                if doc["stored_path"]:
+                    snapshots.append(doc["stored_path"])
+            else:
+                conn.execute(
+                    "UPDATE documents SET linked_folder_id=NULL, linked_relative_path=NULL "
+                    "WHERE id=?",
+                    (doc["id"],),
+                )
+        conn.execute(
+            "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
+            "(SELECT id FROM linked_folder_sync_jobs WHERE folder_id=?)",
+            (job_leases.FOLDER_SYNC, folder_id),
+        )
+        conn.execute("DELETE FROM linked_folder_sync_jobs WHERE folder_id=?", (folder_id,))
+        conn.execute("DELETE FROM linked_folders WHERE id=?", (folder_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    for snapshot in snapshots:
+        _remove_snapshot(snapshot)
+    return True
+
+
+def _reconcile_retired_folder_deletions() -> None:
+    conn = rag_db.get_connection()
+    try:
+        folder_ids = [
+            row["id"]
+            for row in conn.execute(
+                "SELECT id FROM linked_folders "
+                "WHERE delete_remove_index IS NOT NULL"
+            )
+        ]
+    finally:
+        conn.close()
+    for folder_id in folder_ids:
+        _delete_retired_folder(folder_id)
+
+
 def delete_folder(folder_id: str, *, remove_index: bool = True) -> bool:
     with _folder_lock(folder_id):
         conn = rag_db.get_connection()
-        snapshots: list[str] = []
         try:
+            conn.execute("BEGIN IMMEDIATE")
             if (
                 conn.execute("SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
                 is None
             ):
+                conn.rollback()
                 return False
-            docs = conn.execute(
-                "SELECT d.id, d.stored_path FROM linked_folder_files ff "
-                "JOIN documents d ON d.id=ff.document_id WHERE ff.folder_id=?",
-                (folder_id,),
-            ).fetchall()
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM linked_folder_files WHERE folder_id=?", (folder_id,))
-            for doc in docs:
-                if remove_index:
-                    store.delete_document(conn, doc["id"], commit = False)
-                    if doc["stored_path"]:
-                        snapshots.append(doc["stored_path"])
-                else:
-                    conn.execute(
-                        "UPDATE documents SET linked_folder_id=NULL, linked_relative_path=NULL "
-                        "WHERE id=?",
-                        (doc["id"],),
-                    )
-            conn.execute("DELETE FROM linked_folders WHERE id=?", (folder_id,))
+            conn.execute(
+                "UPDATE linked_folders SET auto_sync=0, status='retired', "
+                "delete_remove_index=COALESCE(delete_remove_index, ?), updated_at=? WHERE id=?",
+                (int(remove_index), _now(), folder_id),
+            )
             conn.execute(
                 "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
                 "error='Linked folder was removed', completed_at=? "
@@ -434,10 +499,13 @@ def delete_folder(folder_id: str, *, remove_index: bool = True) -> bool:
                 (_now(), folder_id),
             )
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
-        for snapshot in snapshots:
-            _remove_snapshot(snapshot)
+        while _delete_retired_folder(folder_id) is False:
+            time.sleep(0.05)
         return True
 
 
@@ -671,14 +739,34 @@ def delete_retired_scope(scope: str) -> bool:
     with scope_retirement_lock(scope):
         conn = rag_db.get_connection()
         try:
+            conn.execute("BEGIN IMMEDIATE")
             if (
                 conn.execute(
                     "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
                 ).fetchone()
                 is None
             ):
+                conn.rollback()
                 return False
-            conn.execute("BEGIN IMMEDIATE")
+            live_ingestion = conn.execute(
+                "SELECT 1 FROM ingestion_jobs j JOIN rag_job_leases l "
+                "ON l.kind=? AND l.job_id=j.id WHERE j.scope=? "
+                "AND j.status IN ('pending','running') AND l.expires_at>? LIMIT 1",
+                (job_leases.INGESTION, scope, _now()),
+            ).fetchone()
+            if live_ingestion is not None:
+                conn.rollback()
+                return False
+            live_folder_sync = conn.execute(
+                "SELECT 1 FROM linked_folder_sync_jobs j JOIN linked_folders f "
+                "ON f.id=j.folder_id JOIN rag_job_leases l "
+                "ON l.kind=? AND l.job_id=j.id WHERE f.scope=? "
+                "AND l.expires_at>? LIMIT 1",
+                (job_leases.FOLDER_SYNC, scope, _now()),
+            ).fetchone()
+            if live_folder_sync is not None:
+                conn.rollback()
+                return False
             documents = conn.execute(
                 "SELECT id, stored_path FROM documents WHERE scope=?", (scope,)
             ).fetchall()
@@ -688,9 +776,21 @@ def delete_retired_scope(scope: str) -> bool:
             for document in documents:
                 store.delete_document(conn, document["id"], commit = False)
             conn.execute(
+                "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
+                "(SELECT id FROM ingestion_jobs WHERE scope=?)",
+                (job_leases.INGESTION, scope),
+            )
+            conn.execute("DELETE FROM ingestion_jobs WHERE scope=?", (scope,))
+            conn.execute(
                 "DELETE FROM linked_folder_files WHERE folder_id IN "
                 "(SELECT id FROM linked_folders WHERE scope=?)",
                 (scope,),
+            )
+            conn.execute(
+                "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
+                "(SELECT j.id FROM linked_folder_sync_jobs j JOIN linked_folders f "
+                "ON f.id=j.folder_id WHERE f.scope=?)",
+                (job_leases.FOLDER_SYNC, scope),
             )
             conn.execute(
                 "DELETE FROM linked_folder_sync_jobs WHERE folder_id IN "
@@ -782,9 +882,13 @@ def _request_sync(folder_id: str, *, rebuild: bool = False) -> str:
     try:
         conn.execute("BEGIN IMMEDIATE")
         folder = conn.execute(
-            "SELECT status FROM linked_folders WHERE id=?", (folder_id,)
+            "SELECT status, delete_remove_index FROM linked_folders WHERE id=?", (folder_id,)
         ).fetchone()
-        if folder is None or folder["status"] == "retired":
+        if (
+            folder is None
+            or folder["status"] == "retired"
+            or folder["delete_remove_index"] is not None
+        ):
             raise KeyError(folder_id)
         active = conn.execute(
             "SELECT id, kind, status FROM linked_folder_sync_jobs WHERE folder_id=? "
@@ -1040,6 +1144,29 @@ def _check_running() -> None:
     stop_event = getattr(_worker_state, "stop_event", _stop)
     if stop_event.is_set():
         raise _SyncStopped
+    job_id = getattr(_worker_state, "job_id", None)
+    if job_id is None:
+        return
+    conn = rag_db.get_connection()
+    try:
+        if not job_leases.renew_owned(conn, job_leases.FOLDER_SYNC, job_id):
+            conn.rollback()
+            raise _LeaseLost
+        folder = conn.execute(
+            "SELECT f.status, f.delete_remove_index FROM linked_folder_sync_jobs j "
+            "JOIN linked_folders f ON f.id=j.folder_id WHERE j.id=?",
+            (job_id,),
+        ).fetchone()
+        if (
+            folder is None
+            or folder["status"] == "retired"
+            or folder["delete_remove_index"] is not None
+        ):
+            conn.commit()
+            raise _LeaseLost
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _check_root_identity(root: str, expected: tuple[int, int]) -> None:
@@ -1243,25 +1370,22 @@ def _reconcile_folder(job_id: str) -> None:
     _check_running()
     conn = rag_db.get_connection()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM linked_folder_sync_jobs WHERE id=?", (job_id,)).fetchone()
-        if row is None or row["status"] not in ("pending", "running"):
-            conn.rollback()
+        if (
+            row is None
+            or row["status"] != "running"
+            or not job_leases.owned_by_this_process(conn, job_leases.FOLDER_SYNC, job_id)
+        ):
             return
         job = dict(row)
-        conn.execute(
-            "UPDATE linked_folder_sync_jobs SET status='running', stage='scanning', "
-            "started_at=COALESCE(started_at, ?) WHERE id=?",
-            (_now(), job_id),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
     finally:
         conn.close()
     folder = get_folder(job["folder_id"])
-    if folder is None or folder["status"] == "retired":
+    if (
+        folder is None
+        or folder["status"] == "retired"
+        or folder["delete_remove_index"] is not None
+    ):
         _set_job(
             job_id,
             status = "failed",
@@ -1288,7 +1412,7 @@ def _reconcile_folder(job_id: str) -> None:
         current, scanned_identity = _scan(folder["path"], expected_identity)
         _check_running()
         _establish_root_identity(folder["id"], scanned_identity)
-    except _SyncStopped:
+    except (_SyncStopped, _LeaseLost):
         raise
     except Exception as exc:
         # A partial/unavailable scan is never authoritative for deletion.
@@ -1470,7 +1594,7 @@ def _reconcile_folder(job_id: str) -> None:
                 added += 1
             else:
                 changed_count += 1
-        except _SyncStopped:
+        except (_SyncStopped, _LeaseLost):
             if document_id and ingestion_job:
                 ingestion.discard_document_when_finished(ingestion_job, document_id)
             elif document_id:
@@ -1543,7 +1667,8 @@ def _reconcile_folder(job_id: str) -> None:
     conn = rag_db.get_connection()
     try:
         conn.execute(
-            "UPDATE linked_folders SET status=?, last_error=?, last_scan_at=?, updated_at=? WHERE id=?",
+            "UPDATE linked_folders SET status=?, last_error=?, last_scan_at=?, updated_at=? "
+            "WHERE id=? AND delete_remove_index IS NULL",
             ("ready" if failed == 0 else "error", error, _now(), _now(), folder["id"]),
         )
         conn.commit()
@@ -1635,24 +1760,37 @@ def _queue_requested_rebuild(job_id: str) -> None:
 
 def reconcile_folder(job_id: str) -> None:
     """Reconcile and persist a terminal folder state for every unexpected failure."""
+    if _claim_job(job_id) is None:
+        return
+    lease_lost = False
+    _worker_state.job_id = job_id
     try:
         _reconcile_folder(job_id)
+    except _LeaseLost:
+        lease_lost = True
     except _SyncStopped:
         _pause_job(job_id)
     except Exception as exc:
         logger.exception("linked-folder job %s failed unexpectedly", job_id)
         _fail_job(job_id, exc)
     finally:
-        _queue_requested_rebuild(job_id)
+        try:
+            if not lease_lost:
+                _queue_requested_rebuild(job_id)
+        finally:
+            del _worker_state.job_id
+            job_leases.release(job_leases.FOLDER_SYNC, job_id)
 
 
 def _enqueue_periodic() -> None:
+    _reconcile_retired_folder_deletions()
     conn = rag_db.get_connection()
     try:
         now = _now()
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
-            "SELECT id FROM linked_folders WHERE auto_sync=1 AND status!='retired'"
+            "SELECT id FROM linked_folders WHERE auto_sync=1 AND status!='retired' "
+            "AND delete_remove_index IS NULL"
         ).fetchall()
         for row in rows:
             conn.execute(
@@ -1667,16 +1805,61 @@ def _enqueue_periodic() -> None:
         conn.close()
 
 
+def _claim_job(job_id: str) -> tuple[str, str] | None:
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT id, folder_id, status FROM linked_folder_sync_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        if row is None or row["status"] not in ("pending", "running"):
+            conn.rollback()
+            return None
+        if row["status"] == "running":
+            if not job_leases.owned_by_this_process(
+                conn, job_leases.FOLDER_SYNC, job_id
+            ) and not job_leases.claim(conn, job_leases.FOLDER_SYNC, job_id):
+                conn.rollback()
+                return None
+        else:
+            if not job_leases.claim(conn, job_leases.FOLDER_SYNC, job_id):
+                conn.rollback()
+                return None
+            conn.execute(
+                "UPDATE linked_folder_sync_jobs SET status='running', stage='scanning', "
+                "started_at=COALESCE(started_at, ?) WHERE id=? AND status='pending'",
+                (_now(), job_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        job_leases.activate(job_leases.FOLDER_SYNC, job_id)
+    except Exception:
+        conn = rag_db.get_connection()
+        try:
+            conn.execute(
+                "UPDATE linked_folder_sync_jobs SET status='pending', stage='queued' WHERE id=?",
+                (job_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        job_leases.release(job_leases.FOLDER_SYNC, job_id)
+        raise
+    return job_id, row["folder_id"]
+
+
 def _next_job() -> tuple[str, str] | None:
     conn = rag_db.get_connection()
     try:
         row = conn.execute(
-            "SELECT id, folder_id FROM linked_folder_sync_jobs "
-            "WHERE status='pending' ORDER BY created_at LIMIT 1"
+            "SELECT id FROM linked_folder_sync_jobs WHERE status='pending' "
+            "ORDER BY created_at LIMIT 1"
         ).fetchone()
-        return (row["id"], row["folder_id"]) if row else None
     finally:
         conn.close()
+    return _claim_job(row["id"]) if row else None
 
 
 def _worker(stop_event: threading.Event | None = None, project_exists = None) -> None:
@@ -1726,10 +1909,16 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
 def _recover_startup_state() -> None:
     conn = rag_db.get_connection()
     try:
+        now = _now()
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "UPDATE linked_folder_sync_jobs SET status='pending', stage='queued', "
-            "error=NULL WHERE status='running'"
+            "error=NULL WHERE status='running' AND NOT EXISTS ("
+            "SELECT 1 FROM rag_job_leases l WHERE l.kind=? "
+            "AND l.job_id=linked_folder_sync_jobs.id AND l.expires_at>?)",
+            (job_leases.FOLDER_SYNC, now),
         )
+        conn.execute("DELETE FROM rag_job_leases WHERE expires_at<=?", (now,))
         rebuild_handoffs = conn.execute(
             "SELECT id FROM linked_folder_sync_jobs WHERE status IN ('completed','failed') "
             "AND rebuild_requested=1"
@@ -1739,10 +1928,23 @@ def _recover_startup_state() -> None:
         orphans = conn.execute(
             "SELECT d.id, d.stored_path FROM documents d "
             "WHERE d.linked_folder_id IS NOT NULL AND NOT EXISTS "
-            "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)"
+            "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id) AND NOT EXISTS ("
+            "SELECT 1 FROM ingestion_jobs j JOIN rag_job_leases l "
+            "ON l.kind=? AND l.job_id=j.id WHERE j.document_id=d.id "
+            "AND j.status IN ('pending','running') AND l.expires_at>?) AND NOT EXISTS ("
+            "SELECT 1 FROM linked_folder_sync_jobs sj JOIN rag_job_leases sl "
+            "ON sl.kind=? AND sl.job_id=sj.id WHERE sj.folder_id=d.linked_folder_id "
+            "AND sl.expires_at>?)",
+            (job_leases.INGESTION, now, job_leases.FOLDER_SYNC, now),
         ).fetchall()
         for orphan in orphans:
             store.delete_document(conn, orphan["id"], commit = False)
+            conn.execute(
+                "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
+                "(SELECT id FROM ingestion_jobs WHERE document_id=?)",
+                (job_leases.INGESTION, orphan["id"]),
+            )
+            conn.execute("DELETE FROM ingestion_jobs WHERE document_id=?", (orphan["id"],))
         conn.commit()
     finally:
         conn.close()

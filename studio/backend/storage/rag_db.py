@@ -156,6 +156,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS rag_job_leases (
+            kind TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            PRIMARY KEY(kind, job_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rag_job_leases_expiry
+            ON rag_job_leases(expires_at);
+
         CREATE TABLE IF NOT EXISTS linked_folders (
             id TEXT NOT NULL PRIMARY KEY,
             scope_type TEXT NOT NULL,
@@ -165,6 +175,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             name TEXT NOT NULL,
             root_device INTEGER,
             root_inode INTEGER,
+            delete_remove_index INTEGER,
             auto_sync INTEGER NOT NULL DEFAULT 1,
             status TEXT NOT NULL DEFAULT 'pending',
             last_error TEXT,
@@ -244,6 +255,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN root_device INTEGER")
     if "root_inode" not in folder_cols:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN root_inode INTEGER")
+    if "delete_remove_index" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN delete_remove_index INTEGER")
     retired_scope_cols = {
         r[1] for r in conn.execute("PRAGMA table_info(linked_folder_retired_scopes)").fetchall()
     }

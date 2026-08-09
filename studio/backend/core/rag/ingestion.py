@@ -16,7 +16,7 @@ import threading
 
 from storage import rag_db
 
-from . import captioner, chunking, config, embeddings, parsers, store
+from . import captioner, chunking, config, embeddings, job_leases, parsers, store
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,8 @@ def _set_job(
 
 
 def _progress(conn, job_id: str, stage: str, progress: float) -> None:
+    if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+        raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
     _set_job(conn, job_id, status = "running", stage = stage, progress = progress)
     _emit(job_id, {"type": "progress", "stage": stage, "progress": progress})
 
@@ -264,6 +266,8 @@ def _run(
             count = count,
         )
         if not chunks:
+            if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+                raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
             store.set_document_status(conn, document_id, "completed", num_chunks = 0)
             _replace_old_document(conn, replaces, stored_path)
             _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
@@ -290,6 +294,8 @@ def _run(
 
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
+    except job_leases.JobLeaseLost:
+        logger.info("ingestion job %s stopped after its lease was reclaimed", job_id)
     except Exception as exc:  # noqa: BLE001 - report any failure to the client
         logger.exception("ingestion job %s failed", job_id)
         try:
@@ -303,6 +309,7 @@ def _run(
     finally:
         if conn is not None:
             conn.close()
+        job_leases.release(job_leases.INGESTION, job_id)
         with _jobs_lock:
             _workers.pop(job_id, None)
             discard_document_id = _discard_after_worker.pop(job_id, None)
@@ -348,6 +355,15 @@ def start_ingestion(
     sha = _sha256_file(stored_path)
     conn = rag_db.get_connection()
     try:
+        # Serialize admission with durable scope retirement across backend
+        # processes. The job lease is committed in the same transaction as the
+        # document, so cleanup never observes an unowned in-flight document.
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute(
+            "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
+        ).fetchone():
+            conn.rollback()
+            raise RuntimeError("Owning scope is being deleted")
         effective_model = model_name or config.effective_embedding_model()
         # (old_document_id, old_stored_path) replaced by this upload; deleted by
         # the worker only after the replacement completes, so a failed re-index
@@ -387,7 +403,7 @@ def start_ingestion(
                 return existing, job_id
         if dedupe:
             for failed in store.failed_documents_by_hash(conn, scope, sha):
-                store.delete_document(conn, failed["id"])
+                store.delete_document(conn, failed["id"], commit = False)
                 _remove_upload(failed.get("stored_path"), keep_path = stored_path)
 
         document_id = store.create_document(
@@ -403,28 +419,40 @@ def start_ingestion(
             embedding_model = effective_model,
             linked_folder_id = linked_folder_id,
             linked_relative_path = linked_relative_path,
+            commit = False,
         )
         job_id = _new_job(conn, document_id, scope)
     finally:
         conn.close()
 
-    with _jobs_lock:
-        _jobs[job_id] = queue.Queue()
-    worker = threading.Thread(
-        target = _run,
-        # effective_model (not the raw model_name) pins the embedder for the
-        # whole job: a Settings change mid-ingestion must not switch tokenizer
-        # or embedder between batches of one document.
-        args = (job_id, document_id, scope, stored_path, effective_model, ocr, caption, replaces),
-        daemon = True,
-    )
-    with _jobs_lock:
-        _workers[job_id] = worker
     try:
+        job_leases.activate(job_leases.INGESTION, job_id)
+        with _jobs_lock:
+            _jobs[job_id] = queue.Queue()
+        worker = threading.Thread(
+            target = _run,
+            # effective_model (not the raw model_name) pins the embedder for the
+            # whole job: a Settings change mid-ingestion must not switch tokenizer
+            # or embedder between batches of one document.
+            args = (
+                job_id,
+                document_id,
+                scope,
+                stored_path,
+                effective_model,
+                ocr,
+                caption,
+                replaces,
+            ),
+            daemon = True,
+        )
+        with _jobs_lock:
+            _workers[job_id] = worker
         worker.start()
     except Exception:
         with _jobs_lock:
             _workers.pop(job_id, None)
+        job_leases.release(job_leases.INGESTION, job_id)
         fail_stalled_job(job_id, "Ingestion worker could not start")
         raise
     return document_id, job_id
@@ -495,6 +523,9 @@ def _new_job(
             datetime.now(timezone.utc).isoformat(),
         ),
     )
+    if status not in _TERMINAL_JOB_STATUSES:
+        if not job_leases.claim(conn, job_leases.INGESTION, job_id):
+            raise RuntimeError("Could not claim ingestion job")
     conn.commit()
     return job_id
 
