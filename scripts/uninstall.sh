@@ -561,9 +561,11 @@ _unsloth_uninstall_main() {
             # writes this data; the shell launcher just opens a browser. This script never
             # removes that app, so it must not reset it either.
             _bid="ai.unsloth.studio"
+            # Overridable so tests can point the scan at a fixture dir.
+            _bid_apps="${UNSLOTH_APPLICATIONS_DIR:-/Applications}"
             _bid_owner=""
-            for _bid_cand in "/Applications/Unsloth.app" \
-                             "/Applications/Unsloth Studio (Desktop).app" \
+            for _bid_cand in "$_bid_apps/Unsloth.app" \
+                             "$_bid_apps/Unsloth Studio (Desktop).app" \
                              "$HOME/Applications/Unsloth.app"; do
                 if [ -x "$_bid_cand/Contents/MacOS/unsloth-studio" ]; then
                     _bid_owner="$_bid_cand"

@@ -63,12 +63,19 @@ for _tool in powershell.exe sudo; do
     chmod +x "$STUB_BIN/$_tool"
 done
 
-# run_uninstall <home> <uname_output> : run the full script with a stubbed OS.
+# The macOS branch keeps the bundle-id data when the packaged desktop app owns it, so point
+# the scan at an empty fixture: these cases are a shell-only install, and a real /Applications
+# /Unsloth.app on the machine running the tests must not change the result.
+APPS_DIR="$_TMP_ROOT/Applications"
+mkdir -p "$APPS_DIR"
+
+# run_uninstall <home> <uname_output> [apps_dir] : run the full script with a stubbed OS.
 run_uninstall() {
     printf '#!/bin/sh\necho %s\n' "$2" > "$STUB_BIN/uname"
     chmod +x "$STUB_BIN/uname"
     env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
         -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+        UNSLOTH_APPLICATIONS_DIR="${3:-$APPS_DIR}" \
         HOME="$1" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" >/dev/null 2>&1
 }
 
@@ -78,6 +85,7 @@ run_uninstall_out() {
     chmod +x "$STUB_BIN/uname"
     env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
         -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+        UNSLOTH_APPLICATIONS_DIR="${3:-$APPS_DIR}" \
         HOME="$1" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" 2>/dev/null
 }
 
@@ -106,6 +114,33 @@ assert_gone "macOS: Cookies/$BID.binarycookies removed"      "$H/Library/Cookies
 assert_gone "macOS: Saved Application State removed"         "$H/Library/Saved Application State/$BID.savedState"
 assert_gone "macOS: Preferences/$BID.plist removed"          "$H/Library/Preferences/$BID.plist"
 assert_present "macOS: unrelated app cache kept"             "$H/Library/Caches/com.other.app/keepme"
+
+# ── 1b. macOS: the packaged desktop app owns this bundle id, so its data survives ──
+# The shell launcher is a /bin/sh stub with no WebView; only the packaged app writes these.
+# This script never removes that app, so it must not reset it either.
+OWNED_APPS="$_TMP_ROOT/Applications-owned"
+mkdir -p "$OWNED_APPS/Unsloth.app/Contents/MacOS"
+printf '#!/bin/sh\nexit 0\n' > "$OWNED_APPS/Unsloth.app/Contents/MacOS/unsloth-studio"
+chmod +x "$OWNED_APPS/Unsloth.app/Contents/MacOS/unsloth-studio"
+H=$(new_home)
+mkdir -p "$H/Library/Caches/$BID" "$H/Library/WebKit/$BID" \
+         "$H/Library/Application Support/$BID" "$H/Library/HTTPStorages" \
+         "$H/Library/Saved Application State/$BID.savedState" \
+         "$H/Library/Preferences" "$H/Library/Cookies" \
+         "$H/Applications/Unsloth Studio.app/Contents/MacOS"
+: > "$H/Library/HTTPStorages/$BID.binarycookies"
+: > "$H/Library/Cookies/$BID.binarycookies"
+: > "$H/Library/Preferences/$BID.plist"
+: > "$H/Applications/Unsloth Studio.app/Contents/MacOS/launch-studio"
+run_uninstall "$H" Darwin "$OWNED_APPS"
+assert_present "macOS: Caches/$BID kept when the app owns it"              "$H/Library/Caches/$BID"
+assert_present "macOS: WebKit/$BID kept when the app owns it"              "$H/Library/WebKit/$BID"
+assert_present "macOS: Application Support/$BID kept when the app owns it" "$H/Library/Application Support/$BID"
+assert_present "macOS: Saved Application State kept when the app owns it"  "$H/Library/Saved Application State/$BID.savedState"
+assert_present "macOS: Preferences/$BID.plist kept when the app owns it"   "$H/Library/Preferences/$BID.plist"
+assert_present "macOS: Cookies kept when the app owns it"                  "$H/Library/Cookies/$BID.binarycookies"
+# The shell launcher is still this script's to remove, app present or not.
+assert_gone    "macOS: shell launcher bundle still removed"                "$H/Applications/Unsloth Studio.app"
 
 # ── 2. Linux: bundle-id-keyed XDG default paths are removed ──
 H=$(new_home)
