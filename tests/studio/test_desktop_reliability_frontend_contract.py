@@ -42,6 +42,8 @@ APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
 VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
+VIDEO_API = FRONTEND / "features/video/api.ts"
+RAG_API = FRONTEND / "features/rag/api/rag-api.ts"
 
 REMOTE_ACCESS_SECTION = FRONTEND / "features/settings/components/remote-access-section.tsx"
 PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialog.tsx"
@@ -265,6 +267,62 @@ def test_generated_download_buttons_use_the_native_save_boundary():
         assert "isDownloadCancelled(error)" in source
 
 
+def test_gallery_video_links_are_absolute_and_saved_natively():
+    video_api = VIDEO_API.read_text(encoding = "utf-8")
+    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
+    rag_api = RAG_API.read_text(encoding = "utf-8")
+
+    # The backend mints this link relative so a proxy can serve it. Its consumers are
+    # <video src> and the download, none of which go through authFetch, so a relative
+    # path under Tauri resolves against the webview and yields the SPA shell.
+    assert "return apiUrl(body.url);" in video_api
+    assert 'from "@/lib/api-base"' in video_api
+    # The same fix the RAG document preview already carries.
+    assert "return apiUrl(data.url);" in rag_api
+
+    # An absolute link is cross-origin, where the download attribute stops saving, so the
+    # MP4 goes native. Streaming, not downloadUrl: a clip is capped at 2048x2048 x 1024
+    # frames, too big to buffer for IPC, and the chooser must not wait on the body.
+    helper = NATIVE_FILES.read_text(encoding = "utf-8")
+    assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
+    assert '"save_native_file_from_url"' in helper
+    assert "isDownloadCancelled(err)" in video_page
+    # WebM / GIF keep the blob-and-anchor route they already had; nothing forced a change.
+    assert "URL.createObjectURL(blob)" in video_page
+
+    # media-src, not just connect-src: the signed link is played by an element.
+    tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
+    assert (
+        "media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*" in tauri_config
+    )
+
+    # The save dialog now offers these to video, not just to the audio player, and the
+    # streaming command is registered and pinned to the local backend.
+    dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
+    assert '("MPEG-4 video or audio", filter_extensions(["m4a", "mp4"]))' in dialogs
+    assert '("WebM video or audio", filter_extensions(["webm"]))' in dialogs
+    assert "async fn stream_url_to_path" in dialogs
+    # Parsed, not sliced: in http://127.0.0.1:8888@evil.test the loopback part is userinfo.
+    assert "reqwest::Url::parse(url)" in dialogs
+    assert "parsed.username().is_empty()" in dialogs
+    assert "parsed.password().is_some()" in dialogs
+    # The chooser has to come first, or the user waits on the body before being asked where.
+    streaming = dialogs[dialogs.index("pub async fn save_native_file_from_url") :]
+    assert streaming.index(".save_file(") < streaming.index("stream_url_to_path(&url")
+    # No proxy (the signed URL must not reach one) and no redirects (they would leave loopback
+    # after the check). read_timeout, not timeout: it bounds each chunk, so a backend that goes
+    # quiet cannot hang the save while a legitimately large clip still finishes.
+    loopback = (REPO / "studio/src-tauri/src/loopback_http.rs").read_text(encoding = "utf-8")
+    assert "fn streaming_client" in loopback
+    assert "redirect(reqwest::redirect::Policy::none())" in loopback
+    assert ".read_timeout(read_timeout)" in loopback
+    assert ".timeout(" not in loopback.split("fn streaming_client")[1]
+    assert loopback.count(".no_proxy()") == 2
+    assert "loopback_http::streaming_client" in dialogs
+    main_rs = (REPO / "studio/src-tauri/src/main.rs").read_text(encoding = "utf-8")
+    assert "native_file_dialogs::save_native_file_from_url," in main_rs
+
+
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
     helper = CLIPBOARD_FILES.read_text(encoding = "utf-8")
     thread = THREAD.read_text(encoding = "utf-8")
@@ -343,6 +401,16 @@ def test_mac_dock_reopens_hidden_main_window():
     assert "has_visible_windows: false" in run_handler
     reopen_handler = run_handler.split("tauri::RunEvent::Reopen", 1)[1].split("=>", 1)[1]
     assert "show_main_window(app)" in reopen_handler
+
+
+def test_windows_browser_guard_runs_only_in_release_builds():
+    # WebView2 is not reachable from Python, so pin the release-only call that
+    # keeps refresh controls available during development.
+    source = TAURI_MAIN.read_text(encoding = "utf-8")
+
+    assert "fn setup_windows_browser_guards" in source
+    before_call = source.split("setup_windows_browser_guards(app)?;", 1)[0]
+    assert before_call.rstrip().endswith("#[cfg(all(windows, not(debug_assertions)))]")
 
 
 def test_desktop_manages_the_remote_password_through_the_account_dialog():
