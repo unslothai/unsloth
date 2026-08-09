@@ -18,7 +18,6 @@ from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
     bare_quant_alias,
-    extract_quant_label,
     extract_quant_token,
     gguf_variant_key,
     is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
