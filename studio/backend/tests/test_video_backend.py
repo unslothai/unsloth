@@ -3643,6 +3643,90 @@ def test_h3_native_progress_reads_only_the_denoise_bar(monkeypatch):
     assert seen[8] == (2, 4, "decode")
 
 
+def test_h3_native_progress_survives_the_real_in_place_redraws(monkeypatch):
+    """The two halves of the frozen-bar defect have to be fixed together.
+
+    ``sd_cpp_engine`` splits sd-cli's in-place redraws (leading ``\\r``, no newline until the last
+    step, closed by ``\\033[K``) into records, and the backend's bar pattern reads them. Fix only
+    the reader and the bar still never matches; fix only the pattern and the reader never hands a
+    record over while sampling is running. This drives the REAL byte stream through both.
+    """
+    from core.inference.sd_cpp_engine import iter_sd_cpp_records
+
+    redraw = "\r  |=====>                | {}/{} - 1.63it/s\x1b[K"
+    # One flush per element, as the child actually writes them: the bar for step N is its own
+    # write with no newline, and the carriage return that would terminate it does not arrive
+    # until step N+1. Reading in one big chunk would hide exactly the lateness under test.
+    flushes = [
+        "[INFO ] stable-diffusion.cpp:6899 - generate_video 640x384x124\n",
+        redraw.format(1, 4),
+        redraw.format(2, 4),
+        redraw.format(3, 4),
+        redraw.format(4, 4) + "\n",
+        "[INFO ] stable-diffusion.cpp:6997 - sampling completed, taking 13.20s\n",
+    ]
+
+    class _Raw:
+        def __init__(self, owner) -> None:
+            self._owner = owner
+
+        def read1(self, _n: int) -> bytes:
+            if not self._owner.pending:
+                return b""
+            self._owner.reads += 1
+            return self._owner.pending.pop(0).encode()
+
+    class _PipeStream:
+        def __init__(self, payload: list[str]) -> None:
+            self.pending = list(payload)
+            self.reads = 0
+            self.buffer = _Raw(self)
+
+        def __iter__(self):
+            raise AssertionError("a redraw carries no newline, so line iteration would block")
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    class _ReplayEngine:
+        def generate_video(self, files, params, *, on_log, **kwargs):
+            seen = []
+            stream = _PipeStream(flushes)
+            for record in iter_sd_cpp_records(stream):
+                on_log(record)
+                seen.append((stream.reads, backend._gen["step"], backend._gen["phase"]))
+            calls.append(seen)
+            return Path("/tmp/does-not-exist.webm")
+
+    from core.inference.video_minimax_h3 import MiniMaxH3NativeRuntime
+
+    object.__setattr__(
+        backend._state,
+        "pipe",
+        MiniMaxH3NativeRuntime(engine = _ReplayEngine(), files = object(), offload_flags = ()),
+    )
+    backend.generate(prompt = "p", width = 640, height = 384, steps = 4)
+
+    seen = calls[-1]
+    # Every sampling step is observed WHILE sampling, in order, not all at once at the end.
+    # A redraw yields two records (the empty run before its leading CR, then the bar), so
+    # collapse repeats: what matters is that 1, 2, 3 and 4 each arrive, and in that order.
+    progression: list[int] = []
+    for _reads, step, phase in seen:
+        if phase == "denoise" and (not progression or progression[-1] != step):
+            progression.append(step)
+    assert progression == [0, 1, 2, 3, 4]
+    # Step N must be visible after the flush that carried it (read N + 1, the opening log line
+    # being read 1), not one redraw later. Being "eventually right" is the bug, not the fix.
+    first_read_for = {}
+    for reads, step, phase in seen:
+        if phase == "denoise" and step:
+            first_read_for.setdefault(step, reads)
+    assert first_read_for == {1: 2, 2: 3, 3: 4, 4: 5}
+    # And the run does not end parked on a full denoise bar.
+    assert seen[-1][2] == "decode"
+
+
 # ── MiniMax-H3 references (Ref2VA) ───────────────────────────────────────────
 
 

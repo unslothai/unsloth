@@ -524,3 +524,125 @@ def test_native_generation_timeout_matches_the_ui_settle_window():
         ), fn.__name__
     # The resident-server path shares the same ceiling, applied per request (see test_server_generate_splits_batches_above_server_limit).
     assert sd_cpp_backend.NATIVE_GENERATION_TIMEOUT_S == NATIVE_GENERATION_TIMEOUT_S
+
+
+# ── in-place progress redraws ───────────────────────────────────────────────
+# sd-cli redraws its sampling bar with a LEADING carriage return and closes each redraw with an
+# erase-to-end-of-line, emitting a newline only on the final step:
+#     printf("\r%s %i/%i - %s\033[K%s", bar, step, steps, speed, step == steps ? "\n" : "")
+# so a reader that keys only on newlines reports nothing until sampling is already over.
+
+_REDRAW = "\r  |=========>          | {}/{} - 21.50s/it\x1b[K"
+
+
+def test_split_progress_records_treats_erase_as_a_terminator():
+    """The redraw is complete the moment sd-cli flushes it, even though its own newline never
+    comes and the NEXT redraw's carriage return has not arrived yet."""
+    records, rest = eng.split_progress_records(_REDRAW.format(7, 30))
+    assert records == ["", "  |=========>          | 7/30 - 21.50s/it\x1b[K"]
+    assert rest == ""
+
+
+def test_split_progress_records_keeps_unterminated_remainder():
+    records, rest = eng.split_progress_records("done\nhalf a li")
+    assert records == ["done"]
+    assert rest == "half a li"
+
+
+def test_split_progress_records_counts_crlf_as_one_terminator():
+    records, rest = eng.split_progress_records("a\r\nb\r\n")
+    assert records == ["a", "b"]
+    assert rest == ""
+
+
+def test_strip_ansi_removes_the_erase_sequence():
+    assert eng.strip_ansi("  |==>  | 7/30 - 21.50s/it\x1b[K") == "  |==>  | 7/30 - 21.50s/it"
+
+
+class _ChunkStream:
+    """A text stream over a pipe: ``.buffer.read1`` returns whatever the child has flushed,
+    exactly like a real subprocess pipe, and iteration would block until a newline. Counts reads
+    so a test can prove WHEN a record was delivered, not merely that it arrived eventually."""
+
+    class _Raw:
+        def __init__(self, chunks, owner):
+            self._chunks = list(chunks)
+            self._owner = owner
+
+        def read1(self, _n):
+            if not self._chunks:
+                return b""
+            self._owner.reads += 1
+            return self._chunks.pop(0)
+
+    def __init__(self, chunks):
+        self.reads = 0
+        self.buffer = self._Raw(chunks, self)
+
+    def __iter__(self):
+        raise AssertionError("iteration would block on a redraw that carries no newline")
+
+
+def test_iter_records_delivers_every_redraw():
+    chunks = [_REDRAW.format(i, 3).encode() for i in (1, 2)]
+    chunks.append((_REDRAW.format(3, 3) + "\n").encode())
+    got = [r for r in eng.iter_sd_cpp_records(_ChunkStream(chunks)) if r.strip()]
+    assert got == [
+        "  |=========>          | 1/3 - 21.50s/it",
+        "  |=========>          | 2/3 - 21.50s/it",
+        "  |=========>          | 3/3 - 21.50s/it",
+    ]
+
+
+def test_iter_records_delivers_a_redraw_as_soon_as_it_is_flushed():
+    """The actual regression: progress was not merely late-ish, it was one redraw behind, so a
+    30-step job showed 0/30 until step 2 and never showed the last step before completion.
+
+    Delivering after ONE read is the whole claim. A redraw carries no newline, and its carriage
+    return sits at the front of the NEXT redraw, so a reader terminating only on CR/LF cannot
+    produce step 1 until step 2 has been flushed -- which is a second read.
+    """
+    stream = _ChunkStream([_REDRAW.format(i, 3).encode() for i in (1, 2, 3)])
+    records = eng.iter_sd_cpp_records(stream)
+    first = next(r for r in records if r.strip())
+    assert first == "  |=========>          | 1/3 - 21.50s/it"
+    assert stream.reads == 1
+
+
+def test_iter_records_decodes_utf8_split_across_reads():
+    """A multi-byte character straddling two read1() boundaries must not become mojibake."""
+    blob = "café\n".encode()
+    stream = _ChunkStream([blob[:4], blob[4:]])
+    assert list(eng.iter_sd_cpp_records(stream)) == ["café"]
+
+
+def test_iter_records_falls_back_to_line_iteration_without_a_raw_buffer():
+    """Test doubles (and non-pipe streams) hand us a plain iterable with no ``.buffer``."""
+    lines = ["loading\n", _REDRAW.format(4, 4) + "\n"]
+    got = [r for r in eng.iter_sd_cpp_records(iter(lines)) if r.strip()]
+    assert got == ["loading", "  |=========>          | 4/4 - 21.50s/it"]
+
+
+def test_run_forwards_clean_redraws_to_on_log(tmp_path, monkeypatch):
+    """End of the engine's own chain: a redraw reaches on_log, with no escape left in it."""
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    _patch_popen(
+        monkeypatch,
+        lines = [_REDRAW.format(1, 2), _REDRAW.format(2, 2) + "\n"],
+        returncode = 0,
+        out_file = str(out),
+    )
+    seen: list[str] = []
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+        SdCppGenParams(prompt = "p"),
+        output_path = str(out),
+        on_log = seen.append,
+    )
+    bars = [s for s in seen if "|" in s]
+    assert bars == [
+        "  |=========>          | 1/2 - 21.50s/it",
+        "  |=========>          | 2/2 - 21.50s/it",
+    ]
+    assert not any("\x1b" in s for s in seen)
