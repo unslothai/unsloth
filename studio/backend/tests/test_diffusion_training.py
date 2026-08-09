@@ -68,6 +68,11 @@ class _FakeCtx:
 
 
 @pytest.fixture(autouse = True)
+def _healthy_diffusers(healthy_diffusers):
+    """Every test here is about the route or the config, not about the runner's diffusers."""
+
+
+@pytest.fixture(autouse = True)
 def _isolated_runs_dir(monkeypatch, tmp_path):
     """Terminal service events persist a run record; point the runs dir at tmp so tests
     never write into a real studio home. Yields the dir for the history tests."""
@@ -1407,6 +1412,297 @@ def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypat
     assert "SDXL" in r.json()["detail"]
     assert freed == []
     assert client._fake.started_with is None
+
+
+# ── the pipeline-class gate in the training preflight ─────────────────────────
+# The image families' pipeline classes arrived in different diffusers releases, and the packaging
+# deliberately leaves an older diffusers installable: diffusers dropped Python 3.9 in 0.37 and this
+# project still supports 3.9, so the pin is ``diffusers>=0.39.0 ; python_version >= '3.10'`` plus an
+# unconstrained ``diffusers`` below that. The newest release a 3.9 host can resolve is 0.36.0, and
+# an already-present older one satisfies the unconstrained pin outright. Upstream first exports:
+#   ZImagePipeline 0.36.0, Flux2Pipeline 0.36.0, Flux2KleinPipeline 0.37.0, Krea2Pipeline 0.39.0.
+_PIPELINE_TOO_NEW_FOR_0_36 = (
+    ("krea/Krea-2-Raw", "Krea2Pipeline"),
+    ("black-forest-labs/FLUX.2-klein-4B", "Flux2KleinPipeline"),
+)
+_PIPELINE_TOO_NEW_FOR_0_35 = _PIPELINE_TOO_NEW_FOR_0_36 + (
+    ("Tongyi-MAI/Z-Image-Turbo", "ZImagePipeline"),
+    ("black-forest-labs/FLUX.2-dev", "Flux2Pipeline"),
+)
+
+
+def _fake_diffusers(version, *classes):
+    """A stand-in ``diffusers`` carrying exactly ``classes``, so the guard sees the attribute
+    surface of that release rather than whatever is installed on the runner."""
+    import types
+
+    mod = types.ModuleType("diffusers")
+    mod.__version__ = version
+    for c in classes:
+        setattr(mod, c, object)
+    return mod
+
+
+@pytest.mark.parametrize("base_model,pipeline_class", _PIPELINE_TOO_NEW_FOR_0_35)
+def test_route_start_refuses_a_family_the_install_has_no_pipeline_for(
+    client, monkeypatch, base_model, pipeline_class
+):
+    # The hole this closes: the family resolved as trainable, /diffusion/start reserved the
+    # training slot and freed the resident GPU workloads, and only the spawned child failed, on its
+    # own ``from diffusers import <Pipeline>``. Losing a loaded model and THEN failing is the worst
+    # ordering available, so this asserts the ORDERING, not merely that an error was raised:
+    # nothing freed, and the slot never even reserved.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    # 0.35.2: the last release before any of these four classes existed.
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.35.2"))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": base_model})
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert pipeline_class in detail  # names the class that is missing
+    assert "0.35.2" in detail  # and what is actually installed
+    assert freed == []  # nothing was torn down
+    assert client._fake.calls == []  # the slot was never even reserved
+    assert client._fake.started_with is None
+
+
+@pytest.mark.parametrize("base_model,pipeline_class", _PIPELINE_TOO_NEW_FOR_0_36)
+def test_route_start_refuses_a_too_new_pipeline_on_the_newest_py39_diffusers(
+    client, monkeypatch, base_model, pipeline_class
+):
+    # The realistic case rather than the worst one: 0.36.0 is the newest diffusers a supported
+    # Python 3.9 host can resolve, and it already carries ZImagePipeline and Flux2Pipeline. Krea 2
+    # and FLUX.2-klein still cannot run there, and no `pip install -U diffusers` fixes it without
+    # also upgrading Python.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        _fake_diffusers("0.36.0", "ZImagePipeline", "Flux2Pipeline", "StableDiffusionXLPipeline"),
+    )
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": base_model})
+    assert r.status_code == 400, r.text
+    assert pipeline_class in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []
+    assert client._fake.started_with is None
+
+
+def test_route_start_refuses_a_missing_pipeline_named_by_model_family_too(client, monkeypatch):
+    # resolve_trainable_family has two branches that produce a family, and the explicit
+    # model_family override is the one a name-based test cannot reach: it skips detection entirely.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.36.0"))
+
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "my-org/some-private-mirror", "model_family": "krea-2"},
+    )
+    assert r.status_code == 400, r.text
+    assert "Krea2Pipeline" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []
+    assert client._fake.started_with is None
+
+
+def test_route_start_still_runs_when_the_install_does_have_the_pipeline(
+    client, monkeypatch, dit_train_host
+):
+    # The gate must not refuse a family the environment can actually run, or it would break every
+    # up-to-date install. Same request as above, one attribute different.
+    import sys
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.39.0", "Krea2Pipeline"))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["base_model"] == "krea/Krea-2-Raw"
+
+
+def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(client, monkeypatch):
+    # diffusers' top level is lazy, so the guard's attribute probe is what actually imports the
+    # pipeline's submodule, and a partially usable install raises RuntimeError("Failed to import
+    # diffusers.pipelines...") there. Inference absorbs that (the native sd.cpp engine needs no
+    # diffusers), but the trainer child is a spawn of THIS interpreter and would hit the same
+    # broken import -- after the GPU residents were gone. So training refuses, as a 400 with the
+    # underlying reason intact rather than the bare 500 a RuntimeError would have produced.
+    import sys
+    import types
+
+    import routes.training as tr
+
+    class _LazyModule(types.ModuleType):
+        __version__ = "0.39.0"
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"Failed to import diffusers.pipelines.{name.lower()}")
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "Krea2Pipeline" in detail
+    assert "Failed to import diffusers.pipelines" in detail  # the real reason, not a guess
+    assert freed == []
+    assert client._fake.calls == []
+    assert client._fake.started_with is None
+
+
+def test_route_start_refuses_training_when_diffusers_is_absent(client, monkeypatch):
+    # There is no "the child will install it" here: the trainer runs in a spawned process in the
+    # SAME environment, so an absent diffusers is absent there too. Refusing before the teardown
+    # is the whole point of this preflight.
+    import builtins
+    import sys
+
+    import routes.training as tr
+
+    real_import = builtins.__import__
+
+    def _no_diffusers(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError("No module named 'diffusers'")
+        return real_import(name, *args, **kwargs)
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(builtins, "__import__", _no_diffusers)
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
+    assert r.status_code == 400, r.text
+    assert "No module named 'diffusers'" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []
+
+
+def test_inference_keeps_absorbing_an_unimportable_diffusers(monkeypatch):
+    # The other half of the strict split, asserted where it lives: the default stays silent, or a
+    # CPU/Apple host serving GGUF picks through the native sd.cpp engine could not load anything.
+    import builtins
+
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    real_import = builtins.__import__
+
+    def _no_diffusers(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError("No module named 'diffusers'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_diffusers)
+    assert assert_pipeline_class_available("Krea2Pipeline", "krea-2") is None
+
+
+@pytest.mark.parametrize(
+    "pipeline_class,minimum,needs_py310",
+    [
+        ("ZImagePipeline", "0.36.0", False),
+        ("Flux2Pipeline", "0.36.0", False),
+        ("Flux2KleinPipeline", "0.37.0", True),
+        ("LTX2Pipeline", "0.37.0", True),
+        ("Krea2Pipeline", "0.39.0", True),
+        # Older than the 0.35 baseline but still listed: the packaging leaves an UNCONSTRAINED
+        # diffusers installable below Python 3.10, so an ancient one already present satisfies the
+        # pin, and quoting the 0.39 floor at a family that has shipped since 0.30 is the same wrong
+        # remedy this fixes.
+        ("QwenImagePipeline", "0.35.0", False),
+        ("FluxPipeline", "0.30.0", False),
+    ],
+)
+def test_the_refusal_names_the_release_that_family_actually_needs(
+    pipeline_class, minimum, needs_py310
+):
+    # Quoting the 0.39 floor at every family sent a Python 3.9 host to upgrade its interpreter for
+    # Z-Image, when `pip install -U diffusers` (0.36.0 there) was the whole fix. First-export
+    # releases are read off src/diffusers/__init__.py at the upstream tags; 0.37.0 is where
+    # diffusers' requires-python went ">= 3.10.0" on PyPI.
+    from core.inference.diffusion_families import (
+        _too_old_message,
+        pipeline_class_requirement,
+    )
+
+    assert pipeline_class_requirement(pipeline_class) == (minimum, needs_py310)
+    message = _too_old_message(pipeline_class, "some-family", "0.29.0")
+    assert f"diffusers >= {minimum}" in message
+    assert "0.29.0" in message  # what is actually installed
+    assert ("Python >= 3.10" in message) is needs_py310
+
+
+def test_an_unlisted_pipeline_names_no_version_it_cannot_stand_behind():
+    # StableDiffusionXLPipeline has shipped since before 0.29, so there is no release in play that
+    # lacks it. Falling back to the 0.39 packaging floor would tell a supported Python 3.9 host to
+    # upgrade its interpreter for a class every diffusers it can install already has, so an
+    # unlisted class gets no version and no Python claim at all.
+    from core.inference.diffusion_families import (
+        _too_old_message,
+        pipeline_class_requirement,
+    )
+
+    assert pipeline_class_requirement("StableDiffusionXLPipeline") == (None, False)
+    message = _too_old_message("StableDiffusionXLPipeline", "sdxl", "0.29.0")
+    assert "a newer diffusers" in message and "0.29.0" in message
+    assert "0.39" not in message and "3.10" not in message
+
+
+def test_a_dummy_pipeline_export_is_not_treated_as_importable():
+    # With a required backend absent, diffusers still exports every pipeline NAME as a
+    # DummyObject-metaclassed placeholder whose from_pretrained raises ImportError on first call.
+    # hasattr answers True for it, so the strict gate has to look past the name or the trainer
+    # child hits that ImportError after the GPU residents are gone.
+    import sys
+    import types
+
+    import pytest
+
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    dummy = types.new_class("Krea2Pipeline")
+    dummy.__module__ = "diffusers.utils.dummy_torch_and_transformers_objects"
+    dummy._backends = ["torch", "transformers"]
+
+    stub = types.ModuleType("diffusers")
+    stub.__version__ = "0.39.0"
+    stub.Krea2Pipeline = dummy
+    real = sys.modules.get("diffusers")
+    sys.modules["diffusers"] = stub
+    try:
+        # The default is unchanged: inference has always left an unusable install to the loader.
+        assert assert_pipeline_class_available("Krea2Pipeline", "krea-2") is None
+        with pytest.raises(ValueError) as excinfo:
+            assert_pipeline_class_available("Krea2Pipeline", "krea-2", strict = True)
+    finally:
+        if real is not None:
+            sys.modules["diffusers"] = real
+        else:
+            del sys.modules["diffusers"]
+    msg = str(excinfo.value)
+    assert "placeholder" in msg
+    assert "requires: torch, transformers" in msg  # what the class needs, not a diagnosis
+    # _backends is diffusers' full requirement list, not a list of failed probes, so the message
+    # must not declare a working torch missing or prescribe reinstalling it.
+    assert "missing: torch" not in msg and "pip install -U torch" not in msg
 
 
 def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatch):

@@ -7290,9 +7290,21 @@ class LlamaCppBackend:
             encoding = "utf-8",
             errors = "replace",
             env = utf8_child_env(env),
+            # Deliberately NOT start_new_session, as with the component
+            # installer: the desktop stops this backend by signalling its
+            # process group and force-kills it after five seconds, so a session
+            # of its own would leave the shim and the visual server holding the
+            # GPU until the next launch sweeps them.
             **_windows_hidden_subprocess_kwargs(),
             **_child_popen_kwargs(),
         )
+        # macOS has no parent-death signal, so the kwargs above are empty there and
+        # only this record lets the next startup reap a runner holding the GPU.
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(self._process.pid)
+        except Exception as e:
+            logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
         )
@@ -13284,6 +13296,47 @@ class LlamaCppBackend:
                     torch.cuda.empty_cache()
             return True
 
+    @staticmethod
+    def _leading_process_group(pid):
+        """The pid's own process group, when it leads one. None otherwise."""
+        if not pid or os.name != "posix" or not hasattr(os, "getpgid"):
+            return None
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            return None
+        return pgid if pgid == pid else None
+
+    @staticmethod
+    def _kill_process_group(pgid):
+        """Take down what the leader left behind, if anything is still there."""
+        if pgid is None or not hasattr(os, "killpg"):
+            return
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _collect_descendants(pid):
+        """The server's own children, for the kill below. Empty when unreadable."""
+        try:
+            from utils.process_lifetime import collect_descendants
+            return collect_descendants(pid)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _terminate_descendants(collected):
+        """The diffusion shim's visual server, and anything else it started."""
+        if not collected:
+            return
+        try:
+            from utils.process_lifetime import terminate_descendants
+            terminate_descendants(collected, timeout = 5.0)
+        except Exception as e:
+            logger.debug(f"Could not terminate server descendants: {e}")
+
     def _kill_process(self):
         """Terminate the subprocess if running."""
         # Stop the watchdog before a deliberate kill so a planned reload/unload
@@ -13303,6 +13356,13 @@ class LlamaCppBackend:
         terminable = hasattr(self._process, "terminate")
         if not terminable:
             logger.debug("no terminable llama-server process to kill; clearing state")
+        # Both read before the terminate below: getpgid stops answering once the
+        # wait reaps the leader, and the shim's children are reparented the
+        # moment it exits. This is the only stop the desktop shutdown waits for,
+        # so the visual server has to be named while that link still exists.
+        _pid = getattr(self._process, "pid", None)
+        _pgid = self._leading_process_group(_pid)
+        _descendants = self._collect_descendants(_pid)
         try:
             if terminable:
                 self._process.terminate()
@@ -13323,11 +13383,25 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
+            self._kill_process_group(_pgid)
+            self._terminate_descendants(_descendants)
             # getattr: teardown must tolerate a partially-built backend (failed
             # __init__ or a __new__-built instance), as with _llama_log_fh below.
             if getattr(self, "_stats_logger", None) is not None:
                 self._stats_logger.stop()
                 self._stats_logger = None
+            # Drop it from the lifetime record only once it is confirmed gone.
+            # A server that survived a failed kill has to stay recorded, or the
+            # next startup sweep cannot reap it. The record stores a start-time
+            # identity, so a recycled pid is never signalled either way.
+            _killed_pid = getattr(self._process, "pid", None)
+            _exited = getattr(self._process, "poll", lambda: None)() is not None
+            if _killed_pid is not None and _exited:
+                try:
+                    from utils.process_lifetime import forget_pid
+                    forget_pid(_killed_pid)
+                except Exception:
+                    pass
             self._process = None
             self._clear_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
@@ -13371,6 +13445,14 @@ class LlamaCppBackend:
         since been recycled to a different process (see ``_pid_start_identity``).
         A bare ``pid`` (no identity) is still accepted on read for compatibility.
         """
+        # Track it generically too: the pidfile holds one server, while the
+        # process-lifetime record covers every child and is what the startup
+        # sweep reads where there is no parent-death signal (macOS).
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(pid)
+        except Exception as e:
+            logger.debug(f"Could not track llama-server for lifetime sweep: {e}")
         path = cls._server_pidfile_path()
         if path is None:
             return
