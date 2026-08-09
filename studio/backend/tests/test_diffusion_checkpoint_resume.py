@@ -2660,9 +2660,7 @@ def test_the_latest_displaced_bundle_is_the_one_restored(run_dir):
     was actually in the slot."""
     first = _Run(run_dir, save_total_limit = 0)
     first.save(15)
-    original = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(
-        encoding = "utf-8"
-    )
+    original = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
 
     # A middle run displaces it and then dies, leaving its own replaced- orphan behind.
     middle = _Run(run_dir, seed = 5, save_total_limit = 0)
@@ -2683,9 +2681,7 @@ def test_the_latest_displaced_bundle_is_the_one_restored(run_dir):
 
     dc.clear_own_checkpoints(run_dir, preexisting)
 
-    settled = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(
-        encoding = "utf-8"
-    )
+    settled = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
     assert settled == displaced_by_middle, "the predecessor in the slot is what comes back"
     assert list(run_dir.glob(f"{dc._STAGING_PREFIX}*")) == []
 

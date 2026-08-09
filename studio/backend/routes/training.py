@@ -2650,7 +2650,11 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
 
 
 def _preflight_diffusion_resume(
-    config: dict, identity: Any, target_steps: int, *, pin: bool = True
+    config: dict,
+    identity: Any,
+    target_steps: int,
+    *,
+    pin: bool = True,
 ) -> None:
     """Validate ``config["resume_from_checkpoint"]`` against ``identity``, optionally PINNING it.
 

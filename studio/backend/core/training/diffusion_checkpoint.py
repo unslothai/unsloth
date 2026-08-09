@@ -1087,6 +1087,7 @@ def _retire_replaced_slots(root: Path, *, restore: bool) -> None:
         entries = list(root.glob(f"{_STAGING_PREFIX}replaced-*"))
     except OSError:
         return
+
     # NEWEST first per slot. Replacements stack: a run that crashed after displacing
     # checkpoint-15 leaves its copy behind, and a later run displacing the same slot leaves
     # another. Restoring whichever sorted first by NAME (a uuid, so effectively at random)
@@ -1103,12 +1104,7 @@ def _retire_replaced_slots(root: Path, *, restore: bool) -> None:
     for entry in entries:
         match = _REPLACED_SLOT.match(entry.name[len(_STAGING_PREFIX) :])
         slot = root / f"{CHECKPOINT_PREFIX}{int(match.group(1))}" if match else None
-        if (
-            restore
-            and slot is not None
-            and slot not in restored_slots
-            and not slot.exists()
-        ):
+        if restore and slot is not None and slot not in restored_slots and not slot.exists():
             try:
                 os.replace(entry, slot)
                 restored_slots.add(slot)

@@ -174,9 +174,7 @@ def _refresh_resume_state(rec: dict) -> dict:
             # mode train_steps is the request model's unused default, so recomputing from it
             # here undid the persisted answer on every read -- a 600-step checkpoint of a run
             # resolved to 1000 read as 600/500 and Resume was disabled.
-            total_steps = _resolved_total_steps(
-                rec, config if isinstance(config, dict) else {}
-            ),
+            total_steps = _resolved_total_steps(rec, config if isinstance(config, dict) else {}),
             write_error = rec.get("checkpoint_write_error"),
             # What this run itself resumed from, so a resumed run that died before its first
             # save can still offer the bundle it was validated against.
@@ -626,7 +624,6 @@ class DiffusionTrainingService:
             return
         try:
             from core.training.diffusion_checkpoint import read_checkpoint
-
             manifest = read_checkpoint(Path(str(source)).expanduser())
         except Exception:  # noqa: BLE001 -- an unreadable bundle simply has no identity here
             manifest = None
