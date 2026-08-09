@@ -92,11 +92,18 @@ def installed_accelerator(root: Path) -> Optional[str]:
     It exists for a record that stayed readable and stale (still naming the PREVIOUS accelerator)
     after a successful install, where trusting the file re-downloads the bundle on every selection.
     Once anything else rewrites that file -- the installer CLI, another Studio -- the content no
-    longer matches the snapshot and the file is the newer answer again."""
+    longer matches the snapshot and the file is the newer answer again.
+
+    Only a SUCCESSFUL read that disagrees retires the memo. A record we cannot read right now is
+    not a newer answer: the memo's own reason for existing is a record this process could not
+    write, and on Windows another writer holding that file open reads as a failure. Dropping the
+    memo on it would hand the next selection the stale accelerator it was protecting against, and
+    that is a multi-GB reinstall on every load."""
     memo = _INSTALLED_ACCELERATOR_MEMO.get(str(root))
     val = None
     if memo is not None:
-        if _raw_install_record(root) == memo[1]:
+        raw = _raw_install_record(root)
+        if raw is None or raw == memo[1]:
             val = memo[0]
         else:
             _INSTALLED_ACCELERATOR_MEMO.pop(str(root), None)
@@ -110,16 +117,20 @@ def installed_accelerator(root: Path) -> Optional[str]:
 # either is a mismatch for a GPU target, so every later engine selection re-downloads the same
 # multi-GB bundle. Keyed on the snapshot so it only speaks for the record it saw: once anything
 # else updates that file (the installer CLI, another Studio), the file is newer and wins again.
-_INSTALLED_ACCELERATOR_MEMO: dict[str, tuple[str, str]] = {}
+_INSTALLED_ACCELERATOR_MEMO: dict[str, tuple[str, Optional[str]]] = {}
 
 
-def _raw_install_record(root: Path) -> str:
-    """The record file's bytes as text, or "" when it cannot be read. Never raises."""
+def _raw_install_record(root: Path) -> Optional[str]:
+    """The record file's bytes as text, or None when it cannot be read. Never raises.
+
+    None is "cannot tell", NOT empty content: an absent file, a directory in its place and a
+    transient permission/sharing failure all land here, and none of them proves the record was
+    rewritten. Callers must not treat it as a value that differs from a snapshot."""
     try:
         with open(root / INSTALL_RECORD, "r", encoding = "utf-8") as f:
             return f.read()
-    except Exception:  # noqa: BLE001 -- absent / unreadable / a directory: all "no content"
-        return ""
+    except Exception:  # noqa: BLE001 -- absent / unreadable / a directory: all "cannot tell"
+        return None
 
 
 def _write_install_record(root: Path, *, accelerator: str, repo: str, tag: Optional[str]) -> None:
@@ -346,6 +357,15 @@ def _locate_sd_cli(root: Path) -> Optional[Path]:
     return None
 
 
+class SupersededBinaryError(RuntimeError):
+    """An install failed PART WAY through replacing the managed tree.
+
+    Distinct from every other install failure because the tree is now a mixture of two bundles.
+    ``ensure_*`` must not record it as a failed accelerator upgrade: that memo suppresses the
+    mismatch for the whole process, so the mixed tree would be accepted forever instead of being
+    retried, which is the opposite of what withholding the install record is for."""
+
+
 def _binary_names() -> tuple[str, ...]:
     """The executables the managed tree may hold, in both platform spellings."""
     suffix = ".exe" if sys.platform == "win32" else ""
@@ -384,7 +404,7 @@ def _discard_superseded_binaries(root: Path, supplied: set[Path]) -> None:
             try:
                 found.unlink()
             except OSError as exc:
-                raise RuntimeError(
+                raise SupersededBinaryError(
                     f"could not remove the superseded binary {found}: {exc}. It was not written by "
                     f"this bundle, and leaving it would keep serving the previous accelerator."
                 ) from exc
@@ -621,6 +641,13 @@ def install(
         with zipfile.ZipFile(archive) as zf:
             supplied = _archive_binary_paths(zf, target)
             _safe_extractall(zf, target)
+        # Nothing is swept until this bundle is known to have supplied the one binary the install
+        # cannot do without. A malformed archive is caught below either way, but only AFTER the
+        # sweep would have deleted the working sd-cli that ensure_sd_cpp_binary keeps precisely so
+        # a failed upgrade still leaves something to generate with.
+        cli_name = _binary_names()[0]
+        if not any(p.name == cli_name for p in supplied):
+            raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
         # Extraction merges, so anything the previous bundle put somewhere this one does not write
         # survives -- and it outranks the new copy whenever its path sorts higher. Drop what this
         # bundle did not supply, so the tree and the record written below agree.

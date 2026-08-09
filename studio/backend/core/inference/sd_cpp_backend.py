@@ -119,13 +119,29 @@ def _tree_claimed_for_install():
 
 
 @contextlib.contextmanager
-def _tree_reader():
-    """Run a binary out of the managed tree, holding off any install for the duration."""
+def _tree_reader(binary: Optional[str]):
+    """Run ``binary`` out of the managed tree, holding off any install for the duration.
+
+    Only a MANAGED copy needs this. An sd-cli from ``SD_CLI_PATH`` / ``UNSLOTH_SD_CPP_PATH``, an
+    in-tree build or ``PATH`` is one the installer never touches, so claiming for it would block
+    that generation behind an unrelated bundle download for nothing (and, on a timeout, fail it).
+
+    A timeout is NOT admission: the install still holds the tree, and starting the binary it is
+    replacing is the exact race this exists to prevent."""
     global _tree_readers
+    if not is_managed_binary(binary):
+        yield
+        return
     with _tree_state:
         if _tree_installing:
             logger.info("waiting for the sd.cpp install to finish before starting a generation")
-            _tree_state.wait_for(lambda: not _tree_installing, timeout = _TREE_WAIT_TIMEOUT_S)
+            if not _tree_state.wait_for(
+                lambda: not _tree_installing, timeout = _TREE_WAIT_TIMEOUT_S
+            ):
+                raise RuntimeError(
+                    f"the stable-diffusion.cpp install is still replacing its binaries after "
+                    f"{int(_TREE_WAIT_TIMEOUT_S)}s. Try again once it has finished."
+                )
         _tree_readers += 1
     try:
         yield
@@ -352,6 +368,19 @@ def _note_failed_upgrade(accelerator: str) -> None:
         pass
 
 
+def _incomplete_tree_replacement(exc: BaseException) -> bool:
+    """True when an install failed PART WAY through replacing the managed tree.
+
+    That leaves a mixture of two bundles, and the installer withholds the record precisely so the
+    next load retries the sweep. Memoising it as a failed upgrade would do the opposite: the
+    mismatch is then suppressed for the rest of the process and the mixed tree is served as if it
+    were the accelerator that was asked for."""
+    try:
+        return isinstance(exc, _installer_module().SupersededBinaryError)
+    except Exception:  # noqa: BLE001 -- cannot tell -> treat as an ordinary failure, as before
+        return False
+
+
 def _tree_in_use(backend: Any) -> bool:
     """True while ``backend`` may still have a native process executing out of the managed tree.
 
@@ -461,7 +490,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-cli auto-install failed: %s", exc)
-                if fallback is not None:
+                if fallback is not None and not _incomplete_tree_replacement(exc):
                     _note_failed_upgrade(accelerator)
                 return fallback
 
@@ -505,7 +534,9 @@ def ensure_sd_server_binary(
                 # Also when only the CLI survives (a legacy server-less tree): the router probes
                 # ensure_sd_cpp_binary immediately after this, and without the record that probe
                 # resolves and downloads the same bundle a second time inside one selection.
-                if fallback is not None or find_sd_cpp_binary() is not None:
+                if (
+                    fallback is not None or find_sd_cpp_binary() is not None
+                ) and not _incomplete_tree_replacement(exc):
                     _note_failed_upgrade(accelerator)
                 return fallback
         return find_sd_server_binary() or fallback
@@ -1816,7 +1847,15 @@ class SdCppDiffusionBackend:
                 )
                 # Each sd-cli run executes out of the managed tree, so hold installs off for its
                 # duration (and wait here if one is already extracting).
-                with _tree_reader():
+                # getattr: an INJECTED engine is the unit-test seam / escape hatch and need not
+                # name a file at all, and nothing without a path is a binary an install replaces.
+                with _tree_reader(getattr(engine, "binary", None)):
+                    # Re-resolve INSIDE the claim. An install that finished while this image was
+                    # waiting can have put its sd-cli somewhere else and swept the copy resolved
+                    # above, so the cached path would launch a file that is no longer there. Also
+                    # covers a batch, which releases the claim between images. Cheap when nothing
+                    # moved: _resolve_engine returns the cached engine whose binary still exists.
+                    engine = self._resolve_engine()
                     engine.generate(
                         state.files,
                         params,

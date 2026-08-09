@@ -1585,9 +1585,71 @@ def test_a_superseded_binary_that_cannot_be_removed_fails_the_install(tmp_path, 
         raise OSError("permission denied")
 
     monkeypatch.setattr(Path, "unlink", _no_unlink)
-    with pytest.raises(RuntimeError) as exc:
+    with pytest.raises(sdmod.SupersededBinaryError) as exc:
         sdmod._discard_superseded_binaries(target, set())
     assert "superseded binary" in str(exc.value)
+
+
+def test_a_bundle_with_no_cli_is_refused_before_anything_is_swept(tmp_path, monkeypatch, capsys):
+    """The sweep deletes every managed binary the bundle did not write, so an archive that ships
+    no sd-cli would take the working one with it -- and only then would the malformed-bundle check
+    fire. ensure_sd_cpp_binary keeps that copy precisely so a failed upgrade still leaves something
+    to generate with, so the refusal has to come first."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("build/bin/sd-server", b"#!/bin/sh\necho sd-server\n")
+    zb = buf.getvalue()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+
+    target = tmp_path / "sd"
+    (target / "build" / "bin").mkdir(parents = True)
+    working = target / "build" / "bin" / "sd-cli"
+    working.write_bytes(b"old-but-working")
+    (target / ".unsloth-studio-owned").touch()
+
+    with pytest.raises(RuntimeError) as exc:
+        install(install_dir = target)
+    assert "no sd-cli" in str(exc.value)
+    # The fallback the caller was counting on is still there.
+    assert working.read_bytes() == b"old-but-working"
+    # And nothing claimed the tree is the new accelerator.
+    assert "removed a superseded binary" not in capsys.readouterr().out
+
+
+def test_an_unreadable_record_does_not_retire_the_memo(tmp_path, monkeypatch):
+    """The memo exists for a record this process could not WRITE. A record it cannot READ right
+    now (another writer holding it open, a permission blip) is not evidence that someone else
+    rewrote it, and retiring the memo on that hands the next selection the stale accelerator --
+    a multi-GB reinstall on every load."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:
+        json.dump({"accelerator": "cpu", "repo": "r", "tag": "old"}, f)
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+
+    real_open = builtins.open
+
+    def _readonly_record(file, mode = "r", *a, **k):
+        if str(file).endswith(sdmod.INSTALL_RECORD) and "w" in mode:
+            raise OSError("permission denied")
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _readonly_record)
+    sdmod._write_install_record(root, accelerator = "cuda", repo = "r", tag = "t")
+    monkeypatch.setattr(builtins, "open", real_open)
+    assert sdmod.installed_accelerator(root) == "cuda"
+
+    def _unreadable(file, mode = "r", *a, **k):
+        if str(file).endswith(sdmod.INSTALL_RECORD):
+            raise PermissionError("the file is open in another process")
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _unreadable)
+    assert sdmod.installed_accelerator(root) == "cuda"  # still the memo
+    monkeypatch.setattr(builtins, "open", real_open)
+    # And once the record is readable again and unchanged, the memo is still the answer.
+    assert sdmod.installed_accelerator(root) == "cuda"
+    assert str(root) in sdmod._INSTALLED_ACCELERATOR_MEMO
 
 
 def test_an_external_record_update_retires_the_memo(tmp_path, monkeypatch):
@@ -1757,7 +1819,7 @@ def test_a_generation_cannot_start_inside_the_install_window(tmp_path, monkeypat
     assert started.wait(5), "the install did not start"
 
     def _try_generate():
-        with bk._tree_reader():
+        with bk._tree_reader(str(server)):
             admitted_during_install.append(bk._tree_installing)
 
     generator = threading.Thread(target = _try_generate, daemon = True)
@@ -1791,6 +1853,100 @@ def test_an_install_stands_down_while_a_generation_is_running(tmp_path, monkeypa
         sdmod, "install", lambda **_k: pytest.fail("no install while a generation is running")
     )
 
-    with bk._tree_reader():
+    with bk._tree_reader(str(server)):
         assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
         assert server.read_bytes() == b"cpu-build"
+
+
+def test_an_unmanaged_binary_never_waits_for_a_managed_install(tmp_path, monkeypatch):
+    """An sd-cli from SD_CLI_PATH / UNSLOTH_SD_CPP_PATH / an in-tree build / PATH is one the
+    installer cannot replace, so an install in flight is nothing to it. Claiming for it would stall
+    the generation behind an unrelated multi-GB download for the whole timeout."""
+    import core.inference.sd_cpp_backend as bk
+
+    _managed_tree(tmp_path, monkeypatch)
+    outside = tmp_path / "mine" / "sd-cli"
+    outside.parent.mkdir(parents = True)
+    outside.write_bytes(b"my own build")
+
+    monkeypatch.setattr(bk, "_tree_installing", True)  # an install is extracting right now
+    monkeypatch.setattr(bk, "_TREE_WAIT_TIMEOUT_S", 0.2)
+    with bk._tree_reader(str(outside)):
+        pass  # returns immediately, and does not register as a reader
+    assert bk._tree_readers == 0
+
+
+def test_a_reader_is_never_admitted_when_the_install_wait_times_out(tmp_path, monkeypatch):
+    """wait_for returns False on a timeout while _tree_installing is still true. Ignoring that and
+    admitting anyway recreates the overwrite/ETXTBSY race this admission control exists for."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch)
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"managed")
+
+    monkeypatch.setattr(bk, "_tree_installing", True)
+    monkeypatch.setattr(bk, "_TREE_WAIT_TIMEOUT_S", 0.2)
+    with pytest.raises(RuntimeError) as exc:
+        with bk._tree_reader(str(managed)):
+            pytest.fail("a generation must not run against binaries an install still holds")
+    assert "still replacing its binaries" in str(exc.value)
+    assert bk._tree_readers == 0
+
+
+def test_an_incomplete_tree_replacement_is_retried_not_memoised(tmp_path, monkeypatch):
+    """_discard_superseded_binaries withholds the record so the NEXT load retries the sweep.
+    Recording the accelerator as a failed upgrade defeats exactly that: _accelerator_changed then
+    suppresses the mismatch for the rest of the process and the mixed tree is served forever."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    cli = root / "sd-bin" / "sd-cli"
+    cli.write_bytes(b"old-cpu-cli")
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
+    monkeypatch.setattr(bk, "_usable_or_discard_managed", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+
+    def _install_that_cannot_finish_the_swap(**_kwargs):
+        raise sdmod.SupersededBinaryError("could not remove the superseded binary /x/sd-cli")
+
+    monkeypatch.setattr(sdmod, "install", _install_that_cannot_finish_the_swap)
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
+    assert bk._failed_accelerator_upgrades == set()
+    # So the mismatch is still visible and the next load tries the swap again.
+    assert bk._accelerator_changed(str(cli), "cuda") is True
+
+    # An ordinary install failure (no asset, no network) is still memoised, as before.
+    monkeypatch.setattr(sdmod, "install", lambda **_k: (_ for _ in ()).throw(RuntimeError("404")))
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
+    assert bk._failed_accelerator_upgrades == {"cuda"}
+
+
+def test_a_generation_re_resolves_the_cli_the_install_moved(tmp_path, monkeypatch):
+    """The engine is resolved before the wait, and an install that lands during it can put its
+    sd-cli somewhere else and sweep the copy that was resolved. Launching the cached path then
+    fails on a file that is no longer there, which is the failure the wait exists to prevent."""
+    import core.inference.sd_cpp_backend as bk
+    from core.inference.sd_cpp_engine import SdCppEngine
+
+    root = _managed_tree(tmp_path, monkeypatch)
+    old = root / "build" / "bin" / "sd-cli"
+    old.parent.mkdir(parents = True)
+    old.write_bytes(b"old-cpu-cli")
+    new = root / "sd-bundle-cuda12" / "bin" / "sd-cli"
+    new.parent.mkdir(parents = True)
+    new.write_bytes(b"new-cuda-cli")
+
+    backend = bk.SdCppDiffusionBackend()
+    backend._engine = SdCppEngine(binary = str(old))
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(new))
+    monkeypatch.setattr(bk, "_usable_or_discard_managed", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_install_allowed", lambda: False)
+
+    # The install landed while this generation was waiting: the old layout is gone.
+    old.unlink()
+    with bk._tree_reader(str(old)):
+        engine = backend._resolve_engine()
+    assert engine.binary == str(new)
+    assert backend._engine.binary == str(new)
