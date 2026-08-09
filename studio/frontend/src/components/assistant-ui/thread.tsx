@@ -2184,6 +2184,56 @@ const Composer: FC<{
     seenImageDropFailuresRef.current = imageDropFailures;
     cancelQueuedSendRef.current?.();
   }, [imageDropFailures]);
+  // Audio rides the same composer adapter as an uploaded file, so it needs none
+  // of the image queue's send-gating: nothing parks a send on it.
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) {
+      return;
+    }
+    const targetKey = nativeAttachmentTargetKey;
+    let disposed = false;
+    let draining = false;
+
+    const drainPendingAudio = async () => {
+      if (disposed || draining) return;
+      draining = true;
+      try {
+        while (!disposed) {
+          const intents = useNativeIntentStore
+            .getState()
+            .takeAudioAttachments(targetKey);
+          if (intents.length === 0) break;
+          for (const intent of intents) {
+            try {
+              await aui
+                .composer()
+                .addAttachment(await nativeAttachmentIntentToFile(intent));
+            } catch (error) {
+              toast.error("Could not attach dropped audio", {
+                description:
+                  error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+        }
+      } finally {
+        draining = false;
+      }
+    };
+
+    const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      if ((state.pendingAudioAttachments[targetKey]?.length ?? 0) > 0) {
+        void drainPendingAudio();
+      }
+    });
+    void drainPendingAudio();
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
+
   useEffect(() => {
     if (!nativeAttachmentTargetKey) {
       return;

@@ -9,8 +9,9 @@ import {
   dequeueNativeAttachments,
   enqueueNativeAttachments,
 } from "../src/features/native-intents/attachment-queue.ts";
-import { classifyDropPaths, CHAT_IMAGE_DROP_ACCEPT, SUPPORTED_DROP_HINT } from "../src/features/native-intents/drop-paths.ts";
+import { classifyDropPaths, CHAT_AUDIO_DROP_ACCEPT, CHAT_IMAGE_DROP_ACCEPT, SUPPORTED_DROP_HINT } from "../src/features/native-intents/drop-paths.ts";
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
+import { AUDIO_ACCEPT } from "../src/lib/audio-utils.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -23,6 +24,8 @@ const { useNativeIntentStore } = await import(
 const BACKEND_UPLOAD_EXTS_RE = /UPLOAD_EXTS\s*=\s*\{([^}]+)\}/s;
 const RUST_ATTACHMENT_EXTS_RE = /ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_IMAGE_ATTACHMENT_EXTS_RE = /IMAGE_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const RUST_AUDIO_ATTACHMENT_EXTS_RE = /AUDIO_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const RUST_AUDIO_MIME_RE = /Some\("(audio\/[^"]+)"\)/g;
 const DOTTED_EXTENSION_RE = /"(\.[^"]+)"/g;
 const RUST_EXTENSION_RE = /"([^"]+)"/g;
 const RUST_MIME_ARM_RE = /Some\("(image\/[^"]+)"\)/g;
@@ -355,4 +358,71 @@ test("document and image drop extensions stay disjoint", () => {
     images.filter((ext) => docs.includes(ext)),
     [],
   );
+});
+
+// The composer already takes audio uploads, so a dropped clip has to reach the
+// same adapter instead of being reported as an unsupported file type.
+test("audio routes to chat audio attachments, one or many", () => {
+  const dropped = classifyDropPaths([
+    "/clips/take.WAV",
+    "/clips/note.mp3",
+    "/clips/voice.flac",
+  ]);
+  assert.equal(dropped.kind, "audio");
+  assert.equal(dropped.kind === "audio" ? dropped.paths.length : 0, 3);
+});
+
+test("documents, images and audio can be dropped together", () => {
+  const dropped = classifyDropPaths([
+    "/docs/a.pdf",
+    "/photos/cat.png",
+    "/clips/note.mp3",
+  ]);
+  assert.equal(dropped.kind, "attach");
+  if (dropped.kind === "attach") {
+    assert.deepEqual(dropped.docs, ["/docs/a.pdf"]);
+    assert.deepEqual(dropped.images, ["/photos/cat.png"]);
+    assert.deepEqual(dropped.audio, ["/clips/note.mp3"]);
+  }
+});
+
+test("frontend and Rust accept the same chat audio extensions", () => {
+  const frontend = CHAT_AUDIO_DROP_ACCEPT.split(",")
+    .map((ext) => ext.trim().toLowerCase())
+    .sort();
+  const rustSource = readFileSync(
+    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
+    "utf8",
+  );
+  const rust = [
+    ...(rustSource
+      .match(RUST_AUDIO_ATTACHMENT_EXTS_RE)?.[1]
+      .matchAll(RUST_EXTENSION_RE) ?? []),
+  ]
+    .map((match) => `.${match[1]}`)
+    .sort();
+
+  assert.deepEqual(rust, frontend);
+});
+
+// Same seam as the vision check: Rust stamps the File's MIME type and the
+// composer routes by it, so an unclaimed audio type lands nowhere.
+test("every audio MIME Rust stamps is one the audio adapter claims", () => {
+  const rustSource = readFileSync(
+    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
+    "utf8",
+  );
+  const claimed = new Set(
+    AUDIO_ACCEPT.split(",").map((token) => token.trim().toLowerCase()),
+  );
+  const stamped = [
+    ...(rustSource.match(MIME_MATCH_BODY_RE)?.[1] ?? "").matchAll(
+      RUST_AUDIO_MIME_RE,
+    ),
+  ].map((match) => match[1]);
+
+  assert.ok(stamped.length > 0, "Rust stamps no audio MIME types");
+  for (const mime of stamped) {
+    assert.ok(claimed.has(mime), `the audio adapter does not claim ${mime}`);
+  }
 });

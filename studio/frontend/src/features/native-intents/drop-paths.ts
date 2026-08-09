@@ -10,8 +10,13 @@ export const CHAT_IMAGE_DROP_ACCEPT = ".jpg,.jpeg,.png,.webp,.gif";
 
 const IMAGE_EXTS = CHAT_IMAGE_DROP_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
 
+/** Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`. */
+export const CHAT_AUDIO_DROP_ACCEPT = ".wav,.mp3,.m4a,.ogg,.oga,.flac";
+
+const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
+
 /** What the window actually takes, for the rejection toast and the overlay. */
-export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${CHAT_IMAGE_DROP_ACCEPT}, or a single .gguf model.`;
+export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${CHAT_IMAGE_DROP_ACCEPT}, ${CHAT_AUDIO_DROP_ACCEPT}, or a single .gguf model.`;
 
 function hasExt(path: string, ext: string): boolean {
   return path.toLowerCase().endsWith(ext);
@@ -22,7 +27,8 @@ export type NativeDropClass =
   | { kind: "model"; path: string }
   | { kind: "docs"; paths: string[] }
   | { kind: "images"; paths: string[] }
-  | { kind: "attach"; docs: string[]; images: string[] }
+  | { kind: "audio"; paths: string[] }
+  | { kind: "attach"; docs: string[]; images: string[]; audio: string[] }
   | { kind: "unsupported" };
 
 /** What a native drag payload is, before any of it is registered with Rust. */
@@ -39,13 +45,17 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
   const images = paths.filter((path) =>
     IMAGE_EXTS.some((ext) => hasExt(path, ext)),
   );
-  if (docs.length + images.length !== paths.length) {
+  const audio = paths.filter((path) =>
+    AUDIO_EXTS.some((ext) => hasExt(path, ext)),
+  );
+  if (docs.length + images.length + audio.length !== paths.length) {
     return { kind: "unsupported" };
   }
-  if (docs.length === 0 && images.length === 0) return { kind: "none" };
-  if (docs.length > 0 && images.length === 0) return { kind: "docs", paths: docs };
-  if (images.length > 0 && docs.length === 0) {
-    return { kind: "images", paths: images };
+  if (docs.length === 0 && images.length === 0 && audio.length === 0) {
+    return { kind: "none" };
   }
-  return { kind: "attach", docs, images };
+  if (images.length === 0 && audio.length === 0) return { kind: "docs", paths: docs };
+  if (docs.length === 0 && audio.length === 0) return { kind: "images", paths: images };
+  if (docs.length === 0 && images.length === 0) return { kind: "audio", paths: audio };
+  return { kind: "attach", docs, images, audio };
 }

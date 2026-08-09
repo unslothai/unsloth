@@ -12,6 +12,7 @@ interface NativeIntentState {
   // async Rust boundary, so the active chat may change before these arrive.
   pendingAttachments: PendingNativeAttachments;
   pendingImageAttachments: PendingNativeAttachments;
+  pendingAudioAttachments: PendingNativeAttachments;
   // Image drops registering with Rust, before they have a queue to sit in. Not
   // keyed: until the intents land there is no settled target, and the OS drop
   // went to the window, which has one composer to send from.
@@ -25,8 +26,10 @@ interface NativeIntentState {
   addIntent: (intent: NativeIntent) => void;
   addAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   addImageAttachments: (targetKey: string, intents: NativeIntent[]) => void;
+  addAudioAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   takeAttachments: (targetKey: string) => NativeIntent[];
   takeImageAttachments: (targetKey: string) => NativeIntent[];
+  takeAudioAttachments: (targetKey: string) => NativeIntent[];
   beginImageDropRegistration: () => void;
   endImageDropRegistration: () => void;
   failImageDropRegistration: (targetKey: string) => void;
@@ -39,6 +42,7 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   pendingModelIntent: null,
   pendingAttachments: {},
   pendingImageAttachments: {},
+  pendingAudioAttachments: {},
   registeringImageDrops: 0,
   imageDropFailures: {},
   imageDropOwners: {},
@@ -63,6 +67,28 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
     if (pendingImageAttachments !== current) {
       set({ pendingImageAttachments });
     }
+  },
+  addAudioAttachments: (targetKey, intents) => {
+    const current = get().pendingAudioAttachments;
+    const pendingAudioAttachments = enqueueNativeAttachments(
+      current,
+      targetKey,
+      intents,
+    );
+    if (pendingAudioAttachments !== current) {
+      set({ pendingAudioAttachments });
+    }
+  },
+  takeAudioAttachments: (targetKey) => {
+    const current = get().pendingAudioAttachments;
+    const [queued, pendingAudioAttachments] = dequeueNativeAttachments(
+      current,
+      targetKey,
+    );
+    if (pendingAudioAttachments !== current) {
+      set({ pendingAudioAttachments });
+    }
+    return queued;
   },
   takeAttachments: (targetKey) => {
     const current = get().pendingAttachments;

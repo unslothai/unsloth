@@ -528,7 +528,9 @@ pub fn open_path_token(
     open::that_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
 }
 
-const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+// Covers the largest client-side limit (audio, 25 MB); images stay capped at
+// 20 MB by the composer itself.
+const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -545,6 +547,11 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "png" => Some("image/png"),
         "webp" => Some("image/webp"),
         "gif" => Some("image/gif"),
+        "wav" => Some("audio/wav"),
+        "mp3" => Some("audio/mpeg"),
+        "m4a" => Some("audio/mp4"),
+        "ogg" | "oga" => Some("audio/ogg"),
+        "flac" => Some("audio/flac"),
         _ => None,
     }
 }
@@ -593,14 +600,14 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
 fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFile, String> {
     let path = &entry.canonical_path;
     let mime_type = attachment_mime_type(path).ok_or_else(|| {
-        "Only chat image attachments can be read for vision input.".to_string()
+        "Only chat image and audio attachments can be read inline.".to_string()
     })?;
     let file = open_attachment_file(path)?;
     let metadata = file
         .metadata()
         .map_err(|e| format!("Path is no longer available: {e}"))?;
     if !metadata.is_file() || metadata.len() > MAX_NATIVE_ATTACHMENT_BYTES {
-        return Err("Image attachment is unavailable or too large.".to_string());
+        return Err("Attachment is unavailable or too large.".to_string());
     }
     // path_for_operation validated a fingerprint against the path; bind the
     // handle we are about to read to that same one, or a swap in between wins.
@@ -618,7 +625,7 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
         .read_to_end(&mut bytes)
         .map_err(|e| format!("Could not read image attachment: {e}"))?;
     if bytes.len() as u64 > MAX_NATIVE_ATTACHMENT_BYTES {
-        return Err("Image attachment is unavailable or too large.".to_string());
+        return Err("Attachment is unavailable or too large.".to_string());
     }
     let name = path
         .file_name()
@@ -678,6 +685,30 @@ mod tests {
         (state, entry)
     }
 
+    // Classification alone is not enough: the reader maps its own mime types,
+    // and an unmapped one refuses the file after it was already accepted.
+    #[test]
+    fn audio_read_round_trips_with_its_mime_type() {
+        for (ext, mime) in [
+            ("wav", "audio/wav"),
+            ("mp3", "audio/mpeg"),
+            ("m4a", "audio/mp4"),
+            ("ogg", "audio/ogg"),
+            ("oga", "audio/ogg"),
+            ("flac", "audio/flac"),
+        ] {
+            let path = temp_path("clip").with_extension(ext);
+            fs::write(&path, b"ID3AUDIO").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry)
+                .unwrap_or_else(|error| panic!(".{ext} was unreadable: {error}"));
+            assert_eq!(payload.mime_type, mime);
+            assert_eq!(BASE64.decode(payload.base64).unwrap(), b"ID3AUDIO");
+            assert!(payload.name.ends_with(&format!(".{ext}")));
+            let _ = fs::remove_file(path);
+        }
+    }
+
     #[test]
     fn image_read_round_trips_and_names_the_file() {
         let path = temp_path("photo").with_extension("png");
@@ -698,7 +729,7 @@ mod tests {
         let Err(err) = read_attachment_payload(&entry) else {
             panic!("expected the read to be refused");
         };
-        assert!(err.contains("Only chat image attachments"));
+        assert!(err.contains("Only chat image and audio attachments"));
         let _ = fs::remove_file(path);
     }
 

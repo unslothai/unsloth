@@ -9,7 +9,7 @@ import type { NativeIntent } from "./types";
 export type NativeModelDropState =
   | { status: "idle" }
   | { status: "valid"; action: "load" | "replace" | "chip" }
-  | { status: "attach"; count: number; kind: "docs" | "images" | "mixed" }
+  | { status: "attach"; count: number; kind: "docs" | "images" | "audio" | "mixed" }
   | { status: "invalid" };
 
 interface NativeModelDropOptions {
@@ -23,6 +23,7 @@ interface NativeModelDropOptions {
   onAutoLoad?: (intent: NativeIntent) => Promise<void> | void;
   onAttach?: (intents: NativeIntent[]) => Promise<void> | void;
   onAttachImages?: (intents: NativeIntent[]) => Promise<void> | void;
+  onAttachAudio?: (intents: NativeIntent[]) => Promise<void> | void;
 }
 
 function canAttachDocs(options: NativeModelDropOptions): boolean {
@@ -31,6 +32,10 @@ function canAttachDocs(options: NativeModelDropOptions): boolean {
 
 function canAttachImages(options: NativeModelDropOptions): boolean {
   return Boolean(options.onAttachImages);
+}
+
+function canAttachAudio(options: NativeModelDropOptions): boolean {
+  return Boolean(options.onAttachAudio);
 }
 
 function canAutoLoadModel(options: NativeModelDropOptions): boolean {
@@ -42,11 +47,15 @@ function canAutoLoadModel(options: NativeModelDropOptions): boolean {
 }
 
 function attachmentCount(dropped: ReturnType<typeof classifyDropPaths>): number {
-  if (dropped.kind === "docs" || dropped.kind === "images") {
+  if (
+    dropped.kind === "docs" ||
+    dropped.kind === "images" ||
+    dropped.kind === "audio"
+  ) {
     return dropped.paths.length;
   }
   if (dropped.kind === "attach") {
-    return dropped.docs.length + dropped.images.length;
+    return dropped.docs.length + dropped.images.length + dropped.audio.length;
   }
   return 0;
 }
@@ -67,11 +76,17 @@ function dropStateForPaths(
       ? { status: "attach", count: dropped.paths.length, kind: "images" }
       : { status: "invalid" };
   }
+  if (dropped.kind === "audio") {
+    return canAttachAudio(options)
+      ? { status: "attach", count: dropped.paths.length, kind: "audio" }
+      : { status: "invalid" };
+  }
   if (dropped.kind === "attach") {
     const docsSupported = dropped.docs.length === 0 || canAttachDocs(options);
     const imagesSupported =
       dropped.images.length === 0 || canAttachImages(options);
-    return docsSupported && imagesSupported
+    const audioSupported = dropped.audio.length === 0 || canAttachAudio(options);
+    return docsSupported && imagesSupported && audioSupported
       ? { status: "attach", count: attachmentCount(dropped), kind: "mixed" }
       : { status: "invalid" };
   }
@@ -88,8 +103,10 @@ function dropStateForPaths(
 interface RegisteredDrop {
   docs: NativeIntent[];
   images: NativeIntent[];
+  audio: NativeIntent[];
   docsFailed: number;
   imagesFailed: number;
+  audioFailed: number;
   error?: Error;
 }
 
@@ -118,7 +135,7 @@ async function registerEach(paths: string[]) {
 async function registerDroppedAttachments(
   dropped: Extract<
     ReturnType<typeof classifyDropPaths>,
-    { kind: "docs" | "images" | "attach" }
+    { kind: "docs" | "images" | "audio" | "attach" }
   >,
 ): Promise<RegisteredDrop> {
   const docPaths =
@@ -133,16 +150,25 @@ async function registerDroppedAttachments(
       : dropped.kind === "attach"
         ? dropped.images
         : [];
-  const [docs, images] = await Promise.all([
+  const audioPaths =
+    dropped.kind === "audio"
+      ? dropped.paths
+      : dropped.kind === "attach"
+        ? dropped.audio
+        : [];
+  const [docs, images, audio] = await Promise.all([
     registerEach(docPaths),
     registerEach(imagePaths),
+    registerEach(audioPaths),
   ]);
   return {
     docs: docs.intents,
     images: images.intents,
+    audio: audio.intents,
     docsFailed: docs.failed,
     imagesFailed: images.failed,
-    error: docs.error ?? images.error,
+    audioFailed: audio.failed,
+    error: docs.error ?? images.error ?? audio.error,
   };
 }
 
@@ -183,6 +209,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
         if (
           dropped.kind === "docs" ||
           dropped.kind === "images" ||
+          dropped.kind === "audio" ||
           dropped.kind === "attach"
         ) {
           const needsDocs =
@@ -191,6 +218,9 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           const needsImages =
             dropped.kind === "images" ||
             (dropped.kind === "attach" && dropped.images.length > 0);
+          const needsAudio =
+            dropped.kind === "audio" ||
+            (dropped.kind === "attach" && dropped.audio.length > 0);
           if (needsDocs && !canAttachDocs(currentOptions)) {
             toast.error("Attaching files needs the desktop backend", {
               description: "Retry once Studio has finished starting up.",
@@ -199,6 +229,12 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           }
           if (needsImages && !canAttachImages(currentOptions)) {
             toast.error("Attaching images is unavailable right now", {
+              description: "Retry once this chat is ready for attachments.",
+            });
+            return;
+          }
+          if (needsAudio && !canAttachAudio(currentOptions)) {
+            toast.error("Attaching audio is unavailable right now", {
               description: "Retry once this chat is ready for attachments.",
             });
             return;
@@ -228,7 +264,15 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             if (registered.imagesFailed > 0 && failureKey) {
               store.failImageDropRegistration(failureKey);
             }
-            if (registered.docsFailed + registered.imagesFailed > 0) {
+            if (registered.audio.length > 0) {
+              await attachOptions.onAttachAudio?.(registered.audio);
+            }
+            if (
+              registered.docsFailed +
+                registered.imagesFailed +
+                registered.audioFailed >
+              0
+            ) {
               toast.error("Could not attach dropped files", {
                 description: registered.error?.message ?? "Some files were skipped.",
               });
