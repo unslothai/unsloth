@@ -736,29 +736,6 @@ async def delete_cached_model_response(
             detail = blocks_detail,
         )
 
-    # A companion base repo carries the text encoders, VAE and tokenizer for every quant of its
-    # family, so removing it while one is installed leaves that quant unloadable with nothing on
-    # screen to say why. Derived from what is installed right now, never from a stored count, and
-    # only for a WHOLE-repo delete: a variant delete cannot touch another repo. Deleting the
-    # dependants first makes the base an orphan, which Free up space then offers.
-    if variant is None and _is_companion_base_repo(repo_id):
-        # Fails CLOSED, and only here: the table lookup above already established this repo IS a
-        # companion base, so an unreadable cache means the dependants cannot be enumerated, not
-        # that there are none. Every other repo skips the check entirely and is unaffected.
-        try:
-            shared_detail = await asyncio.to_thread(_companion_share_blocks_delete, repo_id)
-        except Exception as e:
-            logger.warning(f"Companion dependency check failed for {repo_id}; refusing delete: {e}")
-            raise HTTPException(
-                status_code = 503,
-                detail = (
-                    "Couldn't check whether other installed models still need these shared "
-                    "assets. Try again in a moment."
-                ),
-            )
-        if shared_detail:
-            raise HTTPException(status_code = 400, detail = shared_detail)
-
     repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
     if not downloads.registry.begin_delete(repo_key, variant):
         detail = (
@@ -782,6 +759,33 @@ def _delete_cached_model_blocking(
     hf_token: Optional[str],
     cache_path: Optional[str] = None,
 ) -> dict:
+    # A companion base repo carries the text encoders, VAE and tokenizer for every quant of its
+    # family, so removing it while one is installed leaves that quant unloadable with nothing on
+    # screen to say why. Derived from what is installed right now, never from a stored count, and
+    # only for a WHOLE-repo delete: a variant delete cannot touch another repo. Deleting the
+    # dependants first makes the base an orphan, which Free up space then offers.
+    #
+    # Here rather than in the async caller so it shares this function's cache walk and its stubs:
+    # the check IS part of the destructive stage, and a caller that replaces that stage should not
+    # end up with half of it still running.
+    if variant is None and _is_companion_base_repo(repo_id):
+        # Fails CLOSED, and only here: the lookup above already established this repo IS a
+        # companion base, so an unreadable cache means the dependants cannot be enumerated, not
+        # that there are none. Every other repo skips the check entirely and is unaffected.
+        try:
+            shared_detail = _companion_share_blocks_delete(repo_id)
+        except Exception as e:
+            logger.warning(f"Companion dependency check failed for {repo_id}; refusing delete: {e}")
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    "Couldn't check whether other installed models still need these shared "
+                    "assets. Try again in a moment."
+                ),
+            )
+        if shared_detail:
+            raise HTTPException(status_code = 400, detail = shared_detail)
+
     try:
         # If a sibling quant is downloading concurrently, restrict this delete to
         # the variant's own files and leave the shared mmproj companion for it.
