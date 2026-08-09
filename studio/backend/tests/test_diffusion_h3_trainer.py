@@ -1344,9 +1344,7 @@ def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
             seen.append({"index_token": token})
             return _Pipe()
 
-    monkeypatch.setitem(
-        sys.modules, "diffusers", types.SimpleNamespace(ModularPipeline = _Modular)
-    )
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(ModularPipeline = _Modular))
     monkeypatch.setattr(h3, "_assert_component_grid", lambda pipe: None)
 
     cfg = types.SimpleNamespace(base_model = "unsloth/private-h3", hf_token = "hf_secret")
@@ -1359,5 +1357,7 @@ def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
 
     # No token configured -> the kwarg is omitted entirely rather than sent as None.
     seen.clear()
-    h3._load_conditioners(types.SimpleNamespace(base_model = "MiniMaxAI/MiniMax-H3", hf_token = None), "cpu")
+    h3._load_conditioners(
+        types.SimpleNamespace(base_model = "MiniMaxAI/MiniMax-H3", hf_token = None), "cpu"
+    )
     assert all("token" not in call for call in seen[1:]), seen
