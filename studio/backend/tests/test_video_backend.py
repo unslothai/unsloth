@@ -5407,9 +5407,7 @@ def test_the_h3_modular_refusal_reruns_when_the_prequant_checkpoint_does_not_lan
         sized.append(kwargs["scheme"])
         return real(family, **kwargs)
 
-    monkeypatch.setattr(
-        VideoBackend, "_raise_on_modular_unified_shortfall", staticmethod(_spy)
-    )
+    monkeypatch.setattr(VideoBackend, "_raise_on_modular_unified_shortfall", staticmethod(_spy))
     # The checkpoint resolves but does not load: exactly the best-effort None contract.
     import core.inference.diffusion_prequant as prequant_mod
 
@@ -5418,9 +5416,7 @@ def test_the_h3_modular_refusal_reruns_when_the_prequant_checkpoint_does_not_lan
         "resolve_prequant_source",
         lambda fam, scheme, base_repo = None: types.SimpleNamespace(location = "unsloth/H3-FP8"),
     )
-    monkeypatch.setattr(
-        prequant_mod, "load_prequantized_transformer", lambda *a, **k: None
-    )
+    monkeypatch.setattr(prequant_mod, "load_prequantized_transformer", lambda *a, **k: None)
 
     with pytest.raises(RuntimeError) as excinfo:
         VideoBackend()._load_h3_modular_pipeline(
