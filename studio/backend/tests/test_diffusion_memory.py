@@ -1149,12 +1149,18 @@ def _stream_te_kwargs(monkeypatch, **call_kw):
             non_blocking = non_blocking,
             record_stream = record_stream,
             low_cpu_mem_usage = low_cpu_mem_usage,
+            offload_type = offload_type,
+            num_blocks_per_group = num_blocks_per_group,
         )
 
     import core.inference.diffusion_memory as mem
 
     pipe, _applied, *_ = _stream_te_pipe(monkeypatch)
-    _install_fake_torch_and_hooks(monkeypatch, _apply)
+    # SWAP, never re-install: a second _install_fake_torch_and_hooks mints a fresh stand-in Module
+    # class, and the components built by the first call then fail isinstance -- so only the
+    # transformer (which is taken unconditionally) reached diffusers and every assertion here was
+    # silently checking one module instead of four.
+    _swap_group_offloading(monkeypatch, _apply)
     assert mem._apply_group_offload(pipe, "cuda", logger = None, **call_kw) is True
     return seen
 
@@ -1551,3 +1557,23 @@ def test_the_activation_refusal_is_its_own_error_type():
         height = 1024,
         family = _TURBO_HINT,
     )
+
+
+def test_the_streamed_encoders_are_hooked_leaf_by_leaf(monkeypatch):
+    # A text encoder is not a stack of uniform blocks, which is why _streamable_components and
+    # _apply_streaming_offload both classify every text_encoder* as leaf_level. Handing this path
+    # the DiTs' block_level kwargs made the plan and the application disagree: block level on an
+    # encoder with no top-level ModuleList groups the whole thing as one unit, which is the
+    # residency the streamed-encoder floor was picked to avoid.
+    seen = _stream_te_kwargs(monkeypatch, stream_text_encoders = True)
+    assert seen, "the applier never reached diffusers"
+    encoders = {name: kw for name, kw in seen.items() if str(name).startswith("text_encoder")}
+    denoisers = {name: kw for name, kw in seen.items() if not str(name).startswith("text_encoder")}
+    assert encoders and denoisers, seen
+    for name, kw in encoders.items():
+        assert kw["offload_type"] == "leaf_level", name
+        # leaf level has no blocks; diffusers only requires the count for block_level.
+        assert kw["num_blocks_per_group"] is None, name
+    for name, kw in denoisers.items():
+        assert kw["offload_type"] == "block_level", name
+        assert kw["num_blocks_per_group"] is not None, name

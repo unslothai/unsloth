@@ -821,9 +821,16 @@ def _apply_group_offload(
         # hooks are installed and whole-module offload can no longer be used as a fallback. So a
         # refusal places that encoder resident instead: the plan's floor becomes optimistic by
         # that encoder's bytes, and the load still runs.
+        # Leaf level, not the DiTs' block level: an encoder is not a stack of uniform blocks, so
+        # _streamable_components and _apply_streaming_offload already classify every text_encoder*
+        # that way. Reusing the transformer's kwargs here grouped the whole encoder as one unit,
+        # which is the residency the planner's floor was chosen to avoid -- the plan said leaf and
+        # the application said block. num_blocks_per_group goes with it: leaf level has no blocks.
+        ekwargs = {k: v for k, v in gkwargs.items() if k != "num_blocks_per_group"}
+        ekwargs["offload_type"] = "leaf_level"
         for name, module in streamed_encoders.items():
             try:
-                apply_group_offloading(module, **gkwargs)
+                apply_group_offloading(module, **ekwargs)
                 installed += 1
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
                 if logger is not None:
