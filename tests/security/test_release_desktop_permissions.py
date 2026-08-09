@@ -27,6 +27,31 @@ def test_only_publish_job_can_write_repository_contents():
     assert write_jobs == ["publish-release"]
 
 
+def _poll_loop_body(script):
+    """Return the body of the first `while ...; do ... done` loop in `script`.
+
+    Assertions about a wait have to land inside the loop that does the waiting,
+    so this brackets it rather than searching the step as a whole. Nested `for`
+    and `while` loops are tracked by depth; the openers here all end their line
+    with `do`, which is what the shell style in this workflow uses.
+    """
+    lines = script.split("\n")
+    starts = [index for index, line in enumerate(lines) if re.match(r"\s*while\b", line)]
+    assert starts, f"no `while` loop in the wait step:\n{script}"
+
+    start = starts[0]
+    depth = 0
+    for index in range(start, len(lines)):
+        line = lines[index]
+        if re.search(r"(?:^|;)\s*do\s*$", line):
+            depth += 1
+        if re.match(r"\s*done\b", line):
+            depth -= 1
+            if depth == 0:
+                return "\n".join(lines[start + 1 : index])
+    raise AssertionError(f"unterminated `while` loop in the wait step:\n{script}")
+
+
 def test_build_matrix_hands_off_assets_without_release_credentials():
     """The build matrix signs bundles; only publish-release may release them.
 
@@ -85,14 +110,20 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     # the loop that repeats it, and the two states it decides on. Without these,
     # deleting the polling loop and the status checks while leaving GITHUB_RUN_ID
     # and LEGS in place still reads as a wait, and the download races the matrix.
-    assert "actions/runs/${GITHUB_RUN_ID}/jobs" in wait_run
-    assert ".status" in wait_run and ".conclusion" in wait_run
+    #
+    # All of it is asserted against the *body of the loop*, not the step as a
+    # whole. Searching the whole script would pass a one-shot `gh api` read
+    # sitting next to an unrelated or dead `while`, which is exactly the shape
+    # that lets publish-release reach the download before the legs finish.
+    loop_body = _poll_loop_body(wait_run)
+    assert "actions/runs/${GITHUB_RUN_ID}/jobs" in loop_body, wait_run
+    assert ".status" in loop_body and ".conclusion" in loop_body, wait_run
     # Not finished yet is "keep waiting"; finished but not `success` is a refusal.
-    assert re.search(r'!=\s*"completed"', wait_run), wait_run
-    assert re.search(r'!=\s*"success"', wait_run), wait_run
-    # A single API read is a snapshot, not a wait: it has to loop and sleep.
-    assert re.search(r"^\s*while\b", wait_run, re.MULTILINE), wait_run
-    assert re.search(r"^\s*sleep\b", wait_run, re.MULTILINE), wait_run
+    assert re.search(r'!=\s*"completed"', loop_body), wait_run
+    assert re.search(r'!=\s*"success"', loop_body), wait_run
+    # A loop that never sleeps is a spin, and one that never breaks never ends.
+    assert re.search(r"^\s*sleep\b", loop_body, re.MULTILINE), wait_run
+    assert re.search(r"^\s*break\b", loop_body, re.MULTILINE), wait_run
 
     names = [step.get("name") for step in publish["steps"]]
     assert names.index("Wait for the build matrix") < names.index("Create versioned release")

@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import fnmatch
 import importlib.util
+import itertools
 import pathlib
+import shlex
 import sys
 import time
 
@@ -859,8 +861,27 @@ class TestWorkflowOrdering:
         return [step.get("name") for step in self._scan_job()["steps"]]
 
     @staticmethod
-    def _leaf(path):
-        return path.rstrip("/").rsplit("/", 1)[-1]
+    def _runner_temp(path):
+        """Normalise the three spellings of the runner temp dir to one token.
+
+        `with:` uses the `${{ runner.temp }}` expression and `run:` uses the
+        `RUNNER_TEMP` env var, so two paths can name the same directory and
+        still compare unequal as strings.
+        """
+        normalised = " ".join(str(path).split())
+        for spelling in ("${{ runner.temp }}", "${RUNNER_TEMP}", "$RUNNER_TEMP"):
+            normalised = normalised.replace(spelling, "<RUNNER_TEMP>")
+        return normalised.rstrip("/")
+
+    def _scan_script_argv(self):
+        """The argv the `VirusTotal scan` step hands to virustotal_scan.py."""
+        run = self._scan_step_map()["VirusTotal scan"]["run"]
+        command = run.replace("\\\n", " ")
+        line = next(
+            text for text in command.split("\n") if "python3 scripts/virustotal_scan.py" in text
+        )
+        argv = shlex.split(line)
+        return argv[argv.index("scripts/virustotal_scan.py") + 1 :]
 
     def test_the_scan_is_its_own_job_gated_on_publish_release(self):
         # Pins the post-publish ordering rather than merely tolerating it: the
@@ -876,15 +897,29 @@ class TestWorkflowOrdering:
         # `failure()` or `cancelled()` would upload build artifacts to a third
         # party on the strength of a failed publish-release, and `${{ false }}`
         # would disable the scan without deleting the job. So the job may either
-        # carry no `if:` at all, as it does today, or one that still requires
-        # `success()` and adds to it.
+        # carry no `if:` at all, as it does today, or one that requires
+        # `success()` *conjunctively* and only narrows it further.
+        #
+        # Conjunctively is the whole point: `success() || inputs.scan_anyway`
+        # mentions success() while still running the scan after publish-release
+        # failed, so a substring check would wave it through. Requiring the
+        # condition to open with `success() &&` and to contain no `||` keeps
+        # every accepted form strictly narrower than the default gate.
         job = self._scan_job()
         condition = job.get("if")
         if condition is not None:
-            normalised = str(condition).replace(" ", "")
-            assert "success()" in normalised, (
-                f"virustotal-scan carries `if: {condition}`, which drops the success() "
-                "gating that needs: [publish-release] provides by default"
+            normalised = str(condition).strip()
+            if normalised.startswith("${{") and normalised.endswith("}}"):
+                normalised = normalised[3:-2]
+            normalised = "".join(normalised.split())
+            assert "||" not in normalised, (
+                f"virustotal-scan carries `if: {condition}`; a disjunction can run the "
+                "scan on a branch where publish-release did not succeed"
+            )
+            assert normalised == "success()" or normalised.startswith("success()&&"), (
+                f"virustotal-scan carries `if: {condition}`, which does not require "
+                "success() conjunctively and so drops the gating that "
+                "needs: [publish-release] provides by default"
             )
             for override in ("always()", "failure()", "cancelled()"):
                 assert override not in normalised, (
@@ -934,8 +969,21 @@ class TestWorkflowOrdering:
                 download["with"].get(key),
                 publish_download["with"].get(key),
             )
-        # The two spell the runner temp directory differently, so compare leaves.
-        assert self._leaf(download["with"]["path"]) == self._leaf(publish_download["with"]["path"])
+        assert self._runner_temp(download["with"]["path"]) == self._runner_temp(
+            publish_download["with"]["path"]
+        ), (download["with"]["path"], publish_download["with"]["path"])
+
+        # And the scan has to be pointed at that same directory. Comparing the
+        # two download steps alone leaves the gap this test exists to close: the
+        # script takes its target as an argument, so moving both downloads under
+        # a new parent, or repointing the argument at another `$RUNNER_TEMP`
+        # path, would scan an empty directory and still report a clean sweep.
+        argv = self._scan_script_argv()
+        scan_paths = list(itertools.takewhile(lambda argument: not argument.startswith("-"), argv))
+        assert scan_paths, argv
+        assert [self._runner_temp(path) for path in scan_paths] == [
+            self._runner_temp(download["with"]["path"])
+        ], (argv, download["with"]["path"])
 
         # And that shared pattern has to match what the matrix actually uploads,
         # or both jobs would agree on a set that does not exist.
