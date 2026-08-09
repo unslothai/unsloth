@@ -446,9 +446,7 @@ def test_dense_bf16_gb_keeps_every_single_size_family_where_it_was():
     for name in ("flux.1", "qwen-image", "z-image", "krea-2", "flux.2-dev"):
         spec = dit._SPECS[name]
         for base in ("some/unknown-base", spec.family, ""):
-            assert dit._dense_bf16_gb(spec, base) == pytest.approx(
-                spec.dense_bf16_gb, rel = 0.05
-            )
+            assert dit._dense_bf16_gb(spec, base) == pytest.approx(spec.dense_bf16_gb, rel = 0.05)
 
 
 def test_dense_bf16_gb_survives_a_broken_lookup(monkeypatch):

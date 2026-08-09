@@ -73,9 +73,7 @@ def test_klein_base_9b_is_sized_like_the_9b_not_the_4b():
     assert base_9b is not None and default is not None and base_9b[0] > 2 * default[0]
     # The unsloth mirror is what Studio actually loads, and canonical_base has to route it here too.
     assert (
-        family_bf16_components_gb(
-            _fam("flux.2-klein"), base_repo = "unsloth/FLUX.2-klein-base-9B"
-        )
+        family_bf16_components_gb(_fam("flux.2-klein"), base_repo = "unsloth/FLUX.2-klein-base-9B")
         == base_9b
     )
 
