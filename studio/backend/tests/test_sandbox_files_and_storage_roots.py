@@ -3255,9 +3255,7 @@ def test_a_project_delete_uses_the_membership_it_really_deleted():
     # would stop it and remove the files it wrote.
     assert 'member_ids = list(project.get("memberIds") or [])' in route
     assert "list_chat_threads(project_id" not in route
-    assert route.index("_cancel_active_generations(member_ids)") < route.index(
-        "_remove_sandboxes("
-    )
+    assert route.index("_cancel_active_generations(member_ids)") < route.index("_remove_sandboxes(")
     # And what survived is reported, or the folders are reachable from nothing.
     assert "sandboxes_kept = await _remove_sandboxes(member_ids" in route
     assert "ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)" in route
@@ -3793,8 +3791,8 @@ def test_the_client_reads_the_file_line_only_from_the_sandbox_tools():
     assert '"python", "terminal"' in files
 
     adapter = (src / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
-    guarded = adapter[adapter.index("const rawEvent = (toolEvent.result as string)"):]
-    guarded = guarded[:guarded.index("const imgMarker")]
+    guarded = adapter[adapter.index("const rawEvent = (toolEvent.result as string)") :]
+    guarded = guarded[: guarded.index("const imgMarker")]
     assert "SANDBOX_FILE_TOOLS.has(" in guarded
     assert guarded.index("SANDBOX_FILE_TOOLS.has(") < guarded.index("extractCreatedFiles(")
 
