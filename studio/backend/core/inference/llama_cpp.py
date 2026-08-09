@@ -1730,7 +1730,6 @@ def _quant_label_for_endian(path: str) -> Optional[str]:
     endian test, which would admit a genuinely big-endian build."""
     try:
         from hub.utils.gguf import extract_quant_token
-
         return extract_quant_token(path)
     except Exception:  # noqa: BLE001 -- an unreadable label must not sink the resolution
         return None
