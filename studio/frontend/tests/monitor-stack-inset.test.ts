@@ -225,3 +225,51 @@ test("a capped stack always fits under the box it is capped by", () => {
     );
   }
 });
+
+// Reachability has to be asked at the inset actually in force. Folding each box
+// against the default one, a monitor with room at the corner kept the capped
+// branch after the composer had already lifted the stack into it, and the cap
+// came out negative. Browsers drop an invalid max-height, so the cap vanished
+// exactly where it was needed.
+test("a box the shared lift moves the stack into is lifted over too", () => {
+  const composer = { left: 412, top: 664, right: 1148, bottom: 814 };
+  const monitor = { left: 996, top: 400, right: 1264, bottom: 660 };
+  assert.equal(
+    stackGeometry(monitor, CHAT_W, CHAT_H).bottom,
+    16,
+    "on its own the monitor leaves the corner free",
+  );
+  const both = stackGeometry([monitor, composer], CHAT_W, CHAT_H);
+  assert.ok(both.maxHeight > 0, "a negative cap is dropped by the browser");
+  assert.ok(
+    CHAT_H - both.bottom <= monitor.top,
+    "the stack has to clear the monitor, not just the composer",
+  );
+});
+
+// The same, swept: no arrangement may leave the stack overlapping a box, and no
+// cap may come out at zero or below.
+test("no pairing produces an overlap or an unusable cap", () => {
+  const composer = { left: 412, top: 664, right: 1148, bottom: 814 };
+  for (let bottom = 60; bottom <= CHAT_H - 16; bottom += 2) {
+    for (const height of [80, 180, 280, 400]) {
+      const box = {
+        left: 996,
+        top: Math.max(0, bottom - height),
+        right: 1264,
+        bottom,
+      };
+      for (const boxes of [[box], [box, composer]]) {
+        const geometry = stackGeometry(boxes, CHAT_W, CHAT_H);
+        const label = `bottom=${bottom} height=${height} n=${boxes.length}`;
+        assert.ok(geometry.maxHeight > 0, `non-positive cap for ${label}`);
+        const stackTop = CHAT_H - geometry.bottom - geometry.maxHeight;
+        for (const each of boxes) {
+          const clearsAbove = CHAT_H - geometry.bottom <= each.top;
+          const clearsBelow = stackTop >= each.bottom;
+          assert.ok(clearsAbove || clearsBelow, `overlap for ${label}`);
+        }
+      }
+    }
+  }
+});

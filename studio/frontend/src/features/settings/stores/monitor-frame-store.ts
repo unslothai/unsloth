@@ -96,13 +96,31 @@ function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
  * the corner underneath them empty.
  *
  * Derived from the cap rather than guessed, so the two cannot disagree: the
- * space below the box is what stackMaxHeight allows, and it refuses to go below
- * MIN_STACK_ROOM. Read as a bare "is it near the bottom" instead, boxes ending
- * just above the cutoff were left in the capped branch with a floor that did
- * not fit under them, and the stack overlapped them by up to 24px.
+ * space below the box is what stackMaxHeight allows. Read as a bare "is it near
+ * the bottom" instead, boxes ending just above the cutoff were left in the
+ * capped branch with a cap that did not fit under them.
+ *
+ * Asked against the inset in force, never a fixed one: lifting over one box
+ * moves the stack up into the next, and a box that had room at the corner may
+ * have none there.
  */
-function reachesStack(frame: MonitorFrame, viewportHeight: number): boolean {
-  return roomBelow(frame, viewportHeight, STACK_INSET) < MIN_STACK_ROOM;
+function reachesStack(
+  frame: MonitorFrame,
+  viewportHeight: number,
+  bottomInset: number,
+): boolean {
+  return roomBelow(frame, viewportHeight, bottomInset) < MIN_STACK_ROOM;
+}
+
+/** The inset that clears this box entirely, bounded so the stack stays on screen. */
+function liftOver(frame: MonitorFrame, viewportHeight: number): number {
+  return Math.max(
+    STACK_INSET,
+    Math.min(
+      viewportHeight - frame.top + STACK_GAP,
+      viewportHeight - MIN_STACK_ROOM,
+    ),
+  );
 }
 
 /** Height available between the box and the stack sitting on `bottomInset`. */
@@ -120,16 +138,12 @@ export function stackBottomInset(
   viewportHeight: number,
 ): number {
   if (!frame) return STACK_INSET;
-  // Only dodge a box that is in the stack's column and reaches its strip; one
-  // parked anywhere else leaves the corner free.
+  // Only dodge a box that is in the stack's column and crowds its corner; one
+  // parked anywhere else leaves that corner free.
   const inTheWay =
-    inStackColumn(frame, viewportWidth) && reachesStack(frame, viewportHeight);
-  if (!inTheWay) return STACK_INSET;
-  const lifted = viewportHeight - frame.top + STACK_GAP;
-  return Math.max(
-    STACK_INSET,
-    Math.min(lifted, viewportHeight - MIN_STACK_ROOM),
-  );
+    inStackColumn(frame, viewportWidth) &&
+    reachesStack(frame, viewportHeight, STACK_INSET);
+  return inTheWay ? liftOver(frame, viewportHeight) : STACK_INSET;
 }
 
 /**
@@ -150,10 +164,9 @@ export function stackMaxHeight(
 ): number {
   const ownMargin = viewportHeight - bottomInset - STACK_INSET;
   if (!frame || !inStackColumn(frame, viewportWidth)) return ownMargin;
-  // The lifted case: already accounted for by bottomInset.
-  if (reachesStack(frame, viewportHeight)) return ownMargin;
-  // At least MIN_STACK_ROOM by construction: anything tighter reaches, and was
-  // lifted instead of capped.
+  // Lifted over: bottomInset already cleared it.
+  if (reachesStack(frame, viewportHeight, bottomInset)) return ownMargin;
+  // At least MIN_STACK_ROOM, since anything tighter reaches at this inset.
   return Math.min(ownMargin, roomBelow(frame, viewportHeight, bottomInset));
 }
 
@@ -182,9 +195,21 @@ export function stackGeometry(
       maxHeight: stackMaxHeight(null, viewportWidth, viewportHeight, bottom),
     };
   }
-  const bottom = Math.max(
-    ...list.map((f) => stackBottomInset(f, viewportWidth, viewportHeight)),
-  );
+  // Settled, not summed. Lifting over one box moves the stack up into the next,
+  // which may then need a lift of its own, so keep going until nothing more
+  // asks. Each pass can only promote a box once, so this bounds at their count.
+  const column = list.filter((f) => inStackColumn(f, viewportWidth));
+  let bottom = STACK_INSET;
+  for (let pass = 0; pass <= column.length; pass += 1) {
+    let next = bottom;
+    for (const frame of column) {
+      if (reachesStack(frame, viewportHeight, bottom)) {
+        next = Math.max(next, liftOver(frame, viewportHeight));
+      }
+    }
+    if (next === bottom) break;
+    bottom = next;
+  }
   return {
     bottom,
     maxHeight: Math.min(
