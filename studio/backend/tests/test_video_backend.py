@@ -2141,6 +2141,123 @@ def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
     assert plan["total_bytes"] == 43
 
 
+_H3_BASE_SIBLINGS = [
+    _PlanSibling("transformer/config.json", 1),
+    _PlanSibling("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 40),
+    _PlanSibling("transformer/diffusion_pytorch_model-00002-of-00002.safetensors", 26),
+    _PlanSibling("scheduler/scheduler_config.json", 1),
+    _PlanSibling("vae/diffusion_pytorch_model.safetensors", 11),
+]
+
+_H3_PREQUANT_SIBLINGS = [
+    _PlanSibling("MiniMax-H3-INT8.pt", 20),
+    _PlanSibling("MiniMax-H3-FP8.pt", 20),
+]
+
+
+def test_download_plan_stages_the_prequant_denoiser_it_drops_the_dense_shards_for(monkeypatch):
+    # The dense DiT shards leave the base entry as soon as a hosted pre-quantized checkpoint
+    # covers them, so the checkpoint has to arrive in their place. Without it the plan skipped
+    # 66 GB and added nothing: the byte total under-reported the stage by the size of the
+    # artifact, the disk preflight cleared a volume that could not hold it, and an offline stage
+    # finished without the one file the load opens.
+    _cuda_bf16_target(monkeypatch)
+    _plan_api(
+        monkeypatch,
+        {
+            "MiniMaxAI/MiniMax-H3": _H3_BASE_SIBLINGS,
+            "unsloth/MiniMax-H3-FP8": _H3_PREQUANT_SIBLINGS,
+        },
+    )
+
+    plan = VideoBackend().download_plan(
+        "MiniMaxAI/MiniMax-H3",
+        family_override = "minimax-h3",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+    )
+
+    by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
+    # int8 and fp8 share one repo, so the SCHEME picks the file, not the repo.
+    assert by_repo["unsloth/MiniMax-H3-FP8"]["files"] == ["MiniMax-H3-INT8.pt"]
+    base = by_repo["MiniMaxAI/MiniMax-H3"]
+    assert not any(f.startswith("transformer/diffusion_pytorch_model") for f in base["files"])
+    # The config still goes, exactly as on the pre-cast encoder path: the class is read from it.
+    assert "transformer/config.json" in base["files"]
+    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
+
+
+def test_download_plan_keeps_the_dense_denoiser_when_the_prequant_repo_is_missing(monkeypatch):
+    # An unpublished / gated / renamed checkpoint must neither strand the load without a denoiser
+    # nor sink the whole plan: the dense shards stay and no phantom entry is invented.
+    _cuda_bf16_target(monkeypatch)
+
+    class _Api:
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
+            if repo_id == "unsloth/MiniMax-H3-FP8":
+                raise RuntimeError("404 gated")
+            return _PlanInfo(_H3_BASE_SIBLINGS)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+
+    plan = VideoBackend().download_plan(
+        "MiniMaxAI/MiniMax-H3",
+        family_override = "minimax-h3",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+    )
+
+    by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
+    assert "unsloth/MiniMax-H3-FP8" not in by_repo
+    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
+
+
+def test_download_plan_adds_no_prequant_entry_without_a_scheme(monkeypatch):
+    # bf16 keeps the dense shards, so there is nothing to replace and no third repo to stage.
+    _cuda_bf16_target(monkeypatch)
+    _plan_api(
+        monkeypatch,
+        {
+            "MiniMaxAI/MiniMax-H3": _H3_BASE_SIBLINGS,
+            "unsloth/MiniMax-H3-FP8": _H3_PREQUANT_SIBLINGS,
+        },
+    )
+
+    plan = VideoBackend().download_plan(
+        "MiniMaxAI/MiniMax-H3",
+        family_override = "minimax-h3",
+        model_kind = "pipeline",
+    )
+
+    by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
+    assert "unsloth/MiniMax-H3-FP8" not in by_repo
+    assert any(
+        f.startswith("transformer/diffusion_pytorch_model")
+        for f in by_repo["MiniMaxAI/MiniMax-H3"]["files"]
+    )
+
+
+def test_a_quantized_reference_load_is_refused_rather_than_run_on_the_wrong_partition():
+    # The hosted checkpoints are FL2VA denoisers. Ref2VA shares their module shapes and base
+    # model, so one installs cleanly, passes every metadata check, and makes load_components skip
+    # the real Ref2VA transformer: the request generates from the keyframe partition instead of
+    # failing. There is no in-place quantise seam to fall back on, so this has to be a refusal.
+    backend = VideoBackend()
+    with pytest.raises(ValueError, match = "reference video"):
+        backend.validate_load_request(
+            "MiniMaxAI/MiniMax-H3",
+            family_override = "minimax-h3",
+            model_kind = "pipeline",
+            transformer_quant = "int8",
+            h3_task = "ref2va",
+        )
+
+
 def test_direct_h3_native_load_uses_sd_cpp_path(monkeypatch):
     backend = VideoBackend()
     calls = []
@@ -4146,6 +4263,33 @@ def _data_url_wav(seconds = 1.0, rate = 32_000):
     return "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+def test_h3_reference_audio_decodes_inside_the_trained_window():
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_audio
+
+    blob = base64.b64decode(_data_url_wav(seconds = 2.0).split(",", 1)[1])
+    waveform, rate = decode_h3_reference_audio(blob)
+    assert rate == 32_000
+    assert waveform.shape == (64_000, 2)
+
+
+def test_h3_reference_audio_refuses_a_clip_past_the_window_while_decoding():
+    # The encoded size does not bound the decoded size: the route's 32 MiB limit admits over half
+    # an hour of compressed audio, which lands as ~1.9 GB of float32 and doubles again in the
+    # concatenate, three times over per request. The refusal has to happen DURING the decode, not
+    # after it, or the allocation the bound exists to prevent has already happened.
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_audio
+
+    blob = base64.b64decode(_data_url_wav(seconds = 15.5).split(",", 1)[1])
+    with pytest.raises(ValueError, match = "up to 15 seconds"):
+        decode_h3_reference_audio(blob)
+
+
 def test_h3_partitions_refuse_each_others_conditioning(monkeypatch):
     # The resident partition decides which conditioning is valid.
     keyframe_backend = _h3_native_backend(monkeypatch, [])
@@ -4863,12 +5007,10 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
     for fam in _FAMILIES:
         if fam.bf16_components_gb is None or fam.name == "wan2.2-t2v-a14b":
             continue
-        # A family whose pipeline class this diffusers does not carry cannot be loaded at all, so
-        # there is no plan to judge: MiniMax-H3 is a ModularPipeline family and the packaging
-        # deliberately keeps an older diffusers installable. Skipping it here is the same rule the
-        # listing routes apply, and it keeps this test about the BUDGET rather than about which
-        # diffusers the runner happens to have.
-        if not family_pipeline_available(fam):
+        # A modular-workflow family has no dense plan to be unchanged: load_pipeline dispatches to
+        # the workflow's own loader before plan_diffusion_memory is ever reached, because there is
+        # no single dense pipeline to budget -- each component is built by its own from_pretrained.
+        if fam.modular_workflow:
             continue
         calls.clear()
         VideoBackend().load_pipeline(fam.base_repo, model_kind = "pipeline")

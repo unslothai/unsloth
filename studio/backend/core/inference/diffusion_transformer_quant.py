@@ -107,7 +107,6 @@ _HUNYUAN15_INT8_EXCLUDES = (
 # used to be excluded here for the same reason. They are not any more: they are padded instead,
 # see _INT8_FAMILY_PAD_NAME_TOKENS below.
 _MINIMAX_H3_INT8_EXCLUDES = ("adaln_proj",)
-
 # LTX-2 is audiovisual: every block carries an audio-side stream (audio_attn1 / audio_attn2 /
 # audio_ff, fed by audio_proj_in) plus the a2v / v2a cross attentions. A video-only run feeds a
 # MINIMAL audio stream -- one token for a still -- so those linears run at M = 1, under the same

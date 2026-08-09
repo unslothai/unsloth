@@ -1183,11 +1183,13 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
         return {"entries": [], "total_bytes": 0}
 
     monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
-    # The route now runs the precision gate BEFORE planning, and that gate fails closed on an
-    # explicit scheme this host cannot honour. That refusal is its own contract, covered by
-    # test_video_download_plan_refuses_an_unavailable_transformer_quant; here it would only mean
-    # the request never reaches download_plan, so the forwarding under test is never exercised.
-    monkeypatch.setattr(video_module, "assert_video_precision_available", lambda fam, **kw: None)
+    # What is under test is the ROUTE forwarding the denoiser policy into download_plan, not the
+    # precision gate that now runs ahead of it. That gate has its own tests and it refuses an
+    # explicit scheme on a gguf pick before download_plan is ever reached, so stub it out here and
+    # keep this test on the forwarding.
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
 
     resp = client.post(
         "/api/inference/video/download-plan",

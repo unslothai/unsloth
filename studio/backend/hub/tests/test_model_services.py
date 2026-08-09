@@ -115,18 +115,24 @@ class TestExtractQuantToken:
 @pytest.mark.parametrize(
     "repo", ["leejet/MiniMax-H3-GGUF", "unsloth/MiniMax-H3-GGUF", "UNSLOTH/minimax-h3-gguf"]
 )
-def test_minimax_h3_variant_filter_keeps_only_fl2va_transformers(repo):
+def test_minimax_h3_variant_filter_keeps_both_denoiser_partitions(repo):
     """Both H3 bundle repos need the filter, and the match is case-insensitive.
 
     The Unsloth mirror is the one the family and catalog now advertise, and it carries the
     Qwen3-VL encoder quants beside the denoisers, so leaving it off the list would aggregate a
-    12 GB text encoder as if it were a selectable transformer quant."""
+    12 GB text encoder as if it were a selectable transformer quant.
+
+    Both denoiser partitions stay: which one is picked IS the task, the loader's
+    ``validate_h3_transformer_filename`` accepts either, and the community bundle repo publishes
+    Ref2VA quants today. Filtering them out hid the whole reference-video path from the picker."""
     selectable = gguf._is_selectable_repo_gguf
     assert selectable(repo, "minimax_h3_fl2va-Q4_K_M.gguf")
     assert selectable(repo, "minimax_h3_fl2va_pruned-Q4_K_M.gguf")
     assert selectable(repo, "minimax_h3_fl2va-Q2_K_M.gguf")
     assert selectable(repo, "minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf")
-    assert not selectable(repo, "minimax_h3_ref2va-Q4_K_M.gguf")
+    assert selectable(repo, "minimax_h3_ref2va-Q4_K_M.gguf")
+    assert selectable(repo, "minimax_h3_ref2va_pruned-Q2_K_M.gguf")
+    # The companions are still never picks.
     assert not selectable(repo, "qwen3vl_32b_minimax_h3-Q4_K_M.gguf")
     assert not selectable(repo, "qwen3vl_32b_minimax_h3-Q2_K_M.gguf")
 
