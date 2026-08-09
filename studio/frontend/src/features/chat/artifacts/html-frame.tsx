@@ -64,12 +64,14 @@ export function ArtifactHtmlFrame({
     uris: [],
     hosts: [],
   });
-  // Granted by the banner button alone, for this code only. Nothing the canvas
-  // sends may set it, or a blocked page could talk its way onto the network.
-  const [grantedForCanvas, setGrantedForCanvas] = useState(false);
-  useEffect(() => {
-    setGrantedForCanvas(false);
-  }, [code]);
+  // Granted by the banner button alone, and only for the exact code on screen
+  // when it was clicked. Nothing the canvas sends may set it, or a blocked page
+  // could talk its way onto the network. Comparing against the current code here
+  // rather than resetting in an effect is what keeps the grant from leaking: an
+  // effect runs after the DOM is updated, so the first render carrying new code
+  // would still build src with allow_network=1 from the previous canvas' grant.
+  const [grantedCode, setGrantedCode] = useState<string | null>(null);
+  const grantedForCanvas = grantedCode === code;
   const networkAllowed = networkAccessEnabled || grantedForCanvas;
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
   const src = useMemo(() => {
@@ -159,7 +161,7 @@ export function ArtifactHtmlFrame({
           <Button
             size="sm"
             variant="outline"
-            onClick={() => setGrantedForCanvas(true)}
+            onClick={() => setGrantedCode(code)}
           >
             {t("settings.chat.artifacts.blockedBannerAction")}
           </Button>

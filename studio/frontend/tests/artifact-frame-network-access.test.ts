@@ -122,14 +122,16 @@ test("the blocked banner is hidden once network access is on", () => {
   assert.match(condition, /blocked\.uris\.length > 0/);
 });
 
-/** Arguments of every `setGrantedForCanvas(...)` call, with the enclosing JSX handler. */
+const GRANT_SETTER = /\bsetGranted\w*\(/;
+
+/** Arguments of every `setGrantedCode(...)` call, with the enclosing JSX handler. */
 function readGrantCalls(): { argument: string; handler: string | null }[] {
   const source = sourceFile(FRAME);
   const calls: { argument: string; handler: string | null }[] = [];
   const visit = (node: ts.Node): void => {
     if (
       ts.isCallExpression(node) &&
-      node.expression.getText() === "setGrantedForCanvas"
+      node.expression.getText() === "setGrantedCode"
     ) {
       let handler: string | null = null;
       for (let at: ts.Node = node; at.parent; at = at.parent) {
@@ -148,32 +150,38 @@ function readGrantCalls(): { argument: string; handler: string | null }[] {
 
 // The canvas is what reports being blocked, so the grant must never be reachable
 // from that path: a page could otherwise post its way onto the network. Granting
-// is allowed only from a JSX click handler, and only the reset may run elsewhere.
+// is allowed only from a JSX click handler, and it stores the code it was clicked
+// for, so nothing the canvas controls can widen it.
 test("only a click can grant the per-canvas exception", () => {
   const calls = readGrantCalls();
-  assert.ok(calls.length > 0, "setGrantedForCanvas is never called");
+  assert.ok(calls.length > 0, "setGrantedCode is never called");
   for (const { argument, handler } of calls) {
-    if (argument === "false") continue;
-    assert.equal(argument, "true", "the grant takes a literal, not a value");
+    assert.equal(argument, "code", "the grant stores the current code");
     assert.equal(handler, "onClick", "the grant must come from a click handler");
   }
 });
 
-// A new canvas is new untrusted code, so a grant must not carry over to it.
-test("the per-canvas grant resets when the code changes", () => {
+// A new canvas is new untrusted code, so a grant must not carry over to it. The
+// tie has to be a comparison made during render: an effect that reset the grant
+// on [code] would run only after React had already updated the DOM, so the first
+// render carrying canvas B still built src with canvas A's allow_network=1.
+test("the per-canvas grant is tied to the code it was granted for", () => {
+  assert.equal(readConst("grantedForCanvas"), "grantedCode === code");
+});
+
+test("no effect resets the grant, which would leave a stale render", () => {
   const source = sourceFile(FRAME);
-  let reset = false;
+  let resetInEffect = false;
   const visit = (node: ts.Node): void => {
     if (
       ts.isCallExpression(node) &&
       node.expression.getText() === "useEffect" &&
-      node.arguments[1]?.getText() === "[code]" &&
-      node.arguments[0]?.getText().includes("setGrantedForCanvas(false)")
+      GRANT_SETTER.test(node.arguments[0]?.getText() ?? "")
     ) {
-      reset = true;
+      resetInEffect = true;
     }
     node.forEachChild(visit);
   };
   source.forEachChild(visit);
-  assert.ok(reset, "no effect resets the grant when the code changes");
+  assert.ok(!resetInEffect, "the grant must not be reset from an effect");
 });
