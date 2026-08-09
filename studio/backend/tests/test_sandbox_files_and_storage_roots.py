@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import threading
 import time
 import platform
@@ -3521,6 +3522,130 @@ def test_bulk_deletes_share_one_sweeper(tmp_path, monkeypatch):
     assert started.count("sandbox-delete") == 1, started
     for i in range(12):
         assert not (Path(tools.sandbox_root()) / f"__LOCALID_bulk{i:03d}").exists()
+
+
+def test_one_chats_legacy_copy_does_not_hold_up_another(tmp_path, monkeypatch):
+    """A single lock around every move meant a first tool call in one chat sat
+    behind a multi-gigabyte copy belonging to a different one."""
+    fake_home = tmp_path / "userprofile"
+    legacy_root = fake_home / "studio_sandbox"
+    for name in ("__LOCALID_huge111", "__LOCALID_tiny111"):
+        (legacy_root / name).mkdir(parents = True)
+        (legacy_root / name / "data.bin").write_bytes(b"x")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    tools._legacy_sandbox_migrated = False
+    getattr(tools, "_legacy_session_locks", {}).clear()
+
+    started = threading.Event()
+    release = threading.Event()
+    real_move = tools._staged_move
+
+    def slow_move(source, target, name):
+        if "huge" in name:
+            started.set()
+            assert release.wait(timeout = 5)
+        return real_move(source, target, name)
+
+    monkeypatch.setattr(tools, "_staged_move", slow_move)
+
+    big = threading.Thread(
+        target = tools._migrate_one_legacy_session,
+        args = (tools.sandbox_root(), "__LOCALID_huge111"),
+    )
+    big.start()
+    try:
+        assert started.wait(timeout = 5)
+        small = threading.Thread(
+            target = tools._migrate_one_legacy_session,
+            args = (tools.sandbox_root(), "__LOCALID_tiny111"),
+        )
+        small.start()
+        small.join(timeout = 5)
+        assert not small.is_alive(), "the small chat waited on the big chat's copy"
+        assert (Path(tools.sandbox_root()) / "__LOCALID_tiny111" / "data.bin").is_file()
+    finally:
+        release.set()
+        big.join(timeout = 5)
+
+
+def test_an_absolute_session_id_cannot_reach_outside_the_sentinel(tmp_path, monkeypatch):
+    """The id comes straight from the query, and os.path.join drops the root it
+    is given when the second half is absolute."""
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    tools._NOTHING_ROOT = None
+
+    for hostile in ("/etc", "/", os.path.join("..", "..", "etc")):
+        resolved = Path(tools._nothing_to_serve(hostile))
+        assert not (resolved / "passwd").exists(), resolved
+        assert str(resolved).startswith(tempfile.gettempdir()), resolved
+
+    # And through the resolver, which is what the download route asks.
+    session = "/etc"
+    theirs = root / tools._sandbox_name(session)
+    theirs.mkdir()
+    served = Path(tools.resolve_sandbox_workdir(session))
+    assert not str(served).startswith("/etc"), served
+    assert str(served) != "/", served
+
+
+def test_a_legacy_copy_of_a_folder_we_already_moved_is_left_alone(tmp_path, monkeypatch):
+    """The destination already carries this chat's marker from an earlier move,
+    so a second one would take the old copy somewhere nothing resolves to."""
+    fake_home = tmp_path / "userprofile"
+    session = "__LOCALID_twice11"
+    legacy = fake_home / "studio_sandbox" / session
+    legacy.mkdir(parents = True)
+    (legacy / "old.csv").write_text("old", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    tools._legacy_sandbox_migrated = False
+    getattr(tools, "_legacy_session_locks", {}).clear()
+    # What an earlier move left: the destination, marked, already in place.
+    moved = root / session
+    moved.mkdir()
+    (moved / "new.csv").write_text("new", encoding = "utf-8")
+    tools._mark_sandbox(str(moved), session)
+
+    tools._migrate_one_legacy_session(str(root), session)
+
+    assert (legacy / "old.csv").is_file(), "the legacy copy went somewhere unreachable"
+    assert Path(tools.resolve_sandbox_workdir(session)) == moved
+    assert len(list(root.iterdir())) == 1, list(root.iterdir())
+
+
+def test_an_interrupted_delete_is_swept_even_without_its_marker(tmp_path, monkeypatch):
+    """A tool can remove the marker before the delete, and nothing but this code
+    names a directory that way in our own root."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    root = Path(tools.sandbox_root())
+    root.mkdir(parents = True, exist_ok = True)
+    tombstone = root / f"__LOCALID_gone222{tools._DETACHED_SUFFIX}0123abcd"
+    tombstone.mkdir()
+    (tombstone / "big.bin").write_bytes(b"x" * 16)
+
+    tools.sweep_detached_sandboxes(str(root))
+    assert not tombstone.exists(), "an unreachable tree was left on disk for good"
 
 
 if __name__ == "__main__":

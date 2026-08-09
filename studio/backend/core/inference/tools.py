@@ -7466,8 +7466,6 @@ def sandbox_root() -> str:
 
 _legacy_sandbox_migrated = False
 _legacy_sandbox_lock = threading.Lock()
-# the whole-tree pass.
-_legacy_one_lock = threading.Lock()
 
 
 # Where a cross-filesystem move is assembled. Not a session name, so nothing
@@ -7486,6 +7484,12 @@ def _free_move_target(root: str, name: str) -> "str | None":
     candidate = _session_dir(root, name)
     if not os.path.exists(candidate):
         return candidate
+    if _marker_owner(candidate) == _sandbox_name(name):
+        # This session's own folder is already at the destination, from a move
+        # that ran before. The whole-tree pass leaves a duplicate legacy copy
+        # alone rather than overwriting, and moving it somewhere random would
+        # take it off the path the user can still find it on.
+        return None
     if _root_is_ours():
         return None  # ours and occupied is a real collision, not a borrowed name
     for _ in range(8):
@@ -7527,9 +7531,22 @@ def _staged_move(source: str, target: str, name: str) -> None:
     _mark_sandbox(target, name)
 
 
-# Held for a single session's move. The whole-tree pass takes it per entry, so
-# a request that needs one folder never waits behind the rest.
+# Bookkeeping only, never held across a move: starting the background pass and
+# the sweep. Anything that copies a tree takes that session's own lock below.
 _legacy_one_lock = threading.Lock()
+
+# One lock per session being moved. A single lock around every move meant a
+# first tool call in one chat waited out a multi-gigabyte copy belonging to
+# another, which is the whole thing the background pass exists to avoid. Bounded
+# by the number of chats that had a legacy folder, and only during the upgrade.
+_legacy_session_locks: "dict[str, threading.Lock]" = {}
+_legacy_locks_guard = threading.Lock()
+
+
+def _legacy_lock_for(name: str) -> threading.Lock:
+    """The lock covering this one session's move."""
+    with _legacy_locks_guard:
+        return _legacy_session_locks.setdefault(name, threading.Lock())
 
 
 def _legacy_session_dir(session_id: str) -> "str | None":
@@ -7558,7 +7575,7 @@ def _migrate_one_legacy_session(root: str, name: str) -> None:
     source = os.path.join(_legacy_sandbox_root(), name)
     if os.path.islink(source) or not os.path.isdir(source):
         return
-    with _legacy_one_lock:
+    with _legacy_lock_for(name):
         if not os.path.isdir(source):
             return  # the background pass got there first
         # Through the resolver, like the whole-tree pass: at a shared root the
@@ -7637,7 +7654,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
             if os.path.exists(target) or not _contained_in_root(target, root):
                 continue
             try:
-                with _legacy_one_lock:
+                with _legacy_lock_for(name):
                     if not os.path.isdir(source) or os.path.exists(target):
                         continue  # a request path moved it while we waited
                     _staged_move(source, target, name)
@@ -7704,15 +7721,25 @@ _nothing_lock = threading.Lock()
 
 
 def _nothing_to_serve(name: str) -> str:
-    """A path that exists nowhere the user keeps files."""
+    """A path that exists nowhere the user keeps files.
+
+    The name is derived first: callers pass the id straight from the request,
+    and an absolute one like ``/etc`` would make os.path.join drop the root it
+    was given and hand back a directory of the system's.
+    """
     global _NOTHING_ROOT
+    leaf = _sandbox_name(name)
     with _nothing_lock:
         if _NOTHING_ROOT is None or not os.path.isdir(_NOTHING_ROOT):
             try:
                 _NOTHING_ROOT = tempfile.mkdtemp(prefix = "unsloth-unowned-")
             except OSError:
-                return os.path.join(tempfile.gettempdir(), "unsloth-unowned", name)
-    return os.path.join(_NOTHING_ROOT, name)
+                _NOTHING_ROOT = os.path.join(tempfile.gettempdir(), "unsloth-unowned")
+        root = _NOTHING_ROOT
+    resolved = os.path.join(root, leaf)
+    # Belt and braces: a derived name cannot escape, and neither may anything
+    # else that reaches here.
+    return resolved if _contained_in_root(resolved, root) else root
 
 
 def _contained_in_root(workdir: str, root: str) -> bool:
@@ -7948,9 +7975,13 @@ def sweep_detached_sandboxes(root: "str | None" = None) -> None:
     """Finish deletes a previous run was killed part way through.
 
     The rename is what puts the tree out of reach, so a kill between it and the
-    rmtree leaves a full copy of the files nothing resolves to. Only ours: the
-    marker travels with the tree, so a folder of the user's that happens to
-    carry the name is left alone.
+    rmtree leaves a full copy of the files nothing resolves to.
+
+    At our own root the name is enough: nothing but this code puts a
+    ``.deleting-<hex>`` directory there, and a tool that had removed the marker
+    before the delete would otherwise leave the tree unreachable for good. In a
+    root the user pointed us at, the marker is still required, since a folder of
+    theirs can carry any name.
     """
     base = os.path.realpath(root or sandbox_root())
     try:
@@ -7961,7 +7992,7 @@ def sweep_detached_sandboxes(root: "str | None" = None) -> None:
         target = os.path.join(base, name)
         if os.path.islink(target) or not os.path.isdir(target):
             continue
-        if _marker_owner(target) is None:
+        if _marker_owner(target) is None and not _root_is_ours():
             continue
         shutil.rmtree(target, ignore_errors = True)
 
