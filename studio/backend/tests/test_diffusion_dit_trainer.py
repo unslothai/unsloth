@@ -217,9 +217,7 @@ def test_family_train_infos_lists_dit_families(dit_train_host):
     assert klein["deploy_bases"]["black-forest-labs/FLUX.2-klein-base-9B"] == (
         "black-forest-labs/FLUX.2-klein-9B"
     )
-    assert klein["deploy_bases"]["unsloth/FLUX.2-klein-base-9B"] == (
-        "unsloth/FLUX.2-klein-9B"
-    )
+    assert klein["deploy_bases"]["unsloth/FLUX.2-klein-base-9B"] == ("unsloth/FLUX.2-klein-9B")
     assert "gated" not in infos["flux.2-klein"]["vram_note"].lower()
     # Z-Image defaults to the prequant nf4 repo for QLoRA.
     assert "4bit" in infos["z-image"]["default_base"].lower()
