@@ -321,7 +321,14 @@ def decode_h3_reference_audio(blob: bytes) -> tuple[Any, int]:
 
 
 def _decode_audio_stream(container: Any, np: Any) -> tuple[Optional[Any], Optional[int]]:
-    """The container's first audio stream as float32 ``(samples, channels)`` at its own rate."""
+    """The container's first audio stream as float32 ``(samples, channels)`` at its own rate.
+
+    Bounded while decoding, for the reason the video path above is: the encoded size says almost
+    nothing about the decoded size. A 32 MiB request-limit MP3 is over half an hour of audio, which
+    expands to ~1.9 GB of float32 here and doubles again in ``np.concatenate``, and three
+    references are accepted per request. H3's reference window is
+    ``H3_REF_VIDEO_MAX_SECONDS`` anyway, so anything past it is unusable rather than merely large:
+    refuse it with the same message the video guard uses instead of decoding it first."""
     import av
 
     stream = container.streams.audio[0]
@@ -329,12 +336,26 @@ def _decode_audio_stream(container: Any, np: Any) -> tuple[Optional[Any], Option
     # One resampler pass gives interleaved float32 whatever the source layout/format was.
     resampler = av.AudioResampler(format = "flt", layout = stream.layout.name, rate = sample_rate)
     channels = len(stream.layout.channels)
+    max_samples = math.floor(H3_REF_VIDEO_MAX_SECONDS * sample_rate + 1e-6)
     chunks = []
+    total = 0
+
+    def _take(resampled: Any) -> None:
+        nonlocal total
+        block = resampled.to_ndarray().reshape(-1, channels)
+        total += block.shape[0]
+        if total > max_samples:
+            raise ValueError(
+                f"MiniMax-H3 reference audio runs up to {H3_REF_VIDEO_MAX_SECONDS:g} seconds; "
+                f"this one is longer. Trim it first."
+            )
+        chunks.append(block)
+
     for frame in container.decode(audio = 0):
         for resampled in resampler.resample(frame):
-            chunks.append(resampled.to_ndarray().reshape(-1, channels))
+            _take(resampled)
     for resampled in resampler.resample(None):
-        chunks.append(resampled.to_ndarray().reshape(-1, channels))
+        _take(resampled)
     if not chunks:
         return None, None
     return np.concatenate(chunks, axis = 0).astype("float32"), sample_rate

@@ -4223,6 +4223,33 @@ def _data_url_wav(seconds = 1.0, rate = 32_000):
     return "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+def test_h3_reference_audio_decodes_inside_the_trained_window():
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_audio
+
+    blob = base64.b64decode(_data_url_wav(seconds = 2.0).split(",", 1)[1])
+    waveform, rate = decode_h3_reference_audio(blob)
+    assert rate == 32_000
+    assert waveform.shape == (64_000, 2)
+
+
+def test_h3_reference_audio_refuses_a_clip_past_the_window_while_decoding():
+    # The encoded size does not bound the decoded size: the route's 32 MiB limit admits over half
+    # an hour of compressed audio, which lands as ~1.9 GB of float32 and doubles again in the
+    # concatenate, three times over per request. The refusal has to happen DURING the decode, not
+    # after it, or the allocation the bound exists to prevent has already happened.
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_audio
+
+    blob = base64.b64decode(_data_url_wav(seconds = 15.5).split(",", 1)[1])
+    with pytest.raises(ValueError, match = "up to 15 seconds"):
+        decode_h3_reference_audio(blob)
+
+
 def test_h3_partitions_refuse_each_others_conditioning(monkeypatch):
     # The resident partition decides which conditioning is valid.
     keyframe_backend = _h3_native_backend(monkeypatch, [])
