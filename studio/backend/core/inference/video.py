@@ -92,12 +92,14 @@ from .video_families import (
     VideoFamily,
     default_video_generation_params,
     detect_video_family,
+    resolve_keyframe_canvas,
     resolve_video_base_repo,
     snap_num_frames,
     snap_video_size,
     supported_video_family_names,
     video_family_prequant_repo,
     video_family_prequant_schemes,
+    video_family_supports_keyframes,
 )
 from utils.hardware import clear_gpu_cache
 
@@ -192,6 +194,24 @@ def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
 class _VideoGenerationCancelled(Exception):
     """Unwinds a denoise loop that has no cooperative interrupt (no step callback);
     generate() maps it to the VIDEO_CANCELLED_MSG sentinel the routes 409 on."""
+
+
+def _keyframe_anchors(image: Any, last_image: Any) -> Optional[list[str]]:
+    """Which ends of the clip were pinned to a reference frame, for the gallery recipe.
+
+    None (not an empty list) for a text-only clip, so an old record and a new text-only one carry
+    the same absent field rather than two spellings of "no keyframes"."""
+    anchors = [
+        name for name, frame in (("first", image), ("last", last_image)) if frame is not None
+    ]
+    return anchors or None
+
+
+def _pil_lanczos() -> Any:
+    """PIL's LANCZOS filter, which moved to ``Image.Resampling`` in Pillow 9.1."""
+    from PIL import Image
+
+    return getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 
 
 @contextlib.contextmanager
@@ -2173,11 +2193,25 @@ class VideoBackend:
         if kind != "pipeline":
             raise ValueError("MiniMax-H3 Diffusers loading requires the pipeline artifact.")
         manager = diffusers.ComponentsManager()
+        # The workflow this load's COMPONENTS are bounded to. A keyframe-capable family loads the
+        # keyframe workflow's set (a superset of the text-only one: the VAE encoder and the keyframe
+        # image processor), which is what makes first/last-frame conditioning possible at all.
+        component_workflow = fam.keyframe_workflow or fam.modular_workflow
         load_kwargs: dict[str, Any] = {
-            "workflow": fam.modular_workflow,
             "components_manager": manager,
             "cache_dir": hub_cache_dir(),
         }
+        if not fam.keyframe_workflow:
+            load_kwargs["workflow"] = fam.modular_workflow
+        # A keyframe-capable family deliberately does NOT pass `workflow=` here. That argument
+        # prunes the auto block graph STATICALLY, once, at construction: an fl2va-pruned pipeline
+        # runs the keyframe blocks on every request and cannot serve a text-only one at all (it
+        # raises packing an empty conditioning list). Keeping the full graph lets it select per
+        # request; `load_components(workflow=...)` below still bounds the DOWNLOAD, so the 61.7 GB
+        # Ref2VA partition is no more loaded than it was before. Measured against the released
+        # checkpoint: text-only through this pipeline is bit-identical, video and audio, to the same
+        # request through a t2va-pruned one, and a keyframe request is bit-identical to an
+        # fl2va-pruned one.
         if hf_token:
             load_kwargs["token"] = hf_token
         pipe = diffusers.ModularPipeline.from_pretrained(_base_local_dir or repo_id, **load_kwargs)
@@ -2253,17 +2287,26 @@ class VideoBackend:
         # The token above only opens the modular index. Every component's own from_pretrained runs
         # here, against the repos that index names, so it has to be passed again or a gated/private
         # component load goes out anonymously (load_components only WARNS on a failed component).
-        # Deliberately no names= argument: the workflow prunes the block graph itself, which is what
-        # already keeps the 61.7 GB Ref2VA transformer out of a t2va load, and naming components
-        # here would forfeit that pruning for a saving the seeding above has already taken.
-        pipe.load_components(dtype = dtype, **({"token": hf_token} if hf_token else {}))
+        # Deliberately no names= argument: the workflow bounds the component set itself, which is
+        # what keeps the 61.7 GB Ref2VA transformer out of the load, and naming components here
+        # would forfeit that for a saving the seeding above has already taken. On a keyframe-capable
+        # family the block graph was left whole, so the bound has to be stated here instead.
+        load_components_kwargs: dict[str, Any] = {"dtype": dtype}
+        if hf_token:
+            load_components_kwargs["token"] = hf_token
+        if fam.keyframe_workflow:
+            load_components_kwargs["workflow"] = component_workflow
+        pipe.load_components(**load_components_kwargs)
         # The video VAE loads at float32 and the decode runs under float16 autocast, so both
         # copies are resident for the whole decode. Pre-casting removes the pair without
         # changing a single output value, and t2va never uses the encoder half at all.
         from .video_minimax_h3 import trim_h3_video_vae
 
         try:
-            trimmed = trim_h3_video_vae(getattr(pipe, "vae", None), workflow = fam.modular_workflow)
+            # The workflow the COMPONENTS were loaded for, not the family's text-only name: the VAE
+            # encoder is dead weight for t2va but is exactly what encodes a keyframe, so a
+            # keyframe-capable load must keep it.
+            trimmed = trim_h3_video_vae(getattr(pipe, "vae", None), workflow = component_workflow)
         except Exception as exc:  # noqa: BLE001 -- a saving is not worth failing a load over
             logger.warning("video.h3_vae_trim failed, keeping the full VAE: %s", exc)
         else:
@@ -2388,6 +2431,8 @@ class VideoBackend:
         guidance: Optional[float] = None,
         guidance_2: Optional[float] = None,
         seed: Optional[int] = None,
+        image: Optional[str] = None,
+        last_image: Optional[str] = None,
     ) -> None:
         """Validate cheaply, then run generate + gallery persist on a daemon thread.
 
@@ -2401,6 +2446,14 @@ class VideoBackend:
         sentinels the route maps to 409.
         """
         cancel = threading.Event()
+        # Decode the keyframes HERE, on the caller's thread, so an unreadable or oversized frame is
+        # a synchronous ValueError the route turns into a 400. Deferring it to the worker would
+        # accept the request and only report the failure minutes later through generate-progress.
+        # The family check comes first: a family without keyframe conditioning must say so rather
+        # than silently drop the frames it was sent.
+        with self._lock:
+            family = getattr(self._state, "family", None)
+        keyframes = self._decode_keyframes(family, image, last_image)
         with self._lock:
             if self._state is None:
                 raise RuntimeError(VIDEO_NOT_LOADED_MSG)
@@ -2429,10 +2482,49 @@ class VideoBackend:
                 guidance = guidance,
                 guidance_2 = guidance_2,
                 seed = seed,
+                image = keyframes[0],
+                last_image = keyframes[1],
                 cancel_event = cancel,
             ),
             daemon = True,
         ).start()
+
+    @staticmethod
+    def _decode_keyframes(
+        family: Any, image: Optional[str], last_image: Optional[str]
+    ) -> tuple[Any, Any]:
+        """Decode the base64 first/last frames of a request into PIL images.
+
+        Returns ``(None, None)`` when neither was sent, so a text-only request pays nothing and
+        behaves exactly as it did. Raises ``ValueError`` -- a 400 at the route -- when frames were
+        sent to a family that cannot condition on them, or when one will not decode.
+
+        The decode is the image backend's, not a second one: ``_decode_b64_image`` already accepts
+        both a bare base64 payload and a ``data:`` URL, bounds the decoded size, and converts to
+        RGB, which is exactly the contract the keyframe encoder wants."""
+        if image is None and last_image is None:
+            return None, None
+        if not video_family_supports_keyframes(family):
+            name = getattr(family, "name", None)
+            raise ValueError(
+                f"{name or 'The loaded model'} generates from a prompt only and cannot start or "
+                "end on a reference frame. Load MiniMax-H3 to condition a clip on one."
+            )
+        # Imported at the call site: this is the one place the video backend needs the image
+        # backend's decoder, and importing it at module scope would pull that module into every
+        # video import for a helper most requests never reach.
+        from core.inference.diffusion import _decode_b64_image
+
+        decoded = []
+        for payload, label in ((image, "first"), (last_image, "last")):
+            if payload is None:
+                decoded.append(None)
+                continue
+            try:
+                decoded.append(_decode_b64_image(payload))
+            except ValueError as exc:
+                raise ValueError(f"Could not read the {label} reference frame: {exc}") from exc
+        return decoded[0], decoded[1]
 
     def _run_generate(self, *, cancel_event: threading.Event, **gen_kwargs: Any) -> None:
         """begin_generate's worker: generate, persist to the gallery, record the
@@ -2478,6 +2570,7 @@ class VideoBackend:
                     "guidance_2": gen_kwargs.get("guidance_2"),
                     "seed": result["seed"],
                     "has_audio": result["has_audio"],
+                    "keyframe_anchors": result.get("keyframe_anchors"),
                     "model": result["repo_id"],
                     "created_at": created_at,
                 },
@@ -2539,6 +2632,8 @@ class VideoBackend:
         guidance: Optional[float] = None,
         guidance_2: Optional[float] = None,
         seed: Optional[int] = None,
+        image: Any = None,
+        last_image: Any = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> dict[str, Any]:
         # begin_generate passes its already-registered event; a direct call makes its own.
@@ -2554,11 +2649,28 @@ class VideoBackend:
                 self._active_generate_cancel = cancel
             try:
                 fam = state.family
-                width, height = snap_video_size(
-                    fam,
-                    width or fam.resolution_presets[0][0],
-                    height or fam.resolution_presets[0][1],
-                )
+                # A direct generate() call bypasses begin_generate's family check, so re-assert it
+                # here rather than handing keyframes to a pipeline that would ignore them.
+                if (image is not None or last_image is not None) and not (
+                    video_family_supports_keyframes(fam)
+                ):
+                    raise ValueError(
+                        f"{fam.name} generates from a prompt only and cannot start or end on a "
+                        "reference frame."
+                    )
+                anchor = image if image is not None else last_image
+                if anchor is not None:
+                    # A keyframe is the geometry anchor, so the canvas comes from IT, not from the
+                    # requested size: the model derives the canvas from the anchor's aspect ratio,
+                    # and forcing an unrelated preset on it stretches the frame and degrades the
+                    # clip without ever erroring. Same rule the reference workflows apply.
+                    width, height = resolve_keyframe_canvas(fam, *anchor.size)
+                else:
+                    width, height = snap_video_size(
+                        fam,
+                        width or fam.resolution_presets[0][0],
+                        height or fam.resolution_presets[0][1],
+                    )
                 frames = snap_num_frames(fam, num_frames or fam.default_num_frames)
                 out_fps = (
                     fam.default_fps if fam.name == "minimax-h3" else int(fps or fam.default_fps)
@@ -2583,6 +2695,8 @@ class VideoBackend:
                         steps = steps,
                         guidance = guidance,
                         seed = seed,
+                        image = image,
+                        last_image = last_image,
                         cancel = cancel,
                     )
 
@@ -2673,6 +2787,13 @@ class VideoBackend:
                     kwargs[fam.cfg2_kwarg] = float(guidance_2)
                 if fam.modular_workflow:
                     kwargs["output"] = ["videos", "audio", "sampling_rate"]
+                # The auto block graph selects its keyframe branches on the PRESENCE of these
+                # inputs, so a text-only request must not pass them at all -- passing None is not
+                # the same as omitting them for a ConditionalPipelineBlocks trigger.
+                if image is not None:
+                    kwargs["image"] = image
+                if last_image is not None:
+                    kwargs["last_image"] = last_image
 
                 started = time.monotonic()
                 self._gen = {
@@ -2794,6 +2915,7 @@ class VideoBackend:
                     "has_audio": bool(audio_track is not None),
                     "steps": steps,
                     "guidance": guidance,
+                    "keyframe_anchors": _keyframe_anchors(image, last_image),
                 }
             except Exception:
                 self._gen = {"active": False}
@@ -2816,6 +2938,8 @@ class VideoBackend:
         guidance: float,
         seed: Optional[int],
         cancel: threading.Event,
+        image: Any = None,
+        last_image: Any = None,
     ) -> dict[str, Any]:
         import random
 
@@ -2844,7 +2968,30 @@ class VideoBackend:
         tmp = tempfile.NamedTemporaryFile(suffix = ".webm", delete = False)
         tmp.close()
         output_path = Path(tmp.name)
+        # sd-cli reads its keyframes from disk, so the decoded frames are staged as PNGs for the
+        # life of the run. PNG rather than JPEG: a keyframe is encoded straight into conditioning
+        # latents, so a lossy round-trip would move the conditioning for no saving.
+        keyframe_paths: list[Path] = []
+
+        def _stage(frame: Any) -> Optional[str]:
+            if frame is None:
+                return None
+            handle = tempfile.NamedTemporaryFile(suffix = ".png", delete = False)
+            handle.close()
+            path = Path(handle.name)
+            keyframe_paths.append(path)
+            # Pre-resize to the resolved canvas rather than leaving it to sd-cli: it resizes to
+            # --width/--height anyway, and doing it here keeps the frames the two engines encode
+            # identical in size.
+            staged = frame if frame.size == (width, height) else frame.resize(
+                (width, height), _pil_lanczos()
+            )
+            staged.save(path, format = "PNG")
+            return str(path)
+
         try:
+            init_image_path = _stage(image)
+            end_image_path = _stage(last_image)
             try:
                 generated = runtime.engine.generate_video(
                     runtime.files,
@@ -2857,6 +3004,8 @@ class VideoBackend:
                         steps = steps,
                         cfg_scale = 1.0,
                         seed = int(seed),
+                        init_image_path = init_image_path,
+                        end_image_path = end_image_path,
                     ),
                     output_path = str(output_path),
                     offload = list(runtime.offload_flags),
@@ -2885,9 +3034,12 @@ class VideoBackend:
                 "has_audio": has_audio,
                 "steps": steps,
                 "guidance": guidance,
+                "keyframe_anchors": _keyframe_anchors(image, last_image),
             }
         finally:
             output_path.unlink(missing_ok = True)
+            for path in keyframe_paths:
+                path.unlink(missing_ok = True)
 
     @staticmethod
     def _encode_mp4(
@@ -3028,6 +3180,7 @@ class VideoBackend:
                 "text_encoder_quant": None,
                 "has_audio": False,
                 "supports_cfg": True,
+                "supports_keyframes": False,
                 "defaults": None,
                 "resolved": None,
             }
@@ -3058,6 +3211,8 @@ class VideoBackend:
             "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
             "supports_cfg": fam.supports_cfg,
+            # Both engines route keyframes, so the capability is the family's, not the engine's.
+            "supports_keyframes": video_family_supports_keyframes(fam),
             "defaults": {
                 "steps": default_steps,
                 "guidance": default_guidance,

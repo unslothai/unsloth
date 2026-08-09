@@ -3214,6 +3214,21 @@ class VideoGenerateRequest(BaseModel):
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
+    # Keyframe conditioning, carried as base64 exactly like the image routes' init_image. Same
+    # 32 MiB cap per payload so one request cannot buffer a multi-GB body. Only families whose
+    # status reports supports_keyframes accept these; anyone else is refused with the reason.
+    image: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL first frame the clip starts from (omit for text-to-video). "
+        "Its aspect ratio resolves the generated size, so the requested width/height are ignored.",
+    )
+    last_image: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL last frame the clip ends on. Can be sent on its own to "
+        "generate up to a frame, or with image to generate between the two.",
+    )
 
 
 class GalleryVideo(BaseModel):
@@ -3235,6 +3250,11 @@ class GalleryVideo(BaseModel):
     )
     seed: int = Field(..., description = "Seed used")
     has_audio: bool = Field(False, description = "Whether the MP4 carries an audio track")
+    # Which ends of the clip were pinned to a reference frame ("first" / "last"), in packed order.
+    # Absent on records written before keyframes existed, and on text-only clips.
+    keyframe_anchors: Optional[list[str]] = Field(
+        None, description = "Which ends were conditioned on a reference frame: first and/or last"
+    )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     created_at: str = Field(..., description = "Creation time (ISO 8601 timestamp)")
 
@@ -3365,6 +3385,12 @@ class VideoStatusResponse(BaseModel):
     )
     supports_cfg: bool = Field(
         True, description = "Whether guidance and negative prompts apply to this family"
+    )
+    supports_keyframes: bool = Field(
+        False,
+        description = "Whether the loaded family accepts a first and/or last frame on generate. "
+        "The Video page shows the reference-frame controls only when this is true, so a family "
+        "without keyframe conditioning does not grow a control that does nothing.",
     )
     defaults: Optional[VideoGenerationDefaults] = Field(
         None, description = "Per-family generation defaults + shape constraints; null when unloaded"

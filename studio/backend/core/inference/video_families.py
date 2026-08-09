@@ -91,6 +91,20 @@ class VideoFamily:
     modular_workflow: Optional[str] = None
     # Guidance-distilled families expose neither CFG nor a negative prompt.
     supports_cfg: bool = True
+    # Keyframe (first / last frame) conditioning. This is the Modular Diffusers workflow whose
+    # COMPONENT SET a keyframe-capable load pulls -- NOT a workflow the pipeline runs under: passing
+    # `workflow=` to `ModularPipeline.from_pretrained` prunes the auto blocks STATICALLY, so an
+    # fl2va-pruned pipeline cannot serve a text-only request at all (it dies packing an empty
+    # conditioning list). The load keeps the full auto block graph, which selects per request, and
+    # uses this name only to bound `load_components` to the keyframe subset. None = no keyframes.
+    keyframe_workflow: Optional[str] = None
+    # H3's own canvas rule, used to resolve the generated size from a keyframe's aspect ratio the
+    # way the released model does. Only read when keyframe_workflow is set.
+    canvas_short_edge: int = 768
+    canvas_max_pixels: int = 768 * 1344
+    # The aspect ratios the checkpoint was trained over; a keyframe outside them is refused.
+    min_aspect_ratio: float = 0.25
+    max_aspect_ratio: float = 4.0
 
 
 _FAMILIES: tuple[VideoFamily, ...] = (
@@ -129,6 +143,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         prequant_repos = (("int8", "unsloth/MiniMax-H3-FP8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
         modular_workflow = "t2va",
         supports_cfg = False,
+        # The released FL2VA transformer -- the one already downloaded for text-to-video -- also
+        # serves first/last-frame conditioning; only Ref2VA needs the second 61.7 GB partition.
+        # Naming it here adds the VAE encoder and the keyframe image processor to the load and
+        # nothing else, so text-only generation is bit-identical to what it was.
+        keyframe_workflow = "fl2va",
     ),
     # LTX-2 (diffusers >= 0.39): ~19B single-stream video DiT generating synchronized audio + video in one pass. The Gemma3-12B
     # encoder is stored fp32 on the hub (~49 GB download, ~24 GB resident bf16). The base repo carries the dev config (40 steps, CFG 4).
@@ -389,6 +408,59 @@ def snap_video_size(fam: VideoFamily, width: int, height: int) -> tuple[int, int
     multiple = max(1, fam.resolution_multiple)
     snap = lambda v: max(multiple, (max(1, v) // multiple) * multiple)  # noqa: E731
     return snap(width), snap(height)
+
+
+def video_family_supports_keyframes(fam: Optional[VideoFamily]) -> bool:
+    """Whether this family can condition a clip on a first and/or last frame.
+
+    Read through ``getattr`` so a family object that predates the field simply says no; this drives
+    the UI capability flag, and an unknown family must not grow a control that does nothing."""
+    return bool(getattr(fam, "keyframe_workflow", None))
+
+
+def resolve_keyframe_canvas(fam: VideoFamily, image_width: int, image_height: int) -> tuple[int, int]:
+    """The ``(width, height)`` a keyframe of this size generates at.
+
+    A keyframe is a geometry anchor, not just conditioning: the released model derives the canvas
+    from the anchor's aspect ratio rather than stretching it onto whatever preset was selected, and
+    the reference workflows do the same. The arithmetic is the released one -- start at
+    ``canvas_short_edge``, cap the area at ``canvas_max_pixels``, then round BOTH axes to the
+    family's multiple, so the rounded area can land slightly above the pre-rounding budget.
+
+    Handing H3 an arbitrary user resolution instead produces a garbled clip rather than an error,
+    which is why this is resolved here and not left to the pipeline.
+
+    Raises ``ValueError`` for a degenerate or out-of-range aspect ratio, which the routes map to a
+    400 with the reason.
+    """
+    if image_width <= 0 or image_height <= 0:
+        raise ValueError(
+            f"The reference image has no area ({image_width}x{image_height})."
+        )
+    ratio = image_width / image_height
+    lo = float(getattr(fam, "min_aspect_ratio", 0.25) or 0.25)
+    hi = float(getattr(fam, "max_aspect_ratio", 4.0) or 4.0)
+    if not lo <= ratio <= hi:
+        raise ValueError(
+            f"{fam.name} supports aspect ratios from 1:{1 / lo:g} to {hi:g}:1, but the reference "
+            f"image is {image_width}x{image_height} ({ratio:.3g}:1). Crop it and try again."
+        )
+    short_edge = float(max(1, getattr(fam, "canvas_short_edge", 768)))
+    if ratio >= 1.0:
+        width, height = short_edge * ratio, short_edge
+    else:
+        width, height = short_edge, short_edge / ratio
+    max_pixels = float(max(1, getattr(fam, "canvas_max_pixels", 768 * 1344)))
+    area = width * height
+    if area > max_pixels:
+        scale = (max_pixels / area) ** 0.5
+        width, height = width * scale, height * scale
+    multiple = max(1, fam.resolution_multiple)
+    # round-half-even, as Python's round() and the released implementation both do.
+    return (
+        max(multiple, round(width / multiple) * multiple),
+        max(multiple, round(height / multiple) * multiple),
+    )
 
 
 # Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base repo), most specific first.
