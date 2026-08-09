@@ -481,7 +481,7 @@ def test_the_outgoing_window_mask_is_freed_before_its_replacement(monkeypatch):
     attention_dispatch._windowed_causal_mask(8, 8, 3, device)
 
     assert cached_during_build, "the replacement must actually have been built"
-    assert not any(cached_during_build), (
-        "the previous mask was still alive while its replacement was allocated"
-    )
+    assert not any(
+        cached_during_build
+    ), "the previous mask was still alive while its replacement was allocated"
     attention_dispatch._WINDOW_MASK_CACHE.clear()
