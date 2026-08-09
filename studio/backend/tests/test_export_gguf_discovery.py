@@ -378,7 +378,11 @@ def test_imatrix_named_like_the_output_does_not_suppress_the_real_gguf(monkeypat
 
     class _Model:
         def save_pretrained_gguf(
-            self, model_save_path, tokenizer, quantization_method, imatrix_file = None
+            self,
+            model_save_path,
+            tokenizer,
+            quantization_method,
+            imatrix_file = None,
         ):
             _gguf(Path(model_save_path) / "MyModel.Q5_K_M.gguf", b"IMATRIX")
             quant = _gguf(Path(f"{model_save_path}_gguf") / "MyModel.Q5_K_M.gguf")
