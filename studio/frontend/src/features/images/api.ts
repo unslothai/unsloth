@@ -27,6 +27,8 @@ export interface DiffusionStatus {
   dtype: string | null;
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Gates GGUF-only controls. Null when not loaded.
   model_kind?: string | null;
+  // Selected GGUF quant. Newer backends report this separately from the compute dtype.
+  gguf_variant?: string | null;
   cpu_offload: boolean;
   // The ENGAGED runtime build. The backend has always sent these; declaring them is what lets the UI
   // report what actually ran instead of echoing the load request back at the user.

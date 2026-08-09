@@ -202,6 +202,10 @@ export function describeDiffusionStatus(
   status: DiffusionStatus | null,
 ): LoadedModelEntry[] {
   if (!status?.loaded || !status.repo_id) return [];
+  const isGguf =
+    status.model_kind === "gguf" ||
+    status.dtype?.toLowerCase() === "gguf" ||
+    Boolean(status.gguf_variant);
   return [
     {
       id: `image:${status.repo_id}`,
@@ -210,9 +214,10 @@ export function describeDiffusionStatus(
       name: status.repo_id,
       detail: joinDetail(
         status.family,
-        status.model_kind === "gguf" ? "GGUF" : null,
-        // A GGUF load reports "gguf" here too; joinDetail drops the repeat.
-        precisionLabel(status.dtype),
+        isGguf ? "GGUF" : null,
+        // The checkpoint quant identifies a GGUF build. dtype is only its
+        // compute precision, and calling that BF16 made a Q8_0 pick look wrong.
+        status.gguf_variant ?? precisionLabel(status.dtype),
         status.device,
       ),
     },

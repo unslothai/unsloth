@@ -219,6 +219,31 @@ test("a GGUF image load does not print GGUF twice", () => {
   assert.equal(image.detail, "flux · GGUF · cuda");
 });
 
+test("a GGUF image row names its selected quant instead of its compute dtype", () => {
+  const [image] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+    model_kind: "gguf",
+    gguf_variant: "Q8_0",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(image.detail, "z-image · GGUF · Q8_0 · cuda");
+});
+
+test("a native GGUF image row names its selected quant without model_kind", () => {
+  const [image] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+    gguf_variant: "Q8_0",
+    dtype: "gguf",
+    device: "cpu",
+  } as never);
+  assert.equal(image.detail, "z-image · GGUF · Q8_0 · cpu");
+});
+
 // Gemma 3n and friends take audio in but answer as chat. Every backend sets
 // is_audio from `audio_type is not None and audio_type != "audio_vlm"`
 // (model_config.py, mlx_inference.py; llama_cpp.py keeps _is_audio False for
