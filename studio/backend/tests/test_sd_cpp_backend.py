@@ -524,6 +524,48 @@ def test_generate_cancellation_raises_cancelled_not_failure():
         b.generate(prompt = "x", steps = 8, seed = 5)
 
 
+def test_cancel_generate_idle_returns_false():
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    assert b.cancel_generate() is False
+
+
+def test_cancel_generate_via_public_api_interrupts_generation():
+    import threading
+
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)
+    started = threading.Event()
+    release = threading.Event()
+
+    original_generate = eng.generate
+
+    def _blocking_generate(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        cancel = kwargs.get("cancel_event")
+        if cancel is not None and cancel.is_set():
+            raise SdCppCancelled("cancelled")
+        return original_generate(*args, **kwargs)
+
+    eng.generate = _blocking_generate
+    out: dict = {}
+
+    def _run():
+        try:
+            out["res"] = b.generate(prompt = "x", steps = 8, seed = 5)
+        except Exception as exc:  # noqa: BLE001
+            out["exc"] = exc
+
+    t = threading.Thread(target = _run)
+    t.start()
+    assert started.wait(5)
+    assert b.cancel_generate() is True
+    release.set()
+    t.join(10)
+    assert "exc" in out and "cancelled" in str(out["exc"]).lower()
+    assert b._active_generate_cancel is None
+
+
 def test_generate_progress_tracks_parsed_steps():
     b = _loaded_backend()
     b._gen = bk._SdGen(total_steps = 8)

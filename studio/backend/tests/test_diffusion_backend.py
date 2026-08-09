@@ -2543,6 +2543,73 @@ def test_callback_cancellation_interrupts_denoise(fake_runtime):
     assert "exc" in out and "cancelled" in str(out["exc"]).lower()
 
 
+def test_cancel_generate_idle_returns_false(fake_runtime):
+    backend = DiffusionBackend()
+    assert backend.cancel_generate() is False
+
+
+def test_cancel_generate_via_public_api_interrupts_denoise(fake_runtime):
+    import threading
+
+    backend = DiffusionBackend()
+    at_step0 = threading.Event()
+    resume = threading.Event()
+
+    class _SteppingPipe:
+        def __init__(self) -> None:
+            self._interrupt = False
+            self.steps_run = 0
+
+        def __call__(
+            self,
+            *,
+            callback_on_step_end = None,
+            num_inference_steps = 8,
+            **kwargs,
+        ):
+            for i in range(num_inference_steps):
+                if self._interrupt:
+                    break
+                if callback_on_step_end is not None:
+                    callback_on_step_end(self, i, 0.0, {})
+                self.steps_run = i + 1
+                if i == 0:
+                    at_step0.set()
+                    resume.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    pipe = _SteppingPipe()
+    fam = detect_family("unsloth/Z-Image-GGUF")
+    backend._state = _LoadState(
+        pipe = pipe,
+        family = fam,
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+
+    out: dict = {}
+
+    def _run():
+        try:
+            out["res"] = backend.generate(prompt = "p", steps = 8)
+        except Exception as exc:  # noqa: BLE001
+            out["exc"] = exc
+
+    t = threading.Thread(target = _run)
+    t.start()
+    assert at_step0.wait(5)
+    assert backend.cancel_generate() is True
+    resume.set()
+    t.join(5)
+    assert pipe._interrupt is True
+    assert pipe.steps_run < 8
+    assert "exc" in out and "cancelled" in str(out["exc"]).lower()
+    assert backend._active_generate_cancel is None
+
+
 def test_validate_load_request(tmp_path):
     backend = DiffusionBackend()
     # No filename + unsloth repo -> a full-pipeline load (allowed for unsloth/*).

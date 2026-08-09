@@ -346,6 +346,76 @@ def test_cancel_running_generation(client):
     assert resp.json()["detail"] == DIFFUSION_CANCELLED_MSG
 
 
+def test_cancel_after_generation_completes_returns_false(client):
+    client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+            "base_repo": "unsloth/Z-Image-base",
+        },
+    )
+    gen = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
+    assert gen.status_code == 200
+    resp = client.post("/api/inference/images/generate/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["cancelled"] is False
+
+
+def test_double_cancel_during_running_generation(client):
+    import threading
+
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+    cancel = threading.Event()
+    started = threading.Event()
+
+    def _blocking_generate(**kwargs):
+        started.set()
+        assert cancel.wait(5)
+        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+
+    backend.generate = _blocking_generate
+    backend.cancel_generate = lambda: cancel.set() or True
+
+    result: dict = {}
+
+    def _run_generate():
+        result["resp"] = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+
+    worker = threading.Thread(target = _run_generate)
+    worker.start()
+    assert started.wait(5)
+    first = client.post("/api/inference/images/generate/cancel")
+    second = client.post("/api/inference/images/generate/cancel")
+    assert first.status_code == 200 and first.json()["cancelled"] is True
+    # Second call is harmless: nothing active to cancel anymore once the event is set.
+    assert second.status_code == 200
+    worker.join(10)
+    assert result["resp"].status_code == 409
+
+
+def test_cancel_route_requires_auth_when_enforced():
+    from auth.authentication import get_current_subject
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+
+    import routes.inference as inf
+
+    app = FastAPI()
+    app.include_router(inf.studio_router, prefix = "/api/inference")
+
+    def _deny():
+        raise HTTPException(status_code = 401, detail = "nope")
+
+    app.dependency_overrides[get_current_subject] = _deny
+    guarded = TestClient(app)
+    resp = guarded.post("/api/inference/images/generate/cancel")
+    assert resp.status_code == 401
+
+
 def test_load_rejects_untrusted_base_repo(client):
     # A trusted GGUF paired with an untrusted remote base_repo is rejected at the route, so a client cannot make the server fetch an arbitrary companion repo.
     r = client.post(
