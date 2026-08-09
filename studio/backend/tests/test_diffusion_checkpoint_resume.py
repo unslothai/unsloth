@@ -1908,6 +1908,72 @@ def test_the_identity_covers_the_update_shape_and_the_resolution(run_dir):
     assert "resolution" not in dc._OPTIONAL_IDENTITY_FIELDS
 
 
+def test_pruning_spares_the_bundle_the_run_resumed_from(run_dir):
+    """A resumed run writes into the directory it resumed FROM, so with the default keep=2 a
+    resume of checkpoint-10 that saves 20 and 30 prunes 10 -- and "stop without saving" then
+    removes only what this run wrote, leaving the ORIGINAL stopped run with no resume point."""
+    source = _Run(run_dir)
+    origin, error = source.save(10)
+    assert error is None and origin is not None
+
+    run = _Run(run_dir, resume_from_checkpoint = origin)
+    for step in (20, 30):
+        _path, error = run.save(step)
+        assert error is None, step
+
+    assert Path(origin).is_dir(), "the source bundle is not this run's to spend"
+    assert (run_dir / "checkpoint-30").is_dir()
+
+
+def test_the_resolved_cache_path_is_recorded_not_the_request(run_dir):
+    """UNSLOTH_DIFFUSION_NO_LATENT_CACHE and the over-budget fallback both turn the cache off
+    behind the request, and the two paths draw crops and flips from different RNG streams, so
+    a bundle written on one and resumed on the other restores a state that no longer
+    reproduces the run."""
+    base = dc.identity_for_config(_Run(run_dir).cfg)
+    cached = dc.with_cache_mode(base, True)
+    in_loop = dc.with_cache_mode(base, False)
+
+    assert cached.cache_mode == "cached" and in_loop.cache_mode == "in-loop"
+    reason = cached.mismatch_reason(in_loop)
+    assert reason is not None and "latent cache path" in reason
+    # The start route builds its identity before the loop decides, so it stays unknown there
+    # and the pre-eviction preflight is unaffected.
+    assert base.cache_mode is None
+    assert base.mismatch_reason(in_loop) is None
+    assert cached.mismatch_reason(base) is None
+
+    # And both trainers record it.
+    trainers = Path(dc.__file__).parent
+    for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
+        source = (trainers / name).read_text(encoding = "utf-8")
+        assert "with_cache_mode(identity, latent_cache is not None)" in source, name
+
+
+def test_a_first_periodic_save_does_not_spend_the_previous_runs_bundles(run_dir):
+    """Deleting them at the first save spends them before this run has produced anything: a
+    later "stop without saving" removes only what this run wrote, leaves the previous adapter
+    in place, and the run it belonged to is unresumable -- cancelling a retrain destroyed the
+    thing being retrained."""
+    earlier = _Run(run_dir)
+    kept, error = earlier.save(9)
+    assert error is None and kept is not None
+
+    fresh = _Run(run_dir)
+    mine, error = fresh.save(1)
+    assert error is None and mine is not None
+    assert Path(kept).is_dir(), "the previous run's bundle survives the first periodic save"
+
+    # It goes on the COMPLETION path instead, once this run's adapter is actually saved.
+    dc.retire_own_checkpoints(run_dir, [], resumed_here = False)
+    assert dc.list_checkpoints(run_dir) == []
+
+    trainers = Path(dc.__file__).parent
+    for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
+        source = (trainers / name).read_text(encoding = "utf-8")
+        assert "discard_existing = False," in source, name
+
+
 def test_both_trainers_honour_the_fp32_optimizer_override(run_dir):
     """The preflight refuses 8-bit moments when the override is set, which is only sound if
     every trainer actually obeys it -- otherwise DiT checkpoints written on this host become

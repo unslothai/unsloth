@@ -106,6 +106,11 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     # old optimizer and sampler against a different sequence of images.
     ("seed", "random seed"),
     ("cache_latents", "latent caching"),
+    ("cache_mode", "latent cache path"),
+    # The mode the LOOP actually ran in, which the request does not settle:
+    # UNSLOTH_DIFFUSION_NO_LATENT_CACHE turns it off, and an over-budget cache falls back to
+    # encoding in-loop. The two paths draw their crops and flips from different streams
+    # (variant_rng versus the loop rng), so a restored RNG state does not reproduce the run.
     ("cache_variants", "cached crop variants"),
     ("center_crop", "centre cropping"),
     ("random_flip", "random flipping"),
@@ -140,6 +145,7 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "lr_warmup_steps",
         "seed",
         "cache_latents",
+        "cache_mode",
         "cache_variants",
         "center_crop",
         "random_flip",
@@ -207,6 +213,11 @@ class CheckpointIdentity:
     # Booleans as text ("on"/"off") for the same reason snr_gamma is: False is a real value and
     # None has to stay reserved for a manifest that predates the field.
     cache_latents: Optional[str] = None
+    # Resolved, not requested, and known only inside the trainer -- the start route leaves it
+    # None, which the optional rule reads as "cannot tell" so the pre-eviction preflight is
+    # unaffected. The trainer's own preflight, which runs with the real value, is where a
+    # mismatched cache path is caught.
+    cache_mode: Optional[str] = None
     cache_variants: Optional[int] = None
     center_crop: Optional[str] = None
     random_flip: Optional[str] = None
@@ -238,6 +249,7 @@ class CheckpointIdentity:
             "lr_warmup_steps": self.lr_warmup_steps,
             "seed": self.seed,
             "cache_latents": self.cache_latents,
+            "cache_mode": self.cache_mode,
             "cache_variants": self.cache_variants,
             "center_crop": self.center_crop,
             "random_flip": self.random_flip,
@@ -278,6 +290,7 @@ class CheckpointIdentity:
                 lr_warmup_steps = _optional_int(data.get("lr_warmup_steps")),
                 seed = _optional_int(data.get("seed")),
                 cache_latents = _optional_str(data.get("cache_latents")),
+                cache_mode = _optional_str(data.get("cache_mode")),
                 cache_variants = _optional_int(data.get("cache_variants")),
                 center_crop = _optional_str(data.get("center_crop")),
                 random_flip = _optional_str(data.get("random_flip")),
@@ -450,6 +463,16 @@ def _resolve_lora_targets(cfg: Any) -> tuple[str, ...]:
     if spec is None:
         return configured
     return tuple(_select_lora_targets(configured, spec.lora_targets))
+
+
+def with_cache_mode(identity: "CheckpointIdentity", used_cache: bool) -> "CheckpointIdentity":
+    """Record the latent-cache path the loop ACTUALLY took.
+
+    The config only carries the request. The environment override and the over-budget fallback
+    can both turn it off, and the cached and uncached paths consume different RNG streams for
+    crops and flips, so a bundle written on one and resumed on the other restores a state that
+    no longer reproduces the training stream."""
+    return replace(identity, cache_mode = "cached" if used_cache else "in-loop")
 
 
 def with_resolved_revision(identity: "CheckpointIdentity", base_model: Any) -> "CheckpointIdentity":
@@ -813,7 +836,17 @@ def save_checkpoint(
         if stale != final:
             shutil.rmtree(stale, ignore_errors = True)
     _prune_staging(root)
-    prune_checkpoints(root, keep = save_total_limit, protect = final)
+    # The source bundle is pinned as well as the one just written. A resumed run writes into
+    # the directory it resumed FROM, so with keep=2 a run that resumes checkpoint-10 and saves
+    # 20 and 30 prunes 10 -- and "stop without saving" then removes only what this run wrote,
+    # leaving the ORIGINAL stopped run with no resume point at all. Its own bundle is not this
+    # run's to spend.
+    prune_checkpoints(
+        root,
+        keep = save_total_limit,
+        protect = final,
+        also_protect = _source_bundle_path(root, source_checkpoint),
+    )
     return str(final)
 
 
@@ -1006,15 +1039,33 @@ def _recover_orphaned_slot(root: Path, entry: Path) -> bool:
     return True
 
 
+def _source_bundle_path(root: Path, source_checkpoint) -> Optional[Path]:
+    """The bundle this run resumed from, when it lives in ``root``. None otherwise."""
+    if not source_checkpoint:
+        return None
+    try:
+        source = Path(source_checkpoint).expanduser().resolve()
+    except OSError:
+        return None
+    for candidate in list_checkpoints(root):
+        try:
+            if candidate.resolve() == source:
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
 def prune_checkpoints(
     output_dir: str | os.PathLike[str],
     keep: int = DEFAULT_SAVE_TOTAL_LIMIT,
     *,
     protect: Optional[Path] = None,
+    also_protect: Optional[Path] = None,
 ) -> None:
     """Keep only the ``keep`` newest ``checkpoint-<N>`` bundles. ``keep <= 0`` keeps all.
 
-    ``protect`` is never pruned. Newest is by STEP, and a resume can legitimately write a bundle
+    ``protect`` and ``also_protect`` are never pruned. Newest is by STEP, and a resume can legitimately write a bundle
     that is not the highest-numbered one in the folder: resume checkpoint-10, stop at 15, with 20
     and 30 still present and keep=2, and the bundle just written is the one deleted -- while the
     service reports checkpoint_saved for a path that no longer exists, and the run's own start
@@ -1023,10 +1074,11 @@ def prune_checkpoints(
     if keep <= 0:
         return
     survivors = list_checkpoints(output_dir)
-    if protect is not None and protect in survivors:
-        # It occupies one of the kept slots whether or not it sorted into the top `keep`.
-        survivors = [c for c in survivors if c != protect]
-        keep = max(0, keep - 1)
+    for pinned in (protect, also_protect):
+        if pinned is not None and pinned in survivors:
+            # It occupies one of the kept slots whether or not it sorted into the top `keep`.
+            survivors = [c for c in survivors if c != pinned]
+            keep = max(0, keep - 1)
     for stale in survivors[keep:]:
         shutil.rmtree(stale, ignore_errors = True)
 

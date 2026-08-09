@@ -75,6 +75,7 @@ from core.training.diffusion_checkpoint import (
     resumed_into_this_dir,
     snapshot_checkpoints,
     identity_for_config,
+    with_cache_mode,
     with_resolved_revision,
     preflight_resume,
 )
@@ -481,6 +482,10 @@ def run_diffusion_lora_training(
         # built before the load and records "unresolved" on the first run of an uncached repo,
         # which no later resume could then enforce. Only ever adds the constraint.
         identity = with_resolved_revision(identity, cfg.base_model)
+        # And the cache path the loop actually took, which the request does not settle: the
+        # env override and the over-budget fallback both turn it off, and the two paths draw
+        # crops and flips from different RNG streams.
+        identity = with_cache_mode(identity, latent_cache is not None)
 
         # Permutation-cycle index sampler: each image is visited once per cycle before any repeat, so a short run does not leave a small dataset partly unseen.
         index_sampler = PermutationBatchSampler(len(pairs), rng)
@@ -529,14 +534,12 @@ def run_diffusion_lora_training(
         t_steady = None
         # Starts at the resumed step so a no-op resume (nothing left to train) still reports the real step.
         done = resumed
-        wrote_checkpoint = False
 
         def _save_checkpoint(step: int) -> None:
             # Outcome is reported by write_resume_checkpoint's own checkpoint_saved /
             # checkpoint_failed events, so a run that crashes after a save is still known to be
             # resumable (and one whose save failed is still known to be blocked).
-            nonlocal wrote_checkpoint
-            written, _error = write_resume_checkpoint(
+            _written, _error = write_resume_checkpoint(
                 cfg,
                 step = step,
                 model = unet,
@@ -547,17 +550,14 @@ def run_diffusion_lora_training(
                 sampler = index_sampler,
                 rng_streams = rng_streams,
                 progress = {"running_loss": running_loss},
-                # A fresh run owns its output dir, so clear bundles an earlier run of the same
-                # adapter name left there: they carry higher step numbers and a later Resume
-                # would pick them over this run's.
-                discard_existing = not (wrote_checkpoint or resumed_here),
+                # NOT discard_existing. A fresh run does own its output dir, but deleting the
+                # previous run's bundles at the FIRST periodic save spends them before this run
+                # has produced anything: "stop without saving" then removes only what this run
+                # wrote, leaves the previous adapter in place, and the run it belonged to is
+                # unresumable -- cancelling a retrain destroyed the thing being retrained. The
+                # clear happens on the completion path instead, once the new adapter is saved.
+                discard_existing = False,
             )
-            # Only a bundle that actually landed retires the discard. A first save that failed
-            # (a transient ENOSPC at the first save_steps interval, say) wrote nothing, so the
-            # next attempt still has to clear an earlier run's higher-numbered bundles -- which
-            # a later Resume by output directory would otherwise pick over this run's state.
-            if written:
-                wrote_checkpoint = True
 
         for opt_step in range(resumed, cfg.train_steps):
             optimizer.zero_grad(set_to_none = True)

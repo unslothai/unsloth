@@ -67,6 +67,7 @@ from core.training.diffusion_checkpoint import (
     resumed_into_this_dir,
     snapshot_checkpoints,
     identity_for_config,
+    with_cache_mode,
     with_resolved_revision,
     preflight_resume,
 )
@@ -1767,6 +1768,8 @@ def _train_dit(
     # first run of an uncached repo, and an unresolved revision is not comparable, so a later
     # resume could not tell that the repo had moved underneath it.
     identity = with_resolved_revision(identity, cfg.base_model)
+    # See the SDXL trainer: the cache path the loop actually took, not the one requested.
+    identity = with_cache_mode(identity, latent_cache is not None)
 
     transformer.train()
     n_images = len(image_paths)
@@ -1820,14 +1823,12 @@ def _train_dit(
     t_steady = None
     # Starts at the resumed step so a no-op resume still reports the real step.
     done = resumed
-    wrote_checkpoint = False
 
     def _save_checkpoint(step: int) -> None:
         # Outcome is reported by write_resume_checkpoint's own checkpoint_saved /
         # checkpoint_failed events, so a run that crashes after a save is still known to be
         # resumable (and one whose save failed is still known to be blocked).
-        nonlocal wrote_checkpoint
-        written, _error = write_resume_checkpoint(
+        _written, _error = write_resume_checkpoint(
             cfg,
             step = step,
             model = transformer,
@@ -1842,13 +1843,14 @@ def _train_dit(
             # records the REQUESTED mode) cannot tell nf4 from bf16 across two "auto" runs.
             # Recorded here so a resume can at least report the change.
             progress = {"running_loss": running_loss, "resolved_base_precision": base_precision},
-            # A fresh run owns its output dir, so clear bundles an earlier run of the same adapter
-            # name left there: they carry higher step numbers and a later Resume would pick them.
-            discard_existing = not (wrote_checkpoint or resumed_here),
+            # NOT discard_existing. A fresh run does own its output dir, but deleting the
+            # previous run's bundles at the FIRST periodic save spends them before this run
+            # has produced anything: "stop without saving" then removes only what this run
+            # wrote, leaves the previous adapter in place, and the run it belonged to is
+            # unresumable -- cancelling a retrain destroyed the thing being retrained. The
+            # clear happens on the completion path instead, once the new adapter is saved.
+            discard_existing = False,
         )
-        # Only a bundle that actually landed retires the discard; see the LoRA trainer.
-        if written:
-            wrote_checkpoint = True
 
     # bf16 autocast around the forward + loss, matching the diffusers dreambooth scripts: it reconciles the fp32 LoRA params with the bnb 4-bit base matmuls. Without it the 4-bit backward on FLUX dies.
     autocast = (
