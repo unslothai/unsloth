@@ -3789,9 +3789,10 @@ class DiffusionBackend:
             # Accept the family's own default base and anything with an explicit override; anything
             # else keeps its measured size.
             canonical = canonical_base(base)
-            if base_repo_bf16_components_gb(base) is None and canonical.lower() != str(
-                getattr(fam, "base_repo", "") or ""
-            ).lower():
+            if (
+                base_repo_bf16_components_gb(base) is None
+                and canonical.lower() != str(getattr(fam, "base_repo", "") or "").lower()
+            ):
                 return plan
             table = family_bf16_components_gb(fam, base)
             if table is None:
