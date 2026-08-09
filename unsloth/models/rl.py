@@ -579,6 +579,22 @@ _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_
 _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
 
 
+def _module_returns_logits(module):
+    # A module whose forward produces `.logits`, i.e. one that owns an output
+    # head. PreTrainedModel.get_output_embeddings returns None for the decoder
+    # bodies (Qwen2Model, LlamaModel, ...) and the head module for the
+    # *ForCausalLM wrappers, so it separates the two without a name list.
+    if module is None:
+        return False
+    get_output_embeddings = getattr(module, "get_output_embeddings", None)
+    if not callable(get_output_embeddings):
+        return False
+    try:
+        return get_output_embeddings() is not None
+    except Exception:
+        return False
+
+
 def _grpo_hidden_states_wrap_target(model):
     if model is None:
         return None
@@ -589,8 +605,18 @@ def _grpo_hidden_states_wrap_target(model):
             return base_model
     for attr in ("base_model", "model"):
         child = getattr(model, attr, None)
-        if child is not None and child is not model and hasattr(child, "forward"):
-            return child
+        if child is None or child is model or not hasattr(child, "forward"):
+            continue
+        # Only descend into an adapter/wrapper that still owns the output head.
+        # A bare *ForCausalLM also has a `.model`, but that is its decoder body:
+        # it returns hidden states and no `.logits` at all, so wrapping it lets
+        # the head above run untouched and the fallback becomes a silent no-op.
+        # TRL builds GRPO's `ref_model` with a plain
+        # `architecture.from_pretrained(...)`, which is exactly that shape, and
+        # the caller then receives [B, T, vocab] where it expects [B, T, hidden].
+        if not _module_returns_logits(child):
+            continue
+        return child
     return model
 
 
