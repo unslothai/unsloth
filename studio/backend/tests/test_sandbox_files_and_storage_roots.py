@@ -3273,5 +3273,121 @@ def test_closing_an_incognito_chat_cleans_up_its_sandbox():
     assert "offerToDeleteKeptSandboxes(kept)" in projects
 
 
+def test_a_snapshot_stops_hashing_once_it_has_read_enough(tmp_path, monkeypatch):
+    """The file cap alone allowed thousands of files under the per-file bound to
+    be read in full, twice per call, on a directory of experiment artifacts."""
+    from core.inference import tools
+
+    workdir = tmp_path / "artifacts"
+    workdir.mkdir()
+    chunk = b"x" * (1024 * 1024)
+    for i in range(8):
+        (workdir / f"run{i}.bin").write_bytes(chunk)
+
+    monkeypatch.setattr(tools, "_MAX_SNAPSHOT_HASH_BYTES", 3 * 1024 * 1024)
+    read = []
+    real_content_key = tools._content_key
+
+    def counting_content_key(path, size):
+        read.append(size)
+        return real_content_key(path, size)
+
+    monkeypatch.setattr(tools, "_content_key", counting_content_key)
+    snapshot = tools._snapshot_workdir_files(str(workdir))
+
+    assert len(snapshot) == 8, snapshot  # every file is still reported
+    assert sum(read) <= 3 * 1024 * 1024 + 1024 * 1024, sum(read)
+    assert any(key[2] is None for key in snapshot.values()), "nothing fell back"
+
+
+def test_a_file_written_while_two_calls_shared_a_workdir_is_not_claimed(tmp_path):
+    """Chats in one project share a workdir. Each call diffs the whole tree, so
+    the other call's output was advertised on this card and its download served
+    that content."""
+    from core.inference import tools
+
+    workdir = tmp_path / "project-workspace"
+    workdir.mkdir()
+
+    tools._call_started(str(workdir))  # the other chat's call, still running
+    try:
+        before = tools._snapshot_workdir_files(str(workdir))
+        tools._call_started(str(workdir))  # ours starts while theirs runs
+        try:
+            (workdir / "theirs.csv").write_text("a,b\n", encoding = "utf-8")
+            sentinels = tools._created_file_sentinels(str(workdir), before)
+        finally:
+            tools._call_finished(str(workdir))
+    finally:
+        tools._call_finished(str(workdir))
+
+    assert "theirs.csv" not in sentinels, sentinels
+
+    # Alone in the workdir, the same write is reported as before.
+    tools._call_started(str(workdir))
+    try:
+        before = tools._snapshot_workdir_files(str(workdir))
+        (workdir / "ours.csv").write_text("a,b\n", encoding = "utf-8")
+        sentinels = tools._created_file_sentinels(str(workdir), before)
+    finally:
+        tools._call_finished(str(workdir))
+    assert "ours.csv" in sentinels, sentinels
+
+
+def test_a_read_serves_the_legacy_files_while_the_move_is_still_running(tmp_path, monkeypatch):
+    """The move runs in the background and across filesystems takes minutes, and
+    a pass that fails leaves the files there for the rest of the process."""
+    fake_home = tmp_path / "userprofile"
+    session = "__LOCALID_slow111"
+    legacy = fake_home / "studio_sandbox" / session
+    legacy.mkdir(parents = True)
+    (legacy / "plot.png").write_bytes(b"png")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    tools._legacy_sandbox_migrated = False
+
+    served = Path(tools.resolve_sandbox_workdir(session))
+    assert (served / "plot.png").is_file(), f"the card 404s until a later tool call: {served}"
+    # And nothing was created at the new root by the read.
+    assert not (Path(tools.sandbox_root()) / session).exists()
+
+
+def test_a_case_variant_id_cannot_delete_a_markerless_sandbox(tmp_path, monkeypatch):
+    """On Windows and a default macOS volume `Foo` and `foo` are one directory,
+    and with the marker gone the default root said yes to either."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    workdir = Path(tools.get_sandbox_workdir("Foo_chat1"))
+    (workdir / "notes.txt").write_text("theirs", encoding = "utf-8")
+    (workdir / tools._SANDBOX_MARKER).unlink()  # a tool wrote over it
+    _forget_sandbox_state(tools)
+
+    # This host is case-sensitive, so the volume that folds the two names is
+    # modelled where the folding happens: both ids resolve to the one directory.
+    real_session_dir = tools._session_dir
+    monkeypatch.setattr(
+        tools,
+        "_session_dir",
+        lambda root, session_id: (
+            str(workdir)
+            if session_id.casefold() == "foo_chat1" else real_session_dir(root, session_id)
+        ),
+    )
+
+    assert tools.remove_session_sandbox("foo_chat1", delete_files = True) is False
+    assert (workdir / "notes.txt").is_file(), "deleted another chat's files"
+    # Its own id still reaches it.
+    assert tools.remove_session_sandbox("Foo_chat1", delete_files = True) is True
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

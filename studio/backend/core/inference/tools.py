@@ -7518,6 +7518,25 @@ def _staged_move(source: str, target: str, name: str) -> None:
 _legacy_one_lock = threading.Lock()
 
 
+def _legacy_session_dir(session_id: str) -> "str | None":
+    """This session's directory at the legacy root, while one is still there.
+
+    Both names, like the migration itself: a chat from before the upgrade whose
+    id starts with the derived prefix kept its folder under the literal id.
+    """
+    if _legacy_sandbox_migrated:
+        return None
+    legacy_root = _legacy_sandbox_root()
+    names = [_sandbox_name(session_id)]
+    if _usable_session_id(session_id) and session_id not in names:
+        names.append(session_id)
+    for name in names:
+        candidate = os.path.join(legacy_root, name)
+        if os.path.isdir(candidate) and not os.path.islink(candidate):
+            return candidate
+    return None
+
+
 def _migrate_one_legacy_session(root: str, name: str) -> None:
     """Bring one session up from the legacy root, without waiting for the rest."""
     if _legacy_sandbox_migrated:
@@ -7823,6 +7842,14 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
     # the root would otherwise serve whatever it points at.
     if not _contained_in_root(workdir, root):
         return _sandbox_fallback(root, "_invalid")
+    if not os.path.isdir(workdir):
+        # Right after an upgrade the files can still be at the legacy root: the
+        # move runs in the background and across filesystems takes minutes, and
+        # a pass that fails leaves them there. Read from where they are rather
+        # than 404 every card in the transcript until some later tool call.
+        legacy = _legacy_session_dir(session_id)
+        if legacy:
+            return legacy
     if not _root_is_ours() and not _owned_by_session(workdir, session_id):
         # In a root the user pointed us at this chat can be in a fallback whose
         # name nothing recomputes, and a read that stops here shows an empty
@@ -8015,6 +8042,11 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     # and those files are the other chat's.
     owner = _marker_owner(target)
     if owner is not None and owner != _sandbox_name(session_id):
+        return False
+    if owner is None and os.path.basename(target) != _sandbox_name(session_id):
+        # Nothing says whose this is, and on a case-insensitive volume `foo`
+        # and `Foo` are one directory: without the marker the name is the only
+        # evidence, and it names the other chat.
         return False
     _workdirs.pop(session_id, None)
     try:
@@ -11319,6 +11351,12 @@ def _defuse_sentinels(text: str) -> str:
     return text
 
 
+# What one snapshot may read to tell a same-size overwrite apart. The file cap
+# alone allowed 2,000 x 4 MiB per walk, twice per call, which on a directory of
+# artifacts made a trivial command look hung.
+_MAX_SNAPSHOT_HASH_BYTES = 64 * 1024 * 1024
+
+
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     """relative path -> change key for every regular file, for the post-run diff.
 
@@ -11334,6 +11372,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     # Directories are budgeted separately from files: thousands of empty output
     # folders never reach the file cap, and this walk runs twice per tool call.
     visited = 0
+    hash_budget = _MAX_SNAPSHOT_HASH_BYTES
     # Walked, not listed: a script writing outputs/report.csv is ordinary, and a
     # top-level listing saw only the directory and dropped it.
     for base, dirs, names in os.walk(workdir):
@@ -11358,11 +11397,12 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
                     continue
                 relative = os.path.relpath(path, workdir).replace(os.sep, "/")
                 stat = os.stat(path)
-                snapshot[relative] = (
-                    stat.st_mtime_ns,
-                    stat.st_size,
-                    _content_key(path, stat.st_size),
-                )
+                content = None
+                if hash_budget >= stat.st_size:
+                    content = _content_key(path, stat.st_size)
+                    if content is not None:
+                        hash_budget -= stat.st_size
+                snapshot[relative] = (stat.st_mtime_ns, stat.st_size, content)
             except OSError:
                 continue
             if len(snapshot) >= _MAX_SNAPSHOT_FILES:
@@ -11376,6 +11416,51 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
 # and its download 404s once that call cleans up.
 _active_scratch: "set[str]" = set()
 _scratch_lock = threading.Lock()
+
+# Per workdir: how many tool calls are running in it, and the periods when more
+# than one was. A file written while two calls shared the directory belongs to
+# neither of them for certain, and a card naming another chat's file (or
+# downloading its contents) is worse than a card that is missing one.
+_workdir_calls: "dict[str, dict]" = {}
+_calls_lock = threading.Lock()
+
+
+def _call_started(workdir: "str | None") -> None:
+    """Register a tool call running in *workdir*."""
+    if not workdir:
+        return
+    with _calls_lock:
+        state = _workdir_calls.setdefault(workdir, {"count": 0, "shared": []})
+        state["count"] += 1
+        if state["count"] == 2:
+            state["shared"].append([time.time_ns(), None])
+            del state["shared"][:-64]
+
+
+def _call_finished(workdir: "str | None") -> None:
+    """Close the shared period this call was part of, if it was the second."""
+    if not workdir:
+        return
+    with _calls_lock:
+        state = _workdir_calls.get(workdir)
+        if state is None:
+            return
+        state["count"] -= 1
+        if state["count"] < 2 and state["shared"] and state["shared"][-1][1] is None:
+            state["shared"][-1][1] = time.time_ns()
+        if state["count"] <= 0:
+            _workdir_calls.pop(workdir, None)
+
+
+def _written_while_shared(workdir: "str | None", mtime_ns: int) -> bool:
+    """Whether this file was last written while another call was also running."""
+    if not workdir:
+        return False
+    with _calls_lock:
+        state = _workdir_calls.get(workdir)
+        shared = list(state["shared"]) if state else []
+    now = time.time_ns()
+    return any(start <= mtime_ns <= (end if end is not None else now) for start, end in shared)
 
 
 def _created_file_sentinels(
@@ -11398,7 +11483,10 @@ def _created_file_sentinels(
     changed = sorted(
         name
         for name, key in after.items()
-        if name != exclude and name not in scratch and (name not in before or before[name] != key)
+        if name != exclude
+        and name not in scratch
+        and (name not in before or before[name] != key)
+        and not _written_while_shared(workdir, key[0])
     )
     if not changed:
         return ""
@@ -11464,6 +11552,7 @@ def _python_exec(
     tmp_path = None
     _scratch_name = None
     workdir = _get_workdir(session_id)
+    _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
     try:
@@ -11563,6 +11652,7 @@ def _python_exec(
     except Exception as e:
         return f"Execution error: {e}"
     finally:
+        _call_finished(workdir)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
@@ -11610,8 +11700,10 @@ def _bash_exec(
             "/proc environment reads; refusing bypass execution."
         )
 
+    workdir = None
     try:
         workdir = _get_workdir(session_id)
+        _call_started(workdir)
         # Same pre-run snapshot as _python_exec. A command that writes a file used
         # to produce "(no output)" and no other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
@@ -11681,4 +11773,5 @@ def _bash_exec(
     except Exception as e:
         return f"Execution error: {e}"
     finally:
+        _call_finished(workdir)
         _forget_tool_pid(locals().get("proc"))
