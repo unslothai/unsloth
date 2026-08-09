@@ -484,7 +484,6 @@ def _h3_te_canonical(repo_id: Optional[str]) -> str:
     then trimmed and lowercased. Deliberately no tail-segment tolerance -- ``someone/MiniMax-H3``
     is a different repo with different weights."""
     from .diffusion_families import canonical_base
-
     return canonical_base(repo_id).strip().lower()
 
 
