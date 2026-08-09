@@ -948,6 +948,79 @@ def test_a_profile_that_prints_nothing_useful_is_still_no_answer(monkeypatch):
     assert studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"]) is None
 
 
+def test_the_caller_edition_is_read_from_the_order_not_the_absence(monkeypatch):
+    """A machine can carry BOTH module trees on PSModulePath -- 5.1 launched from a session
+    that already had 7's path, or a profile that appends it, the mixed case setup.ps1
+    documents. Reading "7 is present, so the caller is 7" then gave the wrong profile
+    precedence and let its proxy override the console the command was typed into. Each host
+    puts its own module directory first, so the earliest tree names the caller."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    monkeypatch.setattr(studio_cmd.shutil, "which", lambda name: f"C:\\{name}")
+    windows = "C:\\Users\\me\\Documents\\WindowsPowerShell\\Modules"
+    seven = "C:\\Program Files\\PowerShell\\7\\Modules"
+
+    # Both present, 5.1 first: the caller is Windows PowerShell.
+    monkeypatch.setenv("PSModulePath", f"{windows};{seven}")
+    assert studio_cmd._profile_probe_hosts()[0] == "powershell.exe"
+    # Both present, 7 first: the caller is pwsh.
+    monkeypatch.setenv("PSModulePath", f"{seven};{windows}")
+    assert studio_cmd._profile_probe_hosts()[0] == "pwsh.exe"
+    # Only one tree: unchanged from before.
+    monkeypatch.setenv("PSModulePath", windows)
+    assert studio_cmd._profile_probe_hosts()[0] == "powershell.exe"
+    monkeypatch.setenv("PSModulePath", seven)
+    assert studio_cmd._profile_probe_hosts()[0] == "pwsh.exe"
+    # Nothing to read: the previous default order.
+    monkeypatch.setenv("PSModulePath", "")
+    assert studio_cmd._profile_probe_hosts() == ["pwsh.exe", "powershell.exe"]
+
+
+def test_the_probe_pins_its_own_output_encoding(monkeypatch):
+    """Windows PowerShell 5.1 writes REDIRECTED output in the console code page while this
+    process decodes UTF-8, so a non-ASCII proxy value came back with replacement characters,
+    still parsed as JSON, and handed setup a proxy that does not resolve."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    probe = studio_cmd._PS_PROXY_PROBE
+    assert "[Console]::OutputEncoding" in probe
+    assert "UTF8Encoding" in probe
+    assert probe.index("OutputEncoding") < probe.index("PSDefaultParameterValues")
+
+
+def test_one_host_owns_a_cmdlet_outright(monkeypatch):
+    """Filling a missing companion parameter from the other edition's profile builds a
+    configuration neither host has: the earlier host's Proxy with the later host's
+    ProxyUseDefaultCredentials, which offers the user's Windows credentials to a proxy whose
+    own profile never asked for that."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    answers = [
+        _framed('{"Invoke-WebRequest:Proxy": "http://first.corp:8080"}'),
+        _framed(
+            '{"Invoke-WebRequest:ProxyUseDefaultCredentials": true, '
+            '"Start-BitsTransfer:Proxy": "http://second.corp:8080"}'
+        ),
+    ]
+    monkeypatch.setattr(
+        studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers.pop(0))
+    )
+
+    merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]))
+
+    # The first host owns Invoke-WebRequest whole, so the second host's credential flag for
+    # that same cmdlet is dropped...
+    assert merged == {
+        "Invoke-WebRequest:Proxy": "http://first.corp:8080",
+        # ...while a cmdlet the first host never configured still comes across.
+        "Start-BitsTransfer:Proxy": "http://second.corp:8080",
+    }
+
+
 def test_the_probe_signature_evaluates_on_the_oldest_supported_python():
     """No `from __future__ import annotations` here, so an unquoted `str | list[str]` is
     evaluated at def time -- a TypeError on 3.9 that takes the whole CLI import with it."""

@@ -2836,6 +2836,13 @@ _PROXY_PROBE_END = "<</UNSLOTH_PROXY_DEFAULTS>>"
 
 _PS_PROXY_PROBE = (
     "$ErrorActionPreference = 'SilentlyContinue'; "
+    # Windows PowerShell 5.1 writes REDIRECTED output in the console code page, and this
+    # process decodes UTF-8: a non-ASCII proxy value (an IDN host, a password) came back with
+    # replacement characters, still parsed as JSON, and handed setup a proxy that does not
+    # work. Pinning the child's output encoding costs nothing on pwsh, which is already UTF-8.
+    "try { [Console]::OutputEncoding = "
+    "New-Object System.Text.UTF8Encoding $false } catch { }; "
+    "try { $OutputEncoding = [Console]::OutputEncoding } catch { }; "
     "$PSModuleAutoLoadingPreference = 'All'; "
     "$out = @{}; "
     "foreach ($k in @($PSDefaultParameterValues.Keys)) { "
@@ -2878,10 +2885,20 @@ def _profile_probe_hosts() -> list[str]:
 
     The caller is inferred from PSModulePath, which every host exports: Windows PowerShell's
     points at ``...\WindowsPowerShell\v1.0\Modules`` and pwsh's at ``...\PowerShell\7\Modules``.
+
+    By ORDER, not by absence. A machine can have both trees on PSModulePath at once -- 5.1
+    launched from a session that already had 7's path, or a profile that appends it, the mixed
+    case studio/setup.ps1 documents -- and reading "7 is present, so the caller is 7" then hands
+    precedence to the wrong profile and lets its proxy override the console the command was
+    actually typed into. Each host puts its OWN module directory first, so whichever tree
+    appears earliest names the caller. Neither present, or both at the same position: fall back
+    to the previous order rather than guess.
     """
     hosts = ["pwsh.exe", "powershell.exe"]
     module_path = os.environ.get("PSModulePath", "").lower()
-    if "windowspowershell" in module_path and "powershell\\7" not in module_path:
+    windows_at = module_path.find("windowspowershell")
+    seven_at = module_path.find("powershell\\7")
+    if windows_at >= 0 and (seven_at < 0 or windows_at < seven_at):
         hosts = ["powershell.exe", "pwsh.exe"]
     return [host for host in hosts if shutil.which(host)]
 
@@ -2911,6 +2928,7 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
     # spelling landed last, quietly reversing the earlier-host-wins rule this merge exists for.
     # Folded here; the first spelling seen is the one handed on.
     claimed: dict = {}
+    seen_keys: set = set()
     for host in hosts:
         try:
             probe = subprocess.run(
@@ -2948,13 +2966,23 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
             continue
         if not isinstance(parsed, dict) or not parsed:
             continue
+        # Per CMDLET, not per key. Filling a missing companion parameter from the other
+        # edition's profile builds a configuration neither host has: the earlier host's Proxy
+        # kept, the later host's ProxyUseDefaultCredentials added, and setup then offers the
+        # user's Windows credentials to a proxy whose own profile never asked for that. A
+        # cmdlet is claimed whole by the first host that configures it.
         for key, value in parsed.items():
             if not isinstance(key, str):
                 continue
+            cmdlet = key.split(":", 1)[0].casefold()
             folded = key.casefold()
-            if folded in claimed:
+            if cmdlet in claimed and claimed[cmdlet] is not parsed:
                 continue
-            claimed[folded] = key
+
+            if folded in seen_keys:
+                continue
+            claimed[cmdlet] = parsed
+            seen_keys.add(folded)
             merged[key] = value
     if not merged:
         return None
