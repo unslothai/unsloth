@@ -247,3 +247,17 @@ def test_orphan_listing_never_offers_an_unrecognised_repo(monkeypatch):
     companion_assets.record_companion_link(GGUF_REPO, "someone/private-weights")
     _install(monkeypatch, stranger)
     assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
+
+
+def test_a_repo_is_never_recorded_as_its_own_companion(monkeypatch):
+    """A full pipeline is its own base. Recording that would make it a dependent of itself and
+    block its own deletion forever, with no other model to delete to unblock it."""
+    assert companion_assets.record_companion_link(BASE_REPO, BASE_REPO) is False
+    assert companion_assets.record_companion_link(BASE_REPO, BASE_REPO.upper()) is False
+    assert companion_assets.read_companion_links() == {}
+    _install(monkeypatch, _base_repo())
+    assert companion_cleanup.companion_dependents(BASE_REPO) == []
+    assert [
+        c["repo_id"]
+        for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    ] == [BASE_REPO]
