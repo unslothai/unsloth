@@ -955,8 +955,13 @@ export interface ClearStoredChatsResult {
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
   // Drain first: a row write still in flight would land after the clear, and the inventory below
   // would never have seen it to tombstone it.
-  const lateThreadIds = [...pendingThreadRecordByThreadId.keys()];
+  const drainingThreadIds = [...pendingThreadRecordByThreadId.keys()];
   await drainPendingStoredChatThreadRecords();
+  // Union, not the pre-drain snapshot: a chat initialized during the drain whose write also
+  // outlives the deadline reaches neither list on its own.
+  const lateThreadIds = [
+    ...new Set([...drainingThreadIds, ...pendingThreadRecordByThreadId.keys()]),
+  ];
   // Clear both sides independently and report each outcome so the toast
   // can distinguish full vs partial success.
   const [backendThreadsResult, legacyThreads] = await Promise.all([
