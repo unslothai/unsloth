@@ -494,7 +494,6 @@ class SdCppDiffusionBackend:
         # never fails a load.
         try:
             from hub.utils.companion_assets import record_companion_link
-
             for asset_repo in dict.fromkeys(
                 r
                 for r, _f, kind in self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
