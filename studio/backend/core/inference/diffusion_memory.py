@@ -1000,6 +1000,8 @@ def raise_on_image_activation_shortfall(
     if logger is not None:
         logger.error("diffusion.memory: refusing oversized generation: %s", message)
     raise ValueError(message)
+
+
 def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
     """Stream transformer blocks and text-encoder leaves without whole-component onloads.
 
