@@ -4491,6 +4491,13 @@ class DiffusionBackend:
                     compile_cache.save(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 — cache persistence is best-effort
                     pass
+                # Last word on cancellation, AFTER the post-denoise work. The cancel event stays
+                # registered through the compile-cache save (a static compile writes a fresh
+                # artifact per shape, so that save is not instant), and the page still shows Stop
+                # for as long as progress reads active. A Stop landing in that window was answered
+                # cancelled = true and then contradicted by the image the route persisted.
+                if cancel.is_set():
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 object.__setattr__(state, "generation_count", state.generation_count + 1)
                 # Return the PIL images unencoded; the route embeds recipes and persists them. ``seeds`` records each image's own seed.

@@ -6887,6 +6887,32 @@ def test_cancel_generate_lands_at_the_next_step_boundary(fake_runtime, tmp_path,
     assert seen == [0, 1, 2]
 
 
+def test_cancel_generate_during_the_post_denoise_save_still_cancels(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The cancel event stays registered through the compile-cache save, and progress still reads
+    # active, so the page still shows Stop. Before the final recheck, a Stop landing there was
+    # answered cancelled = true and then contradicted: generate() returned the images and the
+    # route persisted them. The two answers have to agree, so the run unwinds as cancelled.
+    from core.inference import diffusion_compile_cache as compile_cache
+
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+
+    def _save(ctx, logger = None):
+        # Stop pressed while the bundle is being written: the route's cancel reaches the SAME
+        # event, and it must still be registered here or the button would have reported False.
+        assert backend.cancel_generate() is True
+
+    monkeypatch.setattr(compile_cache, "save", _save)
+
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.generate(prompt = "x", steps = 2)
+
+
 def test_cancel_generate_is_a_no_op_without_a_load(fake_runtime):
     # The route calls this unconditionally, so an idle backend must answer False, not raise.
     assert DiffusionBackend().cancel_generate() is False
