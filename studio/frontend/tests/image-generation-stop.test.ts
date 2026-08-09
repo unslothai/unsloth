@@ -67,18 +67,28 @@ test("a real failure is still reported", () => {
   );
 });
 
-test("a Stop the server never received does not explain away a real failure", () => {
-  // handleCancelGenerate passes stopRequested only when the cancel POST landed. If it threw, the
-  // denoise in flight was never told to stop, so an OOM it raises afterwards is a real failure
-  // the user has to see rather than the silence a genuine Stop earns.
+test("a Stop the backend did not act on does not explain away a real failure", () => {
+  // handleCancelGenerate passes stopRequested only once the backend answered {cancelled: true}.
+  // A POST that threw, or a {cancelled: false} because the run was already past its last
+  // cancellation check while the route was still persisting, means nothing was stopped, so an
+  // error raised afterwards is real and the user has to see it.
   const stopRequested = true;
-  const cancelFailed = true;
+  for (const cancelAcked of [false]) {
+    assert.equal(
+      shouldReportGenerateError({
+        message: "Failed to save the generated image",
+        stopRequested: stopRequested && cancelAcked,
+      }),
+      true,
+    );
+  }
+});
+
+test("a Stop the backend confirmed still silences the run it stopped", () => {
+  // The other side: an acknowledged cancel is the user's own Stop coming back, whatever shape the
+  // run unwinds in, so it must not raise a red toast.
   assert.equal(
-    shouldReportGenerateError({
-      message:
-        "The device ran out of memory. Try a smaller size, fewer steps, or a smaller batch.",
-      stopRequested: stopRequested && !cancelFailed,
-    }),
-    true,
+    shouldReportGenerateError({ message: "Bad Gateway", stopRequested: true && true }),
+    false,
   );
 });

@@ -1313,10 +1313,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // denoise that is running RIGHT NOW, so a multi-run request (count > 1) would start its next run
   // straight after; this breaks the loop as well. Cleared when the run settles.
   const cancelRequested = useRef(false);
-  // True when the Stop POST itself failed, so the backend never heard it. The latch above still
-  // stops the remaining runs, but the run in flight keeps going, and an error it then raises is a
-  // real failure rather than the user's own Stop coming back.
-  const cancelFailed = useRef(false);
+  // True only once the backend has answered {cancelled: true}, i.e. it really stopped a running
+  // denoise. Anything else -- a POST that never landed, or a {cancelled: false} because the run
+  // was already past its last cancellation check -- means the run was NOT stopped, so an error it
+  // raises afterwards is a real failure and not the user's own Stop coming back.
+  const cancelAcked = useRef(false);
+  // A Stop already on the wire. Without this each extra click posts again, and a late duplicate
+  // can land after the run settled and stop whichever generation is running by then.
+  const cancelInFlight = useRef(false);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
@@ -2570,7 +2574,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setGenStep(null);
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
-    cancelFailed.current = false;
+    cancelAcked.current = false;
     // Poll the backend's per-step progress across the whole run so the bar tracks live denoising steps. A named poll body
     // (guarded against overlap) also serves the visibilitychange listener, so a throttled tab catches up when visible.
     let pollInFlight = false;
@@ -2677,13 +2681,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const msg = err instanceof Error ? err.message : "Image generation failed";
       // The user's own Stop comes back as the backend's cancelled sentinel (409). Not an error,
       // so do not toast it. Same treatment the video page gives its Cancel.
-      // Only a Stop the backend actually received explains an error away. When the cancel POST
-      // never landed, the generation was not stopped, so whatever it raised is a real failure and
-      // has to be reported rather than read as "the user stopped it".
+      // Only a Stop the backend confirmed it acted on explains an error away. If the POST never
+      // landed, or the backend answered {cancelled: false} because the run was already past its
+      // last cancellation check while the route was still persisting, the generation was not
+      // stopped, so whatever it raised is a real failure rather than "the user stopped it".
       if (
         shouldReportGenerateError({
           message: msg,
-          stopRequested: cancelRequested.current && !cancelFailed.current,
+          stopRequested: cancelRequested.current && cancelAcked.current,
         })
       )
         toast.error(msg);
@@ -2711,15 +2716,22 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // races the run that is already finishing, then ask the backend to break out of the sampler.
   const handleCancelGenerate = useCallback(async () => {
     cancelRequested.current = true;
+    // One Stop on the wire at a time. The button stays enabled so the click still latches, but a
+    // second POST would target whatever is active when IT arrives, which after the stopped run
+    // settles can be a generation the user started since.
+    if (cancelInFlight.current) return;
+    cancelInFlight.current = true;
     try {
-      await cancelDiffusionGeneration();
-      cancelFailed.current = false;
+      const { cancelled } = await cancelDiffusionGeneration();
+      cancelAcked.current = Boolean(cancelled);
     } catch {
       // The request never landed, so the denoise in flight keeps running. The latch still stops
       // the remaining runs, but the click cannot be treated as handled: say so, and stop it
       // explaining away an error the run raises later.
-      cancelFailed.current = true;
+      cancelAcked.current = false;
       toast.error("Could not reach the server to stop this generation; it is still running");
+    } finally {
+      cancelInFlight.current = false;
     }
   }, []);
 
