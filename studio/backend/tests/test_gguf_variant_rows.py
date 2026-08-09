@@ -334,3 +334,35 @@ def test_row_filenames_are_real_paths_under_the_snapshot(tmp_path):
     for variant in variants:
         assert (snapshot / variant.filename).is_file()
     assert Path(sorted(v.filename for v in variants)[-1]).name.startswith("ltx-2.3-22b-dev")
+
+
+def test_the_route_model_carries_display_label_to_the_picker():
+    """The route builds ``models.models.GgufVariantDetail``, not the hub twin. When only the
+    twin declared ``display_label`` pydantic dropped the kwarg without a word, so every
+    qualified row reached the picker labelled with its whole relative path. Both models
+    have to declare it or the qualified label silently never ships."""
+    from hub.schemas.inventory import GgufVariantDetail as HubDetail
+    from models.models import GgufVariantDetail as RouteDetail
+
+    assert "display_label" in HubDetail.model_fields
+    assert "display_label" in RouteDetail.model_fields, (
+        "the route's own response model dropped display_label; a qualified row will render "
+        "as its relative path"
+    )
+
+    row = RouteDetail(
+        filename = "distilled/ltx-2.3-22b-distilled-Q6_K.gguf",
+        quant = "distilled/ltx-2.3-22b-distilled-Q6_K",
+        display_label = "Q6_K · distilled",
+        size_bytes = 17_774_906_400,
+    )
+    assert row.model_dump()["display_label"] == "Q6_K · distilled"
+
+
+def test_an_unqualified_row_still_reports_no_display_label():
+    """The label is only for keys a picker cannot show. A plain quant token must not grow
+    one, or every ordinary row gains a redundant second name."""
+    from models.models import GgufVariantDetail as RouteDetail
+
+    row = RouteDetail(filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 1)
+    assert row.model_dump()["display_label"] is None
