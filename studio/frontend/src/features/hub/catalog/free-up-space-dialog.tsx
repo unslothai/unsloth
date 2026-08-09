@@ -65,7 +65,10 @@ export function FreeUpSpaceDialog({
     try {
       const result = await fetchOrphanCompanions();
       setCompanions(result.companions);
-      setSelected(new Set(result.companions.map(companionIdentity)));
+      // Empty, not everything. This dialog deletes, and its own contract is that every row is
+      // opt-in; pre-checking them let one click remove every listed copy without the user having
+      // chosen any of them.
+      setSelected(new Set());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setCompanions([]);

@@ -157,11 +157,45 @@ def record_companion_link(checkpoint_repo_id: str, base_repo_id: str) -> bool:
         return wrote and not known
 
 
-def _family_bases(repo_id: str) -> set[str]:
+def _cached_main_gguf_names(cache_scans) -> dict[str, str]:
+    """``{repo_id_lower: one cached main GGUF filename}`` for the family probe below.
+
+    Both diffusion loaders detect a family from the FILENAME as well as the repo id, so a
+    perfectly runnable ``some-owner/custom`` holding ``flux-2-klein-4b-Q4_K_M.gguf`` is a
+    dependent that a repo-id-only probe cannot see. That matters most where there is nothing else
+    to fall back on: on an upgraded install no links have been recorded yet, so the family probe
+    is the whole guard."""
+    names: dict[str, str] = {}
+    for scan in cache_scans or ():
+        for repo in getattr(scan, "repos", ()) or ():
+            try:
+                if str(getattr(repo, "repo_type", "")) != "model":
+                    continue
+                key = _normalise(str(getattr(repo, "repo_id", "") or ""))
+                if not key or key in names:
+                    continue
+                for revision in getattr(repo, "revisions", ()) or ():
+                    for file in getattr(revision, "files", ()) or ():
+                        name = str(getattr(file, "file_name", "") or "")
+                        if name.lower().endswith(".gguf") and "mmproj" not in name.lower():
+                            names[key] = name
+                            break
+                    if key in names:
+                        break
+            except Exception:  # noqa: BLE001 -- one unreadable row never hides the rest
+                continue
+    return names
+
+
+def _family_bases(repo_id: str, gguf_filename: Optional[str] = None) -> set[str]:
     """Companion base ids *repo_id* could resolve to, from the family tables alone.
 
     Both identities: the upstream the tables key on and its ungated unsloth mirror, because
     ``prefer_ungated_mirror`` picks between them per fetch and either may be what landed on disk.
+
+    ``gguf_filename`` is a cached checkpoint from this repo, passed for the same reason the
+    loaders pass it: a repo whose family keyword appears only in the file name still loads, and a
+    dependent this probe cannot see is a companion cleanup will happily delete underneath it.
     """
     try:
         from core.inference.diffusion_families import (
@@ -172,7 +206,7 @@ def _family_bases(repo_id: str) -> set[str]:
         logger.debug("Companion base derivation unavailable for %s: %s", repo_id, exc)
         return set()
     try:
-        fam = detect_family_for_pick(repo_id)
+        fam = detect_family_for_pick(repo_id, gguf_filename)
     except Exception:  # noqa: BLE001
         return set()
     if fam is None:
@@ -229,6 +263,18 @@ def known_companion_base_ids() -> set[str]:
         logger.debug("Companion base table unavailable: %s", exc)
         return set()
     bases = {fam.base_repo for fam in _FAMILIES if getattr(fam, "base_repo", None)}
+    # The native engine's component-only repos (a single-file VAE, a text encoder) are curated
+    # table entries too, and for an sd.cpp pick they ARE the companions -- the largest half of the
+    # footprint. Leaving them out made them link-only strangers: unlisted by Free up space and
+    # dropped from the delete preview, so the assets this cleanup exists for stayed invisible.
+    # Safe against the one hazard that table warns about, a chat model borrowed as a text encoder:
+    # the orphan listing skips any repo holding a GGUF, so it is never offered as a leftover.
+    try:
+        from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+        bases |= set(sd_cpp_companion_only_repo_ids())
+    except Exception as exc:  # noqa: BLE001 -- one missing table never hides the rest
+        logger.debug("sd.cpp companion table unavailable: %s", exc)
     # The gated/mirror pairs are companion bases by construction -- they exist only because a
     # GGUF pick of that family needs an ungated copy of them -- and they cover the variants one
     # family entry serves through a card tag (klein-9B under the klein-4B family, and so on).
@@ -298,12 +344,13 @@ def required_companion_bases(
     """
     ignored = {_normalise(r) for r in ignore_repo_ids}
     links = read_companion_links()
+    gguf_names = _cached_main_gguf_names(cache_scans)
     required: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):
         key = _normalise(repo_id)
         if key in ignored:
             continue
-        bases = _family_bases(repo_id)
+        bases = _family_bases(repo_id, gguf_names.get(key))
         recorded = links.get(key)
         if recorded:
             bases |= _with_mirrors(recorded)

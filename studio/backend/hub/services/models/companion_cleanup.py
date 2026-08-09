@@ -224,7 +224,11 @@ def _orphan_companions_blocking() -> dict:
         # takes everything BUT the denoiser folder (``_base_file_downloaded`` skips
         # ``transformer/``), while a pipeline pick takes it. Its presence is therefore the
         # derived answer to "did the user ask for this repo, or did a GGUF drag it in".
-        if any(_repo_blob_bytes(r, only = _holds_denoiser) for r in repos):
+        # Per COPY, not pooled: the loop below emits one row per cache root because a delete is
+        # scoped to one, so a full pipeline copy in one root must not suppress an orphaned
+        # companion-only copy in another that nothing can otherwise reclaim.
+        repos = [r for r in repos if not _repo_blob_bytes(r, only = _holds_denoiser)]
+        if not repos:
             continue
         # One row per cache root. A delete is scoped to a single cache, so pooling copies from
         # several would promise bytes one removal cannot deliver.

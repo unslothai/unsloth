@@ -451,3 +451,59 @@ def test_a_cached_community_repack_is_a_companion_identity_too(monkeypatch):
     assert companion_cleanup.companion_dependents(repack) == [GGUF_REPO]
     # And it is refused as a delete while the GGUF is installed.
     assert companion_assets.is_companion_base(repack) is True
+
+
+def test_a_native_component_repo_is_offered_once_nothing_needs_it(monkeypatch):
+    """For an sd.cpp pick the single-file VAE and text encoder ARE the companions, and the largest
+    half of the footprint. Leaving that curated table out of the offerable set made them link-only
+    strangers: dropped from the delete preview and never listed by Free up space, so exactly the
+    assets this cleanup exists for stayed unreclaimable."""
+    from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+    component = next(iter(sorted(sd_cpp_companion_only_repo_ids())))
+    assert component in companion_assets.known_companion_base_ids()
+    _install(monkeypatch, _repo(component, [("vae.safetensors", 900_000)]))
+    offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    assert [c["repo_id"].lower() for c in offered] == [component]
+
+
+def test_a_chat_model_borrowed_as_an_encoder_is_never_offered(monkeypatch):
+    """That table deliberately includes repos that are perfectly good chat models sd.cpp also
+    borrows. Offering one as an unused asset would take away a model the user downloaded on
+    purpose; holding a GGUF is what keeps it out."""
+    borrowed = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
+    _install(monkeypatch, _repo(borrowed, [("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", 4_000_000)]))
+    offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    assert offered == []
+
+
+def test_a_family_named_only_by_the_cached_filename_still_pins_its_base(monkeypatch):
+    """Both loaders detect a family from the filename as well as the repo id, so a runnable repo
+    whose name says nothing was invisible to the dependency probe. That matters most on an
+    upgraded install, where no links have been recorded yet and the probe is the whole guard."""
+    _install(
+        monkeypatch,
+        _repo("some-owner/custom", [("FLUX.2-klein-4B-Q4_K_M.gguf", 2_000_000)]),
+        _base_repo(),
+    )
+    required = companion_assets.required_companion_bases(cache_inventory.all_hf_cache_scans())
+    assert "some-owner/custom" in required.get(BASE_REPO.lower(), set())
+    assert companion_cleanup.companion_dependents(BASE_REPO) == ["some-owner/custom"]
+    assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
+
+
+def test_one_full_copy_does_not_hide_an_orphaned_copy_in_another_cache(monkeypatch):
+    """A delete is scoped to one cache root, which is why the listing emits one row per root.
+    Pooling the denoiser test across roots let a full pipeline copy in one suppress a
+    companion-only copy in another that nothing else can reclaim."""
+    full = _repo(
+        BASE_REPO,
+        [("transformer/diffusion_pytorch_model.safetensors", 5_000_000)],
+        cache = "/full-cache",
+    )
+    orphan = _repo(BASE_REPO, [("vae/diffusion_pytorch_model.safetensors", 900_000)])
+    _install(monkeypatch, full, orphan)
+    offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    assert [c["cache_path"] for c in offered] == [
+        "/cache/models--black-forest-labs--FLUX.2-klein-4B"
+    ]
