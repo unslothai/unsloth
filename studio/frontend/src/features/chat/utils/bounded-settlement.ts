@@ -41,3 +41,25 @@ export async function waitForSettledBatch(
     throw firstFailure;
   }
 }
+
+/** If queued work misses its bound, start an independent fallback and observe it for one bound. */
+export async function waitForSettledOrRunFallback(
+  work: Promise<unknown>,
+  fallback: () => Promise<unknown>,
+  ms: number,
+): Promise<void> {
+  let settled = false;
+  const observed = work.then(
+    () => {
+      settled = true;
+    },
+    (error: unknown) => {
+      settled = true;
+      throw error;
+    },
+  );
+  await waitForSettledBatch([observed], ms);
+  if (!settled) {
+    await waitForSettledBatch([fallback()], ms);
+  }
+}

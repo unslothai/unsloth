@@ -75,8 +75,17 @@ export function ThreadDocumentsBar({
   // (ProjectLanding's pendingNewThreadId branch) and drop the just-attached chips.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
+  const initPromiseRef = useRef<{
+    threadId: string | null;
+    promise: Promise<string | null>;
+  } | null>(null);
+  const initGenerationRef = useRef(0);
   useEffect(() => {
-    if (threadId) setMaterializedId(null);
+    if (threadId) {
+      setMaterializedId(null);
+      initGenerationRef.current += 1;
+      initPromiseRef.current = null;
+    }
   }, [threadId]);
 
   const lister = useCallback(
@@ -105,14 +114,18 @@ export function ThreadDocumentsBar({
   useEffect(() => () => onIndexingChange?.(false), [onIndexingChange]);
 
   // Materialize the thread id on first use; ref-deduped so a double-click can't
-  // start two threads.
-  const initPromiseRef = useRef<Promise<string | null> | null>(null);
+  // start two threads. A thread switch gets separate work even if the prior request is pending.
   const ensureThreadId = useCallback((): Promise<string | null> => {
-    if (initPromiseRef.current) return initPromiseRef.current;
+    const requestedThreadId = effectiveThreadId;
+    const current = initPromiseRef.current;
+    if (current?.threadId === requestedThreadId) {
+      return current.promise;
+    }
     const clearGeneration = chatHistoryClearBoundary.capture();
-    const initialized = effectiveThreadId
-      ? Promise.resolve({ remoteId: effectiveThreadId })
+    const initialized = requestedThreadId
+      ? Promise.resolve({ remoteId: requestedThreadId })
       : aui.threadListItem().initialize();
+    const generation = ++initGenerationRef.current;
     const pending = initialized
       .then(async ({ remoteId }) => {
         // Both a cached initialize() and activeThreadId can expose the id while its row write is
@@ -126,17 +139,28 @@ export function ThreadDocumentsBar({
         if (chatHistoryClearBoundary.capture() !== clearGeneration) {
           throw new Error("Chat history was cleared");
         }
-        setMaterializedId(remoteId);
+        // Only an unchanged fresh-chat request owns this local materialization state. An older
+        // request may still finish after the component has moved to another thread.
+        if (
+          requestedThreadId === null &&
+          initGenerationRef.current === generation
+        ) {
+          setMaterializedId(remoteId);
+        }
         return remoteId;
       })
       .catch(() => {
         toast.error("Couldn't start a chat for these documents");
         return null;
-      })
-      .finally(() => {
-        initPromiseRef.current = null;
       });
-    initPromiseRef.current = pending;
+    const entry = { threadId: requestedThreadId, promise: pending };
+    initPromiseRef.current = entry;
+    const clear = () => {
+      if (initPromiseRef.current === entry) {
+        initPromiseRef.current = null;
+      }
+    };
+    pending.then(clear, clear);
     return pending;
   }, [aui, effectiveThreadId]);
 

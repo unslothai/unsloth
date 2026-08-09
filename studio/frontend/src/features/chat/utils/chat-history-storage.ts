@@ -30,7 +30,10 @@ import type {
   ProjectRecord,
   ThreadRecord,
 } from "../types";
-import { settleWithin, waitForSettledBatch } from "./bounded-settlement";
+import {
+  settleWithin,
+  waitForSettledOrRunFallback,
+} from "./bounded-settlement";
 import {
   isChatThreadDeleted,
   markChatThreadsDeleted,
@@ -874,9 +877,14 @@ export async function deleteStoredChatThreads(
   // later writes on every id, and preserves the backend's all-or-nothing transaction for compare
   // chats instead of issuing one request per thread.
   const deletion = threadWriteQueue.enqueue(ids, () => deleteChatThreads(ids));
-  // Bounded, since a wedged write ahead of the delete only delays it and the delete stays queued.
-  // A failure observed before the deadline still reaches the caller's rollback and toast.
-  await waitForSettledBatch([deletion], THREAD_WRITE_WAIT_MS);
+  // If a wedged predecessor keeps the ordered delete from starting, issue an independent delete
+  // after the bound. Observe that fallback for the same bound so prompt backend failures still
+  // reach the caller's rollback and toast before local records are removed.
+  await waitForSettledOrRunFallback(
+    deletion,
+    () => deleteChatThreads(ids),
+    THREAD_WRITE_WAIT_MS,
+  );
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();
@@ -907,23 +915,14 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     const queuedCleanup = threadWriteQueue.enqueue(pendingThreadIds, () =>
       deleteChatThreads(pendingThreadIds),
     );
-    let queuedCleanupSettled = false;
-    const observeQueuedCleanup = queuedCleanup.then(
-      () => {
-        queuedCleanupSettled = true;
-      },
-      () => {
-        queuedCleanupSettled = true;
-      },
-    );
     // A request can commit on the backend while its client promise remains wedged forever. Keep
     // the ordered cleanup above, but issue one independent batch delete after the bounded wait so
     // that lost response cannot let the row reappear after clear-all returns.
-    settleWithin(observeQueuedCleanup, THREAD_WRITE_WAIT_MS).then(() => {
-      if (!queuedCleanupSettled) {
-        return deleteChatThreads(pendingThreadIds).catch(() => undefined);
-      }
-    });
+    void waitForSettledOrRunFallback(
+      queuedCleanup,
+      () => deleteChatThreads(pendingThreadIds),
+      THREAD_WRITE_WAIT_MS,
+    ).catch(() => undefined);
   }
   // Clear both sides independently and report each outcome so the toast
   // can distinguish full vs partial success.

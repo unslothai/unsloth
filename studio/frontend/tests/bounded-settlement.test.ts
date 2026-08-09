@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { waitForSettledBatch } from "../src/features/chat/utils/bounded-settlement.ts";
+import {
+  waitForSettledBatch,
+  waitForSettledOrRunFallback,
+} from "../src/features/chat/utils/bounded-settlement.ts";
 
 test("an early failure survives a sibling that exceeds the batch deadline", async () => {
   const failure = new Error("delete failed");
@@ -19,4 +22,20 @@ test("an early failure survives a sibling that exceeds the batch deadline", asyn
 test("a pending batch can time out without rejecting", async () => {
   const stalled = new Promise<void>(() => undefined);
   await waitForSettledBatch([Promise.resolve(), stalled], 5);
+});
+
+test("a stalled queued operation starts an independent fallback", async () => {
+  const stalled = new Promise<void>(() => undefined);
+  let fallbackCalls = 0;
+
+  await waitForSettledOrRunFallback(
+    stalled,
+    () => {
+      fallbackCalls += 1;
+      return Promise.resolve();
+    },
+    5,
+  );
+
+  assert.equal(fallbackCalls, 1);
 });
