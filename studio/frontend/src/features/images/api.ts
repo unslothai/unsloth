@@ -629,6 +629,16 @@ export interface DiffusionTrainableFamily {
   deploy_base?: string | null;
   // Variant-specific training-base to inference-base pairs, including public mirror ids.
   deploy_bases?: Record<string, string>;
+  // Per-checkpoint facts that overlay the family-level chips for multi-size families.
+  base_specs?: Record<
+    string,
+    {
+      params?: string | null;
+      qlora_vram_gb?: number | null;
+      gated?: boolean | null;
+      note?: string | null;
+    }
+  >;
 }
 
 // Where diffusion training reads/writes on this Studio, plus usable dataset folders.

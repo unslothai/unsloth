@@ -569,6 +569,8 @@ def identity_for_config(
     from core.training.diffusion_train_extras import source_revision
 
     targets = tuple(resolved_targets) if resolved_targets else _resolve_lora_targets(cfg)
+    # Keep the canonical base in metadata, but read the revision from the repo that loads.
+    revision_base_model = getattr(cfg, "fetch_base_model", None) or cfg.base_model
     return CheckpointIdentity(
         family = str(getattr(cfg, "resolved_family", "") or ""),
         base_model = str(cfg.base_model or ""),
@@ -601,7 +603,7 @@ def identity_for_config(
         base_precision = str(getattr(cfg, "base_precision", "") or ""),
         resolution = int(cfg.resolution),
         kind = kind,
-        base_revision = source_revision(cfg.base_model),
+        base_revision = source_revision(revision_base_model),
         dataset_fingerprint = dataset_fingerprint(dataset_pairs) if dataset_pairs else None,
     )
 

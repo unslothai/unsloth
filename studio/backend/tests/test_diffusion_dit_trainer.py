@@ -157,6 +157,7 @@ def test_flux2_bases_pass_the_trusted_base_gate():
 
     _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-base-4B")
     _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-base-9B")
+    _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-4B")
     _assert_trusted_base_model("black-forest-labs/FLUX.2-dev")
     with pytest.raises(ValueError, match = "untrusted"):
         _assert_trusted_base_model("someone/random-flux2-finetune")
@@ -220,6 +221,15 @@ def test_family_train_infos_lists_dit_families(dit_train_host):
         "black-forest-labs/FLUX.2-klein-9B"
     )
     assert klein["deploy_bases"]["unsloth/FLUX.2-klein-base-9B"] == ("unsloth/FLUX.2-klein-9B")
+    assert klein["base_specs"]["black-forest-labs/FLUX.2-klein-base-9B"] == {
+        "params": "9B",
+        "qlora_vram_gb": 18,
+    }
+    assert klein["base_specs"]["unsloth/FLUX.2-klein-base-9B"] == {
+        "params": "9B",
+        "qlora_vram_gb": 18,
+    }
+    assert "black-forest-labs/FLUX.2-klein-base-4B" not in klein["base_specs"]
     assert "gated" not in infos["flux.2-klein"]["vram_note"].lower()
     # Z-Image defaults to the prequant nf4 repo for QLoRA.
     assert "4bit" in infos["z-image"]["default_base"].lower()

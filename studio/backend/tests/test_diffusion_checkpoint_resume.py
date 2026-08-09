@@ -2362,6 +2362,34 @@ def test_the_revision_is_pinned_once_the_base_is_on_disk(monkeypatch, run_dir):
     assert dc.with_resolved_revision(unresolved, cfg.base_model).base_revision == "unresolved"
 
 
+def test_mirror_backed_identity_names_the_source_but_reads_the_fetched_revision(monkeypatch, run_dir):
+    """Resume metadata stays canonical while revision checks follow the bytes that loaded."""
+    import dataclasses
+
+    from core.training import diffusion_train_extras as dte
+
+    source = "black-forest-labs/FLUX.2-klein-base-9B"
+    mirror = "unsloth/FLUX.2-klein-base-9B"
+    cfg = dataclasses.replace(
+        _Run(run_dir).cfg,
+        base_model = source,
+        fetch_base_model = mirror,
+        resolved_family = "flux.2-klein",
+    )
+    seen = []
+
+    def _revision(ref):
+        seen.append(ref)
+        return "rev-mirror123"
+
+    monkeypatch.setattr(dte, "source_revision", _revision)
+    identity = dc.identity_for_config(cfg)
+
+    assert identity.base_model == source
+    assert identity.base_revision == "rev-mirror123"
+    assert seen == [mirror]
+
+
 def test_both_trainers_pin_the_revision_after_the_load():
     """Source-ordered: the loop needs a GPU, so this asserts the call sits after the load event
     and before the restore that validates against it."""

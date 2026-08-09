@@ -66,6 +66,32 @@ def test_base_precision_validation():
     assert _cfg(base_model = _Z_PREQUANT, base_precision = "auto").normalized().base_precision == "auto"
 
 
+def test_normalized_config_keeps_the_canonical_base_and_pins_its_fetch_mirror(monkeypatch):
+    from core.inference import diffusion_families
+
+    upstream = "black-forest-labs/FLUX.2-klein-base-9B"
+    mirror = "unsloth/FLUX.2-klein-base-9B"
+    seen = []
+
+    def _prefer(base, token = None):
+        seen.append((base, token))
+        return mirror
+
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", _prefer)
+    norm = _cfg(base_model = upstream, hf_token = " token ").normalized()
+
+    assert norm.base_model == upstream
+    assert norm.fetch_base_model == mirror
+    assert norm.hf_token == "token"
+    assert seen == [(upstream, "token")]
+
+    # SDXL has its own trainer and still loads base_model directly, so its revision source must
+    # not be redirected until that loader opts into the same fetch field.
+    sdxl = _cfg(base_model = "stabilityai/stable-diffusion-xl-base-1.0").normalized()
+    assert sdxl.fetch_base_model == sdxl.base_model
+    assert seen == [(upstream, "token")]
+
+
 def test_base_precision_denies_fp8_for_corrupted_family():
     # fp8 corrupts the Qwen-Image DiT, so a dense Qwen base with base_precision="fp8" is refused up front.
     with pytest.raises(ValueError, match = "fp8"):

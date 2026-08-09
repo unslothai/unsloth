@@ -1105,6 +1105,8 @@ class DiffusionTrainableFamily(BaseModel):
     deploy_base: Optional[str] = None
     # Variant-specific training-base to inference-base pairs, including public mirror ids.
     deploy_bases: Dict[str, str] = Field(default_factory = dict)
+    # Per-checkpoint facts that overlay the family-level params/VRAM guidance.
+    base_specs: Dict[str, dict] = Field(default_factory = dict)
 
 
 class DiffusionTrainingInfoResponse(BaseModel):

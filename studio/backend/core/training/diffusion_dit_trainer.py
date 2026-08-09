@@ -1919,6 +1919,10 @@ def _train_dit(
 
     use_lora_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets)
     out_dir = Path(cfg.output_dir).expanduser()
+    # Load from the byte-identical public mirror selected during normalization, while keeping
+    # cfg.base_model canonical for the adapter sidecar, completion event, and resume identity.
+    # One fetch config covers the conditioning pipeline, transformer, and scheduler.
+    fetch_cfg = replace(cfg, base_model = cfg.fetch_base_model or cfg.base_model)
 
     # Phase 0: the persistent conditioning cache (opt-in via cond_cache_dir). When every planned latent variant AND caption embedding is on disk, the run is "warm": the VAE and text encoders never load.
     image_paths = [p for p, _ in pairs]
@@ -1935,7 +1939,7 @@ def _train_dit(
         try:
             # Namespace on the CHECKPOINT, not just the family: the keys carry only caption/image content, so one cache dir reused for two checkpoints would train on the other model's embeddings and latent stats.
             from .diffusion_train_extras import source_revision  # noqa: PLC0415
-            namespace = f"{spec.family}_{cfg.base_model}_{source_revision(cfg.base_model)}"
+            namespace = f"{spec.family}_{cfg.base_model}_{source_revision(fetch_cfg.base_model)}"
             pcache = PersistentConditioningCache(cfg.cond_cache_dir, namespace, cfg.resolution)
         except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
             _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
@@ -1963,7 +1967,7 @@ def _train_dit(
     if caption_embeds is None:
         # Phase 1 (cold): conditioning only. The pipeline loads WITHOUT its transformer, so the encoders + VAE never share VRAM with it. Captions are constant, so their embeddings are precomputed once and the encoders freed.
         latent_cache = None
-        pipe, vae = spec.load_conditioners(cfg, device, weight_dtype)
+        pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
         encoded = _encode_prompts_cached(spec, pipe, to_encode, device, pcache)
         caption_embeds = {cap: emb for cap, emb in zip(to_encode, encoded)}
         _free_text_encoders(pipe)
@@ -2017,7 +2021,7 @@ def _train_dit(
 
     # Phase 3: only now load the transformer, in the resolved base precision (nf4 QLoRA by default; bf16 / int8 / fp8 / mxfp8 are the dense speed modes; "auto" picks from free VRAM).
     base_precision = _resolve_base_precision(cfg, spec, device)
-    transformer = spec.load_transformer(cfg, device, weight_dtype, base_precision)
+    transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
     base_is_bnb = base_precision == "nf4"
 
     # Freeze the base; attach the trainable LoRA to the transformer.
@@ -2062,7 +2066,7 @@ def _train_dit(
 
     optimizer = _make_optimizer(lora_params, cfg.learning_rate)
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
+        fetch_cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
     )
     # Timestep-shift + loss-weighting setup (see _training_sigma_table). getattr defaults keep an un-normalized config on the historical behavior.
     flow_shift = getattr(cfg, "flow_shift", None)
@@ -2089,7 +2093,7 @@ def _train_dit(
     # every bundle this run saves. The identity built before the load says "unresolved" on the
     # first run of an uncached repo, and an unresolved revision is not comparable, so a later
     # resume could not tell that the repo had moved underneath it.
-    identity = with_resolved_revision(identity, cfg.base_model)
+    identity = with_resolved_revision(identity, fetch_cfg.base_model)
     # See the SDXL trainer: the cache path the loop actually took, not the one requested.
     identity = with_cache_mode(identity, latent_cache is not None)
     # ...and the precision the frozen base ended up in. base_precision is still the request at

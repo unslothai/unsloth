@@ -533,6 +533,17 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "note": "Video: trains a style LoRA on still images.",
     },
 }
+# Facts that differ between selectable checkpoints inside one family. Keys are canonical
+# upstream ids; family_train_infos also publishes the mirror aliases so a custom mirror pick
+# gets the same guidance. Values overlay the family facts in the client.
+_BASE_TRAIN_SPECS: dict[str, dict[str, Any]] = {
+    "black-forest-labs/flux.2-klein-base-9b": {
+        "params": "9B",
+        # The auto policy measures 16.4 GB for the bf16 text encoder alone. Leave room for
+        # the VAE and runtime state rather than inheriting the 4B checkpoint's 10 GB floor.
+        "qlora_vram_gb": 18,
+    },
+}
 _GATED_NOTE = "Gated: needs its license and your HF token."
 
 
@@ -751,6 +762,15 @@ def family_train_infos() -> list[dict[str, Any]]:
             fam_modes = [m for m in dit_modes if not _family_train_denied(name, m)]
         spec = _FAMILY_TRAIN_SPECS.get(name, {})
         deploy_bases: dict[str, str] = {}
+        base_specs: dict[str, dict[str, Any]] = {}
+        for repo in repos:
+            base_spec = _BASE_TRAIN_SPECS.get(str(repo).strip().lower())
+            if not base_spec:
+                continue
+            base_specs[repo] = dict(base_spec)
+            repo_mirror = mirror_repo(repo)
+            if repo_mirror:
+                base_specs[repo_mirror] = dict(base_spec)
         for training_repo, inference_repo in getattr(fam, "deploy_base_repos", ()):
             deploy_bases[training_repo] = inference_repo
             # A custom base entered with the public mirror id must follow the same pairing as the
@@ -779,6 +799,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "deploy_base": getattr(fam, "deploy_base_repo", None),
                 # Families with several train/deploy pairs cannot use the scalar above.
                 "deploy_bases": deploy_bases,
+                # Checkpoint-specific facts overlay the family facts in the Train UI.
+                "base_specs": base_specs,
             }
         )
     return infos
@@ -817,6 +839,9 @@ class DiffusionLoraConfig:
     caption_column: str = "text"  # column in metadata.jsonl
     adapter_name: str = "default"
     hf_token: Optional[str] = None
+    # Derived by normalized(): the byte-identical mirror used by from_pretrained while
+    # base_model remains the canonical id stored in metadata and resume identity.
+    fetch_base_model: Optional[str] = None
     # Precompute the VAE latents once (freeing the VAE) instead of re-encoding every step. ``cache_variants`` crop/flip draws are frozen per image; the per-step VAE sampling noise is preserved.
     cache_latents: bool = True
     cache_variants: int = 4
@@ -1007,6 +1032,12 @@ class DiffusionLoraConfig:
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
         # A blank Hub token (the Studio default when none is configured) must load anonymously, not as an explicit empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
+        from core.inference.diffusion_families import prefer_ungated_mirror
+        fetch_base_model = (
+            prefer_ungated_mirror(self.base_model, token or None)
+            if resolved_family != "sdxl"
+            else self.base_model
+        )
         # A blank caption_column means the default, as the start route's own preflight already
         # assumes ("or 'text'"). Without this the route and the trainer resolve different captions
         # from a metadata.jsonl, so their dataset fingerprints disagree and a resume that the
@@ -1019,6 +1050,7 @@ class DiffusionLoraConfig:
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
             hf_token = token or None,
+            fetch_base_model = fetch_base_model,
             caption_column = caption_column,
             num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
@@ -1378,6 +1410,7 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
 _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
     {
         "black-forest-labs/flux.2-dev",
+        "black-forest-labs/flux.2-klein-4b",
         "black-forest-labs/flux.2-klein-base-4b",
         "black-forest-labs/flux.2-klein-base-9b",
         # LTX-2's official base. It is a video family, so the image-side inference allowlist

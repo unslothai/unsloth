@@ -100,6 +100,7 @@ import {
   resumeActionLabel,
 } from "./resume-diffusion-run";
 import { resolveDiffusionDeployBase } from "./diffusion-train-deploy";
+import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
 
 // The families the Train tab can train, in popularity order; a fallback for an older backend whose /info reports none.
 type FamilyPreset = {
@@ -113,6 +114,7 @@ type FamilyPreset = {
   params?: string;
   qlora_vram_gb?: number | null;
   note?: string;
+  base_specs?: DiffusionTrainableFamily["base_specs"];
 };
 
 const FAMILY_PRESETS: FamilyPreset[] = [
@@ -231,11 +233,10 @@ function FieldLabel({
 
 /** The family's training facts as chips: size, QLoRA VRAM floor, access. What a chip cannot
  *  carry stays as a line below, as does the prose from a backend too old to send the fields. */
-function FamilyFacts({ family }: { family?: FamilyPreset }) {
+function FamilyFacts({ family, baseModel }: { family?: FamilyPreset; baseModel?: string }) {
   if (!family) return null;
-  const hasChips = Boolean(
-    family.params || family.qlora_vram_gb || family.gated,
-  );
+  const facts = resolveDiffusionTrainingFacts(family, baseModel);
+  const hasChips = Boolean(facts.params || facts.qlora_vram_gb || facts.gated);
   if (!hasChips) {
     return family.vram_note ? (
       <p className="text-ui-11 leading-snug text-muted-foreground">
@@ -246,18 +247,18 @@ function FamilyFacts({ family }: { family?: FamilyPreset }) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-1.5">
-        {family.params ? (
+        {facts.params ? (
           <Badge variant="secondary" className="font-normal">
-            {family.params}
+            {facts.params}
           </Badge>
         ) : null}
-        {family.qlora_vram_gb != null ? (
+        {facts.qlora_vram_gb != null ? (
           <Badge variant="secondary" className="font-normal">
-            QLoRA {family.qlora_vram_gb}GB+ VRAM
+            QLoRA {facts.qlora_vram_gb}GB+ VRAM
           </Badge>
         ) : null}
         {/* Access, not a spec: a neutral fill sets it apart from the capability chips. */}
-        {family.gated ? (
+        {facts.gated ? (
           <Badge
             variant="secondary"
             className="bg-muted font-normal text-muted-foreground"
@@ -266,11 +267,11 @@ function FamilyFacts({ family }: { family?: FamilyPreset }) {
           </Badge>
         ) : null}
       </div>
-      {(family.gated || family.note) && (
+      {(facts.gated || facts.note) && (
         <p className="text-ui-11 leading-snug text-muted-foreground">
-          {family.gated ? "Needs its license and your HF token." : null}
-          {family.gated && family.note ? " " : null}
-          {family.note}
+          {facts.gated ? "Needs its license and your HF token." : null}
+          {facts.gated && facts.note ? " " : null}
+          {facts.note}
         </p>
       )}
     </div>
@@ -296,6 +297,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
       },
       vram_note: r.vram_note || p.vram_note,
       gated: r.gated ?? p.gated,
+      base_specs: r.base_specs,
       // The chips travel together: a backend reporting any of them owns the whole set, so a
       // preset value cannot sit beside a live one describing a different build.
       ...(r.params != null || r.qlora_vram_gb != null || r.note != null
@@ -323,6 +325,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
       params: r.params ?? "",
       qlora_vram_gb: r.qlora_vram_gb ?? null,
       note: r.note ?? "",
+      base_specs: r.base_specs,
     });
   }
   return merged;
@@ -1473,7 +1476,7 @@ export function DiffusionTrainPanel({
                 ))}
               </SelectContent>
             </Select>
-            <FamilyFacts family={family} />
+            <FamilyFacts family={family} baseModel={resolvedBase} />
           </div>
 
           <div className={fieldClass}>
