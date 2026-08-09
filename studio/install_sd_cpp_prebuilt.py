@@ -283,6 +283,28 @@ def _locate_sd_cli(root: Path) -> Optional[Path]:
     return None
 
 
+def _archive_ships_sd_server(zf: zipfile.ZipFile) -> bool:
+    """Whether ``zf`` carries an sd-server binary. Read from the MEMBER LIST, never from the
+    extracted tree: a leftover sd-server from an earlier install looks identical on disk, which is
+    exactly the confusion this answers."""
+    name = "sd-server.exe" if sys.platform == "win32" else "sd-server"
+    return any(n.rsplit("/", 1)[-1] == name for n in zf.namelist())
+
+
+def _discard_stale_sd_server(root: Path) -> None:
+    """Remove an sd-server left behind by a previous, different bundle. Best effort: failing to
+    remove it is not worth failing the install, and the accelerator record is what the backend
+    reads for the reinstall decision anyway."""
+    stale = _locate_sd_server(root)
+    if stale is None:
+        return
+    try:
+        stale.unlink()
+        print(f"removed the previous sd-server -> {stale}", flush = True)
+    except OSError as exc:
+        print(f"could not remove the previous sd-server {stale}: {exc}", flush = True)
+
+
 def _locate_sd_server(root: Path) -> Optional[Path]:
     """The persistent ``sd-server`` binary in the extracted tree, if the archive ships
     one (modern stable-diffusion.cpp releases do). Best-effort: the native backend
@@ -495,7 +517,14 @@ def install(
         _verify_sha256(archive, asset.get("digest"))
         print("extracting ...", flush = True)
         with zipfile.ZipFile(archive) as zf:
+            ships_server = _archive_ships_sd_server(zf)
             _safe_extractall(zf, target)
+        # An archive that carries no sd-server leaves the PREVIOUS accelerator's one in place, and
+        # the record written below would then label the whole tree as this accelerator: the backend
+        # rediscovers that stale server, trusts the record and runs a CUDA request on the old CPU
+        # build forever. Drop what this bundle did not provide, so the tree and its record agree.
+        if _may_own and not ships_server:
+            _discard_stale_sd_server(target)
         # Windows CUDA builds need the separately-published cudart runtime DLLs.
         _maybe_fetch_windows_cudart(release, chosen, target)
     finally:

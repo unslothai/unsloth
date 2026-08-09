@@ -1391,3 +1391,93 @@ def test_a_serverless_install_is_not_replaced_under_a_running_cli(tmp_path, monk
     monkeypatch.setattr(bk, "_sd_cpp_backend", None)
     bk.ensure_sd_server_binary(accelerator = "cuda")
     assert [k["accelerator"] for k in installs] == ["cuda"]
+
+
+def test_the_tree_stays_in_use_until_a_stopping_server_is_gone(tmp_path, monkeypatch):
+    """unload() clears _state and _pending_server under the lock and stops OUTSIDE it, because
+    terminate can take seconds. In that window both fields say idle while the process is still
+    running its own executable, so a router call asking for another accelerator could extract over
+    it. The stop is counted, and the count keeps the tree marked in use."""
+    import core.inference.sd_cpp_backend as bk
+
+    backend = bk.SdCppDiffusionBackend()
+    seen: list = []
+
+    class _SlowServer:
+        def stop(self):
+            # What a concurrent router call would see while this process is still going down.
+            seen.append(bk._tree_in_use(backend))
+
+    backend._stop_server(_SlowServer())
+    assert seen == [True], "the tree must read busy until stop() returns"
+    assert bk._tree_in_use(backend) is False
+    assert backend._stopping_servers == 0
+
+    # A stop that raises must neither propagate nor leak the count.
+    class _BadServer:
+        def stop(self):
+            raise RuntimeError("terminate failed")
+
+    backend._stop_server(_BadServer())
+    assert backend._stopping_servers == 0 and bk._tree_in_use(backend) is False
+
+
+def test_a_failed_server_upgrade_is_not_retried_by_the_cli_probe(tmp_path, monkeypatch):
+    """The router probes the server first and the CLI immediately after. With only a usable CPU
+    sd-cli in the tree, the failed server upgrade left no record (fallback was None), so the CLI
+    probe resolved and downloaded the very same bundle a second time inside one selection."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    cli = root / "sd-bin" / "sd-cli"
+    cli.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    attempts: list = []
+
+    def _boom(**kwargs):
+        attempts.append(kwargs["accelerator"])
+        raise RuntimeError("no cuda asset for this host")
+
+    monkeypatch.setattr(sdmod, "install", _boom)
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
+    assert attempts == ["cuda"], "the same bundle must not be resolved twice in one selection"
+
+
+def test_an_archive_without_a_server_drops_the_previous_one(tmp_path, monkeypatch):
+    """An upgrade whose archive ships only sd-cli left the OLD accelerator's sd-server in place,
+    while the record labelled the whole tree as the new accelerator: the backend then rediscovered
+    that stale server, trusted the record, and ran a CUDA request on the old CPU build forever."""
+    target = tmp_path / "sd"
+    (target / "sd-bin").mkdir(parents = True)
+    stale = target / "sd-bin" / ("sd-server.exe" if sys.platform == "win32" else "sd-server")
+    stale.write_bytes(b"old-cpu-server")
+
+    cli_name = "sd-cli.exe" if sys.platform == "win32" else "sd-cli"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"bin/{cli_name}", "new")
+    buf.seek(0)
+    with zipfile.ZipFile(buf) as zf:
+        assert sdmod._archive_ships_sd_server(zf) is False
+
+    sdmod._discard_stale_sd_server(target)
+    assert not stale.exists()
+    assert sdmod._locate_sd_server(target) is None
+
+
+def test_an_archive_that_does_ship_a_server_keeps_it(tmp_path):
+    """The removal must key on the archive's member list, not on what is on disk: a bundle that
+    ships its own sd-server has just written it, and deleting that would break every upgrade."""
+    server_name = "sd-server.exe" if sys.platform == "win32" else "sd-server"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"bin/{server_name}", "new")
+    buf.seek(0)
+    with zipfile.ZipFile(buf) as zf:
+        assert sdmod._archive_ships_sd_server(zf) is True

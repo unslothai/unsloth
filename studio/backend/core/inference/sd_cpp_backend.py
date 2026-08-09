@@ -202,6 +202,8 @@ def _tree_in_use(backend: Any) -> bool:
         return True  # the resident sd-server is executing its own file
     if getattr(backend, "_pending_server", None) is not None:
         return True  # a server is starting from that same file
+    if getattr(backend, "_stopping_servers", 0):
+        return True  # unpublished, but stop() has not returned: the process is still alive
     return getattr(backend, "_active_generate_cancel", None) is not None
 
 
@@ -341,7 +343,10 @@ def ensure_sd_server_binary(
             _install(accelerator = accelerator)  # extracts sd-cli AND sd-server
         except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
             logger.warning("sd-server auto-install failed: %s", exc)
-            if fallback is not None:
+            # Also when only the CLI survives (a legacy server-less tree): the router probes
+            # ensure_sd_cpp_binary immediately after this, and without the record that probe
+            # resolves and downloads the same bundle a second time inside one selection.
+            if fallback is not None or find_sd_cpp_binary() is not None:
                 _note_failed_upgrade(accelerator)
             return fallback
         return find_sd_server_binary() or fallback
@@ -501,12 +506,29 @@ class SdCppDiffusionBackend:
         # Set by _resolve_backend when it had to skip an accelerator install because the managed
         # tree was still in use; the load retries it once the tree is free.
         self._deferred_accelerator_install = False
+        # Servers taken out of _state/_pending_server whose stop() has not returned yet. unload()
+        # deliberately stops outside the lock (terminate can take seconds), so between the clear
+        # and the stop the fields say idle while the process is still running its own executable.
+        self._stopping_servers = 0
         # Set once this load's graph proved unrunnable on the GPU backend (a ggml unsupported-op abort), so the CPU restart happens once per load. Cleared by each load.
         self._cpu_backend_forced = False
 
     @property
     def is_loaded(self) -> bool:
         return self._state is not None
+
+    def _stop_server(self, server: Any) -> None:
+        """Stop a server that is no longer published, keeping the tree marked in use until its
+        process is actually gone. Never raises: a teardown may not fail a load or an unload."""
+        with self._lock:
+            self._stopping_servers += 1
+        try:
+            server.stop()
+        except Exception as exc:  # noqa: BLE001 -- a stop that fails must not fail the caller
+            logger.warning("sd-server stop failed: %s", exc)
+        finally:
+            with self._lock:
+                self._stopping_servers -= 1
 
     @staticmethod
     def _resolved_accelerator() -> str:
@@ -788,7 +810,7 @@ class SdCppDiffusionBackend:
                     old_state = self._state
                     self._state = None  # the old model is being torn down
                 if old_state is not None and old_state.server is not None:
-                    old_state.server.stop()
+                    self._stop_server(old_state.server)
                 # The tree is free now, so an install deferred in _resolve_backend can land: this
                 # runs under both locks, the old server is stopped, the previous generation has
                 # finished and no new one can start. Not gated on the resolved mode: a serverless
@@ -1668,9 +1690,9 @@ class SdCppDiffusionBackend:
             self._pending_server = None
         # Stop the resident server outside the lock (terminate can take seconds); a mid-flight generation unwinds as the process goes away.
         if state is not None and state.server is not None:
-            state.server.stop()
+            self._stop_server(state.server)
         if pending is not None and pending is not (state.server if state else None):
-            pending.stop()
+            self._stop_server(pending)
         # Barrier: wait for a signalled one-shot generation to exit before reporting unloaded, since callers treat this return as "device is free".
         with self._generate_lock:
             pass
