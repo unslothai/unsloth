@@ -277,7 +277,6 @@ def test_decision_phase_bracket_carries_its_step_position(research_home, monkeyp
 def test_event_stream_is_reachable_over_post_as_well_as_get():
     # Proxies that stream POST /v1/chat/completions still hold a streamed GET until it closes.
     from routes.research_runs import router
-
     events = [route for route in router.routes if route.path == "/{run_id}/events"]
     assert {method for route in events for method in route.methods} >= {"GET", "POST"}
 
