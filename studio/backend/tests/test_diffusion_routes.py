@@ -1354,9 +1354,7 @@ def test_the_native_engine_refuses_an_explicit_precision_it_cannot_honour(client
     assert "native engine" in resp.json()["detail"]
 
 
-def test_a_failed_engine_prediction_still_gates_the_precision_after_selection(
-    client, monkeypatch
-):
+def test_a_failed_engine_prediction_still_gates_the_precision_after_selection(client, monkeypatch):
     """predict_engine is a probe, and a probe can raise -- an sd-cli query against a broken
     install, a filesystem error reading the cache. That left pending_name None, so BOTH gate arms
     above were skipped, and selection then landed on sd.cpp anyway: the explicit fp8 was accepted,
