@@ -448,15 +448,15 @@ assert.equal(
     .format,
   "gguf",
 );
-// 96 GB of host RAM is under the 150 GB the backend's own estimator asks for below 132 GB of
-// VRAM, and nothing checks host RAM at load time, so routing this host to bf16 meant a 145 GB
-// download, a successful load, and a hard failure on the first generation.
 assert.equal(
   pickDefaultArtifact(h3, { gpuGb: 123, systemRamGb: 96, isDownloaded: notDownloaded })
     .format,
-  "gguf",
+  "bf16",
 );
-// At 132 GB of VRAM the estimator drops its host-RAM floor to 85 GB, so this host does fit.
+// The upper tier, in the units the picker is actually handed: 132 GiB of VRAM is 141.7 decimal
+// GB, past the 132 GB at which the backend estimator drops its host-RAM floor to 85 GB, and
+// 85 GiB of RAM is 91.3 GB. So this host fits, and a tier table written in decimal GB would
+// wrongly send it to GGUF.
 assert.equal(
   pickDefaultArtifact(h3, { gpuGb: 132, systemRamGb: 85, isDownloaded: notDownloaded })
     .format,

@@ -346,17 +346,20 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     capabilities: { audio: true },
     artifacts: [
       bf16Pipeline("MiniMaxAI/MiniMax-H3", 145, {
-        // Derived from the two backend estimators at the default 1344x768, 124-frame preset, so
-        // the picker cannot route a host to a 145 GB download the backend then refuses:
-        // estimate_h3_diffusers_vram_gb is 68.5 + 0.08 * 127.98 = 78.74 GB, and
-        // estimate_h3_diffusers_host_ram_gb is 150 GB below 132 GB of VRAM and 85 GB at or above
-        // it. The lower-GPU tier holds one 66 GB component at a time and keeps the full model in
-        // RAM; the higher tier retains more weights on-device. There is no load-time host-RAM
-        // guard, so numbers under these let the download and the load both succeed and the first
-        // generation fail.
+        // Cluster measurements at the default 1344x768, 124-frame preset. The lower-GPU tier
+        // holds one 66 GB component at a time and keeps the full model in RAM; the higher tier
+        // retains more weights on-device.
+        //
+        // THESE ARE GiB, and the backend estimators they mirror are decimal GB, so the two sets
+        // of numbers must never be copied across. The hardware API divides MiB and bytes by
+        // 1024-based units (nvidia.py memory_total_gb, main.py available_gb) while the generation
+        // guard in video.py divides runtime bytes by 1_000_000_000. Converted, these tiers are
+        // 79.5 / 150.3 GB and 132.1 / 85.9 GB, which is exactly the estimators' 78.74 / 150 and
+        // 132 / 85 with a small margin. Raising them to the decimal figures applies the
+        // conversion twice and sends capable hosts to GGUF.
         offloadFitTiers: [
-          { gpuGb: 79, systemRamGb: 150 },
-          { gpuGb: 132, systemRamGb: 85 },
+          { gpuGb: 74, systemRamGb: 140 },
+          { gpuGb: 123, systemRamGb: 80 },
         ],
       }),
       // The FL2VA denoiser this repo publishes, summed off its GGUF tensor shapes.
