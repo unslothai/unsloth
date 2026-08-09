@@ -86,6 +86,12 @@ _STEP_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 # Serialises the one-time binary install so concurrent first-loads don't race.
 _install_lock = threading.Lock()
 
+# Admission control over the managed install tree. _install_lock keeps two installs apart, but the
+# conflict that actually corrupts the tree is an install against a native process EXECUTING out of
+# it, and those two never share a lock. See _claim_managed_tree_for_install.
+_tree_admission = threading.Condition()
+_tree_installing = False
+
 # Max images per img_gen job; larger Studio batches (up to 32) are split into these chunks.
 _MAX_SERVER_BATCH = 8
 
@@ -338,6 +344,47 @@ def _managed_tree_in_use() -> bool:
     return _tree_in_use(_sd_cpp_backend)
 
 
+def _claim_managed_tree_for_install() -> bool:
+    """Reserve the managed tree for an install, or return False to leave it alone.
+
+    _managed_tree_in_use() on its own is a point-in-time sample, and the install it admits then
+    spends seconds resolving the release and streaming tens of MB before it extracts anything.
+    A one-shot generate() starting inside that window sets _active_generate_cancel and execs the
+    very sd-cli the installer is about to replace: Linux refuses to write a running executable
+    (ETXTBSY) and Windows locks it, so the install fails or leaves the tree half-written, and the
+    generation can die under it either way.
+
+    So the probe and the reservation happen together, under _tree_admission, and the flag stays up
+    for the whole install span. Refusing rather than waiting keeps the existing contract: the
+    caller holds on to whatever usable binary it already had, and the next load retries the
+    upgrade after its own teardown."""
+    global _tree_installing
+    with _tree_admission:
+        if _tree_installing or _managed_tree_in_use():
+            return False
+        _tree_installing = True
+        return True
+
+
+def _release_managed_tree() -> None:
+    """Drop the reservation and wake anything waiting to run out of the tree."""
+    global _tree_installing
+    with _tree_admission:
+        _tree_installing = False
+        _tree_admission.notify_all()
+
+
+def _await_managed_tree(timeout: float = 900.0) -> None:
+    """Block until no install is rewriting the managed binaries.
+
+    Waiting, not refusing, because the caller is a user's generation: a delay of one download is
+    better than a failure, and better than the corrupt tree this exists to prevent. The timeout is
+    a backstop against a release that never lands, not a policy -- an install that overruns it
+    leaves the caller no worse off than before this gate existed."""
+    with _tree_admission:
+        _tree_admission.wait_for(lambda: not _tree_installing, timeout = timeout)
+
+
 def _accelerator_changed(binary: str, accelerator: str) -> bool:
     """True when ``binary`` is a managed install built for a DIFFERENT accelerator than the one
     now asked for, so reusing it would silently run the wrong build.
@@ -401,22 +448,27 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
         # mismatch, but "no binary found" never reaches it: a legacy serverless install has no
         # sd-server at all, while its sd-cli may be mid-generation. Nothing can be in use before
         # anything is installed, so a first install is unaffected. The load retries after teardown.
-        if _managed_tree_in_use():
+        # Reserved, not merely probed: the reservation has to outlast the download, or a
+        # generation admitted meanwhile execs the binary this is about to overwrite.
+        if not _claim_managed_tree_for_install():
             return fallback
         try:
-            _install = _installer_module().install
-        except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
-            logger.warning("sd-cli installer import failed: %s", exc)
-            return fallback
-        try:
-            path = _install(accelerator = accelerator)
-            logger.info("sd-cli installed at %s", path)
-            return str(path)
-        except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
-            logger.warning("sd-cli auto-install failed: %s", exc)
-            if fallback is not None:
-                _note_failed_upgrade(accelerator)
-            return fallback
+            try:
+                _install = _installer_module().install
+            except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
+                logger.warning("sd-cli installer import failed: %s", exc)
+                return fallback
+            try:
+                path = _install(accelerator = accelerator)
+                logger.info("sd-cli installed at %s", path)
+                return str(path)
+            except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
+                logger.warning("sd-cli auto-install failed: %s", exc)
+                if fallback is not None:
+                    _note_failed_upgrade(accelerator)
+                return fallback
+        finally:
+            _release_managed_tree()
 
 
 def ensure_sd_server_binary(
@@ -448,24 +500,29 @@ def ensure_sd_server_binary(
         # mismatch, but "no binary found" never reaches it: a legacy serverless install has no
         # sd-server at all, while its sd-cli may be mid-generation. Nothing can be in use before
         # anything is installed, so a first install is unaffected. The load retries after teardown.
-        if _managed_tree_in_use():
+        # Reserved for the whole span, as in ensure_sd_cpp_binary: this archive carries the sd-cli
+        # too, so a generation admitted mid-download is executing a file this will overwrite.
+        if not _claim_managed_tree_for_install():
             return fallback
         try:
-            _install = _installer_module().install
-        except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
-            logger.warning("sd-server installer import failed: %s", exc)
-            return fallback
-        try:
-            _install(accelerator = accelerator)  # extracts sd-cli AND sd-server
-        except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
-            logger.warning("sd-server auto-install failed: %s", exc)
-            # Also when only the CLI survives (a legacy server-less tree): the router probes
-            # ensure_sd_cpp_binary immediately after this, and without the record that probe
-            # resolves and downloads the same bundle a second time inside one selection.
-            if fallback is not None or find_sd_cpp_binary() is not None:
-                _note_failed_upgrade(accelerator)
-            return fallback
-        return find_sd_server_binary() or fallback
+            try:
+                _install = _installer_module().install
+            except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
+                logger.warning("sd-server installer import failed: %s", exc)
+                return fallback
+            try:
+                _install(accelerator = accelerator)  # extracts sd-cli AND sd-server
+            except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
+                logger.warning("sd-server auto-install failed: %s", exc)
+                # Also when only the CLI survives (a legacy server-less tree): the router probes
+                # ensure_sd_cpp_binary immediately after this, and without the record that probe
+                # resolves and downloads the same bundle a second time inside one selection.
+                if fallback is not None or find_sd_cpp_binary() is not None:
+                    _note_failed_upgrade(accelerator)
+                return fallback
+            return find_sd_server_binary() or fallback
+        finally:
+            _release_managed_tree()
 
 
 @dataclass(frozen = True)
@@ -1420,21 +1477,33 @@ class SdCppDiffusionBackend:
 
         cancel = threading.Event()
         with self._generate_lock:
-            with self._lock:
-                state = self._state
-                if state is None:
-                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
-                # A resident server can exit while idle; drop stale state and report not-loaded so the client gets the reload path, not a 500.
-                if (
-                    state.mode == "server"
-                    and state.server is not None
-                    and not state.server.is_alive()
-                ):
-                    self._state = None
-                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
-                self._active_generate_cancel = cancel
-                # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read idle while this holds _generate_lock.
-                self._gen = _SdGen(total_steps = int(steps))
+            # Under _tree_admission for the whole publish, not merely before it: an installer that
+            # sampled the tree as idle is about to overwrite the binary this generation will exec,
+            # and only holding the same lock across both the wait and the _active_generate_cancel
+            # store makes the claim and the publish unable to interleave. An install already under
+            # way is waited out; one that has not started yet now sees this generation and defers.
+            # Lock order is _generate_lock -> _tree_admission -> self._lock, and nothing takes
+            # _tree_admission while holding self._lock, so there is no cycle.
+            with _tree_admission:
+                _tree_admission.wait_for(lambda: not _tree_installing, timeout = 900.0)
+                with self._lock:
+                    state = self._state
+                    if state is None:
+                        raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                    # A resident server can exit while idle; drop stale state and report not-loaded so the client gets the reload path, not a 500.
+                    if (
+                        state.mode == "server"
+                        and state.server is not None
+                        and not state.server.is_alive()
+                    ):
+                        self._state = None
+                        raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                    self._active_generate_cancel = cancel
+                    # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read idle while this holds _generate_lock.
+                    self._gen = _SdGen(total_steps = int(steps))
+            # _tree_admission is dropped here: the generation itself runs for minutes, and holding
+            # it that long would block every upgrade rather than the window that corrupts the tree.
+            # _active_generate_cancel is published now, so _managed_tree_in_use answers for the rest.
             try:
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)

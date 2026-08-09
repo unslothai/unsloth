@@ -1555,6 +1555,82 @@ def test_an_archive_that_does_ship_a_server_keeps_it(tmp_path):
         assert sdmod._archive_ships_sd_server(zf) is True
 
 
+def test_the_install_holds_the_tree_for_its_whole_span(tmp_path, monkeypatch):
+    """A point-in-time _managed_tree_in_use() sample admits the install, and the install then
+    spends seconds resolving and downloading before it writes anything. A generation starting in
+    that window execs the very sd-cli about to be replaced: ETXTBSY on Linux, a locked file on
+    Windows, a half-written tree either way. The reservation must outlast the download."""
+    import core.inference.sd_cpp_backend as bk
+
+    monkeypatch.setattr(bk, "_tree_installing", False)
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: None)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+
+    during: list = []
+
+    def _slow_install(**_kwargs):
+        # Mid-download. Nothing may claim the tree from under us here.
+        during.append(bk._claim_managed_tree_for_install())
+        return tmp_path / "sd-cli"
+
+    monkeypatch.setattr(sdmod, "install", _slow_install)
+
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(tmp_path / "sd-cli")
+    assert during == [False], "the tree was claimable while an install was writing it"
+    # And the reservation is dropped once the install returns, or nothing could ever run again.
+    assert bk._tree_installing is False
+    assert bk._claim_managed_tree_for_install() is True
+    bk._release_managed_tree()
+
+
+def test_a_failed_install_still_releases_the_tree(monkeypatch):
+    """Held through the failure path too. A download that dies leaving the flag up would wedge
+    every later generation on the wait below until its timeout."""
+    import core.inference.sd_cpp_backend as bk
+
+    monkeypatch.setattr(bk, "_tree_installing", False)
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: None)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+
+    def _boom(**_kwargs):
+        raise RuntimeError("network died mid-download")
+
+    monkeypatch.setattr(sdmod, "install", _boom)
+
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") is None
+    assert bk._tree_installing is False
+
+
+def test_a_generation_waits_out_an_install_before_publishing_itself(monkeypatch):
+    """The other half of the same gate, and the reason the wait and the publish share one lock.
+    An install that has already claimed the tree must hold the generation until it is done;
+    waiting rather than refusing, because the caller is a user's request and one download's delay
+    beats a failure."""
+    import core.inference.sd_cpp_backend as bk
+
+    monkeypatch.setattr(bk, "_tree_installing", True)
+    waited: list = []
+    real_wait_for = threading.Condition.wait_for
+
+    def _record_wait(self, predicate, timeout = None):
+        if self is bk._tree_admission:
+            waited.append(bool(predicate()))
+            # Let the "install" finish, so the generation proceeds instead of hanging the test.
+            bk._tree_installing = False
+        return real_wait_for(self, predicate, timeout = timeout)
+
+    monkeypatch.setattr(threading.Condition, "wait_for", _record_wait)
+
+    backend = bk.SdCppDiffusionBackend()
+    # No state: the generation raises not-loaded straight after the gate, which is all this needs.
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "x", steps = 1)
+
+    assert waited == [False], "the generation did not wait on an install that held the tree"
+
+
 def test_the_stop_is_reserved_before_the_server_is_unpublished(tmp_path, monkeypatch):
     """The count has to be claimed in the SAME lock block that clears _state/_pending_server. Doing
     it inside the stop leaves a gap where the resident, pending, stopping and generating fields are
