@@ -184,8 +184,7 @@ def _variant_main_shard_present(
 
 
 def _variant_present_in_any_snapshot(
-    entry: Path,
-    variant_file_matcher: Optional["VariantFileMatcher"],
+    entry: Path, variant_file_matcher: Optional["VariantFileMatcher"]
 ) -> Optional[bool]:
     """``_variant_main_shard_present`` over every snapshot the repo dir retains.
 

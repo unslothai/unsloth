@@ -6538,9 +6538,7 @@ def test_a_blob_that_cannot_be_stated_keeps_presence_unknown(monkeypatch, tmp_pa
         "gguf_variant_blob_hashes",
         lambda *_a, **_kw: frozenset({"mainhash"}),
     )
-    monkeypatch.setattr(
-        snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry]
-    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry])
     monkeypatch.setattr(
         downloads,
         "_registry",
