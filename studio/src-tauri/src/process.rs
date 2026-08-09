@@ -652,6 +652,11 @@ pub struct BackendProcess {
     pub generation: u64,
     pub diagnostics_session: Option<BackendLog>,
     pub adopted_watchdog_generation: Option<u64>,
+    /// Set by the start watchdog, under this mutex, once it has committed to
+    /// emitting server-start-timeout for the current generation. Port
+    /// validation refuses to claim afterwards, so the window never receives
+    /// server-port behind an error it has no handler to clear.
+    pub start_timed_out: bool,
 }
 
 impl BackendProcess {
@@ -703,6 +708,7 @@ pub(crate) fn adopt_verified_backend(
     proc.intentional_stop = false;
     proc.diagnostics_session = None;
     proc.adopted_watchdog_generation = None;
+    proc.start_timed_out = false;
     proc.owned = Some(OwnedBackendHandle::adopted(
         verified.owner,
         verified.port,
@@ -836,6 +842,7 @@ impl Default for BackendProcess {
             generation: 0,
             diagnostics_session: None,
             adopted_watchdog_generation: None,
+            start_timed_out: false,
         }
     }
 }
@@ -1182,6 +1189,7 @@ pub fn start_backend(
         proc.intentional_stop = false;
         proc.diagnostics_session = None;
         proc.adopted_watchdog_generation = None;
+        proc.start_timed_out = false;
         proc.owned = None;
         let generation = proc.generation;
 
@@ -1524,7 +1532,9 @@ async fn validate_candidate_port(
                 return;
             }
         };
-        if proc.generation != generation || proc.port.is_some() {
+        // start_timed_out is the watchdog's claim, taken under this same lock,
+        // so exactly one of the two outcomes reaches the window.
+        if proc.generation != generation || proc.port.is_some() || proc.start_timed_out {
             false
         } else if matches!(proc.owned, Some(OwnedBackendHandle::Spawned { .. })) {
             proc.port = Some(port);
@@ -1610,7 +1620,7 @@ fn start_watchdog(
         }
 
         let (still_ours, tail) = match state.lock() {
-            Ok(proc) => {
+            Ok(mut proc) => {
                 // Same three conditions as the loop. Dropping has_owned_backend here
                 // would let a crash in the last second be overwritten by a message
                 // claiming the backend is still running.
@@ -1618,6 +1628,11 @@ fn start_watchdog(
                 {
                     (false, String::new())
                 } else {
+                    // Claim the outcome while still holding the lock. Deciding
+                    // here and emitting after the unlock would otherwise let a
+                    // port validation that succeeded in between emit
+                    // server-port on top of this timeout.
+                    proc.start_timed_out = true;
                     let skip = proc.logs.len().saturating_sub(20);
                     let tail: Vec<String> = proc.logs.iter().skip(skip).cloned().collect();
                     (true, tail.join("\n"))
