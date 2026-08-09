@@ -286,10 +286,23 @@ class TestMemFractionSelection:
         log off the parsed override rather than the raw string."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
         assert "_mem_fraction = _rocm_memory_fraction(" in source
-        # totalGlobalMem is what the allocator multiplies the fraction by, so the reserve
-        # is only the intended size when the guard divides by the same number.
+        # totalGlobalMem is what the allocator multiplies the fraction by from torch
+        # 2.10 on, so the reserve is only the intended size when the guard divides by
+        # the same number. Before 2.10 the allocator divides by the driver's total.
         assert 'getattr(_props, "total_memory", 0)' in source
         assert "if _env_fraction is not None" in source
+
+    def test_guard_reports_a_props_vs_driver_total_gap(self) -> None:
+        """The byte reserve is only the constant while the allocator divides by the same
+        total the guard did, which is not so before torch 2.10. A wheel that reports the
+        two differently silently resizes the reserve, and no CI machine can catch it, so
+        pin that the guard says which numbers it saw rather than needing a field report.
+        Scoped to the byte arm: discrete and win32 take a flat fraction, which no
+        denominator gap can distort."""
+        source = _WORKER_PY.read_text(encoding = "utf-8")
+        assert "_driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])" in source
+        assert "_mem_fraction > 1.0 - _UNIFIED_MAX_RESERVE_FRACTION" in source
+        assert "Before torch 2.10 the cap is enforced against" in source
 
 
 class TestUnifiedLinuxReserve:

@@ -1566,11 +1566,16 @@ def _rocm_memory_fraction(
 ) -> float:
     """Pick the ``set_per_process_memory_fraction`` cap for a ROCm device.
 
-    ``total_bytes`` must be ``get_device_properties().total_memory``: the caching
-    allocator caps at ``fraction * device_prop.totalGlobalMem`` (c10's
-    ``CUDACachingAllocator::setMemoryFraction``), and that is the same value. Not
-    ``mem_get_info``, whose total is a runtime budget on some hosts -- an absolute
-    byte reserve only lands where intended when both sides divide by the same number.
+    ``total_bytes`` must be ``get_device_properties().total_memory``. An absolute
+    byte reserve only lands where intended when both sides divide by the same
+    number, and this is the one to divide by: c10's
+    ``CUDACachingAllocator::setMemoryFraction`` caps at
+    ``fraction * device_prop.totalGlobalMem``, which is exactly this value, from
+    torch 2.10 on. Through 2.9 it caps at ``fraction * hipMemGetInfo total``
+    instead, so on a wheel that reports the two differently the reserve is scaled
+    by their ratio; the guard logs both when they disagree. Sizing against
+    ``mem_get_info`` here would invert that and lose the 2.10+ hosts, and its
+    total is a runtime budget rather than the pool on some of them anyway.
 
     - ``env_value`` (``UNSLOTH_ROCM_MEM_FRACTION``) wins when it parses to a
       float in ``(0.0, 1.0]``; anything else is ignored, never fatal.
@@ -3706,10 +3711,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 # fractions (gfx1151: 0.5 caps, 1.0 overcommits via WDDM), so 1.0 behaves like torch's
                 # uncapped default. On Linux the total spans nearly all RAM, so keep a bounded headroom
                 # (see _rocm_memory_fraction).
-                # props.total_memory, not mem_get_info: the caching allocator sets its
-                # ceiling to fraction * device_prop.totalGlobalMem (CUDACachingAllocator's
-                # setMemoryFraction), which is exactly this value. An absolute byte reserve
-                # only lands where intended if the denominator matches the allocator's.
+                # props.total_memory, not mem_get_info: from torch 2.10 the caching
+                # allocator sets its ceiling to fraction * device_prop.totalGlobalMem
+                # (CUDACachingAllocator's setMemoryFraction), which is exactly this value.
+                # An absolute byte reserve only lands where intended if the denominator
+                # matches the allocator's; earlier torch divides by the driver's own
+                # total, reported below when the two disagree.
                 _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
                 _env_raw = os.environ.get(_MEM_FRACTION_ENV)
                 _env_fraction = _parse_mem_fraction_env(_env_raw)
@@ -3744,6 +3751,34 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     if _env_fraction is not None
                     else f"computed; override with {_MEM_FRACTION_ENV}",
                 )
+                # The reserve is exactly _UNIFIED_OS_RESERVE_BYTES only while the allocator
+                # divides by the total this did. Before torch 2.10 it divides by the driver's,
+                # and a unified wheel can report the two differently (VRAM carve vs GTT vs
+                # their sum). Only worth saying where the byte arm is load-bearing: discrete
+                # and win32 take a flat fraction, which no denominator gap can distort.
+                if (
+                    _is_unified
+                    and sys.platform != "win32"
+                    and _env_fraction is None
+                    and _total_bytes > 0
+                    and _mem_fraction > 1.0 - _UNIFIED_MAX_RESERVE_FRACTION
+                ):
+                    try:
+                        _driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])
+                    except Exception:
+                        _driver_total = 0
+                    if _driver_total > 0 and abs(_driver_total - _total_bytes) > _total_bytes // 100:
+                        logger.info(
+                            "ROCm OOM guard: props.total_memory is %.1f GiB but the driver "
+                            "reports %.1f GiB. Before torch 2.10 the cap is enforced against "
+                            "the driver's total, which works out to %.1f GiB of headroom "
+                            "here instead of the intended %.1f GiB; adjust it with %s.",
+                            _total_bytes / 1024**3,
+                            _driver_total / 1024**3,
+                            (_total_bytes - _mem_fraction * _driver_total) / 1024**3,
+                            _UNIFIED_OS_RESERVE_BYTES / 1024**3,
+                            _MEM_FRACTION_ENV,
+                        )
                 # Unified Windows APUs: the WDDM budget is user-raisable, but nothing on the box says so
                 # -- users see "48 GB VRAM" on a 96 GB machine. Say where the limit comes from.
                 if _is_unified and sys.platform == "win32":
