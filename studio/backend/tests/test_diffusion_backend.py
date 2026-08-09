@@ -4170,6 +4170,25 @@ def _stub_dense_transformer_cached(monkeypatch, *, cached: bool):
     monkeypatch.setattr(dmod, "_dense_transformer_cached", lambda base_repo: cached)
 
 
+def _stub_dense_candidate(monkeypatch, *, prequant: bool):
+    """Pin what the fast path would open: a PRE-QUANT checkpoint, or the base repo's dense shards.
+
+    ``resolve_dense_quant_candidate`` is the resolver both the plan and the load re-plan against,
+    so pinning it here pins the same answer for both."""
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            prequant = prequant,
+            steady_total_mib = 1,
+            transient_transformer_mib = 1,
+            companions_mib = 1,
+        ),
+    )
+
+
 def _spy_dense_quant(monkeypatch):
     """Record every dense/prequant fast-path build and keep it from running.
 
@@ -4503,6 +4522,8 @@ def test_the_load_declines_when_the_prefetch_skipped_the_dense_shards(
     # from_pretrained() under the load lock after eviction, where unload cannot preempt it and
     # progress already reported 100% -- the exact download the plan just declined.
     _stub_hosted_prequant(monkeypatch, cached = True)  # not the verdict under test
+    # The candidate is the DENSE base, which is the only thing an unstaged transformer/ can cost.
+    _stub_dense_candidate(monkeypatch, prequant = False)
     calls = _spy_dense_quant(monkeypatch)
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
@@ -4531,6 +4552,110 @@ def test_the_load_declines_when_the_prefetch_skipped_the_dense_shards(
         _transformer_prefetched = True,
     )
     assert len(_dense_calls(calls, backend2)) == 1
+
+
+def test_an_unstaged_transformer_still_takes_a_CACHED_prequant(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # A cached pre-quant stages no transformer/ shards either, because the small quantised
+    # checkpoint REPLACES them, not because a download was refused. Reading the empty stage as a
+    # decline dropped a fast path that costs nothing: unsloth/Z-Image-Turbo-GGUF at Q8_0 with
+    # unsloth/Z-Image-Turbo-FP8 already on disk loaded the GGUF instead of the fp8 checkpoint.
+    _stub_hosted_prequant(monkeypatch, cached = True)
+    _stub_dense_candidate(monkeypatch, prequant = True)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        _transformer_prefetched = False,
+    )
+
+    assert len(_dense_calls(calls, backend)) == 1
+
+
+def test_an_unstaged_prequant_load_still_forbids_the_dense_fallback(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Taking the cached pre-quant must not re-open the hole the decline was closing: with no
+    # transformer/ staged, a FAILED prequant load has to raise rather than materialise the dense
+    # bf16 transformer from_pretrained() under the load lock, after eviction.
+    _stub_hosted_prequant(monkeypatch, cached = True)
+    _stub_dense_candidate(monkeypatch, prequant = True)
+    seen: list = []
+
+    def _record(self, *a, **k):
+        seen.append(k.get("allow_dense_fallback"))
+        return None, None
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", _record)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        _transformer_prefetched = False,
+    )
+
+    assert seen == [False]
+
+
+def test_an_uncached_prequant_still_declines_before_the_candidate_is_asked(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The candidate re-ask must not soften the branch above it. An UNCACHED hosted pre-quant is
+    # still a second multi-GB denoiser, and it resolves as a prequant candidate, so a decline
+    # keyed on the candidate alone would hand the download straight back.
+    _stub_hosted_prequant(monkeypatch, cached = False)
+    _stub_dense_candidate(monkeypatch, prequant = True)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        _transformer_prefetched = False,
+    )
+
+    assert _dense_calls(calls, backend) == []
+    assert status["transformer_quant"] is None
+
+
+def test_the_plan_and_the_load_agree_on_a_cached_prequant(fake_runtime, tmp_path, monkeypatch):
+    # The pairing, in one place: the plan declines to stage transformer/ (a prequant needs none)
+    # and the load still takes the fast path. The plan saying "no shards" and the load saying "so
+    # no quant" is exactly the disagreement this branch exists to prevent.
+    _stub_hosted_prequant(monkeypatch, cached = True)
+    _stub_dense_candidate(monkeypatch, prequant = True)
+    _stub_dense_transformer_cached(monkeypatch, cached = False)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    fam = detect_family("unsloth/Z-Image-Turbo-GGUF")
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    # The plan stages no transformer/ shards ...
+    assert backend._dense_quant_prefetch_needed(fam, {"base_repo": "Tongyi-MAI/Z-Image-Turbo"}) is (
+        False
+    )
+    # ... and the load, told exactly that, still quantises.
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        _transformer_prefetched = False,
+    )
+    assert len(_dense_calls(calls, backend)) == 1
 
 
 def test_dense_transformer_cached_reads_the_mirror_too(fake_runtime, monkeypatch, tmp_path):

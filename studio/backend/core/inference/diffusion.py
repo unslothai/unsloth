@@ -882,6 +882,41 @@ def _dense_transformer_cached(base_repo: Optional[str]) -> bool:
     return False
 
 
+def _dense_candidate_is_prequant(
+    fam: Optional[DiffusionFamily],
+    target: Any,
+    requested: Optional[str],
+    *,
+    base_repo: Optional[str],
+    prequant_path: Optional[str],
+) -> bool:
+    """Whether the dense-quant fast path would open a PRE-QUANT checkpoint rather than the base
+    repo's own dense ``transformer/`` shards.
+
+    ``resolve_dense_quant_candidate`` is the one resolver that picks between the two, and it is the
+    same call ``_dense_quant_prefetch_needed`` and ``load_pipeline`` re-plan memory against, so
+    asking it here keeps the plan and the load on one answer. Only meaningful for an auto quant
+    with nothing being baked, which is the only caller: a LoRA bake forces the dense build.
+
+    A ``None`` candidate is not a prequant verdict. It means the resolver had no basis at all (no
+    size entry, or the model cache is too full for the artifact), and the plan declines to stage
+    ``transformer/`` in exactly that case too, so reading it as "dense" is what keeps the two in
+    step. Never raises; an unanswerable probe reads as "dense", the conservative side."""
+    try:
+        candidate = resolve_dense_quant_candidate(
+            fam = fam,
+            target = target,
+            requested = requested,
+            base_repo = base_repo,
+            prequant_path = prequant_path,
+            force_dense = False,
+            logger = None,
+        )
+    except Exception:  # noqa: BLE001 — a probe that cannot answer keeps the decline
+        return False
+    return bool(candidate is not None and candidate.prequant)
+
+
 def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool) -> bool:
     """Whether this memory request offloads the transformer no matter what the weights measure.
 
@@ -1158,6 +1193,11 @@ class DiffusionBackend:
             # Qwen-Image-Edit's Q6_K is 16.9 GB and the base transformer is another 40.9 GB.
             # Cached shards cost nothing, so anyone who already has the dense base keeps the fast
             # path, and an EXPLICIT transformer_quant still opts in as before.
+            #
+            # This returns the same False a PREQUANT candidate returns below, so a cached
+            # pre-quant reaches the load with no transformer/ staged and NOT because a download
+            # was refused. That is why the load side re-asks the resolver rather than reading an
+            # empty stage as a decline: same verdict here, two different reasons there.
             if (
                 auto
                 and not _has_active_lora(kwargs.get("loras"))
@@ -2428,7 +2468,20 @@ class DiffusionBackend:
                     # them from_pretrained() under the load lock, after eviction, where unload
                     # cannot preempt it and progress already reported 100%. Declining keeps the
                     # GGUF the user picked, which is on disk.
-                    elif not _transformer_prefetched:
+                    #
+                    # Only when the fast path's candidate IS the dense base, though. A CACHED
+                    # pre-quant stages no transformer/ shards either -- the plan skips them
+                    # because the small quantised checkpoint replaces them, not because anything
+                    # would have to be downloaded -- so reading the empty stage as a verdict here
+                    # would drop a fast path that costs nothing. The branch above already sent
+                    # every UNCACHED pre-quant to the GGUF, so what reaches here is free.
+                    elif not _transformer_prefetched and not _dense_candidate_is_prequant(
+                        fam,
+                        target,
+                        transformer_quant,
+                        base_repo = base,
+                        prequant_path = transformer_prequant_path,
+                    ):
                         logger.info(
                             "diffusion.transformer_quant_declined: %s transformer/ shards are not "
                             "staged (an auto quant never downloads a second transformer for a "
