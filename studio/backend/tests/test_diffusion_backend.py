@@ -7517,6 +7517,8 @@ def test_a_completed_generation_stops_advertising_itself_as_cancellable(
 def test_cancel_generate_is_a_no_op_without_a_load(fake_runtime):
     # The route calls this unconditionally, so an idle backend must answer False, not raise.
     assert DiffusionBackend().cancel_generate() is False
+
+
 def test_unified_memory_declines_a_prequant_that_outweighs_the_gguf(
     fake_runtime, monkeypatch, tmp_path
 ):
