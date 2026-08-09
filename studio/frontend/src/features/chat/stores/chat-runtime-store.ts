@@ -57,6 +57,7 @@ export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
   "unsloth_chat_show_all_quantizations";
+export const CHAT_SHOW_MEMORY_BAR_KEY = "unsloth_chat_show_memory_bar";
 export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
   "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
@@ -1083,6 +1084,10 @@ type ChatRuntimeStore = {
   expandQuantizations: boolean;
   /** Persisted: show non-downloaded quantizations too, not just downloaded. */
   showAllQuantizations: boolean;
+  /** Persisted, off by default: chart each downloaded model's VRAM footprint
+   *  under its row. Opt-in because the figures are estimates, and a row that
+   *  cannot be sized is better left plain than annotated with a guess. */
+  showMemoryBar: boolean;
   /** Persisted, shared by the chat model selector and the Hub page: list only
    *  models whose size fits this device's memory budget. */
   fitOnDeviceOnly: boolean;
@@ -1266,6 +1271,7 @@ type ChatRuntimeStore = {
   ) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
+  setShowMemoryBar: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
@@ -1599,6 +1605,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   // Off by default: On Device lists what is on disk, not the whole repo.
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
+  showMemoryBar: loadBool(CHAT_SHOW_MEMORY_BAR_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -2403,6 +2410,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setShowAllQuantizations: (showAllQuantizations) => {
     saveBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, showAllQuantizations);
     set({ showAllQuantizations });
+  },
+  setShowMemoryBar: (showMemoryBar) => {
+    saveBool(CHAT_SHOW_MEMORY_BAR_KEY, showMemoryBar);
+    set({ showMemoryBar });
   },
   setFitOnDeviceOnly: (fitOnDeviceOnly) => {
     saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);

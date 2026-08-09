@@ -164,6 +164,10 @@ export function ChatTab() {
   const setShowAllQuantizations = useChatRuntimeStore(
     (state) => state.setShowAllQuantizations,
   );
+  const showMemoryBar = useChatRuntimeStore((state) => state.showMemoryBar);
+  const setShowMemoryBar = useChatRuntimeStore(
+    (state) => state.setShowMemoryBar,
+  );
   const showModelDisclaimer = useChatPreferencesStore(
     (state) => state.showModelDisclaimer,
   );
@@ -214,6 +218,14 @@ export function ChatTab() {
             checked={showAllQuantizations}
             onCheckedChange={setShowAllQuantizations}
           />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.showMemoryBar")}
+          description={t(
+            "settings.chat.modelSelection.showMemoryBarDescription",
+          )}
+        >
+          <Switch checked={showMemoryBar} onCheckedChange={setShowMemoryBar} />
         </SettingsRow>
       </SettingsSection>
 

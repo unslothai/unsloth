@@ -14,6 +14,7 @@ import {
   estimateKvCache,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
+  useChatRuntimeStore,
 } from "@/features/chat";
 import {
   normalizeGgufVariantIdentity,
@@ -124,25 +125,25 @@ function readConfigEpoch(): number {
 }
 
 /**
- * The user's saved settings for this model, if any.
+ * The user's saved settings for this exact variant, if any.
  *
- * Config keys are stored normalized, which lower-cases hub repo ids. Comparing
- * raw strings misses every mixed-case repo, and the bar then quietly falls back
- * to defaults instead of the context length and KV dtype the user chose.
+ * Variant-exact only, matching `resolveInitialConfig`: the load path looks up
+ * (modelId, ggufVariant) and drops to defaults when there's no hit. Falling back
+ * to a model-level entry here would size the bar from settings the variant will
+ * never load with.
+ *
+ * Keys are stored normalized, which lower-cases hub repo ids, so comparing raw
+ * strings would miss every mixed-case repo and quietly use defaults instead of
+ * the context length and KV dtype the user chose.
  */
 function configFor(source: ModelMemorySource): PerModelConfig | undefined {
   const wantId = normalizeModelIdentity(source.repoId);
   const wantVariant = normalizeGgufVariantIdentity(source.quant);
-  const entries = listPerModelConfigs();
-  const sameModel = (e: { modelId: string }) =>
-    normalizeModelIdentity(e.modelId) === wantId;
-  return (
-    entries.find(
-      (e) =>
-        sameModel(e) &&
-        normalizeGgufVariantIdentity(e.ggufVariant) === wantVariant,
-    )?.config ?? entries.find((e) => sameModel(e) && !e.ggufVariant)?.config
-  );
+  return listPerModelConfigs().find(
+    (e) =>
+      normalizeModelIdentity(e.modelId) === wantId &&
+      normalizeGgufVariantIdentity(e.ggufVariant) === wantVariant,
+  )?.config;
 }
 
 /** A context the user pinned, or undefined to let the model use its own. */
@@ -243,12 +244,16 @@ export function useModelMemory(
     () => 0,
   );
 
+  // Opt-in, off by default. Checked here rather than at each render site so a
+  // disabled bar also costs no request.
+  const enabled = useChatRuntimeStore((state) => state.showMemoryBar);
+
   const repoId = source?.repoId;
   const quant = source?.quant;
   // Keyed on primitives rather than the object: callers build the source inline,
   // so a fresh identity each render would loop forever.
   const plan = useMemo(() => {
-    if (!repoId || !quant) return null;
+    if (!enabled || !repoId || !quant) return null;
     const config = configFor({ repoId, quant });
     const nCtx = pinnedContext(config);
     const cacheKey = [
@@ -271,7 +276,7 @@ export function useModelMemory(
     // into the cache key instead would evict every row's answer on any save.
     // biome-ignore lint/correctness/useExhaustiveDependencies: see above
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repoId, quant, epoch]);
+  }, [enabled, repoId, quant, epoch]);
 
   useEffect(() => {
     if (!plan) return;

@@ -795,6 +795,9 @@ export const en = {
         showAllQuantizations: "Show all quantizations",
         showAllQuantizationsDescription:
           "On: list every On Device quantization, including not downloaded. Off: show only downloaded quantizations.",
+      showMemoryBar: "Show VRAM usage bar",
+      showMemoryBarDescription:
+        "Chart each downloaded model's estimated VRAM use under its row: weights, KV cache at the context it will load with, and any speculative draft reserve.",
       },
       menu: {
         title: "Chat menu",
