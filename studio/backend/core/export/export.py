@@ -191,19 +191,24 @@ def _reported_gguf_files(result):
     return resolved or None
 
 
-def _materialized_imatrix_name(imatrix_file):
-    """Filename unsloth gives a `*.gguf_file` imatrix it copies beside the model, else None.
+def _materialized_imatrix_path(model_dir, imatrix_file):
+    """Where unsloth copies a `*.gguf_file` imatrix beside the model, else None.
 
     `_materialize_imatrix` drops that copy in the model directory, so the owned-root scan
-    would otherwise relocate an importance matrix as if it were a converted model.
+    would otherwise relocate an importance matrix as if it were a converted model. Matching
+    the full path, not the basename: an imatrix named after the quant would otherwise
+    suppress the real output in `model_gguf/` as well.
     """
     if imatrix_file is True:
-        return "imatrix_unsloth.gguf"  # the upstream imatrix_unsloth.gguf_file, renamed
-    if isinstance(imatrix_file, (str, os.PathLike)):
+        name = "imatrix_unsloth.gguf"  # the upstream imatrix_unsloth.gguf_file, renamed
+    elif isinstance(imatrix_file, (str, os.PathLike)):
         base = os.path.basename(os.fspath(imatrix_file))
-        if base.endswith(".gguf_file"):
-            return base[: -len(".gguf_file")] + ".gguf"
-    return None
+        if not base.endswith(".gguf_file"):
+            return None
+        name = base[: -len(".gguf_file")] + ".gguf"
+    else:
+        return None
+    return Path(model_dir) / name
 
 
 def _compressed_export_supported():
@@ -1081,10 +1086,10 @@ class ExportBackend:
                 # Keep all intermediates under an export-owned root.
                 model_tmp_root = tempfile.mkdtemp(prefix = "_tmp_model_", dir = abs_save_dir)
                 model_tmp_path = Path(model_tmp_root)
+                _model_tmp = os.path.join(model_tmp_root, "model")
                 # Needed by the cleanup below too, so resolve it before anything can raise.
-                imatrix_name = _materialized_imatrix_name(imatrix_file)
+                imatrix_path = _materialized_imatrix_path(_model_tmp, imatrix_file)
                 try:
-                    _model_tmp = os.path.join(model_tmp_root, "model")
                     result = self.current_model.save_pretrained_gguf(
                         _model_tmp,
                         self.current_tokenizer,
@@ -1096,7 +1101,7 @@ class ExportBackend:
                     reported = result if isinstance(result, dict) else {}
                     produced = {p for p in model_tmp_path.rglob("*.gguf") if p.is_file()}
                     produced.update(Path(f) for f in _reported_gguf_files(result) or [])
-                    produced = {p for p in produced if p.name != imatrix_name}
+                    produced = {p for p in produced if p != imatrix_path}
                     modelfiles = {p for p in model_tmp_path.rglob("Modelfile") if p.is_file()}
                     reported_modelfile = reported.get("modelfile_location")
                     if reported_modelfile and Path(reported_modelfile).is_file():
@@ -1133,7 +1138,7 @@ class ExportBackend:
                     unrelocated = []
                     if model_tmp_path.is_dir():
                         unrelocated = sorted(
-                            str(p) for p in model_tmp_path.rglob("*.gguf") if p.name != imatrix_name
+                            str(p) for p in model_tmp_path.rglob("*.gguf") if p != imatrix_path
                         )
                     if unrelocated:
                         logger.error(

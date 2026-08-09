@@ -370,3 +370,26 @@ def test_materialized_imatrix_does_not_block_temp_root_cleanup(monkeypatch, tmp_
     assert success is True, message
     assert (save_dir / "MyModel.Q5_K_M.gguf").is_file()
     assert list(save_dir.glob("_tmp_model_*")) == []
+
+
+def test_imatrix_named_like_the_output_does_not_suppress_the_real_gguf(monkeypatch, tmp_path):
+    """An imatrix whose derived name collides with the quant must not drop the quant too."""
+    imatrix_src = _gguf(tmp_path / "MyModel.Q5_K_M.gguf_file", b"IMATRIX")
+
+    class _Model:
+        def save_pretrained_gguf(
+            self, model_save_path, tokenizer, quantization_method, imatrix_file = None
+        ):
+            _gguf(Path(model_save_path) / "MyModel.Q5_K_M.gguf", b"IMATRIX")
+            quant = _gguf(Path(f"{model_save_path}_gguf") / "MyModel.Q5_K_M.gguf")
+            return {"gguf_files": [str(quant)]}
+
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
+
+    success, message, _p = backend.export_gguf(
+        str(save_dir), "q5_k_m", imatrix_file = str(imatrix_src)
+    )
+
+    assert success is True, message
+    assert (save_dir / "MyModel.Q5_K_M.gguf").read_bytes() == b"GGUF"
+    assert list(save_dir.glob("_tmp_model_*")) == []
