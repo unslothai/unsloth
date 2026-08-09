@@ -65,13 +65,19 @@ function listen(): void {
         if (target) targets.get(target)?.onDrop(payload.paths);
       });
 
+      // Scale is a refinement, not a prerequisite, and the drop listener is
+      // already installed by now. Failing here must not reset `listening`: the
+      // next registration would retry and stack a second drop listener, so
+      // every later drop would be delivered twice. The seed above holds.
       let scaleReported = false;
-      await currentWindow.onScaleChanged(({ payload }) => {
-        scaleReported = true;
-        scaleFactor = payload.scaleFactor;
-      });
-      const initialScale = await currentWindow.scaleFactor();
-      if (!scaleReported) scaleFactor = initialScale;
+      await currentWindow
+        .onScaleChanged(({ payload }) => {
+          scaleReported = true;
+          scaleFactor = payload.scaleFactor;
+        })
+        .catch(() => undefined);
+      const initialScale = await currentWindow.scaleFactor().catch(() => null);
+      if (!scaleReported && initialScale !== null) scaleFactor = initialScale;
     })
     .catch(() => {
       listening = false;

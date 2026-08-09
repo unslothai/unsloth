@@ -650,6 +650,9 @@ function ImageDropzone({
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
+  // A native read is two awaits deep, so the user can pick or clear another
+  // image before it lands. Only the newest selection may commit.
+  const selection = useRef(0);
 
   const readFile = useCallback(
     (file: File | undefined | null) => {
@@ -657,8 +660,13 @@ function ImageDropzone({
         if (file) toast.error("Please choose an image file");
         return;
       }
+      selection.current += 1;
+      const claimed = selection.current;
       const reader = new FileReader();
-      reader.onload = () => onChange(typeof reader.result === "string" ? reader.result : null);
+      reader.onload = () => {
+        if (claimed !== selection.current) return;
+        onChange(typeof reader.result === "string" ? reader.result : null);
+      };
       reader.onerror = () => toast.error("Could not read the image");
       reader.readAsDataURL(file);
     },
@@ -670,9 +678,12 @@ function ImageDropzone({
   const readNativePath = useCallback(
     async (path: string | undefined) => {
       if (!path) return;
+      selection.current += 1;
+      const claimed = selection.current;
       try {
         const intent = await registerNativeAttachmentPath(path);
         const file = await readNativeAttachmentFile(intent.path.token);
+        if (claimed !== selection.current) return;
         onChange(`data:${file.mimeType};base64,${file.base64}`);
       } catch (error) {
         toast.error("Could not read the image", {
@@ -701,6 +712,9 @@ function ImageDropzone({
               aria-label="Remove source image"
               className="absolute right-1.5 top-1.5 size-7"
               onClick={() => {
+                // Supersede any read still in flight, so it cannot land on the
+                // field the user just cleared.
+                selection.current += 1;
                 onChange(null);
                 if (inputRef.current) inputRef.current.value = "";
               }}

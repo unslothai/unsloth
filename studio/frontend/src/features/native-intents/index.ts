@@ -11,6 +11,7 @@ export {
   registerNativeAttachmentPath,
   registerNativeDatasetPath,
 } from "./api";
+export { nativeDropTargetAt } from "./native-drop-targets";
 export { useNativeDropTarget } from "./use-native-drop-target";
 export {
   NativeAttachmentTargetContext,

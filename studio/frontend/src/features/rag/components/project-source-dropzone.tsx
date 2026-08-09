@@ -135,10 +135,14 @@ export function ProjectSourceDropzone({
   staged,
   onChange,
   disabled = false,
+  onPendingChange,
 }: {
   staged: StagedSource[];
   onChange: (next: StagedSource[]) => void;
   disabled?: boolean;
+  /** Native drops register asynchronously and reach `onChange` only once they
+   * settle. Create must wait, or it commits without the files just dropped. */
+  onPendingChange?: (pending: boolean) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   // Count enter/leave pairs: children fire dragleave on the parent.
@@ -169,6 +173,14 @@ export function ProjectSourceDropzone({
   const commit = useCallback((next: StagedSource[]) => {
     handedOff.current = next;
     onChangeRef.current(next);
+  }, []);
+
+  const onPendingChangeRef = useRef(onPendingChange);
+  onPendingChangeRef.current = onPendingChange;
+  const pending = useRef(0);
+  const addPending = useCallback((delta: number) => {
+    pending.current += delta;
+    onPendingChangeRef.current?.(pending.current > 0);
   }, []);
 
   // Prune desktop drops whose token TTL has lapsed, so Create never commits a
@@ -242,9 +254,10 @@ export function ProjectSourceDropzone({
         .filter((path) => !isSupported(nativeFileName(path)))
         .map(nativeFileName);
       // Per path, so one rejected file does not discard the rest of the drop.
+      addPending(1);
       const settled = await Promise.allSettled(
         supported.map(registerNativeAttachmentPath),
-      );
+      ).finally(() => addPending(-1));
       // The panel was cleared while this was registering: the user is done with
       // this drop, so let the tokens lapse instead of refilling the panel.
       if (claimed !== generation.current) return;
@@ -259,7 +272,7 @@ export function ProjectSourceDropzone({
         );
       }
     },
-    [addSources],
+    [addSources, addPending],
   );
 
   // Stay claimed while disabled. Unregistering hands the drop back to the
