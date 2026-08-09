@@ -2603,9 +2603,7 @@ def list_gguf_variants(
     return variants, has_vision
 
 
-def _group_gguf_variant_files(
-    entries: list[tuple[str, str, int]],
-) -> dict[str, tuple[str, int]]:
+def _group_gguf_variant_files(entries: list[tuple[str, str, int]]) -> dict[str, tuple[str, int]]:
     """``quant -> (first filename, size of that quant's shard family)``.
 
     MIRROR of ``hub.utils.gguf.group_gguf_variant_files`` over ``(name, quant, size)`` triples.

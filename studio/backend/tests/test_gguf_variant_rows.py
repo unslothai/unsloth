@@ -879,9 +879,7 @@ def test_a_bpw_container_build_resolves_by_its_bare_spelling(tmp_path):
     assert plan_for_variant(plans, "IQ4_XS") is None
 
     repo, snap = _cache_repo(tmp_path, "org/Model-GGUF", ["weights/model-IQ4_XS-3.53bpw.gguf"])
-    _delete_gguf_variant_from_repos(
-        "org/Model-GGUF", "IQ4_XS-3.53bpw", [repo], None, root = tmp_path
-    )
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "IQ4_XS-3.53bpw", [repo], None, root = tmp_path)
     assert not (snap / "weights" / "model-IQ4_XS-3.53bpw.gguf").is_symlink()
 
 
