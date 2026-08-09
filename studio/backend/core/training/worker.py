@@ -1558,24 +1558,45 @@ def _parse_mem_fraction_env(env_value: str | None) -> float | None:
     return override if 0.0 < override <= 1.0 else None
 
 
+def _allocator_divides_by_props_total(torch_version: str | None) -> bool:
+    """Whether ``set_per_process_memory_fraction`` scales ``props.total_memory``.
+
+    c10's ``CUDACachingAllocator::setMemoryFraction`` caps at
+    ``fraction * device_prop.totalGlobalMem`` from torch 2.10; through 2.9 it caps at
+    ``fraction * hipMemGetInfo total``. Unknown or unparsable versions answer True, so
+    a surprise version string keeps the property total rather than silently switching
+    denominators on hardware nobody can check.
+    """
+    release = str(torch_version or "").split("+", 1)[0].split(".")
+    try:
+        major, minor = int(release[0]), int(release[1])
+    except (IndexError, ValueError):
+        return True
+    return (major, minor) >= (2, 10)
+
+
 def _rocm_memory_fraction(
     total_bytes: int,
     is_unified: bool,
     platform: str,
     env_value: str | None = None,
+    denominator_bytes: int | None = None,
 ) -> float:
     """Pick the ``set_per_process_memory_fraction`` cap for a ROCm device.
 
-    ``total_bytes`` must be ``get_device_properties().total_memory``. An absolute
-    byte reserve only lands where intended when both sides divide by the same
-    number, and this is the one to divide by: c10's
-    ``CUDACachingAllocator::setMemoryFraction`` caps at
-    ``fraction * device_prop.totalGlobalMem``, which is exactly this value, from
-    torch 2.10 on. Through 2.9 it caps at ``fraction * hipMemGetInfo total``
-    instead, so on a wheel that reports the two differently the reserve is scaled
-    by their ratio; the guard logs both when they disagree. Sizing against
-    ``mem_get_info`` here would invert that and lose the 2.10+ hosts, and its
-    total is a runtime budget rather than the pool on some of them anyway.
+    ``total_bytes`` is the pool the reserve is carved out of, always
+    ``get_device_properties().total_memory``: on a unified APU that is the pool
+    the OS shares, while ``hipMemGetInfo``'s total is a runtime budget that can
+    span the GTT window and swing with TTM limits.
+
+    ``denominator_bytes`` is what the allocator itself multiplies the fraction by,
+    when that is a different number. An absolute byte reserve only lands where
+    intended if the two agree, and they do not on every torch: c10's
+    ``CUDACachingAllocator::setMemoryFraction`` scales
+    ``device_prop.totalGlobalMem`` from 2.10 on, but ``hipMemGetInfo``'s total
+    through 2.9 (see ``_allocator_divides_by_props_total``). Passing it re-solves the
+    cap so the same bytes stay free either way, floored at the historical cap so a
+    larger driver total can never make this tighter than the flat 0.80 it replaced.
 
     - ``env_value`` (``UNSLOTH_ROCM_MEM_FRACTION``) wins when it parses to a
       float in ``(0.0, 1.0]``; anything else is ignored, never fatal.
@@ -1604,9 +1625,28 @@ def _rocm_memory_fraction(
     # to 0.7999999999999999 on some pool sizes (12/24/28/48 GiB), which would
     # break the "never tighter than the historical 0.80" guarantee by a ULP.
     reserve_fraction = min(_UNIFIED_MAX_RESERVE_FRACTION, _UNIFIED_OS_RESERVE_BYTES / total_bytes)
+    fraction = 1.0 - reserve_fraction
+
+    if (
+        reserve_fraction < _UNIFIED_MAX_RESERVE_FRACTION
+        and denominator_bytes
+        and denominator_bytes > 0
+        and denominator_bytes != total_bytes
+    ):
+        # The allocator scales its own total, so re-solve for the same allowed bytes
+        # against that one. Floored at the historical cap: a driver total larger than the
+        # property total would otherwise pull the cap below the flat 0.80 this replaced,
+        # and no host should come out of a loosening change tighter. Only on the byte arm:
+        # below the crossover the policy is a percentage, which is scale-free, and those
+        # small pools are the OOM-prone ones that must stay exactly as they were.
+        fraction = max(
+            fraction * total_bytes / denominator_bytes,
+            1.0 - _UNIFIED_MAX_RESERVE_FRACTION,
+        )
+
     # Past ~160 GiB the byte reserve is under 10% of the pool, which would hand a unified
     # host a looser cap than a discrete card and invert the ordering the guard is built on.
-    return min(1.0 - reserve_fraction, _DISCRETE_MEM_FRACTION)
+    return min(fraction, _DISCRETE_MEM_FRACTION)
 
 
 def _tilelang_platform_supported() -> bool:
@@ -3711,13 +3751,19 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 # fractions (gfx1151: 0.5 caps, 1.0 overcommits via WDDM), so 1.0 behaves like torch's
                 # uncapped default. On Linux the total spans nearly all RAM, so keep a bounded headroom
                 # (see _rocm_memory_fraction).
-                # props.total_memory, not mem_get_info: from torch 2.10 the caching
-                # allocator sets its ceiling to fraction * device_prop.totalGlobalMem
-                # (CUDACachingAllocator's setMemoryFraction), which is exactly this value.
-                # An absolute byte reserve only lands where intended if the denominator
-                # matches the allocator's; earlier torch divides by the driver's own
-                # total, reported below when the two disagree.
+                # props.total_memory is the pool the reserve comes out of. It is also what
+                # the allocator scales from torch 2.10 (CUDACachingAllocator's
+                # setMemoryFraction); through 2.9 it scales hipMemGetInfo's total instead,
+                # which on a unified APU is the runtime budget spanning GTT rather than the
+                # property carve-out. Hand the helper that number on those wheels so the
+                # reserve is the same bytes either way.
                 _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
+                _driver_total = 0
+                if not _allocator_divides_by_props_total(getattr(_torch_mem, "__version__", "")):
+                    try:
+                        _driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])
+                    except Exception:
+                        _driver_total = 0
                 _env_raw = os.environ.get(_MEM_FRACTION_ENV)
                 _env_fraction = _parse_mem_fraction_env(_env_raw)
                 if _env_raw and _env_fraction is None:
@@ -3728,7 +3774,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         _env_raw,
                     )
                 _mem_fraction = _rocm_memory_fraction(
-                    _total_bytes, _is_unified, sys.platform, _env_raw
+                    _total_bytes, _is_unified, sys.platform, _env_raw, _driver_total or None
                 )
                 # A wheel that reports no total still gets a cap; say so rather than
                 # printing "0.0 of 0.0 GiB allowed" on the one host whose props are suspect.
@@ -3751,37 +3797,29 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     if _env_fraction is not None
                     else f"computed; override with {_MEM_FRACTION_ENV}",
                 )
-                # The reserve is exactly _UNIFIED_OS_RESERVE_BYTES only while the allocator
-                # divides by the total this did. Before torch 2.10 it divides by the driver's,
-                # and a unified wheel can report the two differently (VRAM carve vs GTT vs
-                # their sum). Only worth saying where the byte arm is load-bearing: discrete
-                # and win32 take a flat fraction, which no denominator gap can distort.
+                # Where the two totals differ, the cap above was solved against the driver's
+                # rather than the property total, so the printed budget is not the one being
+                # enforced. Report both and the headroom that actually results, which the
+                # 0.80 floor can leave under the intended reserve.
                 if (
                     _is_unified
                     and sys.platform != "win32"
                     and _env_fraction is None
                     and _total_bytes > 0
-                    and _mem_fraction > 1.0 - _UNIFIED_MAX_RESERVE_FRACTION
+                    and _driver_total > 0
+                    and abs(_driver_total - _total_bytes) > _total_bytes // 100
                 ):
-                    try:
-                        _driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])
-                    except Exception:
-                        _driver_total = 0
-                    if (
-                        _driver_total > 0
-                        and abs(_driver_total - _total_bytes) > _total_bytes // 100
-                    ):
-                        logger.info(
-                            "ROCm OOM guard: props.total_memory is %.1f GiB but the driver "
-                            "reports %.1f GiB. Before torch 2.10 the cap is enforced against "
-                            "the driver's total, which works out to %.1f GiB of headroom "
-                            "here instead of the intended %.1f GiB; adjust it with %s.",
-                            _total_bytes / 1024**3,
-                            _driver_total / 1024**3,
-                            (_total_bytes - _mem_fraction * _driver_total) / 1024**3,
-                            _UNIFIED_OS_RESERVE_BYTES / 1024**3,
-                            _MEM_FRACTION_ENV,
-                        )
+                    logger.info(
+                        "ROCm OOM guard: props.total_memory is %.1f GiB but this torch caps "
+                        "against the driver's %.1f GiB, so the fraction is solved for that "
+                        "total and %.1f GiB stays free against the intended %.1f GiB. Adjust "
+                        "with %s.",
+                        _total_bytes / 1024**3,
+                        _driver_total / 1024**3,
+                        (_total_bytes - _mem_fraction * _driver_total) / 1024**3,
+                        _UNIFIED_OS_RESERVE_BYTES / 1024**3,
+                        _MEM_FRACTION_ENV,
+                    )
                 # Unified Windows APUs: the WDDM budget is user-raisable, but nothing on the box says so
                 # -- users see "48 GB VRAM" on a 96 GB machine. Say where the limit comes from.
                 if _is_unified and sys.platform == "win32":

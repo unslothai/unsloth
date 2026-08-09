@@ -25,6 +25,7 @@ from core.training.worker import (
     _DISCRETE_MEM_FRACTION,
     _UNIFIED_MAX_RESERVE_FRACTION,
     _UNIFIED_OS_RESERVE_BYTES,
+    _allocator_divides_by_props_total,
     _parse_mem_fraction_env,
     _rocm_classify_unified_memory,
     _rocm_memory_fraction,
@@ -301,8 +302,9 @@ class TestMemFractionSelection:
         denominator gap can distort."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
         assert "_driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])" in source
-        assert "_mem_fraction > 1.0 - _UNIFIED_MAX_RESERVE_FRACTION" in source
-        assert "Before torch 2.10 the cap is enforced against" in source
+        assert "if not _allocator_divides_by_props_total(" in source
+        assert "sys.platform, _env_raw, _driver_total or None" in source
+        assert "but this torch caps" in source
 
 
 class TestUnifiedLinuxReserve:
@@ -354,6 +356,98 @@ class TestUnifiedLinuxReserve:
         # same reason as the crossover assertions.
         assert _rocm_memory_fraction(0, True, "linux") == _HISTORICAL_CAP
         assert _rocm_memory_fraction(-1, True, "linux") == _HISTORICAL_CAP
+
+
+class TestAllocatorDenominator:
+    """torch caps at fraction * props.total_memory from 2.10, and at fraction *
+    hipMemGetInfo total through 2.9. On a unified APU those are different numbers
+    (the property carve-out against the runtime budget spanning GTT), so an absolute
+    byte reserve only lands where intended if the fraction is solved for whichever
+    one the installed allocator uses."""
+
+    @pytest.mark.parametrize(
+        "version, props_total",
+        [
+            ("2.10.0+rocm7.2", True),
+            ("2.11.0+rocm7.2", True),
+            ("2.12.0a0+gitabc123", True),
+            ("3.0.0", True),
+            ("2.9.1+rocm6.4", False),
+            ("2.8.0+rocm6.3", False),
+            ("2.4.0", False),
+            ("1.13.1", False),
+        ],
+    )
+    def test_release_boundary(self, version: str, props_total: bool) -> None:
+        assert _allocator_divides_by_props_total(version) is props_total
+
+    @pytest.mark.parametrize("version", [None, "", "unknown", "2", "two.ten", "+rocm"])
+    def test_unparsable_versions_keep_the_property_total(self, version: str | None) -> None:
+        # Defaulting the other way would switch denominators on a surprise version string,
+        # on hardware no CI machine has.
+        assert _allocator_divides_by_props_total(version) is True
+
+    def test_matching_denominator_changes_nothing(self) -> None:
+        total = 128 * GIB
+        assert _rocm_memory_fraction(total, True, "linux", None, total) == _rocm_memory_fraction(
+            total, True, "linux"
+        )
+
+    @pytest.mark.parametrize("driver_gib", [125, 126, 130, 134, 139])
+    def test_reserve_is_solved_for_the_driver_total(self, driver_gib: int) -> None:
+        # The point of the parameter: the same bytes stay free whichever total the
+        # allocator scales. Only between the two bounds, which the next two tests own.
+        total = 128 * GIB
+        driver = driver_gib * GIB
+        fraction = _rocm_memory_fraction(total, True, "linux", None, driver)
+        assert _HISTORICAL_CAP < fraction < _DISCRETE_MEM_FRACTION, "sized onto a bound"
+        assert total - fraction * driver == pytest.approx(_UNIFIED_OS_RESERVE_BYTES)
+
+    @pytest.mark.parametrize("driver_gib", [130, 160, 220, 400, 4096])
+    def test_a_larger_driver_total_never_goes_below_the_historical_cap(
+        self, driver_gib: int
+    ) -> None:
+        # Solving for a much larger driver total would drive the fraction toward zero.
+        # This is a loosening change: no host may come out of it tighter than the flat
+        # 0.80 it replaces, even at the cost of the exact reserve.
+        fraction = _rocm_memory_fraction(128 * GIB, True, "linux", None, driver_gib * GIB)
+        assert fraction >= _HISTORICAL_CAP
+
+    @pytest.mark.parametrize("driver_gib", [1, 8, 48])
+    def test_a_smaller_driver_total_still_respects_the_discrete_clamp(
+        self, driver_gib: int
+    ) -> None:
+        fraction = _rocm_memory_fraction(128 * GIB, True, "linux", None, driver_gib * GIB)
+        assert fraction <= _DISCRETE_MEM_FRACTION
+
+    @pytest.mark.parametrize("pool_gib", [8, 24, 62.47, 64, 80])
+    @pytest.mark.parametrize("driver_gib", [1, 48, 120, 220])
+    def test_below_the_crossover_the_denominator_is_ignored(
+        self, pool_gib: float, driver_gib: int
+    ) -> None:
+        # The percentage arm is scale-free, and these small pools are the OOM-prone ones
+        # #5301 added the guard for: they must stay bit-identical to the flat 0.80.
+        total = int(pool_gib * GIB)
+        assert _rocm_memory_fraction(total, True, "linux", None, driver_gib * GIB) == (
+            _HISTORICAL_CAP
+        )
+
+    @pytest.mark.parametrize("driver", [0, -1, None])
+    def test_an_unusable_driver_total_falls_back_to_the_property_total(self, driver) -> None:
+        total = 128 * GIB
+        assert _rocm_memory_fraction(total, True, "linux", None, driver) == (
+            _rocm_memory_fraction(total, True, "linux")
+        )
+
+    def test_the_denominator_does_not_reach_discrete_or_win32(self) -> None:
+        # Both take a flat fraction, which no denominator gap can distort.
+        assert _rocm_memory_fraction(128 * GIB, False, "linux", None, 220 * GIB) == (
+            _DISCRETE_MEM_FRACTION
+        )
+        assert _rocm_memory_fraction(128 * GIB, True, "win32", None, 220 * GIB) == 1.0
+
+    def test_the_override_still_wins_over_the_denominator(self) -> None:
+        assert _rocm_memory_fraction(128 * GIB, True, "linux", "0.95", 220 * GIB) == 0.95
 
 
 class TestMemFractionEnvOverride:
