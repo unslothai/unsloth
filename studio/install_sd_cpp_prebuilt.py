@@ -75,8 +75,12 @@ def read_install_record(root: Path) -> dict:
 def installed_accelerator(root: Path) -> Optional[str]:
     """The accelerator class the install in ``root`` was built for, or None when unrecorded.
 
-    Falls back to what this process installed when the on-disk record could not be written."""
-    val = read_install_record(root).get("accelerator") or _INSTALLED_ACCELERATOR_MEMO.get(str(root))
+    The memo WINS over the file. It is only ever set by an install that completed in this process,
+    so it is strictly newer than whatever is on disk -- and the case it exists for is precisely a
+    record that could not be overwritten, which then still reads as the PREVIOUS accelerator.
+    Preferring the file there would keep reporting cpu after a successful cuda install, and every
+    later selection would download the bundle again."""
+    val = _INSTALLED_ACCELERATOR_MEMO.get(str(root)) or read_install_record(root).get("accelerator")
     return val if isinstance(val, str) and val else None
 
 

@@ -18,6 +18,7 @@ if str(_STUDIO) not in sys.path:
     sys.path.insert(0, str(_STUDIO))
 
 import hashlib  # noqa: E402
+import builtins  # noqa: E402
 import types  # noqa: E402
 import threading  # noqa: E402
 import io  # noqa: E402
@@ -1537,6 +1538,33 @@ def test_an_unwritable_record_does_not_cost_the_install_or_repeat_it(tmp_path, m
     sdmod._write_install_record(root, accelerator = "cuda", repo = "r", tag = "t")
     assert sdmod.read_install_record(root) == {}  # nothing on disk, as expected
     assert sdmod.installed_accelerator(root) == "cuda"  # but not "unknown"
+
+
+def test_a_stale_unwritable_record_does_not_outrank_what_was_just_installed(tmp_path, monkeypatch):
+    """The nastier shape of the same failure: the old record is READABLE but cannot be replaced, so
+    it keeps answering "cpu" after a successful cuda install and every later selection downloads
+    the bundle again. What this process installed is strictly newer than what is on disk."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:
+        json.dump({"accelerator": "cpu", "repo": "r", "tag": "old"}, f)
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+
+    real_open = builtins.open
+
+    def _readonly_record(file, mode = "r", *a, **k):
+        if str(file).endswith(sdmod.INSTALL_RECORD) and "w" in mode:
+            raise OSError("permission denied")
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _readonly_record)
+    sdmod._write_install_record(root, accelerator = "cuda", repo = "r", tag = "t")
+    monkeypatch.setattr(builtins, "open", real_open)
+
+    # The stale file is still there and still says cpu ...
+    assert sdmod.read_install_record(root)["accelerator"] == "cpu"
+    # ... but the accelerator this tree actually holds is the one just installed.
+    assert sdmod.installed_accelerator(root) == "cuda"
 
 
 def test_a_stale_server_that_cannot_be_removed_fails_the_install(tmp_path, monkeypatch):
