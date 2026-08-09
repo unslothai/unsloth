@@ -5377,7 +5377,6 @@ def _validation_server_kwargs() -> "dict[str, Any]":
         # already gone by the time this ran.
         try:
             import ctypes
-
             ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
             if os.getppid() != owner_pid:
                 os._exit(1)
