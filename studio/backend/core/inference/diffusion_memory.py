@@ -721,6 +721,16 @@ def image_activation_shortfall_message(
     desktop stops responding with no error anywhere. A ValueError here is a 400 with the reason,
     which is the clean refusal that failure mode never produces on its own.
 
+    What it does NOT do is second-guess the load. The flat headroom this estimate is built on is a
+    deliberately generous PLANNING figure whose job is to pick an offload tier, and the tier it
+    picks already runs the 1024x1024 default on cards whose whole budget is under 8 GB (measured:
+    a 8 GB card's safe budget is 5898 MiB against a 6963 MiB default-resolution estimate, and
+    those generations complete). Treating that figure as a hard limit at or below the default
+    would refuse work that succeeds today. So the refusal needs BOTH conditions: over the free
+    budget, and over what the load already budgeted. That confines it to the resolution-driven
+    overrun it is for -- the load reserved a 1 MP frame and the request is several times that --
+    and leaves every generation at or below the default resolution exactly as it is.
+
     Fail-open on anything unknown (no free reading, no budget) and on any device class where the
     estimate or the offload story means something different, so a broken probe can never block a
     generation that would have worked."""
@@ -748,18 +758,29 @@ def image_activation_shortfall_message(
             batch_size = batch_size,
             family = family,
         )
+        # What the LOAD budgeted: the same estimator at the default resolution, i.e. the exact
+        # call _plan_memory makes. Same function and same family hint, so the comparison is
+        # between two points on one curve rather than between two different guesses.
+        planned = estimate_image_runtime_mib(
+            width = None,
+            height = None,
+            batch_size = 1,
+            family = family,
+        )
     except Exception:  # noqa: BLE001 — a broken probe must never block a generation
         return None
-    if needed <= int(budget):
+    if needed <= int(budget) or needed <= planned:
         return None
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     batch = max(1, int(batch_size or 1))
     batch_note = f" at a batch of {batch}" if batch > 1 else ""
+    # Two decimals, not one: the refusal is often decided by tens of MiB (the 1088x1920 report
+    # needed 13,872 MiB against a 13,822 MiB budget), and one decimal prints both as "13.5 GB".
     return (
-        f"Generating at {w}x{h}{batch_note} needs about {needed / 1024:.1f} GB of working memory, "
-        f"but only about {int(budget) / 1024:.1f} GB is usable on this device (of the "
-        f"{int(free) / 1024:.1f} GB currently free, after reserving room for fragmentation and "
+        f"Generating at {w}x{h}{batch_note} needs about {needed / 1024:.2f} GB of working memory, "
+        f"but only about {int(budget) / 1024:.2f} GB is usable on this device (of the "
+        f"{int(free) / 1024:.2f} GB currently free, after reserving room for fragmentation and "
         "other processes). Working memory holds this pass's latents and attention buffers, which "
         "cannot be offloaded to the CPU the way weights can, so no memory mode recovers this. "
         "Generate at a smaller resolution or a smaller batch size, free device memory by closing "

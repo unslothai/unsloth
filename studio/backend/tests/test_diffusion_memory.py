@@ -615,3 +615,430 @@ def test_plan_fits_total_capacity():
     assert plan_fits_total_capacity(plan(None, 183_359)) is False
     assert plan_fits_total_capacity(plan(90_228, None)) is False
     assert plan_fits_total_capacity(types.SimpleNamespace()) is False
+
+
+# ── the streamed-text-encoder group tier ──────────────────────────────────────
+# A text encoder runs ONCE, before step 0, but group offload places every non-streamed component
+# resident, so its bytes are reserved for the whole denoise. Where that is the only thing pushing
+# the group floor over budget, streaming the encoders too keeps the tier instead of dropping to
+# whole-module offload (measured 48m25s for a 20-step 1024x1024 image on a 16 GB card).
+
+# The 16 GB card from the report: free 15,870 of 16,305 MiB, reserve max(2048, 10%) = 2048, so the
+# safe budget is exactly the 13,822 MiB the failing plan was measured against.
+_16G_FREE_MIB = 15_870
+_16G_TOTAL_MIB = 16_305
+_16G_BUDGET_MIB = 13_822
+
+# Z-Image at int8, straight from the report: transformer 6451 + companions 7820 = 14,271 resident,
+# of which the text encoders are 7629 (8.0 of the 8.2 GB companion table) and the VAE is the rest.
+_ZIMAGE_MODEL_DENSE_MIB = 14_271
+_ZIMAGE_COMPANION_MIB = 7_820
+_ZIMAGE_TEXT_ENCODER_MIB = 7_629
+
+
+def test_safe_budget_matches_the_reported_16g_card():
+    # Anchors every number below: if the reserve rule changes, this fails first rather than
+    # silently moving the floors the rest of this section is calibrated against.
+    from core.inference.diffusion_memory import _safe_device_budget_mib
+
+    assert _safe_device_budget_mib(_discrete(_16G_FREE_MIB, _16G_TOTAL_MIB)) == _16G_BUDGET_MIB
+
+
+def _zimage_plan(text_encoder_dense_mib):
+    return plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
+        model_dense_mib = _ZIMAGE_MODEL_DENSE_MIB,
+        companion_dense_mib = _ZIMAGE_COMPANION_MIB,
+        text_encoder_dense_mib = text_encoder_dense_mib,
+        runtime_headroom_mib = 8192,
+        base_overhead_mib = 2048,
+    )
+
+
+def test_streamed_text_encoders_rescue_the_48_minute_plan():
+    # required 14,271 + 8192 + 2048 = 24,511 against a 13,822 budget: not resident either way.
+    # group floor 7820 + 8192 + 2048 = 18,060 > 13,822, which is what dropped this to whole-module
+    # offload. With the encoders streamed the floor is 191 + 8192 + 2048 = 10,431 and fits.
+    before = _zimage_plan(None)
+    assert before.offload_policy == OFFLOAD_MODEL
+    assert before.stream_text_encoders is False
+    assert before.estimates["group_floor_streamed_te_mib"] is None
+
+    after = _zimage_plan(_ZIMAGE_TEXT_ENCODER_MIB)
+    assert after.offload_policy == OFFLOAD_GROUP
+    assert after.stream_text_encoders is True
+    assert after.estimates["resident_required_mib"] == 24_511
+    assert after.estimates["group_floor_mib"] == 18_060
+    assert after.estimates["group_floor_streamed_te_mib"] == 10_431
+    assert any("text encoders" in reason for reason in after.reasons)
+    # Group keeps the VAE resident, so the decode stays bit-identical (sliced, not tiled).
+    assert after.vae_slicing is True and after.vae_tiling is False
+    # The flag has to reach the applier, which reads the public dict in status/logging too.
+    assert after.as_public_dict()["stream_text_encoders"] is True
+
+
+def test_plain_group_is_preferred_over_streaming_the_text_encoders():
+    # Where the companions fit as they are, the encoders stay resident: streaming them is a small
+    # loss for no gain, so the new tier must only engage as a rescue from whole-module offload.
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
+        model_dense_mib = 40_000,
+        companion_dense_mib = 1_500,
+        text_encoder_dense_mib = 1_400,
+        runtime_headroom_mib = 8192,
+        base_overhead_mib = 2048,
+    )
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.stream_text_encoders is False
+
+
+def test_streamed_text_encoders_still_fall_through_when_even_that_floor_is_over():
+    # A VAE alone over budget has nothing left to give up, so whole-module offload still wins.
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
+        model_dense_mib = 40_000,
+        companion_dense_mib = 20_000,
+        text_encoder_dense_mib = 1_000,
+        runtime_headroom_mib = 8192,
+        base_overhead_mib = 2048,
+    )
+    assert plan.offload_policy == OFFLOAD_MODEL
+    assert plan.stream_text_encoders is False
+
+
+def test_fast_mode_also_reaches_the_streamed_text_encoder_tier():
+    # `fast` has its own does-not-fit branch; it must offer the same ladder as auto, or an explicit
+    # fast request on a 16 GB card lands on the 48-minute tier the auto path now avoids.
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
+        model_dense_mib = _ZIMAGE_MODEL_DENSE_MIB,
+        companion_dense_mib = _ZIMAGE_COMPANION_MIB,
+        text_encoder_dense_mib = _ZIMAGE_TEXT_ENCODER_MIB,
+        runtime_headroom_mib = 8192,
+        base_overhead_mib = 2048,
+        requested_mode = MEMORY_MODE_FAST,
+    )
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.stream_text_encoders is True
+
+
+def test_text_encoder_split_larger_than_the_companions_clamps_at_zero():
+    # The two terms can come from different sources (a cache walk and a family table), so a split
+    # that exceeds the total must floor at 0 rather than produce a negative resident requirement.
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
+        model_dense_mib = 40_000,
+        companion_dense_mib = 7_820,
+        text_encoder_dense_mib = 9_999,
+        runtime_headroom_mib = 8192,
+        base_overhead_mib = 2048,
+    )
+    assert plan.estimates["group_floor_streamed_te_mib"] == 10_240  # 0 + 8192 + 2048
+
+
+def _legacy_offload_policy(
+    *,
+    budget,
+    model_dense_mib,
+    companion_dense_mib,
+    runtime_headroom_mib,
+    base_overhead_mib,
+):
+    """The auto-path decision as it stood BEFORE the streamed-text-encoder tier, written out
+    independently. The back-compat fence below compares the shipped planner against it, so a
+    change that leaks the new tier into a caller that passed no split fails here."""
+    required = model_dense_mib + runtime_headroom_mib + base_overhead_mib
+    if required <= int(budget * 0.85):
+        return OFFLOAD_NONE
+    if companion_dense_mib is None:
+        return OFFLOAD_MODEL
+    group_floor = companion_dense_mib + runtime_headroom_mib + base_overhead_mib
+    return OFFLOAD_GROUP if group_floor <= budget else OFFLOAD_MODEL
+
+
+def test_no_text_encoder_split_reproduces_the_previous_decision():
+    # The back-compat fence. Every existing caller passes no split (the keyword defaults to None),
+    # so across the size matrix the planner must land exactly where it did before, and must never
+    # report the new tier.
+    from core.inference.diffusion_memory import _safe_device_budget_mib
+
+    for free, total in ((6_000, 8_192), (11_000, 12_288), (15_870, 16_305), (80_000, 81_920)):
+        for model_dense in (2_000, 14_271, 40_000):
+            for companion in (None, 200, 7_820, 30_000):
+                for headroom in (1_000, 8_192):
+                    memory = _discrete(free, total)
+                    plan = plan_diffusion_memory(
+                        target = _target(),
+                        device_memory = memory,
+                        model_dense_mib = model_dense,
+                        companion_dense_mib = companion,
+                        runtime_headroom_mib = headroom,
+                        base_overhead_mib = 2048,
+                    )
+                    expected = _legacy_offload_policy(
+                        budget = _safe_device_budget_mib(memory),
+                        model_dense_mib = model_dense,
+                        companion_dense_mib = companion,
+                        runtime_headroom_mib = headroom,
+                        base_overhead_mib = 2048,
+                    )
+                    where = (free, total, model_dense, companion, headroom)
+                    assert plan.offload_policy == expected, where
+                    assert plan.stream_text_encoders is False, where
+                    assert plan.estimates["group_floor_streamed_te_mib"] is None, where
+
+
+def _stream_te_pipe(monkeypatch):
+    """A pipe with two text encoders and a VAE, plus a record of which modules got group-offload
+    hooks and which were placed resident."""
+    applied: list[Any] = []
+    Mod = _install_fake_torch_and_hooks(monkeypatch, lambda module, **kw: applied.append(module))
+
+    class _Comp(Mod):
+        def __init__(self, name):
+            self.name = name
+            self.placed = None
+
+        def to(self, device):
+            self.placed = device
+            return self
+
+    transformer = _Comp("transformer")
+    text_encoder = _Comp("text_encoder")
+    text_encoder_2 = _Comp("text_encoder_2")
+    vae = _Comp("vae")
+
+    class _Pipe:
+        pass
+
+    pipe = _Pipe()
+    pipe.transformer = transformer
+    pipe.components = {
+        "transformer": transformer,
+        "text_encoder": text_encoder,
+        "text_encoder_2": text_encoder_2,
+        "vae": vae,
+    }
+    return pipe, applied, transformer, text_encoder, text_encoder_2, vae
+
+
+def test_apply_group_offload_leaves_text_encoders_resident_by_default(monkeypatch):
+    # The unchanged path: only the transformer streams, every other component is placed resident.
+    import core.inference.diffusion_memory as mem
+
+    pipe, applied, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    assert mem._apply_group_offload(pipe, "cuda", logger = None) is True
+    assert applied == [transformer]
+    assert te.placed is not None and te2.placed is not None and vae.placed is not None
+
+
+def test_apply_group_offload_streams_text_encoders_when_asked(monkeypatch):
+    # With the flag on, every text_encoder* module gets group-offload hooks and is NOT placed
+    # resident. Placing them would defeat the whole point: their bytes are what did not fit.
+    import core.inference.diffusion_memory as mem
+
+    pipe, applied, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    assert (
+        mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
+    )
+    assert applied == [transformer, te, te2]
+    assert te.placed is None and te2.placed is None
+    assert vae.placed is not None  # the VAE is the companion the tier keeps resident
+
+
+def test_apply_memory_plan_threads_the_stream_flag_to_the_group_applier(monkeypatch):
+    # End of the wire: the planner's decision has to reach _apply_group_offload, or the plan says
+    # group-with-streamed-encoders while the pipeline still places them resident and OOMs.
+    import core.inference.diffusion_memory as mem
+
+    seen = {}
+
+    def _fake(pipe, device, logger, *, stream_text_encoders = False):
+        seen["stream_text_encoders"] = stream_text_encoders
+        return True
+
+    monkeypatch.setattr(mem, "_apply_group_offload", _fake)
+    apply_memory_plan(_RecordingPipe(), _zimage_plan(_ZIMAGE_TEXT_ENCODER_MIB), device = "cuda")
+    assert seen["stream_text_encoders"] is True
+    apply_memory_plan(_RecordingPipe(), _plan(OFFLOAD_GROUP, tiling = True), device = "cuda")
+    assert seen["stream_text_encoders"] is False
+
+
+# ── the generate-time activation guard ────────────────────────────────────────
+# The load-time plan budgets the 1024x1024 default because load time cannot know the request, so a
+# much larger frame was never compared against anything: at 1088x1920 the plan reserved half the
+# working memory the pass needs. On Linux that raises OutOfMemoryError; on Windows WDDM the driver
+# serves the overflow from system RAM instead, so ~27 GB lands on a 16 GB card with no exception
+# and the desktop stops responding. These cover the pre-sampling refusal that replaces that.
+
+# The Z-Image-Turbo GGUF hint from the report: the base repo carries the distilled marker, so the
+# estimate here is the discounted one (0.85), which is the honest 13,872 MiB the issue measured.
+_TURBO_HINT = "z-image Z-Image-Turbo-Q4_K_S.gguf unsloth/Z-Image-Turbo-GGUF Tongyi-MAI/Z-Image-Turbo"
+
+
+def _shortfall(width, height, memory = None, **kw):
+    from core.inference.diffusion_memory import image_activation_shortfall_message
+
+    return image_activation_shortfall_message(
+        device_memory = memory if memory is not None else _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
+        width = width,
+        height = height,
+        family = kw.pop("family", _TURBO_HINT),
+        **kw,
+    )
+
+
+def test_estimate_image_runtime_scales_with_the_real_dimensions():
+    # The regression fence for the estimator itself: it already scales, it was simply never called
+    # with anything. 1088x1920 is 1.99x the area of 1024x1024, so the headroom must be ~2x.
+    base = estimate_image_runtime_mib(width = 1024, height = 1024)
+    tall = estimate_image_runtime_mib(width = 1088, height = 1920)
+    assert base == 8192
+    assert tall == 16_320
+    assert 1.95 < tall / base < 2.05
+    # And with the distilled discount that the base repo now contributes, the report's number.
+    assert estimate_image_runtime_mib(width = 1088, height = 1920, family = _TURBO_HINT) == 13_872
+
+
+def test_guard_refuses_the_oversized_frame_and_passes_the_default_one():
+    # 13,872 MiB of working memory against a 13,822 MiB budget on the reported card: refuse.
+    message = _shortfall(1088, 1920)
+    assert message is not None
+    # Everything the user needs to act: what they asked for, what it costs, what they have.
+    assert "1088x1920" in message
+    assert "13.55 GB" in message  # needed
+    assert "13.50 GB" in message  # usable
+    assert "15.50 GB" in message  # currently free
+    assert "smaller resolution" in message
+    assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE" in message
+    # The same card at the default resolution needs 6963 MiB and must go straight through.
+    assert _shortfall(1024, 1024) is None
+
+
+def test_guard_never_refuses_at_or_below_the_resolution_the_load_planned_for():
+    # The load's flat headroom is a PLANNING figure: it picks an offload tier, and the tier it
+    # picks runs 1024x1024 on cards whose entire budget is below that figure. Treating it as a
+    # hard limit there would refuse generations that complete today, so the guard is confined to
+    # requests LARGER than what was planned. An 8 GB card is the case that proves it.
+    small = _discrete(int(8 * 1024 * 0.97), 8 * 1024)  # safe budget 5898 MiB, under the 6963 default
+    assert _shortfall(1024, 1024, memory = small) is None
+    assert _shortfall(512, 512, memory = small) is None
+    # It still refuses the genuinely oversized frame on that same card.
+    assert _shortfall(1088, 1920, memory = small) is not None
+
+
+def test_guard_scales_with_batch_size():
+    # Batch multiplies the activations exactly as area does, so the same overrun must be caught.
+    assert _shortfall(1024, 1024, batch_size = 1) is None
+    assert _shortfall(1024, 1024, batch_size = 4) is not None
+    assert "at a batch of 4" in _shortfall(1024, 1024, batch_size = 4)
+
+
+def test_guard_is_skipped_on_unified_memory():
+    # Offload means something different where the CPU and GPU share one pool, "free" is a moving
+    # target shared with the OS, and the load-time unified refusal already owns that device class.
+    unified = DeviceMemory("cuda", "cuda", "unified_memory", _16G_FREE_MIB, _16G_TOTAL_MIB)
+    assert _shortfall(1088, 1920, memory = unified) is None
+    mps = DeviceMemory("mps", "mps", "unified_memory", _16G_FREE_MIB, _16G_TOTAL_MIB)
+    assert _shortfall(1088, 1920, memory = mps) is None
+
+
+def test_guard_is_skipped_when_free_memory_is_unknown():
+    # No reading, no verdict: the planner's own rule for an unknown budget is to stay out of it.
+    blind = DeviceMemory("cuda", "cuda", "discrete_vram", None, _16G_TOTAL_MIB)
+    assert _shortfall(1088, 1920, memory = blind) is None
+
+
+def test_guard_is_skipped_off_cuda_and_rocm():
+    # ROCm reports device "cuda", so that stays covered. XPU / CPU keep today's behaviour: their
+    # allocators differ and this estimate was measured against a discrete VRAM pool.
+    xpu = DeviceMemory("xpu", "xpu", "discrete_vram", _16G_FREE_MIB, _16G_TOTAL_MIB)
+    assert _shortfall(1088, 1920, memory = xpu) is None
+    cpu = DeviceMemory("cpu", "cpu", "system_memory", _16G_FREE_MIB, _16G_TOTAL_MIB)
+    assert _shortfall(1088, 1920, memory = cpu) is None
+
+
+def test_guard_env_override_lets_an_oversized_generation_through(monkeypatch):
+    from core.inference.diffusion_memory import OVERSIZED_GENERATE_ENV
+
+    for value in ("1", "true", "YES", " on "):
+        monkeypatch.setenv(OVERSIZED_GENERATE_ENV, value)
+        assert _shortfall(1088, 1920) is None, value
+    # Anything else is not an override, so the refusal stands.
+    for value in ("0", "false", "", "maybe"):
+        monkeypatch.setenv(OVERSIZED_GENERATE_ENV, value)
+        assert _shortfall(1088, 1920) is not None, value
+
+
+def test_guard_fails_open_when_the_probe_raises():
+    # A broken probe must never cost a user a generation that would have worked.
+    class _Exploding:
+        device = "cuda"
+        memory_kind = "discrete_vram"
+        is_unified = False
+        total_mib = _16G_TOTAL_MIB
+
+        @property
+        def free_mib(self):
+            raise RuntimeError("mem_get_info exploded")
+
+    assert _shortfall(1088, 1920, memory = _Exploding()) is None
+
+
+def test_raiser_raises_valueerror_so_the_route_answers_400():
+    # ValueError, not RuntimeError: /images/generate maps ValueError to a 400 carrying the reason,
+    # while RuntimeError there is reserved for the not-loaded / cancelled sentinels and otherwise
+    # becomes an opaque 500 with the reason stripped.
+    from core.inference.diffusion_memory import raise_on_image_activation_shortfall
+
+    with pytest.raises(ValueError, match = "1088x1920"):
+        raise_on_image_activation_shortfall(
+            device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
+            width = 1088,
+            height = 1920,
+            family = _TURBO_HINT,
+        )
+    # And it is a no-op wherever the message function declines to produce a verdict.
+    raise_on_image_activation_shortfall(
+        device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
+        width = 1024,
+        height = 1024,
+        family = _TURBO_HINT,
+    )
+
+
+def _zimage_plan_on(memory, text_encoder_dense_mib):
+    return plan_diffusion_memory(
+        target = _target(),
+        device_memory = memory,
+        model_dense_mib = _ZIMAGE_MODEL_DENSE_MIB,
+        companion_dense_mib = _ZIMAGE_COMPANION_MIB,
+        text_encoder_dense_mib = text_encoder_dense_mib,
+        runtime_headroom_mib = 8192,
+        base_overhead_mib = 2048,
+    )
+
+
+def test_default_resolution_plans_identically_across_card_sizes():
+    # The cross-check between the two fixes: at the default resolution the guard is silent on every
+    # card, and the plan a discrete CUDA target reaches with no text-encoder split is the plan it
+    # reached before either change. Neither fix leaks into the other's territory.
+    from core.inference.diffusion_memory import _safe_device_budget_mib
+
+    for gigabytes in (8, 12, 16, 24, 32, 48, 80):
+        total = gigabytes * 1024
+        memory = _discrete(int(total * 0.97), total)
+        assert _shortfall(1024, 1024, memory = memory) is None, gigabytes
+        expected = _legacy_offload_policy(
+            budget = _safe_device_budget_mib(memory),
+            model_dense_mib = _ZIMAGE_MODEL_DENSE_MIB,
+            companion_dense_mib = _ZIMAGE_COMPANION_MIB,
+            runtime_headroom_mib = 8192,
+            base_overhead_mib = 2048,
+        )
+        assert _zimage_plan_on(memory, None).offload_policy == expected, gigabytes

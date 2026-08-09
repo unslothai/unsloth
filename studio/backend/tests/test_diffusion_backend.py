@@ -5914,3 +5914,285 @@ def test_download_plan_skips_nothing_when_the_hub_reports_no_commit(monkeypatch)
         "unsloth/FLUX.1-dev-GGUF",
         "unsloth/FLUX.1-dev",
     }
+
+
+# ── the variant hint feeding the runtime-headroom estimate ────────────────────
+
+
+def test_variant_hint_carries_both_the_repo_id_and_the_base():
+    # `repo_id or base` dropped the base whenever a repo id existed, which is every GGUF load, and
+    # the base is exactly where the distilled marker lives: unsloth/Z-Image-GGUF says nothing while
+    # Tongyi-MAI/Z-Image-Turbo says turbo, so the 0.85 discount never fired for these models.
+    from core.inference.diffusion import _image_variant_hint
+    from core.inference.diffusion_memory import estimate_image_runtime_mib
+
+    hint = _image_variant_hint(
+        "z-image", "Z-Image-Q4_K_S.gguf", "unsloth/Z-Image-GGUF", "Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert "unsloth/Z-Image-GGUF" in hint and "Tongyi-MAI/Z-Image-Turbo" in hint
+    # Worth ~1.2 GB of headroom on a card where 1.2 GB decides the offload tier.
+    assert estimate_image_runtime_mib(width = None, height = None, family = hint) == 6963
+    assert estimate_image_runtime_mib(width = None, height = None, family = "") == 8192
+
+
+def test_variant_hint_is_deduplicated_and_order_stable():
+    # A pipeline load passes the same id as both repo and base; the hint must not repeat it, and
+    # the order must be a pure function of the load so two identical loads plan identically.
+    from core.inference.diffusion import _image_variant_hint
+
+    assert (
+        _image_variant_hint("z-image", None, "Tongyi-MAI/Z-Image-Turbo", "Tongyi-MAI/Z-Image-Turbo")
+        == "z-image Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert _image_variant_hint("z-image", "  ", None, None) == "z-image"
+    assert _image_variant_hint(None, None, None, None) == ""
+
+
+# ── the text-encoder share of the companion total ─────────────────────────────
+
+
+def _base_snapshot_with_sizes(tmp_path, monkeypatch, sizes):
+    """A base repo cached only under the other cache root, with the given ``{relative path: MiB}``."""
+    _live, other = _split_cache_roots(tmp_path, monkeypatch)
+    snapshot = other / "models--bfl--base" / "snapshots" / ("a" * 40)
+    for rel, mib in sizes.items():
+        path = snapshot / rel
+        path.parent.mkdir(parents = True, exist_ok = True)
+        with open(path, "wb") as fh:
+            fh.truncate(mib * 1024 * 1024)
+    return snapshot
+
+
+def test_text_encoder_cache_bytes_is_a_subset_of_the_companion_total(tmp_path, monkeypatch):
+    # The planner SUBTRACTS this from the companion total, so it has to come off the same walk:
+    # a second, independent derivation could see a file the companion walk did not and drive the
+    # difference negative.
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/model.safetensors": 150,
+            "text_encoder_2/model.safetensors": 90,
+            "vae/diffusion_pytorch_model.safetensors": 50,
+            # Never a companion on a GGUF load: the single file supplies the transformer.
+            "transformer/diffusion_pytorch_model.safetensors": 4096,
+        },
+    )
+    sizes = DiffusionBackend._local_dir_text_encoder_sizes(snapshot)
+    # Both encoder folders, and nothing else.
+    assert sorted(sizes) == ["text_encoder/model.safetensors", "text_encoder_2/model.safetensors"]
+    assert DiffusionBackend._text_encoder_cache_bytes(str(snapshot)) == 240 * 1024 * 1024
+    assert DiffusionBackend._companion_cache_bytes(str(snapshot)) == 290 * 1024 * 1024
+
+
+def test_plan_memory_hands_the_planner_the_text_encoder_split(monkeypatch, tmp_path):
+    # 150 MiB of encoders inside a 200 MiB companion total, so the streamed-encoder floor is the
+    # VAE (50) + headroom (100) + overhead (2048).
+    from core.inference.diffusion_memory import OFFLOAD_GROUP
+
+    snapshot = _other_root_base_snapshot(tmp_path, monkeypatch)
+    target = _small_card(monkeypatch)
+
+    plan = DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "flux.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 300,
+        base_local_dir = str(snapshot),
+    )
+    assert plan.estimates["companion_dense_mib"] == 200
+    assert plan.estimates["text_encoder_dense_mib"] == 150
+    assert plan.estimates["group_floor_streamed_te_mib"] == 2198
+    # The companions fit as they are, so the cheaper tier still wins and nothing streams.
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_text_encoders is False
+
+
+def test_plan_memory_streams_the_text_encoders_instead_of_offloading_everything(
+    monkeypatch, tmp_path
+):
+    # 8081's shape at this fixture's scale: a text encoder that alone busts the group floor. Before
+    # the split that meant whole-module offload of every component, measured at 48m25s for a
+    # 20-step 1024x1024 image; the VAE-only floor of 2198 fits the 2952 MiB budget.
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/model.safetensors": 2800,
+            "vae/diffusion_pytorch_model.safetensors": 50,
+        },
+    )
+    target = _small_card(monkeypatch)
+    from core.inference.diffusion_memory import OFFLOAD_GROUP
+
+    def _plan(**kw):
+        return DiffusionBackend()._plan_memory(
+            target,
+            None,
+            "bfl/base",
+            types.SimpleNamespace(name = "flux.1"),
+            None,
+            False,
+            kind = "gguf",
+            transformer_resident_override_mib = 300,
+            base_local_dir = str(snapshot),
+            **kw,
+        )
+
+    plan = _plan()
+    # group floor 2850 + 100 + 2048 = 4998, over the 2952 budget: this is the whole-module case.
+    assert plan.estimates["group_floor_mib"] == 4998
+    assert plan.estimates["group_floor_streamed_te_mib"] == 2198
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_text_encoders is True
+
+
+def test_plan_memory_keeps_the_split_on_the_dense_candidate_path(monkeypatch, tmp_path):
+    # The reported plan came from the dense int8 candidate replan, which overrides the companion
+    # total from the family component table. Without the matching text-encoder override that path
+    # keeps landing on whole-module offload however good the cache-walk split is.
+    from core.inference.diffusion_memory import OFFLOAD_GROUP
+
+    _base_snapshot_with_sizes(tmp_path, monkeypatch, {})
+    target = _small_card(monkeypatch)
+
+    plan = DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "flux.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 300,
+        companion_override_mib = 2850,
+        text_encoder_override_mib = 2800,
+    )
+    assert plan.estimates["text_encoder_dense_mib"] == 2800
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_text_encoders is True
+
+
+def test_dense_quant_estimate_carries_the_text_encoder_share():
+    # The override above is only as good as the table it comes from: companions minus text encoders
+    # has to be the VAE and nothing else, or the streamed floor is wrong on every dense candidate.
+    from core.inference.diffusion_auto_policy import estimate_dense_quant
+
+    estimate = estimate_dense_quant(types.SimpleNamespace(name = "z-image"), "int8")
+    # The reported numbers: transformer 6451 int8, companions 7820, of which 7629 is the encoders.
+    assert estimate.steady_transformer_mib == 6451
+    assert estimate.companions_mib == 7820
+    assert estimate.text_encoders_mib == 7629
+    assert estimate.companions_mib - estimate.text_encoders_mib == 191  # the VAE
+
+
+# ── generate(): the resolution-aware re-check ─────────────────────────────────
+# The load-time plan budgets the 1024x1024 default because load time cannot know the request. At
+# 1088x1920 the pass needs ~2x that, and on Windows WDDM the overrun does not raise: the driver
+# serves it from system RAM, so ~27 GB lands on a 16 GB card with no exception and the desktop
+# stops responding. generate() re-checks with the real dimensions before it samples.
+
+# The reported card: free 15,870 of 16,305 MiB, so the safe budget is 13,822 MiB.
+_ROCM_16G = (15_870, 16_305)
+
+
+def _loaded_backend_on_a_16g_card(tmp_path, monkeypatch, *, base_repo = "base/repo"):
+    """A loaded GGUF pipeline, then a 16 GB discrete-CUDA memory snapshot. Patched AFTER the load
+    so the load itself still plans against the fixture's CPU target and is unaffected."""
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_memory import DeviceMemory
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = base_repo,
+        family_override = "z-image",
+    )
+    free, total = _ROCM_16G
+    monkeypatch.setattr(
+        dmod,
+        "settled_snapshot_device_memory",
+        lambda target, **kw: DeviceMemory("cuda", "cuda", "discrete_vram", free, total),
+    )
+    return backend
+
+
+def test_generate_refuses_a_resolution_whose_activations_cannot_fit(fake_runtime, tmp_path, monkeypatch):
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError) as excinfo:
+        backend.generate(prompt = "a sloth", width = 1088, height = 1920, steps = 4)
+    message = str(excinfo.value)
+    # ValueError, so /images/generate answers 400 with this text rather than a 500 or, worse,
+    # nothing at all while the machine swaps itself to death.
+    assert "1088x1920" in message
+    assert "smaller resolution" in message
+    assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE" in message
+
+    # The same model on the same card at the default resolution is untouched.
+    assert len(backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 4)["images"]) == 1
+
+
+def test_generate_guard_measures_the_input_image_not_the_sliders(fake_runtime, tmp_path, monkeypatch):
+    # img2img / inpaint / upscale / edit take their OUTPUT size from the uploaded image, so reading
+    # the width/height kwargs would check a frame this call never renders. A 2048x2048 upload with
+    # the sliders left at 1024 is four times the planned area.
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match = "2048x2048"):
+        backend.generate(
+            prompt = "a sloth",
+            width = 1024,
+            height = 1024,
+            steps = 4,
+            init_image = _png_b64(2048),
+        )
+
+
+def test_generate_guard_uses_the_hint_the_load_planned_with(fake_runtime, tmp_path, monkeypatch):
+    # The distilled discount has to apply at generate time too, or a turbo model is budgeted 18%
+    # high and refused where it would have run. Same hint, stored on the load state.
+    backend = _loaded_backend_on_a_16g_card(
+        tmp_path, monkeypatch, base_repo = "Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert "Tongyi-MAI/Z-Image-Turbo" in backend._state.variant_hint
+
+    # 1408x1408 is 1.89x the default: 15,486 MiB undiscounted (refused) but 13,163 with the
+    # discount, which fits the 13,822 MiB budget.
+    assert len(backend.generate(prompt = "a sloth", width = 1408, height = 1408, steps = 4)["images"]) == 1
+    # The reported 1088x1920 needs 13,872 MiB even discounted, so it is still refused.
+    with pytest.raises(ValueError, match = "1088x1920"):
+        backend.generate(prompt = "a sloth", width = 1088, height = 1920, steps = 4)
+
+
+def test_generate_guard_fails_open_when_the_probe_raises(fake_runtime, tmp_path, monkeypatch):
+    # A broken memory probe must never cost a user a generation that would have worked.
+    from core.inference import diffusion as dmod
+
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+
+    def _boom(target, **kw):
+        raise RuntimeError("mem_get_info exploded")
+
+    monkeypatch.setattr(dmod, "settled_snapshot_device_memory", _boom)
+    assert len(backend.generate(prompt = "a sloth", width = 1088, height = 1920, steps = 4)["images"]) == 1
+
+
+def test_generate_guard_env_override(fake_runtime, tmp_path, monkeypatch):
+    from core.inference.diffusion_memory import OVERSIZED_GENERATE_ENV
+
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+    monkeypatch.setenv(OVERSIZED_GENERATE_ENV, "1")
+    assert len(backend.generate(prompt = "a sloth", width = 1088, height = 1920, steps = 4)["images"]) == 1
+
+
+def test_generate_guard_leaves_a_large_batch_to_the_oom_backoff(fake_runtime, tmp_path, monkeypatch):
+    # The chunk loop halves a failed multi-image forward down to singletons, so budgeting the whole
+    # chunk here would refuse batches that complete today (the measured batch-32 fast path). The
+    # guard budgets one image, the case no backoff can rescue.
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+    out = backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 4, batch_size = 8)
+    assert len(out["images"]) == 8
