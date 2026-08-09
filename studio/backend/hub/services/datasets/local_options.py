@@ -1525,9 +1525,7 @@ def _unverifiable_configs(collapsed: dict[str, dict[str, Any]]) -> set[str]:
     return {
         name
         for name, item in collapsed.items()
-        if any(
-            character in pattern for pattern in _declared_paths(item) for character in "*?["
-        )
+        if any(character in pattern for pattern in _declared_paths(item) for character in "*?[")
     }
 
 
@@ -1570,9 +1568,7 @@ def _valid_parameter(rule: Any, value: Any) -> bool:
 def _valid_header(value: Any) -> bool:
     """A csv header names row numbers, scalar or list, which pandas rejects otherwise."""
     if isinstance(value, list):
-        return all(
-            isinstance(row, int) and not isinstance(row, bool) and row >= 0 for row in value
-        )
+        return all(isinstance(row, int) and not isinstance(row, bool) and row >= 0 for row in value)
     return not isinstance(value, int) or isinstance(value, bool) or value >= 0
 
 

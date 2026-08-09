@@ -3328,8 +3328,11 @@ def test_snapshot_options_drop_a_wildcard_when_the_walk_is_truncated(tmp_path, m
 def test_snapshot_options_validate_configs_past_the_display_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(local_options, "_MAX_OPTIONS", 2)
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: a\n  data_dir: d\n- config_name: b\n  data_dir: d\n"
-                    "- config_name: c\n  data_dir: d\n- config_name: gone\n  data_dir: missing\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: a\n  data_dir: d\n- config_name: b\n  data_dir: d\n"
+        "- config_name: c\n  data_dir: d\n- config_name: gone\n  data_dir: missing\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -3343,8 +3346,11 @@ def test_snapshot_options_reject_a_link_into_a_sibling_snapshot(tmp_path):
     sibling = repo / "snapshots" / "other"
     sibling.mkdir(parents = True)
     (sibling / "test.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_files:\n  - split: train\n    path: train.jsonl\n"
-                    "  - split: test\n    path: test.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_files:\n  - split: train\n    path: train.jsonl\n"
+        "  - split: test\n    path: test.jsonl\n",
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     (snapshot / "test.jsonl").symlink_to(sibling / "test.jsonl")
 
