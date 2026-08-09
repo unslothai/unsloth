@@ -253,10 +253,79 @@ def _entry_key(
     return f"{prefix}{variant_fragment}"
 
 
-def cache_scope_name(hub_cache: str | Path) -> str:
-    normalized = os.path.normcase(str(Path(hub_cache).expanduser()))
+def normalize_hub_cache(hub_cache: str | Path) -> str:
+    """The one spelling of a hub cache path every state key is derived from.
+
+    ``resolve`` first so a junction, a mapped drive, an 8.3 short name or a
+    ``~`` all collapse onto the directory they name, then ``normcase`` so a
+    case-insensitive filesystem cannot spell the same directory two ways. Both
+    steps matter on Windows and neither is a no-op there; on POSIX ``normcase``
+    is identity and only ``resolve`` does any work.
+
+    Kept here rather than in download_manifest so the digest and the manifest
+    reader cannot normalize differently: a resolved/unresolved pair of the same
+    directory used to be able to produce two ``cache-<digest>`` scopes, one of
+    which held the manifest while the other was the one looked in -- a complete
+    download that could never report complete.
+    """
+    try:
+        resolved = str(Path(hub_cache).expanduser().resolve(strict = False))
+    except (OSError, RuntimeError, ValueError):
+        # Windows can refuse to resolve a path it can still open (OneDrive
+        # placeholders, a locked junction). Degrade to the expanded spelling
+        # rather than dropping the scope. It has to be exactly what
+        # legacy_cache_scope_name below builds, or that read-side counterpart
+        # would not recover the state this branch writes -- so expanduser here
+        # too, and fall back again if even that is unavailable.
+        try:
+            resolved = str(Path(hub_cache).expanduser())
+        except (OSError, RuntimeError, ValueError):
+            resolved = str(hub_cache)
+    return os.path.normcase(resolved)
+
+
+def _cache_scope_digest(normalized: str) -> str:
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:_CACHE_SCOPE_DIGEST_LENGTH]
     return f"cache-{digest}"
+
+
+def cache_scope_name(hub_cache: str | Path) -> str:
+    return _cache_scope_digest(normalize_hub_cache(hub_cache))
+
+
+def legacy_cache_scope_name(hub_cache: str | Path) -> str:
+    """The pre-``resolve`` scope name, for reads only.
+
+    State written while ``resolve`` was unavailable (or by an older build) sits
+    under this digest. Readers probe it after the canonical one so a digest
+    change never orphans an existing manifest or cancel marker; writers only
+    ever use :func:`cache_scope_name`.
+
+    Must be given the caller's own spelling of the path: handed an already
+    canonicalized one it returns the canonical digest and recovers nothing.
+    """
+    try:
+        normalized = os.path.normcase(str(Path(hub_cache).expanduser()))
+    except (OSError, RuntimeError, ValueError):
+        # Guarded like normalize_hub_cache, and for the same reason: this is now
+        # fed the caller's raw spelling, so a homeless "~" that expanduser
+        # refuses would otherwise escape a plain read as a RuntimeError.
+        normalized = os.path.normcase(str(hub_cache))
+    return _cache_scope_digest(normalized)
+
+
+def cache_scope_names(hub_cache: str | Path) -> tuple[str, ...]:
+    """Every scope dir this cache's state can be filed under, canonical first.
+
+    A single entry whenever the resolved and unresolved spellings of the path
+    agree, which is every path that resolves to itself -- so on POSIX, and on
+    Windows for anything that is not a junction, a mapped drive, an 8.3 short
+    name or a OneDrive redirect. The second entry is the read-side recovery for
+    state filed under the unresolved spelling.
+    """
+    canonical = cache_scope_name(hub_cache)
+    legacy = legacy_cache_scope_name(hub_cache)
+    return (canonical,) if legacy == canonical else (canonical, legacy)
 
 
 def _cache_scope(
@@ -264,10 +333,14 @@ def _cache_scope(
     hub_cache: Optional[str | Path],
     *,
     create: bool = False,
+    cache_scope: Optional[str] = None,
 ) -> Optional[Path]:
     if hub_cache is None:
         return parent
-    scoped = parent / cache_scope_name(hub_cache)
+    # A precomputed scope skips re-deriving the digest -- and with it the
+    # ``resolve`` inside it -- once per probe when a caller fans one cache path
+    # out across the filename-migration spellings.
+    scoped = parent / (cache_scope or cache_scope_name(hub_cache))
     if not create:
         return scoped
     try:
@@ -288,12 +361,18 @@ def manifest_path(
     legacy_variant_key: bool = False,
     legacy_repo_key: bool = False,
     legacy_hash_key: bool = False,
+    cache_scope: Optional[str] = None,
 ) -> Optional[Path]:
     """Path to the manifest file for this triple. May or may not exist."""
     parent = _subdir(_MANIFESTS_SUBDIR, create = create)
     if parent is None:
         return None
-    parent = _cache_scope(parent, hub_cache, create = create)
+    parent = _cache_scope(
+        parent,
+        hub_cache,
+        create = create,
+        cache_scope = cache_scope,
+    )
     if parent is None:
         return None
     entry_key = _entry_key(
@@ -317,12 +396,18 @@ def marker_path(
     legacy_variant_key: bool = False,
     legacy_repo_key: bool = False,
     legacy_hash_key: bool = False,
+    cache_scope: Optional[str] = None,
 ) -> Optional[Path]:
     """Path to the cancel-marker file for this triple. May or may not exist."""
     parent = _subdir(_CANCELLED_SUBDIR, create = create)
     if parent is None:
         return None
-    parent = _cache_scope(parent, hub_cache, create = create)
+    parent = _cache_scope(
+        parent,
+        hub_cache,
+        create = create,
+        cache_scope = cache_scope,
+    )
     if parent is None:
         return None
     entry_key = _entry_key(
