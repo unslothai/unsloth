@@ -7205,7 +7205,8 @@ def _orphan_records_dir() -> str:
         # Only if the studio home cannot be resolved at all: beside the sandbox
         # root, whose parent an administrator may have made read-only.
         return os.path.join(
-            os.path.dirname(os.path.realpath(sandbox_root())), "orphaned-projects",
+            os.path.dirname(os.path.realpath(sandbox_root())),
+            "orphaned-projects",
         )
 
 
