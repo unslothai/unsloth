@@ -718,9 +718,7 @@ def _scan(
         raise RuntimeError("Linked folder root identity changed")
 
     found: dict[str, dict] = {}
-    root_ancestors = (
-        frozenset({identity}) if _usable_directory_identity(identity) else frozenset()
-    )
+    root_ancestors = frozenset({identity}) if _usable_directory_identity(identity) else frozenset()
     pending = [(root, root_ancestors)]
     while pending:
         directory, ancestor_identities = pending.pop()
