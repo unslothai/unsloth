@@ -134,6 +134,7 @@ def _tree_reader():
             _tree_readers -= 1
             _tree_state.notify_all()
 
+
 # Max images per img_gen job; larger Studio batches (up to 32) are split into these chunks.
 _MAX_SERVER_BATCH = 8
 

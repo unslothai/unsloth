@@ -1602,7 +1602,12 @@ def test_an_external_record_update_retires_the_memo(tmp_path, monkeypatch):
 
     real_open = builtins.open
 
-    def _readonly_record(file, mode = "r", *a, **k):
+    def _readonly_record(
+        file,
+        mode = "r",
+        *a,
+        **k,
+    ):
         if str(file).endswith(sdmod.INSTALL_RECORD) and "w" in mode:
             raise OSError("permission denied")
         return real_open(file, mode, *a, **k)
@@ -1717,8 +1722,6 @@ def test_a_stale_unwritable_record_does_not_outrank_what_was_just_installed(tmp_
     assert sdmod.installed_accelerator(root) == "cuda"
 
 
-
-
 def test_a_generation_cannot_start_inside_the_install_window(tmp_path, monkeypatch):
     """The window a point-in-time check leaves open: the tree is idle when the install is decided,
     then the download runs for seconds or minutes, and a generation admitted in that gap launches
@@ -1760,7 +1763,9 @@ def test_a_generation_cannot_start_inside_the_install_window(tmp_path, monkeypat
     generator = threading.Thread(target = _try_generate, daemon = True)
     generator.start()
     generator.join(1.0)
-    assert generator.is_alive(), "a generation must not be admitted while the tree is being replaced"
+    assert (
+        generator.is_alive()
+    ), "a generation must not be admitted while the tree is being replaced"
     assert admitted_during_install == []
 
     release.set()
