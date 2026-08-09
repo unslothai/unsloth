@@ -2458,8 +2458,7 @@ def test_the_delete_switch_reaches_a_chat_moved_into_a_project():
     """Anything it wrote before the move is in its own folder, and the backend
     never touches the project workspace."""
     sidebar = (
-        Path(__file__).resolve().parents[2]
-        / "frontend" / "src" / "components" / "app-sidebar.tsx"
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "components" / "app-sidebar.tsx"
     ).read_text(encoding = "utf-8")
     assert 'return target.kind === "project" || target.kind === "chat";' in sidebar
     assert "!target.item.projectId" not in sidebar
@@ -2469,9 +2468,9 @@ def test_a_persisted_files_value_that_is_not_a_list_is_not_a_wrapper():
     """The cards map over it, so anything else takes the chat view down."""
     root = Path(__file__).resolve().parents[2] / "frontend" / "src"
     adapter = (root / "features" / "chat" / "api" / "chat-adapter.ts").read_text(encoding = "utf-8")
-    python_card = (
-        root / "components" / "assistant-ui" / "tool-ui-python.tsx"
-    ).read_text(encoding = "utf-8")
+    python_card = (root / "components" / "assistant-ui" / "tool-ui-python.tsx").read_text(
+        encoding = "utf-8"
+    )
     for source in (adapter, python_card):
         assert "v.files === undefined || Array.isArray(v.files)" in source
 

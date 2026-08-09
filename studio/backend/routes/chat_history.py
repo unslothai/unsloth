@@ -379,9 +379,9 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> int:
 
     def _remove() -> int:
         from core.inference.tools import remove_session_sandbox
-
         return sum(
-            1 for thread_id in thread_ids
+            1
+            for thread_id in thread_ids
             if remove_session_sandbox(thread_id, delete_files = delete_files)
         )
 

@@ -179,7 +179,8 @@ def register_compiled_cache_on_path() -> None:
     # every worker. Where we were pointed, or where we put it, is ours anyway.
     trusted = _trusted_cache_paths()
     registrable = [
-        d for d, dedicated in _cleanable_cache_dirs()
+        d
+        for d, dedicated in _cleanable_cache_dirs()
         if dedicated
         or str(d) in trusted
         or any(_OWNED_DELETE_RE.match(item.name) for item in _entries(d))
