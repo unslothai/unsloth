@@ -119,6 +119,39 @@ def _local_gguf_path(repo_id: str, gguf_filename: str) -> Optional[str]:
     return None
 
 
+def _snapshot_revision(path: Optional[str]) -> Optional[str]:
+    """The commit a cached Hub file was downloaded at, read off its ``snapshots/<sha>/`` parent.
+
+    None for anything that is not an HF cache entry -- an On Device checkpoint is the file the
+    loader opens, so there is no revision to be behind."""
+    if not path:
+        return None
+    parts = Path(path).parts
+    try:
+        idx = len(parts) - 1 - parts[::-1].index("snapshots")
+    except ValueError:
+        return None
+    return parts[idx + 1] if idx + 1 < len(parts) - 1 else None
+
+
+def _hub_revision(repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> Optional[str]:
+    """The commit the Hub currently serves this file at, or None when it cannot be asked.
+
+    One HEAD, no body: the caller only needs to know whether the local copy is still the current
+    one, and an offline or erroring host must leave today's verdict alone."""
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+
+        meta = get_hf_file_metadata(
+            hf_hub_url(repo_id, gguf_filename),
+            token = hf_token,
+            timeout = _HEADER_TIMEOUT_SECONDS,
+        )
+    except Exception:  # noqa: BLE001 — a revision we cannot read is not a verdict
+        return None
+    return getattr(meta, "commit_hash", None) or None
+
+
 def _read_local_header(path: str) -> bytes:
     """The first ``_GGUF_HEADER_BYTES`` of a file on disk, or b"" when it cannot be read."""
     try:
@@ -283,6 +316,25 @@ def flux2_inner_dim_for_pick(
     return inner_dim
 
 
+def _revalidated_inner_dim(
+    repo_id: str, gguf_filename: str, hf_token: Optional[str], got: int
+) -> Optional[int]:
+    """``got`` again, re-read off the Hub when it came from a cached copy the Hub has moved past.
+
+    ``try_to_load_from_cache`` resolves the LOCAL ``refs/main``, so a checkpoint republished at the
+    same filename would otherwise refuse a pick that the loader's own ``hf_hub_download`` refreshes
+    and loads. Runs only on a would-be refusal; an unknown revision keeps ``got``, and a live
+    header we cannot read is no opinion."""
+    cached = _snapshot_revision(_local_gguf_path(repo_id, gguf_filename))
+    if cached is None:
+        return got
+    token = (hf_token or "").strip() or None
+    live = _hub_revision(repo_id, gguf_filename, token)
+    if live is None or live == cached:
+        return got
+    return gguf_flux2_inner_dim_from_header(_read_gguf_header(repo_id, gguf_filename, token))
+
+
 def flux2_pick_mismatch(
     fam: Any,
     repo_id: str,
@@ -301,10 +353,13 @@ def flux2_pick_mismatch(
     # nothing to compare against, so it must not cost a round trip either.
     if want is None:
         return None
+    got = flux2_inner_dim_for_pick(repo_id, gguf_filename, hf_token)
+    if got is not None and got != want:
+        got = _revalidated_inner_dim(repo_id, gguf_filename, hf_token, got)
     return flux2_mismatch_reason(
         Path(str(gguf_filename)).name,
         str(base_repo),
-        flux2_inner_dim_for_pick(repo_id, gguf_filename, hf_token),
+        got,
         want,
     )
 

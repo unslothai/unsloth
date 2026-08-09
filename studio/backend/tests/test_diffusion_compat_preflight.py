@@ -907,3 +907,92 @@ def test_the_offline_caller_still_gets_a_memoised_remote_answer(monkeypatch, tmp
         )
         == 4096
     )
+
+
+# ── a cached copy the Hub has moved past ──────────────────────────────────────
+
+
+def _cached_snapshot(tmp_path, sha, body, filename = KLEIN_4B_FILE):
+    """A file where huggingface_hub puts it: ``models--org--repo/snapshots/<sha>/<file>``."""
+    path = tmp_path / f"models--{KLEIN_4B_GGUF.replace('/', '--')}" / "snapshots" / sha / filename
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_bytes(body)
+    return path
+
+
+def _stub_revision(monkeypatch, sha):
+    def _meta(*_args, **_kwargs):
+        if sha is None:
+            raise OSError("offline")
+        return types.SimpleNamespace(commit_hash = sha, etag = sha)
+
+    monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _meta)
+
+
+def test_a_republished_checkpoint_is_not_refused_from_the_stale_cache(monkeypatch, tmp_path):
+    """try_to_load_from_cache resolves the LOCAL refs/main, so a 4B file republished at the same
+    name as a 9B one would refuse a pick the loader's own hf_hub_download refreshes and loads."""
+    requests = _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(4096, tmp_path)})
+    cached = _cached_snapshot(tmp_path, "oldcommit", _gguf_header(3072, tmp_path))
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: str(cached))
+    _stub_revision(monkeypatch, "newcommit")
+
+    reason = diffusion_compat.flux2_pick_mismatch(
+        FLUX2_FAMILY, KLEIN_4B_GGUF, KLEIN_4B_FILE, KLEIN_9B_BASE
+    )
+
+    assert reason is None, "a stale cached header refused a pick the loader would have loaded"
+    assert requests, "the live header was never read"
+
+
+def test_a_cached_checkpoint_at_the_current_revision_is_still_refused(monkeypatch, tmp_path):
+    # The refusal this preflight exists for: the cache is current, so its header is the verdict
+    # and nothing has to be fetched to say so.
+    requests = _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(4096, tmp_path)})
+    cached = _cached_snapshot(tmp_path, "oldcommit", _gguf_header(3072, tmp_path))
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: str(cached))
+    _stub_revision(monkeypatch, "oldcommit")
+
+    reason = diffusion_compat.flux2_pick_mismatch(
+        FLUX2_FAMILY, KLEIN_4B_GGUF, KLEIN_4B_FILE, KLEIN_9B_BASE
+    )
+
+    assert reason is not None and "klein-9B" in reason
+    assert requests == []
+
+
+def test_a_revision_check_that_cannot_run_keeps_the_cached_refusal(monkeypatch, tmp_path):
+    # Offline is the case the cached copy answers best: unable to ask, the preflight keeps the
+    # verdict it has rather than fetching or going silent.
+    requests = _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(4096, tmp_path)})
+    cached = _cached_snapshot(tmp_path, "oldcommit", _gguf_header(3072, tmp_path))
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: str(cached))
+    _stub_revision(monkeypatch, None)
+
+    reason = diffusion_compat.flux2_pick_mismatch(
+        FLUX2_FAMILY, KLEIN_4B_GGUF, KLEIN_4B_FILE, KLEIN_9B_BASE
+    )
+
+    assert reason is not None and "klein-9B" in reason
+    assert requests == []
+
+
+def test_an_on_device_checkpoint_is_never_revalidated(monkeypatch, tmp_path):
+    # An On Device file IS the file the loader opens, so there is no Hub revision to be behind
+    # and a mismatch must be refused without a single network call.
+    local = tmp_path / "on-device"
+    local.mkdir()
+    (local / KLEIN_4B_FILE).write_bytes(_gguf_header(3072, tmp_path))
+    requests = _stub_range_reads(monkeypatch, {})
+    monkeypatch.setattr(
+        diffusion_compat,
+        "_hub_revision",
+        lambda *a, **k: pytest.fail("an On Device pick asked the Hub for a revision"),
+    )
+
+    reason = diffusion_compat.flux2_pick_mismatch(
+        FLUX2_FAMILY, str(local), KLEIN_4B_FILE, KLEIN_9B_BASE
+    )
+
+    assert reason is not None and "klein-9B" in reason
+    assert requests == []
