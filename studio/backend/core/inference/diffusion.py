@@ -2789,8 +2789,7 @@ class DiffusionBackend:
                         # OFFLOAD_NONE test already carries this and the extra resolve is waste.
                         if (
                             prequant is not None
-                            and getattr(plan.device_memory, "memory_kind", None)
-                            == "unified_memory"
+                            and getattr(plan.device_memory, "memory_kind", None) == "unified_memory"
                         ):
                             prequant_candidate = resolve_dense_quant_candidate(
                                 fam = fam,
@@ -2801,24 +2800,28 @@ class DiffusionBackend:
                                 force_dense = _has_active_lora(loras),
                                 logger = logger,
                             )
-                            if prequant_candidate is not None and unified_memory_shortfall_message(
-                                self._plan_memory(
-                                    target,
-                                    single_file_path,
-                                    base,
-                                    fam,
-                                    memory_mode,
-                                    cpu_offload,
-                                    kind = kind,
-                                    repo_id = repo_id,
-                                    fetch_base = fetch_base,
-                                    transformer_resident_override_mib = (
-                                        prequant_candidate.transient_transformer_mib
+                            if (
+                                prequant_candidate is not None
+                                and unified_memory_shortfall_message(
+                                    self._plan_memory(
+                                        target,
+                                        single_file_path,
+                                        base,
+                                        fam,
+                                        memory_mode,
+                                        cpu_offload,
+                                        kind = kind,
+                                        repo_id = repo_id,
+                                        fetch_base = fetch_base,
+                                        transformer_resident_override_mib = (
+                                            prequant_candidate.transient_transformer_mib
+                                        ),
+                                        companion_override_mib = prequant_candidate.companions_mib,
                                     ),
-                                    companion_override_mib = prequant_candidate.companions_mib,
-                                ),
-                                family = getattr(fam, "name", None),
-                            ) is not None:
+                                    family = getattr(fam, "name", None),
+                                )
+                                is not None
+                            ):
                                 dense_declined = True
                                 dense_possible = False
                                 dense_fallback_allowed = False
