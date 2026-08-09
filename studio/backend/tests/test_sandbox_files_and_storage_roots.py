@@ -4154,9 +4154,7 @@ def test_clearing_every_chat_cancels_the_research_it_removed():
 
     storage = inspect.getsource(studio_db.clear_chat_history)
     assert "SELECT id FROM research_runs" in storage
-    assert storage.index("SELECT id FROM research_runs") < storage.index(
-        "DELETE FROM chat_threads"
-    )
+    assert storage.index("SELECT id FROM research_runs") < storage.index("DELETE FROM chat_threads")
 
     route = inspect.getsource(chat_history.clear_history)
     assert "_cancel_research_runs(request, cleared_runs)" in route
