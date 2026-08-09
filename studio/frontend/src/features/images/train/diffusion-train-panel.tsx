@@ -1,9 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type DragEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-import { Settings02Icon, Upload01Icon } from "@hugeicons/core-free-icons";
+import {
+  FolderAddIcon,
+  Settings02Icon,
+  Upload01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
@@ -24,6 +36,11 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Select,
   SelectContent,
   SelectGroup,
@@ -36,6 +53,7 @@ import type { TrainingSeriesPoint } from "@/features/training";
 // eslint-disable-next-line no-restricted-imports -- matches images-page.tsx's token access
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 
 import {
@@ -55,6 +73,14 @@ import {
   uploadDiffusionDataset,
 } from "../api";
 import { DatasetLabelingGrid, LabelingGridToggle } from "./dataset-labeling-grid";
+import {
+  DATASET_FILE_ACCEPT,
+  DATASET_IMAGE_EXTS,
+  DATASET_UPLOAD_CHUNK,
+  filesFromDataTransfer,
+  metadataKeyedOnSubfolders,
+  selectDatasetFiles,
+} from "./dataset-files";
 import { DatasetShowcase } from "./dataset-showcase";
 import { DiffusionCharts } from "./diffusion-charts";
 import {
@@ -135,7 +161,6 @@ function repoIsPrequantized(baseModel: string): boolean {
 }
 // Dataset-select option value prefix for a not-yet-imported example; picking it imports.
 const EXAMPLE_PREFIX = "example:";
-const DATASET_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.bmp,.txt,.caption,.jsonl";
 // min-w-0 + a truncating value: a long option would otherwise set the grid column min width and push into its neighbour.
 const selectClass =
   "h-8 w-full min-w-0 text-xs *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate";
@@ -144,6 +169,34 @@ const selectClass =
 // implicit column auto-sized, so the track froze at its widest child's min-content
 // (150px for the run-length pair) and the cell painted over the next column.
 const fieldClass = "grid grid-cols-1 min-w-0 gap-2";
+
+/** opens the folder picker; icon-only because the 416px rail already holds the select and the file-pick button. */
+function FolderPickButton({
+  disabled,
+  onPick,
+}: {
+  disabled: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          aria-label="Add a folder of images"
+          className="size-8 shrink-0"
+          onClick={onPick}
+          disabled={disabled}
+        >
+          <HugeiconsIcon icon={FolderAddIcon} className="size-3.5" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>Add a whole folder of images</TooltipContent>
+    </Tooltip>
+  );
+}
 
 /** A field's label with its guidance behind an "i" tooltip, keeping the grid scannable.
  *  Only facts a user must act on stay on the page as text. */
@@ -346,6 +399,10 @@ export function DiffusionTrainPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Adds to the selected set; the other input creates a new one.
   const addInputRef = useRef<HTMLInputElement | null>(null);
+  // one folder picker serves both targets, so the destination is captured when it opens.
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const folderTarget = useRef("");
+  const [dropActive, setDropActive] = useState(false);
   const [gridOpen, setGridOpen] = useState(false);
   const [gridRefresh, setGridRefresh] = useState(0);
   const [examples, setExamples] = useState<DiffusionDatasetExample[]>([]);
@@ -673,20 +730,89 @@ export function DiffusionTrainPanel({
   }, [viewRun?.metric_history]);
 
   // Uploads accumulate, so the same call both creates a folder and adds to an existing one.
+  // `picked` can come from a file pick, a folder pick or a drop, so it is filtered here.
   const uploadTo = useCallback(
-    async (name: string, files: File[]) => {
-      if (files.length === 0) return; // the picker was cancelled
+    async (name: string, picked: File[]) => {
+      if (picked.length === 0) return; // the picker was cancelled
       if (!name) {
         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
         return;
       }
+      const { files, imageCount, skipped, collisions } = selectDatasetFiles(picked);
+      if (collisions.length > 0) {
+        const { kind, first, second } = collisions[0];
+        const more =
+          collisions.length > 1
+            ? ` ${collisions.length - 1} other pair${collisions.length === 2 ? "" : "s"} clash too.`
+            : "";
+        toast.error(
+          (kind === "name"
+            ? `"${first}" and "${second}" have the same file name, and a dataset folder is ` +
+              "flat, so one would overwrite the other."
+            : `"${first}" and "${second}" differ only by extension, so they would share one ` +
+              "caption file.") + `${more} Rename them and upload again.`,
+        );
+        return;
+      }
+      if (files.length === 0) {
+        toast.error(
+          `Nothing to upload. Pick images (${DATASET_IMAGE_EXTS.join(", ")}) and, ` +
+            "optionally, a caption file beside each one.",
+        );
+        return;
+      }
+      // /diffusion/info only lists folders holding an image, so say why the set will not
+      // appear yet rather than refusing a captions-first upload.
+      const newCaptionsOnly =
+        imageCount === 0 && !(info?.datasets ?? []).some((d) => d.name === name);
+      const misKeyed = await metadataKeyedOnSubfolders(files);
       setUploading(true);
       try {
-        const res = await uploadDiffusionDataset(name, files);
-        toast.success(
-          `Uploaded ${res.uploaded} file${res.uploaded === 1 ? "" : "s"} - ` +
-            `"${res.name}" now has ${res.image_count} images`,
-        );
+        // the endpoint accumulates into the same folder, so a tree past the multipart part cap
+        // goes up in slices rather than being refused outright.
+        let res = await uploadDiffusionDataset(name, files.slice(0, DATASET_UPLOAD_CHUNK));
+        let sent = res.uploaded;
+        let stopped: string | null = null;
+        for (let at = DATASET_UPLOAD_CHUNK; at < files.length; at += DATASET_UPLOAD_CHUNK) {
+          try {
+            res = await uploadDiffusionDataset(name, files.slice(at, at + DATASET_UPLOAD_CHUNK));
+            sent += res.uploaded;
+          } catch (e) {
+            stopped = e instanceof Error ? e.message : "upload failed";
+            break;
+          }
+        }
+        // caption_count is the folder total the backend resolves over sidecars and metadata alike.
+        if (stopped) {
+          toast.error(
+            `Uploaded ${sent} of ${files.length} files into "${res.name}", then stopped: ` +
+              `${stopped}`,
+          );
+        } else {
+          toast.success(
+            `Uploaded ${sent} file${sent === 1 ? "" : "s"} - ` +
+              `"${res.name}" now has ${res.image_count} images, ` +
+              `${res.caption_count} captioned`,
+          );
+        }
+        if (skipped > 0) {
+          toast.info(
+            `Skipped ${skipped} file${skipped === 1 ? "" : "s"} that ` +
+              `${skipped === 1 ? "was" : "were"} neither an image nor a caption.`,
+          );
+        }
+        if (newCaptionsOnly) {
+          toast.info(
+            `"${res.name}" holds captions but no images yet, so it stays out of the dataset ` +
+              "picker until you add some.",
+          );
+        }
+        if (misKeyed) {
+          toast.info(
+            `${misKeyed} keys its captions on subfolder paths, and a dataset folder is flat, ` +
+              "so those rows will not match. A .txt beside each image always will.",
+          );
+        }
         await refreshInfo();
         setDataset(res.name);
         setGridRefresh((k) => k + 1);
@@ -696,7 +822,48 @@ export function DiffusionTrainPanel({
         setUploading(false);
       }
     },
-    [refreshInfo],
+    [info?.datasets, refreshInfo],
+  );
+
+  const pickFolder = useCallback((name: string) => {
+    folderTarget.current = name;
+    folderInputRef.current?.click();
+  }, []);
+
+  // a drop lands on whichever set the field is showing, filling a new folder or topping up the selected one.
+  const dropTarget = uploadMode ? uploadName.trim() : dataset;
+  const onDrop = useCallback(
+    async (event: DragEvent) => {
+      if (isTauri) return;
+      // only claim file drops: preventDefault on a text drag kills editing in the caption boxes.
+      if (!event.dataTransfer.types.includes("Files")) return;
+      event.preventDefault();
+      setDropActive(false);
+      if (uploading) {
+        toast.error("An upload is already running. Wait for it to finish, then drop again.");
+        return;
+      }
+      let dropped: File[];
+      // held across the walk too: a big tree takes seconds, and every control is live until then.
+      setUploading(true);
+      try {
+        dropped = await filesFromDataTransfer(event.dataTransfer);
+      } catch {
+        toast.error(
+          "Could not read every file in that folder, so nothing was uploaded. Try the folder " +
+            "button instead.",
+        );
+        return;
+      } finally {
+        setUploading(false);
+      }
+      if (dropped.length === 0) {
+        toast.error("That drop had no files in it.");
+        return;
+      }
+      await uploadTo(dropTarget, dropped);
+    },
+    [dropTarget, uploadTo, uploading],
   );
 
   const onStart = useCallback(async () => {
@@ -1202,7 +1369,29 @@ export function DiffusionTrainPanel({
           </div>
 
           {/* Dataset */}
-          <div className={fieldClass}>
+          {/* the whole field is the drop zone, so a folder can land on the picker, the thumbnails or the caption grid. */}
+          <div
+            className={cn(
+              fieldClass,
+              "rounded-lg transition-colors",
+              dropActive && "outline-2 outline-dashed outline-offset-4 outline-primary/60",
+            )}
+            onDragOver={(e) => {
+              // tauri consumes os drags before the webview, as the chat composer notes.
+              if (isTauri) return;
+              // files only: without this a text-selection drag also arms the zone.
+              if (!e.dataTransfer.types.includes("Files")) return;
+              e.preventDefault();
+              setDropActive(true);
+            }}
+            onDragLeave={(e) => {
+              // dragging onto a child fires leave on the parent, so ignore inner moves.
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setDropActive(false);
+              }
+            }}
+            onDrop={(e) => void onDrop(e)}
+          >
             <FieldLabel hint="The set the LoRA learns from. 10-50 images is plenty, and captions are optional.">
               Training images
             </FieldLabel>
@@ -1270,9 +1459,24 @@ export function DiffusionTrainPanel({
                     <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
                     {uploading ? "Uploading..." : "Add"}
                   </Button>
+                  <FolderPickButton disabled={uploading} onPick={() => pickFolder(dataset)} />
                 </>
               )}
             </div>
+            {/* a folder pick carries the whole tree, so an images-plus-captions set arrives paired in one go. */}
+            <input
+              ref={folderInputRef}
+              type="file"
+              multiple
+              {...({ webkitdirectory: "", directory: "" } as object)}
+              className="hidden"
+              aria-label="Training image folder"
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                e.target.value = "";
+                void uploadTo(folderTarget.current, files);
+              }}
+            />
             {importingId && (
               <p className="text-ui-11 text-muted-foreground">
                 Importing {examples.find((e) => e.id === importingId)?.label ?? "example"}...
@@ -1325,7 +1529,22 @@ export function DiffusionTrainPanel({
                     <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
                     {uploading ? "Uploading..." : "Upload"}
                   </Button>
+                  <FolderPickButton
+                    disabled={uploading}
+                    onPick={() => {
+                      if (!uploadName.trim()) {
+                        toast.error("Give the dataset a folder name, e.g. my-style-photos.");
+                        return;
+                      }
+                      pickFolder(uploadName.trim());
+                    }}
+                  />
                 </div>
+                <p className="text-ui-11 leading-snug text-muted-foreground">
+                  {isTauri ? "Pick files or a folder." : "Pick files or a folder, or drop them here."}{" "}
+                  A caption file beside an image (cat.png and cat.txt) is read as that image's
+                  caption.
+                </p>
               </div>
             ) : (
               selectedDataset && (
