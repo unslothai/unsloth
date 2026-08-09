@@ -3,16 +3,11 @@
 
 from __future__ import annotations
 
-import bz2
-import codecs
-import gzip
 import json
-import lzma
 import os
 import re
-import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from hub.schemas.datasets import (
     DatasetSplitOption,
@@ -39,271 +34,7 @@ _MAX_PROCESSED_METADATA_FILES = 256
 _MAX_PROCESSED_WALK_DEPTH = 4
 _MAX_OPTIONS = 2048
 _MAX_OPTION_LENGTH = 128
-# Only names are read during the scan, so this can sit well above any real snapshot. Past it
-# the scan is truncated and cannot be compared with the loader, so nothing is offered.
-_MAX_SNAPSHOT_DATA_FILES = 200_000
-# Declared globs are the one part that is not linear in the snapshot. Past this much
-# matching work nothing is determinate, so the picker offers nothing rather than stall.
-_MAX_RESOLUTION_WORK = 10_000_000
-# Only what fsspec can actually decompress in a Studio install. zstd and lz4 are named by
-# datasets but need optional codecs we do not ship, so they raise "Compression type not
-# supported" and offering them would put a dead split in the picker.
-_COMPRESSION_EXTENSIONS = ("", ".gz", ".gzip", ".bz2", ".xz", ".lzma", ".zip")
-_UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4"})
-
-
-# A zip is left alone; we do not open archives, so its payload stays unknown.
-# datasets has no lzma-alone rule, by extension or by magic number, so both suffixes are
-# read as xz and a raw lzma stream counts as unreadable.
-def _open_xz(path: Path, mode: str = "rb") -> Any:
-    return lzma.open(path, mode, format = lzma.FORMAT_XZ)
-
-
-_DECOMPRESSORS = {
-    ".gz": gzip.open,
-    ".gzip": gzip.open,
-    ".bz2": bz2.open,
-    ".xz": _open_xz,
-    ".lzma": _open_xz,
-}
-# What a card may name as a feature dtype, as datasets 4.3 reads it: a pyarrow value alias,
-# optionally parameterised, or one of its own feature classes.
-_VALUE_DTYPES = frozenset(
-    "null bool bool_ int8 int16 int32 int64 uint8 uint16 uint32 uint64 float float16 float32 "
-    "float64 double date32 date64 binary large_binary string large_string utf8 large_utf8 "
-    "string_view binary_view month_day_nano_interval bool8 json_ uuid".split()
-)
-# The parameterised ones, with the units pyarrow actually takes.
-_DTYPE_UNITS = {
-    "time32": frozenset({"s", "ms"}),
-    "time64": frozenset({"us", "ns"}),
-    "timestamp": frozenset({"s", "ms", "us", "ns"}),
-    "duration": frozenset({"s", "ms", "us", "ns"}),
-}
-_DECIMAL_RE = re.compile(r"decimal(128|256)\(([0-9]+), ?(-?[0-9]+)\)")
-# Arrow's own precision ceilings.
-_DECIMAL_PRECISION = {"128": 38, "256": 76}
-# Compared with the underscores stripped, since a card may spell these in snake case.
-_FEATURE_TYPE_NAMES = frozenset(
-    "value classlabel translation translationvariablelanguages largelist list array2d "
-    "array3d array4d array5d audio image video pdf".split()
-)
-# The feature classes that construct with no arguments. The rest are only usable in the
-# mapping form, where the card supplies what their constructor demands.
-# A card can alias a feature node into itself, so the walk is bounded rather than trusting
-# the tree to end. Nothing real nests anywhere near this deep.
-_MAX_FEATURE_DEPTH = 64
-_PARAMETERLESS_FEATURES = frozenset("translationvariablelanguages audio image video pdf".split())
-# What each feature class cannot be built without. ClassLabel takes any one of its three,
-# the rest take all of theirs.
-_REQUIRED_FEATURE_ARGS = {
-    "value": ("dtype",),
-    "list": ("feature",),
-    "largelist": ("feature",),
-    "translation": ("languages",),
-    "array2d": ("shape", "dtype"),
-    "array3d": ("shape", "dtype"),
-    "array4d": ("shape", "dtype"),
-    "array5d": ("shape", "dtype"),
-}
-_ARRAY_RANKS = {"array2d": 2, "array3d": 3, "array4d": 4, "array5d": 5}
-# What a recorded split may carry. SplitInfo takes these and nothing else.
-_SPLIT_INFO_FIELDS = frozenset(
-    {"name", "num_bytes", "num_examples", "shard_lengths", "dataset_name"}
-)
-# datasets' own version grammar. Anything else raises when it builds the cache directory.
-_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
-# Ordered, because datasets resolves a split's keyword patterns in this order and samples
-# the first files it gets back.
-_SPLIT_KEYWORDS = {
-    "train": ("train", "training"),
-    "validation": ("validation", "valid", "dev", "val"),
-    "test": ("test", "testing", "eval", "evaluation"),
-}
-# datasets' keyword globs, as regexes, in the order it resolves them. "sep" is its
-# NON_WORDS_CHARS, "**/" leads every pattern and "*" never crosses a directory.
-_SEP = "[-._ 0-9]"
-_FILENAME_KEYWORD_PATTERNS = (
-    r"(?:.*/)?{keyword}%s[^/]*" % _SEP,
-    r"(?:.*/)?[^/]*%s{keyword}%s[^/]*" % (_SEP, _SEP),
-)
-_DIR_NAME_KEYWORD_PATTERNS = (
-    r"(?:.*/)?{keyword}/.*",
-    r"(?:.*/)?{keyword}%s[^/]*/.*" % _SEP,
-    r"(?:.*/)?[^/]*%s{keyword}/.*" % _SEP,
-    r"(?:.*/)?[^/]*%s{keyword}%s[^/]*/.*" % (_SEP, _SEP),
-)
-_KeywordPatterns = dict[str, list[tuple[tuple[int, int], "re.Pattern[str]"]]]
-
-
-def _keyword_patterns(bases: tuple[str, ...]) -> _KeywordPatterns:
-    return {
-        split: [
-            (
-                (keyword_index, base_index),
-                re.compile(base.format(keyword = re.escape(keyword)) + r"\Z"),
-            )
-            for keyword_index, keyword in enumerate(keywords)
-            for base_index, base in enumerate(bases)
-        ]
-        for split, keywords in _SPLIT_KEYWORDS.items()
-    }
-
-
-_DIR_NAME_SPLITS = _keyword_patterns(_DIR_NAME_KEYWORD_PATTERNS)
-_FILENAME_SPLITS = _keyword_patterns(_FILENAME_KEYWORD_PATTERNS)
-# The loader globs data/{split}-NNNNN-of-NNNNN*.*, and a * matches nothing as happily as
-# something, so an empty split or suffix still puts the sharded stage in charge.
-_SHARDED_DATA_RE = re.compile(r"^data/(?P<split>[^/]*)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]*$")
-# datasets drops these by basename (FILES_TO_IGNORE) before it infers anything, so a
-# metadata-only cache is empty rather than a bogus train split.
-_IGNORED_DATA_FILENAMES = frozenset(
-    {
-        "README.md",
-        "config.json",
-        "dataset_info.json",
-        "dataset_infos.json",
-        "dataset_dict.json",
-        "dummy_data.zip",
-    }
-)
-_INDETERMINATE_MODULE = "?"
-
-
-def _exts(names: str) -> frozenset:
-    return frozenset(names.split())
-
-
-# datasets' own extension table, by builder. The folder builders are the only ones it
-# registers in both cases, so those match case-insensitively and the rest stay case-exact.
-_MODULE_EXTENSIONS = {
-    "arrow": ".arrow",
-    "csv": ".csv",
-    # datasets compares the whole builder result and tsv carries sep="\t", so it is not csv.
-    "csv+tab": ".tsv",
-    "hdf5": ".h5 .hdf5",
-    "json": ".json .jsonl .ndjson",
-    "parquet": ".parquet .geoparquet .gpq",
-    "text": ".txt",
-    "webdataset": ".tar",
-    "xml": ".xml",
-    "imagefolder": (
-        ".apng .blp .bmp .bufr .bw .cur .dcx .dds .dib .emf .eps .fit .fits .flc .fli .ftc "
-        ".ftu .gbr .gif .grib .icb .icns .ico .iim .im .j2c .j2k .jfif .jp2 .jpc .jpe .jpeg "
-        ".jpf .jpg .jpx .msp .pbm .pcd .pcx .pgm .png .pnm .ppm .ps .psd .pxr .ras .rgb "
-        ".rgba .sgi .tga .tif .tiff .vda .vst .webp .wmf .xbm .xpm"
-    ),
-    "audiofolder": (
-        ".3g2 .3gp .aiff .asf .au .avr .caf .f4v .flac .flv .htk .ircam .m4v .mat4 .mat5 "
-        ".mp3 .mpc2k .mpg .mxf .nist .nut .ogg .ogm .opus .paf .pvf .raw .rf64 .sd2 .sds "
-        ".svx .voc .w64 .wav .wavex .webm .wma .wmv .wve .xi"
-    ),
-    "videofolder": ".avi .mkv .mov .mp4 .mpeg",
-    "pdffolder": ".pdf",
-    # datasets reads a zip to pick its module. We do not open archives, so a split a zip
-    # would decide is unknowable and the snapshot is left alone.
-    _INDETERMINATE_MODULE: ".zip",
-}
-# Every card key that is not config_name / data_files / data_dir / default is handed to the
-# builder config, so one of the wrong type raises while the split generates. Types as pinned
-# at datasets 4.3.0; None means the loader refuses the parameter whatever its value.
-_TEXT_PARAMETERS = {"encoding": str, "encoding_errors": str, "chunksize": int}
-# Parameters whose builder uses the value directly, so a null one fails where the same
-# null is the harmless default elsewhere. Verified against datasets 4.3.0 per builder.
-_NON_NULLABLE = {"json": frozenset({"encoding", "chunksize"}), "csv": frozenset({"sep"})}
-# Parameters the builder also needs within a range, as their smallest allowed value.
-_PARAMETER_MINIMUMS = {"chunksize": 1, "block_size": 1, "nrows": 1, "batch_size": 0}
-# skipfooter is unsupported outright: the builder always reads with iterator=True.
-_PARAMETER_EXACT = {"skipfooter": 0}
-_BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
-    "json": {
-        **_TEXT_PARAMETERS,
-        "field": str,
-        "use_threads": bool,
-        "block_size": int,
-        "newlines_in_values": None,
-    },
-    "csv": {
-        **_TEXT_PARAMETERS,
-        "sep": str,
-        "delimiter": str,
-        "header": (int, list, frozenset({"infer"})),
-        # Validated further by _valid_header, which the list rule cannot express.
-        "names": list,
-        "column_names": list,
-        # pandas takes False as "no index column" and refuses True.
-        "index_col": (int, str, list, frozenset({False})),
-        "usecols": list,
-        "prefix": str,
-        "mangle_dupe_cols": bool,
-        # pyarrow is a pandas engine, but the builder always reads with iterator=True.
-        "engine": frozenset({"c", "python"}),
-        "converters": dict,
-        "true_values": list,
-        "false_values": list,
-        "skipinitialspace": bool,
-        "skiprows": (int, list),
-        "nrows": int,
-        "na_values": (str, list),
-        "keep_default_na": bool,
-        "na_filter": bool,
-        "verbose": bool,
-        "skip_blank_lines": bool,
-        "thousands": str,
-        "decimal": str,
-        "lineterminator": str,
-        "quotechar": str,
-        "quoting": frozenset({0, 1, 2, 3}),
-        "escapechar": str,
-        "comment": str,
-        "dialect": str,
-        "error_bad_lines": bool,
-        "warn_bad_lines": bool,
-        "skipfooter": int,
-        "doublequote": bool,
-        "memory_map": bool,
-        "float_precision": str,
-        "on_bad_lines": frozenset({"error", "warn", "skip"}),
-        "date_format": str,
-    },
-    "text": {**_TEXT_PARAMETERS, "keep_linebreaks": bool, "sample_by": str},
-    # fragment_scan_options reaches pyarrow as a scan-options object, which a card cannot
-    # write, so any value it can carry is one the builder chokes on.
-    "parquet": {
-        "batch_size": int,
-        "columns": list,
-        "filters": list,
-        "fragment_scan_options": None,
-    },
-}
-# Our synthetic module names, and the packaged builder each one really is. Two configs
-# whose names differ here still go through the same builder, so neither is unreadable.
-_BASE_MODULES = {"csv+tab": "csv"}
-_EXTENSION_MODULES = {
-    extension: module for module, names in _MODULE_EXTENSIONS.items() for extension in names.split()
-}
-# The folder builders. They are the only ones datasets registers in both letter cases and
-# the only ones with a non-empty metadata allow-list.
-_FOLDER_MODULES = _exts("imagefolder audiofolder videofolder pdffolder")
-# datasets' tie-break after the count, before falling back to the extension string itself.
-_EXTENSION_PRIORITY = (".parquet", ".jsonl", ".json", ".csv")
-# Folder-builder metadata loses every tie-break in datasets, so it never picks a split's
-# module. This is the pinned 4.3 list; 3.4 flagged only the csv and jsonl names.
-_METADATA_FILENAMES = frozenset({"metadata.csv", "metadata.jsonl", "metadata.parquet"})
-# datasets infers a split's module from its first 200 files, in resolved (sorted) order.
-_MAX_MODULE_INFERENCE_FILES = 200
-# _read_card_metadata returns this when a card exists but its YAML does not parse. datasets
-# lets that error out of DatasetCard.load, so nothing in the snapshot is loadable.
-_UNPARSABLE_METADATA = object()
-_STANDALONE_YAML = ".huggingface.yaml"
-# huggingface_hub's REGEX_YAML_BLOCK, which is what actually decides whether a README has
-# front matter, as pinned at 0.36.2. Neither delimiter tolerates trailing spaces there; 1.x
-# added them to the closing one, so a padded close is a card we deliberately do not read.
-_CARD_BLOCK_RE = re.compile(r"^(\s*---[\r\n]+)([\S\s]*?)([\r\n]+---(\r\n|\n|$))")
-# A snapshot file and the module datasets would build it with, None when it is not data.
-_DataFile = tuple[PurePosixPath, Optional[str]]
 _CONFIG_RE = re.compile(r"[^<>:/\\|?*\x00-\x1f\x7f]+")
-# Also datasets' own _split_re, so a sharded name it would reject never reaches the picker.
 _SPLIT_RE = HF_DATASET_SPLIT_NAME_PATTERN
 
 
@@ -315,11 +46,7 @@ def _valid_option(
 ) -> Optional[str]:
     if not isinstance(value, str):
         return None
-    # The loader keeps the name it was given, so a padded one is only ever addressable
-    # padded, and we cannot offer that.
-    normalized = value
-    if normalized != normalized.strip():
-        return None
+    normalized = value.strip()
     if not normalized or len(normalized) > _MAX_OPTION_LENGTH:
         return None
     if has_unsafe_hf_dataset_option_characters(normalized):
@@ -345,304 +72,6 @@ def _split_names(value: Any) -> list[str]:
         for item in candidates
         if (name := _valid_option(item, _SPLIT_RE, reject_dotdot = True)) is not None
     ]
-
-
-def _drive_prefixed(value: str) -> bool:
-    """Whether this starts with a drive letter the filesystem would act on. On POSIX a:b is
-    an ordinary relative path, and the loader reads it as one."""
-    return os.name == "nt" and re.match(r"^[A-Za-z]:", value) is not None
-
-
-def _safe_data_dir(value: Any) -> Optional[str]:
-    """A data_dir we can scan, or None. An absolute one resolves off the snapshot entirely."""
-    if not isinstance(value, str):
-        return None
-    if value.startswith(("/", "\\")) or _drive_prefixed(value):
-        return None
-    if "\\" in value or "\x00" in value:
-        return None
-    # Only a component that walks out escapes; release..v2 is a name and a/../b is a real
-    # directory the loader reaches, as long as every step of it exists.
-    depth = 0
-    for part in PurePosixPath(value).parts:
-        depth += -1 if part == ".." else 0 if part == "." else 1
-        if depth < 0:
-            return None
-    # The loader joins the string as written and globs it. ./a, a/. and a/ all still find
-    # the directory; only a doubled separator at the end does not.
-    if value.endswith("//"):
-        return None
-    return value
-
-
-def _normalized_dir(value: str) -> Optional[str]:
-    """A data_dir with its . and .. steps collapsed, or None if it walks out."""
-    parts: list[str] = []
-    for part in PurePosixPath(value).parts:
-        if part == ".":
-            continue
-        if part == "..":
-            if not parts:
-                return None
-            parts.pop()
-        else:
-            parts.append(part)
-    return "/".join(parts)
-
-
-def _known_dtype(dtype: str) -> bool:
-    """A dtype datasets can turn into a Value, or one of its feature classes by name."""
-    return _known_value_dtype(dtype) or dtype.replace("_", "").lower() in _PARAMETERLESS_FEATURES
-
-
-def _known_value_dtype(dtype: str) -> bool:
-    """An Arrow value alias, which is all a Value or an ArrayXD can be built from."""
-    if dtype in _VALUE_DTYPES:
-        return True
-    decimal = _DECIMAL_RE.fullmatch(dtype)
-    if decimal is not None:
-        precision, scale = int(decimal.group(2)), int(decimal.group(3))
-        ceiling = _DECIMAL_PRECISION[decimal.group(1)]
-        return 0 < precision <= ceiling and -ceiling <= scale <= ceiling
-    parameterised = re.fullmatch(r"([a-z0-9_]+)\[([^\]]*)\]", dtype)
-    if parameterised is None:
-        return False
-    units = _DTYPE_UNITS.get(parameterised.group(1))
-    if units is None:
-        return False
-    # A timestamp may carry a timezone after its unit, and nothing else may.
-    parameters = [part.strip() for part in parameterised.group(2).split(",")]
-    if parameters[0] not in units:
-        return False
-    if len(parameters) == 1:
-        return True
-    return (
-        parameterised.group(1) == "timestamp"
-        and len(parameters) == 2
-        and parameters[1].startswith("tz=")
-        and len(parameters[1]) > len("tz=")
-    )
-
-
-def _valid_array(spec: dict[str, Any], rank: int) -> bool:
-    """An ArrayXD the builder can put in a schema: its shape has to have the class's rank,
-    and its dtype has to be one Value understands."""
-    shape = spec.get("shape")
-    if not isinstance(shape, list) or len(shape) != rank:
-        return False
-    # datasets takes a null first dimension as a dynamic one; the rest are fixed.
-    sizes = shape[1:] if shape[0] is None else shape
-    if not all(isinstance(size, int) and not isinstance(size, bool) and size > 0 for size in sizes):
-        return False
-    return isinstance(spec.get("dtype"), str) and _known_value_dtype(spec["dtype"])
-
-
-def _valid_class_label(spec: dict[str, Any]) -> bool:
-    """ClassLabel takes its names as a list, or as a mapping datasets reads back into one,
-    which it only can when the ids are every integer from zero up."""
-    names = spec.get("names")
-    if names is None:
-        # ClassLabel(names=None) is the same to datasets as passing nothing.
-        return False
-    if isinstance(names, dict):
-        ids = []
-        for key in names:
-            try:
-                ids.append(int(key))
-            except (TypeError, ValueError):
-                return False
-        # Two keys can name the same id, which leaves a gap once they are sorted.
-        if sorted(ids) != list(range(len(ids))):
-            return False
-        names = list(names.values())
-    if not isinstance(names, list):
-        return False
-    # ClassLabel stringifies the names and refuses a repeat.
-    labels = [str(name) for name in names]
-    return len(labels) == len(set(labels))
-
-
-def _valid_feature_node(node: Any, depth: int = 0) -> bool:
-    """One node of a card's feature tree, read the way Features._from_yaml_list reads it.
-
-    The first key names the node's role: dtype carries a value alias, the list forms and
-    struct carry a nested node, and anything else has to be a feature class whose value is
-    that class's parameters.
-    """
-    if depth > _MAX_FEATURE_DEPTH:
-        # An aliased cycle, which datasets cannot build either.
-        return False
-    if isinstance(node, str):
-        return _known_dtype(node)
-    if isinstance(node, list):
-        # datasets pops a name off each child, so one without it raises there.
-        return all(
-            isinstance(item, dict)
-            and isinstance(item.get("name"), str)
-            and _valid_feature_node(item, depth + 1)
-            for item in node
-        )
-    if not isinstance(node, dict):
-        return False
-    keys = [key for key in node if key != "name"]
-    if not keys:
-        # Nothing to reconstruct from, so Features raises rather than defaulting.
-        return False
-    role = keys[0]
-    if role == "dtype":
-        return _valid_feature_node(node["dtype"], depth + 1)
-    if role in {"large_list", "list", "sequence", "struct"}:
-        return _valid_feature_node(node[role], depth + 1)
-    # A feature class, with the mapping under it being its keyword arguments. datasets
-    # expands that value with **, so anything but a mapping raises there.
-    if not isinstance(role, str):
-        # safe_load keeps a numeric key as an int, and the card is not one datasets reads.
-        return False
-    name = role.replace("_", "").lower()
-    return (
-        name in _FEATURE_TYPE_NAMES
-        and isinstance(node[role], dict)
-        and _valid_feature_arguments(name, node[role])
-    )
-
-
-def _valid_feature_arguments(name: str, spec: dict[str, Any]) -> bool:
-    """The arguments a feature class is given, whether the card spelled them under the class
-    name or the json form put them beside its _type."""
-    if name == "classlabel":
-        # A card can only size a ClassLabel by its names; datasets drops the other two.
-        return "names" in spec and _valid_class_label(spec)
-    if not all(key in spec for key in _REQUIRED_FEATURE_ARGS.get(name, ())):
-        return False
-    if name == "value":
-        return isinstance(spec["dtype"], str) and _known_value_dtype(spec["dtype"])
-    if name == "translation":
-        return isinstance(spec["languages"], list) and all(
-            isinstance(language, str) for language in spec["languages"]
-        )
-    rank = _ARRAY_RANKS.get(name)
-    return rank is None or _valid_array(spec, rank)
-
-
-def _valid_features(features: Any) -> bool:
-    """datasets turns this field into Features while it builds the configs, and anything it
-    cannot read raises there, so a card carrying one is not loadable at all."""
-    if not isinstance(features, list):
-        return False
-    return all(
-        isinstance(field, dict)
-        and isinstance(field.get("name"), str)
-        and _valid_feature_node(field)
-        for field in features
-    )
-
-
-def _valid_declared_data_files(entries: Any) -> bool:
-    """datasets checks every config's data_files shape before it builds any of them."""
-    if entries is None or isinstance(entries, str):
-        return True
-    if not isinstance(entries, list):
-        return False
-    if any(isinstance(item, dict) for item in entries) and not all(
-        isinstance(item, dict) for item in entries
-    ):
-        # Once one entry is a dict, sanitize_patterns demands they all are.
-        return False
-    declared_splits = []
-    for item in entries:
-        if isinstance(item, str):
-            continue
-        if not isinstance(item, dict) or len(item) != 2 or "split" not in item:
-            return False
-        if not isinstance(item["split"], str) or _SPLIT_RE.fullmatch(item["split"]) is None:
-            return False
-        path = item.get("path")
-        if not isinstance(path, (str, list)):
-            return False
-        if isinstance(path, list) and not all(isinstance(value, str) for value in path):
-            # Every element is resolved, so one that is not a path raises there.
-            return False
-        declared_splits.append(item["split"])
-    # sanitize_patterns refuses a split named twice, while the module is still being chosen.
-    return len(declared_splits) == len(set(declared_splits))
-
-
-def _collapsed_configs(payload: Any) -> Any:
-    """Declared configs keyed by name the way datasets keys them, or _UNPARSABLE_METADATA."""
-    if not payload:
-        # datasets reads the field only when it is truthy, so anything falsy is no configs.
-        return {}
-    if not isinstance(payload, list):
-        return _UNPARSABLE_METADATA
-    # Every entry is checked, including past the cap: one unusable name anywhere makes
-    # datasets reject the whole list, while the cap only bounds what we go on to offer.
-    collapsed: dict[str, dict[str, Any]] = {}
-    for item in payload:
-        if not isinstance(item, dict) or not isinstance(item.get("config_name"), str):
-            return _UNPARSABLE_METADATA
-        name = item["config_name"]
-        if _CONFIG_RE.fullmatch(name) is None:
-            # datasets raises InvalidConfigName on these rather than skipping the config,
-            # so nothing in the snapshot is loadable and inference must not step in.
-            return _UNPARSABLE_METADATA
-        features = item.get("features")
-        # An empty list is kept as an explicit zero-column schema, which no row matches.
-        if features is not None and (not features or not _valid_features(features)):
-            # datasets parses these into Features while it builds the configs, and anything
-            # it cannot read raises there rather than when the config is chosen.
-            return _UNPARSABLE_METADATA
-        entries = item.get("data_files")
-        if not _valid_declared_data_files(entries):
-            return _UNPARSABLE_METADATA
-        collapsed[name] = item
-    return collapsed
-
-
-def _declared_configs(payload: Any) -> Any:
-    """Declared config -> data_dir for configs datasets would infer, or _UNPARSABLE_METADATA.
-
-    datasets keys its metadata configs by name, so a repeated name is last-wins, it infers
-    each config under its own data_dir, and it treats an empty configs list as no configs.
-    Only a config with no data_files field at all is inferred; an empty one resolves to
-    nothing and raises.
-    """
-    collapsed = _collapsed_configs(payload)
-    if collapsed is _UNPARSABLE_METADATA:
-        return _UNPARSABLE_METADATA
-    if not collapsed:
-        return {}
-    first = next(iter(collapsed.values()))
-    if "data_files" in first and not first["data_files"] and first["data_files"] != "":
-        # The effective first config's declaration is resolved while the builder is picked,
-        # so an empty or null one there raises for every config. A later one only kills
-        # itself, and _unresolvable_configs drops it.
-        return _UNPARSABLE_METADATA
-    if "data_files" in first and first["data_files"] is None:
-        # datasets sanitizes the first config's declaration before it looks at a file, and a
-        # null one raises TypeError there.
-        return _UNPARSABLE_METADATA
-    # A config called default is a default too, so it conflicts with a flagged sibling and
-    # get_default_config_name raises before anything loads.
-    defaults = sum(
-        1 for name, item in collapsed.items() if item.get("default") or name == "default"
-    )
-    if defaults > 1:
-        return _UNPARSABLE_METADATA
-    declared: dict[str, Optional[str]] = {}
-    # Every config is scoped and validated; _sorted_options is what caps the display.
-    for raw, item in collapsed.items():
-        # The loader takes names the picker cannot show. Those configs are skipped, but they
-        # are still real configs, so they keep their say over the module.
-        name = _valid_option(raw, _CONFIG_RE)
-        if name is None:
-            continue
-        if item.get("data_files") is not None:
-            # Declared, so _add_config_options owns it.
-            declared[name] = None
-        else:
-            # Rewriting an unusable data_dir would silently change the config's scope.
-            declared[name] = _safe_data_dir(item.get("data_dir") or "")
-    return declared
 
 
 def _config_name(value: Any, fallback: Any = None) -> Optional[str]:
@@ -679,109 +108,6 @@ def _add_dataset_info_options(options: set[tuple[str, str]], payload: Any) -> No
         return
     for config, info in payload.items():
         _add_info_options(options, info, fallback_config = config)
-
-
-def _valid_post_processed(value: Any) -> bool:
-    """PostProcessedInfo takes these two fields, and rebuilds its features like any other."""
-    if value is None:
-        return True
-    if not isinstance(value, dict) or set(value) > {"features", "resources_checksums"}:
-        return False
-    features = value.get("features")
-    return features is None or (isinstance(features, dict) and _valid_info_features(features))
-
-
-def _valid_supervised_keys(value: Any) -> bool:
-    """SupervisedKeysData takes an input and an output, and nothing else."""
-    return value is None or (isinstance(value, dict) and set(value) <= {"input", "output"})
-
-
-def _valid_split_info(child: Any) -> bool:
-    """SplitDict expands each recorded split into SplitInfo, so an unknown key raises."""
-    return isinstance(child, dict) and set(child) <= _SPLIT_INFO_FIELDS
-
-
-def _valid_info_version(version: Any) -> bool:
-    """datasets parses this field into a Version, which only reads a mapping or an x.y.z
-    string, so anything else raises before a config could be built."""
-    if version is None:
-        return True
-    if isinstance(version, dict):
-        # Version.from_dict passes the mapping straight to the constructor.
-        version = version.get("version_str")
-    return isinstance(version, str) and _VERSION_RE.fullmatch(version) is not None
-
-
-def _valid_info_features(features: Any) -> bool:
-    """dataset_info carries the same feature list a card does, or the json form the legacy
-    file writes, which datasets reconstructs field by field."""
-    if isinstance(features, list):
-        return _valid_features(features)
-    return all(_valid_json_feature(child) for child in features.values())
-
-
-def _valid_json_feature(node: Any, depth: int = 0) -> bool:
-    """One node of the json feature form, where _type names the class outright."""
-    if depth > _MAX_FEATURE_DEPTH:
-        return False
-    if isinstance(node, list):
-        return all(_valid_json_feature(item, depth + 1) for item in node)
-    if not isinstance(node, dict):
-        return False
-    kind = node.get("_type")
-    if kind is not None:
-        name = kind.replace("_", "").lower()
-        if name not in _FEATURE_TYPE_NAMES:
-            return False
-        if not _valid_feature_arguments(name, {k: v for k, v in node.items() if k != "_type"}):
-            return False
-    return all(
-        _valid_json_feature(child, depth + 1)
-        for key, child in node.items()
-        if key in {"feature", "features"} or kind is None
-    )
-
-
-def _valid_dataset_info(payload: Any) -> bool:
-    """datasets walks this while it builds DatasetInfosDict, so a field of the wrong shape
-    raises there rather than when a split is chosen."""
-
-    def children(value: Any) -> list[Any]:
-        return list(value.values()) if isinstance(value, dict) else value
-
-    def field(entry: dict[str, Any], name: str) -> Any:
-        # datasets skips the conversion when the field is absent or null.
-        return entry.get(name) or []
-
-    entries = payload if isinstance(payload, list) else [payload]
-    return all(
-        isinstance(entry, dict)
-        and _valid_info_version(entry.get("version"))
-        and _valid_post_processed(entry.get("post_processed"))
-        and _valid_supervised_keys(entry.get("supervised_keys"))
-        and isinstance(field(entry, "features"), (list, dict))
-        and isinstance(field(entry, "splits"), (list, dict))
-        # datasets walks each child with .get or .pop, so a scalar in there raises too.
-        and _valid_info_features(field(entry, "features"))
-        and all(_valid_split_info(child) for child in children(field(entry, "splits")))
-        for entry in entries
-    )
-
-
-def _emptied_configs(payload: Any) -> set[str]:
-    """Configs whose dataset_info records no splits at all. That set is authoritative, so
-    the config is dropped rather than built from whatever the patterns find."""
-    entries = payload if isinstance(payload, list) else [payload]
-    # datasets builds these into a dict keyed by config name, so a repeat is last-wins.
-    collapsed: dict[str, Any] = {}
-    for item in entries:
-        if isinstance(item, dict) and (name := _config_name(item.get("config_name"))) is not None:
-            collapsed[name] = item
-    return {
-        name
-        for name, item in collapsed.items()
-        if isinstance(item.get("splits"), (list, dict)) and not item["splits"]
-    }
 
 
 def _add_config_options(options: set[tuple[str, str]], payload: Any) -> None:
@@ -892,1215 +218,339 @@ def _snapshot_metadata_file(snapshot: Path, name: str) -> Optional[Path]:
     return path if 0 < size <= _MAX_METADATA_BYTES else None
 
 
-def _snapshot_metadata_exists(snapshot: Path, name: str) -> bool:
-    """The file is there for the loader, whether or not we were willing to read it."""
-    return (snapshot / name).is_file()
-
-
-def _snapshot_metadata_is_unsafe(snapshot: Path, name: str) -> bool:
-    """The loader will read this file and we will not, so we cannot say what it declares."""
-    return _snapshot_metadata_exists(snapshot, name) and (
-        resolved_dataset_snapshot_file(snapshot, name) is None
-    )
-
-
-def _snapshot_metadata_is_oversized(snapshot: Path, name: str) -> bool:
-    path = resolved_dataset_snapshot_file(snapshot, name)
-    try:
-        return path is not None and path.stat().st_size > _MAX_METADATA_BYTES
-    except OSError:
-        return False
+# _read_card_metadata returns this when a card has front matter datasets cannot parse.
+# DatasetCard.load raises on it, so nothing in the snapshot is loadable.
+_UNPARSABLE_METADATA = object()
 
 
 def _read_card_metadata(path: Path) -> Any:
     try:
-        content = path.read_text(encoding = "utf-8")
-    except (OSError, UnicodeError, ValueError):
-        # DatasetCard.load opens the file whenever it is there and lets the error out.
-        return _UNPARSABLE_METADATA
-    block = _CARD_BLOCK_RE.search(content)
-    if block is None:
-        # RepoCard's own grammar, so a delimiter it will not accept leaves the card empty
-        # here too rather than handing us configs the loader never saw.
-        return None
-    try:
+        lines = path.read_text(encoding = "utf-8").splitlines()
+        if not lines or lines[0].strip() != "---":
+            return None
+        end = next(index for index, line in enumerate(lines[1:], start = 1) if line.strip() == "---")
         from yaml import YAMLError, safe_load
-    except ImportError:
-        return None
-    try:
-        payload = safe_load(block.group(2))
-    except YAMLError:
-        return _UNPARSABLE_METADATA
-    # DatasetCard.load turns a null block into empty metadata but raises on anything else
-    # that is not a mapping.
-    if payload is None:
-        return {}
-    if not isinstance(payload, dict) or not all(isinstance(key, str) for key in payload):
-        # DatasetCardData takes the mapping as keyword arguments, so a non-string key is a
-        # TypeError there rather than a card we could read.
-        return _UNPARSABLE_METADATA
-    return payload
 
-
-def _snapshot_card_data(snapshot: Path) -> Any:
-    """The card datasets would build: README front matter, then .huggingface.yaml over it."""
-    card: dict[str, Any] = {}
-    if _snapshot_metadata_is_unsafe(snapshot, "README.md") or _snapshot_metadata_is_unsafe(
-        snapshot, _STANDALONE_YAML
-    ):
-        # datasets follows the symlink and builds that card's configs, so inferring here
-        # would offer a config it never created.
-        return _UNPARSABLE_METADATA
-    if _snapshot_metadata_is_oversized(snapshot, "README.md"):
-        # datasets parses it whatever its size, so treating it as absent invents options.
-        return _UNPARSABLE_METADATA
-    readme = _snapshot_metadata_file(snapshot, "README.md")
-    if readme is not None:
-        payload = _read_card_metadata(readme)
-        if payload is _UNPARSABLE_METADATA:
-            return _UNPARSABLE_METADATA
-        if isinstance(payload, dict):
-            card.update(payload)
-
-    if _snapshot_metadata_is_oversized(snapshot, _STANDALONE_YAML):
-        return _UNPARSABLE_METADATA
-    standalone = _snapshot_metadata_file(snapshot, _STANDALONE_YAML)
-    path = snapshot / _STANDALONE_YAML
-    if standalone is None and path.exists() and not path.is_file():
-        # The loader tests os.path.exists and then opens it, so a directory here raises
-        # IsADirectoryError. An empty file just parses to nothing and is skipped.
-        return _UNPARSABLE_METADATA
-    if standalone is not None:
         try:
-            from yaml import YAMLError, safe_load
-        except ImportError:
-            payload = None
-        else:
-            try:
-                payload = safe_load(standalone.read_text(encoding = "utf-8"))
-            except (YAMLError, OSError, UnicodeError, ValueError):
-                # The loader opens this file unconditionally and lets the error out.
-                return _UNPARSABLE_METADATA
-        if payload and not (
-            isinstance(payload, dict) and all(isinstance(key, str) for key in payload)
-        ):
-            # The loader skips a falsy block and merges anything else into the card, which
-            # then becomes keyword arguments: a scalar or a non-string key raises there.
+            payload = safe_load("\n".join(lines[1:end]))
+        except YAMLError:
             return _UNPARSABLE_METADATA
-        if payload:
-            card.update(payload)
-    return card
-
-
-def _has_snapshot_data_extension(filename: str) -> bool:
-    """Whether datasets would keep this name and Studio could train on it.
-
-    The allowed-extension test looks at every suffix in the basename, not just the last, so
-    train.jsonl.txt is json data. Case-sensitive on every platform: datasets globs through
-    fsspec, whose matcher is a plain regex with no normcase, so .JSONL is unsupported even
-    on Windows.
-    """
-    suffixes = ["." + suffix for suffix in filename.split(".")[1:]]
-    if suffixes and suffixes[-1] in _UNREADABLE_COMPRESSION:
-        # Named by datasets but needing a codec a Studio install does not ship, so the split
-        # would be offered and then fail to open.
-        return False
-    return any(suffix in TRAINING_DATA_EXTS for suffix in suffixes)
-
-
-def _extension_module(extension: str) -> Optional[str]:
-    """The builder datasets registers for one suffix, honouring its case rules."""
-    module = _EXTENSION_MODULES.get(extension)
-    if module is not None:
-        return module
-    # The folder builders are registered twice, lower case and upper case. Nothing else,
-    # so a mixed-case .Jpg is not a media file and the loader filters it out.
-    if extension != extension.upper():
+    except StopIteration:
+        # Front matter that never closes is not front matter at all.
         return None
-    module = _EXTENSION_MODULES.get(extension.lower())
-    return module if module in _FOLDER_MODULES else None
+    except (ImportError, OSError, UnicodeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else _UNPARSABLE_METADATA
 
 
-def _file_modules(filename: str) -> set:
-    """Every builder this name maps to. datasets weighs all suffixes, not just the first."""
+
+# --- Split inference for cached datasets whose card declares nothing ------------------
+#
+# datasets resolves a metadata-free directory with get_data_patterns: it tries sharded
+# data/{split}-NNNNN-of-NNNNN files, then directory-name keywords, then filename keywords,
+# and falls back to one train split holding everything. The first stage that names any
+# split wins, and one builder is chosen for all of them. This mirrors that without
+# importing datasets, which dataset_cache.py forbids on cache paths.
+#
+# The contract is that an offered split has to be trainable: anything looser is offered and
+# then 422s, anything tighter hides a usable option. Deliberately tighter in two places,
+# both to keep training inside the cache: a file whose symlink leaves the repository is
+# refused, and only the extensions Studio can train on are offered.
+
+# Only names are read during the scan, so this can sit well above any real snapshot. Past
+# it the result would depend on traversal order, so nothing is offered.
+_MAX_SNAPSHOT_DATA_FILES = 200_000
+# datasets drops these by basename before it infers anything, so a metadata-only cache is
+# empty rather than a bogus train split.
+_IGNORED_DATA_FILENAMES = frozenset(
+    {
+        "README.md",
+        "config.json",
+        "dataset_info.json",
+        "dataset_infos.json",
+        "dataset_dict.json",
+        "dummy_data.zip",
+    }
+)
+# What fsspec can decompress in a Studio install, as suffixes that sit after the real one.
+_COMPRESSION_EXTENSIONS = frozenset({".gz", ".gzip", ".bz2", ".xz", ".lzma", ".zip"})
+# Named by datasets but needing codecs a Studio install does not ship, so they raise
+# "Compression type not supported" and offering them would put a dead split in the picker.
+_UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4"})
+# datasets picks one builder for the whole dataset, from the extensions it finds. Splits
+# that disagree make it raise, so a snapshot mixing formats is not offerable at all.
+_MODULE_EXTENSIONS = {
+    "arrow": ".arrow",
+    "csv": ".csv",
+    # datasets compares the whole builder result, and tsv carries sep="\t", so it is not csv.
+    "csv+tab": ".tsv",
+    "json": ".json .jsonl .ndjson",
+    "parquet": ".parquet .geoparquet .gpq",
+    "text": ".txt",
+    "webdataset": ".tar",
+    "xml": ".xml",
+    "hdf5": ".h5 .hdf5",
+}
+# The folder builders. datasets registers only these in both letter cases, so only their
+# extensions match case-insensitively; everything else is matched by a case-sensitive glob.
+_FOLDER_EXTENSIONS = frozenset(
+    ".apng .bmp .gif .ico .jfif .jp2 .jpe .jpeg .jpg .png .pnm .ppm .psd .tif .tiff .webp "
+    ".3gp .aiff .au .flac .m4v .mp3 .ogg .opus .wav .webm .wma "
+    ".avi .mkv .mov .mp4 .mpeg .pdf".split()
+)
+_EXTENSION_MODULES = {
+    extension: module
+    for module, names in _MODULE_EXTENSIONS.items()
+    for extension in names.split()
+}
+# datasets' tie-break once the counts are level, then the extension string itself.
+_EXTENSION_PRIORITY = (".parquet", ".jsonl", ".json", ".csv")
+# Folder-builder metadata loses every tie-break, so it never decides a split's builder.
+_METADATA_FILENAMES = frozenset({"metadata.csv", "metadata.jsonl", "metadata.parquet"})
+# datasets' split keywords, in the order it resolves them.
+_SPLIT_KEYWORDS = {
+    "train": ("train", "training"),
+    "validation": ("validation", "valid", "dev", "val"),
+    "test": ("test", "testing", "eval", "evaluation"),
+}
+# Its keyword globs as regexes: "sep" is NON_WORDS_CHARS and * never crosses a directory.
+_SEP = "[-._ 0-9]"
+_FILENAME_KEYWORD_PATTERNS = (
+    r"(?:.*/)?{keyword}%s[^/]*" % _SEP,
+    r"(?:.*/)?[^/]*%s{keyword}%s[^/]*" % (_SEP, _SEP),
+)
+_DIR_NAME_KEYWORD_PATTERNS = (
+    r"(?:.*/)?{keyword}/.*",
+    r"(?:.*/)?{keyword}%s[^/]*/.*" % _SEP,
+    r"(?:.*/)?[^/]*%s{keyword}/.*" % _SEP,
+    r"(?:.*/)?[^/]*%s{keyword}%s[^/]*/.*" % (_SEP, _SEP),
+)
+# data/{split}-NNNNN-of-NNNNN*.*, where a * matches nothing as happily as something.
+_SHARDED_DATA_RE = re.compile(r"^data/(?P<split>[^/]*)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]*$")
+# datasets' own split grammar, which is stricter than the one the picker accepts. A shard
+# named outside it makes the whole snapshot unloadable rather than falling through.
+_SHARD_SPLIT_RE = re.compile(r"^\w+(\.\w+)*$")
+
+
+def _keyword_patterns(bases: tuple[str, ...]) -> dict[str, list["re.Pattern[str]"]]:
     return {
-        module
-        for suffix in filename.split(".")[1:]
-        if (module := _extension_module("." + suffix)) is not None
+        split: [
+            re.compile(base.format(keyword = re.escape(keyword)) + r"\Z")
+            for keyword in keywords
+            for base in bases
+        ]
+        for split, keywords in _SPLIT_KEYWORDS.items()
     }
 
 
-def _file_module(filename: str) -> Optional[str]:
-    """Whether datasets sees data here at all; _split_module decides which builder wins."""
-    return next(iter(_file_modules(filename)), None)
+_DIR_NAME_SPLITS = _keyword_patterns(_DIR_NAME_KEYWORD_PATTERNS)
+_FILENAME_SPLITS = _keyword_patterns(_FILENAME_KEYWORD_PATTERNS)
 
 
-def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
-    """Every file datasets would see, or None when the snapshot is too large to judge.
+def _data_suffix(name: str) -> Optional[str]:
+    """The suffix that decides this file's builder, or None when it has none.
 
-    Nothing is resolved here. datasets picks a split pattern over all non-ignored files and
-    only then drops the unsupported ones, so a `test/notes.bin` decides which stage wins even
-    though it can never be trained on. Resolution is deferred to the files actually offered.
+    datasets reads the whole suffix chain, so records.parquet.backup is still parquet, and
+    a trailing compression suffix is stripped before the rest is considered.
     """
-    files: list[_DataFile] = []
+    suffixes = PurePosixPath(name).suffixes
+    if suffixes and suffixes[-1].lower() in _UNREADABLE_COMPRESSION:
+        return None
+    if suffixes and suffixes[-1].lower() in _COMPRESSION_EXTENSIONS:
+        suffixes = suffixes[:-1]
+    for suffix in reversed(suffixes):
+        if suffix in _EXTENSION_MODULES or suffix.lower() in _FOLDER_EXTENSIONS:
+            return suffix
+    return suffixes[-1] if suffixes else None
+
+
+def _file_module(name: str) -> Optional[str]:
+    """The builder datasets would pick for this filename.
+
+    Its globs are case-sensitive, so TRAIN.JSONL is a file it never resolves. The folder
+    builders are the exception: those are registered in both cases.
+    """
+    suffix = _data_suffix(name)
+    if suffix is None:
+        return None
+    if suffix.lower() in _FOLDER_EXTENSIONS:
+        return "folder"
+    return _EXTENSION_MODULES.get(suffix)
+
+
+def _trainable_name(name: str) -> bool:
+    """Whether Studio can train on this file. Narrower than what datasets would read."""
+    suffix = _data_suffix(name)
+    return suffix is not None and suffix in TRAINING_DATA_EXTS
+
+
+def _snapshot_data_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
+    """Every file datasets would consider, relative to the snapshot and sorted the way
+    fsspec returns them, or None when the snapshot is too large to compare with."""
+    found: list[PurePosixPath] = []
     try:
         root = snapshot.resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
-        return files
-
-    for directory, dirnames, filenames in os.walk(root, followlinks = False):
+        return found
+    for directory, dirnames, filenames in os.walk(root):
         base = Path(directory)
         try:
             relative = base.relative_to(root)
         except ValueError:
             dirnames[:] = []
             continue
+        # datasets hides dot and __ directories from its own patterns.
         dirnames[:] = [
-            name
-            for name in dirnames
-            # datasets exempts a component that is only dots from its hidden-directory rule.
-            if (not name.startswith((".", "__")) or set(name) == {"."})
-            and not (base / name).is_symlink()
+            name for name in dirnames if not name.startswith((".", "__"))
         ]
         for filename in filenames:
-            # datasets hides dot files and `__` directories, but not `__` filenames.
-            if (filename.startswith(".") and set(filename) != {"."}) or (
-                filename in _IGNORED_DATA_FILENAMES
-            ):
+            if filename in _IGNORED_DATA_FILENAMES or filename.startswith("."):
                 continue
-            if (base / filename).is_symlink() and not (base / filename).exists():
-                # fsspec drops a dangling link before it picks a split pattern.
-                continue
-            if len(files) >= _MAX_SNAPSHOT_DATA_FILES:
-                return None
-            files.append((PurePosixPath((relative / filename).as_posix()), _file_module(filename)))
-    # os.walk yields directory order, but the loader globs through fsspec and sorts, and
-    # only the first files of a split decide its module.
-    files.sort(key = lambda entry: entry[0].as_posix())
-    return files
-
-
-def _snapshot_all_files(
-    snapshot: Path,
-) -> Optional[tuple[list[PurePosixPath], set[str], list[PurePosixPath]]]:
-    """Every file a declared pattern could name, hidden and __ ones included.
-
-    Default inference does not see these: fsspec's ** does not descend a directory link, so
-    _snapshot_data_files leaves them alone. An explicit pattern does resolve through one, so
-    this walk follows a link whose target stays inside the repository, blobs included, and
-    still refuses one that points outside it.
-    """
-    found: list[PurePosixPath] = []
-    directories: set[str] = set()
-    # Files the loader would read and we will not: a pattern reaching one condemns its config.
-    unsafe: list[PurePosixPath] = []
-    unsafe_dirs: list[str] = []
-    try:
-        root = snapshot.resolve(strict = True)
-        # <cache>/datasets--org--name/snapshots/<sha>
-        blobs = (snapshot.parent.parent / "blobs").resolve()
-    except (OSError, RuntimeError, ValueError):
-        return found, directories, unsafe
-
-    def inside(path: Path) -> bool:
-        # The reach resolved_dataset_snapshot_file allows: this snapshot or the blobs, and
-        # never a sibling revision.
-        try:
-            real = path.resolve(strict = True)
-            return real.is_relative_to(root) or real.is_relative_to(blobs)
-        except (OSError, RuntimeError, ValueError):
-            return False
-
-    for directory, dirnames, filenames in os.walk(root, followlinks = True):
-        base = Path(directory)
-        try:
-            relative = base.relative_to(root)
-        except ValueError:
-            dirnames[:] = []
-            continue
-        try:
-            real = base.resolve(strict = True)
-        except (OSError, RuntimeError, ValueError):
-            dirnames[:] = []
-            continue
-        if relative.parts:
-            directories.add(relative.as_posix())
-        if real in base.parents:
-            # A link back up its own branch. Two links to one directory are both real names
-            # for it, so only a cycle is pruned here, not a second alias, and the alias is
-            # still a directory a declaration may step through.
-            dirnames[:] = []
-            continue
-        kept = []
-        for name in dirnames:
-            if not (base / name).is_symlink() or inside(base / name):
-                kept.append(name)
-            else:
-                # Pruned, but the loader globs through it, so a pattern that can reach in
-                # condemns its config the way an unsafe file does.
-                unsafe_dirs.append((relative / name).as_posix())
-        dirnames[:] = kept
-        for filename in filenames:
-            if (base / filename).is_symlink() and not inside(base / filename):
-                # Dangling, or pointing out of the cache. Either way it is not a file we
-                # would let training read.
-                unsafe.append(PurePosixPath((relative / filename).as_posix()))
-                continue
+            # Files with no builder of their own are kept: they cannot win the vote, but a
+            # split holding nothing else is one datasets refuses to build.
             if len(found) >= _MAX_SNAPSHOT_DATA_FILES:
-                # Past the cap this is a traversal-order prefix, and deciding a declaration is
-                # missing from a prefix would drop configs that are really there.
+                # Past the cap this is a traversal-order prefix, which cannot be compared
+                # with what the loader would resolve.
                 return None
             found.append(PurePosixPath((relative / filename).as_posix()))
-    # fsspec returns each glob's matches sorted, and only the first files decide the module.
     found.sort(key = lambda path: path.as_posix())
-    # A directory we refused stands for every file it might hold.
-    unsafe += [
-        PurePosixPath(f"{directory}{'/*' * depth}/probe{extension}")
-        for directory in unsafe_dirs
-        for depth in range(3)
-        for extension in sorted(TRAINING_DATA_EXTS)
-    ]
-    return found, directories, unsafe
+    return found
 
 
-def _keyword_splits(path: str, patterns: _KeywordPatterns) -> dict[str, list[tuple[int, int]]]:
-    """Splits this path is named for, each with the patterns that matched it.
-
-    datasets resolves every keyword pattern separately and concatenates, so a path a pattern
-    set matches twice is listed twice and counts twice when the module is inferred.
-    """
-    matched = {}
-    for split, compiled in patterns.items():
-        hits = [order for order, matcher in compiled if matcher.match(path)]
-        if hits:
-            matched[split] = hits
-    return matched
-
-
-def _sharded_split_files(files: Iterable[_DataFile]) -> Optional[dict[str, list[_DataFile]]]:
-    """Sharded splits, or None when a name datasets rejects makes the snapshot unloadable."""
-    grouped: dict[str, list[_DataFile]] = {}
-    for entry in files:
-        match = _SHARDED_DATA_RE.fullmatch(entry[0].as_posix())
-        if match is None:
+def _sharded_splits(files: list[PurePosixPath]) -> Optional[dict[str, list[PurePosixPath]]]:
+    """The sharded stage, or None when a shard name is one datasets refuses outright."""
+    grouped: dict[str, list[PurePosixPath]] = {}
+    for path in files:
+        matched = _SHARDED_DATA_RE.match(path.as_posix())
+        if matched is None:
             continue
-        raw = match.group("split")
-        split = _valid_option(raw, _SPLIT_RE, reject_dotdot = True)
-        if split is None or split != raw:
-            # Trimming would hand the picker a different split than the loader rejects.
+        split = matched.group("split")
+        if _SHARD_SPLIT_RE.fullmatch(split) is None:
+            # datasets raises on the name rather than moving on to the next stage.
             return None
-        grouped.setdefault(split, []).append(entry)
-    return {split: sorted(entries) for split, entries in grouped.items()}
-
-
-def _keyword_split_files(
-    files: Iterable[_DataFile], patterns: _KeywordPatterns
-) -> dict[str, list[_DataFile]]:
-    ordered: dict[str, list[tuple[int, PurePosixPath, _DataFile]]] = {}
-    for entry in files:
-        for split, hits in _keyword_splits(entry[0].as_posix(), patterns).items():
-            ordered.setdefault(split, []).extend((order, entry[0], entry) for order in hits)
-    return {
-        split: [entry for _order, _path, entry in sorted(rows, key = lambda row: row[:2])]
-        for split, rows in ordered.items()
-    }
-
-
-def _split_module(files: Iterable[_DataFile]) -> Optional[str]:
-    """The one module datasets would build this split with, counting and ranking as it does."""
-    counts: dict[tuple[bool, str], int] = {}
-    for path, module in list(files)[:_MAX_MODULE_INFERENCE_FILES]:
-        if module is None:
-            continue
-        is_metadata = path.name in _METADATA_FILENAMES
-        # Every suffix counts, not just the first that resolves, and the counter is folded to
-        # lower case even though what may reach it is not.
-        for suffix in path.name.split(".")[1:]:
-            if _extension_module("." + suffix) is None:
-                continue
-            key = (is_metadata, "." + suffix.lower())
-            counts[key] = counts.get(key, 0) + 1
-    if not counts:
-        return None
-    best = max(
-        counts,
-        key = lambda key: (
-            not key[0],
-            counts[key],
-            *(key[1] == extension for extension in _EXTENSION_PRIORITY),
-            key[1],
-        ),
-    )
-    return _EXTENSION_MODULES[best[1]]
-
-
-def _empty_archive(path: Path) -> bool:
-    """Whether a zip holds nothing the builder could read. Only the central directory is
-    read, which names every member and its size without unpacking any of them."""
-    try:
-        with zipfile.ZipFile(path) as archive:
-            members = archive.infolist()
-            if any(member.flag_bits & 0x1 for member in members):
-                # Encrypted, and nothing here has the password.
-                return True
-            return not any(member.file_size for member in members)
-    except (OSError, zipfile.BadZipFile):
-        return True
-
-
-def _empty_file(path: Path, name: str) -> bool:
-    """Whether the builder would read no bytes out of this file. A compressed one is opened
-    for a single byte, since its container size says nothing about its payload. The name is
-    the one the snapshot uses, since the cache resolves it to a suffixless blob."""
-    suffixes = [suffix.lower() for suffix in PurePosixPath(name).suffixes]
-    if len(suffixes) > 1 and all(
-        suffix in _DECOMPRESSORS or suffix == ".zip" for suffix in suffixes[-2:]
-    ):
-        # Only the outer layer is unwrapped, so the parser is handed a compressed stream.
-        return True
-    suffix = suffixes[-1] if suffixes else ""
-    if suffix == ".zip":
-        return _empty_archive(path)
-    opener = _DECOMPRESSORS.get(suffix)
-    if opener is None:
-        try:
-            return path.stat().st_size == 0
-        except OSError:
-            return True
-    try:
-        with opener(path, "rb") as stream:
-            return not stream.read(1)
-    except (OSError, EOFError, ValueError, lzma.LZMAError):
-        # Unreadable is as dead as empty, and the builder fails on it either way.
-        return True
-
-
-def _offerable_split(
-    entries: Iterable[_DataFile], snapshot: Path, root: str, module: str
-) -> Optional[bool]:
-    """True when the split holds trainable data, False when it holds none, None when a file
-    the builder would read escapes the cache. One safe file is not enough: datasets loads
-    them all, so an escape anywhere condemns the whole config rather than the one split."""
-    trainable = False
-    empty = False
-    for path, _file_module in entries:
-        # datasets keeps every zip, and folder metadata for its own builders, whatever module
-        # won, so those are read as well and have to clear the resolver too.
-        modules = {_base_module(name) for name in _file_modules(path.name)}
-        retained = (
-            _base_module(module) in modules
-            or _INDETERMINATE_MODULE in modules
-            # The metadata allow-list is empty for every non-folder builder, so a csv builder
-            # never reads metadata.csv the way an imagefolder one does.
-            or (module in _FOLDER_MODULES and path.name in _METADATA_FILENAMES)
-        )
-        if not retained:
-            continue
-        resolved = resolved_dataset_snapshot_file(snapshot, root + path.as_posix())
-        if resolved is None:
-            return None
-        if not _has_snapshot_data_extension(path.name):
-            continue
-        if _empty_file(resolved, path.name):
-            # An empty file fails the whole generation for every builder but json, which
-            # skips it and carries on as long as one file still holds rows.
-            empty = True
-            continue
-        trainable = True
-    return trainable and not (empty and module != "json")
-
-
-def _declared_split_groups(item: dict[str, Any]) -> list[tuple[str, list[str]]]:
-    """Each split a config declares with the globs that make it up, grouped the way
-    sanitize_patterns groups them. Each group is resolved on its own, so one that comes
-    back empty is what raises.
-    """
-    entries = item.get("data_files")
-    if isinstance(entries, str):
-        return [("train", [entries])]
-    if not isinstance(entries, list):
-        return []
-    groups: list[tuple[Any, list[Any]]] = []
-    plain: list[Any] = []
-    for entry in entries:
-        if isinstance(entry, dict):
-            value = entry.get("path")
-            groups.append((entry.get("split"), list(value) if isinstance(value, list) else [value]))
-        else:
-            plain.append(entry)
-    if plain:
-        groups.append(("train", plain))
-    return [
-        (split, [value for value in paths if isinstance(value, str)])
-        for split, paths in groups
-        if isinstance(split, str)
-    ]
-
-
-def _declared_path_groups(item: dict[str, Any]) -> list[list[str]]:
-    """The globs a config declares, with the split each belongs to dropped."""
-    return [paths for _split, paths in _declared_split_groups(item)]
-
-
-def _declared_paths(item: dict[str, Any]) -> list[str]:
-    """Every glob a config declares, flattened. One module is voted on across all of them."""
-    return [path for group in _declared_path_groups(item) for path in group]
-
-
-def _paths_module(item: dict[str, Any], files: _DeclaredFiles) -> Optional[str]:
-    """The module a config's declaration votes for, counting the files it resolves to the
-    way datasets does rather than counting the pattern strings."""
-    root = _config_root(item, files)
-    if root is None:
-        return None
-    named = [
-        (path, _file_module(path.name))
-        for pattern in _declared_paths(item)
-        for path in files.resolve(pattern, root)
-    ]
-    return _split_module(named) if named else None
-
-
-def _mixed_declared_splits(item: dict[str, Any], files: _DeclaredFiles) -> bool:
-    """Whether the first config declares splits its builder cannot be chosen for. Each group
-    is resolved on its own, so two of them naming different formats stops the factory before
-    any config is selected and takes every sibling down too."""
-    root = _config_root(item, files)
-    if root is None:
-        return False
-    modules = set()
-    for group in _declared_path_groups(item):
-        resolved = [path for pattern in group for path in files.resolve(pattern, root)]
-        if resolved:
-            modules.add(_split_module([(path, _file_module(path.name)) for path in resolved]))
-    return len(modules) > 1
-
-
-def _declared_module(payload: Any, files: _DeclaredFiles) -> Optional[str]:
-    """The builder datasets picks for the whole dataset, or None when the snapshot picks it.
-
-    It settles one module before it builds any config, and only the first effective config's
-    data_files feed that choice. If the first one declares none, the module comes from the
-    snapshot's own patterns instead and every config is still built with it.
-    """
-    collapsed = _collapsed_configs(payload)
-    if collapsed is _UNPARSABLE_METADATA or not collapsed:
-        return None
-    return _paths_module(next(iter(collapsed.values())), files)
-
-
-def _glob_matcher(pattern: str) -> "Optional[re.Pattern[str]]":
-    """One fsspec glob as a regex, or None when it is not one the engine can compile.
-
-    ** crosses directories, * and ? never do. A pattern the engine refuses is one the loader
-    cannot resolve either, so the caller treats it as matching nothing.
-    """
-    parts = []
-    index = 0
-    while index < len(pattern):
-        character = pattern[index]
-        if character == "*":
-            if pattern[index + 1 : index + 2] == "*":
-                before = pattern[index - 1 : index]
-                after = pattern[index + 2 : index + 3]
-                if (before and before != "/") or (after and after != "/"):
-                    # fsspec raises on a ** that is not a path component of its own.
-                    return None
-                # A leading **/ stands for any number of directories, including none.
-                if pattern[index + 2 : index + 3] == "/":
-                    parts.append("(?:.*/)?")
-                    index += 3
-                else:
-                    parts.append(".*")
-                    index += 2
-            else:
-                parts.append("[^/]*")
-                index += 1
-        elif character == "?":
-            parts.append("[^/]")
-            index += 1
-        elif character == "[" and "]" in pattern[index + 2 :]:
-            # A ] straight after the opening bracket, or after its !, is a member not the end.
-            start = index + 1
-            if pattern[start : start + 1] == "!":
-                start += 1
-            end = pattern.find("]", start + 1)
-            if end < 0:
-                # fsspec reads this as a class that never closes and matches nothing.
-                return None
-            body = pattern[index + 1 : end]
-            if body.startswith("!"):
-                body = "^" + body[1:]
-            elif body.startswith("^"):
-                # Only ! negates a glob class, so a leading caret is a literal one.
-                body = "\\^" + body[1:]
-            parts.append("[" + body + "]")
-            index = end + 1
-        else:
-            parts.append(re.escape(character))
-            index += 1
-    try:
-        return re.compile("".join(parts) + r"\Z")
-    except re.error:
-        return None
-
-
-def _explicit_parts(value: str, prefix: str) -> int:
-    """How many parts the loader treats as deliberately named rather than skipped."""
-    parts = PurePosixPath(value).parts if prefix == "." else PurePosixPath(value).parent.parts
-    return sum(1 for part in parts if part.startswith(prefix) and set(part) != {"."})
-
-
-class _DeclaredFiles:
-    """The snapshot as declared patterns see it: every file, indexed once.
-
-    Resolution is the one part of this module that is not linear in the snapshot, so a
-    literal goes through a lookup and the globs share a work budget. Past the budget nothing
-    further is determinate and the caller stops inferring.
-    """
-
-    def __init__(
-        self,
-        paths: list[PurePosixPath],
-        directories: set[str],
-        unsafe: Optional[list[PurePosixPath]] = None,
-    ) -> None:
-        self.paths = paths
-        self.unsafe = unsafe or []
-        self.index = {path.as_posix(): path for path in paths}
-        # Every real directory, including the empty ones a declaration may step through.
-        self.directories = directories
-        self.budget = _MAX_RESOLUTION_WORK
-        self.exhausted = False
-
-    def collapse(self, pattern: str) -> Optional[str]:
-        """A pattern with its parent steps removed, or None when a step is not there."""
-        if ".." not in PurePosixPath(pattern).parts:
-            return pattern
-        parts: list[str] = []
-        for part in PurePosixPath(pattern).parts:
-            if part == ".":
-                continue
-            if part != "..":
-                parts.append(part)
-                continue
-            if not parts or "/".join(parts) not in self.directories:
-                return None
-            parts.pop()
-        return "/".join(parts)
-
-    def resolve(
-        self,
-        pattern: str,
-        root: str = "",
-        unsafe: bool = False,
-    ) -> list[PurePosixPath]:
-        """What a declared pattern resolves to, under its config's data_dir.
-
-        The loader keeps a hidden or __ path only when the pattern names as many such parts
-        as the path has, and it drops anything without a suffix it recognises.
-        """
-        if pattern.startswith(("/", "\\")) or _drive_prefixed(pattern):
-            # The loader resolves this off the snapshot entirely, so nothing can match it.
-            return []
-        # The filesystem normalises ./x and x/../y before it globs, so the matcher has to
-        # as well, and every step it walks through still has to be a real directory.
-        joined = f"{root}/{pattern}" if root else pattern
-        collapsed = self.collapse(PurePosixPath(joined.strip("/")).as_posix())
-        if collapsed is None:
-            return []
-        pattern = collapsed
-        ignored = _IGNORED_DATA_FILENAMES - {PurePosixPath(pattern).name}
-        special = _explicit_parts(pattern, "__")
-        hidden = _explicit_parts(pattern, ".")
-
-        def keep(path: PurePosixPath) -> bool:
-            return (
-                path.name not in ignored
-                and _explicit_parts(path.as_posix(), "__") == special
-                and _explicit_parts(path.as_posix(), ".") == hidden
-                and bool(_file_modules(path.name))
-            )
-
-        paths = self.unsafe if unsafe else self.paths
-        if not any(character in pattern for character in "*?["):
-            index = {path.as_posix(): path for path in paths} if unsafe else self.index
-            found = index.get(pattern)
-            return [found] if found is not None and keep(found) else []
-        if unsafe and "**" in pattern:
-            # ** crosses into any directory, refused ones included.
-            return paths[:1]
-        matcher = _glob_matcher(pattern)
-        if matcher is None:
-            return []
-        if not unsafe:
-            self.budget -= len(self.paths)
-            if self.budget < 0:
-                self.exhausted = True
-                return []
-        return [path for path in paths if matcher.match(path.as_posix()) and keep(path)]
-
-
-def _config_root(item: dict[str, Any], files: "_DeclaredFiles") -> Optional[str]:
-    """The directory a config's declared patterns are resolved under, or None when it is one
-    we will not follow. Falling back to the root would validate a different file, and the
-    loader walks the string as written, so every step of it has to be there."""
-    safe = _safe_data_dir(item.get("data_dir") or "")
-    return None if safe is None else files.collapse(safe.strip("/"))
-
-
-def _unverifiable_configs(collapsed: dict[str, dict[str, Any]]) -> set[str]:
-    """Configs declaring a glob, which says nothing without the index: what it matched, what
-    it missed, and whether anything it reached was unsafe are all unknown."""
-    return {
-        name
-        for name, item in collapsed.items()
-        if any(character in pattern for pattern in _declared_paths(item) for character in "*?[")
-    }
-
-
-def _missing_literal_configs(collapsed: dict[str, dict[str, Any]], snapshot: Path) -> set[str]:
-    """Configs naming a literal file the cache cannot serve, checked without a walk.
-
-    Used when the snapshot is too large to index: a literal is one lookup rather than a
-    scan, so its presence and its payload can both still be judged.
-    """
-    dead = set()
-    for name, item in collapsed.items():
-        root = _safe_data_dir(item.get("data_dir") or "")
-        if root is None:
-            dead.add(name)
-            continue
-        for pattern in _declared_paths(item):
-            if any(character in pattern for character in "*?["):
-                continue
-            joined = f"{root}/{pattern}" if root else pattern
-            resolved = resolved_dataset_snapshot_file(snapshot, joined.strip("/"))
-            if resolved is None or _empty_file(resolved, PurePosixPath(pattern).name):
-                # Without the index the module is unknown, so an empty file anywhere in the
-                # declaration is taken as fatal rather than only for the builders it is.
-                dead.add(name)
-    return dead
-
-
-def _valid_parameter(rule: Any, value: Any) -> bool:
-    if rule is None:
-        return value is None
-    if value is None:
-        return True
-    rules = rule if isinstance(rule, tuple) else (rule,)
-    literals = frozenset().union(*[item for item in rules if isinstance(item, frozenset)])
-    types = tuple(item for item in rules if not isinstance(item, frozenset))
-    if isinstance(value, (str, int, float)) and value in literals:
-        return True
-    if bool not in types and isinstance(value, bool):
-        return False
-    return bool(types) and isinstance(value, types)
-
-
-def _valid_header(value: Any) -> bool:
-    """A csv header names row numbers, scalar or list, which pandas rejects otherwise."""
-    if isinstance(value, list):
-        return all(isinstance(row, int) and not isinstance(row, bool) and row >= 0 for row in value)
-    return not isinstance(value, int) or isinstance(value, bool) or value >= 0
-
-
-def _known_codec(value: Any) -> bool:
-    """encoding_errors is not checked: datasets 4.3 loads happily with an unknown handler,
-    since nothing decodes badly enough to reach it."""
-    if not isinstance(value, str):
-        return True
-    try:
-        codecs.lookup(value)
-    except LookupError:
-        return False
-    return True
-
-
-def _in_parameter_range(key: str, value: Any) -> bool:
-    if key in _PARAMETER_EXACT and value != _PARAMETER_EXACT[key]:
-        return False
-    minimum = _PARAMETER_MINIMUMS.get(key)
-    return minimum is None or not isinstance(value, int) or value >= minimum
-
-
-def _mismatched_columns(item: dict[str, Any]) -> bool:
-    """The parquet builder refuses a columns list that does not name the declared features."""
-    columns, features = item.get("columns"), item.get("features")
-    if not isinstance(columns, list) or not isinstance(features, list):
-        return False
-    named = {field.get("name") for field in features if isinstance(field, dict)}
-    return set(columns) != named
-
-
-def _misparameterised_configs(collapsed: dict[str, dict[str, Any]], module: str) -> set[str]:
-    """Configs handing the chosen builder a parameter it cannot use. It takes them without
-    complaint and then raises while the split generates, so the option is dead."""
-    module = _base_module(module)
-    rules = _BUILDER_PARAMETERS.get(module)
-    if rules is None:
-        return set()
-    required = _NON_NULLABLE.get(module, frozenset())
-    return {
-        name
-        for name, item in collapsed.items()
-        if (module == "parquet" and _mismatched_columns(item))
-        or any(
-            key in rules
-            and not (
-                (value is not None or key not in required)
-                and _valid_parameter(rules[key], value)
-                and _in_parameter_range(key, value)
-                and (key != "encoding" or _known_codec(value))
-                and (key != "header" or _valid_header(value))
-                # pandas takes a single character as the decimal marker and nothing else.
-                and (key != "decimal" or not isinstance(value, str) or len(value) == 1)
-                # converters wants callables, which yaml.safe_load can never produce.
-                and (key != "converters" or not value)
-                and (key != "filters" or not isinstance(value, list) or bool(value))
-            )
-            for key, value in item.items()
-        )
-    }
-
-
-def _misversioned_configs(collapsed: dict[str, dict[str, Any]]) -> set[str]:
-    """Configs datasets cannot even name a cache directory for. It parses this field into a
-    Version before it looks at a file, so the check needs no scan."""
-    return {
-        name
-        for name, item in collapsed.items()
-        if "version" in item
-        and (not isinstance(item["version"], str) or _VERSION_RE.fullmatch(item["version"]) is None)
-    }
-
-
-def _unsafe_configs(collapsed: dict[str, dict[str, Any]], files: _DeclaredFiles) -> set[str]:
-    """Configs whose declaration reaches a file outside the cache. The loader follows it, so
-    the pattern cannot be offered with the unsafe match quietly dropped."""
-    if not files.unsafe:
-        return set()
-    dead = set()
-    for name, item in collapsed.items():
-        root = _config_root(item, files)
-        if root is None:
-            continue
-        if any(files.resolve(pattern, root, unsafe = True) for pattern in _declared_paths(item)):
-            dead.add(name)
-    return dead
-
-
-def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _DeclaredFiles) -> set[str]:
-    """Configs the loader cannot build. It lets a wildcard match nothing, so only a literal
-    that is missing raises on its own; a whole group matching nothing raises either way."""
-    dead = set()
-    for name, item in collapsed.items():
-        if _config_root(item, files) is None:
-            dead.add(name)
-            continue
-        entries = item.get("data_files")
-        if entries is not None and not entries:
-            dead.add(name)
-        root = _config_root(item, files) or ""
-        for group in _declared_path_groups(item):
-            matched = False
-            for pattern in group:
-                if files.resolve(pattern, root):
-                    matched = True
-                elif not any(character in pattern for character in "*?["):
-                    dead.add(name)
-            if not matched:
-                # An empty group resolves to nothing just as surely as one that misses.
-                dead.add(name)
-    return dead
-
-
-def _base_module(module: str) -> str:
-    return _BASE_MODULES.get(module, module)
-
-
-def _readable_by(path: PurePosixPath, module: str) -> bool:
-    modules = {_base_module(name) for name in _file_modules(path.name)}
-    module = _base_module(module)
-    # A zip is opened whatever won, and folder metadata only by the folder builders.
-    return (
-        module in modules
-        or _INDETERMINATE_MODULE in modules
-        or (module in _FOLDER_MODULES and path.name in _METADATA_FILENAMES)
-    )
-
-
-def _mismatched_configs(
-    collapsed: dict[str, dict[str, Any]], required: str, files: _DeclaredFiles
-) -> set[str]:
-    """Declared configs the settled builder could not read. One builder serves every config,
-    so a config voting for another module, or holding one file that builder chokes on, is
-    dead however it is selected."""
-    mismatched = set()
-    for name, item in collapsed.items():
-        root = _config_root(item, files)
-        if root is None:
-            continue
-        resolved = [
-            path for pattern in _declared_paths(item) for path in files.resolve(pattern, root)
-        ]
-        if not resolved:
-            continue
-        module = _split_module([(path, _file_module(path.name)) for path in resolved])
-        if _base_module(module) != _base_module(required) or not all(
-            _readable_by(path, required) for path in resolved
-        ):
-            mismatched.add(name)
-    return mismatched
-
-
-def _empty_declared_options(
-    collapsed: dict[str, dict[str, Any]], required: str, files: _DeclaredFiles, snapshot: Path
-) -> set[tuple[str, str]]:
-    """Declared splits holding nothing the builder can read. A declaration names its files
-    outright, so they go through the same payload check inference already applies."""
-    dead = set()
-    for name, item in collapsed.items():
-        root = _config_root(item, files)
-        if root is None:
-            continue
-        for split, patterns in _declared_split_groups(item):
-            resolved = [path for pattern in patterns for path in files.resolve(pattern, root)]
-            if resolved and not _offerable_split(
-                [(path, _file_module(path.name)) for path in resolved], snapshot, "", required
-            ):
-                dead.add((name, split))
-    return dead
-
-
-def _grouped_splits(files: list[_DataFile]) -> Optional[dict[str, list[_DataFile]]]:
-    """The splits datasets would resolve, by the first stage that names any."""
-    grouped = _sharded_split_files(files)
-    if grouped is None:
-        return None
-    if not grouped:
-        grouped = _keyword_split_files(files, _DIR_NAME_SPLITS)
-    if not grouped:
-        grouped = _keyword_split_files(files, _FILENAME_SPLITS)
-    if not grouped:
-        grouped = {"train": files}
+        grouped.setdefault(split, []).append(path)
     return grouped
 
 
-def _grouped_module(grouped: dict[str, list[_DataFile]]) -> Optional[str]:
-    """The one module these splits agree on. A split with no data at all makes datasets
-    raise, and one whose module we cannot pin down could disagree with the others."""
-    modules = {_split_module(entries) for entries in grouped.values()}
-    if len(modules) != 1 or modules & {None, _INDETERMINATE_MODULE}:
-        return None
-    return modules.pop()
-
-
-def _snapshot_module(snapshot: Path, scans: dict[str, Optional[list]]) -> str:
-    """The module datasets settles on from the snapshot's own patterns, or one no config can
-    match when it would not settle on any."""
-    if "" not in scans:
-        scans[""] = _snapshot_data_files(snapshot)
-    files = scans[""]
-    grouped = _grouped_splits(files) if files else None
-    return (grouped and _grouped_module(grouped)) or _INDETERMINATE_MODULE
-
-
-_DIRECTORY_SCAN = "\x00dirs"
-
-
-def _snapshot_directory_names(snapshot: Path, scans: dict[str, Any]) -> list[str]:
-    """Every directory in the snapshot, listed once and reused by each wildcard data_dir."""
-    if _DIRECTORY_SCAN not in scans:
-        scanned = _snapshot_all_files(snapshot)
-        scans[_DIRECTORY_SCAN] = sorted(scanned[1]) if scanned else []
-    return scans[_DIRECTORY_SCAN]
-
-
-_MISSING_DIR = "\x00missing"
-
-
-def _resolved_data_dir(snapshot: Path, raw: str, directories: list[str]) -> Optional[str]:
-    """The directory a config is scoped to, _MISSING_DIR when it holds nothing, or None when
-    we cannot name exactly one.
-
-    The loader globs this string, so every step of it has to be there and a wildcard in it
-    is expanded. A wildcard matching several directories is a union we cannot represent, so
-    that config is left alone rather than half offered.
-    """
-    if not raw:
-        return ""
-    if any(character in raw for character in "*?["):
-        matcher = _glob_matcher(_normalized_dir(raw) or "")
-        if matcher is None:
-            return None
-        pattern = _normalized_dir(raw) or ""
-        matched = sorted(
-            relative
-            for relative in directories
-            if matcher.match(relative)
-            and _explicit_parts(relative + "/x", "__") == _explicit_parts(pattern + "/x", "__")
-            and _explicit_parts(relative, ".") == _explicit_parts(pattern, ".")
-        )
-        if not matched:
-            # No directory at all is the loader's empty case, not an indeterminate union.
-            return _MISSING_DIR
-        return matched[0] if len(matched) == 1 else None
-    if not (snapshot / raw).is_dir():
-        return _MISSING_DIR
-    return _normalized_dir(raw)
-
-
-def _inferred_snapshot_options(
-    snapshot: Path,
-    configs: Iterable[tuple[str, str]] = (("default", ""),),
-    required_module: Optional[str] = None,
-    scans: Optional[dict[str, Optional[list]]] = None,
-) -> Optional[set[tuple[str, str]]]:
-    """Mirror datasets' default local-file split inference without importing it.
-
-    Known gaps, all of which hide an option rather than offer a dead one: names longer than
-    _MAX_OPTION_LENGTH are dropped because the picker cannot start them, splits made only of
-    files outside TRAINING_DATA_EXTS are not offered, a zip's module is left unknown rather
-    than read out of the archive, and external symlinks stay rejected for cache safety. The
-    one dead option left is a card recording the wrong row count, which only shows up once
-    the data is read.
-    """
-    options: set[tuple[str, str]] = set()
-    scans = {} if scans is None else scans
-    for config, data_dir in configs:
-        raw = data_dir.strip("/")
-        root = _resolved_data_dir(snapshot, raw, _snapshot_directory_names(snapshot, scans))
-        if root is None:
-            continue
-        if root is _MISSING_DIR:
-            # get_data_patterns runs for every metadata config while the module is chosen,
-            # so one that finds nothing raises EmptyDatasetError for all of them.
-            return None
-        if root not in scans:
-            scans[root] = _snapshot_data_files(snapshot / root if root else snapshot)
-        files = scans[root]
-        if not files:
-            return None
-
-        grouped = _grouped_splits(files)
-        if grouped is None:
-            continue
-        module = _grouped_module(grouped)
-        if module is None:
-            continue
-        if required_module is not None and _base_module(module) != _base_module(required_module):
-            # One module is chosen for the whole dataset, so this config would be built with
-            # a builder that cannot read its files.
-            continue
-        prefix = root + "/" if root else ""
-        offerable = {
-            split: _offerable_split(entries, snapshot, prefix, module)
-            for split, entries in grouped.items()
-        }
-        if any(state is None for state in offerable.values()):
-            continue
-        options.update((config, split) for split, state in offerable.items() if state)
-    return options
-
-
-def _counted_split(item: Any) -> bool:
-    """A recorded split size datasets could match. It compares the numbers, so a count
-    written as a float or a bool still holds as long as it is a positive one."""
-    if not isinstance(item, dict):
-        return False
-    count = item.get("num_examples")
-    if not isinstance(count, (int, float)) or count <= 0:
-        return False
-    # A built split has whole rows, so a fractional count can never match.
-    return float(count).is_integer()
-
-
-def _info_split_sets(
-    payload: Any,
-    declared: dict[str, Optional[set[str]]],
-    *,
-    keyed: bool = False,
-) -> None:
-    """Record the splits dataset_info promises per config, or None when it promises a size
-    the data cannot match. datasets verifies the built splits against these, so a promise
-    that does not hold takes the config down with it."""
-    entries = payload if isinstance(payload, list) else [payload]
-    if keyed and isinstance(payload, dict):
-        # Only the legacy json file is keyed by config; a card's mapping is one info whose
-        # unknown keys datasets drops.
-        entries = [
-            {"config_name": entry.get("config_name", name), **entry}
-            for name, entry in payload.items()
-            if isinstance(entry, dict)
+def _keyword_splits(
+    files: list[PurePosixPath], patterns: dict[str, list["re.Pattern[str]"]]
+) -> dict[str, list[PurePosixPath]]:
+    grouped: dict[str, list[PurePosixPath]] = {}
+    for split, expressions in patterns.items():
+        matched = [
+            path
+            for path in files
+            if any(expression.match(path.as_posix()) for expression in expressions)
         ]
-    for entry in entries:
-        if not isinstance(entry, dict) or "splits" not in entry:
-            continue
-        config = _config_name(entry.get("config_name"))
-        if config is None:
-            continue
-        splits = entry["splits"]
-        # from_split_dict drops the mapping key and keeps the name recorded in the child.
-        sized = list(splits.values()) if isinstance(splits, dict) else splits
-        if isinstance(splits, dict):
-            splits = [child for child in sized if isinstance(child, dict)]
-        counted = all(_counted_split(item) for item in sized) if isinstance(sized, list) else False
-        declared[config] = set(_split_names(splits)) if counted else None
+        if matched:
+            grouped[split] = matched
+    return grouped
 
 
-def _verified_by_info(
-    options: set[tuple[str, str]], declared: dict[str, Optional[set[str]]]
-) -> set[tuple[str, str]]:
-    """dataset_info is a promise datasets checks after it builds, so a config whose splits
-    do not come out exactly as promised raises rather than loading part of itself.
+def _grouped_splits(files: list[PurePosixPath]) -> Optional[dict[str, list[PurePosixPath]]]:
+    """The splits datasets would resolve, by the first stage that names any."""
+    grouped = _sharded_splits(files)
+    if grouped is None:
+        return None
+    for stage in (_DIR_NAME_SPLITS, _FILENAME_SPLITS):
+        if grouped:
+            break
+        grouped = _keyword_splits(files, stage)
+    return grouped or {"train": files}
 
-    It cannot check the row counts themselves without reading the data, so a card promising
-    the wrong number of rows still leaves an option that fails when it starts.
+
+def _one_module(grouped: dict[str, list[PurePosixPath]]) -> Optional[str]:
+    """The single builder every split agrees on, or None when datasets would refuse them.
+
+    It counts a split's files by extension and takes the winner, so a split with no clear
+    winner, or two splits wanting different builders, is a dataset it cannot build.
     """
-    dead = set()
-    for config, promised in declared.items():
-        offered = {split for name, split in options if name == config}
-        if offered and promised != offered:
-            dead.add(config)
-    return {entry for entry in options if entry[0] not in dead}
+    modules = set()
+    for entries in grouped.values():
+        counts: dict[tuple[str, str], int] = {}
+        for path in entries:
+            suffix = _data_suffix(path.name)
+            module = _file_module(path.name)
+            # Folder metadata is counted last whatever it is, so it never wins on its own.
+            if module is not None and path.name not in _METADATA_FILENAMES:
+                counts[(module, suffix or "")] = counts.get((module, suffix or ""), 0) + 1
+        if not counts:
+            return None
+        best = max(
+            counts,
+            key = lambda key: (
+                counts[key],
+                -_EXTENSION_PRIORITY.index(key[1]) if key[1] in _EXTENSION_PRIORITY else -99,
+                key[1],
+            ),
+        )
+        modules.add(best[0])
+    return modules.pop() if len(modules) == 1 else None
+
+
+def _offerable(entries: list[PurePosixPath], snapshot: Path) -> Optional[bool]:
+    """True when the split holds data Studio can train on, False when it holds none, None
+    when a file the builder would read escapes the cache. datasets reads every file in the
+    split, so one escape condemns the config rather than the single file."""
+    trainable = False
+    for path in entries:
+        if resolved_dataset_snapshot_file(snapshot, path.as_posix()) is None:
+            return None
+        trainable = trainable or _trainable_name(path.name)
+    return trainable
+
+
+def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
+    """What the picker can offer for a snapshot whose metadata named nothing."""
+    files = _snapshot_data_files(snapshot)
+    if not files:
+        return set()
+    grouped = _grouped_splits(files)
+    if grouped is None or _one_module(grouped) is None:
+        return set()
+    offerable = {split: _offerable(entries, snapshot) for split, entries in grouped.items()}
+    if any(state is None for state in offerable.values()):
+        return set()
+    return {
+        ("default", name)
+        for split, state in offerable.items()
+        if state and (name := _valid_option(split, _SPLIT_RE, reject_dotdot = True)) is not None
+    }
 
 
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
-    promised: dict[str, Optional[set[str]]] = {}
-    return _verified_by_info(_snapshot_card_options(snapshot, promised), promised)
-
-
-def _snapshot_card_options(
-    snapshot: Path, promised: dict[str, Optional[set[str]]]
-) -> set[tuple[str, str]]:
     options: set[tuple[str, str]] = set()
-    # Cards may name thousands of configs; one scan per directory serves them all.
-    scans: dict[str, Optional[list]] = {}
 
-    card_data = _snapshot_card_data(snapshot)
-    if card_data is _UNPARSABLE_METADATA:
-        # datasets raises out of DatasetCard.load, so no option here would ever start.
-        return options
-    declared_configs = _declared_configs(card_data.get("configs"))
-    if declared_configs is _UNPARSABLE_METADATA:
-        # datasets raises building MetadataConfigs, well before it ever looks at a file.
-        return options
-    info = card_data.get("dataset_info")
-    if not isinstance(info, (list, dict)):
-        # DatasetInfosDict skips anything that is neither, so the rest of the card still stands.
-        info = None
-    if info is not None and not _valid_dataset_info(info):
-        # DatasetInfosDict calls .get on each entry, so anything else raises before a split
-        # could start.
-        return options
-    # datasets keys its configs by name, so a repeated one is last-wins and only that last
-    # entry declares anything.
-    collapsed = _collapsed_configs(card_data.get("configs"))
-    _add_config_options(options, list(collapsed.values()) if collapsed else None)
-    card_promised: dict[str, Optional[set[str]]] = {}
-    if info is not None:
-        _info_split_sets(info, card_promised)
+    declared = False
+    readme = _snapshot_metadata_file(snapshot, "README.md")
+    if readme is not None:
+        card_data = _read_card_metadata(readme)
+        if card_data is _UNPARSABLE_METADATA:
+            # datasets raises out of DatasetCard.load, so no option here would ever start.
+            return options
+        if isinstance(card_data, dict):
+            declared = bool(card_data.get("configs")) or bool(card_data.get("dataset_info"))
+            _add_config_options(options, card_data.get("configs"))
+            _add_dataset_info_options(options, card_data.get("dataset_info"))
+    # datasets reads this file as a card too, and we do not, so anything it declares is
+    # metadata we cannot see rather than a snapshot to infer from.
+    declared = declared or _snapshot_metadata_file(snapshot, ".huggingface.yaml") is not None
 
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)
         if metadata is None:
-            if filename == "dataset_infos.json" and _snapshot_metadata_exists(snapshot, filename):
-                # Present but empty or too big to read. The loader still opens it and lets the
-                # decode error out, so there is nothing here we could offer.
-                return set()
             continue
         payload = _safe_json_file(metadata, snapshot, allow_snapshot_symlink = True)
-        if payload is None and filename == "dataset_infos.json":
-            # The local factory opens the plural file whenever it exists and lets the decode
-            # error out. The singular one is an ignored data filename it never reads here.
-            return set()
-        if filename != "dataset_infos.json":
-            # The local factory never opens the singular file, so it promises nothing.
-            continue
-        if not isinstance(payload, dict) or not all(
-            isinstance(entry, dict) for entry in payload.values()
-        ):
-            # The factory iterates this payload and builds a DatasetInfo per entry, so
-            # any other shape raises before a split could start.
-            return set()
-        if not _valid_dataset_info(list(payload.values())):
-            # Each entry is turned into a DatasetInfo there, so a bad field raises as well.
-            return set()
-        if len(payload) == 1:
-            # A lone legacy entry is renamed, whatever the old config was called.
-            payload = {"default": next(iter(payload.values()))}
-        _info_split_sets(payload, promised, keyed = True)
-    # legacy_dataset_infos.update(dataset_infos): the card has the last word.
-    promised.update(card_promised)
-    # datasets infers patterns per config, so a config with no data_files still gets them even
-    # when a sibling config declared its own, and it builds under that config's name.
-    pending = [
-        (config, data_dir)
-        for config, data_dir in declared_configs.items()
-        if data_dir is not None and not any(existing == config for existing, _split in options)
-    ]
-    # Whether the loader has configs at all, not whether the picker can show them: a card
-    # naming only an unshowable config still stops datasets inferring a default one.
-    if collapsed:
-        scanned = _snapshot_all_files(snapshot)
-        if scanned is None:
-            # Too large to index. Explicit declarations stand on their own, but a literal one
-            # still has to be there, and that is a lookup rather than a scan.
-            dead = (
-                _missing_literal_configs(collapsed, snapshot)
-                | _unverifiable_configs(collapsed)
-                | _misversioned_configs(collapsed)
-                | _emptied_configs(info)
-            )
-            return {(config, split) for config, split in options if config not in dead}
-        declared_files = _DeclaredFiles(*scanned)
-        unresolvable = _unresolvable_configs(collapsed, declared_files)
-        if next(iter(collapsed)) in unresolvable or _mixed_declared_splits(
-            next(iter(collapsed.values())), declared_files
-        ):
-            # The first config is resolved before any module is chosen, so a declaration that
-            # matches nothing, or that names two formats at once, takes the snapshot with it.
-            return set()
-        required = _declared_module(card_data.get("configs"), declared_files) or _snapshot_module(
-            snapshot, scans
-        )
-        # One builder serves every config, so a config declaring another format is dead:
-        # it either fails to generate or silently misreads its own files.
-        deterministic = (
-            _misversioned_configs(collapsed)
-            | _misparameterised_configs(collapsed, required)
-            | _emptied_configs(info)
-        )
-        if declared_files.exhausted:
-            # Nothing further resolves, but what the loader settles without a scan still holds.
-            return {
-                entry
-                for entry in options
-                if entry[0] not in deterministic | unresolvable
-                and entry
-                not in _empty_declared_options(collapsed, required, declared_files, snapshot)
-            }
-        dead = (
-            unresolvable
-            | deterministic
-            | _unsafe_configs(collapsed, declared_files)
-            | _mismatched_configs(collapsed, required, declared_files)
-        )
-        options = {
-            entry
-            for entry in options
-            if entry[0] not in dead
-            and entry not in _empty_declared_options(collapsed, required, declared_files, snapshot)
-        }
-        pending = [entry for entry in pending if entry[0] not in dead]
-        if pending:
-            inferred = _inferred_snapshot_options(snapshot, pending, required, scans)
-            if inferred is None:
-                return set()
-            options.update(inferred)
-    elif not options:
-        options.update(_inferred_snapshot_options(snapshot, scans = scans) or set())
+        if filename == "dataset_infos.json":
+            _add_dataset_info_options(options, payload)
+        else:
+            _add_info_options(options, payload)
+
+    if not options and not declared:
+        # Nothing was declared, which is the case #8140 reports: the loader still resolves
+        # the files by pattern, so the picker infers the same splits it would. A card that
+        # did declare something names its own configs, which inference cannot reproduce.
+        options.update(_inferred_snapshot_options(snapshot))
     return options
 
 
