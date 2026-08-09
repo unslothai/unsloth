@@ -535,9 +535,10 @@ Environment:
     if ($defaultSdCpp -and (Test-Path -LiteralPath $defaultSdCpp) -and (Test-Path -LiteralPath (Join-Path $defaultSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
         $defaultSdCppToStop = $defaultSdCpp
     }
-    # Custom/env-mode sd.cpp builds sit BESIDE each custom root at <parent>\stable-diffusion.cpp,
-    # outside $knownRoots. We delete those marker-owned dirs below, so add them to the handle scan
-    # too, gated on the same owner marker.
+    # A custom/env-mode sd.cpp build now sits UNDER its root at <root>\stable-diffusion.cpp, which
+    # the $knownRoots prefix match below already covers. Older builds put it BESIDE the root at
+    # <parent>\stable-diffusion.cpp, outside $knownRoots. We delete those marker-owned dirs below,
+    # so add them to the handle scan too, gated on the same owner marker.
     $customSdCppToStop = @()
     foreach ($r in $customRoots) {
         $sdc = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
@@ -564,13 +565,14 @@ Environment:
             continue
         }
         _RemoveRootRecordingDb $r
-        # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
-        # the root at <parent>\stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
-        # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
-        # build behind. Only remove a sibling Studio installed: <parent> is a user-chosen dir
-        # and "stable-diffusion.cpp" is exactly what a git clone of leejet/stable-diffusion.cpp
-        # produces, so require our owner marker (written by install_sd_cpp_prebuilt) before rm,
-        # and keep any unowned checkout. Guard the derived parent path the same way.
+        # Native diffusion (stable-diffusion.cpp) now installs UNDER the custom root, at
+        # <root>\stable-diffusion.cpp, so the removal above already took it. Older builds put it
+        # BESIDE the root at <parent>\stable-diffusion.cpp (find_sd_cpp_binary derived it from
+        # UNSLOTH_STUDIO_HOME.parent), and removing only the root would leave that build behind.
+        # Only remove a sibling Studio installed: <parent> is a user-chosen dir and
+        # "stable-diffusion.cpp" is exactly what a git clone of the upstream project produces, so
+        # require our owner marker (written by install_sd_cpp_prebuilt) before rm, and keep any
+        # unowned checkout. Guard the derived parent path the same way.
         $customSdCpp = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
         if (_IsUnsafeRoot $customSdCpp) {
             _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"

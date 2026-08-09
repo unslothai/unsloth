@@ -75,16 +75,23 @@ _pkill_escape() {
     printf '%s' "$1" | sed -e 's:[][\\.^$*+?{|}()/]:\\&:g'
 }
 
-# Owned sd.cpp roots (default $HOME/.unsloth/stable-diffusion.cpp + each custom root's
-# <parent>/stable-diffusion.cpp sibling), each gated on the install-time owner marker so we never
-# stop a user-managed sd-server from an unrelated checkout at one of these paths.
+# Owned sd.cpp roots (default $HOME/.unsloth/stable-diffusion.cpp, plus for each custom root both
+# <root>/stable-diffusion.cpp, where the install now lives, and the legacy
+# <parent>/stable-diffusion.cpp sibling an older build wrote), each gated on the install-time owner
+# marker so we never stop a user-managed sd-server from an unrelated checkout at one of these paths.
+# The nested one matters most: a resident sd-server survives unlinking its binary, and the custom
+# root is removed wholesale below, so without it the tree goes and the server keeps running.
 _owned_sd_cpp_roots() {
     _default_sd="$HOME/.unsloth/stable-diffusion.cpp"
     [ -f "$_default_sd/.unsloth-studio-owned" ] && printf '%s\n' "$_default_sd"
     _custom_studio_roots 2>/dev/null | while IFS= read -r _root; do
         [ -n "$_root" ] || continue
-        _sd_root="$(dirname "$_root")/stable-diffusion.cpp"
-        [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
+        for _sd_root in \
+            "$_root/stable-diffusion.cpp" \
+            "$(dirname "$_root")/stable-diffusion.cpp"
+        do
+            [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
+        done
     done
 }
 
@@ -461,14 +468,15 @@ _unsloth_uninstall_main() {
             continue
         fi
         _remove_root_recording_db "$_custom_root"
-        # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
-        # the root at <parent>/stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
-        # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
-        # build behind. Only remove a sibling Studio installed: <parent> is a user-chosen dir
-        # and "stable-diffusion.cpp" is exactly what `git clone` of leejet/stable-diffusion.cpp
-        # produces, so require our owner marker (written by install_sd_cpp_prebuilt) before rm,
-        # and keep any unowned checkout. A pre-marker Studio build is left behind, never a user
-        # file deleted. Guard the derived parent path the same way.
+        # Native diffusion (stable-diffusion.cpp) now installs UNDER the custom root, at
+        # <root>/stable-diffusion.cpp, so the removal above already took it. Older builds put it
+        # BESIDE the root at <parent>/stable-diffusion.cpp (find_sd_cpp_binary derived it from
+        # UNSLOTH_STUDIO_HOME.parent), and removing only the root would leave that build behind.
+        # Only remove a sibling Studio installed: <parent> is a user-chosen dir and
+        # "stable-diffusion.cpp" is exactly what `git clone` of the upstream project produces, so
+        # require our owner marker (written by install_sd_cpp_prebuilt) before rm, and keep any
+        # unowned checkout. A pre-marker Studio build is left behind, never a user file deleted.
+        # Guard the derived parent path the same way.
         _custom_sd_cpp="$(dirname "$_custom_root")/stable-diffusion.cpp"
         if _is_unsafe_root "$_custom_sd_cpp"; then
             echo "  refusing to remove unsafe path: $_custom_sd_cpp" >&2

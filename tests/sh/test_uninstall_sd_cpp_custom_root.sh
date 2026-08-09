@@ -35,7 +35,10 @@ HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
     # fragment dies with "command not found" and every assertion below is vacuous.
     sed -n '/^_set_marker() {/,/^}/p'              "$UNINSTALL_SH"
     sed -n '/^_remove_root_recording_db() {/,/^}/p' "$UNINSTALL_SH"
+    # The owned-root lister that decides which sd-servers are pkilled before a tree is deleted.
+    sed -n '/^_owned_sd_cpp_roots() {/,/^}/p'      "$UNINSTALL_SH"
 } > "$HELPERS_FILE"
+grep -q '_owned_sd_cpp_roots' "$HELPERS_FILE" || { echo "FAIL: helpers missing _owned_sd_cpp_roots"; exit 1; }
 # Both blocks sit inside the main removal function, so they are indented: anchor on optional
 # leading whitespace, never on column 0, or the range matches nothing and every assertion below
 # passes or fails vacuously against a fragment that was never extracted.
@@ -133,6 +136,73 @@ mkdir -p "$HOME/.unsloth/stable-diffusion.cpp"
 : > "$HOME/.unsloth/stable-diffusion.cpp/main.cpp"  # user's own checkout, no owner marker
 run_default_removal
 assert_dir "default-mode unowned sd.cpp kept" "$HOME/.unsloth/stable-diffusion.cpp"
+
+
+# ── _owned_sd_cpp_roots: which sd-servers get stopped before their tree is deleted ────────────
+#
+# The install now lands at <root>/stable-diffusion.cpp, inside the custom root, and the custom
+# root is removed wholesale by the loop above. A resident sd-server survives unlinking its
+# binary, so if that nested path is not listed here the tree disappears while the server keeps
+# running and holding its port. The legacy <parent>/stable-diffusion.cpp sibling an older build
+# wrote still has to be listed too, since it is deleted separately.
+assert_lists() {
+    _l="$1"; _want="$2"
+    if _owned_sd_cpp_roots | grep -qxF "$_want"; then
+        echo "  PASS: $_l"; PASS=$((PASS+1))
+    else
+        echo "  FAIL: $_l (not listed: $_want)"; FAIL=$((FAIL+1))
+    fi
+}
+assert_not_lists() {
+    _l="$1"; _want="$2"
+    if _owned_sd_cpp_roots | grep -qxF "$_want"; then
+        echo "  FAIL: $_l (listed anyway: $_want)"; FAIL=$((FAIL+1))
+    else
+        echo "  PASS: $_l"; PASS=$((PASS+1))
+    fi
+}
+
+# 7. The nested install under the custom root is listed, so its sd-server is stopped first.
+p7="$_TMP_ROOT/inst7/studioE"
+mkdir -p "$p7/stable-diffusion.cpp/build/bin"
+: > "$p7/stable-diffusion.cpp/build/bin/sd-server"
+: > "$p7/stable-diffusion.cpp/.unsloth-studio-owned"
+_custom_studio_roots() { printf '%s\n' "$p7"; }
+assert_lists "nested <root>/stable-diffusion.cpp is stopped before removal" "$p7/stable-diffusion.cpp"
+
+# 8. An unowned checkout the user happens to keep inside their Studio root is never signalled.
+p8="$_TMP_ROOT/inst8/studioF"
+mkdir -p "$p8/stable-diffusion.cpp/build/bin"
+: > "$p8/stable-diffusion.cpp/build/bin/sd-server"  # no owner marker: the user's own build
+_custom_studio_roots() { printf '%s\n' "$p8"; }
+assert_not_lists "unowned nested stable-diffusion.cpp is left running" "$p8/stable-diffusion.cpp"
+
+# 9. The legacy sibling an older build installed is still listed (it is still deleted).
+p9="$_TMP_ROOT/inst9"
+mkdir -p "$p9/studioG" "$p9/stable-diffusion.cpp"
+: > "$p9/stable-diffusion.cpp/.unsloth-studio-owned"
+_custom_studio_roots() { printf '%s\n' "$p9/studioG"; }
+assert_lists "legacy <parent>/stable-diffusion.cpp still stopped" "$p9/stable-diffusion.cpp"
+
+# 10. Both locations at once: neither shadows the other.
+p10="$_TMP_ROOT/inst10"
+mkdir -p "$p10/studioH/stable-diffusion.cpp" "$p10/stable-diffusion.cpp"
+: > "$p10/studioH/stable-diffusion.cpp/.unsloth-studio-owned"
+: > "$p10/stable-diffusion.cpp/.unsloth-studio-owned"
+_custom_studio_roots() { printf '%s\n' "$p10/studioH"; }
+assert_lists "both locations: nested listed"  "$p10/studioH/stable-diffusion.cpp"
+assert_lists "both locations: sibling listed" "$p10/stable-diffusion.cpp"
+
+# 11. The nested tree goes away with the root it lives in.
+p11="$_TMP_ROOT/inst11"
+make_studio "$p11/studioI"
+mkdir -p "$p11/studioI/stable-diffusion.cpp/build/bin"
+: > "$p11/studioI/stable-diffusion.cpp/build/bin/sd-cli"
+: > "$p11/studioI/stable-diffusion.cpp/.unsloth-studio-owned"
+_custom_studio_roots() { printf '%s\n' "$p11/studioI"; }
+run_loop
+assert_nodir "nested stable-diffusion.cpp removed with its root" "$p11/studioI/stable-diffusion.cpp"
+assert_nodir "its custom root removed"                           "$p11/studioI"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
