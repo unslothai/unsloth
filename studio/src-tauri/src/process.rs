@@ -1395,9 +1395,16 @@ async fn generic_backend_health_ok(port: u16) -> bool {
     live && service
 }
 
-/// Gap between port-verification probes. Each probe already costs up to
-/// LOCAL_HTTP_TIMEOUT, so this only paces a backend that is busy, not stuck.
-const PORT_VALIDATION_RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Backoff between port-verification probes, doubling from min to max.
+///
+/// A probe is not free: it costs a liveness request plus a desktop-login
+/// request, each up to LOCAL_HTTP_TIMEOUT, against a backend that is by
+/// definition busy. Polling at a fixed short interval would add load to the
+/// slow start it is waiting on. Starting small still wins the common race,
+/// where the backend is a few hundred ms from ready, while the cap keeps a
+/// long torch import down to a handful of probes rather than dozens.
+const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
+const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
 async fn validate_candidate_port(
     app: AppHandle,
@@ -1433,6 +1440,7 @@ async fn validate_candidate_port(
     // port the backend had already reported it could not bind. Keep probing
     // until the backend answers or that same deadline passes.
     let deadline = std::time::Instant::now() + BACKEND_START_DEADLINE;
+    let mut delay = PORT_VALIDATION_RETRY_MIN;
     let mut attempts = 0u32;
     let valid = loop {
         attempts += 1;
@@ -1453,7 +1461,8 @@ async fn validate_candidate_port(
         if std::time::Instant::now() >= deadline {
             break false;
         }
-        tokio::time::sleep(PORT_VALIDATION_RETRY_DELAY).await;
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(PORT_VALIDATION_RETRY_MAX);
         // Stop once this generation is gone or another path claimed the port,
         // so a restarted backend does not keep an old probe alive. Bound the
         // guard to this statement: the future must stay Send across the await.
