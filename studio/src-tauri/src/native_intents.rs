@@ -57,6 +57,8 @@ struct NativePathEntry {
     expires_at_ms: u64,
     size_bytes: Option<u64>,
     modified_ms: Option<u64>,
+    device_id: String,
+    file_id: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -229,6 +231,8 @@ impl NativeIntakeState {
                 display_label: classified.display_label,
                 size_bytes: classified.size_bytes,
                 modified_ms: None,
+                device_id: Some(classified.device_id),
+                file_id: Some(classified.file_id),
             },
         )?;
         Ok(NativeDocumentFolderSelection {
@@ -273,6 +277,8 @@ impl NativeIntakeState {
             expires_at_ms,
             size_bytes: classified.size_bytes,
             modified_ms: classified.modified_ms,
+            device_id: classified.device_id,
+            file_id: classified.file_id,
         };
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         inner.tokens.insert(token, entry.clone());
@@ -321,6 +327,8 @@ impl NativeIntakeState {
                 display_label: entry.display_label,
                 size_bytes: entry.size_bytes,
                 modified_ms: entry.modified_ms,
+                device_id: Some(entry.device_id),
+                file_id: Some(entry.file_id),
             },
         )
     }
@@ -360,6 +368,8 @@ fn validate_entry_path(
         || !classified.allowed_operations.contains(&operation)
         || (check_fingerprint && classified.size_bytes != entry.size_bytes)
         || (check_fingerprint && classified.modified_ms != entry.modified_ms)
+        || (check_fingerprint && classified.device_id != entry.device_id)
+        || (check_fingerprint && classified.file_id != entry.file_id)
     {
         return Err("Native path changed after it was selected.".to_string());
     }
@@ -649,9 +659,8 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
 
 fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFile, String> {
     let path = &entry.canonical_path;
-    let mime_type = attachment_mime_type(path).ok_or_else(|| {
-        "Only chat image attachments can be read for vision input.".to_string()
-    })?;
+    let mime_type = attachment_mime_type(path)
+        .ok_or_else(|| "Only chat image attachments can be read for vision input.".to_string())?;
     let file = open_attachment_file(path)?;
     let metadata = file
         .metadata()
@@ -917,6 +926,12 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
         assert!(payload["modified_ms"].is_null());
+        assert!(payload["device_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert!(payload["file_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
         assert_eq!(
             lease.display_name,
             path.file_name().unwrap().to_string_lossy()

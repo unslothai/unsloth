@@ -46,21 +46,24 @@ def _sign(
 ):
     """Mint the grant Rust would sign for a dropped file."""
     st = os.stat(path)
+    path_type = "directory" if os.path.isdir(path) else "file"
     now_ms = int(time.time() * 1000)
     payload = {
         "version": 1,
         "operation": operation,
         "canonical_path": str(path),
         "path_kind": path_kind,
-        "path_type": "file",
+        "path_type": path_type,
         "source_kind": "drop",
         "token_id_hash": hashlib.sha256(b"path_token").hexdigest(),
         "issued_at_ms": now_ms,
         "expires_at_ms": now_ms + 120_000,
         "nonce": nonce or os.urandom(16).hex(),
         "display_label": os.path.basename(path),
-        "size_bytes": st.st_size,
-        "modified_ms": int(st.st_mtime_ns // 1_000_000),
+        "size_bytes": st.st_size if path_type == "file" else None,
+        "modified_ms": int(st.st_mtime_ns // 1_000_000) if path_type == "file" else None,
+        "device_id": format(st.st_dev, "x"),
+        "file_id": format(st.st_ino, "x"),
     }
     payload_b64 = _b64(json.dumps(payload).encode("utf-8"))
     signature = hmac.new(secret, payload_b64.encode("ascii"), hashlib.sha256).digest()
@@ -139,6 +142,34 @@ def test_grant_is_single_use(rag_home, tmp_path):
     # Replaying the same nonce must not mint a second read of the path.
     with pytest.raises(HTTPException):
         _save_native_path_upload(lease)
+
+
+def test_document_folder_grant_binds_identity_but_allows_content_changes(tmp_path):
+    folder = tmp_path / "documents"
+    folder.mkdir()
+    lease = _sign(folder, operation = "link-documents", path_kind = "document-folder")
+    (folder / "new.txt").write_text("new content", encoding = "utf-8")
+
+    grant = leases.verify_native_path_lease(
+        lease,
+        operation = "link-documents",
+        expected_kind = "document-folder",
+        expected_path_type = "directory",
+    )
+
+    assert grant.canonical_path == folder
+
+    replaced_lease = _sign(folder, operation = "link-documents", path_kind = "document-folder")
+    old_folder = tmp_path / "old-documents"
+    folder.rename(old_folder)
+    folder.mkdir()
+    with pytest.raises(leases.NativePathLeaseError, match = "changed"):
+        leases.verify_native_path_lease(
+            replaced_lease,
+            operation = "link-documents",
+            expected_kind = "document-folder",
+            expected_path_type = "directory",
+        )
 
 
 def test_resolver_needs_one_of_file_or_lease(rag_home):

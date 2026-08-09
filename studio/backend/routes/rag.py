@@ -727,7 +727,7 @@ def delete_document(document_id: str, subject: str = Depends(get_current_subject
     _require_rag()
     conn = _rag_connection()
     try:
-        doc = store.get_document(conn, document_id)
+        doc = store.get_visible_document(conn, document_id)
         if doc is None:
             raise HTTPException(status_code = 404, detail = "Document not found")
         if doc.get("linked_folder_id"):
@@ -939,7 +939,7 @@ def preview_target(
     _require_rag()
     conn = _rag_connection()
     try:
-        doc = store.get_document(conn, document_id)
+        doc = store.get_visible_document(conn, document_id)
         if doc is None:
             raise HTTPException(status_code = 404, detail = "Document not found")
         ext = os.path.splitext(doc["filename"])[1].lower()
@@ -953,8 +953,9 @@ def preview_target(
         }
         if chunk_id:
             row = conn.execute(
-                "SELECT text, page_number, pdf_regions_json FROM chunks WHERE id=?",
-                (chunk_id,),
+                "SELECT text, page_number, pdf_regions_json FROM chunks "
+                "WHERE id=? AND document_id=?",
+                (chunk_id, document_id),
             ).fetchone()
             if row is not None:
                 out["text"] = row["text"]
@@ -975,7 +976,7 @@ def document_file_url(document_id: str, subject: str = Depends(get_current_subje
     _require_rag()
     conn = _rag_connection()
     try:
-        doc = store.get_document(conn, document_id)
+        doc = store.get_visible_document(conn, document_id)
         if doc is None or not doc.get("stored_path"):
             raise HTTPException(status_code = 404, detail = "Document file not available")
     finally:
@@ -996,7 +997,7 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     _require_rag()
     conn = _rag_connection()
     try:
-        doc = store.get_document(conn, document_id)
+        doc = store.get_visible_document(conn, document_id)
     finally:
         conn.close()
     stored_path = (doc or {}).get("stored_path")

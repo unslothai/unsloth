@@ -88,6 +88,8 @@ class NativePathGrant:
     expires_at_ms: int
     size_bytes: int | None
     modified_ms: int | None
+    device_id: int | None
+    file_id: int | None
 
 
 def native_path_leases_supported() -> bool:
@@ -205,6 +207,8 @@ def verify_native_path_lease(
         expires_at_ms = _required_int(payload, "expires_at_ms"),
         size_bytes = _optional_int(payload.get("size_bytes")),
         modified_ms = _optional_int(payload.get("modified_ms")),
+        device_id = _optional_identity(payload.get("device_id")),
+        file_id = _optional_identity(payload.get("file_id")),
     )
 
     if expected_path_type and grant.path_type != expected_path_type:
@@ -352,6 +356,12 @@ def _validate_current_stat(grant: NativePathGrant) -> None:
     current_modified_ms = int(st.st_mtime_ns // 1_000_000)
     if grant.modified_ms is not None and current_modified_ms != grant.modified_ms:
         raise NativePathLeaseError("Native path changed after it was selected.")
+    if grant.path_kind == "document-folder" and (grant.device_id is None or grant.file_id is None):
+        raise NativePathLeaseError("Native path grant is missing its folder identity.")
+    if grant.device_id is not None and st.st_dev != grant.device_id:
+        raise NativePathLeaseError("Native path changed after it was selected.")
+    if grant.file_id is not None and st.st_ino != grant.file_id:
+        raise NativePathLeaseError("Native path changed after it was selected.")
 
 
 def _consume_nonce(nonce: str, expires_at_ms: int) -> None:
@@ -418,6 +428,22 @@ def _optional_int(value: Any) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
+        raise NativePathLeaseError("Native path grant payload is invalid.") from exc
+
+
+def _optional_identity(value: Any) -> int | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.lower()
+        or any(char not in "0123456789abcdef" for char in value)
+    ):
+        raise NativePathLeaseError("Native path grant payload is invalid.")
+    try:
+        return int(value, 16)
+    except ValueError as exc:
         raise NativePathLeaseError("Native path grant payload is invalid.") from exc
 
 

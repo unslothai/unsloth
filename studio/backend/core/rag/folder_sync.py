@@ -1471,7 +1471,9 @@ def _reconcile_folder(job_id: str) -> None:
             else:
                 changed_count += 1
         except _SyncStopped:
-            if document_id:
+            if document_id and ingestion_job:
+                ingestion.discard_document_when_finished(ingestion_job, document_id)
+            elif document_id:
                 _discard_document(document_id)
             else:
                 _remove_snapshot(snapshot)

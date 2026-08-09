@@ -173,7 +173,9 @@ def list_documents(conn: sqlite3.Connection, scope: str) -> list[dict]:
     rows = conn.execute(
         "SELECT id, scope, kb_id, thread_id, project_id, filename, sha256, status, error, "
         "num_chunks, created_at, linked_folder_id "
-        "FROM documents WHERE scope=? ORDER BY created_at DESC",
+        "FROM documents d WHERE scope=? AND NOT EXISTS "
+        "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+        "ORDER BY created_at DESC",
         (scope,),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -184,13 +186,25 @@ def list_all_documents(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         "SELECT id, scope, kb_id, thread_id, project_id, filename, sha256, status, error, "
         "num_chunks, stored_path, created_at, linked_folder_id "
-        "FROM documents ORDER BY created_at DESC"
+        "FROM documents d WHERE NOT EXISTS "
+        "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+        "ORDER BY created_at DESC"
     ).fetchall()
     return [dict(r) for r in rows]
 
 
 def get_document(conn: sqlite3.Connection, document_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_visible_document(conn: sqlite3.Connection, document_id: str) -> dict | None:
+    """Return a document only while its owning scope is available to readers."""
+    row = conn.execute(
+        "SELECT d.* FROM documents d WHERE d.id=? AND NOT EXISTS "
+        "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope)",
+        (document_id,),
+    ).fetchone()
     return dict(row) if row else None
 
 
@@ -294,8 +308,15 @@ def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int):
         return []
     placeholders = ",".join("?" * len(scopes))
     rows = conn.execute(
-        f"SELECT chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
-        f"WHERE chunks_fts MATCH ? AND scope IN ({placeholders}) ORDER BY s LIMIT ?",
+        f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
+        f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
+        f"JOIN documents d ON d.id=c.document_id "
+        f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+        f"AND NOT EXISTS "
+        f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+        f"AND (d.linked_folder_id IS NULL OR EXISTS "
+        f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
+        f"ORDER BY s LIMIT ?",
         (mq, *scopes, k),
     ).fetchall()
     # bm25() is negative (more negative = better); flip to higher-is-better.
@@ -324,25 +345,32 @@ def search_dense(
         # table cannot answer new-model queries (vec0 errors on the MATCH).
         return []
     # Over-fetch when filtering so stale-model hits don't starve the top-k.
-    fetch = k * 3 if embedding_model else k
+    fetch = max(k * 3, k + 10)
     out: list[tuple[str, float]] = []
     for s in _scopes(scope):
+        if conn.execute(
+            "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (s,)
+        ).fetchone():
+            continue
         rows = conn.execute(
             "SELECT chunk_id, distance FROM chunks_vec "
             "WHERE scope=? AND embedding MATCH ? ORDER BY distance LIMIT ?",
             (s, _f32(vector), fetch),
         ).fetchall()
         out.extend((r["chunk_id"], 1.0 - r["distance"]) for r in rows)
-    if embedding_model and out:
+    if out:
         ids = [cid for cid, _ in out]
         placeholders = ",".join("?" * len(ids))
         valid = {
             r["id"]
             for r in conn.execute(
                 f"SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
-                f"WHERE c.id IN ({placeholders}) "
-                f"AND (d.embedding_model IS NULL OR d.embedding_model=?)",
-                (*ids, embedding_model),
+                f"WHERE c.id IN ({placeholders}) AND NOT EXISTS "
+                f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+                f"AND (d.linked_folder_id IS NULL OR EXISTS "
+                f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
+                f"AND (? IS NULL OR d.embedding_model IS NULL OR d.embedding_model=?)",
+                (*ids, embedding_model, embedding_model),
             ).fetchall()
         }
         out = [t for t in out if t[0] in valid]
@@ -359,7 +387,10 @@ def chunks_by_id(conn: sqlite3.Connection, ids) -> dict:
         f"SELECT c.id, c.text, c.document_id, c.chunk_index, c.page_number, "
         f"c.source_page_index, d.filename "
         f"FROM chunks c JOIN documents d ON d.id=c.document_id "
-        f"WHERE c.id IN ({placeholders})",
+        f"WHERE c.id IN ({placeholders}) AND NOT EXISTS "
+        f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+        f"AND (d.linked_folder_id IS NULL OR EXISTS "
+        f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id))",
         list(ids),
     ).fetchall()
     return {r["id"]: r for r in rows}
@@ -378,6 +409,10 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
         f"c.token_count, d.filename, d.created_at "
         f"FROM chunks c JOIN documents d ON d.id=c.document_id "
         f"WHERE c.scope IN ({placeholders}) AND d.status='completed' "
+        f"AND NOT EXISTS "
+        f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+        f"AND (d.linked_folder_id IS NULL OR EXISTS "
+        f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
         f"ORDER BY d.created_at, c.document_id, c.chunk_index",
         list(scopes),
     ).fetchall()
@@ -396,7 +431,11 @@ def scope_token_estimate(conn: sqlite3.Connection, scope) -> int:
         f"SELECT COALESCE(SUM(CASE WHEN c.token_count > 0 THEN c.token_count "
         f"ELSE MAX(1, length(COALESCE(c.text, '')) / 4) END), 0) AS total "
         f"FROM chunks c JOIN documents d ON d.id=c.document_id "
-        f"WHERE c.scope IN ({placeholders}) AND d.status='completed'",
+        f"WHERE c.scope IN ({placeholders}) AND d.status='completed' "
+        f"AND NOT EXISTS "
+        f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+        f"AND (d.linked_folder_id IS NULL OR EXISTS "
+        f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id))",
         list(scopes),
     ).fetchone()
     return int(row["total"] or 0)

@@ -10,6 +10,7 @@ import io
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1279,6 +1280,67 @@ def test_shutdown_requeues_a_scan_before_it_mutates_mappings(rag_home, monkeypat
         conn.close()
 
 
+@requires_sqlite_vec
+def test_shutdown_transfers_live_ingestion_cleanup_to_child(rag_home, stub_embeddings, monkeypatch):
+    from core.rag import ingestion
+
+    source, folder = _folder(rag_home)
+    (source / "notes.txt").write_text("shutdown child", encoding = "utf-8")
+    child_started = threading.Event()
+    release_child = threading.Event()
+    original_parse = ingestion.parsers.parse
+
+    def blocked_parse(path):
+        child_started.set()
+        assert release_child.wait(5)
+        return original_parse(path)
+
+    monkeypatch.setattr(ingestion.parsers, "parse", blocked_parse)
+    job_id = folder_sync.request_sync(folder["id"])
+    reconcile = threading.Thread(target = folder_sync.reconcile_folder, args = (job_id,))
+    reconcile.start()
+    try:
+        assert child_started.wait(5)
+        folder_sync._stop.set()
+        reconcile.join(5)
+        assert not reconcile.is_alive()
+        conn = rag_db.get_connection()
+        try:
+            document = conn.execute(
+                "SELECT id FROM documents WHERE linked_folder_id=?", (folder["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert document is not None
+    finally:
+        release_child.set()
+        folder_sync._stop.clear()
+        reconcile.join(5)
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        conn = rag_db.get_connection()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM documents WHERE id=?", (document["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        if exists is None:
+            break
+        time.sleep(0.05)
+    assert exists is None
+    conn = rag_db.get_connection()
+    try:
+        assert (
+            conn.execute("SELECT 1 FROM chunks WHERE document_id=?", (document["id"],)).fetchone()
+            is None
+        )
+        assert store.search_lexical(conn, folder["scope"], "shutdown", 5) == []
+    finally:
+        conn.close()
+
+
 def test_start_auto_sync_queues_replacement_for_retired_live_worker(monkeypatch):
     blocker = threading.Event()
     released = threading.Event()
@@ -2070,9 +2132,10 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
     assert _run(folders[0]["id"])["status"] == "completed"
     conn = rag_db.get_connection()
     try:
-        stored_path = conn.execute(
-            "SELECT stored_path FROM documents WHERE linked_folder_id=?", (folders[0]["id"],)
-        ).fetchone()["stored_path"]
+        document = conn.execute(
+            "SELECT id, stored_path FROM documents WHERE linked_folder_id=?", (folders[0]["id"],)
+        ).fetchone()
+        stored_path = document["stored_path"]
     finally:
         conn.close()
     assert os.path.isfile(stored_path)
@@ -2089,6 +2152,15 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
     assert {folder["status"] for folder in remaining} == {"retired"}
     assert folder_sync.scope_retired(store.kb_scope("knowledge")) is True
     assert os.path.exists(stored_path)
+    assert rag_routes.list_kb_documents("knowledge", subject = "test") == {"documents": []}
+    assert rag_routes.list_all_uploaded_documents(subject = "test") == {"documents": []}
+    assert rag_routes.search(
+        rag_routes.SearchRequest(query = "managed", kb_id = "knowledge", mode = "lexical"),
+        subject = "test",
+    ) == {"results": []}
+    with pytest.raises(Exception) as exc_info:
+        rag_routes.preview_target(document["id"], subject = "test")
+    assert getattr(exc_info.value, "status_code", None) == 404
     conn = rag_db.get_connection()
     try:
         assert (
@@ -2097,6 +2169,8 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
             ).fetchone()
             is not None
         )
+        assert store.all_chunks_for_scope(conn, store.kb_scope("knowledge")) == []
+        assert store.scope_token_estimate(conn, store.kb_scope("knowledge")) == 0
     finally:
         conn.close()
     monkeypatch.setattr(folder_sync, "delete_retired_scope", original_cleanup)

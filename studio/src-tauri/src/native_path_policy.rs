@@ -23,6 +23,8 @@ pub struct ClassifiedPath {
     pub display_label: String,
     pub size_bytes: Option<u64>,
     pub modified_ms: Option<u64>,
+    pub device_id: String,
+    pub file_id: String,
 }
 
 pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String> {
@@ -160,6 +162,65 @@ pub fn refresh_path_fingerprint(
     Ok((path_type, size_bytes, modified_ms))
 }
 
+#[cfg(unix)]
+fn stable_path_identity(path: &Path) -> Result<(String, String), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::metadata(path).map_err(|e| format!("Path is no longer available: {e}"))?;
+    Ok((
+        format!("{:x}", metadata.dev()),
+        format!("{:x}", metadata.ino()),
+    ))
+}
+
+#[cfg(windows)]
+fn stable_path_identity(path: &Path) -> Result<(String, String), String> {
+    use std::mem::zeroed;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO,
+    };
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|e| format!("Path is no longer available: {e}"))?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+    let ok = unsafe {
+        GetFileInformationByHandle(file.as_raw_handle() as _, std::ptr::addr_of_mut!(info))
+    };
+    if ok == 0 || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err("Path is no longer available.".to_string());
+    }
+    let mut identity: FILE_ID_INFO = unsafe { zeroed() };
+    let extended_ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as _,
+            FileIdInfo,
+            std::ptr::addr_of_mut!(identity).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if extended_ok != 0 {
+        let file_id = u128::from_le_bytes(identity.FileId.Identifier);
+        return Ok((
+            format!("{:x}", identity.VolumeSerialNumber),
+            format!("{file_id:x}"),
+        ));
+    }
+    let file_id = ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64;
+    Ok((
+        format!("{:x}", info.dwVolumeSerialNumber),
+        format!("{file_id:x}"),
+    ))
+}
+
 pub fn reveal_target(path: &Path) -> PathBuf {
     if path.is_dir() {
         path.to_path_buf()
@@ -212,6 +273,7 @@ fn classify_existing_path(path: &Path) -> Result<ClassifiedPath, String> {
         return Err("Symlink paths are not supported for native intake.".to_string());
     }
     let (path_type, size_bytes, modified_ms) = refresh_path_fingerprint(&canonical_path)?;
+    let (device_id, file_id) = stable_path_identity(&canonical_path)?;
     let display_label = sanitize_display_label(
         canonical_path
             .file_name()
@@ -227,6 +289,8 @@ fn classify_existing_path(path: &Path) -> Result<ClassifiedPath, String> {
         display_label,
         size_bytes,
         modified_ms,
+        device_id,
+        file_id,
     })
 }
 

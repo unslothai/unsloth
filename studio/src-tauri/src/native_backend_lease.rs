@@ -66,6 +66,8 @@ pub struct NativePathLeasePayload {
     pub display_label: String,
     pub size_bytes: Option<u64>,
     pub modified_ms: Option<u64>,
+    pub device_id: Option<String>,
+    pub file_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -113,6 +115,8 @@ pub struct NativePathLeaseRequest {
     pub display_label: String,
     pub size_bytes: Option<u64>,
     pub modified_ms: Option<u64>,
+    pub device_id: Option<String>,
+    pub file_id: Option<String>,
 }
 
 pub fn sign_path_lease(
@@ -135,6 +139,8 @@ pub fn sign_path_lease(
         display_label: request.display_label.clone(),
         size_bytes: request.size_bytes,
         modified_ms: request.modified_ms,
+        device_id: request.device_id,
+        file_id: request.file_id,
     };
     sign_payload(secret, &payload).map(|native_path_lease| NativePathLeaseResponse {
         native_path_lease,
@@ -201,6 +207,8 @@ mod tests {
                 display_label: "model.gguf".to_string(),
                 size_bytes: Some(123),
                 modified_ms: Some(456),
+                device_id: Some("7".to_string()),
+                file_id: Some("8".to_string()),
             },
         )
         .unwrap();
@@ -224,6 +232,8 @@ mod tests {
                 display_label: "knowledge".to_string(),
                 size_bytes: None,
                 modified_ms: None,
+                device_id: Some("7".to_string()),
+                file_id: Some("8".to_string()),
             },
         )
         .unwrap();
@@ -239,5 +249,7 @@ mod tests {
         assert!(expires_at_ms > issued_at_ms);
         assert_eq!(expires_at_ms - issued_at_ms, 120_000);
         assert!(payload["modified_ms"].is_null());
+        assert_eq!(payload["device_id"], "7");
+        assert_eq!(payload["file_id"], "8");
     }
 }
