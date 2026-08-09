@@ -2632,3 +2632,85 @@ def test_a_dit_family_records_the_bf16_it_actually_runs_in(run_dir):
     # SDXL keeps its own resolution: the request is what that trainer honours.
     sdxl = dataclasses.replace(base.cfg, resolved_family = "sdxl", mixed_precision = "fp16")
     assert dc.identity_for_config(sdxl).precision == ("fp16" if torch.cuda.is_available() else "no")
+
+
+def test_a_checkpoint_at_the_target_does_not_roll_back_to_an_older_one(run_dir):
+    """The directory scan walks past a bundle it cannot USE. "Already at the target" is not
+    that: nothing is wrong with the newest bundle, and falling past it returned checkpoint-400
+    of a run that finished at 500 -- rolling the model, optimizer, scheduler and RNG back and
+    retraining completed work, which is the exact rollback the fence exists to prevent."""
+    run = _Run(run_dir, save_total_limit = 0)
+    run.step_once(0.5)
+    run.save(400)
+    run.step_once(0.5)
+    run.save(500)
+
+    with pytest.raises(dc.ResumeError, match = "already at step 500"):
+        dc.preflight_resume(str(run_dir), identity = run.identity, target_steps = 500)
+
+    # Raising the target continues the newest, as before.
+    path, step = dc.preflight_resume(str(run_dir), identity = run.identity, target_steps = 800)
+    assert Path(path).name == "checkpoint-500" and step == 500
+
+
+def test_the_latest_displaced_bundle_is_the_one_restored(run_dir):
+    """Replacements stack. A run that crashed after displacing checkpoint-15 leaves its copy
+    behind, and a later run displacing the same slot leaves another; restoring whichever sorted
+    first by NAME (a uuid) resurrected an older branch's state instead of the predecessor that
+    was actually in the slot."""
+    first = _Run(run_dir, save_total_limit = 0)
+    first.save(15)
+    original = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(
+        encoding = "utf-8"
+    )
+
+    # A middle run displaces it and then dies, leaving its own replaced- orphan behind.
+    middle = _Run(run_dir, seed = 5, save_total_limit = 0)
+    middle.step_once(1.0)
+    middle.save(15)
+    displaced_by_middle = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(
+        encoding = "utf-8"
+    )
+    assert displaced_by_middle != original
+
+    preexisting = dc.snapshot_checkpoints(run_dir)
+    last = _Run(run_dir, seed = 9, save_total_limit = 0)
+    last.step_once(2.0)
+    last.save(15, preexisting = preexisting)
+
+    orphans = list(run_dir.glob(f"{dc._STAGING_PREFIX}replaced-15-*"))
+    assert len(orphans) == 2, "the stacked case needs both copies on disk"
+
+    dc.clear_own_checkpoints(run_dir, preexisting)
+
+    settled = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(
+        encoding = "utf-8"
+    )
+    assert settled == displaced_by_middle, "the predecessor in the slot is what comes back"
+    assert list(run_dir.glob(f"{dc._STAGING_PREFIX}*")) == []
+
+
+def test_the_first_preflight_does_not_pin_the_bundle_it_accepted(run_dir):
+    """The pre-dataset pass has no fingerprint, so that comparison is SKIPPED and it can accept
+    the newest bundle on the strength of a check it did not make. Rewriting the request to that
+    bundle left the dataset-aware pass able only to reject it, when scanning the original
+    directory would have found an older retained checkpoint matching the current images."""
+    import inspect
+
+    from routes.training import _preflight_diffusion_resume
+
+    run = _Run(run_dir, save_total_limit = 0)
+    run.save(4)
+
+    config = {"resume_from_checkpoint": str(run_dir)}
+    _preflight_diffusion_resume(config, run.identity, 500, pin = False)
+    assert config["resume_from_checkpoint"] == str(run_dir), "the directory must survive"
+
+    # The dataset-aware pass still pins, so the trainer resumes exactly what was approved.
+    _preflight_diffusion_resume(config, run.identity, 500)
+    assert Path(config["resume_from_checkpoint"]).name == "checkpoint-4"
+
+    # And the start route asks for it that way round.
+    start = inspect.getsource(__import__("routes.training", fromlist = ["x"]))
+    first = start.index("0 if normalized_cfg.num_epochs > 0 else normalized_cfg.train_steps")
+    assert "pin = False" in start[first : first + 400]

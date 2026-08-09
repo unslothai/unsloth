@@ -168,12 +168,15 @@ def _refresh_resume_state(rec: dict) -> dict:
             status = rec.get("status"),
             started_at = rec.get("started_at"),
             ended_at = rec.get("ended_at"),
-            # Same fallback as the write side: a run that died during model loading never got
-            # a "resumed" event to seed total_steps, and zero here sends the calculation back
-            # to the checkpoint manifest's OLDER target, reporting "nothing left to train" for
-            # a run whose whole point was a raised one.
-            total_steps = rec.get("total_steps")
-            or (config.get("train_steps") if isinstance(config, dict) else None),
+            # Same rule as the write side, and via the same helper: a run that died during
+            # model loading never got a "resumed" event to seed total_steps, and zero here
+            # sends the calculation back to the checkpoint manifest's OLDER target. In EPOCH
+            # mode train_steps is the request model's unused default, so recomputing from it
+            # here undid the persisted answer on every read -- a 600-step checkpoint of a run
+            # resolved to 1000 read as 600/500 and Resume was disabled.
+            total_steps = _resolved_total_steps(
+                rec, config if isinstance(config, dict) else {}
+            ),
             write_error = rec.get("checkpoint_write_error"),
             # What this run itself resumed from, so a resumed run that died before its first
             # save can still offer the bundle it was validated against.
@@ -496,6 +499,12 @@ class DiffusionTrainingService:
 
             job_id = uuid.uuid4().hex
             self._discard_requested = False
+            # The route has already validated and PINNED a source bundle by this point, so its
+            # identity is known before the child starts. Seeding it here means a resume that
+            # dies during the model load -- before the trainer can emit "resumed" -- still has
+            # the timestamp its fallback is checked against, instead of trusting the pathname
+            # and offering back whatever later occupies that slot.
+            self._seed_source_identity(config)
             self._own_checkpoints = []
             event_queue = self._ctx.Queue()
             self._stop_queue = self._ctx.Queue()
@@ -609,6 +618,20 @@ class DiffusionTrainingService:
                     self._apply_discard_intent()
                 self._persist_run_record()
                 return
+
+    def _seed_source_identity(self, config: dict[str, Any]) -> None:
+        """Record which bundle the route accepted, before the child can report it itself."""
+        source = config.get("resume_from_checkpoint")
+        if not source:
+            return
+        try:
+            from core.training.diffusion_checkpoint import read_checkpoint
+
+            manifest = read_checkpoint(Path(str(source)).expanduser())
+        except Exception:  # noqa: BLE001 -- an unreadable bundle simply has no identity here
+            manifest = None
+        if isinstance(manifest, dict):
+            self._state["resumed_source_created_at"] = manifest.get("created_at")
 
     def _apply_discard_intent(self) -> None:
         """Carry out a stop-without-saving the child could not report itself.

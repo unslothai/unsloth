@@ -2649,20 +2649,29 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
     return resolve_dataset_path(raw)
 
 
-def _preflight_diffusion_resume(config: dict, identity: Any, target_steps: int) -> None:
-    """Validate ``config["resume_from_checkpoint"]`` against ``identity`` and PIN it.
+def _preflight_diffusion_resume(
+    config: dict, identity: Any, target_steps: int, *, pin: bool = True
+) -> None:
+    """Validate ``config["resume_from_checkpoint"]`` against ``identity``, optionally PINNING it.
 
-    On success the config's resume path is rewritten to the exact ``checkpoint-<N>``
-    directory that was accepted, so the trainer subprocess resumes the bundle this preflight
-    approved rather than re-picking "newest" from a directory that could have changed.
+    Pinning rewrites the config's resume path to the exact ``checkpoint-<N>`` directory that was
+    accepted, so the trainer subprocess resumes the bundle this preflight approved rather than
+    re-picking "newest" from a directory that could have changed.
+
     Called twice -- once before the dataset is known, once with its fingerprint -- and both
-    times BEFORE the resident GPU models are freed. Raises ResumeError."""
+    times BEFORE the resident GPU models are freed. The FIRST pass does not pin: its identity
+    has no dataset fingerprint, so that comparison is skipped and it can accept the newest
+    bundle on the strength of a check it did not make. Rewriting the request to that bundle
+    left the dataset-aware pass with nothing to do but reject it, when scanning the original
+    directory would have found an older retained checkpoint matching the current images.
+    Raises ResumeError."""
     from core.training.diffusion_checkpoint import preflight_resume
 
     path, _step = preflight_resume(
         config["resume_from_checkpoint"], identity = identity, target_steps = target_steps
     )
-    config["resume_from_checkpoint"] = path
+    if pin:
+        config["resume_from_checkpoint"] = path
 
 
 @router.post("/diffusion/start", response_model = DiffusionTrainingStartResponse)
@@ -2795,6 +2804,10 @@ async def start_diffusion_training(
                 config,
                 resume_identity,
                 0 if normalized_cfg.num_epochs > 0 else normalized_cfg.train_steps,
+                # Fail fast on an impossible resume, but leave the request pointing at what the
+                # user gave: the dataset-aware pass below is the one that may need to scan the
+                # directory for an older bundle matching the current images.
+                pin = False,
             )
         except ResumeError as e:
             raise HTTPException(status_code = 400, detail = str(e))

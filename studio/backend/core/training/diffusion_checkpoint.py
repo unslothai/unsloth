@@ -1084,15 +1084,34 @@ def _retire_replaced_slots(root: Path, *, restore: bool) -> None:
     is left behind afterwards.
     """
     try:
-        entries = sorted(root.glob(f"{_STAGING_PREFIX}replaced-*"))
+        entries = list(root.glob(f"{_STAGING_PREFIX}replaced-*"))
     except OSError:
         return
+    # NEWEST first per slot. Replacements stack: a run that crashed after displacing
+    # checkpoint-15 leaves its copy behind, and a later run displacing the same slot leaves
+    # another. Restoring whichever sorted first by NAME (a uuid, so effectively at random)
+    # resurrected an older branch's optimizer state instead of the predecessor that was
+    # actually in the slot, and later resumes then continued the wrong lineage.
+    def _written_at(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    entries.sort(key = _written_at, reverse = True)
+    restored_slots: set[Path] = set()
     for entry in entries:
         match = _REPLACED_SLOT.match(entry.name[len(_STAGING_PREFIX) :])
         slot = root / f"{CHECKPOINT_PREFIX}{int(match.group(1))}" if match else None
-        if restore and slot is not None and not slot.exists():
+        if (
+            restore
+            and slot is not None
+            and slot not in restored_slots
+            and not slot.exists()
+        ):
             try:
                 os.replace(entry, slot)
+                restored_slots.add(slot)
                 continue
             except OSError:
                 # Could not hand it back. Leaving it on disk still beats deleting the only copy
@@ -1836,10 +1855,23 @@ def preflight_resume(
         try:
             return _validated_resume(path, manifest, identity, target_steps)
         except ResumeError as exc:
+            # "Already at the target" is an answer, not a damaged bundle. Falling past it
+            # walked back to checkpoint-400 of a run that finished at 500 and retrained
+            # completed work -- the exact rollback the fence exists to prevent. Only a bundle
+            # that cannot be USED is a reason to try the retained one behind it.
+            if getattr(exc, "terminal", False):
+                raise
             if first_error is None:
                 first_error = exc
     assert first_error is not None
     raise first_error
+
+
+def _terminal(error: ResumeError) -> ResumeError:
+    """Mark a refusal as final: it describes the REQUEST, not a damaged bundle, so the directory
+    scan must not walk past it to an older checkpoint."""
+    error.terminal = True  # type: ignore[attr-defined]
+    return error
 
 
 def _validated_resume(
@@ -1861,9 +1893,13 @@ def _validated_resume(
     _assert_loadable(path, manifest)
     step = int(manifest.get("global_step") or 0)
     if target_steps and step >= int(target_steps):
-        raise ResumeError(
-            f"This checkpoint is already at step {step} of {int(target_steps)}, so there is "
-            "nothing left to train. Raise the step count to continue it."
+        # Terminal: the newest bundle having nothing left to train says nothing is WRONG with
+        # it, so the directory scan must stop here rather than offering the retained older one.
+        raise _terminal(
+            ResumeError(
+                f"This checkpoint is already at step {step} of {int(target_steps)}, so there "
+                "is nothing left to train. Raise the step count to continue it."
+            )
         )
     return str(path), step
 

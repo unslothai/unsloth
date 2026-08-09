@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import itertools
 
+from pathlib import Path
+
 import pytest
 import torch
 from fastapi import FastAPI
@@ -597,3 +599,51 @@ def test_an_epoch_mode_target_does_not_fall_back_to_the_unused_step_count():
     assert _resolved_total_steps({}, {"num_epochs": 4, "train_steps": 500}) == 0
     # Step mode is unchanged: the configured count is the target.
     assert _resolved_total_steps({}, {"num_epochs": 0, "train_steps": 500}) == 500
+
+
+def test_the_read_time_refresh_uses_the_same_epoch_rule():
+    """The persisted record may carry the right target, but every read recomputes it -- and the
+    read side was still falling back to the request model's unused train_steps in epoch mode,
+    so a 600-step checkpoint of a run resolved to 1000 read as 600/500 and Resume was
+    disabled again the moment the run was listed."""
+    import inspect
+
+    from core.training.diffusion_training_service import _refresh_resume_state
+
+    source = inspect.getsource(_refresh_resume_state)
+    assert "_resolved_total_steps(" in source, "the read side must use the shared rule"
+    assert 'config.get("train_steps")' not in source, "and not the raw fallback it replaced"
+
+
+def test_the_source_identity_is_seeded_before_the_child_starts():
+    """The route has already validated and pinned a source bundle, so a resume that dies during
+    the model load -- before the trainer can emit `resumed` -- still needs the timestamp its
+    fallback is checked against, or the pathname alone offers back whatever later occupies the
+    slot."""
+    import inspect
+
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    start = inspect.getsource(DiffusionTrainingService.start)
+    assert "_seed_source_identity(config)" in start
+    # Before the process is created, or a fast failure beats the seed.
+    assert start.index("_seed_source_identity(config)") < start.index("self._ctx.Process(")
+
+
+def test_seeding_reads_the_bundles_own_timestamp(tmp_path, monkeypatch):
+    import json as _json
+
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    bundle = tmp_path / "checkpoint-10"
+    bundle.mkdir()
+    svc = DiffusionTrainingService()
+    monkeypatch.setattr(
+        "core.training.diffusion_checkpoint.read_checkpoint",
+        lambda path: {"created_at": 1234.5} if Path(path) == bundle else None,
+    )
+    svc._seed_source_identity({"resume_from_checkpoint": str(bundle)})
+    assert svc._state["resumed_source_created_at"] == 1234.5
+    # An unreadable or absent bundle simply records nothing rather than raising.
+    svc._seed_source_identity({"resume_from_checkpoint": str(tmp_path / "checkpoint-99")})
+    assert _json.dumps(svc._state["resumed_source_created_at"]) in ("1234.5", "null")
