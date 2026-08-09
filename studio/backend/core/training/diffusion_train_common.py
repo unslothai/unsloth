@@ -65,10 +65,11 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
 
 # VIDEO families (from the separate ``video_families`` registry) Studio can train a LoRA on.
 # The video registry has no ``trainable`` flag of its own -- it exists for the inference
-# picker -- so the trainable set lives here, next to the trainers, and MUST hold exactly the
-# families ``diffusion_dit_trainer._SPECS`` implements. A video base outside this set is
-# refused by name in ``resolve_trainable_family`` rather than falling through to a trainer
-# that cannot run it.
+# picker -- so the trainable set lives here, next to the trainers, and every name in it MUST
+# resolve through ``get_trainer``. Not necessarily to the DiT loop: LTX-2 is a
+# ``diffusion_dit_trainer._SPECS`` family, while MiniMax-H3 has its own trainer. A video base
+# outside this set is refused by name in ``resolve_trainable_family`` rather than falling
+# through to a trainer that cannot run it.
 TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset({"ltx-2", "minimax-h3"})
 
 # Families whose ``flow_shift`` default is "auto" (reproduce the family's INFERENCE sigma
@@ -106,6 +107,22 @@ def _all_trainable_family_names() -> tuple[str, ...]:
     view has to union them."""
     video = tuple(n for n in supported_video_family_names() if n in TRAINABLE_VIDEO_FAMILIES)
     return tuple(trainable_family_names()) + video
+
+
+def _trainable_family_spec(name: str) -> Any:
+    """The registry entry for a trainable family name, from EITHER registry, or None.
+
+    Every consumer that starts from a resolved family NAME (rather than from a repo id) needs
+    this: the image registry does not know a video family, so a plain ``detect_family`` returns
+    None for one and the caller silently skips it. That is how ``ltx-2`` stayed out of
+    ``/diffusion/info`` and out of the strict pipeline gate."""
+    from core.inference.diffusion_families import detect_family
+
+    key = str(name or "").strip().lower()
+    fam = detect_family("", override = key)
+    if fam is not None:
+        return fam
+    return detect_video_family("", override = key)
 
 
 def _refuse_untrainable_video_family(name: str) -> None:
@@ -179,20 +196,6 @@ def _refuse_component_only_repo(base_model: str) -> None:
     )
 
 
-def _assert_video_pipeline_available(fam: Any) -> None:
-    """Refuse a video family whose pipeline class the installed diffusers does not carry.
-
-    ``pyproject`` deliberately keeps the diffusers floor conditional -- diffusers dropped Python
-    3.9 in 0.38 and this project still supports 3.9 -- so a supported install can legitimately
-    predate ``LTX2Pipeline``. The inference paths already assert this before a load; the training
-    preflight did not, so the family resolved as trainable, ``/diffusion/start`` freed the
-    resident GPU workloads, and only the spawned child discovered the pipeline was missing.
-    Losing a loaded model and THEN failing is the worst ordering available, so assert here, while
-    ``resolve_trainable_family`` still runs ahead of any teardown."""
-    from core.inference.diffusion_families import assert_pipeline_class_available
-    assert_pipeline_class_available(fam.pipeline_class, fam.name)
-
-
 def _trainable_hint() -> str:
     """A user-facing hint listing the families Studio can train today. Always names SDXL
     explicitly so the message is actionable even as more families become trainable."""
@@ -247,9 +250,11 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
     Returns the message instead of raising, matching ``training_precision_preflight_error``, so the
     route maps it to its own 400."""
-    from core.inference.diffusion_families import assert_pipeline_class_available, detect_family
+    from core.inference.diffusion_families import assert_pipeline_class_available
 
-    fam = detect_family("", override = str(resolved_family or "").strip().lower())
+    # Either registry: a video family is invisible to detect_family, and returning None for one
+    # would hand the strict half of the gate back to the spawned child, after the teardown.
+    fam = _trainable_family_spec(resolved_family)
     if fam is None:
         return None
     try:
@@ -292,6 +297,9 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     # every family branch below (including an explicit model_family override, which names the
     # family but says nothing about what the repo holds).
     _refuse_component_only_repo(base_model)
+    # Same shape as the component-only refusal: the name resolves to a real, trainable family, but
+    # the repo is not something the training loader can open.
+    _refuse_ltx23_training_base(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
@@ -302,7 +310,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
             if vid is not None:
                 if vid.name not in TRAINABLE_VIDEO_FAMILIES:
                     _refuse_untrainable_video_family(vid.name)
-                _assert_video_pipeline_available(vid)
+                _assert_family_pipeline_available(vid)
                 return vid.name
             known = ", ".join(supported_family_names() + supported_video_family_names())
             raise ValueError(f"Unknown model_family {model_family!r}. Known families: {known}.")
@@ -327,7 +335,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     if vid is not None:
         if vid.name not in TRAINABLE_VIDEO_FAMILIES:
             _refuse_untrainable_video_family(vid.name)
-        _assert_video_pipeline_available(vid)
+        _assert_family_pipeline_available(vid)
         return vid.name
 
     condensed = re.sub(r"[^a-z0-9]+", "-", name)
@@ -750,17 +758,25 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
 def family_train_infos() -> list[dict[str, Any]]:
     """Describe every trainable family for the Train UI: name, label, the default + allowed
     base repos, the recommended starting hyperparameters, and a VRAM/access note. Built from
-    the family registry so it stays in sync with what the trainers actually support."""
-    from core.inference.diffusion_families import detect_family
+    the family registry so it stays in sync with what the trainers actually support.
+
+    Both registries: a video family with a trainer is as trainable as an image one, and reading
+    only the image registry is what kept ``ltx-2`` out of the Train tab entirely -- the trainer,
+    the preflight and the start route all accepted it, but nothing ever offered it. A family whose
+    pipeline class the installed diffusers lacks is dropped rather than advertised, since the start
+    route refuses it (``training_pipeline_import_error``) and no choice in the UI can fix that."""
+    from core.inference.diffusion_families import family_pipeline_available
     from core.inference.diffusion_transformer_quant import _family_train_denied
 
     dit_modes, dit_recommended = train_precision_modes()
     infos: list[dict[str, Any]] = []
-    for name in trainable_family_names():
-        fam = detect_family("", override = name)
-        if fam is None:
+    for name in _all_trainable_family_names():
+        fam = _trainable_family_spec(name)
+        if fam is None or not family_pipeline_available(fam):
             continue
-        repos = list(fam.train_base_repos) or [fam.base_repo]
+        # A video family carries no train_base_repos/deploy_base_repo: its own base repo is the
+        # one training base, and a video LoRA has no image catalog to deploy into.
+        repos = list(getattr(fam, "train_base_repos", ()) or ()) or [fam.base_repo]
         # base_precision applies to the DiT trainer only; SDXL keeps its mixed_precision lever. compile applies everywhere.
         is_dit = name in _DIT_TRAIN_FAMILIES
         # On a non-bf16 CUDA GPU the start preflight rejects EVERY DiT family, so advertise no precision, else /info offers an
@@ -793,8 +809,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
                 # compile is offered everywhere (SDXL regional U-Net + DiT), except a DiT family the GPU cannot train in bf16.
                 "supports_compile": bool(not dit_block),
-                # Krea trains on Raw but previews adapters on Turbo; None elsewhere.
-                "deploy_base": fam.deploy_base_repo,
+                # Krea trains on Raw but previews adapters on Turbo; None elsewhere (and never for a video family).
+                "deploy_base": getattr(fam, "deploy_base_repo", None),
             }
         )
     return infos
@@ -1415,6 +1431,26 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
         "minimaxai/minimax-h3",
     }
 )
+
+# LTX-2.3 repos hold SINGLE-FILE checkpoints (ltx-2.3-22b-*.safetensors) and no diffusers layout:
+# no model_index.json, no transformer/ or scheduler/ subfolder. Inference assembles them with
+# from_single_file plus 2.3 config overrides and components borrowed from the 2.0 base (see
+# core/inference/video_ltx2.py); the trainer only knows LTX2Pipeline.from_pretrained, which cannot
+# read that layout. The name still resolves to the ``ltx-2`` family, so without an explicit refusal
+# the run passes preflight, evicts the user's resident models, and only then fails in the child.
+_LTX23_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.3", "lightricks/ltx-2.3-fp8")
+
+
+def _refuse_ltx23_training_base(base_model: str) -> None:
+    """Raise for an LTX-2.3 base: the family routing accepts it, the training loader cannot."""
+    if str(base_model or "").strip().lower() not in _LTX23_TRAIN_UNSUPPORTED:
+        return
+    raise ValueError(
+        f"'{base_model}' ships LTX-2.3 as single-file checkpoints with no diffusers layout, so it "
+        f"cannot be a training base yet: the trainer loads a base with from_pretrained, while 2.3 "
+        f"has to be assembled with from_single_file plus components from the 2.0 base. Train from "
+        f"'Lightricks/LTX-2' instead."
+    )
 
 
 def _assert_trusted_base_model(base_model: str) -> None:

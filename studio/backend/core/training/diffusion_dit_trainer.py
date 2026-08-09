@@ -138,7 +138,9 @@ class _FamilySpec:
     lora_targets: tuple[str, ...]
     # bf16 only (Z-Image overflows fp16 and its RoPE/embedder run in fp32).
     force_bf16: bool
-    # Approximate dense-bf16 transformer weight size, used by base_precision="auto" to pick a mode that fits free VRAM.
+    # Approximate dense-bf16 transformer weight size for the family's DEFAULT base, used by
+    # base_precision="auto" to pick a mode that fits free VRAM. A family covering more than one
+    # size (flux.2-klein is 4B and 9B) must not be sized off this alone -- see _dense_bf16_gb.
     dense_bf16_gb: float
     # Phased load so the multi-GB transformer never coexists with the text encoders + VAE: ``load_conditioners`` builds the
     # pipeline WITHOUT it and returns (pipe, vae); ``load_transformer`` then loads it alone once the conditioners are freed.
@@ -327,19 +329,26 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
     ).to(device)
 
 
-def _int8_quantize_base(transformer) -> None:
+def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
     """torchao weight-only int8 on the big frozen linears, applied after add_adapter so
     the base_layer inside each LoRA wrapper quantizes while the adapters stay high
     precision. ``make_filter_fn`` (shared with the inference quant layer) keeps only
     Linears with >= 512 features -- which also naturally skips the rank-sized LoRA
-    matrices -- and drops the M=1 modulation projections int8 kernels reject."""
+    matrices -- and drops the M=1 modulation projections int8 kernels reject.
+
+    ``family`` selects the per-family small-M exclusions on top of those. Passing it is what
+    keeps training and inference on the same list: without it LTX-2's one-token audio stream
+    (and Qwen-Image's unpadded text stream) is quantized here and the first forward raises,
+    after the whole base has been loaded."""
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme, make_filter_fn
     from torchao.quantization import Int8WeightOnlyConfig, quantize_
 
     quantize_(
         transformer,
         Int8WeightOnlyConfig(),
-        filter_fn = make_filter_fn(512, exclude_name_tokens = exclude_tokens_for_scheme("int8")),
+        filter_fn = make_filter_fn(
+            512, exclude_name_tokens = exclude_tokens_for_scheme("int8", family)
+        ),
     )
 
 
@@ -480,6 +489,32 @@ def _pick_auto_precision(
     return "nf4"
 
 
+def _dense_bf16_gb(spec, base_model: str) -> float:
+    """The dense-bf16 transformer size of the base this run actually trains from.
+
+    ``spec.dense_bf16_gb`` is one number per FAMILY, and flux.2-klein is a family with two
+    transformer sizes under it: the 4B default (8.1 GB) and the 9B / base-9B pair (18.2 GB).
+    Sizing a 9B run off the family number understates it by 2.3x, so base_precision="auto"
+    (the mode /info recommends, and therefore the Train tab's default) resolves to bf16 on a
+    16-24 GB GPU and the dense load OOMs -- the run fails before the first step.
+
+    The inference auto-policy already keeps per-base overrides for exactly this, so read them
+    here instead of adding a second table that can drift. Reads the per-base OVERRIDES only,
+    never the family table underneath them: this spec's own number is the family default, and
+    the two are independently maintained, so falling through to the shared family entry would
+    silently re-size every base that has no override (klein's 4B default from 8.1 to 7.8, which
+    moves the bf16 band by half a GB). Never raises: a sizing lookup must not be able to fail a
+    run that would otherwise train."""
+    try:
+        from core.inference.diffusion_auto_policy import base_repo_bf16_components_gb
+        components = base_repo_bf16_components_gb(base_model)
+        if components:
+            return float(components[0])
+    except Exception:  # noqa: BLE001 -- table miss / import failure -> the family number
+        pass
+    return float(spec.dense_bf16_gb)
+
+
 def _resolve_base_precision(cfg, spec, device) -> str:
     """Resolve "auto" against the live GPU (free VRAM measured BEFORE anything loads);
     explicit modes pass through (normalized() already validated them against the repo and
@@ -541,7 +576,13 @@ def _resolve_base_precision(cfg, spec, device) -> str:
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
             pass
     return _pick_auto_precision(
-        prequant, device, free_gb, spec.dense_bf16_gb, capability, has_fp8, has_torchao
+        prequant,
+        device,
+        free_gb,
+        _dense_bf16_gb(spec, cfg.base_model),
+        capability,
+        has_fp8,
+        has_torchao,
     )
 
 
@@ -1150,7 +1191,6 @@ def _ltx2_encode_prompts(pipe, captions, device):
     _encoders_to_device(pipe, device)
     # The Gemma3 hidden states are per-LAYER stacked ([1, 1024, 3840 * layers]); only the
     # connector output reaches the transformer, so that is what gets cached.
-    padding_side = getattr(getattr(pipe, "tokenizer", None), "padding_side", "left")
     out = []
     with torch.no_grad():
         for cap in captions:
@@ -1161,6 +1201,13 @@ def _ltx2_encode_prompts(pipe, captions, device):
                 max_sequence_length = 1024,
                 device = device,
             )
+            # Read AFTER encode_prompt, exactly where the pipeline reads it. encode_prompt
+            # sets ``tokenizer.padding_side = "left"`` itself (Gemma wants left padding for
+            # chat-style prompts), so a tokenizer that loaded reporting "right" would have had
+            # that stale value baked in here -- and the connectors build the valid-token mask
+            # from this, so every caption shorter than the 1024 pad length would be masked on
+            # the wrong end and the cached conditioning would not match what inference builds.
+            padding_side = getattr(getattr(pipe, "tokenizer", None), "padding_side", "left")
             video_emb, audio_emb, conn_mask = pipe.connectors(pe, mask, padding_side = padding_side)
             out.append((video_emb.cpu(), audio_emb.cpu(), conn_mask.cpu()))
     return out
@@ -1745,8 +1792,7 @@ def run_dit_lora_training(
     on_event: Optional[EventCb] = None,
     should_stop: Optional[StopCb] = None,
 ) -> str:
-    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2)
-    and export it.
+    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2) and export it.
 
     Resumable: ``cfg.resume_from_checkpoint`` restores the adapter, optimizer moments, LR
     position, EMA shadow, sampler cycle and RNG streams from a ``checkpoint-<N>`` bundle,
@@ -1987,7 +2033,7 @@ def _train_dit(
 
     # int8 / fp8 / mxfp8 convert the frozen base linears AFTER the LoRA attaches, so the adapter modules are excluded and stay high precision.
     if base_precision == "int8":
-        _int8_quantize_base(transformer)
+        _int8_quantize_base(transformer, cfg.resolved_family)
     if base_precision == "fp8" and not _apply_fp8_training(transformer, on_event):
         base_precision = "bf16"
     if base_precision == "mxfp8" and not _apply_mxfp8_training(transformer, on_event):

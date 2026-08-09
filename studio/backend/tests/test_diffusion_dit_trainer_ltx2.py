@@ -603,18 +603,20 @@ def test_a_video_run_publishes_no_adapter_into_the_image_lora_catalog(tmp_path, 
 
 
 def test_ltx2_preflight_refuses_a_diffusers_without_the_pipeline(monkeypatch):
-    # LTX2Pipeline landed in diffusers 0.39, and pyproject deliberately keeps an older diffusers
-    # installable on the Python 3.9 hosts this project still supports (diffusers dropped 3.9 in
-    # 0.38). The inference paths assert this before a load; the training preflight has to as well,
-    # or the family resolves, /diffusion/start frees the resident GPU workloads, and only the
-    # child finds out. Same refusal whether the family is detected or named.
-    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.37.0"))
+    # LTX2Pipeline is a diffusers 0.37.0 export, and pyproject deliberately keeps an older
+    # diffusers installable on the Python 3.9 hosts this project still supports (0.36.0 is the
+    # newest one such a host can resolve). The inference paths assert this before a load; the
+    # training preflight has to as well, or the family resolves, /diffusion/start frees the
+    # resident GPU workloads, and only the child finds out. Same refusal whether the family is
+    # detected or named.
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
     for base, family in (("Lightricks/LTX-2", None), ("/data/models/anything", "ltx-2")):
         with pytest.raises(ValueError) as exc:
             resolve_trainable_family(base, family)
         message = str(exc.value)
         assert "LTX2Pipeline" in message
-        assert "0.39" in message and "0.37.0" in message  # names the floor and what is installed
+        # The floor LTX-2 actually needs, not the packaging floor, and what is installed.
+        assert "0.37.0" in message and "0.36.0" in message
 
     # A diffusers that HAS the pipeline resolves as before, so the gate is the class, not the stub.
     monkeypatch.setitem(
@@ -666,3 +668,221 @@ def test_the_preflight_survives_a_diffusers_that_cannot_import_its_pipeline(monk
 
     monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
     assert resolve_trainable_family("Lightricks/LTX-2") == "ltx-2"
+
+
+# -- int8, the trust gate, and the connector padding side ---------------------
+
+
+def test_int8_excludes_the_one_token_audio_stream():
+    """A still feeds a ONE-token audio stream, and torch._int_mm needs M > 16. Without an
+    LTX-2 entry the generic int8 path quantized audio_proj_in / audio_attn* / audio_ff and the
+    first forward raised, after the whole base had been loaded."""
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    tokens = exclude_tokens_for_scheme("int8", "ltx-2")
+    assert "audio" in tokens and "av_cross_attn" in tokens and "adaln" in tokens
+    # The generic list is still there (the M=1 modulation projections).
+    assert "norm" in tokens and "time_embed" in tokens
+    # 2.3 is the same audiovisual DiT.
+    assert "audio" in exclude_tokens_for_scheme("int8", "ltx-2.3")
+    # An image family is unchanged, and a non-int8 scheme still excludes nothing.
+    assert "audio" not in exclude_tokens_for_scheme("int8", "flux.1")
+    assert exclude_tokens_for_scheme("fp8", "ltx-2") == ()
+
+
+def test_the_int8_filter_actually_skips_every_audio_side_linear():
+    """The token list is only useful if the shared filter drops these modules."""
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme, make_filter_fn
+
+    fn = make_filter_fn(512, exclude_name_tokens = exclude_tokens_for_scheme("int8", "ltx-2"))
+    big = torch.nn.Linear(2048, 2048)
+    audio_names = (
+        "transformer_blocks.0.audio_proj_in",
+        "transformer_blocks.0.audio_attn1.to_q",
+        "transformer_blocks.0.audio_attn2.to_k",
+        "transformer_blocks.0.audio_ff.net.0.proj",
+        "transformer_blocks.0.audio_to_video_attn.to_q",
+        "transformer_blocks.0.video_to_audio_attn.to_k",
+    )
+    modulation_names = (
+        # LTX2AdaLayerNormSingle projections: Linear over a BATCH-sized input, so M = batch = 1.
+        # Nothing in these names says "audio", and none matches a generic token.
+        "av_cross_attn_video_scale_shift.linear",
+        "av_cross_attn_video_a2v_gate.linear",
+        "av_cross_attn_audio_scale_shift.linear",
+        "av_cross_attn_audio_v2a_gate.linear",
+        "prompt_adaln.linear",
+        "audio_prompt_adaln.linear",
+    )
+    for name in audio_names + modulation_names:
+        assert fn(big, name) is False, f"{name} must stay dense"
+    # The video stream keeps full int8 coverage.
+    assert fn(big, "transformer_blocks.0.attn1.to_q") is True
+    assert fn(big, "transformer_blocks.0.ff.net.0.proj") is True
+
+
+def test_the_int8_trainer_path_passes_the_family_through(monkeypatch):
+    """The exclusions only apply if the trainer asks for them by family."""
+    seen: dict = {}
+
+    def _fake_quantize(
+        model,
+        config,
+        filter_fn = None,
+    ):
+        seen["filter_fn"] = filter_fn
+
+    fake = types.ModuleType("torchao.quantization")
+    fake.Int8WeightOnlyConfig = lambda: object()
+    fake.quantize_ = _fake_quantize
+    monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
+    monkeypatch.setitem(sys.modules, "torchao.quantization", fake)
+
+    dit._int8_quantize_base(torch.nn.Linear(8, 8), "ltx-2")
+    big = torch.nn.Linear(2048, 2048)
+    assert seen["filter_fn"](big, "transformer_blocks.0.audio_attn1.to_q") is False
+
+
+def test_ltx23_is_refused_as_a_training_base_with_the_real_reason():
+    """Lightricks/LTX-2.3 ships single-file checkpoints and no diffusers layout (no
+    model_index.json, no transformer/ subfolder), so LTX2Pipeline.from_pretrained cannot open it.
+    The name still resolves to the ltx-2 family, so it has to be refused explicitly -- in preflight,
+    before the run evicts the user's resident models."""
+    from core.training.diffusion_train_common import _assert_trusted_base_model
+
+    _assert_trusted_base_model("Lightricks/LTX-2")
+    for repo in ("Lightricks/LTX-2.3", "lightricks/ltx-2.3", "Lightricks/LTX-2.3-fp8"):
+        with pytest.raises(ValueError) as exc:
+            resolve_trainable_family(repo)
+        message = str(exc.value)
+        assert "single-file" in message and "Lightricks/LTX-2" in message
+        assert "untrusted" not in message
+    # An unrelated repo is still refused by the trust gate.
+    with pytest.raises(ValueError):
+        _assert_trusted_base_model("some-random-user/ltx-2-clone")
+
+
+def test_the_connector_padding_side_is_read_after_encode_prompt():
+    """diffusers' own encode_prompt sets tokenizer.padding_side = "left" (Gemma wants left
+    padding), and the pipeline reads the value AFTER calling it. Reading it before baked in a
+    stale "right", and the connectors build the valid-token mask from it, so every caption
+    shorter than the 1024 pad length would have been masked on the wrong end."""
+    seen: list = []
+
+    class _Tok:
+        padding_side = "right"  # what the tokenizer reports before encode_prompt runs
+
+    class _Pipe:
+        tokenizer = _Tok()
+
+        def encode_prompt(self, **_kwargs):
+            # Exactly what diffusers does inside _get_gemma_prompt_embeds.
+            self.tokenizer.padding_side = "left"
+            return torch.zeros(1, 4, 8), torch.ones(1, 4), None, None
+
+        def connectors(
+            self,
+            pe,
+            mask,
+            padding_side = "left",
+        ):
+            seen.append(padding_side)
+            return torch.zeros(1, 4, 8), torch.zeros(1, 4, 8), torch.ones(1, 4)
+
+    dit._ltx2_encode_prompts(_Pipe(), ["a sloth", "a second caption"], "cpu")
+    assert seen == ["left", "left"], "the connectors must get the side encode_prompt actually used"
+
+
+# ── the Train tab has to be able to OFFER the family ──────────────────────────
+
+
+def test_family_train_infos_offers_the_video_family(dit_train_host):
+    """The gap this closes: everything below the API accepted ltx-2 -- the trainer, the preflight,
+    /diffusion/start -- but ``/api/train/diffusion/info`` is built from the IMAGE registry alone,
+    so the family never appeared in the Train tab and the whole path was unreachable from the UI.
+    """
+    from core.training.diffusion_train_common import family_train_infos
+
+    infos = {i["name"]: i for i in family_train_infos()}
+    assert "ltx-2" in infos, "a trainable video family must be offered by /diffusion/info"
+    info = infos["ltx-2"]
+    # A video family has no train_base_repos, so its own base repo is the training base.
+    assert info["default_base"] == "Lightricks/LTX-2"
+    assert info["base_repos"] == ["Lightricks/LTX-2"]
+    assert info["label"] == "LTX-2"
+    assert info["defaults"]["resolution"] % 32 == 0  # the VAE's spatial grid
+    # No image LoRA catalog entry for a video run, so nothing to deploy to Create.
+    assert info["deploy_base"] is None
+    # Still a DiT, so it keeps the base_precision selector every other DiT family has.
+    assert "nf4" in info["precision_modes"]
+    # The image families must be untouched by the union.
+    assert "sdxl" in infos and "flux.1" in infos
+
+
+def test_family_train_infos_drops_a_family_this_diffusers_cannot_run(monkeypatch, dit_train_host):
+    """A family whose pipeline class is missing can only 400 at /diffusion/start, and no choice in
+    the UI fixes it, so it must not be offered at all."""
+    import core.training.diffusion_train_common as dtc
+
+    monkeypatch.setattr(
+        dtc, "family_pipeline_available", lambda fam: fam.name != "ltx-2", raising = False
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion_families.family_pipeline_available",
+        lambda fam: getattr(fam, "name", "") != "ltx-2",
+    )
+    names = {i["name"] for i in dtc.family_train_infos()}
+    assert "ltx-2" not in names
+    assert "sdxl" in names  # only the unavailable one goes
+
+
+def test_the_strict_pipeline_gate_resolves_a_video_family_too(monkeypatch):
+    """``training_pipeline_import_error`` resolved the family name through the image registry only,
+    so it returned None for ltx-2 and the strict half of the preflight was skipped: the failure
+    then landed in the spawned child, after the resident GPU models were already freed."""
+    from core.training.diffusion_train_common import training_pipeline_import_error
+
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
+    reason = training_pipeline_import_error("ltx-2")
+    assert reason and "LTX2Pipeline" in reason
+
+    healthy = types.SimpleNamespace(__version__ = "0.39.0", LTX2Pipeline = object)
+    monkeypatch.setitem(sys.modules, "diffusers", healthy)
+    assert training_pipeline_import_error("ltx-2") is None
+
+
+def test_editing_the_connectors_invalidates_the_conditioning_cache(tmp_path):
+    """Only the connector OUTPUT is cached (the Gemma3 hidden states are per-layer stacked and
+    never reach the transformer), so replacing the connector weights in place changes what a warm
+    run should encode. The fingerprint scanned text_encoder*/tokenizer*/vae* only, so it did not
+    move and the warm run trained on embeddings from the old connectors."""
+    from core.training.diffusion_train_extras import source_revision
+
+    root = tmp_path / "LTX-2"
+    for sub in ("text_encoder", "tokenizer", "vae", "connectors"):
+        (root / sub).mkdir(parents = True)
+        (root / sub / "model.safetensors").write_bytes(b"v1")
+    (root / "model_index.json").write_text("{}")
+
+    before = source_revision(str(root))
+    assert source_revision(str(root)) == before  # stable while nothing changes
+
+    (root / "connectors" / "model.safetensors").write_bytes(b"v2-different-size")
+    assert source_revision(str(root)) != before
+
+
+def test_an_unrelated_subdirectory_is_still_ignored(tmp_path):
+    """The fingerprint stays cheap: only the components the cached tensors come from are hashed,
+    so a scheduler or transformer edit (which the cache does not depend on) must not invalidate it.
+    """
+    from core.training.diffusion_train_extras import source_revision
+
+    root = tmp_path / "LTX-2"
+    (root / "connectors").mkdir(parents = True)
+    (root / "connectors" / "model.safetensors").write_bytes(b"v1")
+    (root / "transformer").mkdir()
+    (root / "transformer" / "model.safetensors").write_bytes(b"dit")
+
+    before = source_revision(str(root))
+    (root / "transformer" / "model.safetensors").write_bytes(b"a-different-dit-entirely")
+    assert source_revision(str(root)) == before
