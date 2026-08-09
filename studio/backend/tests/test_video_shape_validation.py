@@ -436,3 +436,55 @@ def test_a_family_swap_cannot_slip_between_the_check_and_the_job(backend):
     with pytest.raises(ValueError):
         backend.begin_generate(prompt = "a cat", width = 704, height = 1216)
     assert not backend._generate_job_active, "a refused shape must not reserve the job slot"
+
+
+# ── the half-specified canvas, with and without a keyframe ────────────────────
+
+
+def _tiny_png_b64() -> str:
+    """A 2x1 PNG, enough for the keyframe branch of the request model."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 1), (255, 0, 0)).save(buf, format = "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+@pytest.mark.parametrize("axes", [{"width": 768}, {"height": 512}])
+def test_a_half_specified_canvas_stays_valid_without_a_keyframe(axes):
+    """The regression this pins: the paired-axes rule was written for the keyframe canvas but
+    ran as an unconditional request validator, so every existing LTX / Wan / Hunyuan /
+    prompt-only H3 client that sends one axis started getting a 422. The backend deliberately
+    resolves the missing axis from the family's default preset (validate_video_request_shape
+    documents it, and _resolve_keyframes implements it), so these calls must still be accepted.
+    """
+    from models.inference import VideoGenerateRequest
+
+    req = VideoGenerateRequest(prompt = "a cat", **axes)
+    assert (req.width, req.height) == (axes.get("width"), axes.get("height"))
+
+
+@pytest.mark.parametrize("axes", [{"width": 768}, {"height": 512}])
+def test_a_half_specified_canvas_is_refused_with_a_keyframe(axes):
+    """The rule still has to hold where it means something: with a keyframe present
+    _resolve_keyframes matches the SOURCE aspect whenever either axis is missing, so the axis
+    the caller did send would be silently discarded. Refuse rather than draw another recipe."""
+    import pydantic
+    from models.inference import VideoGenerateRequest
+
+    with pytest.raises(pydantic.ValidationError, match = "sent together"):
+        VideoGenerateRequest(prompt = "a cat", first_frame = _tiny_png_b64(), **axes)
+
+
+def test_both_axes_and_neither_stay_valid_with_a_keyframe():
+    """The two shapes the rule exists to allow: an explicit canvas, and "match source"."""
+    from models.inference import VideoGenerateRequest
+
+    frame = _tiny_png_b64()
+    assert VideoGenerateRequest(
+        prompt = "a cat", first_frame = frame, width = 768, height = 512
+    ).width == 768
+    assert VideoGenerateRequest(prompt = "a cat", first_frame = frame).width is None
