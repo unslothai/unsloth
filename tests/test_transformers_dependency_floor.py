@@ -96,24 +96,37 @@ def _run_check(caplog):
 
 # ---------------------------------------------------------------- satisfied
 
+
 @pytest.mark.parametrize(
     "requires, installed",
     [
         (
             REQUIRES_4_57_6,
             {
-                "filelock": "3.16.1", "huggingface-hub": "0.36.2", "numpy": "2.1.3",
-                "packaging": "24.2", "pyyaml": "6.0.2", "regex": "2025.11.3",
-                "requests": "2.32.4", "tokenizers": "0.22.2",
-                "safetensors": "0.7.0", "tqdm": "4.67.3",
+                "filelock": "3.16.1",
+                "huggingface-hub": "0.36.2",
+                "numpy": "2.1.3",
+                "packaging": "24.2",
+                "pyyaml": "6.0.2",
+                "regex": "2025.11.3",
+                "requests": "2.32.4",
+                "tokenizers": "0.22.2",
+                "safetensors": "0.7.0",
+                "tqdm": "4.67.3",
             },
         ),
         (
             REQUIRES_5_14_1,
             {
-                "huggingface-hub": "1.27.0", "numpy": "2.1.3", "packaging": "24.2",
-                "pyyaml": "6.0.2", "regex": "2025.11.3", "tokenizers": "0.22.2",
-                "typer": "0.15.1", "safetensors": "0.8.0", "tqdm": "4.67.3",
+                "huggingface-hub": "1.27.0",
+                "numpy": "2.1.3",
+                "packaging": "24.2",
+                "pyyaml": "6.0.2",
+                "regex": "2025.11.3",
+                "tokenizers": "0.22.2",
+                "typer": "0.15.1",
+                "safetensors": "0.8.0",
+                "tqdm": "4.67.3",
             },
         ),
     ],
@@ -128,21 +141,25 @@ def test_satisfied_requirements_are_silent(monkeypatch, caplog, requires, instal
 
 # ----------------------------------------------------------------- violated
 
+
 def test_violated_floor_is_reported_and_names_the_dependency(monkeypatch, caplog):
     """The Kaggle LFM2 break: transformers main wants safetensors>=0.8.0, the
     image ships 0.7.0. The remedy must upgrade safetensors, not transformers."""
     installed = {
-        "transformers": "5.15.0.dev0", "huggingface-hub": "1.27.0", "numpy": "2.1.3",
-        "packaging": "24.2", "pyyaml": "6.0.2", "regex": "2025.11.3",
-        "tokenizers": "0.22.2", "typer": "0.15.1",
+        "transformers": "5.15.0.dev0",
+        "huggingface-hub": "1.27.0",
+        "numpy": "2.1.3",
+        "packaging": "24.2",
+        "pyyaml": "6.0.2",
+        "regex": "2025.11.3",
+        "tokenizers": "0.22.2",
+        "typer": "0.15.1",
         "safetensors": "0.7.0",  # the violation
         "tqdm": "4.67.3",
     }
     _install_env(monkeypatch, REQUIRES_5_14_1, installed)
 
-    assert IF._unsatisfied_transformers_requirements() == [
-        ("safetensors", ">=0.8.0", "0.7.0")
-    ]
+    assert IF._unsatisfied_transformers_requirements() == [("safetensors", ">=0.8.0", "0.7.0")]
 
     warnings = _run_check(caplog)
     assert len(warnings) == 1
@@ -177,8 +194,10 @@ def test_multiple_violations_are_all_listed_in_one_command(monkeypatch, caplog):
         monkeypatch,
         ["huggingface-hub<2.0,>=1.5.0", "safetensors>=0.8.0", "tqdm>=4.60"],
         {
-            "transformers": "5.15.0.dev0", "huggingface-hub": "0.36.2",
-            "safetensors": "0.7.0", "tqdm": "4.67.3",
+            "transformers": "5.15.0.dev0",
+            "huggingface-hub": "0.36.2",
+            "safetensors": "0.7.0",
+            "tqdm": "4.67.3",
         },
     )
     reported = {name for name, _, _ in IF._unsatisfied_transformers_requirements()}
@@ -200,6 +219,7 @@ def test_prerelease_dependency_satisfying_the_floor_is_not_reported(monkeypatch,
 
 # ------------------------------------------------------- environment markers
 
+
 def test_inapplicable_environment_markers_are_skipped(monkeypatch, caplog):
     """Extras and python_version gates that do not apply must not be checked,
     even when a violating version of the named package is installed."""
@@ -213,8 +233,12 @@ def test_inapplicable_environment_markers_are_skipped(monkeypatch, caplog):
             'requests>=99.0; sys_platform == "definitely-not-a-real-platform"',
         ],
         {
-            "transformers": "5.15.0.dev0", "torch": "2.9.0", "accelerate": "1.2.0",
-            "fugashi": "1.3.0", "numpy": "2.1.3", "requests": "2.32.4",
+            "transformers": "5.15.0.dev0",
+            "torch": "2.9.0",
+            "accelerate": "1.2.0",
+            "fugashi": "1.3.0",
+            "numpy": "2.1.3",
+            "requests": "2.32.4",
         },
     )
     assert IF._unsatisfied_transformers_requirements() == []
@@ -228,13 +252,12 @@ def test_applicable_environment_marker_is_still_checked(monkeypatch, caplog):
         ['safetensors>=0.8.0; python_version >= "3.0"'],
         {"transformers": "5.15.0.dev0", "safetensors": "0.7.0"},
     )
-    assert IF._unsatisfied_transformers_requirements() == [
-        ("safetensors", ">=0.8.0", "0.7.0")
-    ]
+    assert IF._unsatisfied_transformers_requirements() == [("safetensors", ">=0.8.0", "0.7.0")]
     assert "safetensors" in _run_check(caplog)[0]
 
 
 # ------------------------------------------------------------ absent package
+
 
 def test_an_absent_base_requirement_is_reported_like_a_stale_one(monkeypatch, caplog):
     """`--no-deps` leaves a dependency missing as often as it leaves it old.
@@ -289,6 +312,7 @@ def test_unreadable_metadata_is_still_silent(monkeypatch, caplog):
 
 # --------------------------------------------------------- defensive silence
 
+
 @pytest.mark.parametrize(
     "requires, installed",
     [
@@ -301,12 +325,9 @@ def test_unreadable_metadata_is_still_silent(monkeypatch, caplog):
         # Undecidable marker.
         (['safetensors>=0.8.0; nonexistent_marker == "x"'], {"safetensors": "0.7.0"}),
     ],
-    ids = ["bad-specifier", "garbage-line", "bad-marker", "bad-installed-version",
-           "unknown-marker"],
+    ids = ["bad-specifier", "garbage-line", "bad-marker", "bad-installed-version", "unknown-marker"],
 )
-def test_unparseable_input_is_silent_and_never_raises(
-    monkeypatch, caplog, requires, installed
-):
+def test_unparseable_input_is_silent_and_never_raises(monkeypatch, caplog, requires, installed):
     installed = {"transformers": "5.15.0.dev0", **installed}
     _install_env(monkeypatch, requires, installed)
     assert IF._unsatisfied_transformers_requirements() == []
@@ -317,14 +338,12 @@ def test_unparseable_input_is_silent_and_never_raises(
     "requires",
     [
         importlib.metadata.PackageNotFoundError("transformers"),
-        None,   # dist-info present but declares nothing
+        None,  # dist-info present but declares nothing
         [],
     ],
     ids = ["metadata-missing", "requires-none", "requires-empty"],
 )
-def test_missing_transformers_metadata_is_silent_and_never_raises(
-    monkeypatch, caplog, requires
-):
+def test_missing_transformers_metadata_is_silent_and_never_raises(monkeypatch, caplog, requires):
     _install_env(monkeypatch, requires, {})
     assert IF._unsatisfied_transformers_requirements() == []
     assert _run_check(caplog) == []
@@ -352,6 +371,7 @@ def test_env_var_silences_the_check(monkeypatch, caplog):
 
 
 # --------------------------------------------------------------- live + wiring
+
 
 def test_runs_against_the_real_environment_without_raising(caplog):
     """No monkeypatching: the real installed transformers, read from real metadata."""
@@ -395,8 +415,8 @@ def test_a_transformers_stub_in_sys_modules_does_not_break_the_import(monkeypatc
     for stub in (types.ModuleType("transformers"), types.SimpleNamespace()):
         monkeypatch.setitem(sys.modules, "transformers", stub)
         with pytest.raises(ValueError):
-            importlib.util.find_spec("transformers")   # __spec__ None / not set
-        IF.check_transformers_dependency_versions()    # must not raise
+            importlib.util.find_spec("transformers")  # __spec__ None / not set
+        IF.check_transformers_dependency_versions()  # must not raise
         assert _warnings(caplog) == []
 
 
@@ -414,7 +434,8 @@ def test_check_also_runs_on_the_mlx_branch():
 
     source = Path(IF.__file__).with_name("__init__.py").read_text(encoding = "utf-8")
     branch = next(
-        node for node in ast.parse(source).body
+        node
+        for node in ast.parse(source).body
         if isinstance(node, ast.If) and ast.unparse(node.test) == "_IS_MLX"
     )
     body = ast.unparse(ast.Module(body = branch.body, type_ignores = []))
