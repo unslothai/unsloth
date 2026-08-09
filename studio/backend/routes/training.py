@@ -2836,10 +2836,13 @@ async def start_diffusion_training(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
-    # Preflight access to a gated base repo with the user's token BEFORE freeing GPU residents,
-    # so a missing token fails fast (400). In a worker thread: blocking urlopen HEAD (5s).
+    # Preflight the repo the trainer will actually fetch, not the canonical id retained in its
+    # metadata. A gated canonical base may normalize to a byte-identical public mirror.
+    # In a worker thread: blocking urlopen HEAD (5s).
     await asyncio.to_thread(
-        _preflight_gated_base, config.get("base_model", ""), config.get("hf_token")
+        _preflight_gated_base,
+        normalized_cfg.fetch_base_model or normalized_cfg.base_model,
+        normalized_cfg.hf_token,
     )
 
     from core.training import diffusion_train_common as _dtc

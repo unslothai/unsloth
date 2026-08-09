@@ -589,6 +589,47 @@ def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monk
     assert threads["preflight"] is not threads["inline"]  # offloaded to a worker, not run inline
 
 
+@pytest.mark.parametrize(
+    ("hf_token", "authorization"),
+    [(None, None), ("  hf_test  ", "Bearer hf_test")],
+)
+def test_route_start_preflights_the_normalized_fetch_mirror(
+    client, monkeypatch, dit_train_host, healthy_diffusers, hf_token, authorization
+):
+    import urllib.error
+    import urllib.request
+
+    from core.inference import diffusion_families
+
+    source = "black-forest-labs/FLUX.2-klein-base-9B"
+    mirror = "unsloth/FLUX.2-klein-base-9B"
+    monkeypatch.setattr(
+        diffusion_families,
+        "prefer_ungated_mirror",
+        lambda base, token = None: mirror if base.lower() == source.lower() else base,
+    )
+    requests = []
+
+    def _fake_urlopen(req, timeout = None):
+        requests.append(req)
+        if source in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+        assert mirror in req.full_url
+        return object()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": source, "hf_token": hf_token},
+    )
+
+    assert r.status_code == 200, r.text
+    assert len(requests) == 1
+    assert requests[0].get_header("Authorization") == authorization
+    # The fetch-only mirror must not replace the canonical id persisted with the run.
+    assert client._fake.started_with["base_model"] == source
+
+
 def test_route_start_forwards_extra_training_knobs(client):
     # max_grad_norm and lora_target_modules must reach the service, not be silently dropped.
     body = {**_BODY, "max_grad_norm": 0.5, "lora_target_modules": ["to_q", "to_v"]}
