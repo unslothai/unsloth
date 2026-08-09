@@ -216,6 +216,31 @@ def test_scan_skips_revisited_directory_identity(rag_home, monkeypatch):
     assert scanned.count(str(loop)) == 1
 
 
+@pytest.mark.parametrize("directory_identity", [(0, 0), (123, 456)])
+def test_scan_keeps_distinct_directories_with_duplicate_identity(
+    rag_home, monkeypatch, directory_identity
+):
+    source = rag_home / "duplicate-identities"
+    first = source / "first"
+    second = source / "second"
+    first.mkdir(parents = True)
+    second.mkdir()
+    (first / "first.txt").write_text("first", encoding = "utf-8")
+    (second / "second.txt").write_text("second", encoding = "utf-8")
+    original_directory_identity = folder_sync._directory_identity
+
+    def duplicate_identity(entry):
+        if Path(entry.path) in {first, second}:
+            return directory_identity
+        return original_directory_identity(entry)
+
+    monkeypatch.setattr(folder_sync, "_directory_identity", duplicate_identity)
+
+    found, _ = folder_sync._scan(str(source))
+
+    assert set(found) == {"first/first.txt", "second/second.txt"}
+
+
 @requires_sqlite_vec
 def test_reconcile_pins_one_embedding_model_for_every_file(rag_home, stub_embeddings, monkeypatch):
     source, folder = _folder(rag_home)

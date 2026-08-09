@@ -159,6 +159,17 @@ def _root_identity(root: str) -> tuple[int, int]:
     return root_stat.st_dev, root_stat.st_ino
 
 
+def _directory_identity(entry: os.DirEntry) -> tuple[int, int]:
+    directory_stat = entry.stat(follow_symlinks = False)
+    return directory_stat.st_dev, directory_stat.st_ino
+
+
+def _usable_directory_identity(identity: tuple[int, int]) -> bool:
+    # An inode of zero means that the filesystem does not expose a usable file
+    # identity. Treating it as unique would drop unrelated directory trees.
+    return identity[1] != 0
+
+
 def create_folder(
     *,
     scope_type: str,
@@ -707,10 +718,12 @@ def _scan(
         raise RuntimeError("Linked folder root identity changed")
 
     found: dict[str, dict] = {}
-    visited_directories = {identity}
-    pending = [root]
+    root_ancestors = (
+        frozenset({identity}) if _usable_directory_identity(identity) else frozenset()
+    )
+    pending = [(root, root_ancestors)]
     while pending:
-        directory = pending.pop()
+        directory, ancestor_identities = pending.pop()
         with os.scandir(directory) as entries:
             for entry in entries:
                 full = entry.path
@@ -724,12 +737,13 @@ def _scan(
                         or is_denied_system_path(resolved)
                     ):
                         continue
-                    directory_stat = entry.stat(follow_symlinks = False)
-                    directory_identity = (directory_stat.st_dev, directory_stat.st_ino)
-                    if directory_identity in visited_directories:
-                        continue
-                    visited_directories.add(directory_identity)
-                    pending.append(full)
+                    directory_identity = _directory_identity(entry)
+                    child_ancestors = ancestor_identities
+                    if _usable_directory_identity(directory_identity):
+                        if directory_identity in ancestor_identities:
+                            continue
+                        child_ancestors = ancestor_identities | {directory_identity}
+                    pending.append((full, child_ancestors))
                     continue
                 if not entry.is_file(follow_symlinks = False):
                     continue
