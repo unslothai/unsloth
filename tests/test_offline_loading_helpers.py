@@ -969,3 +969,63 @@ def test_the_vlm_tokenizer_fallback_does_not_pin_the_built_model(monkeypatch):
     assert (
         witness["alive_during_retry"] is False
     ), "the implicitly chained patch failure still held the built model during the retry"
+
+
+def test_the_surfaced_online_error_still_names_where_it_failed(monkeypatch):
+    """Freeing the failed attempt's memory must not cost the user the origin of the
+    network failure: with the traceback detached, the report says only that the
+    decorator re-raised something, which is useless for a failure raised deep inside
+    `trust_remote_code`."""
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    calls = []
+
+    def _resolve_config_from_the_hub():
+        raise ConnectionError("Max retries exceeded with url: /api/models")
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            _resolve_config_from_the_hub()
+        raise AttributeError("'NoneType' object has no attribute 'endswith'")
+
+    with pytest.raises(ConnectionError) as caught:
+        fake("model")
+    rendered = "".join(
+        traceback.format_exception(type(caught.value), caught.value, caught.value.__traceback__)
+    )
+    assert "_resolve_config_from_the_hub" in rendered, rendered
+
+
+def test_the_retrys_own_frames_do_not_pin_the_cached_model(monkeypatch):
+    """The retry can load the whole model from the cache and only then trip over a
+    missing tokenizer file. That error is kept on the surfaced one, so its frames hold
+    the cached model for as long as the caller holds the error, and nothing collects
+    after this point."""
+    import gc
+    import weakref
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+
+    class _CachedModel:
+        pass
+
+    witness = {}
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("connection reset while downloading tokenizer.json")
+        model = _CachedModel()  # the retry got the weights, then found no tokenizer
+        witness["ref"] = weakref.ref(model)
+        raise AttributeError("'NoneType' object has no attribute 'endswith'")
+
+    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)  # only refcounts, no cycles
+    with pytest.raises(ConnectionError) as caught:
+        fake("model")
+    assert caught.value.__cause__ is not None
+    assert witness["ref"]() is None, "the retry error's traceback still held the cached model"

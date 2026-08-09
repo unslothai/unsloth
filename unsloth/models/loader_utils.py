@@ -1221,6 +1221,23 @@ def _empty_cache_artifact(exc):
     return False
 
 
+def _release_traceback_locals(error):
+    """Drop the frame locals along an exception chain, keeping file and line.
+
+    An exception we keep past its handler keeps its frames alive, and a failed load's
+    frames still own whatever the attempt had already built, so a retained error can pin
+    a model's GPU tensors for as long as the caller holds it. Clearing the locals beats
+    dropping the traceback: the memory goes either way, but the origin stays printable,
+    which for a network failure inside `trust_remote_code` is the only clue there is.
+    """
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        # The frame we are running in cannot be cleared; clear_frames skips it for us.
+        _traceback.clear_frames(error.__traceback__)
+        error = error.__cause__ or error.__context__
+
+
 def _note_offline_retry(error, retry_error):
     """Record the failed cache retry on the online error we are about to surface.
 
@@ -1264,19 +1281,12 @@ def _offline_aware_load(fn):
             # (else outer layers reload the whole model again).
             if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
                 raise
-            # Keep the error, drop its traceback. Holding `e` holds its frames, and
-            # those frames hold the half-built model, so the collect below could not
-            # free it and a large VLM OOMed on the reload the retry exists to make.
-            online_error = e.with_traceback(None)
-            # A wrapper keeps its own cause/context, and those carry tracebacks over the
-            # SAME failed-attempt frames, so dropping only the top one still pins the
-            # half-built model. Clear the locals along the chain; file/line is kept.
-            _chained = online_error.__cause__ or online_error.__context__
-            _depth = 0
-            while _chained is not None and _depth < 8:
-                _traceback.clear_frames(_chained.__traceback__)
-                _chained = _chained.__cause__ or _chained.__context__
-                _depth += 1
+            # Holding `e` holds its frames, and those frames hold the half-built model,
+            # so the collect below could not free it and a large VLM OOMed on the reload
+            # the retry exists to make. A wrapper's cause/context carries tracebacks over
+            # the SAME frames, so the whole chain has to be released, not just the top.
+            online_error = e
+            _release_traceback_locals(online_error)
         # Retry OUTSIDE the except so the failed attempt's traceback (a partial model)
         # is freed before reallocating, else a large VLM can OOM on the second load.
         try:
@@ -1303,6 +1313,10 @@ def _offline_aware_load(fn):
                 except Exception:
                     pass
                 raise
+            # The retry can load a whole cached model and only then trip over a missing
+            # tokenizer file, and this error outlives the call on the online one, so its
+            # frames would keep that model resident for as long as the caller holds it.
+            _release_traceback_locals(e)
             retry_error = e
         # Report the ONLINE error: this retry only runs because of it, and its own
         # failure names an empty cache badly (offline mode skips Transformers'
