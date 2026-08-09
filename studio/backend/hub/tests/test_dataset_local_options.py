@@ -487,9 +487,7 @@ def test_snapshot_options_accept_only_decompressible_suffixes(tmp_path, suffix, 
         ".lzma": lzma.compress,
     }
     packer = packers.get(suffix)
-    (snapshot / f"records.jsonl{suffix}").write_bytes(
-        packer(payload) if packer else payload
-    )
+    (snapshot / f"records.jsonl{suffix}").write_bytes(packer(payload) if packer else payload)
 
     assert local_options._snapshot_options(snapshot) == expected
 
@@ -2618,8 +2616,11 @@ def test_snapshot_options_accept_a_list_valued_builder_parameter(tmp_path):
 @pytest.mark.parametrize("sizing", ["num_classes: 3", "num_classes: '3'", "names_file: x.txt"])
 def test_snapshot_options_reject_a_class_label_sized_without_names(tmp_path, sizing):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
-                    f"    dtype:\n      class_label:\n        {sizing}\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+        f"    dtype:\n      class_label:\n        {sizing}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
 
@@ -2629,8 +2630,11 @@ def test_snapshot_options_reject_a_class_label_sized_without_names(tmp_path, siz
 
 def test_snapshot_options_reject_a_nested_feature_field_without_a_name(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
-                    "    dtype:\n      struct:\n      - dtype: string\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+        "    dtype:\n      struct:\n      - dtype: string\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"x":{"y":"a"}}\n', encoding = "utf-8")
 
@@ -2639,8 +2643,11 @@ def test_snapshot_options_reject_a_nested_feature_field_without_a_name(tmp_path)
 
 def test_snapshot_options_accept_a_named_nested_feature_field(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
-                    "    struct:\n    - name: y\n      dtype: string\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+        "    struct:\n    - name: y\n      dtype: string\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"x":{"y":"a"}}\n', encoding = "utf-8")
 
@@ -2650,19 +2657,32 @@ def test_snapshot_options_accept_a_named_nested_feature_field(tmp_path):
 @pytest.mark.parametrize("dtype", ["string_view", "binary_view", "month_day_nano_interval"])
 def test_snapshot_options_accept_the_newer_value_aliases(tmp_path, dtype):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n")
+    _card(
+        snapshot,
+        f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
 
 
-@pytest.mark.parametrize("array", ["shape: [2]\n        dtype: int32", "shape: [2, 2]\n        dtype: nope",
-                                   "shape: two\n        dtype: int32", "shape: [0, 2]\n        dtype: int32"])
+@pytest.mark.parametrize(
+    "array",
+    [
+        "shape: [2]\n        dtype: int32",
+        "shape: [2, 2]\n        dtype: nope",
+        "shape: two\n        dtype: int32",
+        "shape: [0, 2]\n        dtype: int32",
+    ],
+)
 def test_snapshot_options_reject_an_array_feature_the_schema_refuses(tmp_path, array):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
-                    f"    dtype:\n      array2_d:\n        {array}\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+        f"    dtype:\n      array2_d:\n        {array}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"x":[[1,2],[3,4]]}\n', encoding = "utf-8")
 
@@ -2671,15 +2691,20 @@ def test_snapshot_options_reject_an_array_feature_the_schema_refuses(tmp_path, a
 
 def test_snapshot_options_accept_a_well_formed_array_feature(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
-                    "    dtype:\n      array2_d:\n        shape: [2, 2]\n        dtype: int32\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+        "    dtype:\n      array2_d:\n        shape: [2, 2]\n        dtype: int32\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"x":[[1,2],[3,4]]}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
 
 
-@pytest.mark.parametrize("suffix,packer", [(".gz", gzip.compress), (".bz2", bz2.compress), (".xz", lzma.compress)])
+@pytest.mark.parametrize(
+    "suffix,packer", [(".gz", gzip.compress), (".bz2", bz2.compress), (".xz", lzma.compress)]
+)
 def test_snapshot_options_reject_a_compressed_file_with_no_payload(tmp_path, suffix, packer):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
     snapshot.mkdir(parents = True)
