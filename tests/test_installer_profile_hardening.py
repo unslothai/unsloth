@@ -1006,9 +1006,7 @@ def test_one_host_owns_a_cmdlet_outright(monkeypatch):
             '"Start-BitsTransfer:Proxy": "http://second.corp:8080"}'
         ),
     ]
-    monkeypatch.setattr(
-        studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers.pop(0))
-    )
+    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers.pop(0)))
 
     merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]))
 
