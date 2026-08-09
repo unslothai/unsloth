@@ -3033,7 +3033,9 @@ def test_a_move_staged_but_never_renamed_is_finished_later(tmp_path, monkeypatch
     staged.mkdir()
     # What the interrupted move had already written down before it copied.
     tools._record_workdir(
-        "__LOCALID_crash11", str(root / "__LOCALID_crash11"), tools._MIGRATING,
+        "__LOCALID_crash11",
+        str(root / "__LOCALID_crash11"),
+        tools._MIGRATING,
     )
     (staged / "sales.csv").write_text("a,b\n", encoding = "utf-8")
 
@@ -3062,7 +3064,9 @@ def test_a_lease_is_renewed_while_a_call_is_still_running(tmp_path, monkeypatch)
         # back, not leave a stale entry for the sweeper to step over.
         stale = time.time() - tools._BUSY_TTL_SECONDS * 2
         tools._record_workdir(
-            tools._session_key(session), f"{os.getpid()}:{stale:.0f}", tools._BUSY,
+            tools._session_key(session),
+            f"{os.getpid()}:{stale:.0f}",
+            tools._BUSY,
         )
         assert not tools._busy_owners(session), "expired for the test to be real"
         tools._mark_busy(session, True)
@@ -3085,7 +3089,9 @@ def test_two_processes_marking_busy_do_not_lose_each_other(tmp_path, monkeypatch
     session = "__LOCALID_race111"
     tools.get_sandbox_workdir(session)
     # Somebody else already in there, written straight into the ledger.
-    tools._record_workdir(tools._session_key(session), f"{os.getpid() + 1}:{time.time():.0f}", tools._BUSY)
+    tools._record_workdir(
+        tools._session_key(session), f"{os.getpid() + 1}:{time.time():.0f}", tools._BUSY
+    )
 
     inside = []
     real = tools._busy_owners
@@ -3311,7 +3317,9 @@ def test_a_first_tool_call_does_not_wait_for_the_whole_legacy_tree(tmp_path, mon
     tools._legacy_sandbox_migrated = False
     # The whole-tree pass, held open as a slow cross-filesystem copy would be.
     held = threading.Event()
-    monkeypatch.setattr(tools, "migrate_legacy_sandbox_in_background", lambda: threading.Thread(target = held.wait))
+    monkeypatch.setattr(
+        tools, "migrate_legacy_sandbox_in_background", lambda: threading.Thread(target = held.wait)
+    )
 
     class _Blocked:
         def __enter__(self):

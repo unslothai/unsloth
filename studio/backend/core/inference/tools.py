@@ -7192,7 +7192,9 @@ def _start_busy_heartbeat() -> None:
                     _mark_busy(key, True)
 
         _busy_heartbeat = threading.Thread(
-            target = _run, name = "sandbox-busy-heartbeat", daemon = True,
+            target = _run,
+            name = "sandbox-busy-heartbeat",
+            daemon = True,
         )
         _busy_heartbeat.start()
 
