@@ -3512,6 +3512,17 @@ class VideoBackend:
                     "flow_shift": flow_shift,
                     # sd.cpp pins the audio schedule, so the recipe records what it actually ran.
                     "audio_flow_shift": state.family.default_audio_flow_shift,
+                    # The BUILD this clip came off, exactly as the diffusers path records it and
+                    # from the ENGAGED state rather than the request. _run_generate persists these
+                    # with result.get(...), so omitting them wrote nulls into the sidecar and two
+                    # clips off different GGUF quantizations of the same repo became
+                    # indistinguishable and unreproducible.
+                    "model_kind": state.kind,
+                    "gguf_filename": state.gguf_filename,
+                    "transformer_quant": state.transformer_quant,
+                    "text_encoder_quant": state.text_encoder_quant,
+                    "memory_mode": state.memory_mode,
+                    "offload_policy": state.offload_policy,
                 }
             finally:
                 output_path.unlink(missing_ok = True)

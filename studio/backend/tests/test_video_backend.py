@@ -3601,6 +3601,26 @@ def test_h3_native_generate_stages_both_keyframes_on_the_canvas(monkeypatch):
     assert result["conditioning"] == "fl2va"
 
 
+def test_h3_native_generate_records_the_build_it_ran_on(monkeypatch):
+    """_run_generate persists these with result.get(...), so a field the native path omits lands
+    in the gallery sidecar as null. Clips generated from different GGUF quantizations of the same
+    repo then cannot be told apart or reproduced from their saved recipe, unlike the diffusers
+    path, which records the same set off the engaged state."""
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544)
+
+    state = backend._state
+    assert result["model_kind"] == state.kind == "gguf"
+    assert result["gguf_filename"] == state.gguf_filename
+    assert result["memory_mode"] == state.memory_mode
+    assert result["offload_policy"] == state.offload_policy
+    assert result["transformer_quant"] == state.transformer_quant
+    assert result["text_encoder_quant"] == state.text_encoder_quant
+
+
 def test_h3_native_generate_names_each_keyframe_combination(monkeypatch):
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
