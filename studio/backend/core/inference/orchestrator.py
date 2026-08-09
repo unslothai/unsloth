@@ -1581,20 +1581,13 @@ class InferenceOrchestrator:
                     self.active_model_name = None
 
                 logger.info("Model '%s' unloaded from subprocess", model_name)
-                # The child's unload frees the model and calls empty_cache, but the
-                # caching allocator can only return blocks nothing still references,
-                # and the accelerator context is never returned while the process
-                # lives. An idle worker therefore keeps its high-water mark -- VRAM
-                # the GGUF backend cannot see, since it probes its own process. Both
-                # are chat-owned, so gpu_arbiter never evicts between them. Nothing
-                # left to serve means nothing worth keeping warm: drop it.
+                # empty_cache in the child cannot return the accelerator context, so an
+                # idle worker keeps its high-water mark -- VRAM the GGUF backend cannot
+                # see and gpu_arbiter never evicts (both are chat-owned). Nothing left
+                # to serve, so drop it; load_model respawns a fresh worker regardless.
                 if not self.models and not self.loading_models:
-                    logger.info(
-                        "No models left resident; shutting the inference subprocess "
-                        "down to return its GPU memory"
-                    )
-                    # The unload already succeeded, so a teardown that fails must not
-                    # report it as failed: the next load respawns the worker anyway.
+                    logger.info("No models left resident; shutting the inference subprocess down")
+                    # The unload already succeeded: a failed teardown must not report it failed.
                     try:
                         self._shutdown_subprocess(timeout = 5)
                     except Exception as exc:
