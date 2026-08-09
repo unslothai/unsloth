@@ -394,7 +394,10 @@ def _local_main_gguf_blobs_by_quant(
                     )
                     continue
                 quant = gguf_variant_key(normalized).lower()
-                if is_big_endian_gguf_path(normalized, quant):
+                # The endian predicate reads a quant TOKEN so it can tell a parent-only quant
+                # from a big-endian build; the qualified key makes it misread the path and drop
+                # the blob, which leaves update detection with no local main files to compare.
+                if is_big_endian_gguf_path(normalized, extract_quant_label(normalized)):
                     continue
                 bucket = result.setdefault(quant, {}).setdefault(normalized, set())
                 bucket.update(str(blob) for blob in hashes if blob)
@@ -1194,7 +1197,7 @@ async def get_gguf_variants_answer(
                     if _is_mmproj_filename(f.name) or _is_mtp_drafter_path(rel):
                         continue
                     q = gguf_variant_key(rel)
-                    if is_big_endian_gguf_path(rel, q):
+                    if is_big_endian_gguf_path(rel, extract_quant_label(rel)):
                         continue
                     q = q.lower()
                     by_quant[q] = by_quant.get(q, 0) + size

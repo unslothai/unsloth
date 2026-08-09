@@ -3327,7 +3327,7 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
                 if snaps.is_dir():
                     roots.extend(s for s in snaps.iterdir() if s.is_dir())
 
-        want = _normalized_quant_label(quant)
+        want = (quant or "").strip()
         best_total = 0
         best_first: Optional[str] = None
         for root in roots:
@@ -3659,8 +3659,10 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
     """How well *want* names this file's variant: 0 for its own key, 1 for the legacy
     quant-label spelling, None for neither.
 
-    Both spellings have to resolve -- a stored pin predates the qualified keys -- but they
-    cannot rank equally. In a repo holding several checkpoints at one quant the bare label
+    *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because
+    doing it once up front strips a qualified key's own path punctuation and folds ``exp-a/`` into
+    ``expa/``. Both spellings have to resolve -- a stored pin predates the qualified keys -- but
+    they cannot rank equally. In a repo holding several checkpoints at one quant the bare label
     names every one of them, so a request for the repo-root ``Q6_K`` matched the qualified
     files too and then took whichever sorted first. Exact keys are used alone whenever any
     exist, and the label is the fallback for the rows that have no qualified spelling.
@@ -3670,9 +3672,23 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return None
-    if _normalized_quant_label(_gguf_variant_key(rel_path)) == want:
+    if _variant_keys_match(_gguf_variant_key(rel_path), want):
         return 0
-    return 1 if _normalized_quant_label(label) == want else None
+    return 1 if _normalized_quant_label(label) == _normalized_quant_label(want) else None
+
+
+def _variant_keys_match(key: str, want: str) -> bool:
+    """Whether *want* is *key*, for the exact-key test.
+
+    ``_normalized_quant_label`` strips hyphens and underscores, which is right for a bare quant
+    (``UD-Q4_K_XL`` and ``udq4kxl`` are the same ask) and wrong for a path: it folds ``exp-a/`` and
+    ``expa/`` into one, so two advertised checkpoints both answered to the other's key. A qualified
+    key keeps its punctuation and compares case-insensitively; the legacy folding applies to the
+    bare aliases it was written for.
+    """
+    if "/" in key or "/" in want:
+        return key.strip().lower() == want.strip().lower()
+    return _normalized_quant_label(key) == _normalized_quant_label(want)
 
 
 def _normalized_quant_label(label: str) -> str:
@@ -4438,7 +4454,7 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
         raise HTTPException(status_code = 404, detail = "Model not found in cache")
 
     if variant:
-        want = _normalized_quant_label(variant)
+        want = (variant or "").strip()
         candidate_revisions = sorted(
             (rev for repo_info in matching_repos for rev in repo_info.revisions),
             key = lambda rev: getattr(rev, "last_modified", 0) or 0,

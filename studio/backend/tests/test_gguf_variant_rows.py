@@ -438,16 +438,20 @@ def test_the_exact_key_wins_over_the_bare_quant_label():
     """A bare label names every checkpoint carrying that quant, so the repo-root ``Q6_K``
     row matched the qualified files too and then took whichever sorted first -- reporting
     the sum of every checkpoint as its size and revealing another one's file."""
-    from routes.models import _main_variant_rank, _normalized_quant_label
+    from routes.models import _main_variant_rank
 
-    want = _normalized_quant_label("Q6_K")
-    assert _main_variant_rank("ltx-2.3-22b-dev-Q6_K.gguf", want) == 0
-    assert _main_variant_rank("distilled/ltx-2.3-22b-distilled-Q6_K.gguf", want) == 1
-    assert _main_variant_rank("ltx-2.3-22b-dev-Q4_K_M.gguf", want) is None
+    # The request VERBATIM: folding it up front would strip a qualified key's path punctuation.
+    assert _main_variant_rank("ltx-2.3-22b-dev-Q6_K.gguf", "Q6_K") == 0
+    assert _main_variant_rank("distilled/ltx-2.3-22b-distilled-Q6_K.gguf", "Q6_K") == 1
+    assert _main_variant_rank("ltx-2.3-22b-dev-Q4_K_M.gguf", "Q6_K") is None
     # And the qualified row is exact under its own key, while the root file is not a match.
-    qualified = _normalized_quant_label("distilled/ltx-2.3-22b-distilled-Q6_K")
+    qualified = "distilled/ltx-2.3-22b-distilled-Q6_K"
     assert _main_variant_rank("distilled/ltx-2.3-22b-distilled-Q6_K.gguf", qualified) == 0
     assert _main_variant_rank("ltx-2.3-22b-dev-Q6_K.gguf", qualified) is None
+    # The bare spelling keeps its hyphen/underscore folding; a qualified one keeps its path.
+    assert _main_variant_rank("model-UD-Q4_K_XL.gguf", "udq4kxl") == 0
+    assert _main_variant_rank("exp-a/model-Q6_K.gguf", "expa/model-Q6_K") is None
+    assert _main_variant_rank("exp-a/model-Q6_K.gguf", "exp-a/model-q6_k") == 0
 
 
 def test_two_checkpoints_in_one_directory_get_distinguishable_labels():
