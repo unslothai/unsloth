@@ -3,11 +3,19 @@
 
 export { SettingsDialog } from "./settings-dialog";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
+export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "./api/hugging-face-cache";
 export type { HuggingFaceCacheSettings } from "./api/hugging-face-cache";
+export {
+  formatUploadSize,
+  getCachedUploadLimitBytes,
+  getCachedUploadLimitLabel,
+  loadUploadLimitSettings,
+  subscribeUploadLimitSettings,
+} from "./api/upload-limit";
 export {
   loadPersonalization,
   savePersonalization,
@@ -23,6 +31,7 @@ export {
   DEFAULT_CUSTOMIZATION,
   applyCustomizationToDocument,
   isDefaultCustomization,
+  migrateShippedSidebarNavDefault,
   prefersReducedMotion,
   sanitizeCustomization,
   useAppearanceCustomStore,
@@ -31,8 +40,19 @@ export type {
   AppearanceCustomization,
   CustomModeColors,
   ReduceMotionSetting,
+  SidebarNavItemId,
+  SidebarNavItemPref,
 } from "./stores/appearance-custom-store";
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
+export {
+  type MonitorFrame,
+  type StackGeometry,
+  stackBottomInset,
+  stackGeometry,
+  stackMaxHeight,
+  useMonitorFrameStore,
+  useStackGeometry,
+} from "./stores/monitor-frame-store";
 export type {
   Personalization,
   PersonalizationAppearance,

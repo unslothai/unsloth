@@ -23,6 +23,10 @@ from typing import Iterable, Mapping, Optional
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
 
+# --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
+BATCH_MIN = 1
+BATCH_MAX = 65536
+
 # Each group = every alias (short + long) of one hard-denied flag.
 # Extend the matching group when llama.cpp adds a new alias.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
@@ -209,9 +213,44 @@ _DEVICE_FLAGS: frozenset[str] = frozenset({"--device", "-dev", "--main-gpu", "-m
 # opt-in, not default. Layer flags are shared with llama_cpp's override
 # detection; the MoE flags are strip-only (manual's --n-cpu-moe slider owns them).
 _GPU_LAYER_FLAGS: frozenset[str] = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers"})
-_LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | frozenset({"-fit", "--fit"})
+# inherited copies of these shadow n_batch / n_ubatch, stripped only when the field is set
+_BATCH_FLAGS: frozenset[str] = frozenset({"-b", "--batch-size"})
+_UBATCH_FLAGS: frozenset[str] = frozenset({"-ub", "--ubatch-size"})
+_FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
+_LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
+
+# Host-memory placement flags. Both are full-model RAM reservations (--mlock pins
+# it, --no-mmap mallocs a copy), so the Model Memory settings own them: stripped
+# only when a toggle vetoes them, never unconditionally.
+_MLOCK_FLAGS: frozenset[str] = frozenset({"--mlock", "-mlock"})
+# Modern spelling of both, as an enum value. Takes a value, so NOT boolean.
+_LOAD_MODE_FLAGS: frozenset[str] = frozenset({"--load-mode", "-lm"})
+_NO_MMAP_FLAGS: frozenset[str] = frozenset({"--no-mmap", "-no-mmap"})
+# Deprecated selectors for the same load-mode enum. Measured: ANY of them
+# trailing the managed flag resets the WHOLE mode and drops the mlock, in both
+# polarities ("--mmap" and "--no-direct-io" do it too). Affirmative dio streams
+# and holds no full copy; the negative spellings are NOT plain mmap, upstream
+# maps them to mode `none` like --no-mmap, so no-reserve must veto those too.
+_DIO_ON_FLAGS: frozenset[str] = frozenset({"--direct-io", "-dio"})
+_DIO_OFF_FLAGS: frozenset[str] = frozenset({"--no-direct-io", "-ndio"})
+_DIO_FLAGS: frozenset[str] = _DIO_ON_FLAGS | _DIO_OFF_FLAGS
+_LOAD_MODE_ALIAS_FLAGS: frozenset[str] = _NO_MMAP_FLAGS | frozenset({"--mmap"}) | _DIO_FLAGS
+# Every spelling that asks for a full-model host buffer.
+_RAM_RESERVING_FLAGS: frozenset[str] = _NO_MMAP_FLAGS | _DIO_OFF_FLAGS
+# llama.cpp reads these before argv, so an inherited value survives stripping the
+# equivalent tokens. Scrubbed whenever a toggle is on, like the spec/placement
+# env groups, so the setting owns memory placement outright.
+MEMORY_ENV_VARS: tuple[str, ...] = (
+    "LLAMA_ARG_MLOCK",
+    "LLAMA_ARG_MMAP",
+    "LLAMA_ARG_LOAD_MODE",
+    "LLAMA_ARG_DIO",
+    # Legacy negative aliases, honoured by PRESENCE whatever the value.
+    "LLAMA_ARG_NO_MMAP",
+    "LLAMA_ARG_NO_DIO",
+)
 
 _SHADOWING_FLAGS: frozenset[str] = (
     _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
@@ -225,6 +264,15 @@ _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
         "--no-jinja",
         "-cmoe",
         "--cpu-moe",
+        "--mlock",
+        "-mlock",
+        "--no-mmap",
+        "-no-mmap",
+        "--mmap",
+        "--direct-io",
+        "-dio",
+        "--no-direct-io",
+        "-ndio",
     }
 )
 
@@ -344,6 +392,35 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     if value < -1:
         raise ValueError("llama-server GPU layers flag requires an integer value of at least -1")
     return value
+
+
+def fit_is_enabled_in(args: Optional[Iterable[str]]) -> bool:
+    """Whether the last ``--fit`` in extras turns the fitter ON.
+
+    Only ``--fit on`` hands placement back to llama.cpp; ``--fit off`` disables
+    it and so cannot move weights to the CPU. Upstream requires a value and
+    rejects anything that is neither truthy nor falsey, so an absent or
+    unreadable value is not an enable.
+    """
+    raw_value = _last_flag_value(args, _FIT_FLAGS)
+    return raw_value is not None and raw_value.strip().lower() in _ENV_TRUE_VALUES
+
+
+def fit_is_effectively_on(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Whether the fitter actually runs, over the WHOLE argv and the env twin.
+
+    ``fit_is_enabled_in`` answers for the extras alone; this answers for the
+    child. llama.cpp defaults the fitter ON and applies the env before argv, so
+    only an explicit "off" turns it off, and an unreadable value keeps it on.
+    """
+    raw_value = _last_flag_value(args, _FIT_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT")
+    if raw_value is None:
+        return True
+    return str(raw_value).strip().lower() not in _ENV_FALSE_VALUES
 
 
 def parse_cache_override_per_axis(
@@ -482,6 +559,12 @@ def strip_shadowing_flags(
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
     strip_device: bool = False,
+    strip_mlock: bool = False,
+    strip_no_mmap: bool = False,
+    strip_load_mode_aliases: bool = False,
+    strip_load_mode: bool = False,
+    strip_batch: bool = False,
+    strip_ubatch: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
@@ -497,6 +580,11 @@ def strip_shadowing_flags(
     replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
     row/none/layer choice intact. ``strip_device`` is enabled when ``gpu_ids``
     owns placement.
+
+    ``strip_mlock`` / ``strip_no_mmap`` are enabled by the Model Memory settings
+    so a RAM-reservation flag cannot survive a load the user asked to keep
+    RAM-free. ``strip_no_mmap`` covers every spelling of mode `none`, so the
+    negative DirectIO forms go with it. All boolean: only the token is dropped.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -515,6 +603,18 @@ def strip_shadowing_flags(
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
     if strip_device:
         shadowing |= _DEVICE_FLAGS
+    if strip_mlock:
+        shadowing |= _MLOCK_FLAGS
+    if strip_no_mmap:
+        shadowing |= _RAM_RESERVING_FLAGS
+    if strip_load_mode_aliases:
+        shadowing |= _LOAD_MODE_ALIAS_FLAGS
+    if strip_load_mode:
+        shadowing |= _LOAD_MODE_FLAGS
+    if strip_batch:
+        shadowing |= _BATCH_FLAGS
+    if strip_ubatch:
+        shadowing |= _UBATCH_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []
@@ -552,3 +652,303 @@ def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
         strip_template = False,
         strip_split_mode = True,
     )
+
+
+def apply_model_memory_policy(
+    extra_args: Optional[Iterable[str]],
+    *,
+    supports_load_mode: bool = False,
+    weights_in_host_memory: bool = True,
+) -> tuple[list[str], list[str]]:
+    """Resolve the Model Memory settings into llama-server flags.
+
+    Returns ``(managed_flags, extras)``: what Unsloth emits itself, and the
+    user's extras with any vetoed flag removed.
+
+    "Keep model in GPU memory" page-locks the weights (``--load-mode mmap+mlock``,
+    or the deprecated ``--mlock``) but ONLY when ``weights_in_host_memory``.
+    mlock pins a whole mapping in host RAM, so for a model fully offloaded to a
+    discrete GPU it would hold a second full copy of the weights in system RAM
+    without doing anything for VRAM residency; there, residency is carried by
+    the idle-unload veto alone. Every other load-mode-bearing flag is stripped
+    from the emitted extras, because a trailing one resets the whole mode and
+    would drop the mlock.
+
+    "Don't reserve system RAM" drops ``--mlock`` / ``--no-mmap``, leaving the
+    default mmap path. With both off nothing is stripped, so a hand-typed flag
+    still applies.
+    """
+    try:
+        from utils.model_memory_settings import get_model_memory_settings
+    except Exception:
+        # Settings unavailable (bare unit-test import): behave as before.
+        return [], list(extra_args or [])
+
+    # One snapshot for both decisions: read separately, a save landing between
+    # them strips for one setting and locks for the other, so a saved --mlock
+    # could survive a committed no-reserve.
+    keep_resident, no_ram_reserve = get_model_memory_settings()
+    tokens = list(extra_args or [])
+    if no_ram_reserve:
+        tokens = strip_shadowing_flags(
+            tokens,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_mlock = True,
+            strip_no_mmap = True,
+        )
+        tokens = _strip_reserving_load_modes(tokens)
+
+    managed: list[str] = []
+    if keep_resident and not no_ram_reserve and weights_in_host_memory:
+        # Before the extras, like the rest of the managed block. mmap+mlock, not
+        # bare mlock: it matches what --mlock meant alongside the default mmap.
+        managed.extend(["--load-mode", "mmap+mlock"] if supports_load_mode else ["--mlock"])
+        tokens = strip_shadowing_flags(
+            tokens,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_mlock = True,
+            strip_load_mode_aliases = True,
+            strip_load_mode = True,
+        )
+    return managed, tokens
+
+
+def _strip_reserving_load_modes(tokens: list[str]) -> list[str]:
+    """Drop only ``--load-mode`` values that lock or reserve host RAM.
+
+    No-reserve vetoes the reservation, not the loader. ``mmap`` and ``dio``
+    hold no full host copy, so a DirectIO preset survives instead of silently
+    falling back to mmap. Unknown values are left alone rather than rewritten.
+    """
+    out: list[str] = []
+    i, n = 0, len(tokens)
+    while i < n:
+        token = tokens[i]
+        if _flag_name(token) not in _LOAD_MODE_FLAGS:
+            out.append(token)
+            i += 1
+            continue
+        if "=" in token:
+            value, step = token.split("=", 1)[1], 1
+        elif i + 1 < n and _flag_name(tokens[i + 1]) is None:
+            value, step = tokens[i + 1], 2
+        else:
+            value, step = "", 1
+        value = value.strip().lower()
+        if value in _LOAD_MODE_MLOCK_VALUES or value in _LOAD_MODE_RESERVING_VALUES:
+            i += step
+            continue
+        out.extend(tokens[i : i + step])
+        i += step
+    return out
+
+
+def model_memory_owns_placement() -> bool:
+    """True when either toggle is on, so the child env must be scrubbed."""
+    try:
+        from utils.model_memory_settings import get_keep_resident, get_no_ram_reserve
+    except Exception:
+        return False
+    return get_keep_resident() or get_no_ram_reserve()
+
+
+def _env_var_locks_or_reserves(name: str, value: str) -> bool:
+    """Whether this inherited var, as set, locks or reserves host RAM.
+
+    Mirrors the argv rule: the settings own the RESERVATION, not the loader, so
+    a DirectIO or mmap choice made through the environment survives the same way
+    ``--load-mode dio`` does. An unrecognised value is left alone.
+    """
+    normalized = value.strip().lower()
+    if name == "LLAMA_ARG_MLOCK":
+        return normalized in _ENV_TRUE_VALUES
+    if name in {"LLAMA_ARG_NO_MMAP", "LLAMA_ARG_NO_DIO"}:
+        # Presence alone selects mode "none", which is a full host buffer.
+        return True
+    if name in {"LLAMA_ARG_MMAP", "LLAMA_ARG_DIO"}:
+        # Falsy selects "none"; truthy selects mmap / dio, neither of which
+        # holds a full copy.
+        return normalized in _ENV_FALSE_VALUES
+    if name == "LLAMA_ARG_LOAD_MODE":
+        return normalized in _LOAD_MODE_MLOCK_VALUES or normalized in _LOAD_MODE_RESERVING_VALUES
+    return False
+
+
+def scrub_memory_env(env: dict) -> list[str]:
+    """Drop inherited memory placement the settings override.
+
+    Returns the names removed, for logging. A no-op with both toggles off, so an
+    existing LLAMA_ARG_MLOCK deployment keeps working untouched. Only the values
+    that actually lock or reserve go: an inherited ``LLAMA_ARG_DIO=1`` is a
+    loader choice, not a reservation, and no-reserve has no quarrel with it.
+    """
+    if not model_memory_owns_placement():
+        return []
+    removed = [
+        name
+        for name in MEMORY_ENV_VARS
+        if name in env and _env_var_locks_or_reserves(name, env[name])
+    ]
+    for name in removed:
+        env.pop(name, None)
+    return removed
+
+
+# Mirrors llama_cpp's _LLAMA_ARG_TRUE/FALSE_VALUES; duplicated so this module
+# stays dependency-free (llama_cpp imports from here, not the other way).
+_ENV_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
+_ENV_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
+
+_LOAD_MODE_MLOCK_VALUES = frozenset({"mlock", "mmap+mlock"})
+# Modes that read the weights into a full host buffer. "dio" streams via
+# DirectIO and "mmap" maps, so neither reserves RAM for the whole model.
+_LOAD_MODE_RESERVING_VALUES = frozenset({"none", "mlock"})
+
+
+def resolve_effective_memory_state(
+    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> tuple[bool, bool]:
+    """``(mlock, reserves_ram)`` the child will actually run with.
+
+    Mirrors llama.cpp: env supplies defaults, argv overrides last-wins. Used to
+    compare a running process against the current settings, so the reload hint
+    reflects the launched state rather than only what Unsloth emitted.
+    """
+    env = env or {}
+    mlock = False
+    reserves_ram = False
+    # Each var runs the SAME handler as its flag, so it assigns the whole mode
+    # and a later one overwrites an earlier one, in llama.cpp's registration
+    # order. Measured: LLAMA_ARG_MLOCK=1 with LLAMA_ARG_MMAP=on or
+    # LLAMA_ARG_DIO=0 leaves the child unlocked.
+    # Only the mlock bit, like the argv --mlock below: "mlock" vs "mmap+mlock"
+    # is not observable and changes no decision.
+    if str(env.get("LLAMA_ARG_MLOCK", "")).strip().lower() in _ENV_TRUE_VALUES:
+        mlock = True
+    # Every option with a negative form also answers to LLAMA_ARG_NO_<NAME>:
+    # upstream rewrites the name and, if that var EXISTS, forces the value
+    # falsey whatever it says, before reading the affirmative one. Measured:
+    # LLAMA_ARG_NO_MMAP=0 still disables mmap, and it beats LLAMA_ARG_MMAP=on.
+    # --mlock has no negative form, so LLAMA_ARG_NO_MLOCK does nothing.
+    # LLAMA_ARG_MMAP is whether to mmap, so "off" means mmap disabled ("none").
+    _mmap_env = "0" if "LLAMA_ARG_NO_MMAP" in env else str(env.get("LLAMA_ARG_MMAP", ""))
+    _mmap_env = _mmap_env.strip().lower()
+    if _mmap_env in _ENV_TRUE_VALUES:
+        mlock, reserves_ram = False, False
+    elif _mmap_env in _ENV_FALSE_VALUES:
+        mlock, reserves_ram = False, True
+    # LLAMA_ARG_DIO likewise: on selects DirectIO, off selects "none".
+    _dio_env = "0" if "LLAMA_ARG_NO_DIO" in env else str(env.get("LLAMA_ARG_DIO", ""))
+    _dio_env = _dio_env.strip().lower()
+    if _dio_env in _ENV_TRUE_VALUES:
+        mlock, reserves_ram = False, False
+    elif _dio_env in _ENV_FALSE_VALUES:
+        mlock, reserves_ram = False, True
+    _mode_env = str(env.get("LLAMA_ARG_LOAD_MODE", "")).strip().lower()
+    if _mode_env:
+        mlock = _mode_env in _LOAD_MODE_MLOCK_VALUES
+        reserves_ram = _mode_env in _LOAD_MODE_RESERVING_VALUES
+
+    tokens = [str(a) for a in (argv or [])]
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        flag = _flag_name(tok)
+        if flag is None:
+            i += 1
+            continue
+        if flag in _MLOCK_FLAGS:
+            # Only the mlock bit: the enum has both "mlock" and "mmap+mlock" and
+            # which one this maps to is not observable. It changes no decision,
+            # since mlock alone already counts as a reservation for no-reserve.
+            mlock = True
+            i += 1
+        elif flag in _NO_MMAP_FLAGS:
+            # Deprecated selector for the whole "none" mode, so it clears the
+            # mlock too: measured, "--mlock --no-mmap" leaves the child unlocked
+            # while "--no-mmap --mlock" locks it.
+            mlock = False
+            reserves_ram = True
+            i += 1
+        elif flag in _DIO_ON_FLAGS:
+            # Deprecated load-mode selector: resets the mode, so the mlock goes.
+            # DirectIO streams the weights, so it holds no full host copy.
+            mlock = False
+            reserves_ram = False
+            i += 1
+        elif flag in _DIO_OFF_FLAGS:
+            # Not "plain mmap": upstream maps these to mode `none`, like
+            # --no-mmap, which reads the weights into a full host buffer.
+            mlock = False
+            reserves_ram = True
+            i += 1
+        elif flag == "--mmap":
+            mlock = False
+            reserves_ram = False
+            i += 1
+        elif flag in _LOAD_MODE_FLAGS:
+            if "=" in tok:
+                value, step = tok.split("=", 1)[1], 1
+            elif i + 1 < n and _flag_name(tokens[i + 1]) is None:
+                value, step = tokens[i + 1], 2
+            else:
+                value, step = "", 1
+            value = value.strip().lower()
+            if value:
+                mlock = value in _LOAD_MODE_MLOCK_VALUES
+                reserves_ram = value in _LOAD_MODE_RESERVING_VALUES
+            i += step
+        else:
+            i += 1
+    return mlock, reserves_ram
+
+
+def memory_state_satisfies_settings(
+    state: Optional[tuple[bool, bool]],
+    policy_active: bool = False,
+    mlock_applicable: bool = True,
+) -> bool:
+    """True when a launched ``(mlock, reserves_ram)`` matches the settings.
+
+    Shared by the duplicate-load comparator (so toggling a setting forces a real
+    relaunch instead of returning already-loaded) and the settings route (so the
+    reload hint agrees with it).
+
+    ``state`` is None for a process this policy does not govern, such as the
+    diffusion runner, which has no load-mode of its own; nothing about it can
+    contradict the settings, so it always matches.
+
+    ``policy_active`` says the launch differed from an unmanaged one, because a
+    flag was emitted, a requested one suppressed, or an inherited env var
+    scrubbed. With both toggles off the policy no longer applies, so any of
+    those has to be undone on the next launch, while a launch it never touched
+    is left alone.
+
+    ``mlock_applicable`` is False when the launch is fully offloaded to a
+    discrete GPU, where page-locking host RAM buys nothing and is deliberately
+    not emitted. Residency there is the idle-unload veto, which needs no
+    relaunch, so demanding mlock would ask for a reload that can never satisfy
+    the check.
+    """
+    if state is None:
+        return True
+    try:
+        from utils.model_memory_settings import get_keep_resident, get_no_ram_reserve
+    except Exception:
+        return True
+    mlock, reserves_ram = state
+    if get_no_ram_reserve():
+        # mlock_applicable only excuses a MISSING lock; a live reservation
+        # still has to go, wherever the weights are.
+        return not (mlock or reserves_ram)
+    if get_keep_resident():
+        return mlock or not mlock_applicable
+    return not policy_active

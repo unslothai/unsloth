@@ -44,6 +44,68 @@ pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String>
     })
 }
 
+/// Document types the RAG ingest accepts; keep in sync with `config.UPLOAD_EXTS`.
+pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "html", "htm"];
+pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
+
+/// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
+pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
+
+pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, String> {
+    let classified = classify_existing_path(path)?;
+    if classified.path_type != NativePathType::File {
+        return Err("Only files can be attached to a chat.".to_string());
+    }
+    let supported = ATTACHMENT_EXTS
+        .iter()
+        .chain(IMAGE_ATTACHMENT_EXTS.iter())
+        .any(|ext| has_extension(&classified.canonical_path, ext));
+    if !supported {
+        return Err(format!(
+            "Unsupported attachment type. Supported: {}",
+            ATTACHMENT_EXTS
+                .iter()
+                .chain(IMAGE_ATTACHMENT_EXTS.iter())
+                .map(|ext| format!(".{ext}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(ClassifiedPath {
+        path_kind: NativePathKind::Attachment,
+        allowed_operations: vec![NativePathOperation::Attach, NativePathOperation::Reveal],
+        ..classified
+    })
+}
+
+pub fn classify_native_dataset_path(path: &Path) -> Result<ClassifiedPath, String> {
+    let classified = classify_existing_path(path)?;
+    if classified.path_type != NativePathType::File {
+        return Err("Only files can be imported as training datasets.".to_string());
+    }
+    if !TRAINING_DATASET_EXTS
+        .iter()
+        .any(|ext| has_extension(&classified.canonical_path, ext))
+    {
+        return Err(format!(
+            "Unsupported training dataset type. Supported: {}",
+            TRAINING_DATASET_EXTS
+                .iter()
+                .map(|ext| format!(".{ext}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(ClassifiedPath {
+        path_kind: NativePathKind::Dataset,
+        allowed_operations: vec![
+            NativePathOperation::DatasetImport,
+            NativePathOperation::Reveal,
+        ],
+        ..classified
+    })
+}
+
 pub fn classify_artifact_path(
     kind: NativeArtifactKind,
     path: &Path,
@@ -179,20 +241,15 @@ fn ensure_artifact_root(kind: NativeArtifactKind, canonical_path: &Path) -> Resu
 }
 
 fn reject_sensitive_artifact(path: &Path) -> Result<(), String> {
-    let lowered = path.to_string_lossy().to_ascii_lowercase();
-    for needle in [
-        "/auth/",
-        "\\auth\\",
-        "/auth.db",
-        "\\auth.db",
-        "/studio.db",
-        "\\studio.db",
-        "/pid",
-        "\\pid",
-    ] {
-        if lowered.contains(needle) {
-            return Err("Sensitive Unsloth state cannot be registered as an artifact.".to_string());
-        }
+    let has_sensitive_segment = path.components().any(|component| {
+        let segment = component.as_os_str().to_string_lossy().to_ascii_lowercase();
+        segment == "auth"
+            || segment == "pid"
+            || segment.starts_with("auth.db")
+            || segment.starts_with("studio.db")
+    });
+    if has_sensitive_segment {
+        return Err("Sensitive Unsloth state cannot be registered as an artifact.".to_string());
     }
     if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
         if matches!(
@@ -287,5 +344,82 @@ mod tests {
         fs::write(&path, b"not gguf").unwrap();
         assert!(classify_native_model_path(&path).is_err());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn document_allows_attach_and_reveal_only() {
+        let path = temp_path("doc").with_extension("pdf");
+        fs::write(&path, b"%PDF-1.4").unwrap();
+        let classified = classify_native_attachment_path(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::Attachment);
+        assert!(classified
+            .allowed_operations
+            .contains(&NativePathOperation::Attach));
+        assert!(!classified
+            .allowed_operations
+            .contains(&NativePathOperation::LoadModel));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn image_allows_attach_and_reveal_only() {
+        let path = temp_path("photo").with_extension("png");
+        fs::write(&path, b"\x89PNG\r\n").unwrap();
+        let classified = classify_native_attachment_path(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::Attachment);
+        assert!(classified
+            .allowed_operations
+            .contains(&NativePathOperation::Attach));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn unsupported_attachment_type_is_rejected() {
+        let path = temp_path("doc").with_extension("exe");
+        fs::write(&path, b"MZ").unwrap();
+        assert!(classify_native_attachment_path(&path).is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn training_dataset_allows_import_and_reveal_only() {
+        let path = temp_path("dataset").with_extension("jsonl");
+        fs::write(&path, b"{\"text\":\"hello\"}\n").unwrap();
+        let classified = classify_native_dataset_path(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::Dataset);
+        assert!(classified
+            .allowed_operations
+            .contains(&NativePathOperation::DatasetImport));
+        assert!(!classified
+            .allowed_operations
+            .contains(&NativePathOperation::Attach));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn unsupported_training_dataset_type_is_rejected() {
+        let path = temp_path("dataset").with_extension("exe");
+        fs::write(&path, b"MZ").unwrap();
+        assert!(classify_native_dataset_path(&path).is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn sensitive_artifact_names_require_an_exact_path_segment() {
+        for path in [
+            Path::new("/outputs/pid/metrics.json"),
+            Path::new("/outputs/auth/credentials.json"),
+            Path::new("/outputs/studio.db"),
+            Path::new("/outputs/auth.db.backup"),
+        ] {
+            assert!(reject_sensitive_artifact(path).is_err());
+        }
+        for path in [
+            Path::new("/outputs/pid_sweep_3/metrics.json"),
+            Path::new("/outputs/auth_results/metrics.json"),
+            Path::new("/outputs/studio_database/metrics.json"),
+        ] {
+            assert!(reject_sensitive_artifact(path).is_ok());
+        }
     }
 }

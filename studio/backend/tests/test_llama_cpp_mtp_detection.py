@@ -15,6 +15,7 @@ import os
 import struct
 import sys
 import types as _types
+from importlib.util import find_spec as _find_spec
 from pathlib import Path
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -29,31 +30,41 @@ _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-_httpx_stub = _types.ModuleType("httpx")
-for _exc in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-):
-    setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
-_httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
-_httpx_stub.Client = type(
-    "C",
-    (),
-    {
-        "__init__": lambda s, **kw: None,
-        "__enter__": lambda s: s,
-        "__exit__": lambda s, *a: None,
-    },
-)
-sys.modules.setdefault("httpx", _httpx_stub)
+# Real httpx wins when installed: setdefault only checks whether httpx is already
+# imported, not whether it exists, so the stub used to shadow the real module for the
+# rest of the session, and it is a subset (no Response) that blew routes/inference up in
+# combined runs. find_spec rather than an import, so installing the stub stays this
+# module's only side effect on sys.modules. sys.modules is tested first because find_spec
+# raises ValueError on a module already there without a spec (every bare-ModuleType httpx
+# stub in this tree), which would be a collection error rather than one failed test.
+if "httpx" not in sys.modules and _find_spec("httpx") is None:
+    _httpx_stub = _types.ModuleType("httpx")
+    for _exc in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+    ):
+        setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
+    _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
+    _httpx_stub.Response = type("Response", (), {})
+    _httpx_stub.Client = type(
+        "C",
+        (),
+        {
+            "__init__": lambda s, **kw: None,
+            "__enter__": lambda s: s,
+            "__exit__": lambda s, *a: None,
+        },
+    )
+    sys.modules["httpx"] = _httpx_stub
 
 import pytest
 
 from core.inference.llama_cpp import (
+    GgufLoadIntent,
     LlamaCppBackend,
     _GPU_OFFLOAD_OVERRIDE_FLAGS,
     _THREAD_OVERRIDE_FLAGS,
@@ -67,6 +78,10 @@ from core.inference.llama_cpp import (
     _mla_mtp_auto_enabled,
     _swa_full_from_args_or_env,
 )
+
+
+def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
+    return backend.adopt_load_intent_if_matched(GgufLoadIntent(**kwargs))
 
 
 # Synthetic GGUF helper (mirrors test_gguf_metadata.py).
@@ -249,7 +264,8 @@ def test_already_in_target_state_matches_when_request_omits_spec_for_mtp_model()
     # Duplicate /load with no spec must match a running draft-mtp backend.
     backend = _mtp_backend()
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -267,7 +283,8 @@ def test_already_in_target_state_matches_when_request_omits_spec_for_mtp_model()
 def test_already_in_target_state_matches_when_request_uses_default_for_mtp_model():
     backend = _mtp_backend()
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -292,7 +309,8 @@ def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_m
         _speculative_type = "default",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-GGUF",
             hf_variant = "Q4_K_M",
@@ -307,10 +325,124 @@ def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_m
     )
 
 
+def test_forced_dspark_without_a_sidecar_stops_reloading():
+    """drafter_not_found covers both "the fetch failed" and "this repo publishes
+    none". The second is the permanent state of every repo but one, so retrying
+    it relaunched an identical server on every Apply."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Qwen3-7B-GGUF",
+        _speculative_type = "default",
+        _requested_spec_mode = "dspark",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dspark",
+        _dspark_sidecar_absent = True,
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3-7B-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "dspark",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is True
+    )
+
+
+def test_forced_dspark_retries_when_the_fetch_failed_rather_than_the_repo():
+    """The other half: the repo does publish a sidecar and the download failed, so
+    the next Apply should reload and re-run _download_dspark."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        _speculative_type = "default",
+        _requested_spec_mode = "dspark",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dspark",
+        _dspark_sidecar_absent = False,
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "dspark",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
+def test_mtp_without_a_drafter_still_reloads_to_retry_the_fetch():
+    """Negative control for the above: the MTP retry must survive."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        _speculative_type = "default",
+        _requested_spec_mode = "mtp",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "mtp",
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "mtp",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
+def test_auto_resolved_dspark_reuses_its_server_instead_of_reloading(tmp_path):
+    """Auto keeps arriving as "auto" while the launch stored the DSpark sidecar in
+    the drafter field. Comparing the MTP field (None for these repos) against it
+    would tear down and relaunch an identical server on every Apply."""
+    sidecar = tmp_path / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        _speculative_type = "draft-dspark",
+        _mtp_draft_path = str(sidecar),
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            dspark_draft_path = str(sidecar),
+            compare_mtp_draft = True,
+        )
+        is True
+    )
+
+
 def test_already_in_target_state_explicit_off_still_mismatches_mtp_backend():
     backend = _mtp_backend()
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -459,7 +591,8 @@ def test_already_in_target_state_user_spec_type_override_matches_clean_backend()
         _extra_args = ["--spec-type", "none"],
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -484,7 +617,8 @@ def test_already_in_target_state_local_file_mtp_match(tmp_path):
         _hf_variant = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = str(gguf),
             model_identifier = "local-qwen-mtp",
             hf_variant = None,
@@ -504,7 +638,8 @@ def test_already_in_target_state_vision_mtp_match():
     # with auto/default spec must match a backend already running draft-mtp.
     backend = _mtp_backend(_is_vision = True)
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -522,7 +657,8 @@ def test_already_in_target_state_vision_mtp_match():
 def test_already_in_target_state_vision_mtp_default_matches():
     backend = _mtp_backend(_is_vision = True)
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -548,7 +684,8 @@ def test_already_in_target_state_vision_off_matches_vision_backend():
         _requested_spec_mode = "off",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3-VL-4B-Instruct-GGUF",
             hf_variant = "Q4_K_M",
@@ -656,6 +793,43 @@ def test_probe_server_capabilities_detects_draft_mtp(tmp_path):
     assert caps["found"] is True
     assert caps["mtp_token"] == "draft-mtp"
     assert caps["supports_mtp"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_detects_dspark(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,draft-dspark,ngram-mod",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_dspark"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_gates_known_broken_dspark_prebuilt(tmp_path, monkeypatch):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,draft-dspark,ngram-mod",
+    )
+    monkeypatch.setattr(
+        "utils.llama_cpp_freshness.read_install_marker",
+        lambda _binary: {"release_tag": "b10265-mix-89aa77b"},
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_dspark"] is False
+    assert caps["supports_mtp"] is True
+
+
+def test_dspark_release_gate_covers_the_whole_broken_window():
+    """Every prebuilt between the llama.cpp#26531 reshape regression and its #26577 fix
+    aborts on a DSpark load, not only the b10265 one that was first seen."""
+    broken = LlamaCppBackend._dspark_release_is_broken
+    assert broken("b10259-mix-abc1234") and broken("b10268-mix-abc1234")
+    assert not broken("b10258-mix-abc1234")
+    assert not broken("b10269-mix-abc1234")
+    assert not broken(None) and not broken("")
 
 
 @_NEEDS_BASH
@@ -1005,62 +1179,66 @@ def test_probe_server_capabilities_caches_by_mtime(tmp_path):
 # spec_draft_n_max plumbing (first-class --spec-draft-n-max override).
 
 
+def _draft_n_max_matches(
+    backend,
+    requested,
+    *,
+    speculative_type = None,
+):
+    return _matches(
+        backend,
+        gguf_path = None,
+        model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = speculative_type,
+        spec_draft_n_max = requested,
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+    )
+
+
 def test_already_in_target_state_matches_when_draft_n_max_unset():
     # None on the request means "platform default"; matches any backend.
-    backend = _mtp_backend(_spec_draft_n_max = None)
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = None), None)
 
 
 def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
-    backend = _mtp_backend(_spec_draft_n_max = 4)
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = 4,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 4)
 
 
-def test_already_in_target_state_mismatches_when_draft_n_max_differs():
-    backend = _mtp_backend(_spec_draft_n_max = 4)
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
+def test_mtp_draft_n_max_mismatch_survives_active_runtime_state():
+    assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 8, speculative_type = "mtp")
+
+
+@pytest.mark.parametrize(
+    ("saved_draft_n_max", "expected_match"),
+    [(8, True), (4, False), (None, False)],
+)
+def test_mtp_draft_n_max_compares_saved_runtime_fallback_intent(saved_draft_n_max, expected_match):
+    backend = _mtp_backend(
+        _requested_spec_mode = "mtp",
+        _speculative_type = None,
+        _spec_draft_n_max = None,
+        _spec_fallback_reason = "runtime_error",
+        _last_load_intent = GgufLoadIntent(
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = 8,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is False
+            spec_draft_n_max = saved_draft_n_max,
+        ),
     )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "mtp") is expected_match
+
+
+def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
+    backend = _mtp_backend(
+        _requested_spec_mode = "mtp",
+        _speculative_type = "default",
+        _spec_draft_n_max = None,
+        _spec_fallback_reason = "binary_no_mtp",
+    )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "mtp")
 
 
 def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
@@ -1071,21 +1249,7 @@ def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
         _requested_spec_mode = "ngram",
         _spec_draft_n_max = None,
     )
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "ngram-mod",
-            spec_draft_n_max = 8,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "ngram-mod")
 
 
 # Sub-3B MTP gate -- tiny dense models regress with the MTP draft head, so
@@ -1127,7 +1291,8 @@ def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(m
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1151,7 +1316,8 @@ def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypa
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1175,7 +1341,8 @@ def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1200,7 +1367,8 @@ def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypa
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1264,6 +1432,7 @@ def test_backfill_usage_from_timings_passthrough_when_timings_empty():
         # New canonical values pass through unchanged.
         ("auto", "auto"),
         ("mtp", "mtp"),
+        ("dspark", "dspark"),
         ("ngram", "ngram"),
         ("mtp+ngram", "mtp+ngram"),
         ("off", "off"),
@@ -1271,6 +1440,7 @@ def test_backfill_usage_from_timings_passthrough_when_timings_empty():
         # Legacy wire values map onto the new vocabulary.
         ("default", "auto"),
         ("draft-mtp", "mtp"),
+        ("draft-dspark", "dspark"),
         ("ngram-mod", "ngram"),
         # Comma-chained legacy values (e.g. from persisted state) collapse
         # to the right canonical mode.
@@ -1312,6 +1482,7 @@ def _resolver_backend(
         "found": True,
         "mtp_token": mtp_token,
         "supports_mtp": bool(mtp_token),
+        "supports_dspark": True,
         "mtp_probe_inconclusive": mtp_probe_inconclusive,
         "ngram_mod_flavor": "new" if ngram_supported else None,
         "supports_ngram_mod": bool(ngram_supported),
@@ -1439,7 +1610,205 @@ def test_build_speculative_flags_user_extra_args_owns_spec_type(monkeypatch):
     assert backend.speculative_type is None
 
 
-@pytest.mark.parametrize("mode", ["auto", "mtp", "ngram", "mtp+ngram", "off"])
+def test_build_speculative_flags_dspark_requires_sidecar_and_leaves_fit_to_placement(
+    monkeypatch, tmp_path
+):
+    backend = _resolver_backend(monkeypatch)
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    parsed = _flags_dict(flags)
+    assert "--fit" not in parsed
+    assert parsed["--model-draft"] == str(sidecar)
+    assert parsed["--spec-type"] == "draft-dspark"
+    assert parsed["--spec-draft-n-max"] == "3"
+
+
+def test_build_speculative_flags_dspark_missing_sidecar_falls_back(monkeypatch):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert flags == ["--spec-default"]
+    assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def test_build_speculative_flags_dspark_blames_the_binary_not_the_missing_sidecar(monkeypatch):
+    """The sidecar fetch is gated on the same supports_dspark answer, so on a
+    binary that cannot run DSpark the sidecar is legitimately absent. Reporting
+    drafter_not_found would tell the user to place a file that is not the problem,
+    and would reload the server on every Apply via the drafter_not_found dedup."""
+    backend = _resolver_backend(monkeypatch)
+    caps = LlamaCppBackend.probe_server_capabilities()
+    caps["supports_dspark"] = False
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = None,
+    )
+    assert flags == ["--spec-default"]
+    assert backend.spec_fallback_reason == "binary_no_mtp"
+
+
+# ── Auto defaults to DSpark, and only where a sidecar actually exists ──
+#
+# The three shapes are the real published repos, checked against the Hub:
+#   unsloth/DeepSeek-V4-Flash-0731-GGUF  -> dspark-*.gguf at the root and in dspark/
+#   unsloth/gemma-4-12b-it-GGUF          -> MTP/mtp-gemma-4-12b-it-*.gguf, no dspark
+#   unsloth/Qwen3.5-4B-MTP-GGUF          -> head baked into the main GGUF, neither file
+
+
+def test_auto_defaults_to_dspark_when_a_sidecar_is_available(monkeypatch, tmp_path):
+    """DSpark beats every other Auto outcome for this architecture, and without it
+    these models fall through to --spec-default, i.e. no drafter at all."""
+    backend = _resolver_backend(monkeypatch)
+    sidecar = tmp_path / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == "draft-dspark"
+    assert parsed["--model-draft"] == str(sidecar)
+    assert parsed["--spec-draft-n-max"] == "3"
+    assert backend.spec_fallback_reason is None
+    # The request stays "auto": rewriting it would make the reuse check compare
+    # "dspark" against a caller that keeps sending "auto" and reload every Apply.
+    assert backend.requested_spec_mode == "auto"
+
+
+def test_auto_keeps_mtp_for_a_separate_drafter_model(monkeypatch, tmp_path):
+    """gemma-4-12b-it ships MTP/mtp-*.gguf and no dspark sidecar, so the DSpark
+    branch must not intercept it."""
+    backend = _resolver_backend(monkeypatch)
+    drafter = tmp_path / "mtp-gemma-4-12b-it-Q8_0.gguf"
+    drafter.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = str(drafter),
+        dspark_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == "draft-mtp"
+    assert parsed["--model-draft"] == str(drafter)
+    assert backend.spec_fallback_reason is None
+
+
+def test_auto_keeps_embedded_mtp(monkeypatch):
+    """Qwen3.5-4B-MTP bakes the head into the main GGUF: no separate file of
+    either kind, so Auto must still emit MTP."""
+    backend = _resolver_backend(monkeypatch)
+    backend._nextn_predict_layers = 1
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+def test_auto_does_not_promote_dspark_on_a_binary_that_cannot_run_it(monkeypatch, tmp_path):
+    """_download_dspark still reports a cached sidecar an incapable binary cannot
+    launch. Promoting there would turn Auto's fallback into no speculation at all,
+    so the promotion is capability-gated and this model keeps its ngram-mod path."""
+    backend = _resolver_backend(monkeypatch)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "found": True,
+                "mtp_token": "draft-mtp",
+                "supports_mtp": True,
+                "supports_dspark": False,
+                "mtp_probe_inconclusive": False,
+                "ngram_mod_flavor": "new",
+                "supports_ngram_mod": True,
+                "spec_draft_n_max_flag": "--spec-draft-n-max",
+            }
+        ),
+    )
+    sidecar = tmp_path / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    assert "draft-dspark" not in _flags_dict(flags).get("--spec-type", "")
+    assert backend.speculative_type != "draft-dspark"
+
+
+def test_build_speculative_flags_dspark_engages_under_auto_fit(monkeypatch, tmp_path):
+    """--fit on is not a blocker. The sidecar borrows the target's token_embd and
+    output, so llama.cpp's fit step cannot build a standalone draft context to
+    measure it and skips the reserve; the load itself still gets the drafter."""
+    backend = _resolver_backend(monkeypatch)
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+        dspark_fit_sized = False,
+    )
+    assert flags[flags.index("--spec-type") + 1] == "draft-dspark"
+    assert flags[flags.index("--model-draft") + 1] == str(sidecar)
+    assert backend.speculative_type == "draft-dspark"
+    assert backend.spec_fallback_reason is None
+
+
+@pytest.mark.parametrize("mode", ["auto", "mtp", "dspark", "ngram", "mtp+ngram", "off"])
 def test_build_speculative_flags_round_trips_requested_mode(monkeypatch, mode):
     # The status round-trip is the contract that lets the UI dropdown
     # restore its picked value after reload / refresh.
@@ -1770,7 +2139,8 @@ def test_reload_skip_auto_mla_ngram_is_idempotent():
         _requested_spec_mode = "auto",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = _GLM_MLA_MODEL,
             hf_variant = "Q4_K_M",
@@ -1794,7 +2164,8 @@ def test_reload_forced_mtp_bounces_auto_mla():
         _requested_spec_mode = "auto",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = _GLM_MLA_MODEL,
             hf_variant = "Q4_K_M",
@@ -2185,7 +2556,46 @@ def test_already_in_target_state_retries_after_hf_drafter_not_found():
         _mtp_draft_path = None,
         _gguf_path = None,
     )
-    assert backend._already_in_target_state(**_drafter_not_found_kwargs()) is False
+    assert _matches(backend, **_drafter_not_found_kwargs()) is False
     # Sanity: with no fallback reason the same request still dedupes (matches).
     ok = _mtp_backend(_model_identifier = "unsloth/gemma-4-E4B-it-GGUF", _gguf_path = None)
-    assert ok._already_in_target_state(**_drafter_not_found_kwargs()) is True
+    assert _matches(ok, **_drafter_not_found_kwargs()) is True
+
+
+_MODERN_DRAFT_NGL_HELP = """usage: llama-server [options]
+
+--spec-draft-ngl N                      layers to offload for the draft model
+--parallel N                            number of parallel sequences
+"""
+
+_LEGACY_DRAFT_NGL_HELP = """usage: llama-server [options]
+
+-ngld, --gpu-layers-draft N             layers to offload for the draft model
+--parallel N                            number of parallel sequences
+"""
+
+
+@_NEEDS_BASH
+def test_probe_reports_the_draft_ngl_alias_the_build_actually_has(tmp_path):
+    """--spec-draft-ngl only exists from llama.cpp b8955, so a plain "yes" for either
+    alias would make the paravirtual drafter pin emit a name an older build does not
+    know and the server would refuse to start."""
+    modern = _make_fake_llama_server(tmp_path / "modern", _MODERN_DRAFT_NGL_HELP)
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(modern))["spec_draft_ngl_flag"] == (
+        "--spec-draft-ngl"
+    )
+
+    legacy = _make_fake_llama_server(tmp_path / "legacy", _LEGACY_DRAFT_NGL_HELP)
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(legacy))["spec_draft_ngl_flag"] == (
+        "--gpu-layers-draft"
+    )
+
+
+@_NEEDS_BASH
+def test_probe_reports_no_draft_ngl_flag_when_the_build_has_neither(tmp_path):
+    """The negative: without it the pin must be skipped, not guessed at."""
+    neither = _make_fake_llama_server(tmp_path / "neither", "usage: llama-server\n\n--parallel N\n")
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(neither))["spec_draft_ngl_flag"] is None

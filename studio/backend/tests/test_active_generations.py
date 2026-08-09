@@ -344,7 +344,7 @@ def test_a_forced_load_that_fails_preflight_leaves_the_chats_alone(monkeypatch):
     from models.inference import LoadRequest
 
     inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
-    monkeypatch.setattr(inf_mod, "_hf_offline_if_dns_dead", contextlib.nullcontext)
+    monkeypatch.setattr(inf_mod, "_hf_offline_if_unreachable", contextlib.nullcontext)
     # Stands in for any preflight refusal; a None here is the route's own 400.
     monkeypatch.setattr(inf_mod.ModelConfig, "from_identifier", staticmethod(lambda **kwargs: None))
 
@@ -375,7 +375,7 @@ def _stub_standard_load_route(monkeypatch):
     _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
     # _stub_load_route neutralises the sidecar guard; this test is about it.
     monkeypatch.setattr(inf_mod, "_raise_if_sidecar_swap_in_progress", real_sidecar_check)
-    monkeypatch.setattr(inf_mod, "_hf_offline_if_dns_dead", contextlib.nullcontext)
+    monkeypatch.setattr(inf_mod, "_hf_offline_if_unreachable", contextlib.nullcontext)
     monkeypatch.setattr(inf_mod, "_mlx_distributed_launch_detected", lambda: False)
     monkeypatch.setattr(
         inf_mod.ModelConfig,
@@ -561,6 +561,104 @@ def _run_unload(
             UnloadRequest(model_path = requested, force_cancel_active = force), "tester"
         )
     )
+
+
+_PINNED_SNAPSHOT = "/tmp/hf/hub/models--Org--Quant/snapshots/" + "d" * 40
+
+
+def test_unload_finds_a_gguf_loaded_from_a_pinned_snapshot(monkeypatch):
+    """A cached row that pins a snapshot is loaded by that path, while the status the client
+    reads back reports the repo id. An unload naming the id has to reach the same server, or
+    Eject reports success and leaves it resident."""
+    _route_gate()
+    import routes.inference as inf_mod
+
+    torn_down: list[str] = []
+    _run_unload(
+        inf_mod,
+        monkeypatch,
+        loaded_gguf = _PINNED_SNAPSHOT,
+        requested = "Org/Quant",
+        force = False,
+        torn_down = torn_down,
+    )
+    assert torn_down == ["gguf"]
+
+    # Control: another repo's id names a different model and must leave this one up.
+    other: list[str] = []
+    _run_unload(
+        inf_mod,
+        monkeypatch,
+        loaded_gguf = _PINNED_SNAPSHOT,
+        requested = "Org/Other",
+        force = False,
+        torn_down = other,
+    )
+    assert other == ["unsloth"]
+
+
+def test_stop_loading_cancels_an_in_flight_pinned_load(monkeypatch):
+    """Cancel sends the id the picker shows. A pinned row loads under a snapshot path, so a raw
+    compare let Stop loading report success while the multi minute load kept running."""
+    _route_gate()
+    import asyncio
+    from types import SimpleNamespace
+
+    from models.inference import UnloadRequest
+
+    def _cancel(loading, requested):
+        cancelled: list[str] = []
+        inf_mod, _kw = _stub_unload_backends(
+            monkeypatch,
+            llama = SimpleNamespace(is_active = False, is_loaded = False, model_identifier = None),
+            backend = SimpleNamespace(
+                get_loading_model = lambda: loading,
+                cancel_load = lambda path: (cancelled.append(path), True)[1],
+                active_model_name = None,
+                models = {},
+                unload_model = lambda path: None,
+            ),
+        )
+        asyncio.run(
+            inf_mod.unload_model(
+                UnloadRequest(model_path = requested, force_cancel_active = False), "tester"
+            )
+        )
+        return cancelled
+
+    # Cancelled under the name the load runs as, not the one the client sent.
+    assert _cancel(_PINNED_SNAPSHOT, "Org/Quant") == [_PINNED_SNAPSHOT]
+    assert _cancel("Org/Quant", "Org/Quant") == ["Org/Quant"]
+    # Control: naming another repo cancels nothing.
+    assert _cancel(_PINNED_SNAPSHOT, "Org/Other") == []
+
+
+def test_unload_evicts_a_pinned_standard_model_under_its_registered_name(monkeypatch):
+    """The standard backend refuses a name it never loaded, so a pinned load has to be evicted
+    under the path it was registered with rather than the id the picker shows."""
+    _route_gate()
+    import asyncio
+    from types import SimpleNamespace
+
+    from models.inference import UnloadRequest
+
+    unloaded: list[str] = []
+    inf_mod, _kw = _stub_unload_backends(
+        monkeypatch,
+        llama = SimpleNamespace(is_active = False, is_loaded = False, model_identifier = None),
+        backend = SimpleNamespace(
+            get_loading_model = lambda: None,
+            active_model_name = _PINNED_SNAPSHOT,
+            models = {_PINNED_SNAPSHOT: {}},
+            unload_model = lambda path: unloaded.append(path),
+        ),
+    )
+    asyncio.run(
+        inf_mod.unload_model(
+            UnloadRequest(model_path = "Org/Quant", force_cancel_active = False), "tester"
+        )
+    )
+    assert unloaded == [_PINNED_SNAPSHOT]
 
 
 def test_forced_unload_of_a_stale_model_path_leaves_the_chats_alone(monkeypatch):
@@ -1582,7 +1680,7 @@ def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(mo
     from models.inference import LoadRequest
 
     inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
-    monkeypatch.setattr(inf_mod, "_hf_offline_if_dns_dead", contextlib.nullcontext)
+    monkeypatch.setattr(inf_mod, "_hf_offline_if_unreachable", contextlib.nullcontext)
     monkeypatch.setattr(
         inf_mod.ModelConfig,
         "from_identifier",
@@ -2633,3 +2731,97 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
         t.join(timeout = 30)
 
     assert orch._active_cancel_events == sent, "claim order must equal send order"
+
+
+def test_responses_stream_reports_reasoning_ttft_and_stop_reason(monkeypatch):
+    # This adapter parses SSE itself, so without its own stamp a reasoning-first
+    # turn would time from the visible text instead.
+    import asyncio
+
+    from core.inference.api_monitor import api_monitor
+    from models.inference import ChatMessage, ResponsesRequest
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch,
+        [
+            {"choices": [{"delta": {"reasoning_content": "thinking"}}]},
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": "length"}]},
+        ],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await inf_mod._responses_stream(
+            payload, messages, _NeverDisconnectedRequest(), monitor_id
+        )
+        async for _ in response.body_iterator:
+            pass
+
+    asyncio.run(run())
+
+    rows = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
+    assert rows, "the stream should have opened a monitor row"
+    assert rows[0]["ttft_ms"] is not None
+    assert rows[0]["stop_reason"] == "length"
+
+
+def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
+    # A tool-call-opening turn already sent client output, so TTFT must stamp there.
+    import asyncio
+
+    from core.inference.api_monitor import api_monitor
+    from models.inference import ChatMessage, ResponsesRequest
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch,
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "f", "arguments": "{}"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        ],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    # append_reply would stamp late; assert it happens at the delta instead.
+    stamped: list[str] = []
+    real_mark = api_monitor.mark_first_token
+    monkeypatch.setattr(
+        api_monitor,
+        "mark_first_token",
+        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+    )
+
+    async def run():
+        response = await inf_mod._responses_stream(
+            payload, messages, _NeverDisconnectedRequest(), monitor_id
+        )
+        async for _ in response.body_iterator:
+            pass
+
+    asyncio.run(run())
+
+    assert stamped, "the tool-call delta should stamp the first token"
+    [row] = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
+    assert row["ttft_ms"] is not None
+    assert row["stop_reason"] == "tool_calls"

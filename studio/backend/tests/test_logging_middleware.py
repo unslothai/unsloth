@@ -357,3 +357,164 @@ def test_legacy_download_progress_heartbeats_not_suppressed(logs, monkeypatch):
     for _ in range(3):
         _run(mw(_http_scope("/api/models/download-progress"), _noop_receive, _drop))
     assert _paths_logged(logs) == ["/api/models/download-progress"]
+
+
+def test_generation_progress_polls_heartbeat(logs, monkeypatch):
+    # The 300ms poll timer always landed just outside the 300ms base dedup window.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+    for path in (
+        "/api/inference/images/generate-progress",
+        "/api/inference/video/generate-progress",
+        "/api/train/diffusion/status",
+    ):
+        mw = LoggingMiddleware(_status_app(200))
+        for _ in range(5):
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+        assert _paths_logged(logs) == [path]
+        logs.events.clear()
+
+
+def test_generation_progress_errors_still_log(logs, monkeypatch):
+    # Heartbeat dedup is GET/2xx only, so a failing poll stays visible.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+    mw = LoggingMiddleware(_status_app(500))
+    for _ in range(3):
+        _run(mw(_http_scope("/api/inference/images/generate-progress"), _noop_receive, _drop))
+    assert _paths_logged(logs) == ["/api/inference/images/generate-progress"] * 3
+
+
+def test_image_video_load_progress_heartbeats(logs, monkeypatch):
+    # These handlers log nothing themselves, so keep a pulse for a multi-minute load.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+    for path in ("/api/inference/images/load-progress", "/api/inference/video/load-progress"):
+        mw = LoggingMiddleware(_status_app(200))
+        for _ in range(5):
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+        assert _paths_logged(logs) == [path]
+        logs.events.clear()
+    mw = LoggingMiddleware(_status_app(503))
+    for _ in range(3):
+        _run(mw(_http_scope("/api/inference/images/load-progress"), _noop_receive, _drop))
+    assert _paths_logged(logs) == ["/api/inference/images/load-progress"] * 3
+
+
+def test_unrelated_image_routes_still_log(logs, monkeypatch):
+    # Quieting only collapses repeats: the first hit on any path always logs,
+    # including the status reads the loaded-models indicator now polls.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    for path in (
+        "/api/inference/images/status",
+        "/api/inference/images/info",
+        "/api/inference/video/status",
+    ):
+        _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
+    assert _paths_logged(logs) == [
+        "/api/inference/images/status",
+        "/api/inference/images/info",
+        "/api/inference/video/status",
+    ]
+
+
+def test_indicator_status_polls_collapse_to_a_heartbeat(logs, monkeypatch):
+    # The loaded-models indicator reads all four runtimes every 5s for as long
+    # as the app is open, and on the desktop every line is mirrored into
+    # tauri.log. /api/inference/status was already quiet; its three siblings
+    # arrived with the indicator and have to be quiet for the same reason.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    polled = (
+        "/api/inference/status",
+        "/api/inference/images/status",
+        "/api/inference/video/status",
+        "/api/inference/audio/stt/status",
+    )
+    for _ in range(4):
+        for path in polled:
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+
+    paths = _paths_logged(logs)
+    for path in polled:
+        assert paths.count(path) == 1, f"{path} logged {paths.count(path)} times"
+
+
+def test_verbose_restores_the_dropped_success_polls(logs, monkeypatch):
+    # --verbose zeroes both windows, so the 2xx suppressor must stand down too.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_VERBOSE_ACCESS_LOG", True)
+    for path in (
+        "/api/inference/load-progress",
+        "/api/hub/download-progress",
+        "/api/export/status",
+        "/api/chat/threads",
+    ):
+        mw = LoggingMiddleware(_status_app(200))
+        for _ in range(3):
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+        assert _paths_logged(logs) == [path] * 3
+        logs.events.clear()
+
+
+def test_boot_burst_catalog_reads_suppressed(logs):
+    # The catalog reads the SPA fans out on every auth change / rehydration: their 2xx
+    # only restates the list the UI is already showing.
+    for path in (
+        "/api/providers/registry",
+        "/api/providers/",
+        "/api/models/loras",
+        "/api/settings/personalization",
+    ):
+        _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
+    assert logs.events == []
+
+
+def test_boot_burst_catalog_errors_still_log(logs):
+    # 4xx/5xx on the same paths are real failures and stay visible.
+    for path, status in (
+        ("/api/providers/registry", 500),
+        ("/api/providers/", 502),
+        ("/api/models/loras", 404),
+        ("/api/settings/personalization", 401),
+    ):
+        _run(LoggingMiddleware(_status_app(status))(_http_scope(path), _noop_receive, _drop))
+    assert _paths_logged(logs) == [
+        "/api/providers/registry",
+        "/api/providers/",
+        "/api/models/loras",
+        "/api/settings/personalization",
+    ]
+
+
+def test_boot_burst_catalog_mutations_still_log(logs):
+    # Suppression is GET-only: creating a provider or saving a profile keeps its line.
+    for path, method in (
+        ("/api/providers/", "POST"),
+        ("/api/settings/personalization", "PUT"),
+    ):
+        _run(
+            LoggingMiddleware(_status_app(200))(
+                _http_scope(path, method = method), _noop_receive, _drop
+            )
+        )
+    assert _paths_logged(logs) == ["/api/providers/", "/api/settings/personalization"]
+
+
+def test_provider_detail_routes_still_log(logs, monkeypatch):
+    # Only the exact list/registry paths are quieted; per-provider reads keep theirs.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    for path in ("/api/providers/abc123", "/api/providers/registry/openai"):
+        _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
+    assert _paths_logged(logs) == ["/api/providers/abc123", "/api/providers/registry/openai"]
+
+
+def test_verbose_off_by_default_keeps_the_polls_quiet(logs):
+    # Default env leaves both windows set, so a normal launch is unchanged.
+    assert hmod._VERBOSE_ACCESS_LOG is False
+    for path in ("/api/inference/load-progress", "/api/hub/download-progress"):
+        _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
+    assert logs.events == []

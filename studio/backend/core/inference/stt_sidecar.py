@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import threading
 import uuid
 from dataclasses import dataclass
@@ -85,6 +86,91 @@ class _CachedSttSnapshot:
     is_multilingual: Optional[bool]
 
 
+class SttDownloadCacheError(RuntimeError):
+    """The shared Hub cache cannot safely admit an STT HTTP writer."""
+
+
+def _capture_stt_hub_cache() -> Path:
+    """Capture the configured Hub cache once for one STT download run."""
+    from utils.hf_cache_settings import get_hf_cache_paths
+    return Path(get_hf_cache_paths().hub_cache).expanduser()
+
+
+def _claim_stt_repository(repo: str) -> tuple[object, object]:
+    """Reserve *repo* against every Model Hub writer and delete."""
+    from hub.utils.download_registry import get_models_registry
+
+    registry = get_models_registry()
+    owner = object()
+    claimed, state = registry.claim_repository_owner(repo, owner)
+    if not claimed:
+        raise SttDownloadCacheError(
+            f"'{repo}' is already active in the Model Hub ({state}); wait for it to finish."
+        )
+    return registry, owner
+
+
+def _prepare_stt_cache_for_http(repo: str, hub_cache: Path) -> None:
+    """Prepare *repo* for HTTP, rejecting unverified transport markers."""
+    from hub.utils.download_registry import TRANSPORT_HTTP, prepare_cache_for_transport
+    from hub.utils.hf_cache_state import (
+        TRANSPORT_MARKER_NAME,
+        iter_active_repo_cache_dirs,
+        repo_cache_dir_name,
+    )
+
+    canonical = hub_cache / repo_cache_dir_name("model", repo)
+    try:
+        canonical.mkdir(parents = True, exist_ok = True)
+    except OSError as exc:
+        raise SttDownloadCacheError(
+            f"Could not make the Hugging Face cache safe for '{repo}'. "
+            "Close other programs using that cache and try again."
+        ) from exc
+    prepare_cache_for_transport("model", repo, TRANSPORT_HTTP, root = hub_cache)
+    entries = list(iter_active_repo_cache_dirs("model", repo, root = hub_cache))
+    try:
+        all_marked_http = bool(entries) and all(
+            (entry / TRANSPORT_MARKER_NAME).read_text(encoding = "utf-8").strip() == TRANSPORT_HTTP
+            for entry in (*entries, canonical)
+        )
+    except (OSError, UnicodeDecodeError):
+        all_marked_http = False
+    if not all_marked_http:
+        raise SttDownloadCacheError(
+            f"Could not make the Hugging Face cache safe for '{repo}'. "
+            "Close other programs using that cache and try again."
+        )
+
+
+def _downloaded_file_bytes(
+    *,
+    hub_cache: Path,
+    repo: str,
+    filename: str,
+    size: int,
+    blob_key: Optional[str],
+    revision: Optional[str],
+) -> int:
+    """Count one selected file across partial, finalized, and snapshot forms."""
+    repo_cache = _repo_cache_dir(repo, hub_cache = hub_cache)
+    candidates: list[Path] = []
+    if blob_key:
+        blobs = repo_cache / "blobs"
+        candidates.extend((blobs / f"{blob_key}.incomplete", blobs / blob_key))
+    if revision:
+        candidates.append(repo_cache / "snapshots" / revision / filename)
+    sizes: list[int] = []
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                sizes.append(max(0, int(candidate.stat().st_size)))
+        except OSError:
+            continue
+    done = max(sizes, default = 0)
+    return min(done, max(0, int(size)))
+
+
 class SttUnavailableError(RuntimeError):
     """The STT backend (PyTorch/Transformers or PyAV) is not installed."""
 
@@ -95,6 +181,10 @@ class SttLoadCancelledError(RuntimeError):
 
 class SttModelNotDownloadedError(RuntimeError):
     """The selected model is not complete in the shared Hub cache."""
+
+
+class SttModelBusyError(RuntimeError):
+    """A switch was asked for while the current model is mid-transcription."""
 
 
 class SttModelIdError(ValueError):
@@ -217,20 +307,36 @@ def _read_json_object(path: Path) -> dict:
 
 
 def _active_hf_hub_cache() -> Path:
-    """Return the active Hub cache while respecting runtime test overrides."""
-    explicit = (os.environ.get("HF_HUB_CACHE") or "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    hf_home = (os.environ.get("HF_HOME") or "").strip()
-    if hf_home:
-        return Path(hf_home).expanduser() / "hub"
-    from huggingface_hub.constants import HF_HUB_CACHE
+    """Return the currently configured Hub cache, including live relocation."""
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
 
-    return Path(HF_HUB_CACHE)
+        paths = get_hf_cache_paths()
+        # Studio's live cache setting takes precedence over environment defaults.
+        if paths.source == "studio":
+            return Path(paths.hub_cache)
+        explicit = (os.environ.get("HF_HUB_CACHE") or "").strip()
+        if explicit:
+            return Path(explicit).expanduser()
+        hf_home = (os.environ.get("HF_HOME") or "").strip()
+        if hf_home:
+            return Path(hf_home).expanduser() / "hub"
+        return Path(paths.hub_cache)
+    except Exception:
+        explicit = (os.environ.get("HF_HUB_CACHE") or "").strip()
+        if explicit:
+            return Path(explicit).expanduser()
+        hf_home = (os.environ.get("HF_HOME") or "").strip()
+        if hf_home:
+            return Path(hf_home).expanduser() / "hub"
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        return Path(HF_HUB_CACHE)
 
 
-def _repo_cache_dir(repo: str) -> Path:
-    return _active_hf_hub_cache() / f"models--{repo.replace('/', '--')}"
+def _repo_cache_dir(repo: str, *, hub_cache: Optional[Path] = None) -> Path:
+    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
+    return root / f"models--{repo.replace('/', '--')}"
 
 
 def _revision_record_path(repo: str) -> Path:
@@ -273,6 +379,32 @@ def _read_revision_record(repo: str) -> Optional[str]:
         return None
     revision = payload.get("revision")
     return revision if isinstance(revision, str) and _HF_COMMIT_SHA.fullmatch(revision) else None
+
+
+def _fallback_revisions(repo: str, *, hub_cache: Optional[Path] = None) -> list[str]:
+    """Cached commits to try when no revision record survives, newest first.
+
+    Pinned downloads never write refs/main, so without this a lost record would
+    hide an already downloaded model and re-download it on every launch.
+    """
+    repo_cache = _repo_cache_dir(repo, hub_cache = hub_cache)
+    candidates: list[str] = []
+    try:
+        main_revision = (repo_cache / "refs" / "main").read_text(encoding = "utf-8").strip()
+        if _HF_COMMIT_SHA.fullmatch(main_revision):
+            candidates.append(main_revision)
+    except OSError:
+        pass
+    try:
+        snapshots = sorted(
+            (p for p in (repo_cache / "snapshots").iterdir() if _HF_COMMIT_SHA.fullmatch(p.name)),
+            key = lambda p: p.stat().st_mtime,
+            reverse = True,
+        )
+    except OSError:
+        snapshots = []
+    candidates.extend(p.name for p in snapshots if p.name not in candidates)
+    return candidates
 
 
 def _safe_snapshot_for_revision(repo: str, revision: str) -> Optional[Path]:
@@ -499,53 +631,118 @@ class _SnapshotDownloadState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
+        self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
         self._repo: Optional[str] = None
+        self._revision: Optional[str] = None
+        self._hub_cache: Optional[Path] = None
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._selected_files: tuple[_SelectedHubFile, ...] = ()
         self._complete = False
+        self._cancelled = False
 
     def status(self) -> dict:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
             show_progress = downloading or self._complete
-            return {
+            snapshot = {
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
                 "error": self._error,
+                "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if show_progress else None,
-                "bytes_done": self._blob_bytes() if show_progress else None,
             }
+            captured = (
+                self._repo,
+                self._revision,
+                self._hub_cache,
+                self._selected_files,
+                self._total_bytes,
+            )
+        # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
+        snapshot["bytes_done"] = self._downloaded_bytes(*captured) if show_progress else None
+        return snapshot
 
-    def _blob_bytes(self) -> Optional[int]:
-        """Best-effort progress: bytes in the repo's HF cache blobs.
+    def cancel(self) -> bool:
+        """Stop an in-flight download. False when none was running.
 
-        Counts only the selected support files and one selected weight format,
-        including in-progress ``.incomplete`` blobs.
+        Partial blobs stay cached, so a restart resumes from them.
+        """
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                return False
+            self._cancelled = True
+            process = self._process
+        if process is not None and process.poll() is None:
+            from core.inference.stt_download_worker import terminate_download
+            terminate_download(process)
+        return True
+
+    def _downloaded_bytes(
+        self,
+        repo: Optional[str] = None,
+        revision: Optional[str] = None,
+        hub_cache: Optional[Path] = None,
+        selected_files: Optional[tuple[_SelectedHubFile, ...]] = None,
+        total: Optional[int] = None,
+    ) -> Optional[int]:
+        """Count selected files across partial, blob, and snapshot locations.
+
+        status() captures these under the lock and passes them in: reading them
+        here would let a run that starts mid-probe pair its bytes with the total
+        of the run that just ended.
         """
         try:
-            # Caller may hold the non-reentrant self._lock; a bare read is safe.
-            repo = self._repo
-            selected_files = self._selected_files
-            if not repo or not selected_files:
+            repo = repo if repo is not None else self._repo
+            revision = revision if revision is not None else self._revision
+            hub_cache = hub_cache or self._hub_cache or _active_hf_hub_cache()
+            selected_files = selected_files if selected_files is not None else self._selected_files
+            total = total if total is not None else self._total_bytes
+            if not repo or hub_cache is None or not selected_files:
                 return None
-            blobs = _repo_cache_dir(repo) / "blobs"
-            if not blobs.is_dir():
-                return 0
-            done = 0
-            for selected in selected_files:
-                if not selected.blob_key:
-                    continue
-                complete = blobs / selected.blob_key
-                incomplete = blobs / f"{selected.blob_key}.incomplete"
-                candidate = complete if complete.is_file() else incomplete
-                if candidate.is_file():
-                    done += min(candidate.stat().st_size, selected.size)
-            total = self._total_bytes
+            done = sum(
+                _downloaded_file_bytes(
+                    hub_cache = hub_cache,
+                    repo = repo,
+                    filename = selected.path,
+                    size = selected.size,
+                    blob_key = selected.blob_key,
+                    revision = revision,
+                )
+                for selected in selected_files
+            )
             return min(done, total) if total is not None else done
         except Exception:
             return None
+
+    def _run_worker(
+        self, args: list[str], hf_token: Optional[str], hub_cache: Path
+    ) -> tuple[bool, bytes]:
+        from core.inference.stt_download_worker import (
+            reap_download,
+            spawn_download,
+            terminate_download,
+        )
+
+        process = spawn_download(args, hf_token = hf_token or None, hub_cache = hub_cache)
+        with self._lock:
+            if self._cancelled:
+                terminate_download(process)
+            self._process = process
+        stderr = reap_download(process)
+        with self._lock:
+            if self._process is process:
+                self._process = None
+            cancelled = self._cancelled
+        if process.returncode == 0 and not cancelled:
+            return True, stderr
+        if cancelled or process.returncode < 0:
+            with self._lock:
+                self._cancelled = True
+            return False, stderr
+        detail = stderr.decode("utf-8", "replace").strip()
+        raise SttModelCompatibilityError(f"Download worker failed for '{self._repo}': {detail}")
 
     def start(
         self,
@@ -554,22 +751,34 @@ class _SnapshotDownloadState:
         revision: Optional[str] = None,
     ) -> None:
         model_id = resolve_model_id(model_id)
+        hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    return
+                    # Joining a cancelling run would silently download nothing.
+                    if not self._cancelled:
+                        return
+                    raise SttModelIdError(
+                        f"'{model_id}' is still cancelling; try again in a moment."
+                    )
                 raise SttModelIdError(
                     f"Another dictation model ('{self._model_id}') is still "
                     "downloading; wait for it to finish."
                 )
             self._model_id = model_id
             self._repo = resolve_model_repo(model_id)
+            self._revision = None
+            self._hub_cache = hub_cache
             self._error = None
             self._total_bytes = None
             self._selected_files = ()
             self._complete = False
+            self._cancelled = False
+            self._process = None
             thread = threading.Thread(
-                target = self._run, args = (self._repo, hf_token, revision), daemon = True
+                target = self._run,
+                args = (self._repo, hf_token, revision),
+                daemon = True,
             )
             self._thread = thread
             thread.start()
@@ -579,9 +788,13 @@ class _SnapshotDownloadState:
         repo: str,
         hf_token: Optional[str],
         revision: Optional[str] = None,
+        hub_cache: Optional[Path] = None,
     ) -> None:
+        hub_cache = hub_cache or self._hub_cache or _active_hf_hub_cache()
+        registry = None
+        owner = None
         try:
-            from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+            from huggingface_hub import HfApi, hf_hub_download
 
             info = HfApi(token = hf_token or None).model_info(
                 repo,
@@ -596,12 +809,33 @@ class _SnapshotDownloadState:
                     f"Could not resolve an immutable revision for STT model '{repo}'."
                 )
 
+            # A cancel during metadata has no child to stop. Without these the
+            # run still reserves the repo and rewrites the cache after the stop.
+            with self._lock:
+                if self._cancelled:
+                    return
+            registry, owner = _claim_stt_repository(repo)
+            with self._lock:
+                if self._cancelled:
+                    return
+            _prepare_stt_cache_for_http(repo, hub_cache)
+            with self._lock:
+                self._revision = revision
+
             def load_index(filename: str) -> dict:
+                completed, _stderr = self._run_worker(
+                    ["--repo-id", repo, "--revision", revision, "--filename", filename],
+                    hf_token,
+                    hub_cache,
+                )
+                if not completed:
+                    return {}
                 path = hf_hub_download(
                     repo_id = repo,
                     filename = filename,
                     revision = revision,
-                    token = hf_token or None,
+                    local_files_only = True,
+                    cache_dir = str(hub_cache),
                 )
                 return _read_json_object(Path(path))
 
@@ -610,14 +844,13 @@ class _SnapshotDownloadState:
             with self._lock:
                 self._selected_files = selected_files
                 self._total_bytes = total or None
-            snapshot = Path(
-                snapshot_download(
-                    repo_id = repo,
-                    revision = revision,
-                    allow_patterns = [selected.path for selected in selected_files],
-                    token = hf_token or None,
-                )
-            )
+            args = ["--repo-id", repo, "--revision", revision]
+            for selected in selected_files:
+                args += ["--filename", selected.path]
+            completed, _stderr = self._run_worker(args, hf_token, hub_cache)
+            if not completed:
+                return
+            snapshot = _repo_cache_dir(repo, hub_cache = hub_cache) / "snapshots" / revision
             if not _snapshot_is_complete(snapshot):
                 raise SttModelCompatibilityError(
                     f"Downloaded STT snapshot for '{repo}' is incomplete."
@@ -626,9 +859,13 @@ class _SnapshotDownloadState:
             with self._lock:
                 self._complete = True
         except Exception as exc:
-            logger.warning("STT snapshot download failed for %s: %s", repo, exc)
             with self._lock:
-                self._error = f"Download failed for '{repo}'."
+                if not self._cancelled:
+                    logger.warning("STT snapshot download failed for %s: %s", repo, exc)
+                    self._error = f"Download failed for '{repo}'."
+        finally:
+            if registry is not None and owner is not None:
+                registry.release_repository_owner(repo, owner)
 
 
 _download_state = _SnapshotDownloadState()
@@ -644,6 +881,10 @@ def start_model_download(
 
 def download_status() -> dict:
     return _download_state.status()
+
+
+def cancel_model_download() -> bool:
+    return _download_state.cancel()
 
 
 def _training_active() -> bool:

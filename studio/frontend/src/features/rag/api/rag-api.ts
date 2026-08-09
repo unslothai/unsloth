@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
   DocumentUploadResult,
@@ -12,6 +13,7 @@ import type {
   RagDocument,
   UploadedDocument,
 } from "../types/rag";
+import { noteRagAvailability, noteRagResponse } from "./rag-availability";
 
 const RAG_BASE = "/api/rag";
 
@@ -34,20 +36,34 @@ async function ragRequest<T>(
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
     body: init?.body ? JSON.stringify(init.body) : undefined,
   });
-  if (response.status === 204) return undefined as T;
+  if (response.status === 204) {
+    noteRagResponse(204, null);
+    return undefined as T;
+  }
   const json = await response.json().catch(() => null);
+  // Every RAG endpoint but the list gates on the extension loading, so its status is
+  // also an availability answer. See api/rag-availability.
+  noteRagResponse(response.status, json);
   if (!response.ok) throw new Error(parseErrorText(response.status, json));
   return json as T;
 }
 
+/** A desktop drop the webview can only name through a Rust-signed grant. */
+export interface NativeUploadRef {
+  nativePathLease: string;
+}
+
+export type UploadSource = File | NativeUploadRef;
+
 async function ragUpload(
   path: string,
-  file: File,
+  source: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {
   const form = new FormData();
-  form.append("file", file);
+  if (source instanceof File) form.append("file", source);
+  else form.append("nativePathLease", source.nativePathLease);
   // Per-upload overrides for the vision passes; omitted -> backend config default.
   if (ocr !== undefined) form.append("ocr", String(ocr));
   if (caption !== undefined) form.append("caption", String(caption));
@@ -57,14 +73,21 @@ async function ragUpload(
     body: form,
   });
   const json = await response.json().catch(() => null);
+  // Uploads bypass ragRequest, so they have to report availability themselves.
+  noteRagResponse(response.status, json);
   if (!response.ok) throw new Error(parseErrorText(response.status, json));
   return json as DocumentUploadResult;
 }
 
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
-  const data = await ragRequest<{ knowledgeBases: KnowledgeBase[] }>(
-    "/knowledge-bases",
-  );
+  const data = await ragRequest<{
+    knowledgeBases: KnowledgeBase[];
+    ragAvailable?: boolean;
+    ragUnavailableReason?: string | null;
+  }>("/knowledge-bases");
+  // The one endpoint that degrades to 200 instead of 503, so an empty list here means
+  // either an empty store or a host where RAG cannot run. The marker tells them apart.
+  noteRagAvailability(data);
   return data.knowledgeBases ?? [];
 }
 
@@ -111,7 +134,7 @@ export async function listKnowledgeBaseDocuments(
 
 export function uploadKnowledgeBaseDocument(
   kbId: string,
-  file: File,
+  file: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {
@@ -134,7 +157,7 @@ export async function listThreadDocuments(
 
 export function uploadThreadDocument(
   threadId: string,
-  file: File,
+  file: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {
@@ -157,7 +180,7 @@ export async function listProjectDocuments(
 
 export function uploadProjectDocument(
   projectId: string,
-  file: File,
+  file: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {
@@ -231,6 +254,8 @@ export async function* streamJobEvents(
   );
   if (!response.ok) {
     const body = await response.json().catch(() => null);
+    // Also gated on the extension, and also not routed through ragRequest.
+    noteRagResponse(response.status, body);
     throw new Error(parseErrorText(response.status, body));
   }
   if (!response.body) throw new Error("Stream response missing body");
@@ -288,10 +313,12 @@ export function getPreviewTarget(
   );
 }
 
-// Signed URL (no bearer) so pdf.js can issue Range requests.
+// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because
+// consumers bypass authFetch, and a relative path under Tauri resolves against
+// the webview origin.
 export async function getDocumentFileUrl(documentId: string): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,
   );
-  return data.url;
+  return apiUrl(data.url);
 }

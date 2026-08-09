@@ -9,7 +9,13 @@ import {
   type GpuIndexKind,
 } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import { create } from "zustand";
+import {
+  GPU_LAYERS_AUTO,
+  recoverDroppedDiffusionSplit,
+  shouldHydrateGpuPlacementControls,
+} from "../lib/gpu-placement";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
@@ -28,6 +34,11 @@ import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
+import {
+  chatModelLifecycleGate,
+  type ModelLifecycleLease,
+} from "../utils/model-lifecycle-gate";
+import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { ResearchWebsitePolicy } from "../types/research";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
@@ -82,9 +93,10 @@ export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
 export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 export const CHAT_GPU_MEMORY_MODE_KEY = "unsloth_chat_gpu_memory_mode";
 
-// Persist only the model-agnostic intents (auto/ngram/off). MTP modes
-// (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
-// choice would silently no-op on models without an MTP head. Unknown -> auto.
+// Persist only the model-agnostic intents (auto/ngram/off). The model-specific
+// drafter modes (mtp/mtp+ngram/dspark) and spec_draft_n_max stay session-only:
+// a persisted choice would silently no-op on a model with no MTP head or no
+// DSpark sidecar. Unknown -> auto.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
@@ -492,6 +504,7 @@ export function normalizeSpeculativeType(
   if (s === "auto" || s === "default") return "auto";
   if (s === "off") return "off";
   if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "dspark" || s === "draft-dspark") return "dspark";
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
   }
@@ -568,9 +581,8 @@ export function persistGpuMemoryModeOnLoad(
   if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);
 }
 
-// Manual-mode gpu_layers sentinel: -1 = Auto (hand layer + context sizing to
-// llama.cpp's --fit). The Manual default; "all on GPU" is the slider's max.
-export const GPU_LAYERS_AUTO = -1;
+// Re-exported from its dependency-free home so existing imports keep working.
+export { GPU_LAYERS_AUTO } from "../lib/gpu-placement";
 
 // Round real-valued shares to integers summing exactly to `total`, giving the
 // leftover units to the largest fractional parts (largest-remainder method).
@@ -671,12 +683,14 @@ export function loadedGpuMemoryFields(resp: {
   is_diffusion?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
+  cpu_fallback_reason?: "vulkan_startup_crash" | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
   requested_gpu_ids?: number[] | null;
+  diffusion_requested_ngl?: number | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -694,6 +708,7 @@ export function loadedGpuMemoryFields(resp: {
       loadedGpuIds: null,
       loadedGpuIndexKind: null,
       loadedGpuMemoryMode: null,
+      loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
       nCpuMoe: 0,
@@ -705,6 +720,9 @@ export function loadedGpuMemoryFields(resp: {
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
+  const hydratePlacementControls = shouldHydrateGpuPlacementControls(
+    resp.cpu_fallback_reason,
+  );
   // Keep the user's placement pool editable across status/load hydration.
   // gpu_ids remains the effective fitted subset for diagnostics.
   const reportedGpuIds = requestedGpuIdsFromResponse(resp);
@@ -721,6 +739,13 @@ export function loadedGpuMemoryFields(resp: {
   // once the shared system cache warms.
   const gpuIds =
     reportedGpuIds != null && gpuIndexKind !== null ? reportedGpuIds : null;
+  // A shim without --ngl reports Auto while the backend still holds the ask, so recover
+  // it: in-memory state survives a reload but not a refresh.
+  const droppedSplit = recoverDroppedDiffusionSplit(
+    resp.is_diffusion,
+    mode,
+    resp.diffusion_requested_ngl,
+  );
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
   // knobs with values it never applied. In manual, the server reports gpu_layers
@@ -731,9 +756,13 @@ export function loadedGpuMemoryFields(resp: {
           loadedGpuLayers: resp.gpu_layers ?? null,
           loadedNCpuMoe: resp.n_cpu_moe ?? null,
           loadedSplitRatio: resp.tensor_split ?? null,
-          gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
-          nCpuMoe: resp.n_cpu_moe ?? 0,
-          splitRatio: resp.tensor_split ?? null,
+          ...(hydratePlacementControls
+            ? {
+                gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
+                nCpuMoe: resp.n_cpu_moe ?? 0,
+                splitRatio: resp.tensor_split ?? null,
+              }
+            : {}),
         }
       : {
           loadedGpuLayers: null,
@@ -743,18 +772,32 @@ export function loadedGpuMemoryFields(resp: {
           // loaded baseline) -- else a later switch back to Manual would snapshot
           // and send a previous model's stale gpuLayers/nCpuMoe/split that this
           // load never applied. Mirrors the non-GGUF branch above.
-          gpuLayers: GPU_LAYERS_AUTO,
+          // Diffusion excepted: an "auto" diffusion response may be an older shim
+          // DROPPING a manual split. Restore the ask when the response carries it (a
+          // refresh has none left in memory), else keep what is standing. Resetting the
+          // slider would turn the ask into manual/-1, unapplyable even after the
+          // unsloth_zoo upgrade that adds --ngl.
+          ...(resp.is_diffusion
+            ? droppedSplit != null
+              ? { gpuLayers: droppedSplit }
+              : {}
+            : { gpuLayers: GPU_LAYERS_AUTO }),
           nCpuMoe: 0,
           splitRatio: null,
         };
   return {
-    // A diffusion GGUF runs mode-agnostic (pins all layers on one GPU, reports
-    // "auto"), so adopt everything a chat GGUF does EXCEPT the live standing
-    // preference -- the next chat load must still honor the user's manual choice.
-    // The loaded baseline is still "auto", but the UI hides mode controls for a
-    // loaded diffusion model so it can't read as dirty against the preference.
-    ...(resp.is_diffusion ? {} : { gpuMemoryMode: mode }),
+    // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert standing
+    // manual preference must survive it. But "manual" means a split was actually applied
+    // (#7574): adopt it, or a refresh hydrates back to "auto" while the runner serves one.
+    ...(hydratePlacementControls
+      ? resp.is_diffusion && mode !== "manual"
+        ? droppedSplit != null
+          ? { gpuMemoryMode: "manual" as const }
+          : {}
+        : { gpuMemoryMode: mode }
+      : {}),
     loadedGpuMemoryMode: mode,
+    loadedCpuFallback: resp.cpu_fallback_reason === "vulkan_startup_crash",
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
@@ -867,6 +910,14 @@ type ChatRuntimeStore = {
   // lets the attach gates flag a failed load vs "no model picked".
   lastModelLoadError: string | null;
   activeGgufVariant: string | null;
+  /**
+   * What /api/inference/status says is resident, as opposed to what the picker
+   * has selected. undefined until the first status read, so the header does not
+   * flash "not loaded" before anything is known. Loading an image or video
+   * model evicts the chat model (one GPU owner at a time), which is otherwise
+   * invisible here: the selection survives it.
+   */
+  residentCheckpoint: string | null | undefined;
   /** Whether the backend loaded the active model from a filesystem path. */
   activeModelIsLocal: boolean;
   ggufContextLength: number | null;
@@ -1005,14 +1056,27 @@ type ChatRuntimeStore = {
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
+  mlxKvBits: number | null;
+  /** Width the backend was last asked for; the verdict belongs beside it. */
+  loadedMlxKvBitsRequested: number | null;
+  mlxKvQuantReason: string | null;
+  chatTemplateOverrideReason: string | null;
+  mlxKvQuantNote: string | null;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
   /**
-   * Why MTP was disabled on the loaded model despite being requested, or null.
+   * Why speculative decoding was disabled despite being requested, or null.
    * Mirrors InferenceStatusResponse.spec_fallback_reason.
    */
   specFallbackReason: string | null;
+  /**
+   * Which drafter the loaded model's speculative resolution was about, "mtp" or
+   * "dspark". Paired with specFallbackReason: the reason alone cannot name the
+   * file to fix, since Auto resolves the kind server-side and the requested mode
+   * still reads "auto".
+   */
+  specDrafterKind: string | null;
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
@@ -1022,6 +1086,14 @@ type ChatRuntimeStore = {
   /** Slots the last successful load sent (null = default); the rollback
    *  re-sends it so a failed switch can't lose the override. */
   loadedNParallel: number | null;
+  /** user --batch-size override for gguf loads (null = llama.cpp default 2048) */
+  nBatch: number | null;
+  /** batch size the last successful load sent (null = default) */
+  loadedNBatch: number | null;
+  /** user --ubatch-size override for gguf loads (null = llama.cpp default 512) */
+  nUbatch: number | null;
+  /** micro-batch size the last successful load sent (null = default) */
+  loadedNUbatch: number | null;
   /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
@@ -1032,6 +1104,8 @@ type ChatRuntimeStore = {
   gpuMemoryMode: "auto" | "manual";
   /** Backend-reported gpu memory mode; null until first hydrated. */
   loadedGpuMemoryMode: "auto" | "manual" | null;
+  /** The active model must use the staged CPU-only runtime when it is reloaded. */
+  loadedCpuFallback: boolean;
   /** Manual mode: layers to offload to GPU. -1 = Auto (--fit); >= model layer
    *  count = all. */
   gpuLayers: number;
@@ -1082,6 +1156,8 @@ type ChatRuntimeStore = {
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
+  activeThreadEpoch: number;
+  queuedSettingsEpoch: number;
   activeProjectId: string | null;
   /**
    * Temporary / incognito chat toggle. When on, the active conversation
@@ -1105,17 +1181,24 @@ type ChatRuntimeStore = {
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
   loadingModelPick: LoadingModelPick | null;
+  // What the resident model loaded from, when that is not its id. A reload rebuilds its target
+  // from the checkpoint, so without this it goes back down the ref the pin avoided.
+  activeLoadId: string | null;
   activeNativePathToken: string | null;
   // Wall-clock expiry (ms) of the active native path token. The desktop host
   // prunes file leases after a TTL, so a reload checks this to prompt
   // re-selection instead of reusing a dead token.
   activeNativePathExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
-  setModelLoading: (loading: boolean) => void;
+  beginModelLoading: () => ModelLifecycleLease | null;
+  endModelLoading: (lease: ModelLifecycleLease) => void;
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
-  setParams: (params: InferenceParams) => void;
+  setParams: (
+    params: InferenceParams,
+    options?: { persist?: boolean; trackQueuedSettings?: boolean },
+  ) => void;
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
   setActivePresetSource: (source: ChatPresetSource) => void;
@@ -1147,14 +1230,18 @@ type ChatRuntimeStore = {
      */
   runKeyForOwner: (fallbackKey: string, owner: () => void) => string;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
-  clearThreadCancel: (threadId: string) => void;
+  clearThreadCancel: (threadId: string, cancel?: () => void) => void;
   registerThreadServerCancel: (threadId: string, cancel: () => void) => void;
   clearThreadServerCancel: (threadId: string, cancel?: () => void) => void;
   setAutoTitle: (enabled: boolean) => void;
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
   setLastModelLoadError: (error: string | null) => void;
-  setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
+  setCheckpoint: (
+    modelId: string,
+    ggufVariant?: string | null,
+    options?: { trackQueuedSettings?: boolean },
+  ) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
   setIncognito: (incognito: boolean) => void;
@@ -1478,6 +1565,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
+  residentCheckpoint: undefined,
   activeModelIsLocal: false,
   ggufContextLength: null,
   ggufMaxContextLength: null,
@@ -1547,18 +1635,29 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
+  mlxKvBits: null,
+  loadedMlxKvBitsRequested: null,
+  mlxKvQuantReason: null,
+  chatTemplateOverrideReason: null,
+  mlxKvQuantNote: null,
   loadedKvCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
+  specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
   nParallel: null,
   loadedNParallel: null,
+  nBatch: null,
+  loadedNBatch: null,
+  nUbatch: null,
+  loadedNUbatch: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
   loadedGpuMemoryMode: null,
+  loadedCpuFallback: false,
   gpuLayers: GPU_LAYERS_AUTO,
   loadedGpuLayers: null,
   nCpuMoe: 0,
@@ -1572,7 +1671,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedGpuIds: null,
   loadedGpuIndexKind: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
-  showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
+  // Off by default: On Device lists what is on disk, not the whole repo.
+  showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -1582,6 +1682,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
   activeThreadId: null,
+  activeThreadEpoch: 0,
+  queuedSettingsEpoch: 0,
   activeProjectId: null,
   incognito: false,
   settingsPanelOpen: false,
@@ -1593,6 +1695,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsageByThreadId: {},
   modelLoading: false,
   loadingModelPick: null,
+  activeLoadId: null,
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
   hydratePersistedSettings: async () => {
@@ -1632,7 +1735,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })();
     return settingsHydrationPromise;
   },
-  setModelLoading: (loading) => set({ modelLoading: loading }),
+  beginModelLoading: () => {
+    const lease = chatModelLifecycleGate.tryAcquire();
+    if (lease !== null) {
+      set({ modelLoading: true });
+    }
+    return lease;
+  },
+  endModelLoading: (lease) => {
+    if (chatModelLifecycleGate.release(lease)) {
+      set({ modelLoading: false });
+    }
+  },
   setLoadingModelPick: (pick) => set({ loadingModelPick: pick }),
   clearLoadingModelPick: (expected) =>
     set((state) => {
@@ -1649,12 +1763,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
-  setParams: (params) =>
+  setParams: (params, options) =>
     set((state) => {
       // Bump version unconditionally so a late hydration response won't clobber
       // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
       const changedParams = getChangedInferenceParams(params, state.params);
-      if (state.settingsHydrated && hasKeys(changedParams)) {
+      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
+        state.params,
+        params,
+        options?.trackQueuedSettings !== false,
+      );
+      if (
+        options?.persist !== false &&
+        state.settingsHydrated &&
+        hasKeys(changedParams)
+      ) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
       // Mirror setCheckpoint: the local load path can mutate params.checkpoint
@@ -1663,6 +1786,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       return {
         params,
+        ...(queuedSettingsChanged
+          ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
+          : {}),
         ...(checkpointChanged
           ? { contextUsage: null, contextUsageByThreadId: {} }
           : {}),
@@ -1782,9 +1908,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next[threadId] = cancel;
       return { cancelByThreadId: next };
     }),
-  clearThreadCancel: (threadId) =>
+  clearThreadCancel: (threadId, cancel) =>
     set((state) => {
       if (!(threadId in state.cancelByThreadId)) return state;
+      if (cancel && state.cancelByThreadId[threadId] !== cancel) return state;
       const next = { ...state.cancelByThreadId };
       delete next[threadId];
       return { cancelByThreadId: next };
@@ -1820,7 +1947,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
-  setCheckpoint: (modelId, ggufVariant) =>
+  setCheckpoint: (modelId, ggufVariant, options) =>
     set((state) => {
       // Persist external selections so they survive a refresh. Local ids are
       // NOT persisted -- they're re-derived from the backend on mount, and a
@@ -1852,13 +1979,35 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           nextMaxTokens = cap;
         }
       }
+      const nextGgufVariant = ggufVariant ?? null;
+      const nextDeepResearchEnabled = isExternalModelId(modelId)
+        ? false
+        : state.deepResearchEnabled;
+      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
+        {
+          checkpoint: state.params.checkpoint,
+          maxTokens: state.params.maxTokens,
+          ggufVariant: state.activeGgufVariant,
+          deepResearchEnabled: state.deepResearchEnabled,
+        },
+        {
+          checkpoint: modelId,
+          maxTokens: nextMaxTokens,
+          ggufVariant: nextGgufVariant,
+          deepResearchEnabled: nextDeepResearchEnabled,
+        },
+        options?.trackQueuedSettings !== false,
+      );
       return {
         params: {
           ...state.params,
           checkpoint: modelId,
           maxTokens: nextMaxTokens,
         },
-        activeGgufVariant: ggufVariant ?? null,
+        activeGgufVariant: nextGgufVariant,
+        ...(queuedSettingsChanged
+          ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
+          : {}),
         // Provenance and the spec-fallback reason both describe the model
         // being replaced, so they go together on a real change. Dropping only
         // one leaves the settings sheet pairing a stale reason with the wrong
@@ -1869,6 +2018,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               contextUsageByThreadId: {},
               activeModelIsLocal: false,
               specFallbackReason: null,
+              specDrafterKind: null,
             }
           : {}),
         // Switching to an external provider disables Deep Research, which only
@@ -1882,6 +2032,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setActiveThreadId: (activeThreadId) =>
     set((state) => ({
       activeThreadId,
+      activeThreadEpoch: state.activeThreadEpoch + 1,
       contextUsage: activeThreadId
         ? (state.contextUsageByThreadId[activeThreadId] ?? null)
         : null,
@@ -1904,12 +2055,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveLastExternalCheckpoint(null);
     saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     return set((state) => ({
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       params: {
         ...state.params,
         checkpoint: "",
       },
       activeGgufVariant: null,
+      // Nothing is picked, so there is nothing for residency to describe. Back
+      // to unknown rather than null: null would be read as "was evicted".
+      residentCheckpoint: undefined,
       activeModelIsLocal: false,
+      activeLoadId: null,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
       ggufContextLength: null,
@@ -1944,19 +2100,30 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolFullOutput: {},
       activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
+      mlxKvBits: null,
+      loadedMlxKvBitsRequested: null,
+      mlxKvQuantReason: null,
+      chatTemplateOverrideReason: null,
+      mlxKvQuantNote: null,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
+      specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
       nParallel: null,
       loadedNParallel: null,
+      nBatch: null,
+      loadedNBatch: null,
+      nUbatch: null,
+      loadedNUbatch: null,
       tensorParallel: false,
       loadedTensorParallel: null,
       // Standing preference: survives unload, unlike the per-model knobs above.
       gpuMemoryMode: readPersistedGpuMemoryMode(),
       loadedGpuMemoryMode: null,
+      loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
       nCpuMoe: 0,
@@ -1980,15 +2147,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }));
   },
   setReasoningEnabled: (reasoningEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
       }
-      return { reasoningEnabled };
+      return {
+        reasoningEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setLastOpenRouterChosenModel: (lastOpenRouterChosenModel) =>
     set({ lastOpenRouterChosenModel }),
-  setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
+  setReasoningStyle: (reasoningStyle) =>
+    set((state) => ({
+      reasoningStyle,
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    })),
   setReasoningEffort: (reasoningEffort) =>
     set((state) => {
       setScalarSettingVersion(
@@ -1996,7 +2170,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         reasoningEffort,
         state.reasoningEffort,
       );
-      return { reasoningEffort };
+      return {
+        reasoningEffort,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setPreserveThinking: (preserveThinking) =>
     set((state) => {
@@ -2005,34 +2182,48 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         preserveThinking,
         state.preserveThinking,
       );
-      return { preserveThinking };
+      return {
+        preserveThinking,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setToolsEnabled: (toolsEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
       }
       if (toolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return toolsEnabled ? { toolsEnabled, deepResearchEnabled: false } : { toolsEnabled };
+      return {
+        ...(toolsEnabled
+          ? { toolsEnabled, deepResearchEnabled: false }
+          : { toolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setCodeToolsEnabled: (codeToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
       if (codeToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return codeToolsEnabled
-        ? { codeToolsEnabled, deepResearchEnabled: false }
-        : { codeToolsEnabled };
+      return {
+        ...(codeToolsEnabled
+          ? { codeToolsEnabled, deepResearchEnabled: false }
+          : { codeToolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setImageToolsEnabled: (imageToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
       if (imageToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return imageToolsEnabled
-        ? { imageToolsEnabled, deepResearchEnabled: false }
-        : { imageToolsEnabled };
+      return {
+        ...(imageToolsEnabled
+          ? { imageToolsEnabled, deepResearchEnabled: false }
+          : { imageToolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setDeepResearchEnabled: (deepResearchEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
       const permissionMode = loadPermissionMode();
       if (deepResearchEnabled) {
@@ -2056,23 +2247,33 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             permissionMode,
             confirmToolCalls:
               permissionMode === "ask" || permissionMode === "auto",
+            queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
           }
-        : { deepResearchEnabled };
+        : {
+            deepResearchEnabled,
+            queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+          };
     }),
   setResearchWebsitePolicy: (researchWebsitePolicy) =>
-    set(() => {
+    set((state) => {
       saveResearchWebsitePolicy(researchWebsitePolicy);
-      return { researchWebsitePolicy };
+      return {
+        researchWebsitePolicy,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setArtifactsEnabled: (artifactsEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
       }
       if (artifactsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return artifactsEnabled
-        ? { artifactsEnabled, deepResearchEnabled: false }
-        : { artifactsEnabled };
+      return {
+        ...(artifactsEnabled
+          ? { artifactsEnabled, deepResearchEnabled: false }
+          : { artifactsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setShowCanvasMenuItem: (showCanvasMenuItem) =>
     set(() => {
@@ -2103,12 +2304,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { allowArtifactNetworkAccess };
     }),
   setMcpEnabledForChat: (mcpEnabledForChat) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       if (mcpEnabledForChat) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return mcpEnabledForChat
-        ? { mcpEnabledForChat, deepResearchEnabled: false }
-        : { mcpEnabledForChat };
+      return {
+        ...(mcpEnabledForChat
+          ? { mcpEnabledForChat, deepResearchEnabled: false }
+          : { mcpEnabledForChat }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setConfirmToolCalls: (confirmToolCalls) =>
     set((state) => {
@@ -2116,13 +2320,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // The legacy toggle is a view over the permission level: on -> "ask",
       // off -> "off" (no prompts). While "full" is active the level is left
       // alone (the toggle is disabled in the UI anyway).
-      if (state.permissionMode === "full") return { confirmToolCalls };
+      if (state.permissionMode === "full") {
+        return {
+          confirmToolCalls,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+        };
+      }
       const permissionMode: PermissionMode = confirmToolCalls ? "ask" : "off";
       savePermissionMode(permissionMode);
-      return { confirmToolCalls, permissionMode };
+      return {
+        confirmToolCalls,
+        permissionMode,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setPermissionMode: (permissionMode) =>
-    set(() => {
+    set((state) => {
       // "full" is session-only (never persisted, see init); ask/auto/off
       // persist and keep the legacy confirm toggle in sync (the gate is
       // requested for both ask and auto).
@@ -2136,18 +2349,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           bypassPermissions: true,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
       const confirmToolCalls =
         permissionMode === "ask" || permissionMode === "auto";
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
-      return { permissionMode, bypassPermissions: false, confirmToolCalls };
+      return {
+        permissionMode,
+        bypassPermissions: false,
+        confirmToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setBypassPermissions: (bypassPermissions) =>
     // Deliberately not persisted (see init): a reload must not silently keep
     // the sandbox/confirmation bypass active without re-accepting the warning.
     // Turning bypass off returns to the last persisted ask/auto level.
-    set(() => {
+    set((state) => {
       if (bypassPermissions) {
         // Full access never prompts; mirror confirm_tool_calls=false in the
         // store so metadata does not report confirmations as enabled.
@@ -2157,6 +2376,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           permissionMode: "full" as PermissionMode,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
       const permissionMode = loadPermissionMode();
@@ -2164,6 +2384,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         bypassPermissions,
         permissionMode,
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
   setBypassConfirmOpen: (bypassConfirmOpen) =>
@@ -2198,38 +2419,60 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { toolConfirmations: next };
     }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
-      return { webFetchToolsEnabled };
+      return {
+        webFetchToolsEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
-  setRagEnabled: (ragEnabled) => set(() => ({ ragEnabled })),
+  setRagEnabled: (ragEnabled) =>
+    set((state) => ({
+      ragEnabled,
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    })),
   setRagSource: (ragSource) =>
-    set(() => {
+    set((state) => {
       saveRagSource(ragSource);
-      return { ragSource };
+      return {
+        ragSource,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagMode: (ragMode) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_MODE_KEY, ragMode);
-      return { ragMode };
+      return {
+        ragMode,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagTopK: (ragTopK) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_TOP_K_KEY, String(ragTopK));
-      return { ragTopK };
+      return {
+        ragTopK,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagAutoInject: (ragAutoInject) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_AUTOINJECT_KEY, ragAutoInject);
-      return { ragAutoInject };
+      return {
+        ragAutoInject,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagAutoInjectMinScore: (ragAutoInjectMinScore) =>
-    set(() => {
+    set((state) => {
       saveString(
         CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
         String(ragAutoInjectMinScore),
       );
-      return { ragAutoInjectMinScore };
+      return {
+        ragAutoInjectMinScore,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagOcrScanned: (ragOcrScanned) =>
     set(() => {
@@ -2326,7 +2569,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         autoHealToolCalls,
         state.autoHealToolCalls,
       );
-      return { autoHealToolCalls };
+      return {
+        autoHealToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setNudgeToolCalls: (nudgeToolCalls) =>
     set((state) => {
@@ -2335,7 +2581,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         nudgeToolCalls,
         state.nudgeToolCalls,
       );
-      return { nudgeToolCalls };
+      return {
+        nudgeToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
@@ -2344,7 +2593,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         maxToolCallsPerMessage,
         state.maxToolCallsPerMessage,
       );
-      return { maxToolCallsPerMessage };
+      return {
+        maxToolCallsPerMessage,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setToolCallTimeout: (toolCallTimeout) =>
     set((state) => {
@@ -2353,7 +2605,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         toolCallTimeout,
         state.toolCallTimeout,
       );
-      return { toolCallTimeout };
+      return {
+        toolCallTimeout,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   // Standing preference, but persisted only on a successful load (see
   // use-chat-model-runtime), not on selection -- so an unapplied pick the user
@@ -2433,7 +2688,8 @@ export function resolveSpeculativeSettingsForLoad({
     speculativeType,
     specDraftNMax:
       !usePersistedPreference &&
-      (speculativeType === "mtp" || speculativeType === "mtp+ngram")
+      speculativeType != null &&
+      DRAFT_N_MAX_SPEC_TYPES.has(speculativeType)
         ? state.specDraftNMax
         : null,
   };

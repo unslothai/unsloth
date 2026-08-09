@@ -7,22 +7,26 @@ import {
   modelStorageKey,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
+  publicModelId,
 } from "./model-identity";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 
 export interface PerModelConfig {
   customContextLength: number | null;
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
+  /** MLX KV cache quantization width. Optional so older blobs still parse. */
+  mlxKvBits?: number | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
   nParallel: number | null;
+  nBatch: number | null;
+  nUbatch: number | null;
   tensorParallel: boolean;
   chatTemplateOverride: string | null;
-  // GPU Memory controls (per-model, GGUF-only), optional so older blobs still
-  // parse. null or absent selectedGpuIds means automatic placement; an array is
-  // an explicit candidate pool. The --tensor-split ratio is deliberately not
-  // remembered because it is bound to the exact GPU set and order.
+  // GPU Memory controls (per-model, GGUF-only), optional so older blobs still parse. null/absent
+  // selectedGpuIds means automatic. --tensor-split is not remembered: it is bound to the GPU set.
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
@@ -34,26 +38,71 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
+  mlxKvBits: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
+  nBatch: null,
+  nUbatch: null,
   tensorParallel: false,
   chatTemplateOverride: null,
 };
 
-// Mirrors llama_server_args.py PARALLEL_MIN/MAX (LoadRequest.n_parallel
-// bounds). null = follow the server-wide default.
+// Mirrors llama_server_args.py PARALLEL_MIN/MAX; null = follow the server-wide default.
 export const N_PARALLEL_MIN = 1;
 export const N_PARALLEL_MAX = 64;
+
+// mirrors llama_server_args.py BATCH_MIN/MAX; null = follow the llama.cpp defaults (2048 / 512)
+export const N_BATCH_MIN = 1;
+export const N_BATCH_MAX = 65536;
+// llama.cpp's own --batch-size default (_DEFAULT_LLAMA_N_BATCH), which a blank control
+// runs at: it still caps the micro-batch, so advisories have to reckon with it.
+export const N_BATCH_LLAMA_DEFAULT = 2048;
 
 export const MAX_SEQ_LENGTH_MIN = 128;
 export const MAX_SEQ_LENGTH_MAX = 1048576;
 export const MAX_SEQ_LENGTH_STEP = 128;
-// App-default max sequence length when a non-GGUF model has no override. Both
-// paths fall back to this rather than an active model's runtime value, so an
-// unconfigured pane never inherits another model's larger context and OOMs.
+// App-default max sequence length when a non-GGUF model has no override. Both paths fall back
+// here rather than an active model's runtime value, so an unconfigured pane never OOMs.
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
+
+// Reasons a Mac still cannot serve with MLX.
+const NO_MLX_REASONS = new Set([
+  "mlx_unavailable",
+  "intel_mac",
+  "detection_failed",
+]);
+
+/** Whether MLX will serve this model, and so whether MLX-only settings apply.
+ *
+ *  Every non-GGUF model loads through MLX on a working Mac stack, including plain
+ *  safetensors repos, so `!isGguf` alone would show these controls to CUDA users.
+ */
+export function isServedByMlx(
+  isGguf: boolean,
+  deviceType: string | null | undefined,
+  chatOnlyReason?: string | null,
+): boolean {
+  return (
+    !isGguf &&
+    deviceType === "mac" &&
+    !NO_MLX_REASONS.has(chatOnlyReason ?? "")
+  );
+}
+
+export function presetLoadSettingNames(
+  isGguf: boolean,
+  deviceType: string | null | undefined,
+  chatOnlyReason?: string | null,
+): string {
+  if (isGguf) {
+    return "context length, KV cache dtype, speculative decoding, GPU layers";
+  }
+  return isServedByMlx(isGguf, deviceType, chatOnlyReason)
+    ? "max seq length, KV cache dtype"
+    : "max seq length";
+}
 
 // Matches studio/backend/core/inference/llama_cpp.py _valid_cache_types (f16 is the UI default).
 export const KV_CACHE_DTYPES = [
@@ -66,30 +115,29 @@ export const KV_CACHE_DTYPES = [
   "iq4_nl",
   "f32",
 ] as const;
+
+// Every width mx.quantize supports. By bit width, not a dtype name, hence separate
+// from KV_CACHE_DTYPES.
+export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
-export const SPECULATIVE_TYPES = [
-  "auto",
-  "mtp",
-  "ngram",
-  "mtp+ngram",
-  "off",
-] as const;
-export const MTP_SPECULATIVE_TYPES: ReadonlySet<string> = new Set([
-  "mtp",
-  "mtp+ngram",
-]);
+export {
+  DRAFT_N_MAX_SPEC_TYPES,
+  SPECULATIVE_TYPES,
+} from "@/lib/speculative-modes";
 
 const STORAGE_KEY = "unsloth_model_configs";
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-const STORAGE_SCHEMA_VERSION = 1;
+// v2 added nBatch / nUbatch; a v1 client's normalizer would rewrite them away
+const STORAGE_SCHEMA_VERSION = 2;
+const PRE_BATCH_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
 
 type StoredPerModelConfig = PerModelConfig & {
-  version: typeof STORAGE_SCHEMA_VERSION;
+  version: number;
 };
 type StoredMap = Record<string, PerModelConfig | StoredPerModelConfig>;
 type RawConfig = Partial<PerModelConfig> & { version?: unknown };
@@ -99,9 +147,12 @@ const STORED_CONFIG_FIELDS = new Set([
   "customContextLength",
   "maxSeqLength",
   "kvCacheDtype",
+  "mlxKvBits",
   "speculativeType",
   "specDraftNMax",
   "nParallel",
+  "nBatch",
+  "nUbatch",
   "tensorParallel",
   "chatTemplateOverride",
   "gpuMemoryMode",
@@ -125,8 +176,7 @@ function normalizeGpuFields(partial: RawConfig): {
     selectedGpuIds?: number[] | null;
     selectedGpuIndexKind?: GpuIndexKind | null;
   } = {};
-  // Only "manual" is a real override; persisting "auto" would pin the model and
-  // stop it following later changes to the global GPU Memory preference.
+  // Only "manual" is a real override; persisting "auto" would stop the model following the global.
   if (partial.gpuMemoryMode === "manual") {
     out.gpuMemoryMode = "manual";
   }
@@ -168,8 +218,7 @@ function canonicalizeSpeculativeType(value: string): string | null {
   if (!s) {
     return null;
   }
-  // "auto"/"default" is the follow-global sentinel; store as null so it is never
-  // persisted as an override and global speculative-decoding changes keep applying.
+  // "auto"/"default" is the follow-global sentinel; store as null so it is never an override.
   if (s === "auto" || s === "default") {
     return null;
   }
@@ -178,6 +227,9 @@ function canonicalizeSpeculativeType(value: string): string | null {
   }
   if (s === "mtp" || s === "draft-mtp") {
     return "mtp";
+  }
+  if (s === "dspark" || s === "draft-dspark") {
+    return "dspark";
   }
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
@@ -206,6 +258,93 @@ export function floorMaxSeqLength(value: unknown): number | null {
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
+}
+
+// Whether Run Settings shows its advanced section is a standing preference, not per-model:
+// opening it once keeps it open for every model and quant. Closed until asked for.
+export const ADVANCED_SETTINGS_OPEN_KEY = "unsloth_model_advanced_settings";
+
+function loadAdvancedSettingsOpen(): boolean | null {
+  if (!canUseStorage()) {
+    return null;
+  }
+  try {
+    const raw = localStorage.getItem(ADVANCED_SETTINGS_OPEN_KEY);
+    return raw === "true" ? true : raw === "false" ? false : null;
+  } catch {
+    return null;
+  }
+}
+
+// Set only when a write is refused, so the switch keeps working in a browser with storage
+// disabled or full. Cleared by the next write that sticks. `stored` is what storage held at
+// the time, the one signal that tells a later write by someone else apart.
+let unpersisted: { open: boolean; stored: boolean | null } | null = null;
+const advancedOpenListeners = new Set<() => void>();
+
+/** null until the switch is used, so an untouched panel is free to open the
+*  section for a model that carries non-default advanced values.
+*  Read straight from storage rather than cached: a write from another tab while every panel
+*  was unmounted has no listener to catch it, and its storage event is not replayed on mount. */
+export function readAdvancedSettingsOpen(): boolean | null {
+  const stored = loadAdvancedSettingsOpen();
+  if (!unpersisted) {
+    return stored;
+  }
+  // Storage moved since the refused write, so a newer choice outranks the fallback. Checked on
+  // read, not on the storage event, so it still holds for an event that landed while unmounted.
+  if (stored !== unpersisted.stored) {
+    unpersisted = null;
+    return stored;
+  }
+  return unpersisted.open;
+}
+
+/** True when the choice reached storage. */
+function writeAdvancedSettingsOpen(open: boolean): boolean {
+  if (!canUseStorage()) {
+    return false;
+  }
+  try {
+    localStorage.setItem(ADVANCED_SETTINGS_OPEN_KEY, open ? "true" : "false");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function saveAdvancedSettingsOpen(open: boolean): void {
+  unpersisted = writeAdvancedSettingsOpen(open)
+    ? null
+    : { open, stored: loadAdvancedSettingsOpen() };
+  // Run Settings is mounted on several surfaces at once, and the sidebar copy stays mounted
+  // while collapsed, so tell them all rather than let them keep a snapshot taken at mount.
+  for (const listener of [...advancedOpenListeners]) {
+    listener();
+  }
+}
+
+/** Follow the preference while mounted, including a change from another tab. */
+export function subscribeAdvancedSettingsOpen(
+  onChange: () => void,
+): () => void {
+  advancedOpenListeners.add(onChange);
+  if (!canUseStorage()) {
+    return () => {
+      advancedOpenListeners.delete(onChange);
+    };
+  }
+  const onStorage = (event: StorageEvent) => {
+    // A null key is a clear(), which drops this preference too.
+    if (event.key === null || event.key === ADVANCED_SETTINGS_OPEN_KEY) {
+      onChange();
+    }
+  };
+  window.addEventListener("storage", onStorage);
+  return () => {
+    advancedOpenListeners.delete(onChange);
+    window.removeEventListener("storage", onStorage);
+  };
 }
 
 function serializedByteLength(value: string): number {
@@ -237,6 +376,7 @@ function serializedMapEntrySize(key: string, value: StoredMap[string]): number {
 function deleteOldestEvictableEntry(
   map: StoredMap,
   protectedKeys?: ReadonlySet<string>,
+  evicted?: string[],
 ): { key: string; value: StoredMap[string] } | null {
   for (const key of Object.keys(map)) {
     // Never evict a future-schema entry an older client cannot interpret.
@@ -248,6 +388,7 @@ function deleteOldestEvictableEntry(
     }
     const value = map[key];
     delete map[key];
+    evicted?.push(key);
     return { key, value };
   }
   return null;
@@ -256,17 +397,18 @@ function deleteOldestEvictableEntry(
 function enforceStorageBudget(
   map: StoredMap,
   protectedKeys?: ReadonlySet<string>,
+  evicted?: string[],
 ): boolean {
   let entryCount = Object.keys(map).length;
   while (entryCount > MAX_ENTRIES) {
-    if (!deleteOldestEvictableEntry(map, protectedKeys)) {
+    if (!deleteOldestEvictableEntry(map, protectedKeys, evicted)) {
       return false;
     }
     entryCount -= 1;
   }
   let bytes = serializedMapSize(map);
   while (bytes > MAX_PER_MODEL_CONFIG_STORAGE_BYTES) {
-    const removed = deleteOldestEvictableEntry(map, protectedKeys);
+    const removed = deleteOldestEvictableEntry(map, protectedKeys, evicted);
     if (!removed) {
       return false;
     }
@@ -377,8 +519,7 @@ function migrateLegacyLoadSettingsOnce(): void {
       return;
     }
     const map = readMapRaw();
-    // Snapshot existing entries so eviction can protect them: importing old load
-    // settings must never discard a newer per-model config the user already has.
+    // Snapshot existing entries so eviction protects them: importing old load settings must never discard a newer config.
     const existingKeys = new Set(Object.keys(map));
     const migratedKeys = mergeLegacyEntries(
       map,
@@ -388,8 +529,7 @@ function migrateLegacyLoadSettingsOnce(): void {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
       return;
     }
-    // Protect pre-existing entries so only just-migrated legacy entries are
-    // dropped when over budget.
+    // Protect pre-existing entries so only just-migrated legacy entries are dropped over budget.
     if (!enforceStorageBudget(map, existingKeys)) {
       return;
     }
@@ -438,7 +578,10 @@ function writeMap(map: StoredMap): boolean {
   }
 }
 
-function warnDroppedFields(raw: Record<string, unknown>, version: number): void {
+function warnDroppedFields(
+  raw: Record<string, unknown>,
+  version: number,
+): void {
   if (!import.meta.env?.DEV) {
     return;
   }
@@ -458,10 +601,11 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     typeof partial.speculativeType === "string"
       ? canonicalizeSpeculativeType(partial.speculativeType)
       : null;
-  const speculativeType = rawSpecType ?? DEFAULT_PER_MODEL_CONFIG.speculativeType;
+  const speculativeType =
+    rawSpecType ?? DEFAULT_PER_MODEL_CONFIG.speculativeType;
   const specDraftNMax =
     speculativeType != null &&
-    MTP_SPECULATIVE_TYPES.has(speculativeType) &&
+    DRAFT_N_MAX_SPEC_TYPES.has(speculativeType) &&
     typeof partial.specDraftNMax === "number" &&
     Number.isFinite(partial.specDraftNMax)
       ? Math.max(1, Math.min(16, Math.round(partial.specDraftNMax)))
@@ -474,6 +618,11 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
+    mlxKvBits:
+      typeof partial.mlxKvBits === "number" &&
+      MLX_KV_BITS.includes(partial.mlxKvBits)
+        ? partial.mlxKvBits
+        : null,
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -482,8 +631,20 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     speculativeType,
     specDraftNMax,
     nParallel:
-      typeof partial.nParallel === "number" && Number.isFinite(partial.nParallel)
-        ? Math.max(N_PARALLEL_MIN, Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)))
+      typeof partial.nParallel === "number" &&
+      Number.isFinite(partial.nParallel)
+        ? Math.max(
+            N_PARALLEL_MIN,
+            Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)),
+          )
+        : null,
+    nBatch:
+      typeof partial.nBatch === "number" && Number.isFinite(partial.nBatch)
+        ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nBatch)))
+        : null,
+    nUbatch:
+      typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
+        ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
         : null,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
@@ -496,6 +657,13 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         : null,
     ...normalizeGpuFields(partial),
   };
+}
+
+/**
+* A config in the exact shape storage keeps it in: the UI carries sentinels storage does not
+* (Speculative Decoding "auto" canonicalizes to null), which would read as non-default. */
+export function normalizePerModelConfig(raw: unknown): PerModelConfig {
+  return normalize(raw);
 }
 
 function normalize(raw: unknown): PerModelConfig {
@@ -512,9 +680,15 @@ function normalize(raw: unknown): PerModelConfig {
 }
 
 function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
+  const normalized = normalize(config);
+  // records without the v2-only batch fields keep v1 so older clients can still rewrite them
+  const version =
+    normalized.nBatch != null || normalized.nUbatch != null
+      ? STORAGE_SCHEMA_VERSION
+      : PRE_BATCH_SCHEMA_VERSION;
   return {
-    version: STORAGE_SCHEMA_VERSION,
-    ...normalize(config),
+    version,
+    ...normalized,
   };
 }
 
@@ -621,9 +795,12 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
+    (config.mlxKvBits ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvBits &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&
+    config.nBatch == null &&
+    config.nUbatch == null &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
     (config.chatTemplateOverride ?? null) === null &&
@@ -631,8 +808,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
   );
 }
 
-// GPU knobs are "default" when mode is Auto with no explicit choice: mode
-// auto/absent, gpuLayers < 0/absent, nCpuMoe 0/absent, selectedGpuIds null/absent.
+// GPU knobs are "default" when mode is Auto with no explicit choice: gpuLayers < 0/absent, nCpuMoe 0/absent, selectedGpuIds null/absent.
 function gpuFieldsAtDefault(config: PerModelConfig): boolean {
   return (
     (config.gpuMemoryMode ?? "auto") === "auto" &&
@@ -646,6 +822,11 @@ export function savePerModelConfig(
   modelId: string,
   ggufVariant: string | null | undefined,
   config: PerModelConfig,
+  /**
+  * Receives models dropped to stay inside the storage budget. Eviction is silent and still
+  * reports success, so without this their server overrides would keep applying with nothing
+  * in the UI able to forget them. */
+  evicted?: { modelId: string; ggufVariant: string | null }[],
 ): boolean {
   if (
     typeof config.chatTemplateOverride === "string" &&
@@ -669,10 +850,52 @@ export function savePerModelConfig(
   const [key] = storageKeysForModelVariant(modelId, ggufVariant);
   deleteConfigEntriesForModelVariant(map, modelId, ggufVariant);
   map[key] = toStoredConfig(normalized);
-  if (!enforceStorageBudget(map, new Set([key]))) {
+  const evictedKeys: string[] = [];
+  if (!enforceStorageBudget(map, new Set([key]), evictedKeys)) {
     return false;
   }
-  return writeMap(map);
+  const written = writeMap(map);
+  if (written && evicted) {
+    for (const evictedKey of evictedKeys) {
+      const id = modelIdFromStorageKey(evictedKey);
+      if (!id) {
+        continue;
+      }
+      const variant = ggufVariantFromStorageKey(evictedKey);
+      evicted.push({ modelId: id, ggufVariant: variant ? variant : null });
+    }
+  }
+  return written;
+}
+
+/** Every saved per-model config, decoded back to the ids it was keyed by. */
+export function listPerModelConfigs(): {
+  modelId: string;
+  ggufVariant: string | null;
+  config: PerModelConfig;
+}[] {
+  const out: {
+    modelId: string;
+    ggufVariant: string | null;
+    config: PerModelConfig;
+  }[] = [];
+  for (const [key, raw] of Object.entries(readMap())) {
+    const modelId = modelIdFromStorageKey(key);
+    if (!modelId) {
+      continue;
+    }
+    // Never report a future-schema record: loadPerModelConfig refuses to apply one anyway.
+    if (storedConfigVersion(raw) > STORAGE_SCHEMA_VERSION) {
+      continue;
+    }
+    const variant = ggufVariantFromStorageKey(key);
+    out.push({
+      modelId,
+      ggufVariant: variant ? variant : null,
+      config: normalize(raw),
+    });
+  }
+  return out;
 }
 
 export function deletePerModelConfig(
@@ -690,6 +913,65 @@ export function deletePerModelConfig(
   return writeMap(map);
 }
 
+/**
+* Move a saved config from an id an older release keyed it by onto the current one.
+*
+* A repo cached outside the active HF cache is now keyed by its repo id (what the picker and
+* auto-switch index use); it used to be keyed by the snapshot path it loads from. Nothing else
+* migrates that, so without this the model reads as never remembered after an upgrade.
+*
+* The key is renamed in one write rather than saved then deleted: holding both copies puts an
+* already-full map over budget, and the save then silently evicts an unrelated model whose
+* server override outlives anything the UI could forget. A rename cannot grow the entry count.
+*/
+export function adoptLegacyConfigKey(
+  modelId: string,
+  legacyModelId: string,
+  ggufVariant?: string | null,
+): boolean {
+  if (!legacyModelId || legacyModelId === modelId) {
+    return false;
+  }
+  const map = readMap();
+  const legacyKey = findConfigKeyForModelVariant(
+    map,
+    legacyModelId,
+    ggufVariant,
+  );
+  if (!legacyKey) {
+    return false;
+  }
+  // Never interpret, move or destroy a record a newer client wrote, on either id.
+  if (
+    storedConfigVersion(map[legacyKey]) > STORAGE_SCHEMA_VERSION ||
+    hasFutureConfigForModelVariant(map, legacyModelId, ggufVariant) ||
+    hasFutureConfigForModelVariant(map, modelId, ggufVariant)
+  ) {
+    return false;
+  }
+  const legacy = normalize(map[legacyKey]);
+  // What is already saved under modelId wins; the stale record still goes.
+  const alreadySaved =
+    findConfigKeyForModelVariant(map, modelId, ggufVariant) !== null;
+  const bytesBefore = serializedMapSize(map);
+  delete map[legacyKey];
+  deleteConfigEntriesForModelVariant(map, legacyModelId, ggufVariant);
+  if (!(alreadySaved || isDefaultConfig(legacy))) {
+    const [key] = storageKeysForModelVariant(modelId, ggufVariant);
+    map[key] = toStoredConfig(legacy);
+  }
+  // Only the key strings change length, and a repo id is normally shorter than the snapshot path.
+  // If it is not and that tips the map past its byte cap, leave storage as it was: eviction is not undoable.
+  const bytesAfter = serializedMapSize(map);
+  if (
+    bytesAfter > bytesBefore &&
+    bytesAfter > MAX_PER_MODEL_CONFIG_STORAGE_BYTES
+  ) {
+    return false;
+  }
+  return writeMap(map);
+}
+
 export function resolveInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
@@ -699,4 +981,28 @@ export function resolveInitialConfig(
     return { config: saved, remembered: true };
   }
   return { config: { ...DEFAULT_PER_MODEL_CONFIG }, remembered: false };
+}
+
+/**
+* Remembered settings for the identifier ``/api/inference/status`` reports as loaded.
+*
+* An API auto-switch hands the loader the concrete snapshot path (the resolver index only holds
+* paths), so ``model_identifier`` names that path while this model's settings are keyed by its
+* repo id. Reading the raw identifier alone reports the resident model as unremembered, blanking
+* a control it is running with, which the next save writes back over the saved record. Only a
+* namespaced collapse is adopted, per ``residentModelIdMatches``: an HF snapshot collapses onto
+* a repo id naming exactly one model, while other paths collapse onto a shareable stem. */
+export function resolveResidentInitialConfig(
+  modelId: string,
+  ggufVariant?: string | null,
+): { config: PerModelConfig; remembered: boolean } {
+  const direct = resolveInitialConfig(modelId, ggufVariant);
+  if (direct.remembered) {
+    return direct;
+  }
+  const alias = publicModelId(modelId);
+  if (alias === modelId || !alias.includes("/")) {
+    return direct;
+  }
+  return resolveInitialConfig(alias, ggufVariant);
 }

@@ -67,7 +67,10 @@ def _run(
     total_by_idx,
     overhead_mib = 0,
     swa_full = False,
+    split_extra_mib = 0,
 ):
+    # Split step passed only when set, so the other cases keep exercising the default.
+    extra = {"split_extra_bytes": int(split_extra_mib * MIB)} if split_extra_mib else {}
     return b._slots_that_fit_on_gpu(
         n_parallel,
         CTX,
@@ -80,6 +83,7 @@ def _run(
         1,
         n_ubatch = 512,
         swa_full = swa_full,
+        **extra,
     )
 
 
@@ -127,6 +131,20 @@ class TestSlotsThatFitOnGpu:
         gi, use_fit, slots = _run(_backend(kv_fixed_mib = 3000), 4, 19500, [(0, 24576)], {0: 24576})
         assert use_fit is False and slots == 3
 
+    def test_split_rate_is_rechecked_on_multi_gpu_candidates(self):
+        # The base footprint carries the context-compute buffer at the single-device
+        # rate, so a candidate that lands on 2 GPUs owes one enlarged copy per card.
+        # Charging it drops the count further (3 -> 1) rather than pinning an OOM.
+        gpus, totals = [(0, 24576), (1, 24576)], {0: 24576, 1: 24576}
+        assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib = 500) == ([0, 1], False, 1)
+        # And when no count clears it, offload (the pre-existing failure mode).
+        assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib = 1000) == (None, True, 4)
+
+    def test_split_step_does_not_touch_a_single_gpu_candidate(self):
+        assert _run(_backend(), 4, 22500, [(0, 24576)], {0: 24576}, split_extra_mib = 500) == (
+            _run(_backend(), 4, 22500, [(0, 24576)], {0: 24576})
+        )
+
     def test_swa_full_is_used_for_every_candidate(self):
         calls = []
         _run(
@@ -139,3 +157,40 @@ class TestSlotsThatFitOnGpu:
         )
         assert calls
         assert all(call["swa_full"] is True for call in calls)
+
+    def test_micro_batch_is_re_derived_per_candidate(self):
+        """llama-server raises --batch-size to max(slots, 2) and llama.cpp caps the
+        micro-batch against it, so a batch below the requested slot count shrinks as the
+        candidates do: n_batch=1 launches the 3-slot candidate at -b 3, not the 64 the
+        4-slot request resolved to. At these dims that is 6.8 MiB of compute buffer
+        against 145.2, so pricing every candidate at the requested count's micro-batch
+        rejects a 3-slot fit that launches comfortably and cuts serving capacity for it."""
+        from core.inference.llama_cpp import _emitted_n_batch, _extra_args_n_ubatch
+
+        def ubatch_for_slots(slots: int):
+            return _extra_args_n_ubatch(
+                None, env = {}, n_ctx = CTX, n_batch = _emitted_n_batch(1, slots), n_ubatch = 64
+            )
+
+        def _fit(**kwargs):
+            calls = []
+            got = _backend(kv_calls = calls)._slots_that_fit_on_gpu(
+                4,
+                CTX,
+                [(0, 24576)],
+                {0: 24576},
+                23750 * MIB,
+                "q8_0",
+                FRAC,
+                0,
+                1,
+                n_ubatch = 64,
+                **kwargs,
+            )
+            return got, [call["n_ubatch"] for call in calls]
+
+        # priced at the batch each candidate LAUNCHES with: the first one fits, so the
+        # search stops there
+        assert _fit(ubatch_for_slots = ubatch_for_slots) == (([0], False, 3), [3])
+        # held at the requested count's micro-batch, the same card loses a slot
+        assert _fit() == (([0], False, 2), [64, 64])

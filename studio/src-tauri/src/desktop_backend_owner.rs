@@ -14,10 +14,15 @@ static TEST_METADATA: std::sync::Mutex<Option<DesktopBackendMetadata>> =
 
 pub(crate) const OWNER_TOKEN_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_TOKEN";
 pub(crate) const OWNER_KIND_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_KIND";
+// The app's own pid, so the backend can watch the exact owner process instead
+// of sampling getppid (racy under a subreaper when the app dies mid-startup).
+pub(crate) const OWNER_PID_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_PID";
 pub(crate) const OWNER_KIND_TAURI: &str = "tauri";
 
 const METADATA_SCHEMA_VERSION: u8 = 1;
 const STUDIO_INSTALL_ID_HEX_LEN: usize = 64;
+const STUDIO_INSTALL_ID_BYTES: usize = STUDIO_INSTALL_ID_HEX_LEN / 2;
+const STUDIO_INSTALL_ID_LOCK_FILE: &str = ".studio_install_id.lock";
 const OWNER_TOKEN_BYTES: usize = 32;
 const DESKTOP_PORT_START: u16 = 8888;
 const DESKTOP_PORT_END: u16 = 8908;
@@ -183,6 +188,201 @@ pub(crate) fn read_expected_studio_root_id() -> Option<String> {
     parse_studio_root_id(&raw)
 }
 
+/// Returns the managed Studio root ID, creating it when absent.
+/// Desktop installs skip the installer step that normally creates it.
+pub(crate) fn ensure_managed_studio_root_id() -> Result<String, String> {
+    #[cfg(test)]
+    if let Ok(guard) = TEST_EXPECTED_STUDIO_ROOT_ID.lock() {
+        if let Some(value) = guard.clone() {
+            return Ok(value);
+        }
+    }
+
+    let path = managed_studio_root_id_path(&home_dir_or_error()?);
+    ensure_studio_root_id_at(&path, true)?.ok_or_else(|| {
+        format!(
+            "could not create the desktop ownership id at {}",
+            path.display()
+        )
+    })
+}
+
+/// Repairs a missing ID only when a managed install already exists.
+pub(crate) fn ensure_installed_studio_root_id() -> Result<Option<String>, String> {
+    let path = managed_studio_root_id_path(&home_dir_or_error()?);
+    ensure_studio_root_id_at(&path, crate::process::find_unsloth_binary().is_some())
+}
+
+fn home_dir_or_error() -> Result<PathBuf, String> {
+    dirs::home_dir().ok_or_else(|| "could not resolve the home directory".to_string())
+}
+
+fn ensure_studio_root_id_at(
+    path: &Path,
+    create_when_missing: bool,
+) -> Result<Option<String>, String> {
+    ensure_studio_root_id_at_with_blank_observer(path, create_when_missing, || {})
+}
+
+fn ensure_studio_root_id_at_with_blank_observer(
+    path: &Path,
+    create_when_missing: bool,
+    after_blank_observed: impl FnOnce(),
+) -> Result<Option<String>, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("desktop ownership id path {} has no parent", path.display()))?;
+
+    // Do not create the share directory before Studio is installed.
+    if !create_when_missing && !path.exists() {
+        return Ok(None);
+    }
+
+    // Reading an existing id needs no lock: it is published atomically, so an
+    // unlocked read only ever sees a complete id. Locking first would make a
+    // read-only or full share/ block startup even when the id is right there.
+    if let Some(existing) = read_studio_root_id_file(path)? {
+        set_private_dir_permissions(parent);
+        return Ok(Some(existing));
+    }
+
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("could not create {}: {}", parent.display(), error))?;
+    set_private_dir_permissions(parent);
+    let _lock = lock_studio_root_id(parent)?;
+
+    // Re-read under the lock; a concurrent caller may have won.
+    if let Some(existing) = read_studio_root_id_file(path)? {
+        return Ok(Some(existing));
+    }
+    if !create_when_missing {
+        return Ok(None);
+    }
+    // Remove interrupted blank writes under the install lock.
+    if matches!(std::fs::read_to_string(path), Ok(raw) if is_blank_studio_root_id(&raw)) {
+        after_blank_observed();
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "could not replace the blank desktop ownership id at {}: {}",
+                    path.display(),
+                    error
+                ))
+            }
+        }
+    }
+    if let Some(created) = create_studio_root_id_file(path)? {
+        return Ok(Some(created));
+    }
+    // Adopt the ID created by a concurrent caller.
+    match read_studio_root_id_file(path)? {
+        Some(winner) => Ok(Some(winner)),
+        None => Err(format!(
+            "could not create the desktop ownership id at {}; delete that file and reopen Unsloth",
+            path.display()
+        )),
+    }
+}
+
+fn lock_studio_root_id(parent: &Path) -> Result<std::fs::File, String> {
+    let lock_path = parent.join(STUDIO_INSTALL_ID_LOCK_FILE);
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&lock_path)
+        .map_err(|error| format!("could not open {}: {}", lock_path.display(), error))?;
+    file.lock()
+        .map_err(|error| format!("could not lock {}: {}", lock_path.display(), error))?;
+    set_private_file_permissions(&lock_path);
+    Ok(file)
+}
+
+// Match installer behavior: blank IDs are interrupted writes.
+fn is_blank_studio_root_id(raw: &str) -> bool {
+    raw.trim().is_empty()
+}
+
+fn read_studio_root_id_file(path: &Path) -> Result<Option<String>, String> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "could not read the desktop ownership id at {}: {}",
+                path.display(),
+                error
+            ))
+        }
+    };
+    if is_blank_studio_root_id(&raw) {
+        return Ok(None);
+    }
+    // Never rewrite malformed IDs because a running backend may still report
+    // the previous value.
+    parse_studio_root_id(&raw).map(Some).ok_or_else(|| {
+        format!(
+            "the desktop ownership id at {} is not 64 lowercase hex characters; delete that file and reopen Unsloth",
+            path.display()
+        )
+    })
+}
+
+/// Returns the created id, or `None` when another process won the race.
+fn create_studio_root_id_file(path: &Path) -> Result<Option<String>, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("desktop ownership id path {} has no parent", path.display()))?;
+    let id = hex_bytes(&rand::random::<[u8; STUDIO_INSTALL_ID_BYTES]>());
+    // Unique temp names isolate concurrent publishers.
+    let tmp = parent.join(format!(".studio_install_id.{}.tmp", &id[..16]));
+    let claimed = claim_private_file(&tmp, path, id.as_bytes());
+    let _ = std::fs::remove_file(&tmp);
+    claimed.map(|claimed| claimed.then_some(id))
+}
+
+/// Atomically publishes a flushed temp file without replacing an existing ID.
+fn claim_private_file(tmp: &Path, path: &Path, body: &[u8]) -> Result<bool, String> {
+    claim_private_file_with_link(tmp, path, body, |prepared, destination| {
+        std::fs::hard_link(prepared, destination)
+    })
+}
+
+fn claim_private_file_with_link(
+    tmp: &Path,
+    path: &Path,
+    body: &[u8],
+    hard_link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<bool, String> {
+    let _ = std::fs::remove_file(tmp);
+    write_private_file(tmp, body)?;
+    match hard_link(tmp, path) {
+        Ok(()) => {
+            set_private_file_permissions(path);
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        // The install lock makes rename a safe no-clobber fallback.
+        Err(_) => publish_private_file_by_rename(tmp, path),
+    }
+}
+
+fn publish_private_file_by_rename(tmp: &Path, path: &Path) -> Result<bool, String> {
+    if path.exists() {
+        return Ok(false);
+    }
+    std::fs::rename(tmp, path)
+        .map_err(|error| format!("could not publish {}: {}", path.display(), error))?;
+    set_private_file_permissions(path);
+    Ok(true)
+}
+
 fn metadata_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| metadata_path_for_home(&home))
 }
@@ -212,11 +412,18 @@ fn hex_bytes(bytes: &[u8]) -> String {
     out
 }
 
-pub(crate) fn new_pending_owner() -> Option<PendingBackendOwner> {
-    Some(PendingBackendOwner {
+pub(crate) fn new_pending_owner() -> Result<PendingBackendOwner, String> {
+    Ok(PendingBackendOwner {
         token: random_owner_token(),
-        studio_root_id: read_expected_studio_root_id()?,
+        studio_root_id: ensure_managed_studio_root_id()?,
     })
+}
+
+/// Applies the identity required for ownership and parent-watchdog tracking.
+pub(crate) fn apply_owner_env(cmd: &mut std::process::Command, pending: &PendingBackendOwner) {
+    cmd.env(OWNER_TOKEN_ENV, pending.token.as_str());
+    cmd.env(OWNER_KIND_ENV, OWNER_KIND_TAURI);
+    cmd.env(OWNER_PID_ENV, std::process::id().to_string());
 }
 
 pub(crate) fn activate_owner(
@@ -224,8 +431,8 @@ pub(crate) fn activate_owner(
     requested_port: u16,
     generation: u64,
     backend_pid: u32,
-) -> Option<BackendOwnerState> {
-    let path = metadata_path()?;
+) -> Result<BackendOwnerState, String> {
+    let path = metadata_path().ok_or_else(|| "could not resolve the home directory".to_string())?;
     let now = now_ms();
     let metadata = DesktopBackendMetadata {
         schema_version: METADATA_SCHEMA_VERSION,
@@ -242,11 +449,14 @@ pub(crate) fn activate_owner(
         updated_at_ms: now,
     };
     let state = BackendOwnerState { path, metadata };
-    if let Err(error) = state.write() {
-        warn!("Desktop backend owner metadata unavailable: {}", error);
-        return None;
-    }
-    Some(state)
+    state.write().map_err(|error| {
+        format!(
+            "could not write the desktop backend ownership metadata at {}: {}",
+            state.path.display(),
+            error
+        )
+    })?;
+    Ok(state)
 }
 
 #[allow(dead_code)]
@@ -332,12 +542,17 @@ fn write_private_file(path: &Path, body: &[u8]) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         file.write_all(body).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
-        return Ok(());
+        Ok(())
     }
 
+    // Flush here too, so a crash right after publishing cannot leave a
+    // zero-length id behind. Permissions come from the user profile ACL.
     #[cfg(not(unix))]
     {
-        std::fs::write(path, body).map_err(|e| e.to_string())
+        let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+        file.write_all(body).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
@@ -548,17 +763,40 @@ fn ready_for_use_status(health: Option<&HealthResponse>) -> OwnedBackendReadines
     }
 }
 
-async fn health_ready_status(port: u16) -> OwnedBackendReadiness {
-    match fetch_health(port).await {
-        Ok(health) => ready_for_use_status(health.as_ref()),
-        Err(reason) => OwnedBackendReadiness::Stale { reason },
+async fn health_ready_status(
+    port: u16,
+    access_token: Option<&str>,
+) -> Result<OwnedBackendReadiness, String> {
+    match fetch_health(port, access_token).await {
+        Ok(health) => {
+            let authenticated_version = health
+                .as_ref()
+                .and_then(|health| health.version.as_deref())
+                .filter(|version| !version.is_empty());
+            if access_token.is_some() {
+                let Some(version) = authenticated_version else {
+                    return Err("desktop_auth_health_unverified".to_string());
+                };
+                return match crate::preflight::backend_version_stale_reason(Some(version)) {
+                    None => Ok(OwnedBackendReadiness::Ready),
+                    Some(reason) if reason == "desktop_backend_version_too_old" => {
+                        Ok(OwnedBackendReadiness::Stale { reason })
+                    }
+                    Some(reason) => Err(reason),
+                };
+            }
+            Ok(ready_for_use_status(health.as_ref()))
+        }
+        Err(reason) if access_token.is_some() => Err(reason),
+        Err(reason) => Ok(OwnedBackendReadiness::Stale { reason }),
     }
 }
 
-async fn fetch_liveness(port: u16) -> Result<Option<DesktopLiveness>, reqwest::Error> {
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()?;
+async fn fetch_liveness(
+    port: u16,
+    timeout: Duration,
+) -> Result<Option<DesktopLiveness>, reqwest::Error> {
+    let client = crate::loopback_http::client(timeout)?;
     for path in ["/api/liveness", "/api/health"] {
         let response = client
             .get(format!("http://127.0.0.1:{port}{path}"))
@@ -590,16 +828,24 @@ fn fetch_liveness_blocking(port: u16) -> Result<Option<DesktopLiveness>, String>
     }
     Ok(None)
 }
-async fn fetch_health(port: u16) -> Result<Option<HealthResponse>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let response = client
-        .get(format!("http://127.0.0.1:{port}/api/health"))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+async fn fetch_health(
+    port: u16,
+    access_token: Option<&str>,
+) -> Result<Option<HealthResponse>, String> {
+    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
+    let mut request = client.get(format!("http://127.0.0.1:{port}/api/health"));
+    if let Some(access_token) = access_token {
+        request = request.bearer_auth(access_token);
+    }
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    if access_token.is_some()
+        && matches!(
+            response.status(),
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        )
+    {
+        return Err("desktop_auth_token_rejected".to_string());
+    }
     if !response.status().is_success() {
         return Ok(None);
     }
@@ -610,11 +856,8 @@ async fn fetch_health(port: u16) -> Result<Option<HealthResponse>, String> {
         .map_err(|e| e.to_string())
 }
 
-async fn desktop_login_route_compatible(port: u16) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-    {
+async fn desktop_login_route_compatible(port: u16, timeout: Duration) -> bool {
+    let client = match crate::loopback_http::client(timeout) {
         Ok(client) => client,
         Err(_) => return false,
     };
@@ -631,28 +874,36 @@ async fn desktop_login_route_compatible(port: u16) -> bool {
     }
 }
 
-async fn desktop_secret_login_compatible(port: u16) -> Result<(), String> {
-    let secret = read_desktop_secret()?.ok_or_else(|| "desktop_auth_secret_missing".to_string())?;
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
+async fn desktop_secret_login(port: u16, secret: &str) -> Result<String, String> {
+    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
     let response = client
         .post(format!("http://127.0.0.1:{port}/api/auth/desktop-login"))
-        .json(&DesktopLoginPayload { secret: &secret })
+        .json(&DesktopLoginPayload { secret })
         .send()
         .await
         .map_err(|_| "desktop_auth_secret_probe_failed".to_string())?;
-    if response.status().is_success() {
-        Ok(())
-    } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         Err("desktop_auth_secret_rejected".to_string())
-    } else {
+    } else if !response.status().is_success() {
         Err(format!(
             "desktop_auth_secret_probe_http_{}",
             response.status()
         ))
+    } else {
+        response
+            .json::<TokenResponse>()
+            .await
+            .map(|tokens| tokens.access_token)
+            .map_err(|_| "desktop_auth_token_response_invalid".to_string())
     }
+}
+
+async fn authenticated_health_ready_status(
+    port: u16,
+    secret: &str,
+) -> Result<OwnedBackendReadiness, String> {
+    let access_token = desktop_secret_login(port, secret).await?;
+    health_ready_status(port, Some(&access_token)).await
 }
 
 pub(crate) async fn probe_owned_backend_state(
@@ -660,13 +911,29 @@ pub(crate) async fn probe_owned_backend_state(
     port: Option<u16>,
     require_desktop_secret: bool,
 ) -> OwnedBackendProbe {
+    probe_owned_backend_state_with_timeout(owner, port, require_desktop_secret, LOCAL_HTTP_TIMEOUT)
+        .await
+}
+
+/// As above, but with an explicit per-request budget.
+///
+/// The health watchdog needs this. Its probes have to survive the multi-second GIL stalls
+/// the backend's warm thread causes while it imports the ML stack, and at the default 2s
+/// every request here times out during exactly the stall the watchdog is meant to tolerate,
+/// so the backend reads as unverified and gets cleared.
+pub(crate) async fn probe_owned_backend_state_with_timeout(
+    owner: BackendOwnerState,
+    port: Option<u16>,
+    require_desktop_secret: bool,
+    timeout: Duration,
+) -> OwnedBackendProbe {
     let ports: Vec<u16> = match port {
         Some(port) => vec![port],
         None => desktop_candidate_ports().collect(),
     };
     let mut verified = Vec::new();
     for port in ports {
-        let liveness = match fetch_liveness(port).await {
+        let liveness = match fetch_liveness(port, timeout).await {
             Ok(Some(liveness)) => liveness,
             Ok(None) => continue,
             Err(error) => {
@@ -683,18 +950,34 @@ pub(crate) async fn probe_owned_backend_state(
         if let Some(reason) = lifecycle_control_block_reason(&liveness) {
             return OwnedBackendProbe::Unmanageable { port, reason };
         }
-        if !desktop_login_route_compatible(port).await {
+        if !desktop_login_route_compatible(port, timeout).await {
             return OwnedBackendProbe::Unmanageable {
                 port,
                 reason: "desktop_login_probe_failed".to_string(),
             };
         }
-        if require_desktop_secret {
-            if let Err(reason) = desktop_secret_login_compatible(port).await {
-                return OwnedBackendProbe::Unmanageable { port, reason };
+        let readiness = if require_desktop_secret {
+            let secret = match read_desktop_secret() {
+                Ok(Some(secret)) => secret,
+                Ok(None) => {
+                    return OwnedBackendProbe::Unmanageable {
+                        port,
+                        reason: "desktop_auth_secret_missing".to_string(),
+                    }
+                }
+                Err(reason) => return OwnedBackendProbe::Unmanageable { port, reason },
+            };
+            match authenticated_health_ready_status(port, &secret).await {
+                Ok(readiness) => readiness,
+                Err(reason) => return OwnedBackendProbe::Unmanageable { port, reason },
             }
-        }
-        verified.push((port, health_ready_status(port).await));
+        } else {
+            // Spawned backends were launched from the already-probed managed
+            // install. Adopted backends pass `true` on their initial probe;
+            // later watchdog checks only need ownership and liveness.
+            OwnedBackendReadiness::Ready
+        };
+        verified.push((port, readiness));
     }
 
     if verified.len() != 1 {
@@ -935,6 +1218,61 @@ mod tests {
     const ROOT_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const TOKEN: &str = "desktop-owner-token";
 
+    async fn http_sequence_server(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (
+        u16,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_task = seen.clone();
+        let task = tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut raw = Vec::new();
+                loop {
+                    let mut chunk = [0u8; 2048];
+                    let count = socket.read(&mut chunk).await.unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&chunk[..count]);
+                    let Some(header_end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&raw[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= header_end + 4 + content_length {
+                        break;
+                    }
+                }
+                seen_task
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&raw).into_owned());
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (port, seen, task)
+    }
+
     fn metadata(app_pid: u32, port: Option<u16>) -> DesktopBackendMetadata {
         DesktopBackendMetadata {
             schema_version: METADATA_SCHEMA_VERSION,
@@ -983,6 +1321,103 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         port
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_uses_login_bearer_and_accepts_ready_version() {
+        let (port, seen, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"access_token":"test-access-token"}"#),
+            ("200 OK", r#"{"version":"2026.8.4"}"#),
+        ])
+        .await;
+
+        let readiness = authenticated_health_ready_status(port, "desktop-test-secret")
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        assert!(matches!(readiness, OwnedBackendReadiness::Ready));
+        let seen = seen.lock().unwrap();
+        assert!(seen[0].contains(r#""secret":"desktop-test-secret""#));
+        assert!(seen[1]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-access-token"));
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_preserves_genuinely_old_version_as_stale() {
+        let (port, _, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"access_token":"test-access-token"}"#),
+            ("200 OK", r#"{"version":"2026.5.2"}"#),
+        ])
+        .await;
+
+        let readiness = authenticated_health_ready_status(port, "desktop-test-secret")
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        assert!(matches!(
+            readiness,
+            OwnedBackendReadiness::Stale { reason }
+                if reason == "desktop_backend_version_too_old"
+        ));
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_rejects_malformed_version() {
+        let (port, _, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"access_token":"test-access-token"}"#),
+            ("200 OK", r#"{"version":"not-a-version"}"#),
+        ])
+        .await;
+
+        let result = authenticated_health_ready_status(port, "desktop-test-secret").await;
+        server.await.unwrap();
+
+        assert_eq!(result.unwrap_err(), "desktop_backend_version_invalid");
+    }
+
+    #[tokio::test]
+    async fn rejected_desktop_secret_fails_before_health() {
+        let (port, seen, server) = http_sequence_server(vec![("401 Unauthorized", "{}")]).await;
+
+        let result = authenticated_health_ready_status(port, "wrong-secret").await;
+        server.await.unwrap();
+
+        assert_eq!(result.unwrap_err(), "desktop_auth_secret_rejected");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejected_health_bearer_is_not_downgraded_to_auto_repairable_stale() {
+        let (port, _, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"access_token":"test-access-token"}"#),
+            ("401 Unauthorized", "{}"),
+        ])
+        .await;
+
+        let result = authenticated_health_ready_status(port, "desktop-test-secret").await;
+        server.await.unwrap();
+
+        assert_eq!(result.unwrap_err(), "desktop_auth_token_rejected");
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_rejects_public_payload_without_version() {
+        let (port, _, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"access_token":"test-access-token"}"#),
+            (
+                "200 OK",
+                r#"{"status":"healthy","service":"Unsloth UI Backend","supports_desktop_auth":true}"#,
+            ),
+        ])
+        .await;
+
+        let result = authenticated_health_ready_status(port, "desktop-test-secret").await;
+        server.await.unwrap();
+
+        assert_eq!(result.unwrap_err(), "desktop_auth_health_unverified");
     }
 
     #[test]
@@ -1103,6 +1538,269 @@ mod tests {
         ));
         assert!(path.exists());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    fn temp_root_id_path(test_name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-root-id-{test_name}-{}-{}-{}",
+            std::process::id(),
+            now_ms(),
+            hex_bytes(&rand::random::<[u8; 4]>())
+        ));
+        dir.join("share").join("studio_install_id")
+    }
+
+    #[test]
+    fn missing_studio_root_id_is_created_once_and_then_preserved() {
+        let path = temp_root_id_path("create");
+
+        let created = ensure_studio_root_id_at(&path, true).unwrap().unwrap();
+        assert!(is_valid_studio_root_id(&created));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), created);
+
+        // A second call must return the same id, not mint a new one.
+        assert_eq!(
+            ensure_studio_root_id_at(&path, true).unwrap(),
+            Some(created.clone())
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), created);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_studio_root_id_is_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_root_id_path("permissions");
+        ensure_studio_root_id_at(&path, true).unwrap().unwrap();
+
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(file_mode & 0o777, 0o600);
+        let dir_mode = std::fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(dir_mode & 0o777, 0o700);
+        // The temp file used to publish the id must not be left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "studio_install_id" && name != STUDIO_INSTALL_ID_LOCK_FILE)
+            .collect();
+        assert!(leftovers.is_empty(), "unexpected leftovers: {leftovers:?}");
+
+        let lock_mode = std::fs::metadata(path.parent().unwrap().join(STUDIO_INSTALL_ID_LOCK_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(lock_mode & 0o777, 0o600);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn malformed_studio_root_id_is_an_error_not_a_silent_rewrite() {
+        let path = temp_root_id_path("malformed");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "not-a-root-id").unwrap();
+
+        let error = ensure_studio_root_id_at(&path, true).unwrap_err();
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        // A backend may still be reporting the id this file used to hold.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not-a-root-id");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn blank_studio_root_id_is_replaced_like_a_missing_one() {
+        // Blank IDs are interrupted writes and must not block later starts.
+        for blank in ["", "\n"] {
+            let path = temp_root_id_path("blank");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, blank).unwrap();
+
+            let created = ensure_studio_root_id_at(&path, true).unwrap().unwrap();
+            assert!(is_valid_studio_root_id(&created));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), created);
+
+            let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn stale_blank_observer_cannot_delete_a_competing_callers_id() {
+        let path = temp_root_id_path("stale-blank-observer");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "").unwrap();
+
+        let (blank_seen_tx, blank_seen_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let first_path = path.clone();
+        let first = std::thread::spawn(move || {
+            ensure_studio_root_id_at_with_blank_observer(&first_path, true, || {
+                blank_seen_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+            })
+            .unwrap()
+            .unwrap()
+        });
+        blank_seen_rx.recv().unwrap();
+
+        // The second caller must wait until blank-file recovery completes.
+        let contender = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.parent().unwrap().join(STUDIO_INSTALL_ID_LOCK_FILE))
+            .unwrap();
+        let lock_error = contender.try_lock().unwrap_err();
+        assert!(matches!(lock_error, std::fs::TryLockError::WouldBlock));
+
+        let (second_tx, second_rx) = std::sync::mpsc::channel();
+        let second_path = path.clone();
+        let second = std::thread::spawn(move || {
+            second_tx
+                .send(ensure_studio_root_id_at(&second_path, true))
+                .unwrap();
+        });
+
+        resume_tx.send(()).unwrap();
+        let first_id = first.join().unwrap();
+        let second_id = second_rx.recv().unwrap().unwrap().unwrap();
+        second.join().unwrap();
+        let persisted = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(first_id, persisted);
+        assert_eq!(second_id, persisted);
+
+        // Windows cannot delete a file that still has an open handle.
+        drop(contender);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn studio_root_id_is_not_created_without_a_managed_install() {
+        let path = temp_root_id_path("not-installed");
+
+        assert_eq!(ensure_studio_root_id_at(&path, false).unwrap(), None);
+        assert!(!path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn existing_studio_root_id_is_read_without_the_install_lock() {
+        // A read-only or full share/ must not stop a usable id from being read.
+        let path = temp_root_id_path("unlockable");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, ROOT_ID).unwrap();
+        // Make the lock file impossible to open.
+        std::fs::create_dir_all(path.parent().unwrap().join(STUDIO_INSTALL_ID_LOCK_FILE)).unwrap();
+
+        assert_eq!(
+            ensure_studio_root_id_at(&path, true).unwrap(),
+            Some(ROOT_ID.to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn concurrent_creators_converge_on_one_studio_root_id() {
+        let path = temp_root_id_path("concurrent");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    ensure_studio_root_id_at(&path, true).unwrap().unwrap()
+                })
+            })
+            .collect();
+        let ids: Vec<String> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(is_valid_studio_root_id(&persisted));
+        for id in &ids {
+            assert_eq!(id, &persisted);
+        }
+        // Filter by name so an unrelated file in share/ cannot fail this test.
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "studio_install_id" && name != STUDIO_INSTALL_ID_LOCK_FILE)
+            .collect();
+        assert!(leftovers.is_empty(), "unexpected leftovers: {leftovers:?}");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn no_hard_link_fallback_publishes_only_a_complete_destination() {
+        let path = temp_root_id_path("rename-fallback");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let tmp = path.parent().unwrap().join("fallback.tmp");
+        let body = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        let claimed = claim_private_file_with_link(&tmp, &path, body, |prepared, destination| {
+            assert_eq!(std::fs::read(prepared).unwrap(), body);
+            assert!(!destination.exists());
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "hard links disabled for test",
+            ))
+        })
+        .unwrap();
+
+        assert!(claimed);
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+        assert!(!tmp.exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn spawned_backends_always_receive_the_owner_environment() {
+        let pending = PendingBackendOwner {
+            token: TOKEN.to_string(),
+            studio_root_id: ROOT_ID.to_string(),
+        };
+        let mut cmd = std::process::Command::new("unsloth");
+        apply_owner_env(&mut cmd, &pending);
+
+        let env: std::collections::HashMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(key, value)| {
+                Some((
+                    key.to_string_lossy().into_owned(),
+                    value?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+
+        assert_eq!(env.get(OWNER_TOKEN_ENV).map(String::as_str), Some(TOKEN));
+        assert_eq!(
+            env.get(OWNER_KIND_ENV).map(String::as_str),
+            Some(OWNER_KIND_TAURI)
+        );
+        // The backend arms its parent watchdog only when it knows the owner pid.
+        assert_eq!(
+            env.get(OWNER_PID_ENV).map(String::as_str),
+            Some(std::process::id().to_string().as_str())
+        );
     }
 
     #[test]

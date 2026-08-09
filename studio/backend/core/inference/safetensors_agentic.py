@@ -66,6 +66,10 @@ from core.inference.tool_loop_controller import (
     status_for_tool,
     tool_event_provenance,
 )
+from core.inference.chat_template_helpers import (
+    append_assistant_turn,
+    trailing_assistant_text,
+)
 from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -492,6 +496,9 @@ def run_safetensors_tool_loop(
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
     reasoning_prefilled: bool = False,
+    continue_final_message: bool = False,
+    markup = None,
+    renderable_tools = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -538,9 +545,11 @@ def run_safetensors_tool_loop(
 
     # off never prompts, so (like auto) it must not lose first-pass retrieval
     # even if a direct caller passes a stale confirm_tool_calls flag.
+    # A resumed turn must keep the partial trailing: autoinject appends a tool call
+    # plus its result, moving the boundary so the model opens a fresh answer.
     _skip_autoinject = (
         confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-    )
+    ) or bool(continue_final_message and trailing_assistant_text(conversation))
     _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
         for _ev in _auto["events"]:
@@ -557,8 +566,23 @@ def run_safetensors_tool_loop(
     # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
     # one-shot), else its repeat is stripped but never drained and the turn ends blank.
     _detect_tools = [] if unrestricted_tools else list(tools or [])
+    # Sanitized at construction: prepare_call authorizes against the controller, so a tool
+    # dropped from the prompt for unsafe markup must leave the controller too. The gates above
+    # keep the ORIGINAL names: those decide what LOOKS like a call, not what may run (#7066).
+    from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
+    # *markup* is the same profile the renderer uses, so a tool is never dropped from the
+    # controller over a marker this model does not treat as structure. *renderable_tools*,
+    # when the caller supplies it, is the catalog safe under every template this turn could
+    # select: the native-template fallback renders with a different profile, and prepare_call
+    # must not authorize a tool that render left out of the prompt (#7066).
+    _authorized = (
+        renderable_tools
+        if renderable_tools is not None
+        else neutralize_tool_descriptions(tools, None, markup)
+    )
     tool_controller = ToolLoopController(
-        tools = None if unrestricted_tools else tools,
+        tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
@@ -1030,7 +1054,13 @@ def run_safetensors_tool_loop(
                         MAX_ACT_REPROMPTS,
                         len(intent_text),
                     )
-                    conversation.append({"role": "assistant", "content": intent_text})
+                    # Merges into a resumed partial: the nudge that follows is a user
+                    # turn, so a second assistant turn breaks alternation.
+                    append_assistant_turn(
+                        conversation,
+                        {"role": "assistant", "content": intent_text},
+                        continue_final_message = continue_final_message,
+                    )
                     tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
                     conversation.append(
                         {
@@ -1172,7 +1202,11 @@ def run_safetensors_tool_loop(
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
-                    conversation.append(assistant_msg)
+                    append_assistant_turn(
+                        conversation,
+                        assistant_msg,
+                        continue_final_message = continue_final_message,
+                    )
                     assistant_appended = True
                 if provisional_match and not provisional_resolved:
                     # A provisional render_html card is already on screen for
@@ -1196,7 +1230,13 @@ def run_safetensors_tool_loop(
 
             if not assistant_appended:
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                conversation.append(assistant_msg)
+                # Merges into a resumed partial, so a continued turn that calls a tool
+                # stays one assistant message.
+                append_assistant_turn(
+                    conversation,
+                    assistant_msg,
+                    continue_final_message = continue_final_message,
+                )
                 assistant_appended = True
             else:
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())

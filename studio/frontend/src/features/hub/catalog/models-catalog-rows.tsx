@@ -449,7 +449,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
           }),
     [isDataset, row.id, row.result, deviceType],
   );
-  const unsupported = support?.status === "unsupported";
+  const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
   const partialRepoId =
     row.isAvailableOnDevice && row.isPartialOnDevice
@@ -573,6 +573,7 @@ export const InventoryRow = memo(function InventoryRow({
   compact = false,
   onSelect,
   onChange,
+  onOpenSettings,
 }: {
   row: CachedInventoryRow | LocalInventoryRow;
   selected: boolean;
@@ -585,6 +586,8 @@ export const InventoryRow = memo(function InventoryRow({
   compact?: boolean;
   onSelect: (id: string) => void;
   onChange?: () => void;
+  /** Open this model's settings page. Omitted for datasets. */
+  onOpenSettings?: (row: CachedInventoryRow | LocalInventoryRow) => void;
 }) {
   const rowModelId =
     row.kind === "cache"
@@ -593,16 +596,16 @@ export const InventoryRow = memo(function InventoryRow({
   const rowTagsSignature = row.tags?.join("\u0001") ?? "";
   const unsupported = useMemo(() => {
     if (isDataset) return false;
-    return (
-      classifyUnslothSupport({
-        modelId: rowModelId,
-        pipelineTag: row.pipelineTag,
-        tags: rowTagsSignature ? rowTagsSignature.split("\u0001") : undefined,
-        libraryName: row.libraryName,
-        quantMethod: row.quantMethod,
-        deviceType,
-      }).status === "unsupported"
-    );
+    const classified = classifyUnslothSupport({
+      modelId: rowModelId,
+      pipelineTag: row.pipelineTag,
+      tags: rowTagsSignature ? rowTagsSignature.split("\u0001") : undefined,
+      libraryName: row.libraryName,
+      quantMethod: row.quantMethod,
+      deviceType,
+    });
+    // Images/Video run these, so they are not unsupported to a user.
+    return classified.status === "unsupported" && !classified.supportedIn;
   }, [
     isDataset,
     rowModelId,
@@ -732,30 +735,38 @@ export const InventoryRow = memo(function InventoryRow({
   const rowPinned =
     cacheDeletableRepoId != null &&
     pinnedKeys.includes(pinKey(cacheDeletableRepoId));
+  // Settings applies to any downloaded model, not just deletable ones, so the menu renders
+  // when either action applies. `deletableRepoId` keeps the delete closures' narrowing.
+  const settingsAction =
+    !isDataset && onOpenSettings ? { onOpen: () => onOpenSettings(row) } : undefined;
+  const deletableRepoId = canDelete ? cacheDeletableRepoId : null;
   const deleteAction =
-    canDelete && cacheDeletableRepoId ? (
+    deletableRepoId || settingsAction ? (
       <ModelRowMenu
-        ariaLabel={`More options for ${cacheDeletableRepoId}`}
-        buttonClassName="pointer-events-auto hub-modal-pe-guard p-2 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         iconClassName="size-4"
+        settings={settingsAction}
         pin={
-          isDataset
+          isDataset || !deletableRepoId
             ? undefined
             : {
                 pinned: rowPinned,
                 pinLabel: "Pin to top",
                 unpinLabel: "Unpin",
-                onToggle: () => togglePinned(cacheDeletableRepoId),
+                onToggle: () => togglePinned(deletableRepoId),
               }
         }
-        cachePath={isDataset ? undefined : { repoId: cacheDeletableRepoId }}
-        del={{
+        cachePath={
+          isDataset || !deletableRepoId ? undefined : { repoId: deletableRepoId }
+        }
+        del={deletableRepoId ? {
           title: isDataset ? "Delete cached dataset?" : "Delete cached model?",
           description: (
             <>
               This will remove{" "}
               <span className="font-medium text-foreground">
-                {cacheDeletableRepoId}
+                {deletableRepoId}
               </span>{" "}
               {isDataset
                 ? "and its downloaded files"
@@ -766,17 +777,17 @@ export const InventoryRow = memo(function InventoryRow({
               disk. You can re-download it later.
             </>
           ),
-          successMessage: `Deleted ${cacheDeletableRepoId}`,
+          successMessage: `Deleted ${deletableRepoId}`,
           onConfirm: async () => {
             // Delete only the copy this row shows: cache rows carry the owning
             // cache path, so pass it through and leave other caches untouched.
             const rowCachePath =
               row.kind === "cache" ? (row.cachePath ?? undefined) : undefined;
             if (isDataset) {
-              await deleteCachedDataset(cacheDeletableRepoId, rowCachePath);
+              await deleteCachedDataset(deletableRepoId, rowCachePath);
             } else {
               await deleteCachedModel(
-                cacheDeletableRepoId,
+                deletableRepoId,
                 undefined,
                 undefined,
                 rowCachePath,
@@ -787,11 +798,11 @@ export const InventoryRow = memo(function InventoryRow({
                 usePinnedModelsStore.getState();
               for (const key of pinned) {
                 if (
-                  key === pinKey(cacheDeletableRepoId) ||
-                  key.startsWith(`${cacheDeletableRepoId}::`)
+                  key === pinKey(deletableRepoId) ||
+                  key.startsWith(`${deletableRepoId}::`)
                 ) {
                   toggle(
-                    cacheDeletableRepoId,
+                    deletableRepoId,
                     key.includes("::")
                       ? key.slice(key.indexOf("::") + 2)
                       : undefined,
@@ -801,7 +812,7 @@ export const InventoryRow = memo(function InventoryRow({
             }
           },
           onDeleted: onChange,
-        }}
+        } : undefined}
       />
     ) : null;
 

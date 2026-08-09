@@ -133,9 +133,8 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             self.assertEqual(resolve_requested_gpu_ids([]), [1, 3])
 
     def test_vulkan_ordinals_bypass_cuda_parent_visible_validation(self):
-        # Vulkan build on a CPU-only torch host: no CUDA parent-visible set and a
-        # zero physical count, yet a valid Vulkan ordinal must not be rejected as
-        # a CUDA physical id (issue #7239).
+        # Vulkan build on a CPU-only torch host: no CUDA parent-visible set and a zero physical count,
+        # yet a valid Vulkan ordinal must not be rejected as a CUDA physical id (issue #7239).
         with (
             patch.dict(os.environ, {}, clear = True),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 0),
@@ -435,8 +434,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
 
         self.assertTrue(result["available"])
         self.assertEqual(result["backend"], "vulkan")
-        # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins, so they
-        # are selectable, unlike a torch-xpu relative ordinal.
+        # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins, so they are selectable.
         self.assertEqual(result["index_kind"], "vulkan")
         self.assertEqual(result["parent_visible_gpu_ids"], [])
         self.assertEqual(
@@ -686,6 +684,37 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
 
         self.assertEqual(model_size_bytes, 1234)
         self.assertEqual(source, "vllm_utils")
+
+    def test_offline_safetensors_probe_uses_config_without_hub_access(self):
+        config = object()
+        for offline_variable in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            with self.subTest(offline_variable = offline_variable):
+                with (
+                    patch.dict(os.environ, {offline_variable: "true"}, clear = True),
+                    patch("huggingface_hub.model_info") as hub_info,
+                    patch(
+                        "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
+                        return_value = "unsloth/test",
+                    ),
+                    patch(
+                        "utils.hardware.hardware._load_config_for_gpu_estimate",
+                        return_value = config,
+                    ),
+                    patch(
+                        "utils.hardware.hardware._estimate_fp16_model_size_bytes_from_config",
+                        return_value = 1234,
+                    ),
+                    patch(
+                        "utils.hardware.hardware._get_local_weight_size_bytes",
+                        return_value = None,
+                    ),
+                ):
+                    model_size_bytes, source = _hw_module.estimate_fp16_model_size_bytes(
+                        "unsloth/test"
+                    )
+
+                self.assertEqual((model_size_bytes, source), (1234, "config"))
+                hub_info.assert_not_called()
 
     def test_auto_select_gpu_ids_chooses_smallest_fitting_subset(self):
         fake_devices = {
@@ -1048,7 +1077,7 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
@@ -1117,7 +1146,7 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ) as training_guard,
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
@@ -1253,7 +1282,7 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
@@ -1309,7 +1338,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_classify_diffusion_gguf", return_value = False),
             patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
             patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
             patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
         ):
@@ -1327,8 +1356,7 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
     def test_diffusion_gguf_on_vulkan_build_rejects_ordinal_pin(self):
-        # The GGUF picker supplies Vulkan ordinals, which cannot be reinterpreted
-        # as the CUDA physical IDs used by the diffusion runner.
+        # The GGUF picker supplies Vulkan ordinals, not the CUDA physical IDs the diffusion runner uses.
         import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
@@ -1370,7 +1398,7 @@ class TestRouteErrors(unittest.TestCase):
             ),
             patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
             patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
             patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
         ):
@@ -1386,6 +1414,179 @@ class TestRouteErrors(unittest.TestCase):
                 )
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("no defined mapping", exc_info.exception.detail)
+
+    def test_inference_route_defers_gpu_handoff_until_after_validation(self):
+        # A doomed chat load (GGUF + gpu_ids -> 400) must NOT reclaim the CHAT arbiter owner first: the handoff is deferred past
+        # validation, so a resident Images/Video pipeline is never evicted for a load that then errors.
+        import core.inference.gpu_arbiter as arb
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_handoff_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
+        model_config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            gguf_hf_repo = None,
+            gguf_file = "/tmp/test.gguf",
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_variant = None,
+            identifier = "unsloth/test.gguf",
+            display_name = "unsloth/test.gguf",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+        acquired = []
+        # Make [0, 1] invalid on any host (a duplicate id is rejected everywhere): the point is the ORDER, validation before the handoff.
+        request.gpu_ids = [0, 0]
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_unreachable_for", nullcontext),
+            # The chat handoff passes a `register` hook (the in-flight marker), so accept it.
+            patch.object(arb, "acquire_for", lambda owner, register = None: acquired.append(owner)),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(
+                                state = SimpleNamespace(llama_parallel_slots = 1),
+                            ),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertEqual(acquired, [])  # no CHAT handoff before the doomed load errored
+
+    def test_inference_route_checks_hub_download_conflict_before_the_handoff(self):
+        # A GGUF the download manager is fetching 409s and loads nothing, so that check must run BEFORE the CHAT handoff:
+        # afterwards it destroyed the resident Images/Video pipeline for a load that could never start.
+        import core.inference.gpu_arbiter as arb
+        import core.inference.llama_cpp as llama_cpp
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_hub_conflict_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
+        model_config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            gguf_hf_repo = "unsloth/Qwen3-4B-GGUF",
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_variant = "Q4_K_M",
+            identifier = "unsloth/Qwen3-4B-GGUF",
+            display_name = "Qwen3-4B",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+        acquired = []
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(inference_route, "_resolve_inherited_extra_args", lambda *a, **k: None),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_unreachable_for", nullcontext),
+            patch.object(llama_cpp, "_hub_download_blocks_gguf_load", lambda *a, **k: True),
+            patch.object(arb, "acquire_for", lambda *a, **k: acquired.append(a[0])),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(
+                                state = SimpleNamespace(llama_parallel_slots = 1),
+                            ),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+        self.assertEqual(exc_info.exception.status_code, 409)
+        self.assertIn("download", exc_info.exception.detail.lower())
+        self.assertEqual(acquired, [])  # nothing evicted for a load that cannot start
+
+    def test_inference_route_marks_the_chat_load_under_the_arbiter_lock(self):
+        # A chat load holds no llama-server process until its GGUF downloaded, so the arbiter is told through acquire_for's
+        # `register` hook (which runs under the arbiter lock). Passing no register left a competing acquire with nothing to cancel.
+        import core.inference.gpu_arbiter as arb
+        import core.inference.llama_cpp as llama_cpp
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_chat_marker_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
+        model_config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            gguf_hf_repo = "unsloth/Qwen3-4B-GGUF",
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_variant = "Q4_K_M",
+            identifier = "unsloth/Qwen3-4B-GGUF",
+            display_name = "Qwen3-4B",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+        marked = []
+
+        def _acquire(owner, register = None):
+            # Under the arbiter lock the evictor must already be able to see this load.
+            if register is not None:
+                register()
+                marked.append(llama_cpp.chat_load_active())
+            raise RuntimeError("stop the load here")
+
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(inference_route, "_resolve_inherited_extra_args", lambda *a, **k: None),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_unreachable_for", nullcontext),
+            patch.object(llama_cpp, "_hub_download_blocks_gguf_load", lambda *a, **k: False),
+            patch.object(arb, "acquire_for", _acquire),
+        ):
+            with self.assertRaises(HTTPException):
+                asyncio.run(
+                    inference_route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(
+                                state = SimpleNamespace(llama_parallel_slots = 1),
+                            ),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+        self.assertEqual(marked, [True])
+        # The marker is scoped to the request: it must not outlive the failed load.
+        self.assertFalse(llama_cpp.chat_load_active())
 
     def test_training_route_returns_400_for_invalid_gpu_ids(self):
         training_route = _load_route_module(
@@ -1410,6 +1611,12 @@ class TestRouteErrors(unittest.TestCase):
 
         with (
             patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(
+                training_route,
+                "_remote_untrainable_model_format",
+                return_value = None,
+            ),
+            patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
             patch(
                 "routes.training_vram.summarize_resident_chat",
                 return_value = {"any": False, "hf": None, "gguf": None},
@@ -1450,6 +1657,12 @@ class TestRouteErrors(unittest.TestCase):
 
         with (
             patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(
+                training_route,
+                "_remote_untrainable_model_format",
+                return_value = None,
+            ),
+            patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
             patch(
                 "routes.training_vram.summarize_resident_chat",
                 return_value = {"any": False, "hf": None, "gguf": None},
@@ -1512,7 +1725,7 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
             patch(
                 "core.export.get_export_backend",
                 return_value = SimpleNamespace(current_checkpoint = None),
@@ -1583,7 +1796,7 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
             patch(
                 "core.export.get_export_backend",
                 return_value = SimpleNamespace(current_checkpoint = None),
@@ -2043,8 +2256,7 @@ class TestEstimateFp16ModelSizeBytesPrefersLocalWeights(unittest.TestCase):
         self.assertEqual(src, "weight_bytes")
 
     def test_equal_local_and_config_keeps_config_label(self):
-        # Tie-breaker is "local must be strictly larger", so an exact
-        # match keeps the config-derived path.
+        # Tie-breaker is "local must be strictly larger", so an exact match keeps the config-derived path.
         same = 8 * (1 << 30)
         bytes_, src = self._run(
             "/local/equal",

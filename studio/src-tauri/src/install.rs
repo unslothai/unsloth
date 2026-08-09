@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 // ── Types ──
 
+#[derive(Default)]
 pub struct InstallProcess {
     /// Process group handle — killing this kills the entire subprocess tree.
     pub child: Option<Box<dyn ChildWrapper + Send>>,
@@ -18,17 +19,6 @@ pub struct InstallProcess {
     pub needed_packages: Vec<String>,
     /// Current diagnostics attempt; kept after NEEDS_ELEVATION so apt output can be linked.
     pub current_attempt: Option<AttemptLog>,
-}
-
-impl Default for InstallProcess {
-    fn default() -> Self {
-        Self {
-            child: None,
-            intentional_stop: false,
-            needed_packages: Vec::new(),
-            current_attempt: None,
-        }
-    }
 }
 
 pub type InstallState = Arc<Mutex<InstallProcess>>;
@@ -193,6 +183,101 @@ fn is_elevation_request(code: i32, packages: &[String]) -> bool {
     code == 2 && !packages.is_empty()
 }
 
+/// Windows PowerShell 5.1 applies `RemoteSigned` authorization differently to
+/// Win32 verbatim paths (`\\?\C:\...`) than to their ordinary drive/UNC forms.
+/// Tauri resolves resources through `canonicalize`, which always returns the
+/// verbatim form, so convert only the two lossless filesystem forms PowerShell
+/// understands before passing a script to `-File`.
+#[cfg(windows)]
+fn powershell_script_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    // Everything after `\\?\` reaches the object manager, which is case insensitive.
+    fn is(unit: Option<&u16>, ascii: u8) -> bool {
+        unit.is_some_and(|value| *value < 128 && (*value as u8).eq_ignore_ascii_case(&ascii))
+    }
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
+    if !wide.starts_with(&verbatim) {
+        return path.to_path_buf();
+    }
+    let rest = &wide[verbatim.len()..];
+
+    let is_drive = rest.first().is_some_and(|value| {
+        (b'A' as u16..=b'Z' as u16).contains(value) || (b'a' as u16..=b'z' as u16).contains(value)
+    }) && rest.get(1) == Some(&(b':' as u16))
+        && rest.get(2) == Some(&(b'\\' as u16));
+
+    let normalized = if is(rest.first(), b'U')
+        && is(rest.get(1), b'N')
+        && is(rest.get(2), b'C')
+        && rest.get(3) == Some(&(b'\\' as u16))
+    {
+        let mut value: Vec<u16> = r"\\".encode_utf16().collect();
+        value.extend_from_slice(&rest[4..]);
+        value
+    } else if is_drive {
+        rest.to_vec()
+    } else {
+        return path.to_path_buf();
+    };
+
+    // Only the verbatim form addresses a path past MAX_PATH; stripping it there
+    // would trade an authorization error for a "path too long" one. MAX_PATH
+    // counts the terminating NUL, so 259 units is the longest legacy path.
+    if normalized.len() >= 260 {
+        return path.to_path_buf();
+    }
+
+    PathBuf::from(OsString::from_wide(&normalized))
+}
+
+/// Everything passed to `powershell.exe` before the script's own arguments.
+///
+/// Separate from `spawn_script` so a test can assert the property that matters:
+/// that this flag set authorizes this path spelling. #7819 broke first-run
+/// install by editing only the flags, which no test over `powershell_script_path`
+/// can see.
+#[cfg(windows)]
+fn powershell_launch_args(script: &Path) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+
+    // No -WindowStyle Hidden / -ExecutionPolicy Bypass: that pair is a Microsoft
+    // detection signature, CREATE_NO_WINDOW hides the console, and NSIS writes
+    // resources without a mark-of-the-web so RemoteSigned loads them.
+    let mut launch: Vec<OsString> = [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "RemoteSigned",
+        "-File",
+    ]
+    .iter()
+    .map(OsString::from)
+    .collect();
+
+    // Load-bearing: RemoteSigned rejects the `\\?\` spelling Tauri resolves to.
+    launch.push(powershell_script_path(script).into_os_string());
+    launch
+}
+
+/// `Command::new` searches the running executable's own directory before the
+/// system one, and a `currentUser` install puts that directory somewhere the
+/// user can write, so resolve the interpreter absolutely.
+#[cfg(windows)]
+fn powershell_exe() -> PathBuf {
+    let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    let absolute = Path::new(&system_root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    if absolute.is_file() {
+        absolute
+    } else {
+        PathBuf::from("powershell.exe")
+    }
+}
+
 // ── Script Resolution ──
 
 /// Returns (script_path, args) depending on dev vs production mode.
@@ -323,38 +408,30 @@ fn spawn_script(
         .stderr(Stdio::piped());
 
     #[cfg(windows)]
-    let mut cmd = Command::new("powershell.exe");
+    let mut cmd = Command::new(powershell_exe());
     #[cfg(windows)]
-    cmd.args([
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-    ])
-    .arg(script)
-    .args(args)
-    .current_dir(&work_dir)
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
+    cmd.args(powershell_launch_args(script))
+        .args(args)
+        .current_dir(&work_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
-    // spawned by the install script. Only clear inside AppImage — native installs
-    // may need these for custom CUDA or conda paths.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
+    crate::process::scrub_appimage_python_env(&mut cmd);
 
     // Tauri only does default-root installs; install.sh / install.ps1 reject
     // these under --tauri. Scrub so an inherited value can't trip the guard.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+
+    // We decode this child as UTF-8 below, so its Python descendants must emit
+    // UTF-8 or the log fills with U+FFFD. The .ps1 entry points set these too;
+    // this covers any path reaching Python without them.
+    #[cfg(windows)]
+    {
+        cmd.env("PYTHONUTF8", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
+    }
 
     // On Windows, launch the installer directly with CREATE_NO_WINDOW.
     // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
@@ -1064,6 +1141,159 @@ fn capped_output_text(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_script_path_normalizes_verbatim_filesystem_paths() {
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\C:\Users\Owner\install.ps1")),
+            PathBuf::from(r"C:\Users\Owner\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\UNC\server\share\install.ps1")),
+            PathBuf::from(r"\\server\share\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"C:\Users\Owner\install.ps1")),
+            PathBuf::from(r"C:\Users\Owner\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\Volume{1234}\install.ps1")),
+            PathBuf::from(r"\\?\Volume{1234}\install.ps1")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_script_path_leaves_unsupported_spellings_verbatim() {
+        // The object manager is case insensitive, so `unc` must normalize too.
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\unc\server\share\install.ps1")),
+            PathBuf::from(r"\\server\share\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\c:\Users\Owner\install.ps1")),
+            PathBuf::from(r"c:\Users\Owner\install.ps1")
+        );
+        // A drive letter with no separator is drive-relative, not the same path.
+        for unchanged in [
+            r"\\?\C:",
+            r"\\?\",
+            r"\\?\1:\install.ps1",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\install.ps1",
+            r"\\.\C:\install.ps1",
+            r"\\server\share\install.ps1",
+            r"install.ps1",
+        ] {
+            assert_eq!(
+                powershell_script_path(Path::new(unchanged)),
+                PathBuf::from(unchanged),
+                "{unchanged} should be passed through untouched"
+            );
+        }
+        // MAX_PATH counts the terminating NUL, so 259 units still fits but 260 does not.
+        let fits = format!(r"C:\{}\install.ps1", "a".repeat(244));
+        assert_eq!(fits.len(), 259);
+        assert_eq!(
+            powershell_script_path(Path::new(&format!(r"\\?\{fits}"))),
+            PathBuf::from(&fits)
+        );
+        for over in [
+            format!(r"\\?\C:\{}\install.ps1", "a".repeat(245)),
+            format!(r"\\?\C:\{}\install.ps1", "a".repeat(300)),
+        ] {
+            assert_eq!(
+                powershell_script_path(Path::new(&over)),
+                PathBuf::from(&over),
+                "a path past MAX_PATH must stay verbatim"
+            );
+        }
+    }
+
+    /// Run the real interpreter with the real flags against a script addressed
+    /// the way Tauri addresses it. Fails if the execution policy is swapped as
+    /// in #7819, or if `powershell_script_path` is dropped from the call site;
+    /// both leave the assertions over the normalizer itself passing.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_runs_a_script_addressed_the_way_tauri_addresses_it() {
+        use std::fs;
+
+        // A temp file has no Zone.Identifier, so RemoteSigned admits it unsigned.
+        // The path spelling and the flag set are what is under test, not signing.
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-launch-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let script = dir.join("install.ps1");
+        fs::write(&script, "Write-Output 'unsloth-launcher-ok'\r\n").expect("write script");
+
+        // Resource resolution bottoms out in `canonicalize`, documented to return
+        // extended-length syntax. Assert that, so the test cannot pass vacuously.
+        let resolved = fs::canonicalize(&script).expect("canonicalize");
+        assert!(
+            resolved.as_os_str().to_string_lossy().starts_with(r"\\?\"),
+            "expected a verbatim path to exercise, got {resolved:?}"
+        );
+
+        let output = Command::new(powershell_exe())
+            .args(powershell_launch_args(&resolved))
+            .output()
+            .expect("spawn powershell");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(
+            output.status.success() && stdout.contains("unsloth-launcher-ok"),
+            "the launcher shape failed to authorize {resolved:?}\n\
+             status: {:?}\nstdout: {stdout}\nstderr: {stderr}",
+            output.status.code()
+        );
+    }
+
+    /// Pin the flag set, so a policy swap shows up as a diff. `-File` stays last
+    /// so the script path is never parsed as a flag.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_launch_args_pin_the_defender_friendly_shape() {
+        let args = powershell_launch_args(Path::new(r"\\?\C:\Users\Owner\install.ps1"));
+        let args: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            args,
+            vec![
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "RemoteSigned",
+                "-File",
+                r"C:\Users\Owner\install.ps1",
+            ]
+        );
+        // The pair Microsoft ships as a detection test must not come back.
+        assert!(!args.iter().any(|a| a == "Bypass" || a == "-WindowStyle"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_exe_resolves_under_the_system_directory() {
+        let resolved = powershell_exe();
+        assert!(resolved.is_absolute(), "{resolved:?} should be absolute");
+        assert!(resolved.is_file(), "{resolved:?} should exist");
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        assert!(
+            resolved.starts_with(&system_root),
+            "{resolved:?} escaped {system_root}"
+        );
+    }
 
     #[test]
     fn elevated_output_cap_is_utf8_boundary_safe() {

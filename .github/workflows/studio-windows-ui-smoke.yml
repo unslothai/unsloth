@@ -20,14 +20,24 @@ on:
       - 'pyproject.toml'
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-windows-ui-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
   push:
-    branches: [main, pip]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -57,11 +67,11 @@ jobs:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
           # No `cache: 'npm'`. setup-node's npm cache restore silently
@@ -72,7 +82,7 @@ jobs:
           # npm/cli#7308. The frontend `npm ci` is fast enough without
           # the cache that the reliability gain is worth the ~30s.
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           # No `cache: 'pip'`. install.ps1 / setup.ps1 use uv and
@@ -80,13 +90,17 @@ jobs:
           # then fatal-errors with "Cache folder path is retrieved
           # for pip but doesn't exist on disk".
 
+      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
+      # Linux, macOS and Windows, so the key carries no `runner.os`, and
+      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -101,11 +115,22 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        if: always() && steps.prime-hf.outcome == 'success'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        # Save on main only. Caches created on a PR ref are scoped to that
+        # merge ref -- per GitHub's docs they "can only be restored by re-runs
+        # of the pull request" -- while every PR *can* restore from the default
+        # branch. So a PR-scoped save helps almost nothing and competes for the
+        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # by least-recently-used, which deletes main's copies that all PRs share.
+        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
+        # same 4.6GB model held four times on four different PR refs and no copy
+        # on main at all. That is the thrash loop: PR misses -> downloads ->
+        # saves its own copy -> evicts main's -> next PR misses.
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
@@ -161,27 +186,28 @@ jobs:
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
-          # *>&1 redirects ALL PowerShell streams (stdout, stderr,
-          # warning, verbose, debug, information) into the success
-          # stream so Tee-Object captures everything. install.ps1
-          # and setup.ps1 emit step/substep markers via Write-Host
-          # which lands on the Information stream (PS 5+); without
-          # the wildcard redirect, those markers (including
-          # "prebuilt installed and validated") never reach
-          # logs/install.log and the post-step grep asserter fails.
-          $ProgressPreference = 'SilentlyContinue'
-          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
+          # install.ps1 runs as a CHILD process, not in-process. Its own
+          # lines now go to [Console]::Out (Write-StudioLine), not the
+          # Information stream, so an in-process `*>&1 | Tee-Object` would
+          # put them on the step log and never in logs/install.log. As a
+          # native command its stdout IS the pipeline, and the setup.ps1
+          # grandchild inherits that handle, so its markers land in the log
+          # too -- they used to bypass Tee-Object entirely.
+          # -Command rather than -File: $ProgressPreference is a preference
+          # variable, so it does not cross a process boundary on its own.
+          $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
+          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 | Tee-Object -FilePath logs/install.log
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         run: |
-          # install.ps1's setup.ps1 child writes "prebuilt installed
-          # and validated" to its own console host -- that output
-          # does NOT come back through this parent step's stdout
-          # pipeline (no matter how aggressively we redirect: *>&1,
-          # tee, etc.). Verify the install via the filesystem
-          # instead. setup.ps1 writes UNSLOTH_PREBUILT_INFO.json
-          # next to the install dir on success, and lays the
-          # binaries under build/bin/Release/ on Windows.
+          # The filesystem is the authority here: setup.ps1's "prebuilt
+          # installed and validated" reaches logs/install.log only because
+          # install.ps1 is spawned as a child process, and a marker that
+          # depends on process topology is a weak thing to gate on.
+          # setup.ps1 writes UNSLOTH_PREBUILT_INFO.json next to the install
+          # dir on success, and lays the binaries under build/bin/Release/
+          # on Windows.
           STUDIO_HOME=~/.unsloth/studio
           LLAMA_DIR=~/.unsloth/llama.cpp
           INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
@@ -298,21 +324,11 @@ jobs:
       - name: Reset auth + boot Unsloth
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
-              jq -e '.status == "healthy"' /tmp/health.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health.json
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Pass bootstrap password to the Playwright step
         run: |
@@ -351,23 +367,20 @@ jobs:
         run: |
           bash .github/scripts/run-studio-permission-browser.sh 18895 chromium msedge
 
+      # Real Edge, which is also the WebView2 the desktop app embeds on Windows.
+      - name: Loaded-models indicator (Edge)
+        run: |
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 chromium msedge
+
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
-            > logs/studio_extra.log 2>&1 &
-          echo "STUDIO_EXTRA_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18897 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
 
       - name: Wait for /api/health on 18897
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:18897/api/health" > /tmp/health2.json; then
-              jq -e '.status == "healthy"' /tmp/health2.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health2.json
+          bash .github/scripts/wait-for-health.sh \
+            --port 18897 --log logs/studio_extra.log --tmp /tmp/health2.json
 
       - name: Pass bootstrap pw for extra UI test
         run: |
@@ -411,4 +424,7 @@ jobs:
             logs/playwright-permissions-*
             logs/playwright_extra
             logs/studio-permissions-*.log
-          retention-days: 7
+          # 1 day, matching the repository-wide cap. A larger value here is
+          # silently clamped to that cap today, so stating 7 only invites the
+          # artifacts to re-inflate if the cap is ever raised.
+          retention-days: 1
