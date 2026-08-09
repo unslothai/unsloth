@@ -26,7 +26,7 @@ Downstream that is the lm_head matmul in
 import pytest
 
 torch = pytest.importorskip("torch")
-if not torch.cuda.is_available():                       # unsloth needs an accelerator to import
+if not torch.cuda.is_available():  # unsloth needs an accelerator to import
     pytest.skip("needs an accelerator to import unsloth", allow_module_level = True)
 
 import os
@@ -45,13 +45,13 @@ def _tiny_causal_lm():
     from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 
     config = AutoConfig.from_pretrained("unsloth/Qwen2.5-0.5B-Instruct")
-    config.num_hidden_layers   = 2
-    config.hidden_size         = 64
-    config.intermediate_size   = 128
+    config.num_hidden_layers = 2
+    config.hidden_size = 64
+    config.intermediate_size = 128
     config.num_attention_heads = 4
     config.num_key_value_heads = 2
-    config.vocab_size          = 128
-    config.pad_token_id        = None
+    config.vocab_size = 128
+    config.pad_token_id = None
     config.tie_word_embeddings = False
     torch.manual_seed(0)
     return Qwen2ForCausalLM(config).eval(), config
@@ -98,9 +98,11 @@ def test_plain_causal_lm_returns_hidden_states_after_the_wrapper():
     finally:
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = previous
 
-    assert wrapped.shape == (2, 6, config.hidden_size), (
-        f"expected hidden states of width {config.hidden_size}, got {tuple(wrapped.shape)}"
-    )
+    assert wrapped.shape == (
+        2,
+        6,
+        config.hidden_size,
+    ), f"expected hidden states of width {config.hidden_size}, got {tuple(wrapped.shape)}"
 
     # The hidden states must be the ones the head consumes, or every logprob
     # computed from them is wrong rather than merely differently shaped.
