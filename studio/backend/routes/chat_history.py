@@ -873,7 +873,6 @@ def get_fork_count(
 @router.get("/export", response_model = ChatExportResponse)
 def export_history(current_subject: str = Depends(get_current_subject)):
     from datetime import datetime, timezone
-
     projects, threads, messages = build_chat_history_export()
     return ChatExportResponse(
         exportedAt = datetime.now(timezone.utc).isoformat(),

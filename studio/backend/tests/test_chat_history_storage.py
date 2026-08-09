@@ -140,7 +140,11 @@ def test_chat_export_reads_one_snapshot_during_concurrent_delete(tmp_path, monke
     deleted = False
 
     class InterleavingConnection:
-        def execute(self, sql, parameters = ()):
+        def execute(
+            self,
+            sql,
+            parameters = (),
+        ):
             nonlocal deleted
             cursor = reader.execute(sql, parameters)
             if not deleted and "SELECT * FROM chat_threads" in sql:

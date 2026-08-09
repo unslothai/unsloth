@@ -196,16 +196,11 @@ def test_clear_history_fences_pending_thread_ids(monkeypatch):
 
     response = chat_history.clear_history(
         request,
-        chat_history.ChatClearRequest(
-            ids = ["pending-thread"], operationId = "clear-operation-1"
-        ),
+        chat_history.ChatClearRequest(ids = ["pending-thread"], operationId = "clear-operation-1"),
         current_subject = "test-user",
     )
 
-    assert response == {
-        "status": "deleted",
-        "deletedThreadIds": ["pending-thread"],
-    }
+    assert response == {"status": "deleted", "deletedThreadIds": ["pending-thread"]}
     assert captured == ["pending-thread"]
     assert captured_operation_ids == ["clear-operation-1"]
 

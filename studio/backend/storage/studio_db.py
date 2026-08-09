@@ -1889,8 +1889,7 @@ def delete_chat_threads(ids: list[str]) -> None:
 
 
 def clear_chat_history_with_active_research_runs(
-    additional_thread_ids: Iterable[str] = (),
-    operation_id: Optional[str] = None,
+    additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
 ) -> tuple[list[str], list[str]]:
     conn = get_connection()
     try:
