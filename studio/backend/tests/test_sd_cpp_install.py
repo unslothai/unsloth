@@ -1614,7 +1614,11 @@ def test_a_generation_waits_out_an_install_before_publishing_itself(monkeypatch)
     waited: list = []
     real_wait_for = threading.Condition.wait_for
 
-    def _record_wait(self, predicate, timeout = None):
+    def _record_wait(
+        self,
+        predicate,
+        timeout = None,
+    ):
         if self is bk._tree_admission:
             waited.append(bool(predicate()))
             # Let the "install" finish, so the generation proceeds instead of hanging the test.
