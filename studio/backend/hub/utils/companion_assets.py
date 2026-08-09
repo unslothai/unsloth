@@ -128,7 +128,10 @@ def record_companion_link(checkpoint_repo_id: str, base_repo_id: str) -> bool:
     if not checkpoint or not base or _normalise(checkpoint) == _normalise(base):
         return False
     # A local filesystem path is not a Hub id and never appears in a cache scan.
-    if "/" not in checkpoint.replace("\\", "/").strip("/") or Path(checkpoint).expanduser().exists():
+    if (
+        "/" not in checkpoint.replace("\\", "/").strip("/")
+        or Path(checkpoint).expanduser().exists()
+    ):
         return False
     if Path(base).expanduser().exists():
         return False
@@ -226,9 +229,7 @@ def is_companion_base(repo_id: str) -> bool:
     if key in known_companion_base_ids():
         return True
     return any(
-        _normalise(base) == key
-        for bases in read_companion_links().values()
-        for base in bases
+        _normalise(base) == key for bases in read_companion_links().values() for base in bases
     )
 
 
@@ -252,9 +253,7 @@ def _cached_model_repo_ids(cache_scans) -> list[str]:
 
 
 def required_companion_bases(
-    cache_scans,
-    *,
-    ignore_repo_ids: Iterable[str] = (),
+    cache_scans, *, ignore_repo_ids: Iterable[str] = ()
 ) -> dict[str, set[str]]:
     """``{base_repo_id_lower: {checkpoint repo ids that still need it}}``.
 

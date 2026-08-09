@@ -33,7 +33,7 @@ from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 logger = get_logger(__name__)
 
 
-def _repo_blob_bytes(repo_info, *, only=None) -> int:
+def _repo_blob_bytes(repo_info, *, only = None) -> int:
     """On-disk bytes of *repo_info*, deduped by blob so a file shared across revisions counts once.
 
     ``only`` is an optional predicate on the snapshot-relative file name.
@@ -126,9 +126,7 @@ def companion_dependents(
     Sorted for a stable message. Empty means the base is safe to remove.
     """
     scans = cache_scans if cache_scans is not None else cache_inventory.all_hf_cache_scans()
-    required = companion_assets.required_companion_bases(
-        scans, ignore_repo_ids = ignore_repo_ids
-    )
+    required = companion_assets.required_companion_bases(scans, ignore_repo_ids = ignore_repo_ids)
     return sorted(required.get((base_repo_id or "").strip().lower(), set()))
 
 
@@ -140,9 +138,7 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
 
     reclaimed = 0
     for repo_info in repos:
-        reclaimed += (
-            _variant_bytes(repo_info, variant) if variant else _repo_blob_bytes(repo_info)
-        )
+        reclaimed += _variant_bytes(repo_info, variant) if variant else _repo_blob_bytes(repo_info)
 
     # Would this delete leave the repo with no runnable checkpoint? Only then can its companions
     # become reclaimable; while a sibling quant survives they stay in use.

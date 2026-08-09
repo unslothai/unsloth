@@ -33,7 +33,12 @@ def _isolated_state_root(monkeypatch, tmp_path):
     monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "app-cache")
 
 
-def _file(name: str, size: int, *, snapshot: str = "/cache/snap"):
+def _file(
+    name: str,
+    size: int,
+    *,
+    snapshot: str = "/cache/snap",
+):
     return SimpleNamespace(
         file_name = name.rsplit("/", 1)[-1],
         file_path = f"{snapshot}/{name}",
@@ -42,7 +47,12 @@ def _file(name: str, size: int, *, snapshot: str = "/cache/snap"):
     )
 
 
-def _repo(repo_id: str, files, *, cache: str = "/cache"):
+def _repo(
+    repo_id: str,
+    files,
+    *,
+    cache: str = "/cache",
+):
     snapshot = f"{cache}/models--{repo_id.replace('/', '--')}/snapshots/rev1"
     return SimpleNamespace(
         repo_id = repo_id,
@@ -191,6 +201,7 @@ def test_a_link_for_an_uninstalled_checkpoint_does_not_protect_anything(monkeypa
 
 def test_delete_of_a_companion_base_fails_closed_when_the_cache_cannot_be_read(monkeypatch):
     """Unable to enumerate dependants is not the same as having none."""
+
     def _boom():
         raise OSError("cache unreadable")
 
@@ -226,8 +237,7 @@ def test_orphan_listing_reports_the_stranded_companions_once_the_quants_are_gone
     assert result["total_bytes"] == COMPANION_BYTES
     # The repo dir, not the cache root: the delete route resolves the owning cache from it.
     assert (
-        result["companions"][0]["cache_path"]
-        == "/cache/models--black-forest-labs--FLUX.2-klein-4B"
+        result["companions"][0]["cache_path"] == "/cache/models--black-forest-labs--FLUX.2-klein-4B"
     )
 
 
