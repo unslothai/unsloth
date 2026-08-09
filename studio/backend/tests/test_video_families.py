@@ -48,9 +48,7 @@ def test_the_host_floor_tracks_the_components_the_load_holds():
         126, text_encoder_gb = 27.2, transformer_gb = 20.3
     ) == pytest.approx(64.5, abs = 0.001)
     # Above the tier the answer is the tier's, whatever the components.
-    assert (
-        estimate_h3_diffusers_host_ram_gb(132, text_encoder_gb = 27.2, transformer_gb = 20.3) == 85
-    )
+    assert estimate_h3_diffusers_host_ram_gb(132, text_encoder_gb = 27.2, transformer_gb = 20.3) == 85
 
 
 @pytest.mark.parametrize(
