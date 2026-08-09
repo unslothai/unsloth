@@ -58,7 +58,7 @@ _DTYPE_UNITS = {
     "timestamp": frozenset({"s", "ms", "us", "ns"}),
     "duration": frozenset({"s", "ms", "us", "ns"}),
 }
-_DECIMAL_RE = re.compile(r"decimal(128|256)\(([0-9]+), ?([0-9]+)\)")
+_DECIMAL_RE = re.compile(r"decimal(128|256)\(([0-9]+), ?(-?[0-9]+)\)")
 # Arrow's own precision ceilings.
 _DECIMAL_PRECISION = {"128": 38, "256": 76}
 # Compared with the underscores stripped, since a card may spell these in snake case.
@@ -71,7 +71,20 @@ _FEATURE_TYPE_NAMES = frozenset(
 # A card can alias a feature node into itself, so the walk is bounded rather than trusting
 # the tree to end. Nothing real nests anywhere near this deep.
 _MAX_FEATURE_DEPTH = 64
-_PARAMETERLESS_FEATURES = frozenset("translationvariablelanguages audio image video pdf".split())
+_PARAMETERLESS_FEATURES = frozenset(
+    "translationvariablelanguages audio image video pdf".split()
+)
+# What each feature class cannot be built without. ClassLabel takes any one of its three,
+# the rest take all of theirs.
+_REQUIRED_FEATURE_ARGS = {
+    "value": ("dtype",),
+    "translation": ("languages",),
+    "array2d": ("shape", "dtype"),
+    "array3d": ("shape", "dtype"),
+    "array4d": ("shape", "dtype"),
+    "array5d": ("shape", "dtype"),
+}
+_CLASS_LABEL_ARGS = ("num_classes", "names", "names_file")
 # datasets' own version grammar. Anything else raises when it builds the cache directory.
 _VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 # Ordered, because datasets resolves a split's keyword patterns in this order and samples
@@ -181,7 +194,7 @@ _BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
         **_TEXT_PARAMETERS,
         "sep": str,
         "delimiter": str,
-        "header": (int, str, list),
+        "header": (int, list, frozenset({"infer"})),
         "names": list,
         "column_names": list,
         "index_col": (int, str, list),
@@ -340,7 +353,7 @@ def _known_dtype(dtype: str) -> bool:
     if decimal is not None:
         precision, scale = int(decimal.group(2)), int(decimal.group(3))
         ceiling = _DECIMAL_PRECISION[decimal.group(1)]
-        return 0 < precision <= ceiling and 0 <= scale <= ceiling
+        return 0 < precision <= ceiling and -ceiling <= scale <= ceiling
     parameterised = re.fullmatch(r"([a-z0-9_]+)\[([^\]]*)\]", dtype)
     if parameterised is None:
         return False
@@ -365,13 +378,14 @@ def _valid_class_label(spec: dict[str, Any]) -> bool:
     if names is None:
         return True
     if isinstance(names, dict):
-        ids = set()
+        ids = []
         for key in names:
             try:
-                ids.add(int(key))
+                ids.append(int(key))
             except (TypeError, ValueError):
                 return False
-        if ids != set(range(len(ids))):
+        # Two keys can name the same id, which leaves a gap once they are sorted.
+        if sorted(ids) != list(range(len(ids))):
             return False
         names = list(names.values())
     if not isinstance(names, list):
@@ -405,11 +419,14 @@ def _valid_feature_node(node: Any, depth: int = 0) -> bool:
         return _valid_feature_node(node["dtype"], depth + 1)
     if role in {"large_list", "list", "sequence", "struct"}:
         return _valid_feature_node(node[role], depth + 1)
-    if role == "class_label":
-        return isinstance(node["class_label"], dict) and _valid_class_label(node["class_label"])
     # A feature class, with the mapping under it being its keyword arguments. datasets
     # expands that value with **, so anything but a mapping raises there.
-    return role.replace("_", "").lower() in _FEATURE_TYPE_NAMES and isinstance(node[role], dict)
+    name = role.replace("_", "").lower()
+    if name not in _FEATURE_TYPE_NAMES or not isinstance(node[role], dict):
+        return False
+    if name == "classlabel":
+        return any(key in node[role] for key in _CLASS_LABEL_ARGS) and _valid_class_label(node[role])
+    return all(key in node[role] for key in _REQUIRED_FEATURE_ARGS.get(name, ()))
 
 
 def _valid_features(features: Any) -> bool:
@@ -1337,12 +1354,14 @@ def _valid_parameter(rule: Any, value: Any) -> bool:
         return value is None
     if value is None:
         return True
-    if isinstance(rule, frozenset):
-        return value in rule
-    types = rule if isinstance(rule, tuple) else (rule,)
+    rules = rule if isinstance(rule, tuple) else (rule,)
+    literals = frozenset().union(*[item for item in rules if isinstance(item, frozenset)])
+    types = tuple(item for item in rules if not isinstance(item, frozenset))
+    if value in literals:
+        return True
     if bool not in types and isinstance(value, bool):
         return False
-    return isinstance(value, types)
+    return bool(types) and isinstance(value, types)
 
 
 def _misparameterised_configs(collapsed: dict[str, dict[str, Any]], module: str) -> set[str]:
@@ -1466,8 +1485,12 @@ def _snapshot_directory_names(snapshot: Path, scans: dict[str, Any]) -> list[str
     return scans[_DIRECTORY_SCAN]
 
 
+_MISSING_DIR = "\x00missing"
+
+
 def _resolved_data_dir(snapshot: Path, raw: str, directories: list[str]) -> Optional[str]:
-    """The directory a config is scoped to, or None when we cannot name exactly one.
+    """The directory a config is scoped to, _MISSING_DIR when it holds nothing, or None when
+    we cannot name exactly one.
 
     The loader globs this string, so every step of it has to be there and a wildcard in it
     is expanded. A wildcard matching several directories is a union we cannot represent, so
@@ -1489,7 +1512,7 @@ def _resolved_data_dir(snapshot: Path, raw: str, directories: list[str]) -> Opti
         )
         return matched[0] if len(matched) == 1 else None
     if not (snapshot / raw).is_dir():
-        return None
+        return _MISSING_DIR
     return _normalized_dir(raw)
 
 
@@ -1498,7 +1521,7 @@ def _inferred_snapshot_options(
     configs: Iterable[tuple[str, str]] = (("default", ""),),
     required_module: Optional[str] = None,
     scans: Optional[dict[str, Optional[list]]] = None,
-) -> set[tuple[str, str]]:
+) -> Optional[set[tuple[str, str]]]:
     """Mirror datasets' default local-file split inference without importing it.
 
     Known gaps, all of which hide an option rather than offer a dead one: names longer than
@@ -1515,11 +1538,15 @@ def _inferred_snapshot_options(
         root = _resolved_data_dir(snapshot, raw, _snapshot_directory_names(snapshot, scans))
         if root is None:
             continue
+        if root is _MISSING_DIR:
+            # get_data_patterns runs for every metadata config while the module is chosen,
+            # so one that finds nothing raises EmptyDatasetError for all of them.
+            return None
         if root not in scans:
             scans[root] = _snapshot_data_files(snapshot / root if root else snapshot)
         files = scans[root]
         if not files:
-            continue
+            return None
 
         grouped = _grouped_splits(files)
         if grouped is None:
@@ -1551,16 +1578,21 @@ def _counted_split(item: Any) -> bool:
     return isinstance(count, (int, float)) and not isinstance(count, str) and count > 0
 
 
-def _info_split_sets(payload: Any, declared: dict[str, Optional[set[str]]]) -> None:
+def _info_split_sets(
+    payload: Any, declared: dict[str, Optional[set[str]]], *, keyed: bool = False
+) -> None:
     """Record the splits dataset_info promises per config, or None when it promises a size
     the data cannot match. datasets verifies the built splits against these, so a promise
     that does not hold takes the config down with it."""
     entries = payload if isinstance(payload, list) else [payload]
-    if isinstance(payload, dict) and not ("splits" in payload or "config_name" in payload):
-        entries = []
-        for name, entry in payload.items():
-            if isinstance(entry, dict):
-                entries.append({"config_name": entry.get("config_name", name), **entry})
+    if keyed and isinstance(payload, dict):
+        # Only the legacy json file is keyed by config; a card's mapping is one info whose
+        # unknown keys datasets drops.
+        entries = [
+            {"config_name": entry.get("config_name", name), **entry}
+            for name, entry in payload.items()
+            if isinstance(entry, dict)
+        ]
     for entry in entries:
         if not isinstance(entry, dict) or "splits" not in entry:
             continue
@@ -1618,9 +1650,13 @@ def _snapshot_card_options(
         # DatasetInfosDict calls .get on each entry, so anything else raises before a split
         # could start.
         return options
-    _add_config_options(options, card_data.get("configs"))
+    # datasets keys its configs by name, so a repeated one is last-wins and only that last
+    # entry declares anything.
+    collapsed = _collapsed_configs(card_data.get("configs"))
+    _add_config_options(options, list(collapsed.values()) if collapsed else None)
+    card_promised: dict[str, Optional[set[str]]] = {}
     if info is not None:
-        _info_split_sets(info, promised)
+        _info_split_sets(info, card_promised)
 
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)
@@ -1644,10 +1680,15 @@ def _snapshot_card_options(
             # The factory iterates this payload and builds a DatasetInfo per entry, so
             # any other shape raises before a split could start.
             return set()
+        if not _valid_dataset_info(list(payload.values())):
+            # Each entry is turned into a DatasetInfo there, so a bad field raises as well.
+            return set()
         if len(payload) == 1:
             # A lone legacy entry is renamed, whatever the old config was called.
             payload = {"default": next(iter(payload.values()))}
-        _info_split_sets(payload, promised)
+        _info_split_sets(payload, promised, keyed = True)
+    # legacy_dataset_infos.update(dataset_infos): the card has the last word.
+    promised.update(card_promised)
     # datasets infers patterns per config, so a config with no data_files still gets them even
     # when a sibling config declared its own, and it builds under that config's name.
     pending = [
@@ -1657,7 +1698,6 @@ def _snapshot_card_options(
     ]
     # Whether the loader has configs at all, not whether the picker can show them: a card
     # naming only an unshowable config still stops datasets inferring a default one.
-    collapsed = _collapsed_configs(card_data.get("configs"))
     if collapsed:
         scanned = _snapshot_all_files(snapshot)
         if scanned is None:
@@ -1689,9 +1729,12 @@ def _snapshot_card_options(
         options = {(config, split) for config, split in options if config not in dead}
         pending = [entry for entry in pending if entry[0] not in dead]
         if pending:
-            options.update(_inferred_snapshot_options(snapshot, pending, required, scans))
+            inferred = _inferred_snapshot_options(snapshot, pending, required, scans)
+            if inferred is None:
+                return set()
+            options.update(inferred)
     elif not options:
-        options.update(_inferred_snapshot_options(snapshot, scans = scans))
+        options.update(_inferred_snapshot_options(snapshot, scans = scans) or set())
     return options
 
 
