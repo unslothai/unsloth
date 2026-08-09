@@ -50,7 +50,8 @@ for (const [page, runtime, path] of PAGES) {
     assert.match(listener, /dropResidentState\(\)/);
     const drop = SOURCE.slice(
       SOURCE.indexOf("const dropResidentState = useCallback("),
-      SOURCE.indexOf("const dropResidentState = useCallback(") + 500,
+      // To the end of the callback, not a fixed window: the body grew a cancel fence.
+      SOURCE.indexOf("}, [dismissLoadToast, pickGuard]);"),
     );
     assert.match(drop, /clearTimeout\(pollTimer\.current\)/);
     assert.doesNotMatch(

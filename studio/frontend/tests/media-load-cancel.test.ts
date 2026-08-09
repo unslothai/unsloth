@@ -42,12 +42,13 @@ for (const [page, path] of PAGES) {
       "the load toast must carry a cancel action, not just a close button",
     );
     // Every toast site has to pass it: the toast is created by handleLoad, by
-    // the mount-time resume of a load started elsewhere, and re-created in place
-    // by each progress tick. A tick that dropped the action would make the
-    // button vanish one second into the load.
+    // the mount-time resume of a load started elsewhere, re-created in place by
+    // each progress tick, and rebuilt by handleCancelLoad when the unload fails
+    // and the load it could not stop has to stay visible. A tick that dropped
+    // the action would make the button vanish one second into the load.
     // Call sites only: the declaration's own argument list opens with a newline.
     const sites = SOURCE.match(/loadToastArgs\((?!\n)[^)\n]*\)/g) ?? [];
-    assert.equal(sites.length, 3, "expected the three load-toast call sites");
+    assert.equal(sites.length, 4, "expected the four load-toast call sites");
     for (const site of sites) {
       assert.match(
         site,
@@ -119,6 +120,77 @@ for (const [page, path] of PAGES) {
     );
   });
 
+
+  test(`the ${page} cancel fences the pending start request`, () => {
+    // Cancel is reachable the instant `busy` turns "loading", which is before the start request
+    // has even been sent. Its unload can therefore reach the backend BEFORE begin_load registers
+    // the load, find nothing to stop, and return success -- after which the load runs on with no
+    // toast and no Cancel button. handleLoad has to notice that and unload again.
+    const load = SOURCE.slice(
+      SOURCE.indexOf("const handleLoad = useCallback("),
+      SOURCE.indexOf("// Set (or clear) the Transform"),
+    );
+    const body = load.length > 0 ? load : SOURCE.slice(SOURCE.indexOf("const handleLoad = useCallback("));
+    assert.match(
+      body,
+      /const startSeq = cancelSeq\.current;/,
+      "the cancel counter must be sampled BEFORE the start request goes out",
+    );
+    assert.match(body, /if \(startSeq !== cancelSeq\.current\) \{/);
+    assert.match(
+      body,
+      /await unload(Diffusion|Video)Model\(\)/,
+      "a cancel that raced the start must unload again once the load exists",
+    );
+    // ...and must NOT then start polling a load it just cancelled.
+    const raced = body.slice(body.indexOf("if (startSeq !== cancelSeq.current)"));
+    assert.doesNotMatch(
+      raced.slice(0, raced.indexOf("return false;")),
+      /void pollLoadProgress\(\)/,
+    );
+  });
+
+  test(`the ${page} progress poll is invalidated by a cancel`, () => {
+    // clearTimeout stops the NEXT tick. A tick already awaiting its response still lands, and its
+    // ready branch would announce "Model loaded" and issue a status ticket newer than the
+    // unload's, so the unloaded answer is dropped as stale and the controls keep advertising a
+    // model that is gone.
+    const poll = SOURCE.slice(
+      SOURCE.indexOf("const pollLoadProgress = useCallback("),
+      SOURCE.indexOf("}, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);"),
+    );
+    assert.match(poll, /const seq = cancelSeq\.current;/);
+    assert.match(poll, /if \(seq !== cancelSeq\.current\) return;/);
+    // The status read is the one that has to be checked on BOTH sides of its await.
+    assert.match(poll, /const loaded = await get(Diffusion|Video)Status\(\);\s*\n\s*if \(seq !== cancelSeq\.current\) \{/);
+  });
+
+  test(`the ${page} cancel counter is bumped by every teardown`, () => {
+    const drop = SOURCE.slice(
+      SOURCE.indexOf("const dropResidentState = useCallback("),
+      SOURCE.indexOf("}, [dismissLoadToast, pickGuard]);"),
+    );
+    assert.match(
+      drop,
+      /cancelSeq\.current \+= 1;/,
+      "an eject from the loaded-models card cancels a load too, so it must fence as well",
+    );
+  });
+
+  test(`the ${page} restores load tracking when the unload fails`, () => {
+    // dropResidentState has already killed the poll and the toast by the time the unload's
+    // failure is known, and refreshStatus cannot bring them back: a first load has nothing
+    // resident to report. Without a restore the load keeps running, invisibly and uncancellable.
+    const handler = SOURCE.slice(
+      SOURCE.indexOf("const handleCancelLoad = useCallback("),
+      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
+    );
+    assert.match(handler, /const wasLoading = busy === "loading";/);
+    assert.match(handler, /setBusy\("loading"\);/);
+    assert.match(handler, /loadToastId\.current = toast\(/);
+    assert.match(handler, /void pollLoadProgress\(\);/);
+  });
+
   test(`the ${page} cancel names the load, not the download`, () => {
     // A user mid-load can have a staged download in the manager panel too, and
     // the two stop different things: this one abandons the load, that one stops
@@ -134,4 +206,18 @@ for (const [page, path] of PAGES) {
 
 test("the download manager keeps its own, differently named cancel", () => {
   assert.match(DOWNLOAD_PANEL, /"Cancel download"/);
+});
+
+
+test("cancelling a deploy does not leave the adapter queued", () => {
+  // handleDeployAdapter parks the trained adapter in pendingDeploy and loads its base. That ref
+  // is applied to whatever LoRA-capable model becomes resident NEXT, so a cancelled deploy would
+  // silently mix a discarded adapter into an unrelated model's generations. Clearing it belongs
+  // in dropResidentState, which every cancel and every eject already runs.
+  const SOURCE = read("../src/features/images/images-page.tsx");
+  const drop = SOURCE.slice(
+    SOURCE.indexOf("const dropResidentState = useCallback("),
+    SOURCE.indexOf("}, [dismissLoadToast, pickGuard]);"),
+  );
+  assert.match(drop, /pendingDeploy\.current = null;/);
 });
