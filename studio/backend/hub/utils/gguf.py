@@ -151,11 +151,18 @@ def is_h3_bundle_repo(repo_id: str) -> bool:
     return repo_id.strip().lower() in _H3_BUNDLE_REPOS
 
 
+# Both released denoiser partitions are valid picks -- which one is picked IS the task. Kept in
+# step with validate_h3_transformer_filename in core/inference/video_minimax_h3.py, which the load
+# enforces; listing only FL2VA hid every published Ref2VA quant from the picker even though the
+# loader routes it and the reference UI depends on it.
+_H3_DENOISER_PARTITIONS = ("minimax_h3_fl2va", "minimax_h3_ref2va")
+
+
 def _is_selectable_repo_gguf(repo_id: str, filename: str) -> bool:
     """Hide auxiliary GGUFs from repos that bundle several model roles."""
     if is_h3_bundle_repo(repo_id):
         name = Path(filename).name.lower()
-        return name.startswith("minimax_h3_fl2va") and name.endswith(".gguf")
+        return name.startswith(_H3_DENOISER_PARTITIONS) and name.endswith(".gguf")
     return True
 
 
