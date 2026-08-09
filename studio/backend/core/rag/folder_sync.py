@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import sqlite3
@@ -14,9 +13,8 @@ import stat
 import threading
 import time
 import uuid
+from contextlib import closing
 import weakref
-from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -192,6 +190,7 @@ def create_folder(
     scope_type: str,
     scope_id: str,
     path: str,
+    expected_identity: tuple[int, int] | None = None,
     name: str | None = None,
     auto_sync: bool = True,
 ) -> dict:
@@ -202,6 +201,8 @@ def create_folder(
         root_device, root_inode = _root_identity(normalized)
     except RuntimeError as exc:
         raise ValueError(str(exc)) from exc
+    if expected_identity is not None and (root_device, root_inode) != expected_identity:
+        raise ValueError("Linked folder changed after it was selected")
     scope = (
         store.kb_scope(scope_id)
         if scope_type == "knowledge_base"
@@ -224,10 +225,20 @@ def create_folder(
             for row in existing:
                 existing_key = _path_key(row["path"])
                 if existing_key == normalized_key or _same_file(row["path"], normalized):
+                    if row["status"] == "retired" or row["delete_remove_index"] is not None:
+                        raise ValueError("Linked folder is still being removed")
                     conn.rollback()
-                    return _reauthorize_folder(row["id"], (root_device, root_inode))
+                    return _reauthorize_folder(row["id"], normalized, expected_identity)
                 if _paths_overlap(existing_key, normalized_key):
                     raise ValueError("Linked folders in the same scope cannot overlap")
+            try:
+                current_identity = _root_identity(normalized)
+            except RuntimeError as exc:
+                raise ValueError(str(exc)) from exc
+            if current_identity != (root_device, root_inode) or (
+                expected_identity is not None and current_identity != expected_identity
+            ):
+                raise ValueError("Linked folder changed after it was selected")
             conn.execute(
                 "INSERT INTO linked_folders(id, scope_type, scope_id, scope, path, name, "
                 "root_device, root_inode, auto_sync, status, created_at, updated_at) "
@@ -258,7 +269,9 @@ def create_folder(
             conn.close()
 
 
-def _reauthorize_folder(folder_id: str, identity: tuple[int, int]) -> dict:
+def _reauthorize_folder(
+    folder_id: str, path: str, expected_identity: tuple[int, int] | None
+) -> dict:
     with _folder_lock(folder_id):
         conn = rag_db.get_connection()
         try:
@@ -268,6 +281,12 @@ def _reauthorize_folder(folder_id: str, identity: tuple[int, int]) -> dict:
                 is None
             ):
                 raise ValueError("Linked folder changed while it was reauthorized")
+            try:
+                identity = _root_identity(path)
+            except RuntimeError as exc:
+                raise ValueError(str(exc)) from exc
+            if expected_identity is not None and identity != expected_identity:
+                raise ValueError("Linked folder changed after it was selected")
             conn.execute(
                 "UPDATE linked_folders SET root_device=?, root_inode=?, updated_at=? WHERE id=?",
                 (*identity, _now(), folder_id),
@@ -288,6 +307,7 @@ def create_folder_with_sync(
     scope_type: str,
     scope_id: str,
     path: str,
+    expected_identity: tuple[int, int] | None = None,
     name: str | None = None,
     auto_sync: bool = True,
 ) -> tuple[dict, str]:
@@ -303,6 +323,7 @@ def create_folder_with_sync(
             scope_type = scope_type,
             scope_id = scope_id,
             path = path,
+            expected_identity = expected_identity,
             name = name,
             auto_sync = auto_sync,
         )
@@ -310,17 +331,13 @@ def create_folder_with_sync(
 
 
 def get_folder(folder_id: str) -> dict | None:
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         row = conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
         return dict(row) if row else None
-    finally:
-        conn.close()
 
 
 def list_folders(scope: str) -> list[dict]:
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         rows = conn.execute(
             "SELECT f.*, COUNT(ff.relative_path) AS file_count, (SELECT j.id FROM "
             "linked_folder_sync_jobs j WHERE j.folder_id=f.id AND j.status IN ('pending','running') "
@@ -330,8 +347,6 @@ def list_folders(scope: str) -> list[dict]:
             (scope,),
         ).fetchall()
         return [dict(row) for row in rows]
-    finally:
-        conn.close()
 
 
 def update_folder(
@@ -350,8 +365,7 @@ def _update_folder(
     name: str | None = None,
     auto_sync: bool | None = None,
 ) -> dict:
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         row = conn.execute(
             "SELECT status, delete_remove_index FROM linked_folders WHERE id=?", (folder_id,)
         ).fetchone()
@@ -374,8 +388,6 @@ def _update_folder(
         return dict(
             conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
         )
-    finally:
-        conn.close()
 
 
 def _remove_snapshot(path: str | None) -> None:
@@ -407,7 +419,6 @@ def _remove_retired_snapshot(path: str | None) -> None:
 def _delete_retired_folder(folder_id: str) -> bool | None:
     """Finish a durable unlink once no process still owns its sync job."""
     conn = rag_db.get_connection()
-    snapshots: list[str] = []
     try:
         conn.execute("BEGIN IMMEDIATE")
         folder = conn.execute(
@@ -430,12 +441,13 @@ def _delete_retired_folder(folder_id: str) -> bool | None:
             "JOIN documents d ON d.id=ff.document_id WHERE ff.folder_id=?",
             (folder_id,),
         ).fetchall()
+        if folder["delete_remove_index"]:
+            for snapshot in dict.fromkeys(doc["stored_path"] for doc in docs):
+                _remove_retired_snapshot(snapshot)
         conn.execute("DELETE FROM linked_folder_files WHERE folder_id=?", (folder_id,))
         for doc in docs:
             if folder["delete_remove_index"]:
                 store.delete_document(conn, doc["id"], commit = False)
-                if doc["stored_path"]:
-                    snapshots.append(doc["stored_path"])
             else:
                 conn.execute(
                     "UPDATE documents SET linked_folder_id=NULL, linked_relative_path=NULL "
@@ -455,73 +467,59 @@ def _delete_retired_folder(folder_id: str) -> bool | None:
         raise
     finally:
         conn.close()
-    for snapshot in snapshots:
-        _remove_snapshot(snapshot)
     return True
 
 
 def _reconcile_retired_folder_deletions() -> None:
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         folder_ids = [
             row["id"]
             for row in conn.execute(
                 "SELECT id FROM linked_folders WHERE delete_remove_index IS NOT NULL"
             )
         ]
-    finally:
-        conn.close()
     for folder_id in folder_ids:
         _delete_retired_folder(folder_id)
 
 
 def delete_folder(folder_id: str, *, remove_index: bool = True) -> bool:
-    with _folder_lock(folder_id):
-        conn = rag_db.get_connection()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            if (
-                conn.execute("SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
-                is None
-            ):
-                conn.rollback()
-                return False
-            conn.execute(
-                "UPDATE linked_folders SET auto_sync=0, status='retired', "
-                "delete_remove_index=COALESCE(delete_remove_index, ?), updated_at=? WHERE id=?",
-                (int(remove_index), _now(), folder_id),
-            )
-            conn.execute(
-                "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
-                "error='Linked folder was removed', completed_at=? "
-                "WHERE folder_id=? AND status IN ('pending','running')",
-                (_now(), folder_id),
-            )
-            conn.commit()
-        except Exception:
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)).fetchone() is None:
             conn.rollback()
-            raise
-        finally:
-            conn.close()
-        while _delete_retired_folder(folder_id) is False:
-            time.sleep(0.05)
-        return True
+            return False
+        conn.execute(
+            "UPDATE linked_folders SET auto_sync=0, status='retired', "
+            "delete_remove_index=COALESCE(delete_remove_index, ?), updated_at=? WHERE id=?",
+            (int(remove_index), _now(), folder_id),
+        )
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
+            "error='Linked folder was removed', completed_at=? "
+            "WHERE folder_id=? AND status IN ('pending','running')",
+            (_now(), folder_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    while _delete_retired_folder(folder_id) is False:
+        time.sleep(0.05)
+    return True
 
 
 def _retirement_connection():
     conn = rag_db.get_metadata_connection()
     try:
         with _retirement_schema_lock:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS linked_folder_retired_scopes ("
-                "scope TEXT NOT NULL PRIMARY KEY, retired_at TEXT NOT NULL, "
-                "restore_state_json TEXT)"
+                "scope TEXT NOT NULL PRIMARY KEY, retired_at TEXT NOT NULL, purged_at TEXT)"
             )
-            columns = _metadata_table_columns(conn, "linked_folder_retired_scopes")
-            if "restore_state_json" not in columns:
-                conn.execute(
-                    "ALTER TABLE linked_folder_retired_scopes ADD COLUMN restore_state_json TEXT"
-                )
             conn.commit()
     except Exception:
         conn.close()
@@ -538,34 +536,12 @@ def _metadata_table_exists(conn, table: str) -> bool:
     )
 
 
-def _metadata_table_columns(conn, table: str) -> set[str]:
-    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-
-
-def _retire_scope_rows(conn, scope: str, folders: list[dict]) -> None:
+def _retire_scope_rows(conn, scope: str) -> None:
     folders_exist = _metadata_table_exists(conn, "linked_folders")
     jobs_exist = folders_exist and _metadata_table_exists(conn, "linked_folder_sync_jobs")
-    jobs_have_rebuild_request = False
-    if jobs_exist:
-        jobs_have_rebuild_request = "rebuild_requested" in _metadata_table_columns(
-            conn, "linked_folder_sync_jobs"
-        )
-        active_jobs = conn.execute(
-            "SELECT j.* FROM linked_folder_sync_jobs j "
-            "JOIN linked_folders f ON f.id=j.folder_id WHERE f.scope=? "
-            "AND j.status IN ('pending','running')",
-            (scope,),
-        ).fetchall()
-        jobs_by_folder: dict[str, list[dict]] = {}
-        for job in active_jobs:
-            jobs_by_folder.setdefault(job["folder_id"], []).append(dict(job))
-        for folder in folders:
-            folder["_retired_active_jobs"] = jobs_by_folder.get(folder["id"], [])
-    restore_state = json.dumps(folders, separators = (",", ":"), sort_keys = True)
     conn.execute(
-        "INSERT OR IGNORE INTO linked_folder_retired_scopes"
-        "(scope, retired_at, restore_state_json) VALUES(?, ?, ?)",
-        (scope, _now(), restore_state),
+        "INSERT OR IGNORE INTO linked_folder_retired_scopes(scope, retired_at) VALUES(?, ?)",
+        (scope, _now()),
     )
     if folders_exist:
         conn.execute(
@@ -574,253 +550,165 @@ def _retire_scope_rows(conn, scope: str, folders: list[dict]) -> None:
             (_now(), scope),
         )
     if jobs_exist:
-        rebuild_reset = ", rebuild_requested=0" if jobs_have_rebuild_request else ""
-        rebuild_filter = " OR rebuild_requested=1" if jobs_have_rebuild_request else ""
         conn.execute(
             "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
-            f"error='Owning scope was removed'{rebuild_reset}, completed_at=? "
+            "error='Owning scope was removed', rebuild_requested=0, completed_at=? "
             "WHERE folder_id IN (SELECT id FROM linked_folders WHERE scope=?) "
-            f"AND (status IN ('pending','running'){rebuild_filter})",
+            "AND (status IN ('pending','running') OR rebuild_requested=1)",
             (_now(), scope),
         )
 
 
-@contextmanager
-def scope_retirement_lock(scope: str) -> Iterator[list[dict]]:
-    """Freeze a scope's folder set and wait for active reconciliation to finish."""
-    with _scope_lock(scope), ExitStack() as locks:
-        conn = _retirement_connection()
-        try:
-            folders = (
-                [
-                    dict(row)
-                    for row in conn.execute("SELECT * FROM linked_folders WHERE scope=?", (scope,))
-                ]
-                if _metadata_table_exists(conn, "linked_folders")
-                else []
-            )
-        finally:
-            conn.close()
-        for folder in sorted(folders, key = lambda row: row["id"]):
-            locks.enter_context(_folder_lock(folder["id"]))
-        yield folders
-
-
-def retire_scope(scope: str) -> list[dict]:
+def retire_scope(scope: str) -> None:
     """Stop all future work, even when the vector extension cannot load."""
-    with scope_retirement_lock(scope) as folders:
-        conn = _retirement_connection()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            _retire_scope_rows(conn, scope, folders)
-            conn.commit()
-            return folders
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+    conn = _retirement_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _retire_scope_rows(conn, scope)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
-def retire_and_delete_kb(kb_id: str) -> list[dict] | None:
+def retire_and_delete_kb(kb_id: str) -> bool:
     """Atomically retire a KB scope and delete its owner row.
 
     Document rows remain as the durable cleanup queue until
     ``delete_retired_scope`` removes their stored files and database state.
     """
     scope = store.kb_scope(kb_id)
-    with _scope_lock(scope), ExitStack() as locks:
-        conn = rag_db.get_connection()
-        try:
-            if store.get_kb(conn, kb_id) is None:
-                return None
-            folders = [
-                dict(row)
-                for row in conn.execute("SELECT * FROM linked_folders WHERE scope=?", (scope,))
-            ]
-            for folder in sorted(folders, key = lambda row: row["id"]):
-                locks.enter_context(_folder_lock(folder["id"]))
-            conn.execute("BEGIN IMMEDIATE")
-            if store.get_kb(conn, kb_id) is None:
-                conn.rollback()
-                return None
-            folders = [
-                dict(row)
-                for row in conn.execute("SELECT * FROM linked_folders WHERE scope=?", (scope,))
-            ]
-            _retire_scope_rows(conn, scope, folders)
-            store.delete_kb(conn, kb_id, commit = False, delete_documents = False)
-            conn.commit()
-            return folders
-        except Exception:
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if store.get_kb(conn, kb_id) is None:
             conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-
-def restore_scope(scope: str, folders: list[dict] | None = None) -> None:
-    """Undo a retirement when deletion of the owning scope did not commit."""
-    if folders is None:
-        conn = _retirement_connection()
-        try:
-            row = conn.execute(
-                "SELECT restore_state_json FROM linked_folder_retired_scopes WHERE scope=?",
-                (scope,),
-            ).fetchone()
-            if row is None:
-                return
-            if row["restore_state_json"]:
-                folders = json.loads(row["restore_state_json"])
-            else:
-                folders = [
-                    {
-                        **dict(folder),
-                        "auto_sync": 1,
-                        "status": "pending",
-                        "last_error": None,
-                    }
-                    for folder in conn.execute(
-                        "SELECT * FROM linked_folders WHERE scope=?", (scope,)
-                    )
-                ]
-        finally:
-            conn.close()
-    with _scope_lock(scope), ExitStack() as locks:
-        for folder in sorted(folders, key = lambda row: row["id"]):
-            locks.enter_context(_folder_lock(folder["id"]))
-        conn = _retirement_connection()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM linked_folder_retired_scopes WHERE scope=?", (scope,))
-            folders_exist = _metadata_table_exists(conn, "linked_folders")
-            jobs_exist = folders_exist and _metadata_table_exists(conn, "linked_folder_sync_jobs")
-            if folders_exist:
-                for folder in folders:
-                    conn.execute(
-                        "UPDATE linked_folders SET auto_sync=?, status=?, last_error=?, "
-                        "updated_at=? WHERE id=? AND scope=? AND status='retired'",
-                        (
-                            folder["auto_sync"],
-                            folder["status"],
-                            folder["last_error"],
-                            folder["updated_at"],
-                            folder["id"],
-                            scope,
-                        ),
-                    )
-            if jobs_exist:
-                job_columns = _metadata_table_columns(conn, "linked_folder_sync_jobs")
-                for folder in folders:
-                    for job in folder.get("_retired_active_jobs", []):
-                        rebuild_restore = (
-                            ", rebuild_requested=?" if "rebuild_requested" in job_columns else ""
-                        )
-                        params = (job.get("rebuild_requested", 0),) if rebuild_restore else ()
-                        conn.execute(
-                            "UPDATE linked_folder_sync_jobs SET status='pending', stage='queued', "
-                            "progress=0, discovered=0, added=0, changed=0, deleted=0, renamed=0, "
-                            f"failed=0, error=NULL{rebuild_restore}, started_at=NULL, completed_at=NULL "
-                            "WHERE id=? AND status='failed' AND error='Owning scope was removed'",
-                            (*params, job["id"]),
-                        )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-    _wake.set()
+            return False
+        _retire_scope_rows(conn, scope)
+        store.delete_kb(conn, kb_id, commit = False, delete_documents = False)
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def delete_retired_scope(scope: str) -> bool:
-    """Atomically purge an ownerless scope while preserving retry state on failure."""
-    with scope_retirement_lock(scope):
-        conn = rag_db.get_connection()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            if (
-                conn.execute(
-                    "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
-                ).fetchone()
-                is None
-            ):
-                conn.rollback()
-                return False
-            live_ingestion = conn.execute(
-                "SELECT 1 FROM ingestion_jobs j JOIN rag_job_leases l "
-                "ON l.kind=? AND l.job_id=j.id WHERE j.scope=? "
-                "AND j.status IN ('pending','running') AND l.expires_at>? LIMIT 1",
-                (job_leases.INGESTION, scope, _now()),
-            ).fetchone()
-            if live_ingestion is not None:
-                conn.rollback()
-                return False
-            live_folder_sync = conn.execute(
-                "SELECT 1 FROM linked_folder_sync_jobs j JOIN linked_folders f "
-                "ON f.id=j.folder_id JOIN rag_job_leases l "
-                "ON l.kind=? AND l.job_id=j.id WHERE f.scope=? "
-                "AND l.expires_at>? LIMIT 1",
-                (job_leases.FOLDER_SYNC, scope, _now()),
-            ).fetchone()
-            if live_folder_sync is not None:
-                conn.rollback()
-                return False
-            documents = conn.execute(
-                "SELECT id, stored_path FROM documents WHERE scope=?", (scope,)
-            ).fetchall()
-            stored_paths = [document["stored_path"] for document in documents]
-            for stored_path in dict.fromkeys(stored_paths):
-                _remove_retired_snapshot(stored_path)
-            for document in documents:
-                store.delete_document(conn, document["id"], commit = False)
+    """Purge an ownerless scope and retain its tombstone permanently.
+
+    Scope identifiers are treated as non-reusable lifecycle IDs. Keeping the small
+    tombstone closes late cross-database upload/link races without a distributed transaction.
+    File removal happens before database rows are discarded, so any failure remains
+    retryable from durable metadata.
+    """
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if (
             conn.execute(
-                "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
-                "(SELECT id FROM ingestion_jobs WHERE scope=?)",
-                (job_leases.INGESTION, scope),
-            )
-            conn.execute("DELETE FROM ingestion_jobs WHERE scope=?", (scope,))
-            conn.execute(
-                "DELETE FROM linked_folder_files WHERE folder_id IN "
-                "(SELECT id FROM linked_folders WHERE scope=?)",
+                "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=? AND purged_at IS NULL",
                 (scope,),
-            )
-            conn.execute(
-                "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
-                "(SELECT j.id FROM linked_folder_sync_jobs j JOIN linked_folders f "
-                "ON f.id=j.folder_id WHERE f.scope=?)",
-                (job_leases.FOLDER_SYNC, scope),
-            )
-            conn.execute(
-                "DELETE FROM linked_folder_sync_jobs WHERE folder_id IN "
-                "(SELECT id FROM linked_folders WHERE scope=?)",
-                (scope,),
-            )
-            conn.execute("DELETE FROM linked_folders WHERE scope=?", (scope,))
-            conn.execute("DELETE FROM linked_folder_retired_scopes WHERE scope=?", (scope,))
-            conn.commit()
-        except Exception:
+            ).fetchone()
+            is None
+        ):
             conn.rollback()
-            raise
-        finally:
-            conn.close()
+            return False
+        live_ingestion = conn.execute(
+            "SELECT 1 FROM ingestion_jobs j JOIN rag_job_leases l "
+            "ON l.kind=? AND l.job_id=j.id WHERE j.scope=? "
+            "AND j.status IN ('pending','running') AND l.expires_at>? LIMIT 1",
+            (job_leases.INGESTION, scope, _now()),
+        ).fetchone()
+        if live_ingestion is not None:
+            conn.rollback()
+            return False
+        live_folder_sync = conn.execute(
+            "SELECT 1 FROM linked_folder_sync_jobs j JOIN linked_folders f "
+            "ON f.id=j.folder_id JOIN rag_job_leases l "
+            "ON l.kind=? AND l.job_id=j.id WHERE f.scope=? "
+            "AND l.expires_at>? LIMIT 1",
+            (job_leases.FOLDER_SYNC, scope, _now()),
+        ).fetchone()
+        if live_folder_sync is not None:
+            conn.rollback()
+            return False
+        documents = conn.execute(
+            "SELECT id, stored_path FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+        for stored_path in dict.fromkeys(document["stored_path"] for document in documents):
+            _remove_retired_snapshot(stored_path)
+        for document in documents:
+            store.delete_document(conn, document["id"], commit = False)
+        conn.execute(
+            "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
+            "(SELECT id FROM ingestion_jobs WHERE scope=?)",
+            (job_leases.INGESTION, scope),
+        )
+        conn.execute("DELETE FROM ingestion_jobs WHERE scope=?", (scope,))
+        conn.execute(
+            "DELETE FROM linked_folder_files WHERE folder_id IN "
+            "(SELECT id FROM linked_folders WHERE scope=?)",
+            (scope,),
+        )
+        conn.execute(
+            "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
+            "(SELECT j.id FROM linked_folder_sync_jobs j JOIN linked_folders f "
+            "ON f.id=j.folder_id WHERE f.scope=?)",
+            (job_leases.FOLDER_SYNC, scope),
+        )
+        conn.execute(
+            "DELETE FROM linked_folder_sync_jobs WHERE folder_id IN "
+            "(SELECT id FROM linked_folders WHERE scope=?)",
+            (scope,),
+        )
+        conn.execute("DELETE FROM linked_folders WHERE scope=?", (scope,))
+        conn.execute(
+            "UPDATE linked_folder_retired_scopes SET purged_at=? WHERE scope=?",
+            (_now(), scope),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     return True
 
 
 def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
-    """Restore live owners and purge deleted owners from durable retirement state."""
-    conn = _retirement_connection()
-    try:
-        scopes = [
-            row["scope"] for row in conn.execute("SELECT scope FROM linked_folder_retired_scopes")
-        ]
-    finally:
-        conn.close()
-    restored: list[str] = []
+    """Retire orphaned project scopes and reap ownerless retired scopes."""
+    with closing(rag_db.get_connection()) as conn:
+        retired_scopes = {
+            row["scope"]
+            for row in conn.execute(
+                "SELECT scope FROM linked_folder_retired_scopes WHERE purged_at IS NULL"
+            )
+        }
+        project_scopes = {
+            row["scope"]
+            for row in conn.execute(
+                "SELECT scope FROM linked_folders WHERE scope_type='project' "
+                "UNION SELECT scope FROM documents WHERE project_id IS NOT NULL"
+            )
+        }
+    retired: list[str] = []
     deleted: list[str] = []
-    for scope in scopes:
+    for scope in sorted(project_scopes - retired_scopes):
+        project_id = scope.removeprefix("project_")
+        if not project_id or project_exists(project_id):
+            continue
         try:
-            owner_exists = False
+            retire_scope(scope)
+            retired_scopes.add(scope)
+            retired.append(scope)
+        except Exception:
+            logger.warning("failed to retire orphaned RAG scope %s", scope, exc_info = True)
+    for scope in sorted(retired_scopes):
+        try:
             if scope.startswith("project_"):
                 project_id = scope[len("project_") :]
                 if not project_id:
@@ -830,40 +718,30 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
                 kb_id = scope[len("kb_") :]
                 if not kb_id:
                     continue
-                owner_conn = rag_db.get_connection()
-                try:
+                with closing(rag_db.get_connection()) as owner_conn:
                     owner_exists = store.get_kb(owner_conn, kb_id) is not None
-                finally:
-                    owner_conn.close()
             else:
                 continue
-            if owner_exists:
-                with _scope_lock(scope):
-                    restore_scope(scope)
-                restored.append(scope)
-            elif delete_retired_scope(scope):
+            if not owner_exists and delete_retired_scope(scope):
                 deleted.append(scope)
         except Exception:
             logger.warning("failed to reconcile retired RAG scope %s", scope, exc_info = True)
-    if restored:
-        logger.info("restored %s interrupted RAG retirement(s)", len(restored))
+    if retired:
+        logger.info("retired %s orphaned RAG scope(s)", len(retired))
     if deleted:
         logger.info("deleted %s retired RAG scope(s)", len(deleted))
-    return {"restored": restored, "deleted": deleted}
+    return {"retired": retired, "deleted": deleted}
 
 
 def scope_retired(scope: str) -> bool:
     with _scope_lock(scope):
-        conn = _retirement_connection()
-        try:
+        with closing(_retirement_connection()) as conn:
             return (
                 conn.execute(
                     "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
                 ).fetchone()
                 is not None
             )
-        finally:
-            conn.close()
 
 
 def scope_lock(scope: str) -> threading.RLock:
@@ -877,8 +755,7 @@ def request_sync(folder_id: str, *, rebuild: bool = False) -> str:
 
 def _request_sync(folder_id: str, *, rebuild: bool = False) -> str:
     job_id = str(uuid.uuid4())
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         conn.execute("BEGIN IMMEDIATE")
         folder = conn.execute(
             "SELECT status, delete_remove_index FROM linked_folders WHERE id=?", (folder_id,)
@@ -920,8 +797,6 @@ def _request_sync(folder_id: str, *, rebuild: bool = False) -> str:
         )
         conn.commit()
         _prune_terminal_jobs(conn)
-    finally:
-        conn.close()
     _wake.set()
     return job_id
 
@@ -939,12 +814,9 @@ def _prune_terminal_jobs(conn) -> None:
 
 
 def get_job(job_id: str) -> dict | None:
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         row = conn.execute("SELECT * FROM linked_folder_sync_jobs WHERE id=?", (job_id,)).fetchone()
         return dict(row) if row else None
-    finally:
-        conn.close()
 
 
 def job_events(job_id: str):
@@ -1041,32 +913,6 @@ def _scan(
     return found, identity
 
 
-def _establish_root_identity(folder_id: str, identity: tuple[int, int]) -> None:
-    """Claim a legacy folder identity without overriding a concurrent claim."""
-    conn = rag_db.get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT root_device, root_inode FROM linked_folders WHERE id=?", (folder_id,)
-        ).fetchone()
-        if row is None:
-            raise RuntimeError("Linked folder not found")
-        persisted = (row["root_device"], row["root_inode"])
-        if None in persisted:
-            conn.execute(
-                "UPDATE linked_folders SET root_device=?, root_inode=?, updated_at=? WHERE id=?",
-                (*identity, _now(), folder_id),
-            )
-        elif persisted != identity:
-            raise RuntimeError("Linked folder root identity changed")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
 def _snapshot(root: str, metadata: dict) -> str:
     source = metadata["path"]
     resolved = os.path.realpath(source)
@@ -1116,29 +962,6 @@ def _copy_exact(source, target, size: int) -> None:
         raise RuntimeError("Linked source changed while it was copied")
 
 
-def _wait_ingestion(job_id: str) -> dict:
-    while True:
-        _check_running()
-        try:
-            row = ingestion.get_job_status(job_id)
-        except Exception:
-            # A transient SQLite lock must not cause us to delete a document whose
-            # ingestion worker is still active.
-            logger.warning("linked-folder ingestion status read failed", exc_info = True)
-            time.sleep(0.1)
-            continue
-        if row is None:
-            raise RuntimeError("Ingestion job disappeared")
-        if row["status"] in _TERMINAL:
-            return row
-        if not ingestion.job_worker_alive(job_id):
-            try:
-                ingestion.fail_stalled_job(job_id, "Ingestion worker exited unexpectedly")
-            except Exception:
-                logger.warning("failed to retire stalled ingestion job", exc_info = True)
-        time.sleep(0.05)
-
-
 def _check_running() -> None:
     stop_event = getattr(_worker_state, "stop_event", _stop)
     if stop_event.is_set():
@@ -1146,8 +969,7 @@ def _check_running() -> None:
     job_id = getattr(_worker_state, "job_id", None)
     if job_id is None:
         return
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         if not job_leases.renew_owned(conn, job_leases.FOLDER_SYNC, job_id):
             conn.rollback()
             raise _LeaseLost
@@ -1164,8 +986,6 @@ def _check_running() -> None:
             conn.commit()
             raise _LeaseLost
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _check_root_identity(root: str, expected: tuple[int, int]) -> None:
@@ -1210,46 +1030,41 @@ def _source_reappeared(root: str, relative_path: str) -> bool:
 def _set_job(job_id: str, **values) -> None:
     if not values:
         return
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         columns = ", ".join(f"{key}=?" for key in values)
         conn.execute(
             f"UPDATE linked_folder_sync_jobs SET {columns} WHERE id=?",
             (*values.values(), job_id),
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _discard_document(document_id: str) -> None:
     conn = rag_db.get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         doc = store.get_document(conn, document_id)
         if doc is not None:
-            store.delete_document(conn, document_id)
-            _remove_snapshot(doc.get("stored_path"))
+            _remove_retired_snapshot(doc.get("stored_path"))
+            store.delete_document(conn, document_id, commit = False)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
 def _install_mapping(
-    folder: dict,
-    rel: str,
-    metadata: dict,
-    document_id: str,
-    content_hash: str,
-    *,
-    renamed_from: str | None = None,
+    folder: dict, rel: str, metadata: dict, document_id: str, content_hash: str
 ) -> None:
     conn = rag_db.get_connection()
-    old_paths: list[str] = []
     try:
         old_rows = conn.execute(
             "SELECT ff.document_id, d.stored_path FROM linked_folder_files ff "
             "LEFT JOIN documents d ON d.id=ff.document_id "
-            "WHERE ff.folder_id=? AND ff.relative_path IN (?, ?)",
-            (folder["id"], rel, renamed_from or rel),
+            "WHERE ff.folder_id=? AND ff.relative_path=?",
+            (folder["id"], rel),
         ).fetchall()
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -1271,29 +1086,20 @@ def _install_mapping(
                 content_hash,
             ),
         )
-        if renamed_from and renamed_from != rel:
-            conn.execute(
-                "DELETE FROM linked_folder_files WHERE folder_id=? AND relative_path=?",
-                (folder["id"], renamed_from),
-            )
         for old in old_rows:
             if old["document_id"] != document_id:
+                _remove_retired_snapshot(old["stored_path"])
                 store.delete_document(conn, old["document_id"], commit = False)
-                if old["stored_path"]:
-                    old_paths.append(old["stored_path"])
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-    for old_path in old_paths:
-        _remove_snapshot(old_path)
 
 
 def _update_mapping_metadata(folder_id: str, rel: str, metadata: dict, content_hash: str) -> None:
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         conn.execute(
             "UPDATE linked_folder_files SET size_bytes=?, mtime_ns=?, device=?, inode=?, "
             "content_hash=?, synced_at=? WHERE folder_id=? AND relative_path=?",
@@ -1309,13 +1115,10 @@ def _update_mapping_metadata(folder_id: str, rel: str, metadata: dict, content_h
             ),
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _delete_mapping(folder_id: str, rel: str) -> None:
     conn = rag_db.get_connection()
-    old_path = None
     try:
         row = conn.execute(
             "SELECT ff.document_id, d.stored_path FROM linked_folder_files ff "
@@ -1326,24 +1129,22 @@ def _delete_mapping(folder_id: str, rel: str) -> None:
         if row is None:
             return
         conn.execute("BEGIN IMMEDIATE")
+        _remove_retired_snapshot(row["stored_path"])
         conn.execute(
             "DELETE FROM linked_folder_files WHERE folder_id=? AND relative_path=?",
             (folder_id, rel),
         )
         store.delete_document(conn, row["document_id"], commit = False)
         conn.commit()
-        old_path = row["stored_path"]
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-    _remove_snapshot(old_path)
 
 
 def _rename_mapping(folder_id: str, old_rel: str, new_rel: str) -> None:
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         row = conn.execute(
             "SELECT document_id FROM linked_folder_files WHERE folder_id=? AND relative_path=?",
             (folder_id, old_rel),
@@ -1360,15 +1161,12 @@ def _rename_mapping(folder_id: str, old_rel: str, new_rel: str) -> None:
             (new_rel, new_rel, row["document_id"]),
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _reconcile_folder(job_id: str) -> None:
     """Run one complete reconciliation; called serially by the coordinator."""
     _check_running()
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         row = conn.execute("SELECT * FROM linked_folder_sync_jobs WHERE id=?", (job_id,)).fetchone()
         if (
             row is None
@@ -1377,8 +1175,6 @@ def _reconcile_folder(job_id: str) -> None:
         ):
             return
         job = dict(row)
-    finally:
-        conn.close()
     folder = get_folder(job["folder_id"])
     if folder is None or folder["status"] == "retired" or folder["delete_remove_index"] is not None:
         _set_job(
@@ -1390,58 +1186,44 @@ def _reconcile_folder(job_id: str) -> None:
         )
         return
     embedding_model = config.effective_embedding_model()
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         conn.execute(
             "UPDATE linked_folders SET status='syncing', last_error=NULL, updated_at=? WHERE id=?",
             (_now(), folder["id"]),
         )
         conn.commit()
-    finally:
-        conn.close()
     try:
         _check_running()
-        expected_identity = None
-        if folder.get("root_device") is not None and folder.get("root_inode") is not None:
-            expected_identity = (folder["root_device"], folder["root_inode"])
+        expected_identity = (folder["root_device"], folder["root_inode"])
         current, scanned_identity = _scan(folder["path"], expected_identity)
         _check_running()
-        _establish_root_identity(folder["id"], scanned_identity)
     except (_SyncStopped, _LeaseLost):
         raise
     except Exception as exc:
         # A partial/unavailable scan is never authoritative for deletion.
         error = _error_text(exc, folder["path"])
         _set_job(job_id, status = "failed", stage = "error", error = error, completed_at = _now())
-        conn = rag_db.get_connection()
-        try:
+        with closing(rag_db.get_connection()) as conn:
             conn.execute(
                 "UPDATE linked_folders SET status='error', last_error=?, updated_at=? WHERE id=?",
                 (error, _now(), folder["id"]),
             )
             conn.commit()
             _prune_terminal_jobs(conn)
-        finally:
-            conn.close()
         return
 
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         known = {
             row["relative_path"]: dict(row)
             for row in conn.execute(
                 "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
             ).fetchall()
         }
-    finally:
-        conn.close()
 
     rebuild = job["kind"] == "rebuild"
     missing = set(known) - set(current)
     new = set(current) - set(known)
     renamed = 0
-    extension_renames: dict[str, str] = {}
-    replacement_succeeded: set[str] = set()
     materially_changed = {
         rel
         for rel in set(current) & set(known)
@@ -1450,89 +1232,15 @@ def _reconcile_folder(job_id: str) -> None:
         or current[rel]["device"] != known[rel]["device"]
         or current[rel]["inode"] != known[rel]["inode"]
     }
-    rename_destinations = new | materially_changed
-    old_by_identity: dict[tuple, set[str]] = {}
-    destinations_by_identity: dict[tuple, set[str]] = {}
-    for rel in missing:
-        old = known[rel]
-        key = (old["device"], old["inode"])
-        old_by_identity.setdefault(key, set()).add(rel)
-    for rel in rename_destinations:
-        meta = current[rel]
-        key = (meta["device"], meta["inode"])
-        destinations_by_identity.setdefault(key, set()).add(rel)
-
-    ambiguous_dependencies: dict[str, set[str]] = {}
-    for key, old_group in old_by_identity.items():
-        destination_group = destinations_by_identity.get(key, set())
-        if not destination_group:
-            continue
-        remaining_old = set(old_group)
-        remaining_destinations = set(destination_group)
-        destination_hashes = {}
-        for rel in sorted(destination_group):
-            _check_running()
-            snapshot = _snapshot(folder["path"], current[rel])
-            try:
-                destination_hashes[rel] = _hash_file(snapshot)
-            finally:
-                _remove_snapshot(snapshot)
-
-        old_by_hash: dict[str, set[str]] = {}
-        destination_by_hash: dict[str, set[str]] = {}
-        for old_rel in old_group:
-            content_hash = known[old_rel].get("content_hash")
-            if content_hash:
-                old_by_hash.setdefault(content_hash, set()).add(old_rel)
-        for rel, content_hash in destination_hashes.items():
-            destination_by_hash.setdefault(content_hash, set()).add(rel)
-        pairs = []
-        for content_hash, old_paths in old_by_hash.items():
-            destination_paths = destination_by_hash.get(content_hash, set())
-            if len(old_paths) == 1 and len(destination_paths) == 1:
-                pairs.append((next(iter(old_paths)), next(iter(destination_paths))))
-        for old_rel, rel in pairs:
-            remaining_old.discard(old_rel)
-            remaining_destinations.discard(rel)
-        if len(remaining_old) == 1 and len(remaining_destinations) == 1 and key[1] not in (None, 0):
-            pairs.append((remaining_old.pop(), remaining_destinations.pop()))
-
-        for old_rel, rel in pairs:
-            missing.discard(old_rel)
-            same_extension = (
-                os.path.splitext(old_rel)[1].lower() == os.path.splitext(rel)[1].lower()
-            )
-            same_content = known[old_rel].get("content_hash") == destination_hashes.get(rel)
-            _check_running()
-            if rel in new and same_extension and same_content:
-                _check_root_identity(folder["path"], scanned_identity)
-                _rename_mapping(folder["id"], old_rel, rel)
-                _update_mapping_metadata(folder["id"], rel, current[rel], destination_hashes[rel])
-                new.discard(rel)
-                known[rel] = {
-                    **known[old_rel],
-                    **current[rel],
-                    "relative_path": rel,
-                    "content_hash": destination_hashes[rel],
-                }
-                renamed += 1
-                replacement_succeeded.add(rel)
-            else:
-                extension_renames[rel] = old_rel
-                if rel in new:
-                    new.discard(rel)
-                    known[rel] = {**known[old_rel], "relative_path": rel}
-
-        if remaining_destinations:
-            for old_rel in remaining_old:
-                ambiguous_dependencies[old_rel] = set(remaining_destinations)
-
-    changed = {
-        rel
-        for rel in set(current) & set(known)
-        if rebuild or rel in extension_renames or rel in materially_changed
-    }
+    changed = set(current) & set(known) if rebuild else materially_changed
     work = sorted(new | changed)
+    missing_by_content: dict[tuple[str, str], list[str]] = {}
+    if not rebuild:
+        for rel in sorted(missing):
+            content_hash = known[rel].get("content_hash")
+            if content_hash:
+                key = (content_hash, os.path.splitext(rel)[1].lower())
+                missing_by_content.setdefault(key, []).append(rel)
     total = len(work) + len(missing)
     _set_job(job_id, stage = "ingesting", discovered = len(current), renamed = renamed)
     added = changed_count = failed = 0
@@ -1546,19 +1254,31 @@ def _reconcile_folder(job_id: str) -> None:
             snapshot = _snapshot(folder["path"], metadata)
             content_hash = _hash_file(snapshot)
             _check_running()
-            if (
-                not rebuild
-                and rel not in extension_renames
-                and rel in changed
-                and content_hash == known[rel].get("content_hash")
-            ):
+            if not rebuild and rel in changed and content_hash == known[rel].get("content_hash"):
                 _check_root_identity(folder["path"], scanned_identity)
                 _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
                 _remove_snapshot(snapshot)
                 snapshot = None
-                replacement_succeeded.add(rel)
                 _set_job(job_id, progress = (index + 1) / max(total, 1))
                 continue
+            if not rebuild and rel in new:
+                rename_key = (content_hash, os.path.splitext(rel)[1].lower())
+                rename_candidates = missing_by_content.get(rename_key)
+                if rename_candidates:
+                    old_rel = rename_candidates.pop(0)
+                    missing.discard(old_rel)
+                    _check_root_identity(folder["path"], scanned_identity)
+                    _rename_mapping(folder["id"], old_rel, rel)
+                    _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
+                    _remove_snapshot(snapshot)
+                    snapshot = None
+                    renamed += 1
+                    _set_job(
+                        job_id,
+                        renamed = renamed,
+                        progress = (index + 1) / max(total, 1),
+                    )
+                    continue
             document_id, ingestion_job = ingestion.start_ingestion(
                 folder["scope"],
                 folder["scope_id"] if folder["scope_type"] == "knowledge_base" else None,
@@ -1570,8 +1290,11 @@ def _reconcile_folder(job_id: str) -> None:
                 linked_folder_id = folder["id"],
                 linked_relative_path = rel,
                 model_name = embedding_model,
+                background = False,
             )
-            result = _wait_ingestion(ingestion_job)
+            result = ingestion.get_job_status(ingestion_job)
+            if result is None:
+                raise RuntimeError("Ingestion job disappeared")
             if result["status"] != "completed":
                 raise RuntimeError(result.get("error") or "Ingestion failed")
             _check_running()
@@ -1582,17 +1305,13 @@ def _reconcile_folder(job_id: str) -> None:
                 metadata,
                 document_id,
                 content_hash,
-                renamed_from = extension_renames.get(rel),
             )
-            replacement_succeeded.add(rel)
             if rel in new:
                 added += 1
             else:
                 changed_count += 1
         except (_SyncStopped, _LeaseLost):
-            if document_id and ingestion_job:
-                ingestion.discard_document_when_finished(ingestion_job, document_id)
-            elif document_id:
+            if document_id:
                 _discard_document(document_id)
             else:
                 _remove_snapshot(snapshot)
@@ -1629,11 +1348,8 @@ def _reconcile_folder(job_id: str) -> None:
         )
 
     deleted = 0
-    for rel in sorted(missing):
+    for rel in sorted(missing) if failed == 0 else ():
         _check_running()
-        dependencies = ambiguous_dependencies.get(rel)
-        if dependencies and not dependencies.issubset(replacement_succeeded):
-            continue
         _check_root_identity(folder["path"], scanned_identity)
         if _source_reappeared(folder["path"], rel):
             raise _FolderChanged("Linked source reappeared during reconciliation")
@@ -1659,8 +1375,7 @@ def _reconcile_folder(job_id: str) -> None:
         error = error,
         completed_at = _now(),
     )
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         conn.execute(
             "UPDATE linked_folders SET status=?, last_error=?, last_scan_at=?, updated_at=? "
             "WHERE id=? AND delete_remove_index IS NULL",
@@ -1668,8 +1383,6 @@ def _reconcile_folder(job_id: str) -> None:
         )
         conn.commit()
         _prune_terminal_jobs(conn)
-    finally:
-        conn.close()
 
 
 def _fail_job(job_id: str, exc: Exception) -> None:
@@ -1679,16 +1392,13 @@ def _fail_job(job_id: str, exc: Exception) -> None:
     _set_job(job_id, status = "failed", stage = "error", error = error, completed_at = _now())
     if job is None:
         return
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         conn.execute(
             "UPDATE linked_folders SET status='error', last_error=?, updated_at=? WHERE id=?",
             (error, _now(), job["folder_id"]),
         )
         conn.commit()
         _prune_terminal_jobs(conn)
-    finally:
-        conn.close()
 
 
 def _pause_job(job_id: str) -> None:
@@ -1696,15 +1406,12 @@ def _pause_job(job_id: str) -> None:
     if job is None:
         return
     _set_job(job_id, status = "pending", stage = "queued", started_at = None)
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         conn.execute(
             "UPDATE linked_folders SET status='ready', updated_at=? WHERE id=?",
             (_now(), job["folder_id"]),
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _queue_requested_rebuild(job_id: str) -> None:
@@ -1779,8 +1486,7 @@ def reconcile_folder(job_id: str) -> None:
 
 def _enqueue_periodic() -> None:
     _reconcile_retired_folder_deletions()
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         now = _now()
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
@@ -1796,13 +1502,10 @@ def _enqueue_periodic() -> None:
             )
         conn.commit()
         _prune_terminal_jobs(conn)
-    finally:
-        conn.close()
 
 
 def _claim_job(job_id: str) -> tuple[str, str] | None:
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT id, folder_id, status FROM linked_folder_sync_jobs WHERE id=?", (job_id,)
@@ -1826,34 +1529,29 @@ def _claim_job(job_id: str) -> tuple[str, str] | None:
                 (_now(), job_id),
             )
         conn.commit()
-    finally:
-        conn.close()
     try:
         job_leases.activate(job_leases.FOLDER_SYNC, job_id)
     except Exception:
-        conn = rag_db.get_connection()
-        try:
+        with closing(rag_db.get_connection()) as conn:
             conn.execute(
                 "UPDATE linked_folder_sync_jobs SET status='pending', stage='queued' WHERE id=?",
                 (job_id,),
             )
             conn.commit()
-        finally:
-            conn.close()
         job_leases.release(job_leases.FOLDER_SYNC, job_id)
         raise
     return job_id, row["folder_id"]
 
 
 def _next_job() -> tuple[str, str] | None:
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         row = conn.execute(
-            "SELECT id FROM linked_folder_sync_jobs WHERE status='pending' "
-            "ORDER BY created_at LIMIT 1"
+            "SELECT j.id FROM linked_folder_sync_jobs j WHERE j.status='pending' OR "
+            "(j.status='running' AND NOT EXISTS (SELECT 1 FROM rag_job_leases l "
+            "WHERE l.kind=? AND l.job_id=j.id AND l.expires_at>?)) "
+            "ORDER BY CASE j.status WHEN 'running' THEN 0 ELSE 1 END, j.created_at LIMIT 1",
+            (job_leases.FOLDER_SYNC, _now()),
         ).fetchone()
-    finally:
-        conn.close()
     return _claim_job(row["id"]) if row else None
 
 
@@ -1878,8 +1576,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                 if job:
                     job_id, folder_id = job
                     try:
-                        with _folder_lock(folder_id):
-                            reconcile_folder(job_id)
+                        reconcile_folder(job_id)
                     except Exception as exc:
                         logger.exception("linked-folder job %s failed unexpectedly", job_id)
                         _fail_job(job_id, exc)
@@ -1902,8 +1599,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
 
 
 def _recover_startup_state() -> None:
-    conn = rag_db.get_connection()
-    try:
+    with closing(rag_db.get_connection()) as conn:
         now = _now()
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -1933,6 +1629,7 @@ def _recover_startup_state() -> None:
             (job_leases.INGESTION, now, job_leases.FOLDER_SYNC, now),
         ).fetchall()
         for orphan in orphans:
+            _remove_retired_snapshot(orphan["stored_path"])
             store.delete_document(conn, orphan["id"], commit = False)
             conn.execute(
                 "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
@@ -1941,10 +1638,6 @@ def _recover_startup_state() -> None:
             )
             conn.execute("DELETE FROM ingestion_jobs WHERE document_id=?", (orphan["id"],))
         conn.commit()
-    finally:
-        conn.close()
-    for orphan in orphans:
-        _remove_snapshot(orphan["stored_path"])
     for job in rebuild_handoffs:
         _queue_requested_rebuild(job["id"])
 

@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 # Per-job event queues, drained by job_events; ``None`` ends the stream.
 _jobs: dict[str, "queue.Queue"] = {}
 _workers: dict[str, threading.Thread] = {}
-_discard_after_worker: dict[str, str] = {}
 _jobs_lock = threading.Lock()
 
 _EMBED_BATCH = 64  # bounds peak memory
@@ -56,41 +55,6 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
             os.remove(target)
     except Exception:  # noqa: BLE001 - upload cleanup must not block ingestion.
         logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
-
-
-def _discard_document_and_job(job_id: str, document_id: str) -> None:
-    """Remove a child ingestion and every persisted artifact it produced."""
-    conn = rag_db.get_connection()
-    stored_path = None
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        doc = store.get_document(conn, document_id)
-        if doc is not None:
-            stored_path = doc.get("stored_path")
-            store.delete_document(conn, document_id, commit = False)
-        conn.execute(
-            "DELETE FROM ingestion_jobs WHERE id=? AND document_id=?",
-            (job_id, document_id),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-    _remove_upload(stored_path)
-    with _jobs_lock:
-        _jobs.pop(job_id, None)
-
-
-def discard_document_when_finished(job_id: str, document_id: str) -> None:
-    """Transfer cleanup to a live child, or clean immediately if it already exited."""
-    with _jobs_lock:
-        worker = _workers.get(job_id)
-        if worker is not None and worker.is_alive():
-            _discard_after_worker[job_id] = document_id
-            return
-    _discard_document_and_job(job_id, document_id)
 
 
 def _emit(job_id: str, event: dict) -> None:
@@ -312,18 +276,6 @@ def _run(
         job_leases.release(job_leases.INGESTION, job_id)
         with _jobs_lock:
             _workers.pop(job_id, None)
-            discard_document_id = _discard_after_worker.pop(job_id, None)
-        if discard_document_id is not None:
-            try:
-                _discard_document_and_job(job_id, discard_document_id)
-            except Exception:
-                # The folder startup recovery owns any durable orphan left by a
-                # shutdown-time database failure.
-                logger.warning(
-                    "failed to discard stopped linked-folder ingestion %s",
-                    job_id,
-                    exc_info = True,
-                )
         _emit(job_id, None)
 
 
@@ -341,6 +293,7 @@ def start_ingestion(
     dedupe: bool = True,
     linked_folder_id: str | None = None,
     linked_relative_path: str | None = None,
+    background: bool = True,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
@@ -429,21 +382,25 @@ def start_ingestion(
         job_leases.activate(job_leases.INGESTION, job_id)
         with _jobs_lock:
             _jobs[job_id] = queue.Queue()
+        args = (
+            job_id,
+            document_id,
+            scope,
+            stored_path,
+            effective_model,
+            ocr,
+            caption,
+            replaces,
+        )
+        if not background:
+            _run(*args)
+            return document_id, job_id
         worker = threading.Thread(
             target = _run,
             # effective_model (not the raw model_name) pins the embedder for the
             # whole job: a Settings change mid-ingestion must not switch tokenizer
             # or embedder between batches of one document.
-            args = (
-                job_id,
-                document_id,
-                scope,
-                stored_path,
-                effective_model,
-                ocr,
-                caption,
-                replaces,
-            ),
+            args = args,
             daemon = True,
         )
         with _jobs_lock:

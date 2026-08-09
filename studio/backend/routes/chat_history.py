@@ -550,78 +550,15 @@ async def patch_project(
     return ChatProject(**project)
 
 
-def _retire_project_rag_sources(project_id: str) -> list[dict]:
-    """Prevent new RAG sources from being linked while a project is deleted."""
-    from core.rag import folder_sync, store as rag_store
-    return folder_sync.retire_scope(rag_store.project_scope(project_id))
-
-
-def _restore_project_rag_sources(project_id: str) -> None:
-    """Restore project RAG sources after the project database rolls back."""
-    from core.rag import folder_sync, store as rag_store
-    folder_sync.restore_scope(rag_store.project_scope(project_id))
-
-
-def _delete_project_with_rag_retirement(
-    project_id: str, *, delete_files: bool
-) -> tuple[dict | None, list[dict]]:
-    """Serialize retirement and project deletion under the RAG scope lock."""
-    from core.rag import folder_sync, store as rag_store
-
-    scope = rag_store.project_scope(project_id)
-    with folder_sync.scope_retirement_lock(scope):
-        folders = []
-        retired = False
-
-        def retire_rag_scope() -> None:
-            nonlocal retired
-            folders.extend(_retire_project_rag_sources(project_id))
-            retired = True
-
-        try:
-            project = delete_chat_project(
-                project_id,
-                delete_files = delete_files,
-                before_delete = retire_rag_scope,
-            )
-        except Exception:
-            if retired:
-                try:
-                    project_survived = get_chat_project(project_id) is not None
-                except Exception:  # noqa: BLE001 - startup reconciliation owns the handoff
-                    project_survived = None
-                    logger.warning(
-                        "could not determine whether project %s deletion committed",
-                        project_id,
-                        exc_info = True,
-                    )
-                if project_survived is True:
-                    _restore_project_rag_sources(project_id)
-                elif project_survived is False:
-                    try:
-                        _delete_project_rag_sources(project_id, folders)
-                    except Exception:  # noqa: BLE001 - preserve the workspace cleanup error
-                        logger.warning(
-                            "failed to delete RAG sources for committed project %s",
-                            project_id,
-                            exc_info = True,
-                        )
-            raise
-        return project, folders
-
-
-def _delete_project_rag_sources(project_id: str, folders: list[dict] | None = None) -> None:
-    """Synchronously remove retired project RAG state; callers run this in a worker thread."""
+def _delete_project_rag_sources(project_id: str) -> None:
+    """Retire an ownerless project scope and reap it when RAG is available."""
     from storage import rag_db
-
-    if not rag_db.rag_available():
-        return
     from core.rag import folder_sync, store as rag_store
 
     scope = rag_store.project_scope(project_id)
-    if folders is None:
-        folder_sync.retire_scope(scope)
-    folder_sync.delete_retired_scope(scope)
+    folder_sync.retire_scope(scope)
+    if rag_db.rag_available():
+        folder_sync.delete_retired_scope(scope)
 
 
 @router.delete("/projects/{project_id}", response_model = ChatProject)
@@ -639,11 +576,34 @@ async def delete_project(
     _cancel_active_research(
         request, [thread["id"] for thread in list_chat_threads(project_id = project_id)]
     )
-    project, retired_folders = await asyncio.to_thread(
-        _delete_project_with_rag_retirement,
-        project_id,
-        delete_files = delete_files,
-    )
+    try:
+        project = await asyncio.to_thread(
+            delete_chat_project,
+            project_id,
+            delete_files = delete_files,
+        )
+    except Exception:
+        # Workspace cleanup runs after the project deletion commits. If it fails,
+        # retire the now-ownerless RAG scope before preserving that error.
+        try:
+            project_survived = await asyncio.to_thread(get_chat_project, project_id)
+        except Exception:  # noqa: BLE001 - periodic reconciliation retains the fallback
+            logger.warning(
+                "could not determine whether project %s deletion committed",
+                project_id,
+                exc_info = True,
+            )
+        else:
+            if project_survived is None:
+                try:
+                    await asyncio.to_thread(_delete_project_rag_sources, project_id)
+                except Exception:  # noqa: BLE001 - preserve the workspace cleanup error
+                    logger.warning(
+                        "failed to delete RAG sources for committed project %s",
+                        project_id,
+                        exc_info = True,
+                    )
+        raise
     if project is None:
         raise HTTPException(
             status_code = 404,
@@ -651,7 +611,7 @@ async def delete_project(
         )
     # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
     try:
-        await asyncio.to_thread(_delete_project_rag_sources, project_id, retired_folders)
+        await asyncio.to_thread(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     return ChatProject(**project)

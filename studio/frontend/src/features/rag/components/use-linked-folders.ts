@@ -3,6 +3,7 @@
 
 import { pickNativeDocumentFolder } from "@/features/native-intents";
 import { isTauri } from "@/lib/api-base";
+import { createScopedSingleFlightRequest } from "@/lib/single-flight-request";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -23,12 +24,6 @@ import {
   linkedFolderSourcesChanged,
   retainActiveFolderJobs,
 } from "../types/rag";
-import {
-  createScopedRefreshGate,
-  runScopedRefresh,
-  setScopedRefreshScope,
-} from "./scoped-refresh";
-
 export function useLinkedFolders(
   scope?: LinkedFolderScope,
   onSourcesChanged?: () => void,
@@ -42,7 +37,12 @@ export function useLinkedFolders(
   const [loading, setLoading] = useState(true);
   const [mutating, setMutating] = useState(false);
   const controllers = useRef(new Map<string, AbortController>());
-  const refreshGate = useRef(createScopedRefreshGate(scopeKey));
+  const refreshGate = useRef(
+    createScopedSingleFlightRequest<
+      (signal: AbortSignal) => Promise<boolean>,
+      boolean
+    >((_scope, execute, signal) => execute(signal)),
+  );
   const currentScopeKey = useRef(scopeKey);
   const folderSnapshot = useRef<LinkedFolder[] | null>(null);
   const notifiedJobs = useRef(new Set<string>());
@@ -141,61 +141,57 @@ export function useLinkedFolders(
   const refresh = useCallback(
     (options?: { quiet?: boolean }): Promise<boolean> => {
       if (!options?.quiet) setLoading(true);
-      return runScopedRefresh(
-        refreshGate.current,
-        scopeKey,
-        async (isCurrent) => {
-          try {
-            const rows = await listLinkedFolders(
-              scopeType && scopeId
-                ? { type: scopeType, id: scopeId }
-                : undefined,
-            );
-            if (!isCurrent()) return false;
-            const sourcesChanged = linkedFolderSourcesChanged(
-              folderSnapshot.current,
-              rows,
-            );
-            folderSnapshot.current = rows;
-            setStateScopeKey(scopeKey);
-            setFolders(rows);
-            setJobs((current) => retainActiveFolderJobs(rows, current));
-            if (sourcesChanged) onSourcesChanged?.();
-            for (const folder of rows) {
-              if (
-                !folder.activeJobId ||
-                controllers.current.has(folder.activeJobId)
-              ) {
-                continue;
-              }
-              try {
-                const job = await getFolderSyncJob(folder.activeJobId);
-                if (!isCurrent()) return false;
-                if (job.status === "pending" || job.status === "running") {
-                  trackJob(job);
-                } else {
-                  setJobs((current) => ({ ...current, [folder.id]: job }));
-                  if (sourcesChanged) notifiedJobs.current.add(job.id);
-                  else notifySourcesChanged(job);
-                }
-              } catch {
-                // The next refresh can reconcile a job that disappeared mid-request.
-              }
+      return refreshGate.current.run(scopeKey, async (signal) => {
+        const isCurrent = () =>
+          !signal.aborted && currentScopeKey.current === scopeKey;
+        try {
+          const rows = await listLinkedFolders(
+            scopeType && scopeId ? { type: scopeType, id: scopeId } : undefined,
+          );
+          if (!isCurrent()) return false;
+          const sourcesChanged = linkedFolderSourcesChanged(
+            folderSnapshot.current,
+            rows,
+          );
+          folderSnapshot.current = rows;
+          setStateScopeKey(scopeKey);
+          setFolders(rows);
+          setJobs((current) => retainActiveFolderJobs(rows, current));
+          if (sourcesChanged) onSourcesChanged?.();
+          for (const folder of rows) {
+            if (
+              !folder.activeJobId ||
+              controllers.current.has(folder.activeJobId)
+            ) {
+              continue;
             }
-            return sourcesChanged;
-          } catch (error) {
-            if (isCurrent() && !options?.quiet) {
-              toast.error("Failed to load linked folders", {
-                description:
-                  error instanceof Error ? error.message : String(error),
-              });
+            try {
+              const job = await getFolderSyncJob(folder.activeJobId);
+              if (!isCurrent()) return false;
+              if (job.status === "pending" || job.status === "running") {
+                trackJob(job);
+              } else {
+                setJobs((current) => ({ ...current, [folder.id]: job }));
+                if (sourcesChanged) notifiedJobs.current.add(job.id);
+                else notifySourcesChanged(job);
+              }
+            } catch {
+              // The next refresh can reconcile a job that disappeared mid-request.
             }
-            return false;
-          } finally {
-            if (isCurrent() && !options?.quiet) setLoading(false);
           }
-        },
-      ).then((result) => result ?? false);
+          return sourcesChanged;
+        } catch (error) {
+          if (isCurrent() && !options?.quiet) {
+            toast.error("Failed to load linked folders", {
+              description:
+                error instanceof Error ? error.message : String(error),
+            });
+          }
+          return false;
+        } finally {
+          if (isCurrent() && !options?.quiet) setLoading(false);
+        }
+      });
     },
     [
       scopeKey,
@@ -209,7 +205,6 @@ export function useLinkedFolders(
 
   useEffect(() => {
     currentScopeKey.current = scopeKey;
-    setScopedRefreshScope(refreshGate.current, scopeKey);
     folderSnapshot.current = null;
     notifiedJobs.current.clear();
     const initialRefresh = window.setTimeout(() => void refresh(), 0);

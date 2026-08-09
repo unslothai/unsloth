@@ -189,7 +189,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS linked_folder_retired_scopes (
             scope TEXT NOT NULL PRIMARY KEY,
             retired_at TEXT NOT NULL,
-            restore_state_json TEXT
+            purged_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS linked_folder_files (
@@ -228,6 +228,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_linked_folder_jobs_queue
             ON linked_folder_sync_jobs(status, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_linked_folder_jobs_active
+            ON linked_folder_sync_jobs(folder_id)
+            WHERE status IN ('pending','running');
 
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
             text,
@@ -250,70 +253,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_folder_id TEXT")
     if "linked_relative_path" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_relative_path TEXT")
-    folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folders)").fetchall()}
-    if "root_device" not in folder_cols:
-        conn.execute("ALTER TABLE linked_folders ADD COLUMN root_device INTEGER")
-    if "root_inode" not in folder_cols:
-        conn.execute("ALTER TABLE linked_folders ADD COLUMN root_inode INTEGER")
-    if "delete_remove_index" not in folder_cols:
-        conn.execute("ALTER TABLE linked_folders ADD COLUMN delete_remove_index INTEGER")
-    retired_scope_cols = {
-        r[1] for r in conn.execute("PRAGMA table_info(linked_folder_retired_scopes)").fetchall()
-    }
-    if "restore_state_json" not in retired_scope_cols:
-        conn.execute("ALTER TABLE linked_folder_retired_scopes ADD COLUMN restore_state_json TEXT")
-    folder_file_cols = {
-        r[1] for r in conn.execute("PRAGMA table_info(linked_folder_files)").fetchall()
-    }
-    if "content_hash" not in folder_file_cols:
-        conn.execute("ALTER TABLE linked_folder_files ADD COLUMN content_hash TEXT")
-    conn.execute(
-        "UPDATE linked_folder_files SET content_hash=("
-        "SELECT d.sha256 FROM documents d WHERE d.id=linked_folder_files.document_id) "
-        "WHERE content_hash IS NULL"
-    )
-    job_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()}
-    if "rebuild_requested" not in job_cols:
-        conn.execute(
-            "ALTER TABLE linked_folder_sync_jobs "
-            "ADD COLUMN rebuild_requested INTEGER NOT NULL DEFAULT 0"
-        )
-    # Retire duplicate active jobs from older schemas before enforcing atomic
-    # per-folder scheduling. Keep a running job ahead of pending work, otherwise
-    # keep the oldest request, and merge every rebuild request into the survivor.
-    active_jobs = conn.execute(
-        "SELECT * FROM linked_folder_sync_jobs WHERE status IN ('pending','running') "
-        "ORDER BY folder_id, CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, id"
-    ).fetchall()
-    jobs_by_folder = {}
-    for job in active_jobs:
-        jobs_by_folder.setdefault(job["folder_id"], []).append(job)
-    for jobs in jobs_by_folder.values():
-        survivor = jobs[0]
-        rebuild_needed = any(job["kind"] == "rebuild" or job["rebuild_requested"] for job in jobs)
-        if rebuild_needed and survivor["kind"] != "rebuild":
-            if survivor["status"] == "pending":
-                conn.execute(
-                    "UPDATE linked_folder_sync_jobs SET kind='rebuild', rebuild_requested=0 "
-                    "WHERE id=?",
-                    (survivor["id"],),
-                )
-            else:
-                conn.execute(
-                    "UPDATE linked_folder_sync_jobs SET rebuild_requested=1 WHERE id=?",
-                    (survivor["id"],),
-                )
-        for duplicate in jobs[1:]:
-            conn.execute(
-                "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
-                "error='Superseded duplicate job', "
-                "completed_at=COALESCE(completed_at, created_at) WHERE id=?",
-                (duplicate["id"],),
-            )
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_linked_folder_jobs_active "
-        "ON linked_folder_sync_jobs(folder_id) WHERE status IN ('pending','running')"
-    )
     conn.commit()
 
 

@@ -65,23 +65,6 @@ def test_initial_connection_failure_marks_ingestion_failed(rag_home, monkeypatch
     assert ingestion.get_job_status(job_id)["status"] == "failed"
 
 
-def test_folder_wait_fails_persisted_job_without_live_worker(rag_home):
-    from core.rag import folder_sync
-
-    scope = store.kb_scope("K1")
-    conn = rag_db.get_connection()
-    try:
-        document_id = store.create_document(conn, scope = scope, filename = "doc.txt", sha256 = "hash")
-        job_id = ingestion._new_job(conn, document_id, scope)
-    finally:
-        conn.close()
-
-    row = folder_sync._wait_ingestion(job_id)
-
-    assert row["status"] == "failed"
-    assert row["error"] == "Ingestion worker exited unexpectedly"
-
-
 def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp_path):
     path = _write(tmp_path, "doc.txt", "alpha bravo charlie " * 50)
     scope = store.kb_scope("K1")

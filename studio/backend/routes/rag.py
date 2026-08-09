@@ -267,7 +267,9 @@ class UpdateFolderRequest(BaseModel):
     auto_sync: bool | None = Field(default = None, alias = "autoSync")
 
 
-def _resolve_linked_folder_path(native_path_lease: str, *, verifier = None) -> str:
+def _resolve_linked_folder_path(
+    native_path_lease: str, *, verifier = None
+) -> tuple[str, tuple[int, int]]:
     """Resolve a desktop grant; the injectable verifier keeps resolution unit-testable."""
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
@@ -279,7 +281,14 @@ def _resolve_linked_folder_path(native_path_lease: str, *, verifier = None) -> s
             expected_kind = "document-folder",
             expected_path_type = "directory",
         )
-        return folder_sync.validate_folder_path(str(grant.canonical_path))
+        device_id = getattr(grant, "device_id", None)
+        file_id = getattr(grant, "file_id", None)
+        if device_id is None or file_id is None:
+            raise NativePathLeaseError("Native folder grant has no stable identity.")
+        return (
+            folder_sync.validate_folder_path(str(grant.canonical_path)),
+            (device_id, file_id),
+        )
     except NativePathLeaseError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     except ValueError as exc:
@@ -333,8 +342,17 @@ def _require_scope_owner(scope_type: str, scope_id: str) -> None:
         raise HTTPException(status_code = 404, detail = detail)
 
 
+def _require_document_owner(conn: sqlite3.Connection, document: dict) -> None:
+    if document.get("kb_id") and store.get_kb(conn, document["kb_id"]) is None:
+        raise HTTPException(status_code = 404, detail = "Document not found")
+    if document.get("project_id"):
+        from storage.studio_db import get_chat_project
+        if get_chat_project(document["project_id"]) is None:
+            raise HTTPException(status_code = 404, detail = "Document not found")
+
+
 def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderRequest) -> dict:
-    path = _resolve_linked_folder_path(payload.native_path_lease)
+    path, signed_identity = _resolve_linked_folder_path(payload.native_path_lease)
     try:
         with folder_sync.scope_lock(_scope_for_owner(scope_type, scope_id)):
             _require_scope_owner(scope_type, scope_id)
@@ -342,6 +360,7 @@ def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderReq
                 scope_type = scope_type,
                 scope_id = scope_id,
                 path = path,
+                expected_identity = signed_identity,
                 name = payload.name,
                 auto_sync = payload.auto_sync,
             )
@@ -434,7 +453,7 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
     _require_rag()
     with _rag_unavailable_as_503():
         deleted = folder_sync.retire_and_delete_kb(kb_id)
-    if deleted is None:
+    if not deleted:
         raise HTTPException(status_code = 404, detail = "Knowledge base not found")
     try:
         folder_sync.delete_retired_scope(store.kb_scope(kb_id))
@@ -579,6 +598,7 @@ async def upload_project_document(
 @router.get("/projects/{project_id}/documents")
 def list_project_documents(project_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
+    _require_scope_owner("project", project_id)
     conn = _rag_connection()
     try:
         docs = store.list_documents(conn, store.project_scope(project_id))
@@ -636,6 +656,7 @@ def list_linked_folders(
         for row in rows:
             names = kb_names if row["scope_type"] == "knowledge_base" else project_names
             row["scope_name"] = names.get(row["scope_id"])
+        rows = [row for row in rows if row["scope_name"] is not None]
     return {"linkedFolders": [_folder_view(row) for row in rows]}
 
 
@@ -845,10 +866,12 @@ def folder_job_events(
 def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
     if payload.kb_id:
+        _require_scope_owner("knowledge_base", payload.kb_id)
         scope = store.kb_scope(payload.kb_id)
     else:
         scopes = []
         if payload.project_id:
+            _require_scope_owner("project", payload.project_id)
             scopes.append(store.project_scope(payload.project_id))
         if payload.thread_id:
             scopes.append(store.thread_scope(payload.thread_id))
@@ -942,6 +965,7 @@ def preview_target(
         doc = store.get_visible_document(conn, document_id)
         if doc is None:
             raise HTTPException(status_code = 404, detail = "Document not found")
+        _require_document_owner(conn, doc)
         ext = os.path.splitext(doc["filename"])[1].lower()
         out = {
             "documentId": document_id,
@@ -979,6 +1003,7 @@ def document_file_url(document_id: str, subject: str = Depends(get_current_subje
         doc = store.get_visible_document(conn, document_id)
         if doc is None or not doc.get("stored_path"):
             raise HTTPException(status_code = 404, detail = "Document file not available")
+        _require_document_owner(conn, doc)
     finally:
         conn.close()
     token = _sign_document(document_id)
@@ -998,6 +1023,8 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     conn = _rag_connection()
     try:
         doc = store.get_visible_document(conn, document_id)
+        if doc is not None:
+            _require_document_owner(conn, doc)
     finally:
         conn.close()
     stored_path = (doc or {}).get("stored_path")
