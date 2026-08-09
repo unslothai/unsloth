@@ -7704,6 +7704,7 @@ def migrate_legacy_sandbox_in_background() -> None:
     Across filesystems this copies every session, which is not something a
     listing or a download can wait on: those run on the event loop.
     """
+
     def _run() -> None:
         try:
             _migrate_legacy_sandbox(sandbox_root())
