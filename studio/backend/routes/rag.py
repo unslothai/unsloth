@@ -327,7 +327,6 @@ def _require_scope_owner(scope_type: str, scope_id: str) -> None:
         detail = "Knowledge base not found"
     else:
         from storage.studio_db import get_chat_project
-
         exists = get_chat_project(scope_id) is not None
         detail = "Project not found"
     if not exists:

@@ -71,9 +71,7 @@ def test_folder_wait_fails_persisted_job_without_live_worker(rag_home):
     scope = store.kb_scope("K1")
     conn = rag_db.get_connection()
     try:
-        document_id = store.create_document(
-            conn, scope = scope, filename = "doc.txt", sha256 = "hash"
-        )
+        document_id = store.create_document(conn, scope = scope, filename = "doc.txt", sha256 = "hash")
         job_id = ingestion._new_job(conn, document_id, scope)
     finally:
         conn.close()
