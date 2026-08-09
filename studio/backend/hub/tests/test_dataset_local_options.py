@@ -3052,8 +3052,11 @@ def test_snapshot_options_accept_a_csv_index_col_of_false(tmp_path):
 
 def test_snapshot_options_reject_a_class_label_whose_names_are_null(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
-                    "    dtype:\n      class_label:\n        names: null\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+        "    dtype:\n      class_label:\n        names: null\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
 
@@ -3065,8 +3068,14 @@ def test_snapshot_options_reject_a_json_class_label_without_names(tmp_path):
     snapshot.mkdir(parents = True)
     (snapshot / "train.jsonl").write_text('{"l":0}\n', encoding = "utf-8")
     (snapshot / "dataset_infos.json").write_text(
-        json.dumps({"default": {"features": {"l": {"_type": "ClassLabel", "names": None}},
-                                "splits": {"train": {"name": "train", "num_examples": 1}}}}),
+        json.dumps(
+            {
+                "default": {
+                    "features": {"l": {"_type": "ClassLabel", "names": None}},
+                    "splits": {"train": {"name": "train", "num_examples": 1}},
+                }
+            }
+        ),
         encoding = "utf-8",
     )
 
@@ -3095,7 +3104,10 @@ def test_snapshot_options_accept_a_csv_header_list_of_rows(tmp_path):
 @pytest.mark.parametrize("dtype", ["bool8", "json_", "uuid"])
 def test_snapshot_options_accept_the_remaining_value_aliases(tmp_path, dtype):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n    dtype: {dtype}\n")
+    _card(
+        snapshot,
+        f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n    dtype: {dtype}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"x":true}\n', encoding = "utf-8")
 
@@ -3125,8 +3137,11 @@ def test_snapshot_options_keep_an_xz_stream_named_lzma(tmp_path):
 
 def test_snapshot_options_keep_a_csv_config_beside_a_tsv_one(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: tab\n  data_files: a/train.tsv\n"
-                    "- config_name: comma\n  data_files: b/train.csv\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: tab\n  data_files: a/train.tsv\n"
+        "- config_name: comma\n  data_files: b/train.csv\n",
+    )
     for name in ("a", "b"):
         (snapshot / name).mkdir()
     (snapshot / "a" / "train.tsv").write_text("text\trow\nx\ty\n", encoding = "utf-8")

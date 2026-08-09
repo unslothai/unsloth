@@ -50,6 +50,8 @@ _MAX_RESOLUTION_WORK = 10_000_000
 # supported" and offering them would put a dead split in the picker.
 _COMPRESSION_EXTENSIONS = ("", ".gz", ".gzip", ".bz2", ".xz", ".lzma", ".zip")
 _UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4"})
+
+
 # A zip is left alone; we do not open archives, so its payload stays unknown.
 # datasets has no lzma-alone rule, by extension or by magic number, so both suffixes are
 # read as xz and a raw lzma stream counts as unreadable.
@@ -1509,9 +1511,7 @@ def _valid_header(value: Any) -> bool:
     """A csv header list names row numbers, which pandas rejects if they are not that."""
     if not isinstance(value, list):
         return True
-    return all(
-        isinstance(row, int) and not isinstance(row, bool) and row >= 0 for row in value
-    )
+    return all(isinstance(row, int) and not isinstance(row, bool) and row >= 0 for row in value)
 
 
 def _known_codec(value: Any) -> bool:
