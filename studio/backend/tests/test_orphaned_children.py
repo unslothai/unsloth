@@ -1628,13 +1628,15 @@ def test_a_validation_server_the_installer_started_is_recorded(monkeypatch, tmp_
 
     class FakeProc:
         pid = 4321
-        stdout = iter([
-            "downloading 10% (1/10)\n",
-            "UNSLOTH_INSTALLER_CHILD started 9911\n",
-            "validating\n",
-            "UNSLOTH_INSTALLER_CHILD stopped 9911\n",
-            "downloading 100% (10/10)\n",
-        ])
+        stdout = iter(
+            [
+                "downloading 10% (1/10)\n",
+                "UNSLOTH_INSTALLER_CHILD started 9911\n",
+                "validating\n",
+                "UNSLOTH_INSTALLER_CHILD stopped 9911\n",
+                "downloading 100% (10/10)\n",
+            ]
+        )
 
         def wait(self):
             return 0
@@ -1647,7 +1649,11 @@ def test_a_validation_server_the_installer_started_is_recorded(monkeypatch, tmp_
 
     monkeypatch.setattr(update_flow.subprocess, "Popen", lambda *a, **k: FakeProc())
     update_flow.stream_installer(
-        ["x"], {}, timeout_seconds = 30, job = {}, job_lock = threading.Lock(),
+        ["x"],
+        {},
+        timeout_seconds = 30,
+        job = {},
+        job_lock = threading.Lock(),
     )
 
     assert adopted == [4321, 9911], adopted  # the installer, then its server
@@ -1679,7 +1685,11 @@ def test_a_validation_server_left_running_stays_recorded(monkeypatch):
 
     monkeypatch.setattr(update_flow.subprocess, "Popen", lambda *a, **k: FakeProc())
     update_flow.stream_installer(
-        ["x"], {}, timeout_seconds = 30, job = {}, job_lock = threading.Lock(),
+        ["x"],
+        {},
+        timeout_seconds = 30,
+        job = {},
+        job_lock = threading.Lock(),
     )
 
     assert adopted == [4321, 9912], adopted  # the installer, then its server
@@ -1688,9 +1698,9 @@ def test_a_validation_server_left_running_stays_recorded(monkeypatch):
 
 def test_the_installer_announces_and_groups_its_validation_server():
     """The other half of the handoff, in the script Studio runs."""
-    source = (
-        Path(__file__).resolve().parents[2] / "install_llama_prebuilt.py"
-    ).read_text(encoding = "utf-8")
+    source = (Path(__file__).resolve().parents[2] / "install_llama_prebuilt.py").read_text(
+        encoding = "utf-8"
+    )
 
     assert '_announce_child("started", process.pid)' in source
     assert '_announce_child("stopped", process.pid)' in source
