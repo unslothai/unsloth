@@ -400,10 +400,19 @@ def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
 # The shipped pin, not a copy of it: a hardcoded tag here silently stops describing what users
 # actually install the moment DEFAULT_TAG moves.
 _TAG = DEFAULT_TAG
-# Exactly what unslothai/stable-diffusion.cpp's CI publishes (CPU + Apple only; GPU hosts run diffusers).
+# Exactly what unslothai/stable-diffusion.cpp's CI publishes. It was CPU and Apple only, on the
+# premise that a GPU host runs diffusers instead. MiniMax-H3 falsified that: its diffusers path
+# wants more VRAM than a consumer card has, so those hosts fall back to the native engine, and on
+# Linux there was no accelerated build to fall back to. The CUDA leg is best effort and outside the
+# publisher's coverage gate, so it can be absent from a release; every test below has to hold
+# either way.
 _MIRROR_ASSETS = [
     f"sd-{_TAG}-bin-Darwin-macOS-arm64.zip",
     f"sd-{_TAG}-bin-Darwin-macOS-x86_64.zip",
+    # Before the plain build, which is the order a real release lists them in ("-cuda12.zip"
+    # sorts ahead of ".zip"). It matters: if auto picked by position rather than by the
+    # accelerator-marker filter, this ordering is what would expose it.
+    f"sd-{_TAG}-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
     f"sd-{_TAG}-bin-Linux-Ubuntu-22.04-x86_64.zip",
     f"sd-{_TAG}-bin-Linux-Ubuntu-24.04-aarch64.zip",
     f"sd-{_TAG}-bin-win-cpu-x64.zip",
@@ -433,6 +442,34 @@ def test_mirror_matrix_resolves_every_cpu_apple_host():
     assert _mresolve("Linux", "aarch64") == f"sd-{_TAG}-bin-Linux-Ubuntu-24.04-aarch64.zip"
     assert _mresolve("Windows", "AMD64") == f"sd-{_TAG}-bin-win-cpu-x64.zip"
     assert _mresolve("Windows", "AMD64", "cpu") == f"sd-{_TAG}-bin-win-cpu-x64.zip"
+
+
+def test_mirror_linux_cuda_resolves_the_cuda_bundle():
+    """A CUDA host asking for cuda gets the accelerated build. This is what makes MiniMax-H3
+    usable there: its GGUF path was running on the CPU because no Linux CUDA asset existed, and
+    video.py falls back to the CPU prebuilt whenever the accelerated one cannot be resolved."""
+    assert (
+        _mresolve("Linux", "x86_64", "cuda")
+        == f"sd-{_TAG}-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip"
+    )
+
+
+def test_mirror_linux_auto_still_takes_the_plain_cpu_build():
+    """The CUDA bundle ships the CUDA runtime and is roughly 25x the size of the CPU one. A host
+    that did not ask for a GPU build must not be handed it by accident."""
+    assert _mresolve("Linux", "x86_64") == f"sd-{_TAG}-bin-Linux-Ubuntu-22.04-x86_64.zip"
+    assert _mresolve("Linux", "x86_64", "cpu") == f"sd-{_TAG}-bin-Linux-Ubuntu-22.04-x86_64.zip"
+
+
+def test_mirror_linux_cuda_refuses_a_release_without_one():
+    """The CUDA leg is best effort, so a release can lack the asset. Returning None lets the
+    caller fall back deliberately; handing back the CPU build would leave the caller believing it
+    had a GPU binary, keep the load on the GPU device, and run sd-cli wholly on the CPU."""
+    without = [a for a in _MIRROR_ASSETS if "cuda" not in a]
+    assert (
+        resolve_release_asset(without, system = "Linux", machine = "x86_64", accelerator = "cuda")
+        is None
+    )
 
 
 # ── mirror -> upstream fallback in install() ─────────────────────────────────
@@ -534,7 +571,10 @@ def test_mirror_windows_gpu_accel_is_no_match_not_cpu():
 
 
 def test_mirror_linux_gpu_accel_is_no_match_not_cpu():
-    for accel in ("cuda", "vulkan", "rocm"):
+    # cuda is no longer in this list: the mirror publishes a Linux CUDA bundle now, and
+    # test_mirror_linux_cuda_resolves_the_cuda_bundle pins that. vulkan and rocm are still
+    # unbuilt, and must return None rather than quietly resolving to the CPU zip.
+    for accel in ("vulkan", "rocm"):
         assert _mresolve("Linux", "x86_64", accel) is None
     assert _mresolve("Linux", "x86_64", "cpu") == f"sd-{_TAG}-bin-Linux-Ubuntu-22.04-x86_64.zip"
 
