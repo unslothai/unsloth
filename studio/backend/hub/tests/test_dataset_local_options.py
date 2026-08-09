@@ -3276,3 +3276,78 @@ def test_safe_data_dir_keeps_a_posix_relative_path_holding_a_colon(monkeypatch):
 def test_safe_data_dir_drops_a_drive_path_on_windows(monkeypatch):
     monkeypatch.setattr(local_options.os, "name", "nt")
     assert local_options._safe_data_dir("C:data") is None
+
+
+def test_snapshot_options_reject_two_layers_of_compression(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl.gz.bz2").write_bytes(bz2.compress(gzip.compress(b'{"text":"row"}\n')))
+
+    # Only the outer layer is unwrapped, so the parser is handed gzip bytes.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_one_layer_of_compression(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl.bz2").write_bytes(bz2.compress(b'{"text":"row"}\n'))
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+@pytest.mark.parametrize("rows", ["0", "-1"])
+def test_snapshot_options_reject_a_nonpositive_csv_row_limit(tmp_path, rows):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  nrows: {rows}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_negative_scalar_csv_header(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  header: -1\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_drop_a_wildcard_when_the_walk_is_truncated(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_options, "_MAX_SNAPSHOT_DATA_FILES", 1)
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: 'missing-*.jsonl'\n")
+    for name in ("train.jsonl", "extra.jsonl"):
+        (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # A glob says nothing without the index, so it cannot be kept on faith.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_validate_configs_past_the_display_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_options, "_MAX_OPTIONS", 2)
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_dir: d\n- config_name: b\n  data_dir: d\n"
+                    "- config_name: c\n  data_dir: d\n- config_name: gone\n  data_dir: missing\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # The loader scopes every metadata config, so one past the cap still takes the rest down.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_link_into_a_sibling_snapshot(tmp_path):
+    repo = tmp_path / "datasets--org--data"
+    snapshot = repo / "snapshots" / "commit"
+    sibling = repo / "snapshots" / "other"
+    sibling.mkdir(parents = True)
+    (sibling / "test.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files:\n  - split: train\n    path: train.jsonl\n"
+                    "  - split: test\n    path: test.jsonl\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "test.jsonl").symlink_to(sibling / "test.jsonl")
+
+    # The loader prepares both declared splits, so a link to another revision condemns the
+    # config rather than only the split that carries it.
+    assert local_options._snapshot_options(snapshot) == set()

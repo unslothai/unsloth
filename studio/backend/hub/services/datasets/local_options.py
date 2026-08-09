@@ -207,7 +207,7 @@ _MODULE_EXTENSIONS = {
 # at datasets 4.3.0; None means the loader refuses the parameter whatever its value.
 _TEXT_PARAMETERS = {"encoding": str, "encoding_errors": str, "chunksize": int}
 # Parameters the builder also needs within a range, as their smallest allowed value.
-_PARAMETER_MINIMUMS = {"chunksize": 1, "block_size": 1, "skipfooter": 0}
+_PARAMETER_MINIMUMS = {"chunksize": 1, "block_size": 1, "skipfooter": 0, "nrows": 1}
 _BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
     "json": {
         **_TEXT_PARAMETERS,
@@ -616,7 +616,8 @@ def _declared_configs(payload: Any) -> Any:
     if defaults > 1:
         return _UNPARSABLE_METADATA
     declared: dict[str, Optional[str]] = {}
-    for raw, item in list(collapsed.items())[:_MAX_OPTIONS]:
+    # Every config is scoped and validated; _sorted_options is what caps the display.
+    for raw, item in collapsed.items():
         # The loader takes names the picker cannot show. Those configs are skipped, but they
         # are still real configs, so they keep their say over the module.
         name = _valid_option(raw, _CONFIG_RE)
@@ -1083,13 +1084,16 @@ def _snapshot_all_files(
     try:
         root = snapshot.resolve(strict = True)
         # <cache>/datasets--org--name/snapshots/<sha>
-        repo = snapshot.parent.parent.resolve(strict = True)
+        blobs = (snapshot.parent.parent / "blobs").resolve()
     except (OSError, RuntimeError, ValueError):
         return found, directories, unsafe
 
     def inside(path: Path) -> bool:
+        # The reach resolved_dataset_snapshot_file allows: this snapshot or the blobs, and
+        # never a sibling revision.
         try:
-            return path.resolve(strict = True).is_relative_to(repo)
+            real = path.resolve(strict = True)
+            return real.is_relative_to(root) or real.is_relative_to(blobs)
         except (OSError, RuntimeError, ValueError):
             return False
 
@@ -1221,7 +1225,13 @@ def _empty_file(path: Path, name: str) -> bool:
     """Whether the builder would read no bytes out of this file. A compressed one is opened
     for a single byte, since its container size says nothing about its payload. The name is
     the one the snapshot uses, since the cache resolves it to a suffixless blob."""
-    suffix = PurePosixPath(name).suffix.lower()
+    suffixes = [suffix.lower() for suffix in PurePosixPath(name).suffixes]
+    if len(suffixes) > 1 and all(
+        suffix in _DECOMPRESSORS or suffix == ".zip" for suffix in suffixes[-2:]
+    ):
+        # Only the outer layer is unwrapped, so the parser is handed a compressed stream.
+        return True
+    suffix = suffixes[-1] if suffixes else ""
     if suffix == ".zip":
         return _empty_archive(path)
     opener = _DECOMPRESSORS.get(suffix)
@@ -1509,6 +1519,18 @@ def _config_root(item: dict[str, Any], files: "_DeclaredFiles") -> Optional[str]
     return None if safe is None else files.collapse(safe.strip("/"))
 
 
+def _unverifiable_configs(collapsed: dict[str, dict[str, Any]]) -> set[str]:
+    """Configs declaring a glob, which says nothing without the index: what it matched, what
+    it missed, and whether anything it reached was unsafe are all unknown."""
+    return {
+        name
+        for name, item in collapsed.items()
+        if any(
+            character in pattern for pattern in _declared_paths(item) for character in "*?["
+        )
+    }
+
+
 def _missing_literal_configs(collapsed: dict[str, dict[str, Any]], snapshot: Path) -> set[str]:
     """Configs naming a literal file the cache does not hold, checked without a walk.
 
@@ -1546,10 +1568,12 @@ def _valid_parameter(rule: Any, value: Any) -> bool:
 
 
 def _valid_header(value: Any) -> bool:
-    """A csv header list names row numbers, which pandas rejects if they are not that."""
-    if not isinstance(value, list):
-        return True
-    return all(isinstance(row, int) and not isinstance(row, bool) and row >= 0 for row in value)
+    """A csv header names row numbers, scalar or list, which pandas rejects otherwise."""
+    if isinstance(value, list):
+        return all(
+            isinstance(row, int) and not isinstance(row, bool) and row >= 0 for row in value
+        )
+    return not isinstance(value, int) or isinstance(value, bool) or value >= 0
 
 
 def _known_codec(value: Any) -> bool:
@@ -1975,6 +1999,7 @@ def _snapshot_card_options(
             # still has to be there, and that is a lookup rather than a scan.
             dead = (
                 _missing_literal_configs(collapsed, snapshot)
+                | _unverifiable_configs(collapsed)
                 | _misversioned_configs(collapsed)
                 | _emptied_configs(info)
             )
