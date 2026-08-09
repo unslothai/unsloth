@@ -880,13 +880,16 @@ export async function deleteStoredChatThreads(
   const deletion = threadWriteQueue.enqueue(ids, () => deleteChatThreads(ids));
   // If a wedged predecessor keeps the ordered delete from starting, issue an independent delete
   // after the bound. The fallback must itself confirm before local deletion is reported as a
-  // success; otherwise the caller rolls back its optimistic tombstone while the queued cleanup
-  // remains tracked.
+  // success. The backend records every requested id before deleting, including an id whose row
+  // has not committed yet, so a confirmed fallback cannot be overtaken by that late creator.
   await waitForSettledOrRunFallback(
     deletion,
     () => deleteChatThreads(ids),
     THREAD_WRITE_WAIT_MS,
   );
+  for (const id of ids) {
+    failedThreadRecordByThreadId.delete(id);
+  }
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();

@@ -4,6 +4,7 @@
 import inspect
 import os
 import re
+import sqlite3
 import sys
 
 import pytest
@@ -86,6 +87,74 @@ def test_replace_thread_messages_reports_protected_research_turn(monkeypatch):
 
     assert exc_info.value.status_code == 409
     assert "Research prompts and responses" in str(exc_info.value.detail)
+
+
+def test_save_thread_message_returns_404_when_thread_is_deleted_during_write(monkeypatch):
+    parent_reads = iter(({"id": "thread-1"}, None))
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: next(parent_reads))
+
+    def missing_parent(*_args, **_kwargs):
+        raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
+
+    monkeypatch.setattr(chat_history, "upsert_chat_message", missing_parent)
+
+    with pytest.raises(HTTPException) as exc_info:
+        chat_history.save_thread_message(
+            "thread-1",
+            "msg-1",
+            _message("msg-1", "thread-1"),
+            current_subject = "test-user",
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Thread thread-1 not found"
+
+
+def test_replace_thread_messages_returns_404_when_thread_is_deleted_during_write(monkeypatch):
+    parent_reads = iter(({"id": "thread-1"}, None))
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: next(parent_reads))
+
+    def missing_parent(*_args, **_kwargs):
+        raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
+
+    monkeypatch.setattr(chat_history, "sync_chat_messages", missing_parent)
+
+    with pytest.raises(HTTPException) as exc_info:
+        chat_history.replace_thread_messages(
+            "thread-1",
+            chat_history.ChatMessageSyncRequest(
+                messages = [_message("msg-1", "thread-1")],
+                pruneMissing = True,
+            ),
+            current_subject = "test-user",
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Thread thread-1 not found"
+
+
+def test_save_thread_message_does_not_mask_an_unrelated_integrity_error(monkeypatch):
+    monkeypatch.setattr(
+        chat_history,
+        "get_chat_thread",
+        lambda _thread_id: {"id": "thread-1"},
+    )
+    failure = sqlite3.IntegrityError("unrelated constraint")
+
+    def raise_unrelated(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(chat_history, "upsert_chat_message", raise_unrelated)
+
+    with pytest.raises(sqlite3.IntegrityError) as exc_info:
+        chat_history.save_thread_message(
+            "thread-1",
+            "msg-1",
+            _message("msg-1", "thread-1"),
+            current_subject = "test-user",
+        )
+
+    assert exc_info.value is failure
 
 
 # ---------------------------------------------------------------------------

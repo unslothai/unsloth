@@ -2604,11 +2604,11 @@ const Composer: FC<{
       ) {
         return false;
       }
-      const threadIdToDelete = initializedFreshThreadId;
       // Tombstone synchronously so a late initializer cannot leave an empty
       // record visible while backend cleanup completes.
-      markChatThreadDeleted(threadIdToDelete);
-      void deleteStoredChatThreads([threadIdToDelete]).catch(() => {
+      markChatThreadDeleted(initializedFreshThreadId);
+      const threadIdToDelete = initializedFreshThreadId;
+      void deleteStoredChatThreads([initializedFreshThreadId]).catch(() => {
         if (chatHistoryClearBoundary.capture() === historyClearGeneration) {
           removeChatThreadTombstones([threadIdToDelete]);
           notifyChatHistoryUpdated();

@@ -266,6 +266,29 @@ def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatc
     assert studio_db.get_chat_thread("thread-1") is None
     assert studio_db.list_chat_messages("thread-1") == []
     assert (tmp_path / "Projects" / "Research-project").exists()
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread({**_thread(), "projectId": "project-1"})
+
+
+def test_thread_delete_blocks_a_late_create_with_the_same_id(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+
+    studio_db.delete_chat_threads(["late-thread"])
+
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("late-thread"))
+    assert studio_db.get_chat_thread("late-thread") is None
+
+
+def test_clear_blocks_a_stale_recreate_of_a_deleted_thread(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    studio_db.clear_chat_history()
+
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("thread-1"))
+    assert studio_db.get_chat_thread("thread-1") is None
 
 
 def test_chat_project_delete_files_removes_workspace(
@@ -680,6 +703,24 @@ def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch)
         id_factory = lambda: "x",
     )
     assert result is None
+
+
+def test_fork_chat_thread_rejects_a_deleted_target_id(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.upsert_chat_message(_msg("m1", None, 1))
+    studio_db.delete_chat_threads(["fork"])
+
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.fork_chat_thread(
+            source_thread_id = "src",
+            branch_message_id = "m1",
+            new_thread_id = "fork",
+            new_title = "f",
+            created_at = 2,
+            id_factory = lambda: "new-1",
+        )
+    assert studio_db.get_chat_thread("fork") is None
 
 
 def test_count_forks_for_message(tmp_path, monkeypatch):

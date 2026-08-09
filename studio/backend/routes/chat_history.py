@@ -21,6 +21,7 @@ from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
     ChatMessageProtectedError,
+    ChatThreadDeletedError,
     ChatThreadPreconditionFailed,
     CorruptSettingsError,
     clear_chat_history_with_active_research_runs,
@@ -279,12 +280,18 @@ def _missing_project_error(project_id: Optional[str]) -> HTTPException:
     return HTTPException(status_code = 404, detail = f"Project {project_id} not found")
 
 
+def _missing_thread_error(thread_id: str) -> HTTPException:
+    return HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+
+
 @router.post("/threads", response_model = ChatThread)
 def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise _missing_project_error(payload.projectId)
     try:
         return ChatThread(**upsert_chat_thread(payload.model_dump()))
+    except ChatThreadDeletedError as exc:
+        raise _missing_thread_error(payload.id) from exc
     except sqlite3.IntegrityError as exc:
         # The project can be deleted between the check above and this insert, and the foreign key
         # then fails. Report the same 404 rather than surfacing a 500.
@@ -645,6 +652,10 @@ def save_thread_message(
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
         return ChatMessage(**upsert_chat_message(payload.model_dump()))
+    except sqlite3.IntegrityError as exc:
+        if get_chat_thread(thread_id) is None:
+            raise _missing_thread_error(thread_id) from exc
+        raise
     except (ChatMessageConflictError, ChatMessageProtectedError) as exc:
         raise log_and_http_error(
             exc,
@@ -683,6 +694,10 @@ def replace_thread_messages(
                 )
             ]
         )
+    except sqlite3.IntegrityError as exc:
+        if get_chat_thread(thread_id) is None:
+            raise _missing_thread_error(thread_id) from exc
+        raise
     except (ChatMessageConflictError, ChatMessageProtectedError) as exc:
         raise log_and_http_error(
             exc,
@@ -790,14 +805,17 @@ def fork_thread(
         )
     base_title = source.get("title") or "New Chat"
     new_title = f"fork · {base_title}"
-    forked = fork_chat_thread(
-        source_thread_id = thread_id,
-        branch_message_id = payload.messageId,
-        new_thread_id = payload.newThreadId,
-        new_title = new_title,
-        created_at = payload.createdAt,
-        id_factory = lambda: str(uuid.uuid4()),
-    )
+    try:
+        forked = fork_chat_thread(
+            source_thread_id = thread_id,
+            branch_message_id = payload.messageId,
+            new_thread_id = payload.newThreadId,
+            new_title = new_title,
+            created_at = payload.createdAt,
+            id_factory = lambda: str(uuid.uuid4()),
+        )
+    except ChatThreadDeletedError as exc:
+        raise _missing_thread_error(payload.newThreadId) from exc
     if forked is None:
         # The source can be deleted between the reads above and the fork transaction, which the
         # threadpool lets run concurrently. Report it gone rather than as a server fault.

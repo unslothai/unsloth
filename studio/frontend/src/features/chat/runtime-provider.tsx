@@ -1419,25 +1419,13 @@ function useStudioRuntimeAdapters(
             await deleteStoredChatThreads([remoteId]);
             return;
           }
-          // Keep single-chat runtime state in sync once a new chat is first
-          // persisted. Compare panes intentionally don't write global activeThreadId.
-          if (modelType === "base" && !pairId) {
-            const store = useChatRuntimeStore.getState();
-            const visibleThreadId = aui.threads().getState().mainThreadId;
-            if (
-              (visibleThreadId === localThreadId ||
-                visibleThreadId === remoteId) &&
-              store.activeThreadId !== remoteId
-            ) {
-              store.setActiveThreadId(remoteId);
-            }
-          }
           // Point reads, issued together: the model run waits on this write.
           const [thread, existingMessage] = await Promise.all([
             getStoredChatThread(remoteId),
             getStoredChatMessage(remoteId, message.id),
           ]);
           await throwIfHistoryWasCleared(remoteId);
+          // Publish the id only after the point read confirms this row and its captured ownership.
           if (thread?.modelType === "base" && !thread.pairId) {
             const store = useChatRuntimeStore.getState();
             const visibleThreadId = aui.threads().getState().mainThreadId;
