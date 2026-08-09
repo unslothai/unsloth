@@ -2293,7 +2293,6 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
 
 
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
-_QUANT_NAME_SEPARATORS = ("-", ".", "_", " ")
 _GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
 
 
@@ -2344,21 +2343,10 @@ def _gguf_variant_key(filename: str) -> str:
     quant = _gguf_variant_token(path)
     if quant is None:
         return _gguf_variant_family(path)
-    parents, _, basename = path.rpartition("/")
-    for segment in parents.split("/"):
-        if not segment:
-            continue
-        segment_match = _select_known_quant_match(segment)
-        names_quant = segment_match is not None and (
-            f"{segment_match.group(1) or ''}{segment_match.group(2)}".lower() == quant.lower()
-        )
-        if not names_quant:
-            return _gguf_variant_family(path)
-    if _gguf_variant_token(basename) is not None:
-        stem, wanted = _gguf_variant_stem(basename).lower(), quant.lower()
-        if stem != wanted and not (
-            stem.endswith(wanted) and stem[: -len(wanted)].endswith(_QUANT_NAME_SEPARATORS)
-        ):
+    for segment in path.rpartition("/")[0].split("/"):
+        # A quant-named directory adds nothing the basename does not already say; a
+        # directory naming something else is a different checkpoint and qualifies.
+        if segment and _select_known_quant_match(segment) is None:
             return _gguf_variant_family(path)
     return quant
 

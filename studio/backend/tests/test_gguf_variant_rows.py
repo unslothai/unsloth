@@ -84,9 +84,10 @@ class _Sibling:
             "distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K.gguf",
             "distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K",
         ),
-        # A token buried in a config string names nothing on its own.
-        ("Qwen3.5-35B-A3B_exp-16-iq2_s-16_shr-16.gguf", "Qwen3.5-35B-A3B_exp-16-iq2_s-16_shr-16"),
-        ("Qwen3.5-35B-A3B_exp-iq2_s-16-16_shr-16.gguf", "Qwen3.5-35B-A3B_exp-iq2_s-16-16_shr-16"),
+        # A quant-named directory never overrides the basename, and a suffix after the
+        # quant does not qualify it: both are established spellings.
+        ("Q8_0/model-Q4_K_M.gguf", "Q4_K_M"),
+        ("BF16/gemma-4-12b-it-Q8_0-MTP-001-of-002.gguf", "Q8_0"),
         # No quant anywhere: unchanged fallback.
         ("weights/model.gguf", "weights/model"),
     ],
@@ -126,7 +127,8 @@ def test_loader_mirror_agrees_with_the_hub_key():
         "DeepSeek-R1-Q4_K_M/DeepSeek-R1-Q4_K_M-00001-of-00009.gguf",
         "Llama-3.3-70B-Instruct-Q6_K/Llama-3.3-70B-Instruct-Q6_K-00001-of-00002.gguf",
         "Q6_K/Llama-3.3-70B-Instruct-Q6_K-00001-of-00002.gguf",
-        "Qwen3.5-35B-A3B_exp-16-iq2_s-16_shr-16.gguf",
+        "Q8_0/model-Q4_K_M.gguf",
+        "BF16/gemma-4-12b-it-Q8_0-MTP-001-of-002.gguf",
         "weights/model.gguf",
         "BF16/foo.gguf",
     ]

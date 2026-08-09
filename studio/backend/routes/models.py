@@ -141,7 +141,6 @@ try:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
-        _gguf_variant_key,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,
         is_audio_input_type,
@@ -176,7 +175,6 @@ except ImportError:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
-        _gguf_variant_key,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,
         is_audio_input_type,
@@ -2762,6 +2760,8 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
             continue
         # Keyed on the path, not the basename: a repo holding several checkpoints at
         # one quant would otherwise delete every one of them for a single row.
+        from utils.models.model_config import _gguf_variant_key
+
         try:
             relative = path.relative_to(root).as_posix()
         except ValueError:
@@ -3656,6 +3656,8 @@ def _main_variant_names(rel_path: str) -> tuple[str, ...]:
     The quant label alone is ambiguous in a repo holding several checkpoints at one
     quant, so the file's own variant key counts too.
     """
+    from utils.models.model_config import _gguf_variant_key
+
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return ()

@@ -275,27 +275,15 @@ def extract_quant_label(filename: str) -> str:
     return extract_quant_token(filename) or _unknown_gguf_variant_key(filename)
 
 
-def _segment_names_quant(segment: str, quant: str) -> bool:
-    """Whether a path segment is a name for *quant* (``Q6_K/``, ``Llama-3.3-70B-Q6_K/``)."""
-    match = _select_quant_match(segment)
-    if match is None:
-        return False
-    return f"{match.group(1) or ''}{match.group(2)}".lower() == quant.lower()
+def _is_quant_directory(segment: str) -> bool:
+    """Whether a path segment names a quant (``Q6_K/``, ``Llama-3.3-70B-Instruct-Q6_K/``).
 
-
-_QUANT_NAME_SEPARATORS = ("-", ".", "_", " ")
-
-
-def _stem_names_quant(stem: str, quant: str) -> bool:
-    """Whether the basename ends in *quant*, the convention ``<model>-<QUANT>.gguf``.
-
-    ``ltx-2.3-22b-dev-Q6_K`` does; ``..._exp-16-iq2_s-16_shr-...`` does not -- there the
-    token is one field of a config string and names nothing.
+    Such a directory says only how the file was quantized, which its name already says,
+    so it adds nothing to the file's identity. A directory naming something else
+    (``distilled/``) is a different checkpoint and does. The basename still wins on
+    which quant it is: ``Q8_0/model-Q4_K_M.gguf`` IS the Q4_K_M file.
     """
-    low, wanted = stem.lower(), quant.lower()
-    if low == wanted:
-        return True
-    return low.endswith(wanted) and low[: -len(wanted)].endswith(_QUANT_NAME_SEPARATORS)
+    return _select_quant_match(segment) is not None
 
 
 def gguf_variant_key(filename: str) -> str:
@@ -305,9 +293,9 @@ def gguf_variant_key(filename: str) -> str:
     almost every repo uses, so this is byte-identical to the historical key there and
     every stored pin, manifest and marker keeps resolving. When the token does NOT
     single the file out, because a sibling directory holds another checkpoint at the
-    same quant (``distilled/`` beside the repo root) or because the token is only a
-    field inside a longer name, the key is the file's :func:`gguf_variant_family`
-    instead, which is unique and which the loader already accepts as a spelling
+    same quant (``distilled/`` and ``distilled-1.1/`` beside the repo root), the key
+    is the file's :func:`gguf_variant_family` instead, which is unique within the
+    repo and which the loader already accepts as a spelling
     (``model_config._find_local_gguf_by_variant`` matches its shard-stripped relative
     path, as does ``llama_cpp._gguf_files_for_variant``).
 
@@ -319,12 +307,8 @@ def gguf_variant_key(filename: str) -> str:
     quant = extract_quant_token(path)
     if quant is None:
         return _unknown_gguf_variant_key(path)
-    parents, _, basename = path.rpartition("/")
-    if any(segment and not _segment_names_quant(segment, quant) for segment in parents.split("/")):
-        return _unknown_gguf_variant_key(path)
-    if extract_quant_token(basename) is not None and not _stem_names_quant(
-        _gguf_stem(basename), quant
-    ):
+    parents = path.rpartition("/")[0]
+    if any(segment and not _is_quant_directory(segment) for segment in parents.split("/")):
         return _unknown_gguf_variant_key(path)
     return quant
 
