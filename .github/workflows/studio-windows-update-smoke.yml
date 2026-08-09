@@ -168,16 +168,18 @@ jobs:
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
-          # *>&1 captures Write-Host (Information stream) output;
-          # plain 2>&1 does not. setup.ps1 emits "prebuilt installed
-          # and validated" via Write-Host, and we grep for that.
-          $ProgressPreference = 'SilentlyContinue'
-          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
+          # install.ps1 runs as a CHILD process so its stdout is pipeline
+          # input; in-process its Write-StudioLine output goes straight to
+          # [Console]::Out and skips Tee-Object. See studio-windows-ui-smoke.yml
+          # for the full explanation.
+          $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
+          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 | Tee-Object -FilePath logs/install.log
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         run: |
-          # Filesystem-based check (setup.ps1's stream output isn't
-          # captured back through the parent pipeline).
+          # Filesystem-based check: it does not depend on which process
+          # emitted a marker.
           LLAMA_DIR=~/.unsloth/llama.cpp
           INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
           BIN="$LLAMA_DIR/build/bin/Release/llama-server.exe"

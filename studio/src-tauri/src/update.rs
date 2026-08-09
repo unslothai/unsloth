@@ -13,20 +13,11 @@ const WINDOWS_CLI_ENTRYPOINT: &str =
 
 // ── Types ──
 
+#[derive(Default)]
 pub struct UpdateProcess {
     pub child: Option<Box<dyn ChildWrapper + Send>>,
     pub intentional_stop: bool,
     pub current_attempt: Option<AttemptLog>,
-}
-
-impl Default for UpdateProcess {
-    fn default() -> Self {
-        Self {
-            child: None,
-            intentional_stop: false,
-            current_attempt: None,
-        }
-    }
 }
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;

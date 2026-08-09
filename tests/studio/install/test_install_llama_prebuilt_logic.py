@@ -1331,6 +1331,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        rocm_gfx = None,
     ):
         call_log.append((llama_tag, initial_fallback_used))
         if llama_tag == "b9002":
@@ -2536,6 +2537,7 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        rocm_gfx = None,
     ):
         call_log.append(llama_tag)
         raise PrebuiltFallback("validation failed for latest release")
@@ -2685,6 +2687,7 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
         quantized_path,
         force_cpu = False,
         llama_backend = None,
+        rocm_gfx = None,
     ):
         attempted_names.append(choice.name)
         if choice.name == first_choice.name:
@@ -2813,6 +2816,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        rocm_gfx = None,
     ):
         attempted.append((llama_tag, release_tag, attempts[0].source_label))
         if llama_tag == "b9002":
@@ -4208,3 +4212,50 @@ def test_marker_sync_never_fails_setup_when_the_write_cannot_land(tmp_path, monk
     INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
 
     assert any("WARNING" in line and "force_cpu" in line for line in logged), logged
+
+
+# The stubs above stand in for these two, so a keyword added to either reaches
+# them as a TypeError raised inside whatever assertion happened to be running.
+# `rocm_gfx` did exactly that to four tests at once. Named here so the next one
+# fails once, in this test, saying which parameter moved.
+_VALIDATOR_KEYWORD_ONLY = {
+    "validate_prebuilt_attempts": (
+        "requested_tag",
+        "llama_tag",
+        "release_tag",
+        "approved_checksums",
+        "initial_fallback_used",
+        "existing_install_dir",
+        "force_cpu",
+        "llama_backend",
+        "rocm_gfx",
+    ),
+    "validate_prebuilt_choice": (
+        "requested_tag",
+        "llama_tag",
+        "release_tag",
+        "approved_checksums",
+        "prebuilt_fallback_used",
+        "quantized_path",
+        "force_cpu",
+        "llama_backend",
+        "rocm_gfx",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_VALIDATOR_KEYWORD_ONLY))
+def test_the_validator_stubs_still_model_the_real_signature(name):
+    """A stub that has fallen behind its real function is not a stub."""
+    import inspect
+
+    real = getattr(INSTALL_LLAMA_PREBUILT, name)
+    actual = tuple(
+        parameter_name
+        for parameter_name, parameter in inspect.signature(real).parameters.items()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    )
+    assert actual == _VALIDATOR_KEYWORD_ONLY[name], (
+        f"{name} keyword-only parameters are now {actual}; update the "
+        f"fake_validate stubs in this file, then this list"
+    )
