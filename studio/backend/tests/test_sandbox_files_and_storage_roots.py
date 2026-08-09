@@ -2870,7 +2870,7 @@ def test_a_native_download_gets_an_absolute_url():
     ).read_text(encoding = "utf-8")
 
     assert "apiUrl(" in view
-    body = view[view.index("const save = useCallback"):]
+    body = view[view.index("const save = useCallback") :]
     assert body.index("apiUrl(") < body.index("downloadUrlStreaming(")
 
 
