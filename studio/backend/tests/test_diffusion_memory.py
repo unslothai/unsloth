@@ -573,6 +573,59 @@ def test_refine_model_offload_streams_only_when_a_component_exceeds_budget(monke
     assert any("text_encoder" in reason for reason in refined.reasons)
 
 
+def test_refine_keeps_model_offload_when_streaming_cannot_help(monkeypatch):
+    """Only a component streaming can actually hook justifies leaving whole-module offload."""
+    Module = _install_sized_torch(monkeypatch)
+    plan = MemoryPlan(
+        requested_mode = "low_vram",
+        offload_policy = OFFLOAD_MODEL,
+        vae_tiling = True,
+        vae_slicing = True,
+        device_memory = _discrete(8000),
+        estimates = {"safe_device_budget_mib": 6000},
+    )
+
+    # The oversized component has no granular hook, so streaming would onload it whole anyway.
+    transformer = Module(2500)
+    fat_vae = types.SimpleNamespace(
+        transformer = transformer,
+        components = {
+            "transformer": transformer,
+            "text_encoder": Module(1200),
+            "vae": Module(7500),
+        },
+    )
+    assert refine_memory_plan_for_components(fat_vae, plan) is plan
+
+    # Each component fits, but streaming holds every unstreamed one at once: 3000 + 3500 > 6000.
+    transformer = Module(2000)
+    fat_resident = types.SimpleNamespace(
+        transformer = transformer,
+        components = {
+            "transformer": transformer,
+            "text_encoder": Module(6500),
+            "vae": Module(3000),
+            "image_encoder": Module(3500),
+        },
+    )
+    assert refine_memory_plan_for_components(fat_resident, plan) is plan
+
+    # Same shape with a resident set that fits still streams, and reports what stays behind.
+    transformer = Module(2000)
+    slim_resident = types.SimpleNamespace(
+        transformer = transformer,
+        components = {
+            "transformer": transformer,
+            "text_encoder": Module(6500),
+            "vae": Module(300),
+            "image_encoder": Module(500),
+        },
+    )
+    refined = refine_memory_plan_for_components(slim_resident, plan)
+    assert refined.offload_policy == OFFLOAD_STREAMING
+    assert refined.estimates["streaming_resident_mib"] == 800
+
+
 def test_apply_streaming_uses_block_and_leaf_hooks_with_bounded_cpu_memory(monkeypatch):
     Module = _install_sized_torch(monkeypatch)
     calls = []

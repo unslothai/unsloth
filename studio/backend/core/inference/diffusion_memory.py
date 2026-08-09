@@ -467,6 +467,23 @@ def plan_diffusion_memory(
 # ── apply to a built pipeline ─────────────────────────────────────────────────
 
 
+def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
+    """Component name -> (module, group-offload type) for what streaming keeps off the device.
+
+    Every denoiser streams block by block; every text encoder streams leaf by leaf. Anything else
+    (the VAE, an image encoder) has no granular hook here and stays resident, so this is also the
+    set ``refine_memory_plan_for_components`` is allowed to size the policy against."""
+    streamed: dict[str, tuple[Any, str]] = {}
+    for name in ("transformer", "transformer_2", "unconditional_transformer"):
+        module = getattr(pipe, name, None)
+        if isinstance(module, torch.nn.Module):
+            streamed[name] = (module, "block_level")
+    for name, module in getattr(pipe, "components", {}).items():
+        if str(name).startswith("text_encoder") and isinstance(module, torch.nn.Module):
+            streamed[str(name)] = (module, "leaf_level")
+    return streamed
+
+
 def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
     """Replace whole-module offload when a loaded component cannot fit on the device.
 
@@ -474,6 +491,10 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
     CPU, so their actual packed storage is a better signal than family or cache estimates. Keep
     whole-module offload when every component can fit, preserving its faster execution. When one
     cannot, use granular streaming so no forward needs to materialise that component in full.
+
+    Only a STREAMABLE component justifies the switch, and only if the components streaming cannot
+    hook still fit resident TOGETHER: whole-module offload onloads one at a time, streaming holds
+    all of them at once, so refining past either bound would trade one OOM for another.
     """
     if plan.offload_policy != OFFLOAD_MODEL:
         return plan
@@ -488,8 +509,9 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         transformer = getattr(pipe, "transformer", None)
         if not isinstance(components, dict) or not isinstance(transformer, torch.nn.Module):
             return plan
+        streamable = _streamable_components(pipe, torch)
 
-        sizes: list[tuple[str, int]] = []
+        sizes: dict[str, int] = {}
         mib = 1024 * 1024
         for name, component in components.items():
             if not isinstance(component, torch.nn.Module):
@@ -505,18 +527,24 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
                     continue
                 seen.add(marker)
                 storage_bytes += int(tensor.numel()) * int(tensor.element_size())
-            sizes.append((str(name), (storage_bytes + mib - 1) // mib))
+            sizes[str(name)] = (storage_bytes + mib - 1) // mib
     except Exception:  # noqa: BLE001 - runtime measurement is an optional refinement
         return plan
 
-    if not sizes:
+    streamed_sizes = {n: m for n, m in sizes.items() if n in streamable}
+    if not streamed_sizes:
         return plan
-    largest_name, largest_mib = max(sizes, key = lambda item: item[1])
+    largest_name, largest_mib = max(streamed_sizes.items(), key = lambda item: item[1])
     if largest_mib <= int(budget):
+        return plan
+    # What streaming leaves resident, all at once. Over budget here means streaming OOMs too.
+    resident_mib = sum(m for n, m in sizes.items() if n not in streamable)
+    if resident_mib > int(budget):
         return plan
 
     estimates = dict(plan.estimates)
     estimates["largest_component_mib"] = largest_mib
+    estimates["streaming_resident_mib"] = resident_mib
     return replace(
         plan,
         offload_policy = OFFLOAD_STREAMING,
@@ -681,14 +709,8 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
         if not isinstance(components, dict):
             raise RuntimeError("pipeline does not expose its components")
 
-        streamed: dict[str, tuple[Any, str]] = {}
-        for name in ("transformer", "transformer_2", "unconditional_transformer"):
-            module = getattr(pipe, name, None)
-            if isinstance(module, torch.nn.Module):
-                streamed[name] = (module, "block_level")
-        for name, module in components.items():
-            if str(name).startswith("text_encoder") and isinstance(module, torch.nn.Module):
-                streamed[str(name)] = (module, "leaf_level")
+        # Same selection the planner sized against, so what it promised to stream is what streams.
+        streamed = _streamable_components(pipe, torch)
         if "transformer" not in streamed:
             raise RuntimeError("pipeline has no transformer to stream")
 
