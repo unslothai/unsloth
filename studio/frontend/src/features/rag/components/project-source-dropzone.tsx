@@ -150,17 +150,26 @@ export function ProjectSourceDropzone({
   stagedRef.current = staged;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
-  // The dialog stays mounted across close and resets `staged` to empty, so an
-  // unmount flag cannot see a cancel. Count clears and discard drops older
-  // than the last one rather than resurrecting files the user dismissed.
-  // Only the transition counts: StrictMode replays setup, and a second bump
-  // would discard a drop that is still legitimately in flight.
+  // The dialog stays mounted across close, so an unmount flag cannot see a
+  // cancel. Identity, not length, marks a drop as superseded: `reset()` swaps
+  // in a fresh array even when it was already empty, which a nonzero→zero
+  // check would miss. Anything this component did not hand to `onChange` is an
+  // external reset, so a drop still registering is no longer wanted. Comparing
+  // the reference also absorbs StrictMode's replayed setup, which sees the
+  // array it already recorded.
   const generation = useRef(0);
-  const lastCount = useRef(staged.length);
+  const handedOff = useRef<StagedSource[] | null>(null);
   useEffect(() => {
-    if (staged.length === 0 && lastCount.current !== 0) generation.current += 1;
-    lastCount.current = staged.length;
-  }, [staged.length]);
+    if (staged === handedOff.current) return;
+    handedOff.current = staged;
+    generation.current += 1;
+  }, [staged]);
+
+  /** Hand a list to the owner without reading it back as an external reset. */
+  const commit = useCallback((next: StagedSource[]) => {
+    handedOff.current = next;
+    onChangeRef.current(next);
+  }, []);
 
   // Prune desktop drops whose token TTL has lapsed, so Create never commits a
   // project against sources the native layer has already pruned.
@@ -174,7 +183,7 @@ export function ProjectSourceDropzone({
         const current = stagedRef.current;
         const kept = current.filter((entry) => !isExpired(entry, Date.now()));
         if (kept.length === current.length) return;
-        onChangeRef.current(kept);
+        commit(kept);
         const dropped = current.length - kept.length;
         toast.info(
           dropped === 1
@@ -186,13 +195,13 @@ export function ProjectSourceDropzone({
       Math.max(0, Math.min(...expiries) - EXPIRY_GRACE_MS - Date.now()),
     );
     return () => clearTimeout(timer);
-  }, [staged]);
+  }, [staged, commit]);
 
   const addSources = useCallback(
     (incoming: StagedSource[], unsupported: string[]) => {
       const current = stagedRef.current;
       const { next, duplicates } = addStagedSources(current, incoming);
-      if (next.length !== current.length) onChangeRef.current(next);
+      if (next.length !== current.length) commit(next);
       if (unsupported.length > 0) {
         toast.info(
           unsupported.length === 1
@@ -211,7 +220,7 @@ export function ProjectSourceDropzone({
         );
       }
     },
-    [],
+    [commit],
   );
 
   const addFiles = useCallback(
@@ -362,7 +371,7 @@ export function ProjectSourceDropzone({
                     aria-label={`Remove ${entry.name}`}
                     disabled={disabled}
                     onClick={() =>
-                      onChange(staged.filter((row) => row.id !== entry.id))
+                      commit(staged.filter((row) => row.id !== entry.id))
                     }
                     className="shrink-0 rounded-full text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
                   >
