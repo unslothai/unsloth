@@ -242,7 +242,10 @@ def _read_card_metadata(path: Path) -> Any:
     except StopIteration:
         # Front matter that never closes is not front matter at all.
         return None
-    except (ImportError, OSError, UnicodeError, ValueError):
+    except UnicodeError:
+        # DatasetCard.load reads the card as utf-8 and raises, so nothing here loads.
+        return _UNPARSABLE_METADATA
+    except (ImportError, OSError, ValueError):
         return None
     return payload if isinstance(payload, dict) else _UNPARSABLE_METADATA
 
@@ -365,9 +368,7 @@ def _data_suffix(name: str) -> Optional[str]:
     a trailing compression suffix is stripped before the rest is considered.
     """
     suffixes = PurePosixPath(name).suffixes
-    if suffixes and suffixes[-1].lower() in _UNREADABLE_COMPRESSION:
-        return None
-    if suffixes and suffixes[-1].lower() in _COMPRESSION_EXTENSIONS:
+    if suffixes and suffixes[-1].lower() in _COMPRESSION_EXTENSIONS | _UNREADABLE_COMPRESSION:
         suffixes = suffixes[:-1]
     for suffix in reversed(suffixes):
         if suffix in _EXTENSION_MODULES or suffix.lower() in _FOLDER_EXTENSIONS:
@@ -568,16 +569,21 @@ def _metadata_present(snapshot: Path, name: str) -> bool:
         return False
 
 
-def _unreadable_metadata(snapshot: Path, name: str) -> bool:
-    """Whether the file is there but _snapshot_metadata_file refused it, for being too big
-    or for pointing out of the cache. The loader still reads it, so we cannot ignore it.
-    An empty file is refused too, but it declares nothing and so blocks nothing."""
-    if not _metadata_present(snapshot, name) or _snapshot_metadata_file(snapshot, name) is not None:
-        return False
+def _nonempty(snapshot: Path, name: str) -> bool:
+    """Whether the file holds any bytes. One that holds none declares nothing."""
     try:
         return (snapshot / name).stat().st_size > 0
     except OSError:
         return True
+
+
+def _unreadable_metadata(snapshot: Path, name: str) -> bool:
+    """Whether the file is there but _snapshot_metadata_file refused it, for being too big
+    or for pointing out of the cache. The loader still reads it, so we cannot ignore it.
+    An empty file is refused too, but it declares nothing and so blocks nothing."""
+    return _metadata_present(snapshot, name) and _snapshot_metadata_file(
+        snapshot, name
+    ) is None and _nonempty(snapshot, name)
 
 
 def _declares_configs(snapshot: Path, name: str) -> bool:
@@ -587,7 +593,7 @@ def _declares_configs(snapshot: Path, name: str) -> bool:
         return False
     path = _snapshot_metadata_file(snapshot, name)
     if path is None:
-        return True
+        return _nonempty(snapshot, name)
     try:
         from yaml import YAMLError, safe_load
         try:
@@ -597,10 +603,16 @@ def _declares_configs(snapshot: Path, name: str) -> bool:
     except (ImportError, OSError, UnicodeError, ValueError):
         return True
     if not isinstance(payload, dict):
-        return False
+        # DatasetCardData updates a dict from it, which raises on anything else.
+        return bool(payload)
     # Only configs count: 4.3.0 builds no config from dataset_info declared here, so a
     # feature schema in this file leaves the loader inferring the files by pattern.
     return bool(payload.get("configs"))
+
+
+def _malformed_info(payload: Any) -> bool:
+    """A dataset_info list holding anything but mappings, which datasets calls .get on."""
+    return isinstance(payload, list) and any(not isinstance(item, dict) for item in payload)
 
 
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
@@ -624,14 +636,20 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             declared = declared or bool(card_data.get("configs"))
             _add_config_options(options, card_data.get("configs"))
             named = len(options)
-            _add_dataset_info_options(options, card_data.get("dataset_info"))
+            info = card_data.get("dataset_info")
+            _add_dataset_info_options(options, info)
             # dataset_info carrying only a feature schema names no config, so datasets
             # still resolves the files by pattern and inference has to run.
-            declared = declared or len(options) > named
+            declared = declared or len(options) > named or _malformed_info(info)
 
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)
         if metadata is None:
+            # datasets json.loads dataset_infos.json unconditionally, so one it cannot
+            # read raises before any split exists, inferred or not.
+            declared = declared or (
+                filename == "dataset_infos.json" and _metadata_present(snapshot, filename)
+            )
             continue
         payload = _safe_json_file(metadata, snapshot, allow_snapshot_symlink = True)
         if filename == "dataset_infos.json":

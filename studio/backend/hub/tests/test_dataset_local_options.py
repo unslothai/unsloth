@@ -645,3 +645,55 @@ def test_snapshot_options_count_bw_images_as_a_folder_builder(tmp_path):
 
     # imagefolder wins the vote and drops the jsonl, so there is nothing to train on.
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_stand_down_beside_a_non_mapping_standalone_yaml(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / ".huggingface.yaml").write_text("hello\n", encoding = "utf-8")
+    _rows(snapshot, "train.jsonl")
+
+    # DatasetCardData updates a dict from it and raises on a scalar.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_infer_beside_an_empty_standalone_yaml(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / ".huggingface.yaml").write_text("", encoding = "utf-8")
+    _rows(snapshot, "train.jsonl")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_split_whose_module_needs_a_missing_codec(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+    (snapshot / "train2.jsonl.zst").write_bytes(b"\x28\xb5\x2f\xfd\x00\x00")
+
+    # The inner .jsonl still votes, so datasets picks json and dies on the .zst.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_stand_down_beside_an_empty_legacy_metadata_file(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "dataset_infos.json").write_text("", encoding = "utf-8")
+    _rows(snapshot, "train.jsonl")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_stand_down_beside_a_card_that_cannot_be_decoded(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "README.md").write_bytes(b"\xff\xfe---\nconfigs: x\n---\n")
+    _rows(snapshot, "train.jsonl")
+
+    # DatasetCard.load reads the card as utf-8 and raises before any data file.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_stand_down_beside_a_malformed_dataset_info_list(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _card(snapshot, "dataset_info: [foo]\n")
+    _rows(snapshot, "train.jsonl")
+
+    # datasets calls .get on each entry, so a list of scalars raises.
+    assert local_options._snapshot_options(snapshot) == set()
