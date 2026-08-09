@@ -102,6 +102,49 @@ def test_explicit_loss_type_still_wins():
     assert cfg.loss_type == "chunked_nll", "explicit loss_type was clobbered"
 
 
+def _pristine_sft_config_cls():
+    """TRL's own SFTConfig, not the generated subclass patching rebinds over it."""
+    import trl
+
+    cls = trl.SFTConfig
+    return cls.__mro__[1] if cls.__name__.startswith("Unsloth") else cls
+
+
+def test_pristine_trl_sft_config_default_is_nll_too():
+    """`from trl import SFTConfig` before `import unsloth` keeps TRL's own class.
+
+    Patching only rebinds the module aliases, so that caller never sees the
+    generated subclass and would still build a chunked_nll config and hand it to
+    the patched trainer. The same ordering is covered by the padding-free tests.
+    """
+    import unsloth  # noqa: F401  must precede trl
+
+    pristine = _pristine_sft_config_cls()
+    if not hasattr(pristine, "loss_type"):
+        pytest.skip("this TRL has no SFTConfig.loss_type")
+
+    got = pristine(output_dir = "unused").loss_type
+    assert got == "nll", (
+        f"pristine {pristine.__name__}.loss_type resolved to {got!r}, expected "
+        "'nll'. _pin_pristine_sft_loss_type in unsloth/models/rl.py stopped "
+        "reaching TRL's own class, so a pre-unsloth `from trl import SFTConfig` "
+        "still double-normalises the loss by 1/GA."
+    )
+
+
+def test_pristine_trl_sft_config_keeps_an_explicit_loss_type():
+    """Pinning the pristine default must not take the choice away either."""
+    import unsloth  # noqa: F401
+
+    pristine = _pristine_sft_config_cls()
+    if not hasattr(pristine, "loss_type"):
+        pytest.skip("this TRL has no SFTConfig.loss_type")
+
+    for wanted in ("chunked_nll", "dft"):
+        got = pristine(output_dir = "unused", loss_type = wanted).loss_type
+        assert got == wanted, f"explicit loss_type {wanted!r} was clobbered to {got!r}"
+
+
 # --------------------------------------------------------------------------
 # 2. The normalisation predicates themselves
 # --------------------------------------------------------------------------
