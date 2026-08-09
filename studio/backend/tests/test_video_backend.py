@@ -4668,6 +4668,11 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
     for fam in _FAMILIES:
         if fam.bf16_components_gb is None or fam.name == "wan2.2-t2v-a14b":
             continue
+        # A modular-workflow family has no dense plan to be unchanged: load_pipeline dispatches to
+        # the workflow's own loader before plan_diffusion_memory is ever reached, because there is
+        # no single dense pipeline to budget -- each component is built by its own from_pretrained.
+        if fam.modular_workflow:
+            continue
         calls.clear()
         VideoBackend().load_pipeline(fam.base_repo, model_kind = "pipeline")
         assert calls[0]["model_dense_mib"] == int(
