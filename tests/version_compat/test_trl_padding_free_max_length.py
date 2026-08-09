@@ -51,9 +51,22 @@ def _eager_compile(
     return lambda fn: fn
 
 
-torch.compile = _eager_compile
-if hasattr(torch, "accelerator"):
-    torch.accelerator.is_available = lambda *a, **k: False
+@pytest.fixture(scope = "module", autouse = True)
+def _cpu_only_torch():
+    """Hold the eager-compile spoof for this module only.
+
+    `torch.compile` and `torch.accelerator.is_available` are process-wide, and
+    nothing here needs them before the module's own tests start, so scope them:
+    left in place at import time they follow the session into any GPU test
+    collected after this file.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(torch, "compile", _eager_compile)
+        # torch.accelerator only exists from torch 2.6 onwards.
+        if hasattr(torch, "accelerator"):
+            mp.setattr(torch.accelerator, "is_available", lambda *a, **k: False)
+        yield mp
+
 
 _MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 # Model-level length the trainer resolves from when the user names none.
@@ -63,7 +76,7 @@ _USER_MAX_LENGTH = 64
 
 
 @pytest.fixture(scope = "module", autouse = True)
-def patched_sft():
+def patched_sft(_cpu_only_torch):
     """Import unsloth, and force both halves of the SFT patch on.
 
     `UNSLOTH_ALLOW_CPU=1` (which CPU-only CI sets) skips both, so ask explicitly,
@@ -73,10 +86,12 @@ def patched_sft():
     global torch  # the `import torch._dynamo` below would otherwise shadow it
     import unsloth  # noqa: F401
 
-    torch.compile = _eager_compile
+    # Through the module's MonkeyPatch: `import unsloth` reinstalls the real
+    # torch.compile over the passthrough, and dynamo's kill switch is global too.
+    _cpu_only_torch.setattr(torch, "compile", _eager_compile)
     try:
         import torch._dynamo
-        torch._dynamo.config.disable = True
+        _cpu_only_torch.setattr(torch._dynamo.config, "disable", True)
     except Exception:
         pass
 
