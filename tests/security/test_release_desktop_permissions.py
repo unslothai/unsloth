@@ -63,12 +63,12 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     # publish on a leg that did not succeed, and refuse to publish a leg whose
     # job record never appeared, rather than defaulting to "finished".
     assert publish["needs"] == ["prepare-version"]
-    wait = next(step for step in publish["steps"] if step.get("name") == "Wait for the build matrix")
+    wait = next(
+        step for step in publish["steps"] if step.get("name") == "Wait for the build matrix"
+    )
     wait_run = wait["run"]
 
-    matrix_legs = {
-        f"Build {entry['label']}" for entry in build["strategy"]["matrix"]["include"]
-    }
+    matrix_legs = {f"Build {entry['label']}" for entry in build["strategy"]["matrix"]["include"]}
     assert len(matrix_legs) == len(tauri_steps)
     for leg in matrix_legs:
         assert f"'{leg}'" in wait_run, leg
