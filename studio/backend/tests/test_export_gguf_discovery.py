@@ -343,3 +343,26 @@ def test_materialized_imatrix_is_not_exported_as_a_model(monkeypatch, tmp_path):
     assert success is True, message
     assert (save_dir / "MyModel.Q5_K_M.gguf").is_file()
     assert not (save_dir / "imatrix_unsloth.gguf").exists()
+
+
+def test_materialized_imatrix_does_not_block_temp_root_cleanup(monkeypatch, tmp_path):
+    """The imatrix is not an unrelocated output, so it must not retain the merged checkpoint."""
+
+    class _Model:
+        def save_pretrained_gguf(
+            self, model_save_path, tokenizer, quantization_method, imatrix_file = None
+        ):
+            merged = Path(model_save_path)
+            merged.mkdir(parents = True, exist_ok = True)
+            (merged / "model.safetensors").write_bytes(b"a very large merged checkpoint")
+            _gguf(merged / "imatrix_unsloth.gguf", b"IMATRIX")
+            quant = _gguf(Path(f"{model_save_path}_gguf") / "MyModel.Q5_K_M.gguf")
+            return {"gguf_files": [str(quant)]}
+
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
+
+    success, message, _p = backend.export_gguf(str(save_dir), "q5_k_m", imatrix_file = True)
+
+    assert success is True, message
+    assert (save_dir / "MyModel.Q5_K_M.gguf").is_file()
+    assert list(save_dir.glob("_tmp_model_*")) == []

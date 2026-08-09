@@ -1081,6 +1081,8 @@ class ExportBackend:
                 # Keep all intermediates under an export-owned root.
                 model_tmp_root = tempfile.mkdtemp(prefix = "_tmp_model_", dir = abs_save_dir)
                 model_tmp_path = Path(model_tmp_root)
+                # Needed by the cleanup below too, so resolve it before anything can raise.
+                imatrix_name = _materialized_imatrix_name(imatrix_file)
                 try:
                     _model_tmp = os.path.join(model_tmp_root, "model")
                     result = self.current_model.save_pretrained_gguf(
@@ -1092,7 +1094,6 @@ class ExportBackend:
 
                     # Scan only the owned root; exact reported paths cover external outputs.
                     reported = result if isinstance(result, dict) else {}
-                    imatrix_name = _materialized_imatrix_name(imatrix_file)
                     produced = {p for p in model_tmp_path.rglob("*.gguf") if p.is_file()}
                     produced.update(Path(f) for f in _reported_gguf_files(result) or [])
                     produced = {p for p in produced if p.name != imatrix_name}
@@ -1127,10 +1128,15 @@ class ExportBackend:
                         shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
                         logger.info(f"Relocated Modelfile → {abs_save_dir}/")
                 finally:
-                    # Preserve any GGUF that could not be relocated.
+                    # Preserve any GGUF that could not be relocated. The imatrix is an input,
+                    # so counting it would retain the merged checkpoint on every such export.
                     unrelocated = []
                     if model_tmp_path.is_dir():
-                        unrelocated = sorted(str(p) for p in model_tmp_path.rglob("*.gguf"))
+                        unrelocated = sorted(
+                            str(p)
+                            for p in model_tmp_path.rglob("*.gguf")
+                            if p.name != imatrix_name
+                        )
                     if unrelocated:
                         logger.error(
                             "Kept GGUF files that could not be relocated: %s",
