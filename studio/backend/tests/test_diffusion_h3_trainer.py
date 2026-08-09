@@ -146,18 +146,30 @@ def test_train_canvas_snaps_both_axes_to_the_multiple():
 
 
 def test_train_canvas_scales_its_area_cap_with_the_short_edge():
-    # A smaller training canvas must keep the released ASPECT budget, not the released pixel
-    # count: a fixed cap would silently letterbox every wide clip at a small short edge.
-    wide_768 = h3_train_canvas(21, 9, short_edge = 768)
-    wide_384 = h3_train_canvas(21, 9, short_edge = 384)
-    assert wide_768[0] / wide_768[1] == pytest.approx(wide_384[0] / wide_384[1], rel = 0.05)
+    # A smaller training canvas must keep the released AREA budget in units of the short edge,
+    # not the released pixel count: with a fixed cap a 384-edge canvas never reaches the cap at
+    # all, so a wide clip trains at a completely different area-to-edge ratio than it would at
+    # 768 and the geometry stops being a scaled-down version of the released one.
+    def area_ratio(short_edge: int) -> float:
+        width, height = h3_train_canvas(21, 9, short_edge = short_edge)
+        return width * height / short_edge**2
+
+    assert area_ratio(384) == pytest.approx(area_ratio(768), rel = 0.10)
+    assert area_ratio(192) == pytest.approx(area_ratio(768), rel = 0.10)
 
 
 def test_train_canvas_refuses_an_untrained_aspect_ratio():
     with pytest.raises(ValueError, match = "1:4 to 4:1"):
         h3_train_canvas(10, 1)
-    with pytest.raises(ValueError):
+
+
+def test_train_canvas_names_a_degenerate_size_as_such():
+    # A zero-sized source has no aspect ratio at all. Folding it into the trained-range message
+    # would tell the user to "crop it first", which cannot help.
+    with pytest.raises(ValueError, match = "must be positive"):
         h3_train_canvas(0, 9)
+    with pytest.raises(ValueError, match = "must be positive"):
+        h3_train_canvas(16, -1)
 
 
 # ── clip discovery ───────────────────────────────────────────────────────────
@@ -404,6 +416,16 @@ def test_minimax_h3_is_a_flow_family_for_the_preflight_gates():
     )
 
 
+def test_the_official_h3_base_is_trusted_for_training():
+    # The image-side inference allowlist never covered a video family, so without the training
+    # allowlist entry the official repo is refused as untrusted and only a local path trains.
+    from core.training.diffusion_train_common import _assert_trusted_base_model
+
+    _assert_trusted_base_model("MiniMaxAI/MiniMax-H3")
+    with pytest.raises(ValueError, match = "untrusted"):
+        _assert_trusted_base_model("some-random-user/minimax-h3-repack")
+
+
 def test_h3_defaults_train_at_the_released_short_edge():
     defaults = train_defaults("minimax-h3")
     assert defaults["resolution"] == 768
@@ -616,6 +638,19 @@ def test_the_loss_includes_both_modalities():
 
     source = inspect.getsource(diffusion_h3_trainer._train_h3)
     assert "loss_video + loss_audio" in source
+
+
+def test_the_row_timestep_plan_is_built_video_first():
+    # build_row_timesteps takes (video_timestep, audio_timestep) in that order, and both are
+    # plain floats, so swapping them is silent: the video rows would be conditioned at the
+    # audio schedule's noise level and vice versa.
+    import inspect
+
+    from core.training import diffusion_h3_trainer
+
+    source = inspect.getsource(diffusion_h3_trainer._train_h3)
+    assert "1.0 - sigma_video, 1.0 - sigma_audio" in source
+    assert "1.0 - sigma_audio, 1.0 - sigma_video" not in source
 
 
 def test_one_base_u_drives_both_sigmas():
