@@ -1010,7 +1010,6 @@ def _swap_group_offloading(monkeypatch, apply_group_offloading):
     _install_fake_torch_and_hooks mints a fresh stand-in Module class each call, so calling it a
     second time would leave the components built by the first call failing isinstance."""
     import sys
-
     monkeypatch.setattr(
         sys.modules["diffusers.hooks"], "apply_group_offloading", apply_group_offloading
     )
@@ -1036,9 +1035,7 @@ def test_a_text_encoder_that_refuses_group_offload_stays_resident(monkeypatch):
     # isinstance check against the already-built components would go false.
     _swap_group_offloading(monkeypatch, _apply)
 
-    assert (
-        mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
-    )
+    assert mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
     # The transformer still streams, and the refusing encoders are placed resident instead.
     assert applied == [transformer]
     assert te.placed is not None and te2.placed is not None
@@ -1061,9 +1058,7 @@ def test_one_refusing_text_encoder_does_not_cost_the_other_its_streaming(monkeyp
     pipe, _unused, transformer, te, te2, _vae = _stream_te_pipe(monkeypatch)
     _swap_group_offloading(monkeypatch, _apply)
 
-    assert (
-        mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
-    )
+    assert mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
     assert applied == [transformer, te2]
     assert te.placed is not None  # the refusing one is resident
     assert te2.placed is None  # the working one still streams
