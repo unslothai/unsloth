@@ -1,5 +1,6 @@
 """Permission-boundary checks for the desktop release workflow."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -45,10 +46,30 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert any(
         step.get("uses", "").startswith("actions/upload-artifact@") for step in build["steps"]
     )
-    assert any(
-        step.get("uses", "").startswith("actions/download-artifact@") for step in publish["steps"]
+    download = next(
+        (
+            index
+            for index, step in enumerate(publish["steps"])
+            if step.get("uses", "").startswith("actions/download-artifact@")
+        ),
+        None,
     )
-    assert "build" in publish["needs"]
+    assert download is not None, [step.get("name") for step in publish["steps"]]
+
+    # The publish job starts alongside the build matrix rather than through
+    # `needs: build`, so the hand-off is a wait step that has to clear before
+    # the assets are downloaded. Either shape keeps the ordering guarantee.
+    if "build" not in (publish.get("needs") or []):
+        wait = next(
+            (
+                index
+                for index, step in enumerate(publish["steps"])
+                if "GITHUB_RUN_ID" in step.get("run", "")
+            ),
+            None,
+        )
+        assert wait is not None, "publish-release neither needs build nor waits for it"
+        assert wait < download, [step.get("name") for step in publish["steps"]]
 
     # The guard moved into a validation step that runs ahead of the VirusTotal
     # scan; creating a missing release is deferred to a separate step so a
@@ -64,6 +85,30 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     )
     assert "gh release create" in create_step["run"]
     assert create_step["if"] == "steps.versioned_release_state.outputs.create == 'true'"
+
+
+def test_the_wait_step_polls_every_build_matrix_leg_by_its_real_name():
+    # The wait step matches jobs by name. Renaming a matrix label, or adding a
+    # leg, would otherwise leave it waiting on a job that never reports, or
+    # publishing while a leg is still building.
+    jobs = _workflow()["jobs"]
+    build = jobs["build"]
+    if "build" in (jobs["publish-release"].get("needs") or []):
+        return
+
+    wait = next(
+        step
+        for step in jobs["publish-release"]["steps"]
+        if "GITHUB_RUN_ID" in step.get("run", "")
+    )
+    # Leg names carry their own parentheses, so take the LEGS line, not to `)`.
+    legs = re.findall(r"'([^']+)'", wait["run"].split("LEGS=(", 1)[1].split("\n", 1)[0])
+    template = build["name"]
+    expected = [
+        template.replace("${{ matrix.label }}", entry["label"])
+        for entry in build["strategy"]["matrix"]["include"]
+    ]
+    assert sorted(legs) == sorted(expected), (legs, expected)
 
 
 def test_versioned_release_hides_updater_signature_assets():

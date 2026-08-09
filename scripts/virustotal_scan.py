@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Advisory VirusTotal pre-flight scan of the built desktop release bundles.
+"""Advisory VirusTotal scan of the published desktop release bundles.
 
 Stdlib only on purpose: this runs on a bare `ubuntu-latest` runner right after the
 artifacts are downloaded, before any Python environment is provisioned, so it cannot
@@ -185,10 +185,15 @@ def _md_text(text: str) -> str:
     return escaped.replace("<", "&lt;").replace(">", "&gt;")
 
 
+# Matched by the workflow step that writes a placeholder when the scan
+# produced no summary, so a reader sees one heading either way.
+SUMMARY_HEADING = "### VirusTotal post-publish scan"
+
+
 def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
     """Render the job-summary table. Kept pure so it is unit testable."""
     lines = [
-        "### VirusTotal pre-flight scan",
+        SUMMARY_HEADING,
         "",
         "| Asset | Malicious | Suspicious | Undetected | Harmless | Timeout | Source |",
         "| --- | ---: | ---: | ---: | ---: | ---: | --- |",

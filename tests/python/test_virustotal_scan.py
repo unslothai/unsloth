@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the advisory VirusTotal pre-flight scan.
+"""Unit tests for the advisory VirusTotal post-publish scan.
 
 Offline by design: every test injects a fake transport, so the suite never spends
 the account's 500/day quota and never uploads a build. The two behaviours worth
@@ -442,7 +442,7 @@ class TestDeadlineEnforcement:
             ]
         )
         assert rc == 0
-        assert "VirusTotal pre-flight scan" in summary.read_text()
+        assert vt.SUMMARY_HEADING in summary.read_text()
 
 
 class TestRenderMarkdown:
@@ -808,13 +808,20 @@ class TestRetryBackoffRespectsTheDeadline:
 
 
 class TestWorkflowOrdering:
-    """The scan must not disclose bundles for a release that cannot be published."""
+    """The scan must cover the bundles a published release actually ships."""
 
-    def _publish_step_list(self):
+    def _jobs(self):
         yaml = pytest.importorskip("yaml")
         workflow = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
-        data = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
-        return data["jobs"]["publish-release"]["steps"]
+        return yaml.safe_load(workflow.read_text(encoding = "utf-8"))["jobs"]
+
+    def _job(self, name = "publish-release"):
+        jobs = self._jobs()
+        assert name in jobs, f"no {name!r} job in: {sorted(jobs)}"
+        return jobs[name]
+
+    def _publish_step_list(self):
+        return self._job()["steps"]
 
     def _publish_steps(self):
         return [step.get("name") for step in self._publish_step_list()]
@@ -822,20 +829,33 @@ class TestWorkflowOrdering:
     def _publish_step_map(self):
         return {step.get("name"): step for step in self._publish_step_list()}
 
-    def test_scan_runs_after_the_release_is_validated(self):
-        names = self._publish_steps()
-        assert names.index("Validate versioned release state") < names.index(
-            "VirusTotal pre-flight scan"
-        )
+    def _in_order(self, steps, *names):
+        """Assert `names` appear in this order, naming any that are missing."""
+        present = [step.get("name") for step in steps]
+        missing = [name for name in names if name not in present]
+        assert not missing, f"missing step(s) {missing} in: {present}"
+        found = [present.index(name) for name in names]
+        assert found == sorted(found), f"expected {list(names)} in order, got: {present}"
 
-    def test_release_creation_is_deferred_until_after_the_scan(self):
+    def test_the_scan_runs_once_the_release_is_published(self):
+        # The scan moved out of publish-release into its own job (#8194), so the
+        # ordering guarantee is now the dependency edge rather than step order.
+        scan = self._job("virustotal-scan")
+        assert "publish-release" in (scan.get("needs") or []), scan.get("needs")
+
+    def test_the_scan_job_cannot_write_to_the_repository(self):
+        # It only reads published bundles, so it must not inherit release rights.
+        assert self._job("virustotal-scan").get("permissions", {}).get("contents") != "write"
+
+    def test_release_creation_is_deferred_until_the_state_is_validated(self):
         # `gh release create` without `--draft` publishes at once, so creating a
-        # new release before the scan would expose an empty release for its
-        # duration, and leave it empty for good if the run were cancelled.
-        names = self._publish_steps()
-        assert names.index("VirusTotal pre-flight scan") < names.index("Create versioned release")
-        assert names.index("Create versioned release") < names.index(
-            "Publish versioned release assets"
+        # release before its state is validated would expose an empty release,
+        # and leave it empty for good if the run were cancelled.
+        self._in_order(
+            self._publish_step_list(),
+            "Validate versioned release state",
+            "Create versioned release",
+            "Publish versioned release assets",
         )
 
     def test_release_notes_are_written_unconditionally(self):
@@ -868,13 +888,40 @@ class TestWorkflowOrdering:
             == "steps.versioned_release_state.outputs.create == 'true'"
         )
 
-    def test_scan_runs_before_the_assets_are_published(self):
-        names = self._publish_steps()
-        assert names.index("VirusTotal pre-flight scan") < names.index(
-            "Publish versioned release assets"
+    def test_the_scan_covers_the_same_bundles_that_were_published(self):
+        # Scanning a different directory would report on nothing at all.
+        steps = self._job("virustotal-scan")["steps"]
+        download = next(
+            step
+            for step in steps
+            if step.get("uses", "").startswith("actions/download-artifact@")
         )
+        # The two spell the runner temp dir differently, so compare the leaf.
+        target = download["with"]["path"].rstrip("/").rsplit("/", 1)[-1]
+        scan = next(step for step in steps if "virustotal_scan.py" in step.get("run", ""))
+        assert f"/{target}" in scan["run"], scan["run"]
+
+    def test_the_placeholder_summary_matches_the_real_one(self):
+        # The fallback runs when the scan produced nothing, so a differing
+        # heading would show up as a second, unrelated summary section.
+        publish = next(
+            step
+            for step in self._job("virustotal-scan")["steps"]
+            if step.get("name") == "Publish VirusTotal summary"
+        )
+        assert vt.SUMMARY_HEADING in publish["run"], publish["run"]
 
     def test_the_scan_script_is_checked_out_first(self):
-        # publish-release otherwise has no source tree, so the script would be missing.
-        names = self._publish_steps()
-        assert names.index("Check out the scan script") < names.index("VirusTotal pre-flight scan")
+        # The scan job otherwise has no source tree, so the script would be missing.
+        steps = self._job("virustotal-scan")["steps"]
+        checkout = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("uses", "").startswith("actions/checkout@")
+        )
+        scan = next(
+            index
+            for index, step in enumerate(steps)
+            if "virustotal_scan.py" in step.get("run", "")
+        )
+        assert checkout < scan, [step.get("name") for step in steps]
