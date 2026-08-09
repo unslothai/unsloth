@@ -693,6 +693,23 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert backend.is_loaded is False
 
 
+def test_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(fake_runtime, tmp_path):
+    filename = "z-image-turbo-Q8_0.gguf"
+    (tmp_path / filename).write_bytes(b"weights")
+    backend = DiffusionBackend()
+
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = filename,
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    assert status["dtype"] == "float32"  # compute dtype is a separate concern
+    assert status["gguf_variant"] == "Q8_0"
+    assert backend.unload()["gguf_variant"] is None
+
+
 def test_generate_progress_active_during_setup(fake_runtime, tmp_path, monkeypatch):
     # Active must be published the moment the lock is held, before the slow setup that _apply_loras runs in.
     (tmp_path / "model.gguf").write_bytes(b"weights")
@@ -4469,6 +4486,11 @@ def test_diffusion_status_response_carries_requested_precision():
     }
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
     assert resp.model_dump()["resolved"] == rec
+
+
+def test_diffusion_status_response_carries_gguf_variant():
+    from models.inference import DiffusionStatusResponse
+    assert DiffusionStatusResponse(loaded = True, gguf_variant = "Q8_0").gguf_variant == "Q8_0"
 
 
 def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):
