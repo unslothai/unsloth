@@ -7236,3 +7236,74 @@ def test_download_plan_skips_nothing_when_the_hub_reports_no_commit(monkeypatch)
         "unsloth/FLUX.1-dev-GGUF",
         "unsloth/FLUX.1-dev",
     }
+
+
+def test_speed_off_is_not_reported_as_a_staging_failure(fake_runtime, tmp_path, monkeypatch):
+    """An explicit Speed=off rewrites an auto request to "off" and the plan stages no
+    transformer/ on purpose. Reading that expected absence as a decline told the caller their
+    automatic quant had failed for want of shards, when what actually happened is the bit-exact
+    GGUF they asked for."""
+    _stub_hosted_prequant(monkeypatch, cached = True)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        speed_mode = "off",
+        _transformer_prefetched = False,
+    )
+
+    assert _dense_calls(calls, backend) == []
+    resolved = status.get("resolved", {}).get("transformer_quant", {})
+    assert "not staged" not in str(resolved.get("reason") or "")
+
+
+def test_a_cached_lower_rung_survives_the_unstaged_decline(fake_runtime, tmp_path, monkeypatch):
+    """Auto's winner having no hosted prequant does not mean there is none to open. fp8 winning
+    while only an int8 checkpoint is published is what the retry below exists for, and declining
+    on the winner alone set dense_declined and skipped straight past it to the GGUF for a
+    checkpoint already on disk."""
+    from core.inference import diffusion as dmod
+
+    def _reason(retry):
+        _stub_hosted_prequant(monkeypatch, cached = True)
+        # No prequant for the WINNER and no dense candidate: only the retry can rescue this.
+        monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
+        monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", lambda **kw: None)
+        monkeypatch.setattr(
+            DiffusionBackend, "_auto_prequant_retry_scheme", staticmethod(lambda *a, **k: retry)
+        )
+        backend = DiffusionBackend()
+        _force_cuda_target(backend, monkeypatch)
+        (tmp_path / "m.gguf").write_bytes(b"x")
+        status = backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            _transformer_prefetched = False,
+        )
+        return str(status.get("resolved", {}).get("transformer_quant", {}).get("reason") or "")
+
+    marker = "an auto quant never downloads a second transformer"
+    # A cached lower rung exists, so this branch must not fire and close the path. The load can
+    # still decline further down for its own reasons; what matters is that it got that far.
+    assert marker not in _reason("int8")
+    # With no cached rung either, the decline stands.
+    assert marker in _reason(None)
+
+
+def test_the_cache_probe_sees_a_moved_cache_root():
+    """_prefetch_files resolves each file through whichever root holds it
+    (reuse_other_cache_root), so a snapshot left behind by a cache-folder change satisfies the
+    pull without moving a byte. Reading the live root alone declined the fast path for a base
+    that is entirely on disk."""
+    import inspect
+
+    from core.inference.diffusion_families import cache_holds_files
+
+    src = inspect.getsource(cache_holds_files)
+    assert "other_root = True" in src

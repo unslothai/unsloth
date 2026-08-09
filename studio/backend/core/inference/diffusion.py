@@ -2600,7 +2600,16 @@ class DiffusionBackend:
                 # never runs. An explicit scheme, a LoRA bake and every non-GGUF kind keep today's
                 # behaviour, where the prequant IS the point. An all-zero-weight list is not a bake.
                 baking_loras = _has_active_lora(loras)
-                if kind == "gguf" and transformer_quant_auto and not baking_loras:
+                # ... and only while a scheme is still ENABLED. An explicit Speed=off rewrites an
+                # auto request to "off" above and the plan stages no transformer/ on purpose, so
+                # without this the deliberate bit-exact GGUF was reported as a quant declined for
+                # want of shards, in the status payload and in the log.
+                if (
+                    kind == "gguf"
+                    and transformer_quant_auto
+                    and not baking_loras
+                    and normalize_transformer_quant(transformer_quant) is not None
+                ):
                     uncached_prequant = _uncached_prequant_repo(
                         fam,
                         target,
@@ -2635,12 +2644,32 @@ class DiffusionBackend:
                     # would have to be downloaded -- so reading the empty stage as a verdict here
                     # would drop a fast path that costs nothing. The branch above already sent
                     # every UNCACHED pre-quant to the GGUF, so what reaches here is free.
-                    elif not _transformer_prefetched and not _dense_candidate_is_prequant(
-                        fam,
-                        target,
-                        transformer_quant,
-                        base_repo = base,
-                        prequant_path = transformer_prequant_path,
+                    # A lower auto rung whose checkpoint is already cached counts as well. Auto's
+                    # winner having no hosted prequant does not mean there is none to open: fp8
+                    # winning while only an int8 checkpoint is published is exactly what the retry
+                    # below exists for, and declining here would skip past it to the GGUF for a
+                    # checkpoint that costs nothing. That retry only ever returns a CACHED rung.
+                    elif (
+                        not _transformer_prefetched
+                        and not _dense_candidate_is_prequant(
+                            fam,
+                            target,
+                            transformer_quant,
+                            base_repo = base,
+                            prequant_path = transformer_prequant_path,
+                        )
+                        and self._auto_prequant_retry_scheme(
+                            target,
+                            fam,
+                            transformer_quant,
+                            select_transformer_quant_scheme(
+                                target, transformer_quant, family = getattr(fam, "name", None)
+                            ),
+                            base_repo = base,
+                            path_override = transformer_prequant_path,
+                            loras = loras,
+                        )
+                        is None
                     ):
                         logger.info(
                             "diffusion.transformer_quant_declined: %s transformer/ shards are not "
