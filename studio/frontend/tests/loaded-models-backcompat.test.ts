@@ -178,8 +178,8 @@ test("fields a future backend adds are ignored, not rendered", () => {
   assert.equal(rows[0].detail, "flux · BF16 · cuda");
 });
 
-test("a backend with no gguf_quant field still reports the compute dtype", () => {
-  // gguf_quant is additive. An older wheel sends model_kind but not the quant, and the row must
+test("a backend with no gguf_variant field still reports the compute dtype", () => {
+  // gguf_variant is additive. An older wheel sends model_kind but not the quant, and the row must
   // keep the line it has always shown rather than losing its precision part entirely.
   const rows = describeDiffusionStatus({
     loaded: true,

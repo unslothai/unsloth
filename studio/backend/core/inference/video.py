@@ -2351,6 +2351,7 @@ class VideoBackend:
                 "device": None,
                 "dtype": None,
                 "model_kind": None,
+                "gguf_variant": None,
                 "offload_policy": None,
                 "vae_tiling": False,
                 "memory_mode": None,
@@ -2364,6 +2365,8 @@ class VideoBackend:
                 "defaults": None,
                 "resolved": None,
             }
+        from hub.utils.gguf import extract_quant_token
+
         fam = state.family
         default_steps, default_guidance = default_video_generation_params(
             state.gguf_filename,
@@ -2379,6 +2382,12 @@ class VideoBackend:
             "device": state.device,
             "dtype": state.dtype,
             "model_kind": state.kind,
+            # As on the image runtime: dtype is compute precision, which labelled a Q4_K_M BF16.
+            "gguf_variant": (
+                extract_quant_token(state.gguf_filename)
+                if state.kind == "gguf" and state.gguf_filename
+                else None
+            ),
             "offload_policy": state.offload_policy,
             "vae_tiling": state.vae_tiling,
             "memory_mode": state.memory_mode,

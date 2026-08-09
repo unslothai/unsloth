@@ -203,6 +203,10 @@ export function describeDiffusionStatus(
   status: DiffusionStatus | null,
 ): LoadedModelEntry[] {
   if (!status?.loaded || !status.repo_id) return [];
+  const isGguf =
+    status.model_kind === "gguf" ||
+    status.dtype?.toLowerCase() === "gguf" ||
+    Boolean(status.gguf_variant);
   return [
     {
       id: `image:${status.repo_id}`,
@@ -214,13 +218,13 @@ export function describeDiffusionStatus(
         // Only while the GGUF is what ran. A GGUF pick the dense fast path replaced is a
         // torchao build of the base transformer, and calling that row "GGUF" names a file
         // the pipeline never opened.
-        status.model_kind === "gguf" && !status.transformer_quant ? "GGUF" : null,
+        isGguf && !status.transformer_quant ? "GGUF" : null,
         // What the transformer IS, in the order the build decides it: the dense scheme when
         // one engaged, else the quant of the GGUF that ran, else the pipeline dtype. `dtype`
         // is a COMPUTE dtype and reads bf16 for every CUDA load, so on its own it reported
-        // "BF16" for a Q8_0 pick. Older backends send no `gguf_quant` and fall back to it.
+        // "BF16" for a Q8_0 pick. Via precisionLabel so a lowercase q8_0 still reads Q8_0.
         precisionLabel(status.transformer_quant) ??
-          precisionLabel(status.gguf_quant) ??
+          precisionLabel(status.gguf_variant) ??
           precisionLabel(status.dtype),
         status.device,
       ),
@@ -240,10 +244,11 @@ export function describeVideoStatus(
       name: status.repo_id,
       detail: joinDetail(
         status.family,
-        status.model_kind === "gguf" ? "GGUF" : null,
-        // The dense transformer's own precision when one engaged, since that is
-        // what distinguishes the build; otherwise the pipeline dtype.
-        precisionLabel(status.transformer_quant) ??
+        status.model_kind === "gguf" || status.gguf_variant ? "GGUF" : null,
+        // Checkpoint quant, else the dense transformer's own precision when one
+        // engaged, else the pipeline dtype (compute precision, so it called Q4_K_M BF16).
+        precisionLabel(status.gguf_variant) ??
+          precisionLabel(status.transformer_quant) ??
           precisionLabel(status.dtype),
         status.device,
       ),
