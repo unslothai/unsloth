@@ -207,6 +207,19 @@ test("a bf16 video load falls back to the pipeline dtype", () => {
   assert.equal(video.detail, "wan · BF16 · cuda");
 });
 
+test("a GGUF video row names its selected quant instead of its compute dtype", () => {
+  const [video] = describeVideoStatus({
+    loaded: true,
+    repo_id: "unsloth/Wan2.2-T2V-A14B-GGUF",
+    family: "wan",
+    model_kind: "gguf",
+    gguf_variant: "Q4_K_M",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(video.detail, "wan · GGUF · Q4_K_M · cuda");
+});
+
 test("a GGUF image load does not print GGUF twice", () => {
   const [image] = describeDiffusionStatus({
     loaded: true,

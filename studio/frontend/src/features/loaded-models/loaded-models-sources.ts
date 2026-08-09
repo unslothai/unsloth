@@ -236,10 +236,11 @@ export function describeVideoStatus(
       name: status.repo_id,
       detail: joinDetail(
         status.family,
-        status.model_kind === "gguf" ? "GGUF" : null,
-        // The dense transformer's own precision when one engaged, since that is
-        // what distinguishes the build; otherwise the pipeline dtype.
-        precisionLabel(status.transformer_quant) ??
+        status.model_kind === "gguf" || status.gguf_variant ? "GGUF" : null,
+        // The checkpoint quant identifies a GGUF build; else the dense transformer's own
+        // precision when one engaged; else the pipeline dtype (only compute precision).
+        status.gguf_variant ??
+          precisionLabel(status.transformer_quant) ??
           precisionLabel(status.dtype),
         status.device,
       ),
