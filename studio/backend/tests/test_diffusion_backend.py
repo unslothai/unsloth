@@ -2813,6 +2813,7 @@ def test_load_refines_component_placement_after_text_encoder_quantization(
     fake_runtime, tmp_path, monkeypatch
 ):
     from core.inference import diffusion as dmod
+    from core.inference.diffusion_precision import TEQuantOutcome
 
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
@@ -2821,7 +2822,10 @@ def test_load_refines_component_placement_after_text_encoder_quantization(
 
     def _quantize(*args, **kwargs):
         seen["quantized"] = True
-        return None
+        # The real pass reports what it did and the loader reads `.mode` off that report, so a
+        # bare None here is a shape the production function can no longer return. A None mode
+        # keeps this stub's meaning: the encoders were left dense.
+        return TEQuantOutcome(None)
 
     def _refine(pipe, plan):
         assert seen["quantized"] is True
@@ -4518,6 +4522,49 @@ def test_dense_quant_prefetch_declines_with_the_load(fake_runtime, monkeypatch):
     _stub_hosted_prequant(monkeypatch, cached = True)
     assert backend._dense_quant_prefetch_needed(fam, {}) is False
     assert len(consulted) == 2
+
+
+def test_status_names_the_gguf_quant_that_actually_ran(fake_runtime, tmp_path):
+    # The reported bug: picking a GGUF at Q8_0 showed "BF16" in the loaded models row, because
+    # dtype is the pipeline COMPUTE dtype and reads bf16 for every CUDA load. gguf_variant is
+    # what distinguishes the file that was downloaded and opened.
+    backend = DiffusionBackend()
+    (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "z-image-turbo-Q8_0.gguf",
+        family_override = "z-image",
+    )
+    status = backend.status()
+    assert status["model_kind"] == "gguf"
+    assert status["transformer_quant"] is None  # the GGUF ran as-is
+    assert status["gguf_variant"] == "Q8_0"
+
+
+def test_status_reports_the_dense_build_when_it_replaced_the_gguf(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # A GGUF pick the dense fast path took over denoises with a torchao build of the BASE
+    # transformer, and the .gguf on disk is never opened. transformer_quant is what describes
+    # that build, so the row must prefer it over the picked file's quant.
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    _stub_dense_quant(monkeypatch, scheme = "fp8")
+    (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "z-image-turbo-Q8_0.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    assert status["transformer_quant"] == "fp8"
+    assert backend.status()["transformer_quant"] == "fp8"
+
+
+def test_status_carries_no_gguf_variant_when_nothing_is_loaded():
+    # The unloaded payload must declare every key the loaded one does, or the row keeps the
+    # previous model's quant after an eject.
+    assert DiffusionBackend().status()["gguf_variant"] is None
 
 
 def test_diffusion_status_response_carries_resolved():
