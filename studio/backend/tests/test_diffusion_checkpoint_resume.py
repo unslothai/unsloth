@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU-only tests for diffusion training resume (NVIDIA QA P1-3).
+"""CPU-only tests for diffusion training resume.
 
 A stop-and-save used to leave only the adapter, so restarting the same configuration began
 again at step 1. These cover the pieces that fix it: the atomically written checkpoint
