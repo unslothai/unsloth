@@ -306,6 +306,13 @@ export async function generateDiffusionImage(
   return parseJson(response);
 }
 
+/** Request a cancel. Best-effort: the diffusers sampler stops at the next step boundary (the native engine kills its sd-cli run outright) and the in-flight generate POST unwinds as a 409 with nothing persisted. `cancelled` is false when there was nothing to stop. */
+export async function cancelDiffusionGeneration(): Promise<{ cancelled: boolean }> {
+  return parseJson(
+    await authFetch("/api/inference/images/generate/cancel", { method: "POST" }),
+  );
+}
+
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
   return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
 }
