@@ -350,7 +350,11 @@ def test_materialized_imatrix_does_not_block_temp_root_cleanup(monkeypatch, tmp_
 
     class _Model:
         def save_pretrained_gguf(
-            self, model_save_path, tokenizer, quantization_method, imatrix_file = None
+            self,
+            model_save_path,
+            tokenizer,
+            quantization_method,
+            imatrix_file = None,
         ):
             merged = Path(model_save_path)
             merged.mkdir(parents = True, exist_ok = True)

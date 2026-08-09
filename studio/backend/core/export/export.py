@@ -1133,9 +1133,7 @@ class ExportBackend:
                     unrelocated = []
                     if model_tmp_path.is_dir():
                         unrelocated = sorted(
-                            str(p)
-                            for p in model_tmp_path.rglob("*.gguf")
-                            if p.name != imatrix_name
+                            str(p) for p in model_tmp_path.rglob("*.gguf") if p.name != imatrix_name
                         )
                     if unrelocated:
                         logger.error(
