@@ -1172,6 +1172,15 @@ class VideoBackend:
         )
         text_encoder_gb = components[1] * te_scale if components is not None else 0.0
         companions_gb = text_encoder_gb + components[2] if components is not None else 0.0
+        if te_scale != 1.0 and components is not None:
+            logger.info(
+                "video.te_prequant_budget: budgeting the pre-cast %s text encoder at %.2f of "
+                "bf16 (%.1f GB instead of %.1f GB)",
+                text_encoder_quant,
+                te_scale,
+                text_encoder_gb,
+                components[1],
+            )
         if kind == "pipeline":
             model_dense_mib = (
                 int((components[0] + companions_gb) * mib_per_gb * dtype_scale)
