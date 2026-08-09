@@ -2042,7 +2042,14 @@ export function DiffusionTrainPanel({
                   {completed
                     ? "Trained"
                     : "Stopped early; the adapter as of the last finished step was saved"}
-                  {status?.family ? ` (${status.family})` : ""} and added to the LoRA picker.
+                  {status?.family ? ` (${status.family})` : ""}
+                  {/* The LoRA picker and Deploy to Create are the Images surface, and only an
+                      adapter published into the diffusion LoRA catalog reaches them. A family
+                      trained here without that catalog (video) still saves a loadable adapter,
+                      so report the file and claim nothing more. */}
+                  {status?.catalog_path
+                    ? " and added to the LoRA picker."
+                    : ". Load it from the path below."}
                   {status?.lora_path && (
                     <span className="mt-1 block break-all">Saved: {status.lora_path}</span>
                   )}
@@ -2051,9 +2058,12 @@ export function DiffusionTrainPanel({
                   )}
                 </p>
                 <div className="mt-1 flex flex-wrap gap-2">
-                  <Button type="button" size="sm" onClick={onDeployClick}>
-                    Deploy to Create
-                  </Button>
+                  {/* A video run publishes no catalog entry, so there is nothing to deploy. */}
+                  {status?.catalog_path && (
+                    <Button type="button" size="sm" onClick={onDeployClick}>
+                      Deploy to Create
+                    </Button>
+                  )}
                   {/* Only a run stopped short can be continued; a completed one is already at its
                       target. Disabled until the run record lands (and enabled only if its
                       checkpoint really is on disk), with the backend's reason as the tooltip. */}

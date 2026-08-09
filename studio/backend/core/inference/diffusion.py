@@ -347,7 +347,7 @@ def resolve_local_single_file(model_path: str) -> Optional[str]:
     return checkpoints[0] if len(checkpoints) == 1 else None
 
 
-def _decode_b64_image(data: str, *, mode: str = "RGB") -> Any:
+def decode_b64_image(data: str, *, mode: str = "RGB") -> Any:
     """Decode a base64 (optionally ``data:`` URL) image string to a PIL image.
 
     The image-conditioned workflows (img2img / inpaint / edit) transport the input
@@ -3307,6 +3307,7 @@ class DiffusionBackend:
                         target, attention_backend, speed_active = effective_speed != SPEED_OFF
                     ),
                     logger = logger,
+                    target = target,
                 )
                 # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps (~1.4x on Flux,
                 # LPIPS ~0.08) and drops compile fullgraph. Tri-state: unset/auto -> FBCACHE_MIN_STEPS policy; off/fbcache pinned.
@@ -4363,6 +4364,7 @@ class DiffusionBackend:
             state.pipe,
             select_attention_backend(target, state.attention_request, speed_active = True),
             logger = logger,
+            target = target,
         )
         object.__setattr__(state, "attention_backend", attention_engaged)
         # Keep the badge in step with the state it describes: the top-level field moved, so leaving
@@ -4538,17 +4540,17 @@ class DiffusionBackend:
                             "support masks (mask_image)."
                         )
                     workflow = "edit"
-                    init_pil = _decode_b64_image(init_image, mode = "RGB")
+                    init_pil = decode_b64_image(init_image, mode = "RGB")
                 elif mask_image is not None and init_image is not None:
                     workflow = "inpaint"
                     pipe = self._workflow_pipe(state, state.family.inpaint_pipeline_class, workflow)
-                    init_pil = _decode_b64_image(init_image, mode = "RGB")
-                    mask_pil = _decode_b64_image(mask_image, mode = "L")
+                    init_pil = decode_b64_image(init_image, mode = "RGB")
+                    mask_pil = decode_b64_image(mask_image, mode = "L")
                 elif init_image is not None and upscale is not None and upscale > 1.0:
                     # Upscale (hires fix): enlarge with Lanczos, then re-run img2img at low strength to add detail.
                     workflow = "upscale"
                     pipe = self._workflow_pipe(state, state.family.img2img_pipeline_class, workflow)
-                    init_pil = _decode_b64_image(init_image, mode = "RGB")
+                    init_pil = decode_b64_image(init_image, mode = "RGB")
                     iw, ih = init_pil.size
                     # Cap the factor, then the absolute output (longest side 2048); round to a multiple of 16 (VAE downsample + patch).
                     factor = max(1.0, min(float(upscale), 4.0))
@@ -4570,15 +4572,15 @@ class DiffusionBackend:
                 elif getattr(state.family, "reference", False) and init_image is not None:
                     # FLUX.2 reference conditioning: the loaded pipe takes the reference via `image` and generates at the REQUESTED size.
                     workflow = "reference"
-                    init_pil = _decode_b64_image(init_image, mode = "RGB")
+                    init_pil = decode_b64_image(init_image, mode = "RGB")
                     # Additional references (FLUX.2 combines a list); capped to bound VRAM.
                     ref_extra = [
-                        _decode_b64_image(x, mode = "RGB") for x in (reference_images or [])[:3]
+                        decode_b64_image(x, mode = "RGB") for x in (reference_images or [])[:3]
                     ]
                 elif init_image is not None:
                     workflow = "img2img"
                     pipe = self._workflow_pipe(state, state.family.img2img_pipeline_class, workflow)
-                    init_pil = _decode_b64_image(init_image, mode = "RGB")
+                    init_pil = decode_b64_image(init_image, mode = "RGB")
                 else:
                     workflow = "txt2img"
 
@@ -4610,7 +4612,7 @@ class DiffusionBackend:
                                 "ControlNet pipeline; not GGUF-via-diffusers or torchao fp8/int8)."
                             )
                         # Decode + preprocess the control image FIRST so a bad image 400s before any CN download, at the OUTPUT size.
-                        src = _decode_b64_image(cn_image_b64, mode = "RGB")
+                        src = decode_b64_image(cn_image_b64, mode = "RGB")
                         control_pil = diffusion_controlnet.preprocess_control(src, cn_type).resize(
                             (width, height), Image.LANCZOS
                         )
