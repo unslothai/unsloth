@@ -119,7 +119,9 @@ def _holds_generated_modules(path: Path) -> bool:
     files is someone's package, and this decides what gets deleted.
     """
     try:
-        return any(_GENERATED_NAME_RE.match(item.name) for item in path.iterdir())
+        return any(
+            item.is_file() and _GENERATED_NAME_RE.match(item.name) for item in path.iterdir()
+        )
     except OSError:
         return False
 

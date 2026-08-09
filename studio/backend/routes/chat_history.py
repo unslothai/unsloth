@@ -460,10 +460,36 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
         return removed, kept
 
     try:
-        return await run_in_threadpool(_remove)
+        result = await run_in_threadpool(_remove)
     except Exception:
         logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
         return 0, []
+    if delete_files:
+        # A project workspace kept for a fork that has now gone: the user asked
+        # for the files on both surfaces, and nothing else would ever revisit it.
+        await run_in_threadpool(_collect_orphaned_workspaces)
+    return result
+
+
+def _collect_orphaned_workspaces() -> None:
+    """Delete kept project workspaces nothing points at any more."""
+    import shutil
+
+    from core.inference.tools import (
+        forget_orphaned_project,
+        list_orphaned_projects,
+        project_session_id,
+    )
+    from storage.studio_db import sandbox_is_referenced_elsewhere
+
+    for project_id, workspace in list_orphaned_projects():
+        try:
+            if sandbox_is_referenced_elsewhere(project_session_id(project_id)):
+                continue
+            shutil.rmtree(workspace, ignore_errors = True)
+            forget_orphaned_project(project_id)
+        except Exception:  # noqa: BLE001 - a stuck record must not break a delete
+            logger.warning("Could not collect workspace for %s", project_id, exc_info = True)
 
 
 @router.get("/attachments")
@@ -677,7 +703,12 @@ async def delete_project(
     if delete_files:
         from starlette.concurrency import run_in_threadpool
 
-        from core.inference.tools import project_session_id, wait_for_sessions_idle
+        from core.inference.tools import (
+            forget_orphaned_project,
+            project_session_id,
+            record_orphaned_project,
+            wait_for_sessions_idle,
+        )
         from storage.studio_db import (
             delete_project_workspace,
             sandbox_is_referenced_elsewhere,
@@ -689,16 +720,31 @@ async def delete_project(
         # first: a tool call in a project runs as `project-<id>`, so waiting on
         # the member ids alone returned at once.
         shared = project_session_id(project_id)
-        await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
+        idle = await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
         # A chat forked out of the project still shows cards for the shared
         # workspace, and the fork is not one of the ids deleted here.
-        if await run_in_threadpool(sandbox_is_referenced_elsewhere, shared, None):
+        referenced = await run_in_threadpool(sandbox_is_referenced_elsewhere, shared, None)
+        if not idle:
+            # Still running after the wait. Removing a live tool call's working
+            # directory is worse than keeping files the user asked to delete,
+            # and the record below means the next delete can still collect them.
+            logger.warning(
+                "Kept project workspace %s: a tool call was still running in it", project_id,
+            )
+        elif referenced:
             logger.info(
                 "Kept project workspace %s: a surviving chat still shows its files",
                 project_id,
             )
-        else:
+        if idle and not referenced:
             await run_in_threadpool(delete_project_workspace, project)
+            await run_in_threadpool(forget_orphaned_project, project_id)
+        elif project.get("sandboxPath"):
+            # Written down so it can be resolved and, once nothing points at it,
+            # collected: the row that knew where it lives is gone.
+            await run_in_threadpool(
+                record_orphaned_project, project_id, project["sandboxPath"],
+            )
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)

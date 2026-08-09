@@ -7191,12 +7191,73 @@ def _usable_session_id(session_id: str) -> bool:
     return session_id.split(".")[0].lower() not in _WINDOWS_DEVICE_NAMES
 
 
-def _orphaned_project_workdir(project_id: str) -> "str | None":
-    """A deleted project's workspace, when its files were kept.
+def _orphan_records_dir() -> str:
+    """Where a preserved project workspace's path is written down.
 
-    Only the default location: a workspace the user pointed elsewhere is not
-    derivable from the id, and nothing is left to look it up in.
+    One small file per project, named by its id: the row that knew the path is
+    gone, and a workspace the user pointed somewhere custom cannot be derived
+    from anything else.
     """
+    return os.path.join(os.path.dirname(os.path.realpath(sandbox_root())), "orphaned-projects")
+
+
+def record_orphaned_project(project_id: str, workspace: str) -> None:
+    """Remember where a deleted project's kept workspace lives."""
+    if not project_id or not _usable_session_id(project_id) or not workspace:
+        return
+    try:
+        os.makedirs(_orphan_records_dir(), exist_ok = True)
+        with open(os.path.join(_orphan_records_dir(), project_id), "w", encoding = "utf-8") as fh:
+            fh.write(os.path.realpath(workspace))
+    except OSError:
+        logger.warning("Could not record kept workspace for project %s", project_id)
+
+
+def forget_orphaned_project(project_id: str) -> None:
+    """Drop the record once the workspace has gone."""
+    if not project_id or not _usable_session_id(project_id):
+        return
+    try:
+        os.unlink(os.path.join(_orphan_records_dir(), project_id))
+    except OSError:
+        pass
+
+
+def list_orphaned_projects() -> "list[tuple[str, str]]":
+    """Every recorded (project id, workspace) still on disk."""
+    records = []
+    try:
+        names = sorted(os.listdir(_orphan_records_dir()))[:_MAX_SNAPSHOT_DIRS]
+    except OSError:
+        return records
+    for name in names:
+        if not _usable_session_id(name):
+            continue
+        try:
+            with open(os.path.join(_orphan_records_dir(), name), encoding = "utf-8") as fh:
+                path = fh.read(4096).strip()
+        except OSError:
+            continue
+        if path and os.path.isdir(path) and not os.path.islink(path):
+            records.append((name, path))
+        else:
+            forget_orphaned_project(name)
+    return records
+
+
+def _recorded_project_workdir(project_id: str) -> "str | None":
+    """The kept workspace of a deleted project, wherever the user put it."""
+    for name, path in list_orphaned_projects():
+        if name == project_id:
+            return path
+    return None
+
+
+def _orphaned_project_workdir(project_id: str) -> "str | None":
+    """A deleted project's workspace, when its files were kept."""
+    recorded = _recorded_project_workdir(project_id)
+    if recorded:
+        return recorded
     suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
     try:
         from utils.paths import project_workspaces_root
@@ -7902,8 +7963,12 @@ def _get_workdir(session_id: str | None = None) -> str:
             and not os.path.islink(cached)
             and _contained_in_root(cached, root_now)
             and os.path.isdir(cached)
-            and _marker_owner(cached) is None
+            and _marker_owner(cached) != _sandbox_name(session_id)
         ):
+            # Whatever it says now, this process made this directory for this
+            # chat. A tool writing another id into the marker would otherwise
+            # send the chat to a new folder and strand what it just wrote.
+            _preserve_foreign_marker(cached, session_id)
             _mark_sandbox(cached, session_id)
         if (
             os.path.islink(cached)
@@ -8154,14 +8219,25 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     # Held across the decision AND the unlink: otherwise a tool can start in
     # between and run in a directory this call then removes.
     key = _session_key(session_id)
-    with _active_sessions_lock:
+    with _sessions_free:
+        while key in _removing_sessions:
+            _sessions_free.wait()  # another delete for this chat is finishing
         if _active_sessions.get(key, 0) > 0:
             # Queued rather than dropped: the chat is already gone from history,
             # so no later delete or clear would ever name this session again.
             queued = _pending_removals.setdefault(key, {})
             queued[session_id] = delete_files or queued.get(session_id, False)
             return False  # see sandbox_removal_deferred
+        # Closed for this chat, then released: deciding whether the sandbox is
+        # empty walks the tree, and holding the global lock for that stops tool
+        # calls starting in every unrelated chat.
+        _removing_sessions.add(key)
+    try:
         return _remove_session_sandbox_locked(session_id, delete_files)
+    finally:
+        with _sessions_free:
+            _removing_sessions.discard(key)
+            _sessions_free.notify_all()
 
 
 def session_sandbox_has_files(session_id: str) -> bool:

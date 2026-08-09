@@ -4173,5 +4173,135 @@ def test_the_supervisor_is_told_even_with_no_row_left():
     )
 
 
+def test_a_workspace_is_kept_when_the_wait_ran_out():
+    """The bound exists so the request cannot hang, and past it the tool call
+    is still there: removing its working directory is the worse outcome."""
+    import inspect
+
+    from routes import chat_history
+
+    route = inspect.getsource(chat_history.delete_project)
+    assert "idle = await run_in_threadpool(wait_for_sessions_idle" in route
+    assert "if idle and not referenced:" in route
+    assert route.index("if idle and not referenced:") < route.index(
+        "run_in_threadpool(delete_project_workspace, project)"
+    )
+
+
+def test_a_kept_workspace_the_user_moved_still_resolves(tmp_path, monkeypatch):
+    """A custom rootPath is not derivable from the id, and the row that knew it
+    is what the delete just removed."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    project_id = "proj98765"
+    custom = tmp_path / "somewhere" / "of the user's" / "sandbox"
+    custom.mkdir(parents = True)
+    (custom / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    tools.record_orphaned_project(project_id, str(custom))
+    served = Path(tools.resolve_sandbox_workdir(tools.project_session_id(project_id)))
+    assert served == custom.resolve(), served
+    assert (served / "report.csv").is_file()
+
+    # And the record goes when the folder does.
+    shutil.rmtree(custom)
+    assert tools.list_orphaned_projects() == []
+
+
+def test_the_last_fork_going_takes_the_kept_workspace(tmp_path, monkeypatch):
+    """The user asked for the files on both surfaces, and nothing else would
+    ever come back to that workspace."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "proj55555"
+    workspace = tmp_path / "kept-workspace"
+    workspace.mkdir()
+    (workspace / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    tools.record_orphaned_project(project_id, str(workspace))
+
+    # While a fork still shows it, the collection leaves it alone.
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: True)
+    asyncio.new_event_loop().run_until_complete(chat_history._remove_sandboxes([], True))
+    assert (workspace / "report.csv").is_file()
+
+    # Once that fork is deleted too, it goes.
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    asyncio.new_event_loop().run_until_complete(chat_history._remove_sandboxes([], True))
+    assert not workspace.exists(), "the workspace was orphaned for good"
+    assert tools.list_orphaned_projects() == []
+
+
+def test_a_tool_renaming_the_marker_does_not_move_the_chat(tmp_path, monkeypatch):
+    """A valid-looking id in that file is still something a tool wrote, and the
+    chat abandoning its own directory strands what the same call just made."""
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "__LOCALID_owned11"
+    (root / tools._sandbox_name(session)).mkdir()  # the user's, so we fall back
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "plot.png").write_bytes(b"x")
+    (workdir / tools._SANDBOX_MARKER).write_text("notes", encoding = "utf-8")
+
+    again = Path(tools.get_sandbox_workdir(session))
+    assert again == workdir, "the chat walked away from the files it just wrote"
+    assert tools._marker_owner(str(workdir)) == tools._sandbox_name(session)
+    saved = list(workdir.glob(".unsloth_sandbox.saved*"))
+    assert saved and saved[0].read_text(encoding = "utf-8") == "notes"
+
+
+def test_an_empty_sandbox_scan_does_not_hold_the_global_lock(tmp_path, monkeypatch):
+    """It walks up to 2,000 directories to decide, and every unrelated chat
+    waits on that lock to start a tool call."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "__LOCALID_scan111"
+    tools.get_sandbox_workdir(session)
+
+    held = []
+
+    def slow_scan(target):
+        held.append(tools._active_sessions_lock.acquire(blocking = False))
+        if held[-1]:
+            tools._active_sessions_lock.release()
+        return True
+
+    monkeypatch.setattr(tools, "_holds_no_user_files", slow_scan)
+    tools.remove_session_sandbox(session, delete_files = False)
+
+    assert held == [True], "the scan ran while holding the global lock"
+
+
+def test_a_cache_directory_needs_a_generated_file_not_a_name(tmp_path, monkeypatch):
+    """The directory is prepended to sys.path for every worker, so a folder
+    that merely carries the name lets anything beside it shadow a real module."""
+    from utils import cache_cleanup
+
+    candidate = tmp_path / "unsloth_compiled_cache"
+    (candidate / "unsloth_compiled_module_fake.py").mkdir(parents = True)
+    (candidate / "numpy.py").write_text("raise SystemExit", encoding = "utf-8")
+
+    assert cache_cleanup._holds_generated_modules(candidate) is False
+
+    (candidate / "unsloth_compiled_module_real.py").write_text("x = 1", encoding = "utf-8")
+    assert cache_cleanup._holds_generated_modules(candidate) is True
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
