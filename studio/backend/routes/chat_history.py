@@ -24,6 +24,7 @@ from storage.studio_db import (
     ChatThreadDeletedError,
     ChatThreadPreconditionFailed,
     CorruptSettingsError,
+    build_chat_history_export,
     clear_chat_history_with_active_research_runs,
     count_chat_threads,
     count_forks_for_message,
@@ -141,6 +142,11 @@ class ChatMessageSyncRequest(BaseModel):
 
 class ChatDeleteRequest(BaseModel):
     ids: list[str]
+
+
+class ChatClearRequest(BaseModel):
+    ids: list[str] = Field(default_factory = list, max_length = 10_000)
+    operationId: Optional[str] = Field(default = None, min_length = 1, max_length = 128)
 
 
 class ChatCountResponse(BaseModel):
@@ -741,16 +747,17 @@ def record_import_ledger(
 @router.delete("")
 def clear_history(
     request: Request,
-    payload: Optional[ChatDeleteRequest] = None,
+    payload: Optional[ChatClearRequest] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     # Pending frontend creators may not have rows yet. Tombstone their known ids in the same
     # transaction so a successful clear also fences any POST that commits afterward.
-    deleted_research_run_ids = clear_chat_history_with_active_research_runs(
-        payload.ids if payload else ()
+    deleted_research_run_ids, deleted_thread_ids = clear_chat_history_with_active_research_runs(
+        payload.ids if payload else (),
+        operation_id = payload.operationId if payload else None,
     )
     _cancel_deleted_research_runs(request, deleted_research_run_ids)
-    return {"status": "deleted"}
+    return {"status": "deleted", "deletedThreadIds": deleted_thread_ids}
 
 
 @router.get("/settings", response_model = ChatSettingsResponse)
@@ -867,9 +874,7 @@ def get_fork_count(
 def export_history(current_subject: str = Depends(get_current_subject)):
     from datetime import datetime, timezone
 
-    threads = list_chat_threads(include_archived = True)
-    projects = list_chat_projects(include_archived = True)
-    messages = list_chat_messages_for_threads([thread["id"] for thread in threads])
+    projects, threads, messages = build_chat_history_export()
     return ChatExportResponse(
         exportedAt = datetime.now(timezone.utc).isoformat(),
         version = 1,

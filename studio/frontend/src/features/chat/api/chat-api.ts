@@ -990,17 +990,25 @@ export async function countBackendChats(): Promise<number> {
 }
 
 export async function clearBackendChats(
-  options: { notify?: boolean; tombstoneThreadIds?: string[] } = {},
-): Promise<void> {
+  options: {
+    notify?: boolean;
+    operationId?: string;
+    tombstoneThreadIds?: string[];
+  } = {},
+): Promise<string[]> {
   const response = await authFetch("/api/chat", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: options.tombstoneThreadIds ?? [] }),
+    body: JSON.stringify({
+      ids: options.tombstoneThreadIds ?? [],
+      operationId: options.operationId,
+    }),
   });
-  await parseJsonOrThrow<unknown>(response);
+  const data = await parseJsonOrThrow<{ deletedThreadIds: string[] }>(response);
   if (options.notify !== false) {
     notifyChatHistoryUpdated();
   }
+  return data.deletedThreadIds;
 }
 
 export async function buildBackendChatExport(): Promise<{

@@ -2,48 +2,72 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
-  settlesWithin,
+  settleWithin,
   waitForSettledOrRunFallback,
 } from "../src/features/chat/utils/bounded-settlement.ts";
 
-test("reports work that confirms within the deadline", async () => {
-  assert.equal(await settlesWithin(Promise.resolve(), 5), true);
-});
-
-test("reports work that remains unconfirmed at the deadline", async () => {
+test("bounds ignored work and returns confirmed work", async () => {
   const stalled = new Promise<void>(() => undefined);
-  assert.equal(await settlesWithin(stalled, 5), false);
-});
-
-test("preserves a rejection that arrives within the deadline", async () => {
-  const failure = new Error("delete failed");
-  await assert.rejects(settlesWithin(Promise.reject(failure), 5), failure);
-});
-
-test("accepts an independent fallback only after it confirms", async () => {
-  const stalled = new Promise<void>(() => undefined);
-  let fallbackCalls = 0;
-
-  await waitForSettledOrRunFallback(
-    stalled,
-    () => {
-      fallbackCalls += 1;
-      return Promise.resolve();
-    },
+  await settleWithin(stalled, 5);
+  const first = waitForSettledOrRunFallback(
+    Promise.resolve("first"),
+    () => Promise.resolve("retry"),
     5,
   );
-
-  assert.equal(fallbackCalls, 1);
+  assert.equal(await first, "first");
 });
 
-test("rejects when the independent fallback also remains unconfirmed", async () => {
-  const stalled = new Promise<void>(() => undefined);
-
+test("preserves a deletion failure that arrives before the fallback", async () => {
+  const failure = new Error("delete failed");
+  let fallbackCalled = false;
   await assert.rejects(
-    waitForSettledOrRunFallback(stalled, () => stalled, 5),
-    /Timed out waiting for fallback work/,
+    waitForSettledOrRunFallback(
+      Promise.reject(failure),
+      () => {
+        fallbackCalled = true;
+        return Promise.resolve();
+      },
+      5,
+    ),
+    failure,
   );
+  assert.equal(fallbackCalled, false);
+});
+
+test("returns only after the independent fallback confirms", async () => {
+  const stalled = new Promise<string>(() => undefined);
+  let confirmFallback!: (value: string) => void;
+  const fallback = new Promise<string>((resolve) => {
+    confirmFallback = resolve;
+  });
+  let confirmed = false;
+
+  const waiting = waitForSettledOrRunFallback(stalled, () => fallback, 5).then(
+    (result) => {
+      confirmed = true;
+      return result;
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(confirmed, false);
+
+  confirmFallback("confirmed");
+  assert.equal(await waiting, "confirmed");
+  assert.equal(confirmed, true);
+});
+
+test("a timed-out legacy backfill retains its binding in thread listings", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/utils/chat-history-storage.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /pendingLegacyThreadBackfills\.set[\s\S]*timedOutLegacyBackfills\.set[\s\S]*\.\.\.timedOutLegacyBackfills\.get\(thread\.id\)/,
+  );
+  assert.doesNotMatch(source, /importDrainTimedOut \|\|\s*!backendThreads/);
 });

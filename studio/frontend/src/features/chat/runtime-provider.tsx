@@ -1412,8 +1412,8 @@ function useStudioRuntimeAdapters(
         );
         const write = (async () => {
           const { remoteId } = await initializeThread;
-          // Bounded: this promise is tracked by chatHistoryClearBoundary, whose waitForPending is
-          // unbounded, so a wedged row write here would hang "clear all chats" outright.
+          // The model run waits for the authoritative row. Clear-all does not: it tombstones this
+          // known id directly, so a stalled request cannot hold the clear hostage.
           await awaitStoredChatThreadWrites(remoteId);
           if (isChatThreadDeleted(remoteId)) {
             await deleteStoredChatThreads([remoteId]);
@@ -1480,10 +1480,7 @@ function useStudioRuntimeAdapters(
           });
           await throwIfHistoryWasCleared(remoteId);
         })();
-        return trackHistoryAppend(
-          message.id,
-          chatHistoryClearBoundary.trackPending(write),
-        );
+        return trackHistoryAppend(message.id, write);
       },
     }),
     [aui, modelType, pairId],

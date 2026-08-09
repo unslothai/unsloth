@@ -318,6 +318,23 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS chat_clear_operations (
+            id TEXT NOT NULL PRIMARY KEY,
+            active_research_run_ids_json TEXT NOT NULL,
+            deleted_thread_ids_json TEXT NOT NULL DEFAULT '[]',
+            cleared_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    chat_clear_operation_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(chat_clear_operations)").fetchall()
+    }
+    if "deleted_thread_ids_json" not in chat_clear_operation_cols:
+        conn.execute(
+            "ALTER TABLE chat_clear_operations ADD COLUMN deleted_thread_ids_json TEXT NOT NULL DEFAULT '[]'"
+        )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS chat_messages (
             id TEXT NOT NULL PRIMARY KEY,
             thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
@@ -1735,6 +1752,36 @@ def list_chat_threads(
         conn.close()
 
 
+def build_chat_history_export() -> tuple[list[dict], list[dict], list[dict]]:
+    """Read projects, threads, and messages from one SQLite snapshot."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN")
+        thread_rows = conn.execute(
+            """
+            SELECT * FROM chat_threads
+            ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC
+            """
+        ).fetchall()
+        project_rows = conn.execute(
+            "SELECT * FROM chat_projects ORDER BY updated_at DESC"
+        ).fetchall()
+        message_rows = conn.execute(
+            "SELECT * FROM chat_messages ORDER BY created_at ASC, id ASC"
+        ).fetchall()
+        conn.commit()
+        return (
+            [_chat_project_from_row(row) for row in project_rows],
+            [_chat_thread_from_row(row) for row in thread_rows],
+            [_chat_message_from_row(row) for row in message_rows],
+        )
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def _reparent_surviving_forks(conn: sqlite3.Connection, deleted_ids: set[str]) -> None:
     """Keep fork lineage connected across any thread deletion path."""
     if not deleted_ids:
@@ -1843,22 +1890,52 @@ def delete_chat_threads(ids: list[str]) -> None:
 
 def clear_chat_history_with_active_research_runs(
     additional_thread_ids: Iterable[str] = (),
-) -> list[str]:
+    operation_id: Optional[str] = None,
+) -> tuple[list[str], list[str]]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if operation_id is not None:
+            completed = conn.execute(
+                """
+                SELECT active_research_run_ids_json, deleted_thread_ids_json
+                FROM chat_clear_operations WHERE id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if completed is not None:
+                conn.commit()
+                return (
+                    list(json.loads(completed["active_research_run_ids_json"])),
+                    list(json.loads(completed["deleted_thread_ids_json"])),
+                )
         _ensure_chat_attachment_inventory_current(conn)
         active_research_run_ids = _active_research_run_ids(conn)
         thread_ids = set(additional_thread_ids)
         thread_ids.update(
             row["id"] for row in conn.execute("SELECT id FROM chat_threads").fetchall()
         )
-        _tombstone_chat_threads(conn, thread_ids)
+        deleted_thread_ids = sorted(thread_ids)
+        _tombstone_chat_threads(conn, deleted_thread_ids)
         conn.execute("DELETE FROM chat_attachment_tombstones")
         conn.execute("DELETE FROM chat_threads")
         _mark_chat_attachment_inventory_clean(conn)
+        if operation_id is not None:
+            conn.execute(
+                """
+                INSERT INTO chat_clear_operations (
+                    id, active_research_run_ids_json, deleted_thread_ids_json, cleared_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    operation_id,
+                    json.dumps(active_research_run_ids),
+                    json.dumps(deleted_thread_ids),
+                    int(datetime.now(timezone.utc).timestamp() * 1000),
+                ),
+            )
         conn.commit()
-        return active_research_run_ids
+        return active_research_run_ids, deleted_thread_ids
     except Exception:
         conn.rollback()
         raise

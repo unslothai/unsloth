@@ -1,51 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Resolve when `work` settles, or after `ms`, whichever comes first. */
-export function settleWithin(
+const TIMED_OUT = Symbol("timed-out");
+
+function deadline(ms: number) {
+  let timer: ReturnType<typeof setTimeout>;
+  return {
+    promise: new Promise<typeof TIMED_OUT>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), Math.max(ms, 0));
+    }),
+    cancel: () => clearTimeout(timer),
+  };
+}
+
+export async function settleWithin(
   work: Promise<unknown>,
   ms: number,
 ): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, Math.max(ms, 0));
-    const finish = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    work.then(finish, finish);
-  });
+  const bound = deadline(ms);
+  const ignored = work.then(
+    () => undefined,
+    () => undefined,
+  );
+  await Promise.race([ignored, bound.promise]);
+  bound.cancel();
 }
 
-/** Report whether work settled within the bound, preserving a rejection that arrives in time. */
-export function settlesWithin(
-  work: Promise<unknown>,
+export async function waitForSettledOrRunFallback<T>(
+  work: Promise<T>,
+  fallback: () => Promise<T>,
   ms: number,
-): Promise<boolean> {
-  return new Promise<boolean>((resolve, reject) => {
-    const timer = setTimeout(() => resolve(false), Math.max(ms, 0));
-    work.then(
-      () => {
-        clearTimeout(timer);
-        resolve(true);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
-
-/** If queued work misses its bound, require an independent fallback to confirm within one bound. */
-export async function waitForSettledOrRunFallback(
-  work: Promise<unknown>,
-  fallback: () => Promise<unknown>,
-  ms: number,
-): Promise<void> {
-  if (await settlesWithin(work, ms)) {
-    return;
-  }
-  if (!(await settlesWithin(fallback(), ms))) {
-    throw new Error("Timed out waiting for fallback work");
+): Promise<T> {
+  const bound = deadline(ms);
+  try {
+    const result = await Promise.race([work, bound.promise]);
+    return result === TIMED_OUT ? await fallback() : result;
+  } finally {
+    bound.cancel();
   }
 }

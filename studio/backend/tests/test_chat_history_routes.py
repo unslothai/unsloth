@@ -180,10 +180,12 @@ def test_save_thread_distinguishes_a_tombstone_from_an_unknown_id(monkeypatch):
 
 def test_clear_history_fences_pending_thread_ids(monkeypatch):
     captured: list[str] = []
+    captured_operation_ids: list[str | None] = []
 
-    def clear_with_ids(thread_ids):
+    def clear_with_ids(thread_ids, operation_id = None):
         captured.extend(thread_ids)
-        return []
+        captured_operation_ids.append(operation_id)
+        return [], list(thread_ids)
 
     monkeypatch.setattr(
         chat_history,
@@ -194,12 +196,18 @@ def test_clear_history_fences_pending_thread_ids(monkeypatch):
 
     response = chat_history.clear_history(
         request,
-        chat_history.ChatDeleteRequest(ids = ["pending-thread"]),
+        chat_history.ChatClearRequest(
+            ids = ["pending-thread"], operationId = "clear-operation-1"
+        ),
         current_subject = "test-user",
     )
 
-    assert response == {"status": "deleted"}
+    assert response == {
+        "status": "deleted",
+        "deletedThreadIds": ["pending-thread"],
+    }
     assert captured == ["pending-thread"]
+    assert captured_operation_ids == ["clear-operation-1"]
 
 
 def test_project_delete_cancels_research_before_workspace_cleanup(monkeypatch):
