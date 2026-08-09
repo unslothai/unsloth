@@ -165,3 +165,40 @@ test("one box in a list matches passing it on its own", () => {
   const frame = corner(300);
   assert.deepEqual(stackGeometry([frame], W, H), stackGeometry(frame, W, H));
 });
+
+// The two composer layouts, which are what this gate exists for. Boxes taken
+// from a 1280x830 window: the docked one has to be dodged, or the card covers
+// Send, which below a 1584px viewport it does. The welcome one must not be,
+// because it sits high on the page and lifting over it stranded the banners in
+// the middle of the screen with the corner underneath them empty.
+const CHAT_W = 1280;
+const CHAT_H = 830;
+
+test("a docked composer is dodged, so the card cannot cover Send", () => {
+  const docked = { left: 412, top: 664, right: 1148, bottom: 814 };
+  const inset = stackBottomInset(docked, CHAT_W, CHAT_H);
+  assert.ok(inset > 16, "it reaches the stack's strip, so the stack lifts");
+  assert.ok(
+    inset >= CHAT_H - docked.top,
+    "and lifts clear of it, not part way",
+  );
+  // Still the bottom of the screen, which is the point: above the composer,
+  // not adrift in the middle.
+  assert.ok(inset < CHAT_H / 2);
+});
+
+test("the welcome composer is left alone, and the stack stays in the corner", () => {
+  const welcome = { left: 412, top: 435, right: 1148, bottom: 660 };
+  assert.equal(stackBottomInset(welcome, CHAT_W, CHAT_H), 16);
+});
+
+// Same rule, applied to the other publisher: a monitor dragged up the screen
+// leaves the corner free, so the stack belongs in it.
+test("a monitor away from the corner no longer lifts the stack", () => {
+  const middle = { left: 996, top: 300, right: 1264, bottom: 560 };
+  const geometry = stackGeometry(middle, CHAT_W, CHAT_H);
+  assert.equal(geometry.bottom, 16);
+  // It is still in the column, so the stack is capped short of it instead.
+  assert.ok(geometry.maxHeight < CHAT_H - 16 - 16);
+  assert.ok(geometry.maxHeight <= CHAT_H - 16 - middle.bottom);
+});

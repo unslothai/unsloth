@@ -71,6 +71,9 @@ const STACK_GAP = 8;
 const STACK_WIDTH = 448;
 // Never lift so far that the stack itself is pushed off the top.
 const MIN_STACK_ROOM = 120;
+// Shortest the stack ever is: the collapsed card on its own. An obstacle above
+// this strip is not covering the stack, whatever else it overlaps.
+const MIN_STACK_HEIGHT = 96;
 
 /**
  * How far above the bottom edge the overlay stack must sit to clear the Live
@@ -81,9 +84,21 @@ const MIN_STACK_ROOM = 120;
 /** Whether the monitor overlaps the column the stack's overlays occupy. */
 function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
   const columnLeft = viewportWidth - STACK_INSET - STACK_WIDTH;
-  return (
-    frame.right > columnLeft && frame.left < viewportWidth - STACK_INSET
-  );
+  return frame.right > columnLeft && frame.left < viewportWidth - STACK_INSET;
+}
+
+/**
+ * Whether the box reaches down into the strip the stack sits in. Anything
+ * higher leaves the corner free, however far down the screen it starts.
+ *
+ * This is the whole difference between the two composer layouts. Docked under a
+ * thread it reaches the corner and has to be dodged, or the card covers Send.
+ * On an empty chat the welcome layout pads it well clear of the bottom, and
+ * lifting over it there is what put the banners in the middle of the page with
+ * the corner underneath them empty.
+ */
+function reachesStack(frame: MonitorFrame, viewportHeight: number): boolean {
+  return frame.bottom > viewportHeight - STACK_INSET - MIN_STACK_HEIGHT;
 }
 
 export function stackBottomInset(
@@ -92,10 +107,11 @@ export function stackBottomInset(
   viewportHeight: number,
 ): number {
   if (!frame) return STACK_INSET;
-  // Only dodge a monitor that is actually in the stack's column and low
-  // enough to be in its way; one dragged elsewhere leaves the corner free.
-  const lowEnough = frame.bottom > viewportHeight / 2;
-  if (!(inStackColumn(frame, viewportWidth) && lowEnough)) return STACK_INSET;
+  // Only dodge a box that is in the stack's column and reaches its strip; one
+  // parked anywhere else leaves the corner free.
+  const inTheWay =
+    inStackColumn(frame, viewportWidth) && reachesStack(frame, viewportHeight);
+  if (!inTheWay) return STACK_INSET;
   const lifted = viewportHeight - frame.top + STACK_GAP;
   return Math.max(
     STACK_INSET,
@@ -121,7 +137,8 @@ export function stackMaxHeight(
 ): number {
   const ownMargin = viewportHeight - bottomInset - STACK_INSET;
   if (!frame || !inStackColumn(frame, viewportWidth)) return ownMargin;
-  if (frame.bottom > viewportHeight / 2) return ownMargin;
+  // The lifted case: already accounted for by bottomInset.
+  if (reachesStack(frame, viewportHeight)) return ownMargin;
   const belowMonitor = viewportHeight - bottomInset - frame.bottom - STACK_GAP;
   return Math.max(MIN_STACK_ROOM, Math.min(ownMargin, belowMonitor));
 }
