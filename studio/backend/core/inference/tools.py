@@ -7322,6 +7322,13 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
         workdir = _session_dir(root, session_id)
         if not _contained_in_root(workdir, root):
             return _sandbox_fallback(root, "_invalid")
+        # Before creating anything: _session_dir can hand back the fallback
+        # name, which in a root the user pointed us at can be a directory of
+        # theirs, and claiming it would run this chat inside their files.
+        if not _free_for(workdir, _sandbox_name(session_id)) and not _root_is_ours():
+            workdir = _free_fallback_dir(root, session_id)
+            if workdir is None or not _contained_in_root(workdir, root):
+                return _sandbox_fallback(root, "_invalid")
         os.makedirs(workdir, exist_ok = True)
         if _claim_sandbox(workdir, session_id):
             return workdir
@@ -7331,12 +7338,39 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
             _mark_sandbox(workdir, session_id)
             return workdir
         # Somebody else's, so take a name of our own rather than run inside it.
-        workdir = os.path.join(root, f"{_sandbox_name(session_id)}-{_name_suffix(session_id)}")
-        if not _contained_in_root(workdir, root):
+        # The fallback is in the same user-controlled root, so it gets the same
+        # test: an unowned directory already sitting there is theirs too.
+        workdir = _free_fallback_dir(root, session_id)
+        if workdir is None or not _contained_in_root(workdir, root):
             return _sandbox_fallback(root, "_invalid")
         os.makedirs(workdir, exist_ok = True)
         _claim_sandbox(workdir, session_id)
         return workdir
+
+
+def _free_fallback_dir(root: str, session_id: str) -> "str | None":
+    """A name in *root* this chat may take, or None when they are all spoken for.
+
+    The deterministic one first, so the same chat comes back to the same folder,
+    then a fresh one rather than running inside anything already there.
+    """
+    name = _sandbox_name(session_id)
+    candidate = os.path.join(root, f"{name}-{_name_suffix(session_id)}")
+    if _free_for(candidate, name):
+        return candidate
+    try:
+        return tempfile.mkdtemp(prefix = f"{name}-", dir = root)
+    except OSError:
+        return None
+
+
+def _free_for(path: str, name: str) -> bool:
+    """Whether we may run in *path*: ours already, or not there at all."""
+    if os.path.islink(path):
+        return False
+    if not os.path.exists(path):
+        return True
+    return _marker_owner(path) == name
 
 
 def _root_is_ours() -> bool:
@@ -7345,10 +7379,15 @@ def _root_is_ours() -> bool:
 
 
 def _sandbox_is_ours(target: str) -> bool:
-    """Ours by construction at our own root, otherwise only with the marker."""
+    """Ours by construction at our own root, otherwise only with the marker.
+
+    A real file: isfile() follows a link, so a marker symlinked at any existing
+    file would make an unrelated directory in a shared root deletable.
+    """
     if _root_is_ours():
         return True
-    return os.path.isfile(os.path.join(target, _SANDBOX_MARKER))
+    marker = os.path.join(target, _SANDBOX_MARKER)
+    return os.path.isfile(marker) and not os.path.islink(marker)
 
 
 def _legacy_sandbox_root() -> str:
@@ -7419,7 +7458,10 @@ def _migrate_one_legacy_session(root: str, name: str) -> None:
     with _legacy_one_lock:
         if not os.path.isdir(source):
             return  # the background pass got there first
-        target = os.path.join(root, name)
+        # Through the resolver, like the whole-tree pass: at a shared root the
+        # plain name can be the user's own, and stopping here would leave this
+        # chat with an empty sandbox and its files stranded at the old root.
+        target = _session_dir(root, name)
         if os.path.exists(target) or not _contained_in_root(target, root):
             return  # a collision, left for the whole-tree pass to report
         try:
@@ -7542,13 +7584,32 @@ def _sandbox_fallback(
     # one we made instead is remembered, so it is not a new one every call.
     made = os.path.join(root, f"{name}_{_name_suffix(name)}")
     if not create:
-        return made if _marker_owner(made) == name else os.path.join(root, "_unowned", name)
+        return made if _marker_owner(made) == name else _nothing_to_serve(name)
     try:
         os.makedirs(made, exist_ok = True)
     except OSError:
         return os.path.join(root, f"{name}_unusable")
     _claim_sandbox(made, name)
     return made
+
+
+# Where a read is sent when the chat owns nothing. Outside every sandbox root
+# and inside a directory this process makes and empties, so a listing is empty
+# and a download is a 404 rather than whatever the user keeps at that name.
+_NOTHING_ROOT = None
+_nothing_lock = threading.Lock()
+
+
+def _nothing_to_serve(name: str) -> str:
+    """A path that exists nowhere the user keeps files."""
+    global _NOTHING_ROOT
+    with _nothing_lock:
+        if _NOTHING_ROOT is None or not os.path.isdir(_NOTHING_ROOT):
+            try:
+                _NOTHING_ROOT = tempfile.mkdtemp(prefix = "unsloth-unowned-")
+            except OSError:
+                return os.path.join(tempfile.gettempdir(), "unsloth-unowned", name)
+    return os.path.join(_NOTHING_ROOT, name)
 
 
 def _contained_in_root(workdir: str, root: str) -> bool:
@@ -7672,10 +7733,8 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
     if not _contained_in_root(workdir, root):
         return _sandbox_fallback(root, "_invalid")
     if os.path.isdir(workdir) and not _owned_by_session(workdir, session_id):
-        # Somebody else's, so this session has nothing here to serve. A path
-        # under a directory we never create, so a listing is empty and a
-        # download is a 404 rather than someone else's file.
-        return os.path.join(root, "_unowned", _sandbox_name(session_id))
+        # Somebody else's, so this session has nothing here to serve.
+        return _nothing_to_serve(session_id)
     return workdir
 
 

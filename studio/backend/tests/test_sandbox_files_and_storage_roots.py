@@ -2375,35 +2375,6 @@ def test_an_id_a_path_segment_cannot_carry_rides_in_the_query():
         assert "session or session_id" in source
 
 
-def test_a_recorded_fallback_survives_losing_its_marker(tmp_path, monkeypatch):
-    """The fallback directory is the only place that chat's files are; a marker
-    a tool deleted must not send the next call somewhere new."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    root = tmp_path / "shared"
-    root.mkdir()
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    session = "__LOCALID_fall111"
-    name = tools._sandbox_name(session)
-    (root / name).mkdir()  # the user's own, so we take a fallback name
-
-    first = Path(tools.get_sandbox_workdir(session))
-    assert first != root / name
-    (first / "results.csv").write_text("a,b\n", encoding = "utf-8")
-
-    marker = first / tools._SANDBOX_MARKER
-    if marker.exists():
-        marker.unlink()
-    tools._workdirs.clear()
-
-    again = Path(tools.get_sandbox_workdir(session))
-    assert again == first, f"{again} is not {first}"
-    assert (again / "results.csv").is_file()
-
-
 def test_clearing_every_chat_reports_what_it_deleted(tmp_path, monkeypatch):
     """A thread added between the listing and the delete is gone too, and its
     sandbox has to be cleaned up with the rest."""
@@ -2757,6 +2728,150 @@ def test_every_delete_surface_can_still_reach_the_files():
     assert "kept" in hook
     body = hook[hook.index("export async function deleteChatItem") :]
     assert "toast(" in body, "nothing tells the user the files are still there"
+
+
+def test_a_fallback_name_already_in_a_shared_root_is_not_taken(tmp_path, monkeypatch):
+    """Both names can be the user's, and claiming the second one puts the chat
+    inside their files, which a delete with the switch would then remove."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_both111"
+    name = tools._sandbox_name(session)
+    theirs = root / name
+    theirs.mkdir()
+    (theirs / "plain.txt").write_text("mine", encoding = "utf-8")
+    fallback = root / f"{name}-{tools._name_suffix(session)}"
+    fallback.mkdir()
+    (fallback / "also-mine.txt").write_text("mine", encoding = "utf-8")
+
+    workdir = Path(tools.get_sandbox_workdir(session))
+    assert workdir not in (theirs, fallback), workdir
+    assert not (theirs / tools._SANDBOX_MARKER).exists()
+    assert not (fallback / tools._SANDBOX_MARKER).exists()
+    assert tools._marker_owner(str(workdir)) == name
+
+    # And a delete takes only what we made.
+    tools.remove_session_sandbox(session, delete_files = True)
+    assert (theirs / "plain.txt").is_file()
+    assert (fallback / "also-mine.txt").is_file()
+
+
+def test_a_symlinked_sandbox_marker_does_not_make_a_directory_ours(tmp_path, monkeypatch):
+    """isfile() follows the link, so a marker pointing at any existing file
+    would let a delete remove an unrelated directory in a shared root."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_fake111"
+    theirs = root / tools._sandbox_name(session)
+    theirs.mkdir()
+    (theirs / "notes.txt").write_text("years of notes", encoding = "utf-8")
+    (root / "anything").write_text("x", encoding = "utf-8")
+    (theirs / tools._SANDBOX_MARKER).symlink_to(root / "anything")
+
+    assert tools._sandbox_is_ours(str(theirs)) is False
+    assert tools.remove_session_sandbox(session, delete_files = True) is False
+    assert (theirs / "notes.txt").is_file(), "deleted a directory it does not own"
+
+
+def test_a_chat_that_owns_nothing_never_reads_from_the_shared_root(tmp_path, monkeypatch):
+    """The reserved-looking path was inside the user's own root, so a folder
+    they happen to keep at that name would have been listed and served."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_none111"
+    theirs = root / tools._sandbox_name(session)
+    theirs.mkdir()
+    (theirs / "private.csv").write_text("theirs", encoding = "utf-8")
+    # What the old sentinel pointed at, filled by the user.
+    planted = root / "_unowned" / tools._sandbox_name(session)
+    planted.mkdir(parents = True)
+    (planted / "also-theirs.csv").write_text("theirs", encoding = "utf-8")
+
+    # The fallback name is theirs too, so the resolver has nothing of ours to
+    # answer with and must not point at anything in here.
+    fallback = root / f"{tools._sandbox_name(session)}-{tools._name_suffix(session)}"
+    fallback.mkdir()
+    (fallback / "third.csv").write_text("theirs", encoding = "utf-8")
+
+    resolved = Path(tools.resolve_sandbox_workdir(session))
+    assert not str(resolved).startswith(str(root)), resolved
+    assert not (resolved / "also-theirs.csv").exists()
+    assert not (resolved / "private.csv").exists()
+    assert not (resolved / "third.csv").exists()
+
+
+def test_a_request_path_move_lands_where_the_resolver_says(tmp_path, monkeypatch):
+    """Stopping at the plain-name collision left the chat with an empty sandbox
+    and its files at the old root, with the whole-tree pass then agreeing."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_taken11"
+    legacy.mkdir(parents = True)
+    (legacy / "results.csv").write_text("a,b\n", encoding = "utf-8")
+
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    theirs = root / "__LOCALID_taken11"
+    theirs.mkdir()
+    (theirs / "plain.txt").write_text("mine", encoding = "utf-8")
+
+    tools._migrate_one_legacy_session(str(root), "__LOCALID_taken11")
+
+    assert (theirs / "plain.txt").is_file(), "moved into the user's own folder"
+    landed = Path(tools.get_sandbox_workdir("__LOCALID_taken11"))
+    assert (landed / "results.csv").is_file(), f"the chat's files were stranded: {landed}"
+
+
+def test_deleting_a_project_takes_its_chats_sandboxes(tmp_path, monkeypatch):
+    """A chat can write files before it joins a project, and deleting the
+    project removes the only records of those chats."""
+    import inspect
+
+    from routes import chat_history
+
+    source = inspect.getsource(chat_history.delete_project)
+    assert "_remove_sandboxes(member_ids" in source
+    assert "_cancel_active_generations(member_ids)" in source
+    assert source.index("member_ids") < source.index("delete_chat_project(")
+
+
+def test_a_native_download_gets_an_absolute_url():
+    """The native command parses the URL and rejects a relative one, so a bare
+    /api path failed before the request was made."""
+    view = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/components/assistant-ui/sandbox-files-view.tsx"
+    ).read_text(encoding = "utf-8")
+
+    assert "apiUrl(" in view
+    body = view[view.index("const save = useCallback"):]
+    assert body.index("apiUrl(") < body.index("downloadUrlStreaming(")
 
 
 if __name__ == "__main__":

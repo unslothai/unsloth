@@ -7,6 +7,7 @@ import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
 import { getAuthToken } from "@/features/auth";
+import { apiUrl } from "@/lib/api-base";
 import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 
 import { sandboxFilePath, type SandboxFile } from "./sandbox-files";
@@ -37,9 +38,11 @@ function SandboxFileRow({
       const token = getAuthToken();
       const path = sandboxFilePath(sessionId, file.name);
       const separator = path.includes("?") ? "&" : "?";
-      const url = token
-        ? `${path}${separator}token=${encodeURIComponent(token)}`
-        : path;
+      // Absolute: the native command parses this and rejects a relative URL,
+      // so a bare /api path failed before the request was made.
+      const url = apiUrl(
+        token ? `${path}${separator}token=${encodeURIComponent(token)}` : path,
+      );
       await downloadUrlStreaming(url, file.name);
     } catch (error) {
       if (!isDownloadCancelled(error)) {

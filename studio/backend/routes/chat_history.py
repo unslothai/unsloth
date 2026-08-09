@@ -613,15 +613,18 @@ async def delete_project(
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
-    _cancel_active_research(
-        request, [thread["id"] for thread in list_chat_threads(project_id = project_id)]
-    )
+    member_ids = [thread["id"] for thread in list_chat_threads(project_id = project_id)]
+    _cancel_active_research(request, member_ids)
+    _cancel_active_generations(member_ids)
     project = delete_chat_project(project_id, delete_files = delete_files)
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    # Each member chat had its own sandbox for anything it wrote before joining
+    # the project, and deleting the project removes the only records of them.
+    await _remove_sandboxes(member_ids, delete_files)
     # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
     try:
         import os
