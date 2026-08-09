@@ -2319,3 +2319,182 @@ def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, mon
         assert status["loaded"] is True, mode
         assert calls == [], mode
         assert "hunyuan_attn_trim" not in status["speed_optims"], mode
+
+
+# ── text-encoder budgeting ───────────────────────────────────────────────────
+# The plan sizes companions from the family's bf16 (transformer, text_encoder, vae) table. A pick
+# that takes its encoder PRE-CAST from a hosted fp8 checkpoint loads roughly half that encoder, and
+# for ltx-2 the encoder is Gemma3-12B at 24.4 GB, so budgeting it at bf16 over-states the resident
+# requirement by ~11 GB. PR #8213 gates a hard unified-memory refusal on model_dense_mib, which
+# turns that over-estimate from a conservative offload choice into a refused load that would fit.
+_MIB_PER_GB = 1000.0**3 / (1024.0 * 1024.0)
+
+
+def _capture_plan(monkeypatch):
+    """Record every plan_diffusion_memory call's kwargs, keeping the real planner."""
+    import core.inference.video as video_mod
+
+    calls = []
+    real = video_mod.plan_diffusion_memory
+
+    def _spy(**kwargs):
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _spy)
+    return calls
+
+
+def _allow_te_prequant(monkeypatch):
+    """Make the pre-cast encoder resolvable (device-gated on CUDA in real life) without any IO."""
+    import core.inference.diffusion_precision as precision
+    import core.inference.diffusion_te_prequant as tpq
+
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    # Injection itself needs the Hub and a real transformers class; the budget is what is under test.
+    monkeypatch.setattr(tpq, "te_prequant_pipe_kwargs", lambda *a, **k: {})
+    return tpq.TE_PREQUANT_BUDGET_SCALE
+
+
+def test_gguf_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(
+    fake_runtime, monkeypatch, tmp_path
+):
+    from core.inference.video_families import detect_video_family
+
+    scale = _allow_te_prequant(monkeypatch)
+    transformer_gb, text_encoder_gb, vae_gb = detect_video_family("Lightricks/LTX-2").bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    backend = VideoBackend()
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+        text_encoder_quant = "fp8",
+    )
+    quant_companion = calls[0]["companion_dense_mib"]
+    quant_dense = calls[0]["model_dense_mib"]
+
+    calls.clear()
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    bf16_companion = calls[0]["companion_dense_mib"]
+    bf16_dense = calls[0]["model_dense_mib"]
+
+    # The encoder is scaled...
+    assert quant_companion == int((text_encoder_gb * scale + vae_gb) * _MIB_PER_GB)
+    # ...the VAE is NOT: nothing on this path quantises it, and the Wan families widen it to fp32.
+    assert quant_companion - int(text_encoder_gb * scale * _MIB_PER_GB) == int(
+        vae_gb * _MIB_PER_GB
+    )
+    assert bf16_companion == int((text_encoder_gb + vae_gb) * _MIB_PER_GB)
+    # The saving reaches model_dense_mib, which is the number PR #8213 refuses on.
+    assert bf16_dense - quant_dense == bf16_companion - quant_companion
+    # ~11 GB for Gemma3-12B, so this is worth a whole offload tier rather than rounding noise.
+    assert (bf16_dense - quant_dense) / _MIB_PER_GB > 8.0
+    # The transformer term is untouched by a TEXT-ENCODER quant.
+    assert bf16_dense - bf16_companion == quant_dense - quant_companion
+
+
+def test_pipeline_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(
+    fake_runtime, monkeypatch
+):
+    from core.inference.video_families import detect_video_family
+
+    scale = _allow_te_prequant(monkeypatch)
+    transformer_gb, text_encoder_gb, vae_gb = detect_video_family("Lightricks/LTX-2").bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline(
+        "Lightricks/LTX-2", model_kind = "pipeline", text_encoder_quant = "fp8"
+    )
+    assert calls[0]["model_dense_mib"] == int(
+        (transformer_gb + text_encoder_gb * scale + vae_gb) * _MIB_PER_GB
+    )
+    # The pipeline kind budgets one total, so companion_dense_mib stays None as before.
+    assert calls[0]["companion_dense_mib"] is None
+
+
+def test_plan_keeps_the_bf16_budget_without_a_hosted_pre_cast_encoder(
+    fake_runtime, monkeypatch
+):
+    # Wan requests fp8 the same way, but hosts no pre-cast checkpoint: the encoder is downloaded
+    # dense and cast in place AFTER assembly, so its PEAK is bf16 and the budget must not shrink.
+    from core.inference.video_families import detect_video_family
+
+    _allow_te_prequant(monkeypatch)
+    components = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", text_encoder_quant = "fp8"
+    )
+    assert calls[0]["model_dense_mib"] == int(sum(components) * _MIB_PER_GB)
+
+
+def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime, monkeypatch):
+    # The whole change is inert on a default load: every family keeps its bf16-table budget, so no
+    # existing decision on any device moves.
+    from core.inference.video_families import _FAMILIES
+
+    _allow_te_prequant(monkeypatch)
+    calls = _capture_plan(monkeypatch)
+    for fam in _FAMILIES:
+        if fam.bf16_components_gb is None or fam.name == "wan2.2-t2v-a14b":
+            continue
+        calls.clear()
+        VideoBackend().load_pipeline(fam.base_repo, model_kind = "pipeline")
+        assert calls[0]["model_dense_mib"] == int(
+            sum(fam.bf16_components_gb) * _MIB_PER_GB
+        ), fam.name
+
+
+def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypatch):
+    # The transformer-quant re-plan rebuilds the total from the table; it must carry the same
+    # scaled encoder, or it re-introduces the over-estimate the first plan just dropped.
+    import core.inference.video as video_mod
+    from core.inference.diffusion_auto_policy import _QUANT_STEADY_FACTOR
+    from core.inference.video_families import detect_video_family
+
+    scale = _allow_te_prequant(monkeypatch)
+    transformer_gb, text_encoder_gb, vae_gb = detect_video_family("Lightricks/LTX-2").bf16_components_gb
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        video_mod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(
+        video_mod, "quantize_transformer", lambda *a, **k: None
+    )
+    # Force the first plan to offload so the re-plan branch runs.
+    import dataclasses
+
+    real = video_mod.plan_diffusion_memory
+    calls = []
+
+    def _spy(**kwargs):
+        calls.append(kwargs)
+        return dataclasses.replace(real(**kwargs), offload_policy = "model")
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _spy)
+    monkeypatch.setattr(
+        video_mod, "apply_memory_plan", lambda pipe, plan, device = None, logger = None: ("model", True)
+    )
+
+    VideoBackend().load_pipeline(
+        "Lightricks/LTX-2",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+        text_encoder_quant = "fp8",
+    )
+    assert len(calls) == 2, "the dense-quant re-plan did not run"
+    assert calls[1]["model_dense_mib"] == int(
+        (transformer_gb * _QUANT_STEADY_FACTOR["int8"] + text_encoder_gb * scale + vae_gb)
+        * _MIB_PER_GB
+    )
