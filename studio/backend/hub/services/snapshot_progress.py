@@ -288,6 +288,7 @@ def _snapshot_complete_on_disk(
     expected_total: int,
     completed_bytes: int,
     in_progress_bytes: int,
+    expected_hashes: "frozenset[str]" = frozenset(),
 ) -> bool:
     if expected_total <= 0 or completed_bytes < expected_total or in_progress_bytes > 0:
         return False
@@ -332,7 +333,43 @@ def _snapshot_complete_on_disk(
         )
     # ANY retained snapshot: the variant can be complete in an older revision while the newest
     # holds only a sibling, and checking the newest alone left that download at 99% forever.
-    return any(download_manifest.verify_against_disk(manifest, snap).ok for snap in snapshots)
+    #
+    # But an older revision can carry the same FILENAMES at the same sizes and different
+    # content, and verify_against_disk does not read sha256 -- so with the resolved hashes in
+    # hand, require the snapshot's entries to actually resolve to them. Without that, a blob
+    # finalized but not yet linked (a crash between the two) let a stale revision satisfy the
+    # check and the job settled on files the app would not load. No resolved hashes means no
+    # such claim is possible, and the filename check stands alone as before.
+    for snap in snapshots:
+        if not download_manifest.verify_against_disk(manifest, snap).ok:
+            continue
+        if not expected_hashes or _snapshot_resolves_to(manifest, snap, expected_hashes):
+            return True
+    return False
+
+
+def _snapshot_resolves_to(
+    manifest: download_manifest.Manifest, snapshot: Path, expected_hashes: "frozenset[str]"
+) -> bool:
+    """Whether every expected file in ``snapshot`` points at one of ``expected_hashes``.
+
+    HF names a blob by its hash and the snapshot entry links to it, so the link target settles
+    which revision is materialized here. A copy-layout cache (Windows without symlinks) has no
+    target to read: unanswerable is not a mismatch, so it passes.
+    """
+    for expected in getattr(manifest, "expected_files", ()) or ():
+        if not download_manifest.expected_path_is_safe(expected.path):
+            continue
+        entry = snapshot / expected.path
+        try:
+            if not entry.is_symlink():
+                continue  # copy layout: nothing to compare against
+            target = os.path.basename(os.readlink(entry))
+        except OSError:
+            continue
+        if target and target not in expected_hashes:
+            return False
+    return True
 
 
 def compute_snapshot_progress(
@@ -499,11 +536,18 @@ def compute_snapshot_progress(
         # its own and nothing counted. Anything less certain stays None.
         target_present: Optional[bool] = None
         if variant is not None and not variant_file_set_unknown:
-            # BYTES, not a manifest. The state-dir manifest describes what the target should
-            # contain; it survives a deletion made outside the app, and with a sibling quant
-            # keeping the repo dir alive it made a variant with nothing left on disk read as
-            # present -- the phantom job this field exists to retire.
-            target_present = bool(completed_bytes or in_progress_bytes)
+            # The MATERIALIZED file, not the blob tally. These counters come from the shared
+            # blobs/ dir: deleting a variant's snapshot symlink leaves its finalized blob
+            # behind, and a companion blob shared with a sibling keeps the count positive on its
+            # own -- so a quant that is gone read as present and hydration re-adopted the
+            # phantom. The by-name scan the unknown-hash branch already uses answers this
+            # properly; bytes only stand in when it cannot (nothing readable to look at), where
+            # in-progress bytes are still real evidence that this download is live.
+            scanned = _variant_present_in_any_snapshot(entry, variant_file_matcher)
+            if scanned is not None:
+                target_present = scanned or bool(in_progress_bytes)
+            else:
+                target_present = bool(completed_bytes or in_progress_bytes)
         elif variant is not None:
             # An unresolvable file set does not have to mean unknown. The byte reading above
             # already walked the snapshot dir, whose entries are named per file, so it can
@@ -535,6 +579,7 @@ def compute_snapshot_progress(
                     expected_total = expected_total,
                     completed_bytes = completed_bytes,
                     in_progress_bytes = in_progress_bytes,
+                    expected_hashes = expected_hashes,
                 ),
                 target_present,
             )

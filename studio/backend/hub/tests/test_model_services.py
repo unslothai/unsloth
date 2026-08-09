@@ -6708,3 +6708,106 @@ def test_a_variant_complete_in_an_older_snapshot_settles(monkeypatch, tmp_path):
 
     assert result["completed_bytes"] == 100, result
     assert result["complete_on_disk"] is True, result
+
+
+def test_a_deleted_snapshot_link_is_absent_even_with_its_blob_left_behind(monkeypatch, tmp_path):
+    """Deleting a GGUF's snapshot entry normally leaves its finalized blob in the shared blobs/
+    dir, and a companion blob shared with a sibling keeps the tally positive on its own. Reading
+    presence off those counters called a quant that is gone present, and idle hydration
+    re-adopted the phantom and blocked a fresh download of it."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    # The finalized blob survives; the snapshot entry that named it does not.
+    (blobs / "mainhash").write_bytes(b"x" * 100)
+    (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)  # a sibling keeps the repo dir alive
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_blob_hashes",
+        lambda *_a, **_kw: frozenset({"mainhash"}),
+    )
+    monkeypatch.setattr(
+        snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry]
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["completed_bytes"] == 100, "the orphaned blob is still counted"
+    assert result["target_present"] is False, result
+
+
+def test_a_stale_revisions_filenames_do_not_settle_the_resolved_one(monkeypatch, tmp_path):
+    """verify_against_disk compares names and sizes, not sha256. An older retained revision can
+    carry the same filenames at the same sizes, so a blob finalized but never linked (a crash
+    between the two) let the stale snapshot satisfy the check -- the job settled on files the
+    app would not load."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    stale = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    stale.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    (blobs / "oldhash").write_bytes(b"y" * 100)
+    (blobs / "newhash").write_bytes(b"x" * 100)  # finalized, never linked
+    os.symlink(blobs / "oldhash", stale / "model-Q4_K_M.gguf")
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
+        "http",
+        hub_cache = entry.parent,
+    )
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_blob_hashes",
+        lambda *_a, **_kw: frozenset({"newhash"}),
+    )
+    monkeypatch.setattr(
+        snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry]
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["complete_on_disk"] is False, result
