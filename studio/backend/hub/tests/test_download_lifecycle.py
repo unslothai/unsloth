@@ -118,6 +118,180 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
         assert registry.current_generation(key) == generation
 
 
+def test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim(monkeypatch, tmp_path):
+    """End-to-end through the real reclaim: the recovery worker spawns with use_xet=True, the job
+    keeps the XET transport (so the UI and the .transport marker stay truthful), and the blob
+    metadata survives the re-claim."""
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+
+    def _start(registry, key, proc, *, on_stall, **kwargs):
+        on_stall("Download appears stalled (xet transport) -- no progress for 30s")
+        return None
+
+    monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", _start)
+    monkeypatch.setattr(
+        download_lifecycle, "_record_xet_failure", lambda *a: pytest.fail("charged")
+    )
+    register_worker = download_lifecycle.register_worker
+
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = None,
+        blob_hashes = frozenset({"blob"}),
+    )[0]
+    generation = registry.current_generation(key)
+    spawned = []
+
+    def fake_spawn(
+        args,
+        _token,
+        *,
+        use_xet,
+        protected_blob_hashes = None,
+    ):
+        spawned.append((args, use_xet))
+        return _Proc(0)
+
+    def fake_retry_register(*_args, **kwargs):
+        assert kwargs["transport"] == download_registry.TRANSPORT_XET
+        assert kwargs["xet_attempt"] == 2
+        return True
+
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn)
+    monkeypatch.setattr(download_lifecycle, "register_worker", fake_retry_register)
+    assert register_worker(
+        registry,
+        key,
+        _Proc(1, b"killed"),
+        hf_token = None,
+        label = "Org/Model",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+    )
+
+    assert spawned == [(["--repo-id", "Org/Model"], True)]
+    metadata = registry.get_job_metadata(key)
+    assert metadata.transport == download_registry.TRANSPORT_XET
+    assert metadata.blob_hashes == frozenset({"blob"})
+    assert registry.current_generation(key) == generation
+
+
+def test_an_unspawnable_xet_retry_falls_through_to_http(monkeypatch, tmp_path):
+    """The extra Xet worker is a bonus rung: if it cannot be spawned at all, the download must
+    still get the HTTP fallback it would have had without the retry, not end in "error"."""
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+
+    spawned = []
+
+    def flaky_spawn(
+        args,
+        _token,
+        *,
+        use_xet,
+        protected_blob_hashes = None,
+        **_kw,
+    ):
+        spawned.append(use_xet)
+        if use_xet:
+            raise OSError("cannot fork")
+        return _Proc(0)
+
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", flaky_spawn)
+    monkeypatch.setattr(download_lifecycle, "register_worker", lambda *a, **k: True)
+
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = None,
+        blob_hashes = frozenset({"blob"}),
+    )[0]
+
+    assert download_lifecycle._try_transport_retry(
+        registry,
+        key,
+        hf_token = None,
+        label = "Org/Model",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        watch_name = "model-watch",
+        retry_transport = download_registry.TRANSPORT_XET,
+        xet_attempt = 2,
+    )
+    assert spawned == [True, False], "the failed XET respawn must be followed by an HTTP one"
+
+
+def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_path):
+    """That fallthrough is the one path that hands a held stall to an HTTP worker. HTTP completing
+    says nothing about Xet, so clearing the verdict there would lose the only evidence a repeatedly
+    stalling machine ever produces."""
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    verdict = "Download appears stalled (xet transport) -- no progress for 30s"
+
+    def _start(registry, key, proc, *, on_stall, **_kwargs):
+        on_stall(verdict)
+        return None
+
+    def flaky_spawn(
+        args,
+        _token,
+        *,
+        use_xet,
+        protected_blob_hashes = None,
+    ):
+        if use_xet:
+            raise OSError("cannot fork")
+        return _Proc(0)  # the HTTP worker starts and completes
+
+    monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", _start)
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", flaky_spawn)
+
+    recorded = []
+    monkeypatch.setattr(download_lifecycle, "_record_xet_failure", lambda m, _l: recorded.append(m))
+
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = None,
+        blob_hashes = frozenset({"blob"}),
+    )[0]
+    download_lifecycle.register_worker(
+        registry,
+        key,
+        _Proc(1, b"killed"),
+        hf_token = None,
+        label = "Org/Model",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+    )
+    assert recorded == [verdict], "a real Xet stall was dropped when HTTP finished the download"
+
+
 def test_http_failure_remains_terminal(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
@@ -279,8 +453,15 @@ def _trip_xet_worker(
     tmp_path,
     message,
     rc = 1,
+    xet_attempt = 2,
+    retries = None,
 ):
-    """Run a Xet worker whose watchdog trips with *message*; return the health failures recorded."""
+    """Run a Xet worker whose watchdog trips with *message*; return the health failures recorded.
+
+    *xet_attempt* defaults to the LAST attempt of the default budget, since that is where the Xet
+    phase ends and a held-back verdict is finally reported. Pass 1 to exercise the deferral.
+    *retries* collects ``(retry_transport, xet_attempt, pending_xet_failure)`` for each respawn.
+    """
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
 
@@ -290,7 +471,19 @@ def _trip_xet_worker(
 
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", _start)
     monkeypatch.setattr(download_lifecycle, "spawn_worker", lambda *a, **k: _Proc(0))
-    monkeypatch.setattr(download_lifecycle, "register_worker", lambda *a, **k: True)
+
+    def _fake_register(*_args, **kwargs):
+        if retries is not None:
+            retries.append(
+                (
+                    kwargs.get("transport"),
+                    kwargs.get("xet_attempt"),
+                    kwargs.get("pending_xet_failure"),
+                )
+            )
+        return True
+
+    monkeypatch.setattr(download_lifecycle, "register_worker", _fake_register)
 
     recorded = []
     monkeypatch.setattr(download_lifecycle, "_record_xet_failure", lambda m, _l: recorded.append(m))
@@ -320,12 +513,14 @@ def _trip_xet_worker(
         repo_id = "Org/Model",
         transport = download_registry.TRANSPORT_XET,
         watch_name = "model-watch",
+        xet_attempt = xet_attempt,
     )
     return recorded
 
 
 def test_a_data_phase_stall_is_recorded_against_the_machine(monkeypatch, tmp_path):
-    """A frozen partial with bytes already flowing is genuinely Xet misbehaving."""
+    """A frozen partial with bytes already flowing is genuinely Xet misbehaving -- charged once the
+    Xet phase is out of attempts."""
     monkeypatch.setattr(
         download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
     )
@@ -335,6 +530,73 @@ def test_a_data_phase_stall_is_recorded_against_the_machine(monkeypatch, tmp_pat
         tmp_path,
         "Download appears stalled (xet transport) -- no progress for 30s",
     ), "a real data-phase stall must still be recorded"
+
+
+def test_a_first_stall_buys_another_xet_worker_and_records_nothing(monkeypatch, tmp_path):
+    """A wedged Xet transfer usually clears on a fresh process, so the first data-phase stall
+    respawns over XET. Nothing is recorded yet: if the retry succeeds the stall was noise, and
+    charging both attempts would let ONE download hit the two-failure demotion threshold."""
+    monkeypatch.setattr(
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+    )
+    retries = []
+    verdict = "Download appears stalled (xet transport) -- no progress for 30s"
+    assert (
+        _trip_xet_worker(monkeypatch, tmp_path, verdict, xet_attempt = 1, retries = retries) == []
+    ), "the first stall must not be charged to the machine"
+    assert retries == [(download_registry.TRANSPORT_XET, 2, verdict)]
+
+
+def test_the_last_xet_stall_falls_back_to_http_and_charges_once(monkeypatch, tmp_path):
+    """Out of Xet attempts: the transport changes, and the single accumulated verdict is reported."""
+    monkeypatch.setattr(
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+    )
+    retries = []
+    recorded = _trip_xet_worker(
+        monkeypatch,
+        tmp_path,
+        "Download appears stalled (xet transport) -- no progress for 30s",
+        xet_attempt = 2,
+        retries = retries,
+    )
+    assert len(recorded) == 1
+    # The HTTP rung carries no pending verdict: it was just recorded.
+    assert retries == [(download_registry.TRANSPORT_HTTP, 2, None)]
+
+
+def test_a_pre_byte_trip_never_buys_another_xet_worker(monkeypatch, tmp_path):
+    """Retrying "did not start" would buy a second full 600s connect window before HTTP ever
+    starts, and that trip is as likely slow metadata as a broken Xet."""
+    monkeypatch.setattr(
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+    )
+    retries = []
+    _trip_xet_worker(
+        monkeypatch,
+        tmp_path,
+        "Download did not start (xet transport) -- no data after 600s",
+        xet_attempt = 1,
+        retries = retries,
+    )
+    assert retries == [(download_registry.TRANSPORT_HTTP, 1, None)]
+
+
+def test_the_attempts_knob_of_one_restores_the_straight_to_http_ladder(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_XET_ATTEMPTS", "1")
+    monkeypatch.setattr(
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+    )
+    retries = []
+    recorded = _trip_xet_worker(
+        monkeypatch,
+        tmp_path,
+        "Download appears stalled (xet transport) -- no progress for 30s",
+        xet_attempt = 1,
+        retries = retries,
+    )
+    assert len(recorded) == 1
+    assert retries == [(download_registry.TRANSPORT_HTTP, 1, None)]
 
 
 def test_a_pre_byte_trip_does_not_poison_the_machines_health_record(monkeypatch, tmp_path):

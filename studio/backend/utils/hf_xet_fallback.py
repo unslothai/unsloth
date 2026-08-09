@@ -20,6 +20,7 @@ never triggers the heavy load.
 
 from __future__ import annotations
 
+import os
 import threading
 from functools import partial
 from pathlib import Path
@@ -35,6 +36,10 @@ DEFAULT_HEARTBEAT_INTERVAL = 30.0
 DEFAULT_STALL_TIMEOUT = 30.0
 DEFAULT_CONNECT_TIMEOUT = 90.0
 DEFAULT_HTTP_STALL_TIMEOUT = 180.0
+# Xet workers spent per download before the transport changes. A wedged transfer usually clears on a
+# fresh process, and the retry replays only the in-flight file: the worker runs
+# snapshot_download(max_workers=1), so every finished shard is already a blob and is skipped.
+DEFAULT_XET_ATTEMPTS = 2
 
 # --- lazy shared-backend loader ----------------------------------------------------------------
 _shared: Any = None
@@ -286,6 +291,34 @@ def child_should_disable_xet(config: dict) -> bool:
     return bool(config.get("disable_xet"))
 
 
+def is_data_phase_stall(message: str) -> bool:
+    """Whether a watchdog verdict fired AFTER bytes had flowed (mirrors
+    ``unsloth_zoo.hf_xet_fallback.is_data_phase_stall``).
+
+    "did not start" is the pre-first-byte trip, as likely slow metadata or a cache lock as a broken
+    Xet; the others mean the transfer moved and then wedged, which a fresh worker recovers from. The
+    lifecycle decides both whether to spend another Xet worker and whether to charge a health
+    failure on this one rule, so the two cannot disagree. Local for the same reason as
+    ``child_should_disable_xet``: the stall path must not depend on the heavy import."""
+    return "did not start" not in (message or "")
+
+
+def xet_attempts() -> int:
+    """Xet workers a download may spend before HTTP (mirrors
+    ``unsloth_zoo.hf_xet_fallback.xet_attempts``): ``UNSLOTH_XET_ATTEMPTS``, default 2, clamped to 8;
+    junk or non-positive falls back to the default. ``1`` restores the straight-to-HTTP ladder."""
+    raw = os.environ.get("UNSLOTH_XET_ATTEMPTS")
+    if not raw:
+        return DEFAULT_XET_ATTEMPTS
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_XET_ATTEMPTS
+    if value <= 0:
+        return DEFAULT_XET_ATTEMPTS
+    return min(value, 8)
+
+
 # --- degraded stubs (used only when unsloth_zoo is unavailable) -------------------------------
 class _DegradedDownloadStallError(RuntimeError):
     """Stub mirror so callers' ``except`` clauses resolve; never raised in degraded mode."""
@@ -507,8 +540,11 @@ __all__ = [
     "DEFAULT_HEARTBEAT_INTERVAL",
     "DEFAULT_HTTP_STALL_TIMEOUT",
     "DEFAULT_STALL_TIMEOUT",
+    "DEFAULT_XET_ATTEMPTS",
     "DownloadStallError",
     "child_should_disable_xet",
+    "is_data_phase_stall",
+    "xet_attempts",
     "get_hf_download_state",
     "record_xet_outcome",
     "start_watchdog",

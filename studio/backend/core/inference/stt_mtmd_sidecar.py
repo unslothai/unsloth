@@ -38,9 +38,18 @@ from core.inference.stt_sidecar import (
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
+    _SelectedHubFile,
+    _capture_stt_hub_cache,
+    _claim_stt_repository,
     _decode_audio_bounded,
+    _downloaded_file_bytes,
+    _fallback_revisions,
+    _HF_COMMIT_SHA,
+    _prepare_stt_cache_for_http,
+    _read_revision_record,
     _TARGET_SAMPLE_RATE,
     _training_active,
+    _write_revision_record,
     normalize_whisper_language,
 )
 
@@ -174,42 +183,75 @@ def _reap(process: Optional[subprocess.Popen]) -> None:
         forget_pid(process.pid)
 
 
-def _cached_main_revision(repo: str) -> Optional[str]:
-    """The commit `main` currently points at in the cache, if it is recorded."""
-    from core.inference.stt_sidecar import _repo_cache_dir
-
-    try:
-        revision = (_repo_cache_dir(repo) / "refs" / "main").read_text(encoding = "utf-8").strip()
-    except OSError:
-        return None
-    return revision or None
-
-
-def _cached_file(model_id: str, filename: str) -> Optional[str]:
+def _cached_file(
+    model_id: str,
+    filename: str,
+    *,
+    hub_cache: Optional[Path] = None,
+    revision: Optional[str] = None,
+) -> Optional[str]:
     from huggingface_hub import hf_hub_download
 
     from core.inference.stt_sidecar import _active_hf_hub_cache
+
+    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
     try:
         return hf_hub_download(
             repo_id = MTMD_STT_MODELS[model_id].repo,
             filename = filename,
+            revision = revision,
             local_files_only = True,
-            # The worker spawns with get_hf_cache_paths(), so a cache relocated
-            # in Studio settings is written there and has to be read there too.
-            cache_dir = str(_active_hf_hub_cache()),
+            cache_dir = str(root),
         )
     except Exception:
         return None
 
 
-def _cached_model_paths(model_id: str) -> Optional[tuple[str, str]]:
+def _cached_model_paths(
+    model_id: str,
+    *,
+    hub_cache: Optional[Path] = None,
+    revision: Optional[str] = None,
+) -> Optional[tuple[str, str]]:
     """Both cached files, or None when either is missing."""
     spec = MTMD_STT_MODELS[model_id]
-    model = _cached_file(model_id, spec.model_file)
-    mmproj = _cached_file(model_id, spec.mmproj_file)
-    if model is None or mmproj is None:
-        return None
-    return model, mmproj
+    from core.inference.stt_sidecar import _active_hf_hub_cache
+
+    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
+
+    def cached_at(candidate_revision: str) -> Optional[tuple[str, str]]:
+        model = _cached_file(
+            model_id,
+            spec.model_file,
+            hub_cache = root,
+            revision = candidate_revision,
+        )
+        mmproj = _cached_file(
+            model_id,
+            spec.mmproj_file,
+            hub_cache = root,
+            revision = candidate_revision,
+        )
+        if model is None or mmproj is None:
+            return None
+        return model, mmproj
+
+    # Explicit revisions keep both files on the downloaded commit.
+    if revision is not None:
+        return cached_at(revision)
+
+    recorded = _read_revision_record(spec.repo)
+    if recorded:
+        cached = cached_at(recorded)
+        if cached is not None:
+            return cached
+
+    for candidate in _fallback_revisions(spec.repo, hub_cache = root):
+        cached = cached_at(candidate)
+        if cached is not None:
+            _write_revision_record(spec.repo, candidate)
+            return cached
+    return None
 
 
 # The panel polls every model every 750ms, and each answer is two hf_hub_download()
@@ -258,6 +300,9 @@ class _MtmdDownloadState:
         self._model_id: Optional[str] = None
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
+        self._selected_files: tuple[_SelectedHubFile, ...] = ()
+        self._revision: Optional[str] = None
+        self._hub_cache: Optional[Path] = None
         self._cancelled = False
 
     def status(self) -> dict:
@@ -271,8 +316,15 @@ class _MtmdDownloadState:
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if downloading else None,
             }
-        # Outside the lock: _cache_bytes() walks the cache blobs, and a cancel must not queue.
-        snapshot["bytes_done"] = self._cache_bytes(model_id) if downloading else None
+            captured = (
+                model_id,
+                self._hub_cache,
+                self._selected_files,
+                self._revision,
+                self._total_bytes,
+            )
+        # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
+        snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
         return snapshot
 
     def cancel(self) -> bool:
@@ -283,21 +335,45 @@ class _MtmdDownloadState:
             self._cancelled = True
             process = self._process
         if process is not None and process.poll() is None:
-            process.terminate()
+            from core.inference.stt_download_worker import terminate_download
+            terminate_download(process)
         return True
 
-    def _cache_bytes(self, model_id: Optional[str] = None) -> Optional[int]:
-        """Best-effort progress: cache blob bytes. model_id lets status() call it unlocked."""
-        try:
-            from core.inference.stt_sidecar import _repo_cache_dir
+    def _downloaded_bytes(
+        self,
+        model_id: Optional[str] = None,
+        hub_cache: Optional[Path] = None,
+        selected_files: Optional[tuple[_SelectedHubFile, ...]] = None,
+        revision: Optional[str] = None,
+        total: Optional[int] = None,
+    ) -> Optional[int]:
+        """Count only the two selected files in their three cache forms.
 
+        status() captures these under the lock and passes them in: reading them
+        here would let a run that starts mid-probe pair its bytes with the total
+        of the run that just ended.
+        """
+        try:
             model_id = model_id or self._model_id
-            if not model_id:
+            hub_cache = hub_cache if hub_cache is not None else self._hub_cache
+            selected_files = selected_files if selected_files is not None else self._selected_files
+            revision = revision if revision is not None else self._revision
+            total = total if total is not None else self._total_bytes
+            if not model_id or hub_cache is None or not selected_files:
                 return None
-            blobs = _repo_cache_dir(MTMD_STT_MODELS[model_id].repo) / "blobs"
-            if not blobs.is_dir():
-                return 0
-            return sum(p.stat().st_size for p in blobs.iterdir() if p.is_file())
+            repo = MTMD_STT_MODELS[model_id].repo
+            done = sum(
+                _downloaded_file_bytes(
+                    hub_cache = hub_cache,
+                    repo = repo,
+                    filename = selected.path,
+                    size = selected.size,
+                    blob_key = selected.blob_key,
+                    revision = revision,
+                )
+                for selected in selected_files
+            )
+            return min(done, total) if total is not None else done
         except Exception:
             return None
 
@@ -307,10 +383,16 @@ class _MtmdDownloadState:
         hf_token: Optional[str] = None,
     ) -> None:
         model_id = resolve_mtmd_model_id(model_id)
+        hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    return
+                    # Joining a cancelling run would silently download nothing.
+                    if not self._cancelled:
+                        return
+                    raise SttModelIdError(
+                        f"'{model_id}' is still cancelling; try again in a moment."
+                    )
                 raise SttModelIdError(
                     f"Another dictation model ('{self._model_id}') is still "
                     "downloading; wait for it to finish."
@@ -318,66 +400,117 @@ class _MtmdDownloadState:
             self._model_id = model_id
             self._error = None
             self._total_bytes = None
+            self._selected_files = ()
+            self._revision = None
+            self._hub_cache = hub_cache
             self._cancelled = False
             self._process = None
-            thread = threading.Thread(target = self._run, args = (model_id, hf_token), daemon = True)
+            thread = threading.Thread(
+                target = self._run,
+                args = (model_id, hf_token),
+                daemon = True,
+            )
             self._thread = thread
             thread.start()
 
-    def _run(self, model_id: str, hf_token: Optional[str]) -> None:
+    def _run(
+        self,
+        model_id: str,
+        hf_token: Optional[str],
+        hub_cache: Optional[Path] = None,
+    ) -> None:
+        if hub_cache is None:
+            from core.inference.stt_sidecar import _active_hf_hub_cache
+            hub_cache = self._hub_cache or _active_hf_hub_cache()
         spec = MTMD_STT_MODELS[model_id]
+        registry = None
+        owner = None
         try:
             from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
-            total = 0
-            for filename in (spec.model_file, spec.mmproj_file):
-                try:
-                    meta = get_hf_file_metadata(
-                        hf_hub_url(spec.repo, filename), token = hf_token or None
-                    )
-                    total += int(meta.size or 0)
-                except Exception:
-                    pass
-            with self._lock:
-                self._total_bytes = total or None
-
-            from core.inference.stt_download_worker import reap_download, spawn_download
-
-            # One worker per file. Both are required, so a cancel between them
-            # leaves the model not downloaded. The first resolves "main" and the
-            # second is pinned to whatever it landed on, so a repo update
-            # mid-download cannot mix two commits. The first stays unpinned
-            # because hf_hub_download only writes refs/main for a named
-            # revision, and _cached_file() resolves through that ref.
+            selected: list[_SelectedHubFile] = []
             revision: Optional[str] = None
             for filename in (spec.model_file, spec.mmproj_file):
-                process = spawn_download(
-                    ["--repo-id", spec.repo, "--filename", filename]
-                    + (["--revision", revision] if revision else []),
-                    hf_token = hf_token or None,
+                meta = get_hf_file_metadata(
+                    hf_hub_url(spec.repo, filename, revision = revision),
+                    token = hf_token or None,
                 )
-                with self._lock:
-                    if self._cancelled:
-                        process.terminate()
-                    self._process = process
-                stderr = reap_download(process)
-                if process.returncode == 0:
-                    revision = revision or _cached_main_revision(spec.repo)
-                    continue
-                with self._lock:
-                    if self._cancelled or process.returncode < 0:
-                        self._cancelled = True
-                        return
-                detail = (stderr or b"").decode("utf-8", "replace").strip()
-                logger.warning("mtmd STT download failed for %s: %s", model_id, detail)
-                with self._lock:
-                    self._error = f"Download failed for '{model_id}'."
+                if revision is None:
+                    revision = meta.commit_hash
+                    if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):
+                        raise RuntimeError("could not resolve an immutable mtmd revision")
+                if meta.commit_hash != revision:
+                    raise RuntimeError("could not pin both mtmd files to one revision")
+                selected.append(
+                    _SelectedHubFile(
+                        path = filename,
+                        size = max(0, int(meta.size or 0)),
+                        blob_key = meta.etag,
+                    )
+                )
+            # A cancel during metadata has no child to stop. Without these the
+            # run still reserves the repo and rewrites the cache after the stop.
+            with self._lock:
+                if self._cancelled:
+                    return
+            registry, owner = _claim_stt_repository(spec.repo)
+            with self._lock:
+                if self._cancelled:
+                    return
+            _prepare_stt_cache_for_http(spec.repo, hub_cache)
+            with self._lock:
+                self._total_bytes = sum(item.size for item in selected) or None
+                self._selected_files = tuple(selected)
+                self._revision = revision
+
+            from core.inference.stt_download_worker import (
+                reap_download,
+                spawn_download,
+                terminate_download,
+            )
+
+            args = ["--repo-id", spec.repo, "--revision", revision]
+            for item in selected:
+                args.extend(("--filename", item.path))
+            process = spawn_download(args, hf_token = hf_token or None, hub_cache = hub_cache)
+            with self._lock:
+                if self._cancelled:
+                    terminate_download(process)
+                self._process = process
+            stderr = reap_download(process)
+            with self._lock:
+                if self._process is process:
+                    self._process = None
+                cancelled = self._cancelled
+            if process.returncode == 0 and not cancelled:
+                if (
+                    _cached_model_paths(
+                        model_id,
+                        hub_cache = hub_cache,
+                        revision = revision,
+                    )
+                    is None
+                ):
+                    raise RuntimeError("downloaded mtmd files are missing from the captured cache")
+                _write_revision_record(spec.repo, revision)
                 return
-        except Exception as exc:
-            logger.warning("mtmd STT download failed for %s: %s", model_id, exc)
+            with self._lock:
+                if cancelled or process.returncode < 0:
+                    self._cancelled = True
+                    return
+            detail = stderr.decode("utf-8", "replace").strip()
+            logger.warning("mtmd STT download failed for %s: %s", model_id, detail)
             with self._lock:
                 self._error = f"Download failed for '{model_id}'."
+        except Exception as exc:
+            with self._lock:
+                if not self._cancelled:
+                    logger.warning("mtmd STT download failed for %s: %s", model_id, exc)
+                    self._error = f"Download failed for '{model_id}'."
         finally:
+            # Release first: it is the half that would wedge the repository.
+            if registry is not None and owner is not None:
+                registry.release_repository_owner(spec.repo, owner)
             # The memo is stale however this ended; dropping it now lets the next poll settle.
             _forget_downloaded_probe(model_id)
 

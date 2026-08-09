@@ -13,9 +13,18 @@ import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Path as ApiPath,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
-from typing import Dict, Optional, Any
+from typing import Dict, Literal, Optional, Any
 import structlog
 from loggers import get_logger
 import asyncio
@@ -28,7 +37,10 @@ if str(backend_path) not in sys.path:
 
 try:
     from core.training import get_training_backend
-    from core.training.training import TrainingStatusIdentitySnapshot
+    from core.training.training import (
+        TrainingStartCancellationCapacityError,
+        TrainingStatusIdentitySnapshot,
+    )
     from core.training.resume import (
         can_resume_run,
         get_resume_checkpoint_path,
@@ -45,7 +57,10 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.training import get_training_backend
-    from core.training.training import TrainingStatusIdentitySnapshot
+    from core.training.training import (
+        TrainingStartCancellationCapacityError,
+        TrainingStatusIdentitySnapshot,
+    )
     from core.training.resume import (
         can_resume_run,
         get_resume_checkpoint_path,
@@ -95,18 +110,36 @@ from models.training import (
     DiffusionTrainingStartResponse,
     DiffusionTrainingStatusResponse,
     DiffusionTrainingStopRequest,
+    TRAINING_REQUEST_ID_PATTERN,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
-from pydantic import BaseModel as PydanticBaseModel, ValidationError
+from pydantic import (
+    BaseModel as PydanticBaseModel,
+    Field as PydanticField,
+    ValidationError,
+)
 
 
 class TrainingStopRequest(PydanticBaseModel):
     save: bool = True
-    expected_job_id: Optional[str] = None
+    expected_job_id: str = PydanticField(
+        ...,
+        min_length = 1,
+        max_length = 128,
+        pattern = TRAINING_REQUEST_ID_PATTERN,
+    )
 
 
 class TrainingResetRequest(PydanticBaseModel):
-    expected_job_id: Optional[str] = None
+    # Stays optional: every Studio build before the train-page rework posts /reset with no
+    # body, and those clients only ever reset a finished run. The backend refuses an
+    # unscoped reset that would touch a LIVE run instead, so the guard costs no compat.
+    expected_job_id: Optional[str] = PydanticField(
+        default = None,
+        min_length = 1,
+        max_length = 128,
+        pattern = TRAINING_REQUEST_ID_PATTERN,
+    )
 
 
 router = APIRouter()
@@ -179,20 +212,21 @@ class _ModelPreflightResult:
 _PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
 
 
-def _stop_training_if_active(backend, *, save: bool, expected_job_id: Optional[str]):
+def _stop_training_if_active(
+    backend, *, save: bool, expected_job_id: str
+) -> Literal["idle", "stopped", "superseded"]:
     from core.training.lifecycle import training_lifecycle_guard
     with training_lifecycle_guard():
-        is_active = _run_active(backend)
-        if not is_active:
-            stopped = False
-        elif expected_job_id is None:
-            stopped = backend.stop_training(save = save)
-        else:
-            stopped = backend.stop_training(
-                save = save,
-                expected_job_id = expected_job_id,
-            )
-    return is_active, stopped
+        if not _run_active(backend):
+            return "idle"
+        current_job_id = getattr(backend, "current_job_id", None)
+        if current_job_id is not None and current_job_id != expected_job_id:
+            return "superseded"
+        stopped = backend.stop_training(
+            save = save,
+            expected_job_id = expected_job_id,
+        )
+        return "stopped" if stopped else "idle"
 
 
 def _is_finalizing(progress, msg_lower: str) -> bool:
@@ -1016,7 +1050,13 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
 
 @router.get("/start-requests/{start_request_id}", response_model = TrainingStartRequestStatus)
 async def get_training_start_request(
-    start_request_id: str, current_subject: str = Depends(get_current_subject)
+    start_request_id: str = ApiPath(
+        ...,
+        min_length = 1,
+        max_length = 128,
+        pattern = TRAINING_REQUEST_ID_PATTERN,
+    ),
+    current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
     record = backend.get_start_request(start_request_id)
@@ -1038,7 +1078,13 @@ def _start_request_status_response(record) -> TrainingStartRequestStatus:
 
 @router.post("/start-requests/{start_request_id}/acknowledge")
 async def acknowledge_training_start_request(
-    start_request_id: str, current_subject: str = Depends(get_current_subject)
+    start_request_id: str = ApiPath(
+        ...,
+        min_length = 1,
+        max_length = 128,
+        pattern = TRAINING_REQUEST_ID_PATTERN,
+    ),
+    current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
     if not backend.acknowledge_start_request(start_request_id):
@@ -1054,13 +1100,22 @@ async def acknowledge_training_start_request(
     response_model = TrainingStartRequestStatus,
 )
 async def cancel_training_start_request(
-    start_request_id: str, current_subject: str = Depends(get_current_subject)
+    start_request_id: str = ApiPath(
+        ...,
+        min_length = 1,
+        max_length = 128,
+        pattern = TRAINING_REQUEST_ID_PATTERN,
+    ),
+    current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
-    outcome, record = await asyncio.to_thread(
-        backend.cancel_start_request,
-        start_request_id,
-    )
+    try:
+        outcome, record = await asyncio.to_thread(
+            backend.cancel_start_request,
+            start_request_id,
+        )
+    except TrainingStartCancellationCapacityError as exc:
+        raise HTTPException(status_code = 429, detail = str(exc)) from exc
     if outcome == "superseded":
         raise HTTPException(
             status_code = 409,
@@ -1689,25 +1744,30 @@ async def start_training(
 
 @router.post("/stop", response_model = TrainingStopResponse)
 async def stop_training(
-    body: TrainingStopRequest = TrainingStopRequest(),
-    current_subject: str = Depends(get_current_subject),
+    body: TrainingStopRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     Stop the currently running training job.
 
     Body:
         save (bool): If True (default), save the model at the current checkpoint.
+        expected_job_id (str): Identifier of the job the caller intends to stop.
     """
     try:
         backend = get_training_backend()
-        is_active, stopped = await asyncio.to_thread(
+        outcome = await asyncio.to_thread(
             _stop_training_if_active,
             backend,
             save = body.save,
             expected_job_id = body.expected_job_id,
         )
-        logger.info("Stop requested: save=%s is_active=%s", body.save, is_active)
-        if not is_active or not stopped:
+        logger.info("Stop requested: save=%s outcome=%s", body.save, outcome)
+        if outcome == "superseded":
+            raise HTTPException(
+                status_code = 409,
+                detail = "The requested training job is no longer active.",
+            )
+        if outcome == "idle":
             return TrainingStopResponse(
                 status = "idle", message = "No training job is currently running"
             )
@@ -1717,6 +1777,8 @@ async def stop_training(
             message = "Stop requested. Training will stop at the next safe step.",
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise log_and_http_error(
             e,

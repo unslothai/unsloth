@@ -5,6 +5,10 @@ import { validateHubResourceId } from "@/components/resource-picker/hub-resource
 import type { TranslationKey } from "@/i18n";
 import type { TrainingConfigState } from "../types/config";
 import { requiresExplicitCachedDatasetSplit } from "./dataset-split-policy";
+import {
+  validateManualDatasetSplit,
+  validateManualDatasetSubset,
+} from "./manual-dataset-options";
 import { isLocalTrainingModelSelection } from "./model-selection";
 import { isUntrainableModelFormat } from "./model-support";
 import {
@@ -98,10 +102,35 @@ function validateDatasetSelection(
         errorKey: "studio.datasetPicker.reasonInvalidHubId",
       };
     }
-    if (requiresExplicitCachedDatasetSplit(config)) {
+    if (config.manualDatasetOptionsValid === false) {
+      return {
+        ok: false,
+        errorKey: "studio.dataset.selectors.manualInvalid",
+      };
+    }
+    const requiresSplit = requiresExplicitCachedDatasetSplit(config);
+    if (requiresSplit) {
       return {
         ok: false,
         errorKey: "studio.training.validation.hfDatasetSplitRequired",
+      };
+    }
+    if (
+      validateManualDatasetSubset(config.datasetSubset ?? "") !== null ||
+      validateManualDatasetSplit(
+        config.datasetSplit ?? "",
+        false,
+        !config.datasetStreaming,
+      ) !== null ||
+      validateManualDatasetSplit(
+        config.datasetEvalSplit ?? "",
+        false,
+        !config.datasetStreaming,
+      ) !== null
+    ) {
+      return {
+        ok: false,
+        errorKey: "studio.dataset.selectors.manualInvalid",
       };
     }
   } else if (config.datasetSource === "upload") {

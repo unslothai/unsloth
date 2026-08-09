@@ -45,7 +45,14 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 
 logger = get_logger(__name__)
 from utils.child_stdio import utf8_child_env
+
+# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 from utils.hardware import apply_gpu_ids
+from utils.hf_dataset_options import hf_dataset_split_instruction_names
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -525,9 +532,9 @@ def _load_hf_train_and_eval_datasets(
                     split_kwargs["token"] = token
                 available_splits = get_dataset_split_names(**split_kwargs)
 
-            excluded_split = train_split.partition("[")[0].strip()
+            excluded_splits = set(hf_dataset_split_instruction_names(train_split))
             for candidate in EVAL_SPLIT_CANDIDATES:
-                if candidate not in available_splits or candidate == excluded_split:
+                if candidate not in available_splits or candidate in excluded_splits:
                     continue
                 try:
                     if loaded_from_cache:
@@ -701,14 +708,15 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
     from utils.security import (
         evaluate_file_security,
         evaluate_remote_code_consent_for_targets,
+        load_scan_target,
         security_load_subdirs,
     )
 
-    targets = [load_target]
+    requested_targets = [load_target]
     try:
         base_model = get_base_model_from_lora_identifier(load_target, hf_token)
         if base_model:
-            targets.append(base_model)
+            requested_targets.append(base_model)
     except Exception as error:
         logger.debug("Could not resolve LoRA base for security scan: %s", error)
 
@@ -716,12 +724,20 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
 
     primary_name = config["model_name"]
     local_only_load = hf_env_offline()
-    for target in dict.fromkeys(targets):
-        load_subdirs = security_load_subdirs(target, hf_token)
-        if target == load_target and target != primary_name:
+    consent_load_subdirs: dict[str, tuple] = {}
+    targets: list[str] = []
+    for requested_target in dict.fromkeys(requested_targets):
+        load_subdirs = security_load_subdirs(requested_target, hf_token)
+        if requested_target == load_target and requested_target != primary_name:
             load_subdirs = tuple(
                 dict.fromkeys((*load_subdirs, *security_load_subdirs(primary_name, hf_token)))
             )
+        target, load_subdirs = load_scan_target(requested_target, load_subdirs)
+        if target not in consent_load_subdirs:
+            targets.append(target)
+            consent_load_subdirs[target] = ()
+        load_subdirs = tuple(dict.fromkeys((*consent_load_subdirs[target], *load_subdirs)))
+        consent_load_subdirs[target] = load_subdirs
         decision = evaluate_file_security(
             target,
             hf_token = hf_token,
@@ -744,6 +760,7 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
         trust_remote_code = True,
         approved_fingerprint = config.get("approved_remote_code_fingerprint"),
         subject = config.get("subject"),
+        load_subdirs_by_target = consent_load_subdirs,
     )
     if not decision.blocked:
         return None
@@ -760,6 +777,26 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
 
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
 _CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
+_CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
+    "qwen3.5",
+    "qwen3_5",
+    "qwen3.6",
+    "qwen3_6",
+    "qwen3-next",
+    "qwen3_next",
+    "nemotron_h",
+    "nemotron-h",
+    "nemotron-3-nano",
+    "falcon_h1",
+    "falcon-h1",
+    "granite-4.0-h",
+    "granitemoehybrid",
+    "lfm2",
+    "mamba",
+    "jamba",
+    "zamba",
+    "bamba",
+)
 _MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 _MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
 _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
@@ -904,25 +941,7 @@ if sys.platform == "win32":
 
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
-    return any(
-        key in name
-        for key in (
-            "qwen3.5",
-            "qwen3_5",
-            "qwen3.6",
-            "qwen3_6",
-            "qwen3-next",
-            "qwen3_next",
-            "nemotron_h",
-            "nemotron-h",
-            "nemotron-3-nano",
-            "falcon_h1",
-            "falcon-h1",
-            "granite-4.0-h",
-            "granitemoehybrid",
-            "lfm2",
-        )
-    )
+    return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
 
 
 def _hipcc_gcc_install_dir() -> str | None:
@@ -968,6 +987,10 @@ def _install_package_wheel_first(
         return True
     except ImportError:
         pass
+
+    if _model_offline_mode_enabled():
+        logger.info("Skipping %s installation while offline", display_name)
+        return False
 
     env = probe_torch_wheel_env(timeout = 30)
     if wheel_url_builder is not None:
@@ -1154,8 +1177,15 @@ def _install_package_wheel_first(
     return True
 
 
-def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
-    if not _model_wants_causal_conv1d(model_name):
+def _ensure_causal_conv1d_fast_path(
+    event_queue: Any,
+    model_name: str,
+    *,
+    required: bool | None = None,
+) -> None:
+    if required is None:
+        required = _model_wants_causal_conv1d(model_name)
+    if not required:
         return
     if sys.platform == "win32":
         logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
@@ -1254,6 +1284,10 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
     if already_importable and _flash_linear_attention_current(already_importable = True):
         logger.info("flash-linear-attention already importable at the pinned version")
         return True
+
+    if _model_offline_mode_enabled():
+        logger.info("Skipping flash-linear-attention installation while offline")
+        return False
 
     _send_status(
         event_queue,
@@ -1489,7 +1523,8 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
 
     if gcn_arch:
         # gfx1152 is Krackan Point: same shared GPU/system-RAM pool as gfx1150/gfx1151.
-        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151", "gfx1152"}
+        # Case-folded: the attribute is lowercase in practice but is not guaranteed.
+        return gcn_arch, gcn_arch.lower() in {"gfx1150", "gfx1151", "gfx1152"}
 
     # Arch attrs absent -- fall back to device-name matching. Only reached under _hw.IS_ROCM,
     # so the NVIDIA GeForce 840M cannot collide with the Krackan markers.
@@ -1504,6 +1539,113 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         or "840m" in dev_lower
     )
     return gcn_arch, is_unified
+
+
+# 16 GiB, not a percentage: on a 128 GiB Strix Halo a flat 20% withholds 25.6 GiB, while
+# 0.90 there reserves 12.8 GiB and was measured as OS-starving. The constant sits between.
+_UNIFIED_OS_RESERVE_BYTES = 16 * 1024**3
+_UNIFIED_MAX_RESERVE_FRACTION = 0.20
+_DISCRETE_MEM_FRACTION = 0.90
+_MEM_FRACTION_ENV = "UNSLOTH_ROCM_MEM_FRACTION"
+
+
+def _parse_mem_fraction_env(env_value: str | None) -> float | None:
+    """``UNSLOTH_ROCM_MEM_FRACTION`` as a float, None when unset or unusable.
+
+    Shared with the OOM guard's log line so it can say whether the override was
+    actually honoured, rather than just whether the variable was set.
+    """
+    try:
+        override = float(env_value)  # None -> TypeError, "" / "  " -> ValueError
+    except (TypeError, ValueError):
+        return None
+    # Two-sided on purpose: NaN loses every comparison, so this rejects it. A one-sided
+    # `override <= 0.0 or override > 1.0` would pass NaN to set_per_process_memory_fraction.
+    return override if 0.0 < override <= 1.0 else None
+
+
+def _allocator_divides_by_props_total(torch_version: str | None) -> bool:
+    """Whether ``set_per_process_memory_fraction`` scales ``props.total_memory``.
+
+    c10's ``CUDACachingAllocator::setMemoryFraction`` caps at
+    ``fraction * device_prop.totalGlobalMem`` from torch 2.10, and at
+    ``fraction * hipMemGetInfo total`` through 2.9. Unparsable versions answer True,
+    so a surprise string keeps today's denominator rather than switching it.
+    """
+    release = str(torch_version or "").split("+", 1)[0].split(".")
+    try:
+        major, minor = int(release[0]), int(release[1])
+    except (IndexError, ValueError):
+        return True
+    return (major, minor) >= (2, 10)
+
+
+def _rocm_memory_fraction(
+    total_bytes: int,
+    is_unified: bool,
+    platform: str,
+    env_value: str | None = None,
+    denominator_bytes: int | None = None,
+) -> float:
+    """Pick the ``set_per_process_memory_fraction`` cap for a ROCm device.
+
+    ``total_bytes`` is the pool the reserve comes out of, always
+    ``get_device_properties().total_memory``: on a unified APU that is what the OS
+    shares, while ``hipMemGetInfo``'s total is a runtime budget spanning GTT.
+
+    ``denominator_bytes`` is what the allocator multiplies the fraction by, when that
+    is a different number (see ``_allocator_divides_by_props_total``). An absolute
+    byte reserve only lands where intended if the two agree, so passing it re-solves
+    the cap for the same allowed bytes, floored at the historical cap so a larger
+    driver total can never leave this tighter than the 0.80 it replaced.
+
+    - ``env_value`` (``UNSLOTH_ROCM_MEM_FRACTION``) wins when it parses to a
+      float in ``(0.0, 1.0]``; anything else is ignored, never fatal.
+    - Unified + win32: ``1.0``. The WDDM budget already excludes the OS share,
+      so any sub-1.0 cap double-taxes it (see the guard's own comment).
+    - Unified elsewhere: reserve ``min(_UNIFIED_MAX_RESERVE_FRACTION of total,
+      _UNIFIED_OS_RESERVE_BYTES)``, then clamp the cap to ``_DISCRETE_MEM_FRACTION``
+      so a huge pool never ends up looser than a discrete card. The percentage
+      ceiling keeps small pools at exactly the historical cap.
+    - Discrete: ``_DISCRETE_MEM_FRACTION``.
+    """
+    override = _parse_mem_fraction_env(env_value)
+    if override is not None:
+        return override
+
+    if not is_unified:
+        return _DISCRETE_MEM_FRACTION
+    if platform == "win32":
+        return 1.0
+    if total_bytes <= 0:
+        # The caller defaults a missing or None total to 0; with no pool size there is
+        # nothing to solve against, so keep the historical cap.
+        return 1.0 - _UNIFIED_MAX_RESERVE_FRACTION
+
+    # Solved in fraction space, not bytes: (total - 0.20 * total) / total rounds
+    # to 0.7999999999999999 on some pool sizes (12/24/28/48 GiB), which would
+    # break the "never tighter than the historical 0.80" guarantee by a ULP.
+    reserve_fraction = min(_UNIFIED_MAX_RESERVE_FRACTION, _UNIFIED_OS_RESERVE_BYTES / total_bytes)
+    fraction = 1.0 - reserve_fraction
+
+    if (
+        reserve_fraction < _UNIFIED_MAX_RESERVE_FRACTION
+        and denominator_bytes
+        and denominator_bytes > 0
+        and denominator_bytes != total_bytes
+    ):
+        # Re-solve for the same allowed bytes against the total the allocator scales.
+        # Floored, so a larger driver total cannot leave a host tighter than the 0.80
+        # this replaced. Byte arm only: the percentage arm is scale-free, and those
+        # small pools are the OOM-prone ones that must stay exactly as they were.
+        fraction = max(
+            fraction * total_bytes / denominator_bytes,
+            1.0 - _UNIFIED_MAX_RESERVE_FRACTION,
+        )
+
+    # Past ~160 GiB the byte reserve is under 10% of the pool, which would hand a unified
+    # host a looser cap than a discrete card and invert the ordering the guard is built on.
+    return min(fraction, _DISCRETE_MEM_FRACTION)
 
 
 def _tilelang_platform_supported() -> bool:
@@ -1586,6 +1728,16 @@ def _ensure_tilelang_backend_unconditional(event_queue: Any) -> bool:
     if not needs_repair and _tilelang_importable():
         logger.info("tilelang + apache-tvm-ffi already installed")
         return True
+
+    if _model_offline_mode_enabled():
+        if needs_repair and os.environ.get("FLA_TILELANG") is None:
+            os.environ["FLA_TILELANG"] = "0"
+            logger.warning(
+                "Disabling TileLang while offline because apache-tvm-ffi %s is unsafe",
+                existing_tvm_ffi,
+            )
+        logger.info("Skipping TileLang installation while offline")
+        return False
 
     # Step 1: --no-deps keeps --force-reinstall off torch/CUDA via the dep graph.
     if needs_repair:
@@ -1671,7 +1823,12 @@ def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj
     return count
 
 
-def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
+def _install_fast_path_hooks(
+    event_queue: Any,
+    model_name: str,
+    *,
+    install_causal_conv1d: bool | None = None,
+) -> None:
     """Hook transformers' is_*_available gates so the first call drives the install.
 
     Idempotent. UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring gate.
@@ -1773,10 +1930,15 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         )
         return bool(ok)
 
-    for gate_name, install_fn, post_fn in (
+    hooks = [
         ("is_flash_linear_attention_available", _fla_install, _fla_post_available),
-        ("is_causal_conv1d_available", _causal_conv1d_install, None),
-    ):
+    ]
+    if install_causal_conv1d is None:
+        install_causal_conv1d = _model_wants_causal_conv1d(model_name)
+    if install_causal_conv1d:
+        hooks.append(("is_causal_conv1d_available", _causal_conv1d_install, None))
+
+    for gate_name, install_fn, post_fn in hooks:
         original = getattr(_iu, gate_name, None)
         if original is None:
             logger.info(
@@ -2779,24 +2941,37 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # ── 7. Apply train_on_responses_only if requested ──
     # Auto-detect markers from the chat template first, manual table as fallback. Mirror the
-    # CUDA skips: raw/CPT text has no chat turns and Alpaca-rendered text lacks the markers.
+    # CUDA skips: raw/CPT text has no chat turns.
     # Check the resolved format too, since format_type="auto" can land on alpaca or raw.
     if (
         config.get("train_on_completions", False)
         and not raw_text_mode
-        and format_type != "alpaca"
-        and dataset_final_format not in ("alpaca", "raw_text")
+        and dataset_final_format != "raw_text"
     ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: the helper handles detection failures and double misses, so an exception here
         # is a real masking failure that must fail the run, not silently train full sequences.
         from utils.datasets.completion_masking import apply_completion_masking
-        trainer, _masking_applied = apply_completion_masking(
+
+        trainer, masking_applied = apply_completion_masking(
             trainer,
             model_name,
             train_on_responses_only,
             notify = lambda level, message: _send("status", status_message = message),
+            dataset_template = "alpaca" if dataset_final_format == "alpaca" else None,
         )
+        if not masking_applied:
+            # A miss changes the training objective for the whole run, so it belongs in the
+            # sticky warning list the eval-split fallback already uses, not a status line
+            # that scrolls past. Recovered detection failures stay status: masking applied.
+            _send(
+                "warning",
+                message = (
+                    f"'Train on completions' could not be applied for {model_name}: no "
+                    f"instruction/response markers were found. Training will run on full "
+                    f"sequences (prompts included)."
+                ),
+            )
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None
@@ -3271,18 +3446,33 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         return
 
     # ── 1b. Install fast-path kernel libraries for the chosen model.
-    # 1) causal-conv1d ALWAYS runs eagerly via the substring path: some SSM modeling files
+    # 1) causal-conv1d runs eagerly for matching architectures: some SSM modeling files
     #    lazy_load it without calling is_causal_conv1d_available.
     # 2) FLA + tilelang: gated by the runtime hook on is_flash_linear_attention_available.
     # 3) mamba-ssm + flash-attn keep their substring / size gates.
     # 4) UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring path.
     try:
-        _ensure_causal_conv1d_fast_path(event_queue, model_name)
+        from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+
+        wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+            model_name,
+            model_load_target,
+            config.get("hf_token") or None,
+        )
+        _ensure_causal_conv1d_fast_path(
+            event_queue,
+            model_name,
+            required = wants_causal_conv1d,
+        )
         if os.getenv(_FAST_PATH_HOOKS_SKIP_ENV) == "1":
             _ensure_flash_linear_attention(event_queue, model_name)
             _ensure_tilelang_backend(event_queue, model_name)
         else:
-            _install_fast_path_hooks(event_queue, model_name)
+            _install_fast_path_hooks(
+                event_queue,
+                model_name,
+                install_causal_conv1d = wants_causal_conv1d,
+            )
         _ensure_mamba_ssm(event_queue, model_name)
         _ensure_flash_attn_for_long_context(
             event_queue,
@@ -3549,8 +3739,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 1g. ROCm OOM guard ──
     # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
     # set_per_process_memory_fraction caps the allocator so PyTorch raises OutOfMemoryError
-    # first. Unified-memory APUs (gfx1150/1151/1152) share GPU+system RAM, so use 0.80 vs 0.90
-    # for discrete; classify via gcnArchName, else device-name markers. Skipped if no torch.
+    # first. Unified hosts share GPU+system RAM and need OS headroom, so the cap depends on
+    # the classification and the pool size (see _rocm_memory_fraction and
+    # _rocm_classify_unified_memory). Skipped if no torch.
     if _hw.IS_ROCM:
         try:
             import torch as _torch_mem
@@ -3567,23 +3758,77 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
                 # Unified hosts on native Windows: mem_get_info's total is the WDDM budget the driver
                 # grants HIP (BIOS carve + ~half of remaining RAM). The OS share is already outside it, so
-                # the Linux 0.80 starve-protection double-taxes (48.49 GiB budget -> 38.79 allowed) and
+                # any sub-1.0 starve-protection double-taxes (48.49 GiB budget -> 38.79 allowed) and
                 # blocks loads that fit in free memory. Current AMD Windows wheels only enforce sub-1.0
                 # fractions (gfx1151: 0.5 caps, 1.0 overcommits via WDDM), so 1.0 behaves like torch's
-                # uncapped default. On Linux the total spans nearly all RAM, so keep the 0.80 headroom.
-                if _is_unified:
-                    _mem_fraction = 1.0 if sys.platform == "win32" else 0.80
-                else:
-                    _mem_fraction = 0.90
+                # uncapped default. On Linux the total spans nearly all RAM, so keep a bounded headroom
+                # (see _rocm_memory_fraction).
+                # props.total_memory is the pool the reserve comes out of, and from torch
+                # 2.10 also what the allocator scales. Through 2.9 it scales hipMemGetInfo's
+                # total, a different number on a unified APU, so hand that to the helper on
+                # those wheels and the reserve is the same bytes either way.
+                _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
+                _driver_total = 0
+                if not _allocator_divides_by_props_total(getattr(_torch_mem, "__version__", "")):
+                    try:
+                        _driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])
+                    except Exception:
+                        _driver_total = 0
+                _env_raw = os.environ.get(_MEM_FRACTION_ENV)
+                _env_fraction = _parse_mem_fraction_env(_env_raw)
+                if _env_raw and _env_fraction is None:
+                    logger.warning(
+                        "ROCm OOM guard: ignoring %s=%r (needs a float in (0.0, 1.0]); "
+                        "using the computed cap instead",
+                        _MEM_FRACTION_ENV,
+                        _env_raw,
+                    )
+                _mem_fraction = _rocm_memory_fraction(
+                    _total_bytes, _is_unified, sys.platform, _env_raw, _driver_total or None
+                )
+                # A wheel that reports no total still gets a cap; say so rather than
+                # printing "0.0 of 0.0 GiB allowed" on the one host whose props are suspect.
+                _allowed = (
+                    f"{_total_bytes * _mem_fraction / 1024**3:.1f} of "
+                    f"{_total_bytes / 1024**3:.1f} GiB allowed"
+                    if _total_bytes > 0
+                    else "device total unreported by this wheel"
+                )
                 _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
-                    "ROCm OOM guard: set_per_process_memory_fraction(%.2f) — "
-                    "%s memory host (%s, %s)",
+                    "ROCm OOM guard: set_per_process_memory_fraction(%.4f) — "
+                    "%s memory host (%s, %s), %s, %s",
                     _mem_fraction,
                     "unified" if _is_unified else "discrete",
                     _dev_name,
                     _gcn_arch or "unknown arch",
+                    _allowed,
+                    f"from {_MEM_FRACTION_ENV}"
+                    if _env_fraction is not None
+                    else f"computed; override with {_MEM_FRACTION_ENV}",
                 )
+                # When the totals differ the cap was solved against the driver's, so the
+                # budget printed above is not the one enforced. Give both, and the headroom
+                # that results, which the floor can leave under the intended reserve.
+                if (
+                    _is_unified
+                    and sys.platform != "win32"
+                    and _env_fraction is None
+                    and _total_bytes > 0
+                    and _driver_total > 0
+                    and abs(_driver_total - _total_bytes) > _total_bytes // 100
+                ):
+                    logger.info(
+                        "ROCm OOM guard: props.total_memory is %.1f GiB but this torch caps "
+                        "against the driver's %.1f GiB, so the fraction is solved for that "
+                        "total and %.1f GiB stays free against the intended %.1f GiB. Adjust "
+                        "with %s.",
+                        _total_bytes / 1024**3,
+                        _driver_total / 1024**3,
+                        (_total_bytes - _mem_fraction * _driver_total) / 1024**3,
+                        _UNIFIED_OS_RESERVE_BYTES / 1024**3,
+                        _MEM_FRACTION_ENV,
+                    )
                 # Unified Windows APUs: the WDDM budget is user-raisable, but nothing on the box says so
                 # -- users see "48 GB VRAM" on a 96 GB machine. Say where the limit comes from.
                 if _is_unified and sys.platform == "win32":

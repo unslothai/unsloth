@@ -9,7 +9,10 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { normalizeTrainingStartPayloadForComparison } = await import(
+const {
+  createTrainingStartInputIdentity,
+  normalizeTrainingStartPayloadForComparison,
+} = await import(
   "../src/features/training/lib/training-start-inputs.ts"
 );
 
@@ -75,4 +78,30 @@ test("untrainable model formats remain part of training start identity", () => {
   );
 
   assert.equal(normalized.model_format, "gguf");
+});
+
+test("manual draft edits remain part of training start identity before blur", () => {
+  const config = {
+    modelType: "text" as const,
+    isVisionModel: false,
+    isAudioModel: false,
+    manualDatasetOptionsValid: true,
+    userEditRevision: 7,
+  };
+  const identity = createTrainingStartInputIdentity(startPayload(), config);
+
+  assert.notDeepEqual(
+    createTrainingStartInputIdentity(startPayload(), {
+      ...config,
+      userEditRevision: 8,
+    }),
+    identity,
+  );
+  assert.notDeepEqual(
+    createTrainingStartInputIdentity(startPayload(), {
+      ...config,
+      manualDatasetOptionsValid: false,
+    }),
+    identity,
+  );
 });

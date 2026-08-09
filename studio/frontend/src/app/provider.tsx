@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { LlamaUpdateBanner } from "@/components/llama-update-banner";
-import { StartupScreen } from "@/components/tauri/startup-screen";
+import {
+  ClosingScreen,
+  StartupScreen,
+} from "@/components/tauri/startup-screen";
 import { UpdateBanner } from "@/components/tauri/update-banner";
 import { UpdateScreen } from "@/components/tauri/update-screen";
 import {
@@ -17,10 +20,12 @@ import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { DeepLinkHandler } from "@/features/deep-links";
 import { DownloadManagerPanel } from "@/features/hub/download-manager";
+import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
   applyCustomizationToDocument,
   useAppearanceCustomStore,
+  useStackGeometry,
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
@@ -372,6 +377,7 @@ function TauriUpdateLayer({
   appContent: ReactNode;
 }) {
   const update = useTauriUpdate(isExternalServer);
+  const stack = useStackGeometry();
   const isUpdating =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
@@ -390,7 +396,10 @@ function TauriUpdateLayer({
     />
   ) : (
     // Capped like the browser stack: the download panel shares it, so both must fit.
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
+    <div
+      className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
+      style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
+    >
       <UpdateBanner
         status={update.status}
         info={update.info}
@@ -503,6 +512,7 @@ function DesktopChromeVarsEffect({
 
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const stack = useStackGeometry();
   const {
     status,
     logs,
@@ -512,6 +522,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     progressDetail,
     startupMessage,
     elevationPackages,
+    closing,
     startInstall,
     retry,
     retryInstall,
@@ -667,7 +678,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             corner, banners above, each owning its width. */}
         {/* Capped to the viewport, or a long download list plus expanded notes
             pushes the top of the stack off screen. */}
-        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
+        <div
+          className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
+          style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
+        >
           <WebUpdateBanner
             positioned={false}
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}
@@ -677,6 +691,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}
           />
           <DownloadManagerPanel positioned={false} />
+          {/* Last in the stack, so the persistent card sits at the corner and the
+              transient banners above it never cover it. */}
+          <LoadedModelsIndicator positioned={false} />
         </div>
       </>
     );
@@ -686,7 +703,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const startupStatus = status === "running" ? "starting" : status;
   const startupProgressDetail = progressDetail;
 
-  const content = showApp ? (
+  const shell = showApp ? (
     <TauriUpdateLayer
       isExternalServer={isExternalServer}
       appContent={
@@ -698,6 +715,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     >
       <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
       <DownloadManagerPanel positioned={false} />
+      <LoadedModelsIndicator positioned={false} />
     </TauriUpdateLayer>
   ) : (
     <StartupScreen
@@ -715,6 +733,16 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       onStartServer={retry}
       onCopyDiagnostics={copyDiagnostics}
     />
+  );
+
+  // Over the shell, not instead of it: ClosingScreen covers the app and the update layer
+  // alike, and a declined quit puts the user back where they were rather than remounting
+  // the tree under them.
+  const content = (
+    <>
+      {shell}
+      {closing && <ClosingScreen />}
+    </>
   );
 
   const chromeVars = (

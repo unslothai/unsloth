@@ -689,13 +689,53 @@ def test_ignored_rows_do_not_consume_the_finding_budget(site):
     assert len(found) == 1 and "tau/__init__.py is missing" in found[0]
 
 
-def test_our_own_top_level_trees_are_still_checked(site):
-    # A missing __init__.py does not make a directory unimportable (PEP 420),
-    # and this repo imports scripts.* itself, so the shared-namespace exemption
-    # must never apply to what Unsloth ships.
+def test_our_own_shared_top_level_trees_are_exempt_too(site):
+    # Reported as `unsloth_zoo: tests/conftest.py is 8107 bytes, expected 11429`
+    # on an install that was already current, so the update failed on every
+    # retry. 11429 is the size in the 2026.8.5 wheel, which shipped a top-level
+    # tests/ that any other wheel using that name overwrites. Squatting the
+    # namespace does not make it ours, and nothing imports it at runtime.
+    conftest = "tests/conftest.py"
+    _make_dist(
+        site,
+        "unsloth_zoo",
+        {"unsloth_zoo/__init__.py": b"z\n", conftest: b"c" * 8107},
+        record_sizes = {conftest: 11429},
+    )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_two_distributions_claiming_one_shared_path(site):
+    # The real shape: a third party also ships tests/conftest.py and lands last,
+    # so the bytes on disk match its RECORD and are shorter than unsloth_zoo's.
+    # Neither the drift nor the deletion can affect startup.
+    rel = "tests/conftest.py"
+    _make_dist(site, "unsloth_zoo", {rel: b"u" * 11429})
+    _make_dist(site, "upsilon", {rel: b"c" * 8107})
+    assert (site / rel).stat().st_size == 8107
+    assert _deps().damaged_installed_files() == []
+    (site / rel).unlink()
+    assert _deps().damaged_installed_files() == []
+
+
+def test_our_own_shared_top_level_trees_may_also_vanish(site):
+    # Same path, deleted rather than overwritten: the einx shape, but claimed by
+    # a distribution of ours. No reinstall repairs it either.
     _make_dist(site, "unsloth_zoo", {"unsloth_zoo/__init__.py": b"z\n"})
     (site / "unsloth_zoo-1.0.dist-info" / "RECORD").write_text(
         "unsloth_zoo/__init__.py,sha256=x,2\nscripts/helper.py,sha256=x,99\n"
     )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_our_own_runtime_trees_are_still_checked(site):
+    # The exemption is scoped to the shared roots. Everything Unsloth actually
+    # imports lives outside them and must still fail an update when damaged.
+    _make_dist(
+        site,
+        "unsloth_zoo",
+        {"unsloth_zoo/__init__.py": b"z\n", "unsloth_zoo/tests/helper.py": b"h\n"},
+    )
+    (site / "unsloth_zoo" / "tests" / "helper.py").unlink()
     found = _deps().damaged_installed_files()
-    assert len(found) == 1 and "scripts/helper.py is missing" in found[0]
+    assert len(found) == 1 and "unsloth_zoo/tests/helper.py is missing" in found[0]

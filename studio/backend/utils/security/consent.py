@@ -30,8 +30,8 @@ from utils.security.remote_code_scan import (
     CRITICAL,
     HIGH,
     MEDIUM,
-    REMOTE_CODE_CONFIG_FILES,
     RemoteCodeUnscannable,
+    remote_code_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
     scan_remote_code_files,
@@ -74,12 +74,12 @@ class RemoteCodeDecision:
         }
 
 
-# trust_remote_code runs auto_map from ANY of these configs (model/tokenizer/processor), so all
-# of them gate consent. The list lives in remote_code_scan so gate and scanner stay in lockstep.
-_REMOTE_CODE_CONFIG_FILES = REMOTE_CODE_CONFIG_FILES
-
-
-def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
+def _config_has_auto_map(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    *,
+    load_subdirs = (),
+) -> Optional[bool]:
     """Whether any config (model/tokenizer/processor) declares an ``auto_map`` the load
     would execute. Reads raw JSON with ``hf_token``; returns None when a config is
     unreadable (transient/auth) so the caller treats it as "unknown" and scans, False
@@ -95,7 +95,7 @@ def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Opt
     # still ship safetensors + auto_map, so it falls through to the scan.
     if _is_direct_gguf_file_ref(model_name):
         return False
-    configs = _load_remote_code_configs(model_name, hf_token)
+    configs = _load_remote_code_configs(model_name, hf_token, load_subdirs = load_subdirs)
     if configs is None:
         return None
     if not any(bool((cfg or {}).get("auto_map")) for cfg in configs):
@@ -122,7 +122,12 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
     return name.count("/") >= 2
 
 
-def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -> Optional[list]:
+def _load_remote_code_configs(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    *,
+    load_subdirs = (),
+) -> Optional[list]:
     """Read every config that can declare ``auto_map`` (model/tokenizer/processor) as
     raw dicts. Returns the configs present (``[]`` when all 404, a definitive "no
     auto_map"), or None when one is unreadable (transient/auth) so the caller scans.
@@ -137,8 +142,8 @@ def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
             configs = []
-            for name in _REMOTE_CODE_CONFIG_FILES:
-                p = root / name
+            for name in remote_code_config_paths(load_subdirs):
+                p = root.joinpath(*Path(name).parts)
                 if p.is_file():
                     configs.append(json.loads(p.read_text(encoding = "utf-8-sig")))
             return configs
@@ -148,7 +153,7 @@ def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -
         from utils.hf_cache_settings import active_hf_hub_cache
 
         configs = []
-        for name in _REMOTE_CODE_CONFIG_FILES:
+        for name in remote_code_config_paths(load_subdirs):
             try:
                 p = hf_hub_download(
                     repo_id = model_name,
@@ -213,6 +218,7 @@ def evaluate_remote_code_consent_for_targets(
     trust_remote_code: bool,
     approved_fingerprint: Optional[str] = None,
     subject: Optional[str] = None,
+    load_subdirs_by_target = None,
 ) -> RemoteCodeDecision:
     """Decide whether a ``trust_remote_code=True`` load may proceed, over every repo whose
     code the load would execute. A LoRA load runs adapter AND base code, so all targets
@@ -254,12 +260,15 @@ def evaluate_remote_code_consent_for_targets(
     # present but unscannable, fail the whole load closed.
     combined: dict = {}
     has_remote_code = False
+    load_subdirs_by_target = load_subdirs_by_target or {}
     for target in targets:
-        if _config_has_auto_map(target, hf_token) is False:
+        load_subdirs = tuple(load_subdirs_by_target.get(target, ()))
+        scan_kwargs = {"load_subdirs": load_subdirs} if load_subdirs else {}
+        if _config_has_auto_map(target, hf_token, **scan_kwargs) is False:
             continue
         has_remote_code = True
         try:
-            files = repo_remote_code_files(target, hf_token = hf_token)
+            files = repo_remote_code_files(target, hf_token = hf_token, **scan_kwargs)
         except RemoteCodeUnscannable:
             logger.warning(
                 "Blocking trust_remote_code load of '%s': remote code present (auto_map) "

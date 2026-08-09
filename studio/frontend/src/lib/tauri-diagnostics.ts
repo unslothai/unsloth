@@ -3,6 +3,7 @@
 
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { stripAnsi } from "@/lib/strip-ansi";
 
 export interface FrontendSupportSnapshot {
   status?: string | null;
@@ -24,15 +25,6 @@ export interface CopySupportDiagnosticsResult {
 }
 
 const FALLBACK_LOG_LINE_LIMIT = 200;
-
-const ANSI_ESCAPE_PATTERN = new RegExp(
-  `${String.fromCharCode(27)}(?:[@-Z\\-_]|\\[[0-?]*[ -/]*[@-~])`,
-  "g",
-);
-
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE_PATTERN, "");
-}
 
 export function redactDiagnosticsText(text: string): string {
   let redacted = stripAnsi(text);

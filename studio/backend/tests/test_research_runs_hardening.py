@@ -3,6 +3,8 @@
 
 """Regression tests for Deep Research query/prompt/citation/config hardening."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import sys
@@ -14,19 +16,23 @@ import httpx
 import pytest
 
 from core import research_runs
+from core.research.citations import (
+    _citation_title,
+    _validate_report_document_sources,
+    _validate_report_sources,
+)
+from core.research.redaction import (
+    _escape_link_destination,
+    _sanitize_public_query,
+    _shield_untrusted,
+)
 from core.research_runs import (
     ResearchSupervisor,
     RunCancelled,
-    _citation_title,
     _completion_hit_context_wall,
-    _escape_link_destination,
     _estimate_prompt_tokens,
     _resolve_max_tokens,
-    _sanitize_public_query,
-    _shield_untrusted,
     _synthesis_length_limit_error,
-    _validate_report_document_sources,
-    _validate_report_sources,
 )
 from routes.research_runs import CreateResearchRun, _is_sensitive_key, _sanitize_config
 
@@ -574,13 +580,74 @@ _NO_MODEL = "No model loaded. Call POST /inference/load first."
 
 
 def test_model_unloaded_only_matches_the_no_model_refusal():
-    assert asyncio.run(research_runs._model_unloaded(_response(400, detail = _NO_MODEL))) is True
+    assert asyncio.run(research_runs._model_unloaded(_response(400, detail = _NO_MODEL))) == "empty"
     # Any other 400 is a real bad request and must stay non-retryable.
     assert (
-        asyncio.run(research_runs._model_unloaded(_response(400, detail = "Invalid 'tools'")))
-        is False
+        asyncio.run(research_runs._model_unloaded(_response(400, detail = "Invalid 'tools'"))) is None
     )
-    assert asyncio.run(research_runs._model_unloaded(_response(500, body = _NO_MODEL))) is False
+    assert asyncio.run(research_runs._model_unloaded(_response(500, body = _NO_MODEL))) is None
+
+
+# Observed live: a run started with no model loaded failed outright on the 404 variant.
+def test_model_unloaded_matches_the_model_not_found_refusal():
+    not_found = json.dumps(
+        {"error": {"message": "The model 'local' does not exist", "code": "model_not_found"}}
+    )
+    assert asyncio.run(research_runs._model_unloaded(_response(404, body = not_found))) == "named"
+    # A 404 that is not about the model stays non-retryable.
+    assert asyncio.run(research_runs._model_unloaded(_response(404, detail = "Not found"))) is None
+
+
+def test_named_model_refusal_does_not_spend_the_whole_model_budget(monkeypatch):
+    # An unresolvable id answers 404 forever; the full budget buries it under a timeout.
+    monkeypatch.setattr(research_runs, "_MODEL_WAIT_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(research_runs, "_local_model_ready", lambda: False)
+    supervisor = _make_supervisor(_noop_check_active)
+
+    started = time.monotonic()
+    ready = asyncio.run(supervisor._wait_for_local_model(_waiting_run(900.0), 0.05))
+    elapsed = time.monotonic() - started
+
+    assert ready is False
+    assert elapsed < 5.0, "the named-model wait must not run to the 900s model budget"
+
+
+def test_empty_backend_refusal_leaves_room_for_the_real_error(monkeypatch):
+    # One wait must not consume the whole model budget, or the wall clock fires first and the
+    # run reports a timeout instead of the 400 that actually refused it.
+    monkeypatch.setattr(research_runs, "_MODEL_WAIT_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(research_runs, "_local_model_ready", lambda: False)
+    supervisor = _make_supervisor(_noop_check_active)
+
+    started = time.monotonic()
+    ready = asyncio.run(supervisor._wait_for_local_model(_waiting_run(2.0)))
+    elapsed = time.monotonic() - started
+
+    assert ready is False
+    # Each wait gets a share, so _MAX_MODEL_WAITS attempts still fit inside the budget.
+    assert elapsed < 2.0 / (research_runs._MAX_MODEL_WAITS + 1) + 0.5
+
+
+def test_stream_completion_waits_out_a_model_not_found_refusal(monkeypatch):
+    _ready_after_first_poll(monkeypatch)
+    not_found = json.dumps(
+        {"error": {"message": "The model 'local' does not exist", "code": "model_not_found"}}
+    )
+    chunk = json.dumps({"choices": [{"delta": {"content": "report"}, "finish_reason": "stop"}]})
+    sent = _install_fake_client(
+        monkeypatch,
+        [_response(404, body = not_found), _response(200, body = f"data: {chunk}\n\ndata: [DONE]\n\n")],
+    )
+
+    async def _check_active(run_id: str) -> None:
+        return None
+
+    supervisor = _make_supervisor(_check_active)
+    report, _reasoning, finish_reason, _usage = asyncio.run(
+        supervisor._stream_completion(_waiting_run(30.0), [{"role": "user"}], report_progress = False)
+    )
+    assert (report, finish_reason) == ("report", "stop")
+    assert len(sent) == 2
 
 
 def _make_supervisor(check_active = None) -> ResearchSupervisor:
@@ -641,7 +708,7 @@ def test_wait_for_local_model_still_honors_cancellation(monkeypatch):
 
 
 def _install_fake_client(monkeypatch, responses: list) -> list:
-    """Serve ``responses`` in order to both completion paths and record the sends. An entry that
+    """Serve ``responses`` in order to the completion path and record the sends. An entry that
     is an exception is raised instead, standing in for a transport failure."""
     sent: list = []
 
@@ -687,38 +754,6 @@ def _install_fake_client(monkeypatch, responses: list) -> list:
 def _ready_after_first_poll(monkeypatch) -> None:
     monkeypatch.setattr(research_runs, "_MODEL_WAIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(research_runs, "_local_model_ready", lambda: True)
-
-
-def test_completion_retries_after_the_model_is_loaded_again(monkeypatch):
-    # A durable run resumes after a Studio restart and is approved long after creation, so the
-    # model can be unloaded when it calls. That 400 used to end the run and its gathered work.
-    _ready_after_first_poll(monkeypatch)
-    reply = {"choices": [{"message": {"content": "answer"}}]}
-    sent = _install_fake_client(
-        monkeypatch,
-        [_response(400, detail = _NO_MODEL), _response(200, body = json.dumps(reply))],
-    )
-
-    async def _check_active(run_id: str) -> None:
-        return None
-
-    supervisor = _make_supervisor(_check_active)
-    result = asyncio.run(supervisor._completion(_waiting_run(30.0), [{"role": "user"}]))
-    assert result == "answer"
-    assert len(sent) == 2
-
-
-def test_completion_still_fails_fast_on_a_real_bad_request(monkeypatch):
-    _ready_after_first_poll(monkeypatch)
-    sent = _install_fake_client(monkeypatch, [_response(400, detail = "Invalid 'tools'")])
-
-    async def _check_active(run_id: str) -> None:
-        return None
-
-    supervisor = _make_supervisor(_check_active)
-    with pytest.raises(httpx.HTTPStatusError):
-        asyncio.run(supervisor._completion(_waiting_run(30.0), [{"role": "user"}]))
-    assert len(sent) == 1
 
 
 def test_stream_completion_retries_after_the_model_is_loaded_again(monkeypatch):
@@ -809,7 +844,7 @@ def test_stream_completion_stops_after_three_transport_attempts(monkeypatch):
     supervisor = _make_supervisor(_noop_check_active)
     with pytest.raises(httpx.ConnectError):
         _run_stream(supervisor)
-    # Same attempt budget and backoff as _completion, so both paths agree.
+    # Same attempt budget and backoff the non-streaming path used.
     assert len(sent) == 3
     assert delays == [1, 2]
 
@@ -1728,3 +1763,63 @@ def test_stream_completion_rechecks_the_lease_between_transport_retries(monkeypa
         _run_stream(supervisor)
     assert len(sent) == 1
     assert checks == ["run-1"]
+
+
+def _switch_failed(retry_after: str | None = "5") -> httpx.Response:
+    """The 503 routes.inference returns while an auto-switch to the run's model is still loading."""
+    return httpx.Response(
+        503,
+        json = {
+            "error": {
+                "message": "The model 'local' is downloaded, but this server could not switch to it.",
+                "code": "model_switch_failed",
+            }
+        },
+        headers = {"Retry-After": retry_after} if retry_after else {},
+        request = httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions"),
+    )
+
+
+def test_model_unloaded_matches_the_model_switch_refusal():
+    assert asyncio.run(research_runs._model_unloaded(_switch_failed())) == "switching"
+    # Any other 503 is a generic overload and keeps the plain transport backoff.
+    assert asyncio.run(research_runs._model_unloaded(_response(503, body = "overloaded"))) is None
+
+
+def test_retry_after_seconds_reads_only_a_delay():
+    assert research_runs._retry_after_seconds(_switch_failed()) == 5.0
+    assert research_runs._retry_after_seconds(_switch_failed(None)) is None
+    # HTTP-date form and non-positive delays carry no usable delay, so the default applies.
+    assert (
+        research_runs._retry_after_seconds(_switch_failed("Wed, 21 Oct 2026 07:28:00 GMT")) is None
+    )
+    assert research_runs._retry_after_seconds(_switch_failed("0")) is None
+
+
+def test_stream_completion_waits_out_an_in_flight_model_switch(monkeypatch):
+    # A model is loaded, so the local-model probe cannot see the swap; only a re-send can.
+    monkeypatch.setattr(research_runs, "_local_model_ready", lambda: False)
+    delays = _capture_backoff(monkeypatch)
+    sent = _install_fake_client(
+        monkeypatch, [_switch_failed(), _response(200, body = _stream_body())]
+    )
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor) == ("report", "", "stop", None)
+    assert len(sent) == 2
+    # The server asked for 5s; the generic 5xx arm would have re-sent after 1s and refused again.
+    assert sum(delays) == 5.0
+
+
+def test_stream_completion_gives_a_model_switch_more_than_the_generic_backoff(monkeypatch):
+    # The 5xx arm gave up after 3 sends in ~3s, well inside the time a model load takes.
+    monkeypatch.setattr(research_runs, "_local_model_ready", lambda: False)
+    delays = _capture_backoff(monkeypatch)
+    sent = _install_fake_client(monkeypatch, [_switch_failed() for _ in range(6)])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _run_stream(supervisor, timeout_seconds = 900.0)
+    assert len(sent) == research_runs._MAX_MODEL_WAITS + 1
+    # Each wait is longer than the last: a swap that has not finished in 5s needs more, not less.
+    assert sum(delays) == 30.0

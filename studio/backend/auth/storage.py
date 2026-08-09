@@ -524,6 +524,8 @@ def _pbkdf2_desktop_secret(raw_secret: str) -> str:
 # enforced by the SQLite read on every call, so a cache hit only skips the KDF.
 # Only keys present in the DB are cached, so unknown-key spam can't grow it.
 _api_key_hash_cache: dict[str, str] = {}
+# Whether each memoized key was minted internally; set once, since minting decides it.
+_api_key_internal_cache: dict[str, bool] = {}
 _API_KEY_HASH_CACHE_MAX = 4096
 _api_key_hash_cache_lock = threading.Lock()
 
@@ -539,6 +541,7 @@ def _reset_api_key_hash_cache() -> None:
     """Drop memoized derivations (tests / salt change)."""
     with _api_key_hash_cache_lock:
         _api_key_hash_cache.clear()
+        _api_key_internal_cache.clear()
 
 
 def is_initialized() -> bool:
@@ -1093,6 +1096,40 @@ def revoke_internal_api_key(key_id: int) -> bool:
         conn.close()
 
 
+def is_internal_api_key(raw_key: str) -> bool:
+    """Whether *raw_key* is a workflow-minted internal key rather than a user's own.
+
+    Lets request-scoped code (the API monitor) tell Studio's own background work from a
+    third party using Unsloth as an API server. The answer is memoized because this runs on
+    the event loop for every API-key request and a key's origin is fixed when it is minted.
+    """
+    if not raw_key.startswith(API_KEY_PREFIX):
+        return False
+    cache_id = _api_key_cache_id(raw_key)
+    cached_internal = _api_key_internal_cache.get(cache_id)
+    if cached_internal is not None:
+        return cached_internal
+    cached_hash = _api_key_hash_cache.get(cache_id)
+    key_hash = cached_hash if cached_hash is not None else _pbkdf2_api_key(raw_key)
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT is_internal FROM api_keys WHERE key_hash = ?", (key_hash,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return False
+    internal = bool(row["is_internal"])
+    with _api_key_hash_cache_lock:
+        if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:
+            _api_key_hash_cache.clear()
+            _api_key_internal_cache.clear()
+        _api_key_hash_cache[cache_id] = key_hash
+        _api_key_internal_cache[cache_id] = internal
+    return internal
+
+
 def validate_api_key(raw_key: str) -> Optional[str]:
     """Validate *raw_key* and return the owning username, or ``None``."""
     verified = validate_api_key_with_credential(raw_key)
@@ -1125,6 +1162,10 @@ def validate_api_key_with_credential(raw_key: str) -> Optional[Tuple[str, str]]:
             with _api_key_hash_cache_lock:
                 if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:
                     _api_key_hash_cache.clear()
+                    # is_internal_api_key sizes itself against the hash cache, so clearing one
+                    # without the other lets the origin cache grow past the bound. Deep Research
+                    # mints a fresh internal key per model call, so that adds up.
+                    _api_key_internal_cache.clear()
                 _api_key_hash_cache[cache_id] = key_hash
         if not row["is_active"]:
             return None

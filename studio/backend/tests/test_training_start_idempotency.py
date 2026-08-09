@@ -9,7 +9,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from core.training.training import TrainingBackend
+from core.training.training import (
+    _MAX_START_CANCEL_TOMBSTONES,
+    TrainingBackend,
+    TrainingStartCancellationCapacityError,
+)
 from models.training import TrainingStartRequest
 
 
@@ -97,6 +101,102 @@ def test_cancel_before_registration_creates_a_start_tombstone():
     )
     assert reservation == "existing"
     assert duplicate == cancelled
+
+
+def test_cancel_tombstone_survives_later_cancellation_records():
+    backend = TrainingBackend()
+    backend.cancel_start_request("request-before-start")
+
+    for index in range(64):
+        backend.cancel_start_request(f"later-cancellation-{index}")
+
+    reservation, record = backend.reserve_start_request(
+        "request-before-start",
+        "job-must-not-start",
+    )
+
+    assert reservation == "existing"
+    assert record.error_code == "training_start_cancelled"
+
+
+def test_cancel_tombstone_capacity_fails_without_eviction(monkeypatch):
+    import core.training.training as training_module
+
+    monkeypatch.setattr(training_module, "_MAX_START_CANCEL_TOMBSTONES", 2)
+    backend = TrainingBackend()
+    backend.cancel_start_request("request-1")
+    backend.cancel_start_request("request-2")
+
+    with pytest.raises(TrainingStartCancellationCapacityError):
+        backend.cancel_start_request("request-3")
+
+    assert len(backend._start_cancel_tombstones) == 2
+    assert backend.reserve_start_request("request-1", "job-1")[0] == "existing"
+    assert backend.reserve_start_request("request-2", "job-2")[0] == "existing"
+
+
+def test_expired_cancel_tombstone_releases_request_id():
+    backend = TrainingBackend()
+    _, record = backend.cancel_start_request("request-expired")
+    backend._start_cancel_tombstones["request-expired"] = (0.0, record)
+
+    reservation, pending = backend.reserve_start_request("request-expired", "job-new")
+
+    assert reservation == "reserved"
+    assert pending.job_id == "job-new"
+
+
+def test_cancel_tombstone_ttl_refreshes_on_duplicate_cancel(monkeypatch):
+    import core.training.training as training_module
+
+    now = [0.0]
+    monkeypatch.setattr(training_module.time, "monotonic", lambda: now[0])
+    backend = TrainingBackend()
+    backend.cancel_start_request("request-delayed")
+
+    now[0] = 299.0
+    backend.cancel_start_request("request-delayed")
+    now[0] = 301.0
+
+    assert backend.reserve_start_request("request-delayed", "job-must-not-start")[0] == "existing"
+
+
+def test_cancel_tombstone_ttl_refreshes_when_start_arrives(monkeypatch):
+    import core.training.training as training_module
+
+    now = [0.0]
+    monkeypatch.setattr(training_module.time, "monotonic", lambda: now[0])
+    backend = TrainingBackend()
+    backend.cancel_start_request("request-delayed")
+
+    now[0] = 299.0
+    assert backend.reserve_start_request("request-delayed", "job-first-retry")[0] == "existing"
+    now[0] = 301.0
+
+    assert backend.reserve_start_request("request-delayed", "job-second-retry")[0] == "existing"
+
+
+def test_registered_cancel_tombstone_survives_start_request_churn():
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-cancelled", "job-cancelled")
+    backend.cancel_start_request("request-cancelled")
+
+    for index in range(64):
+        request_id = f"later-request-{index}"
+        backend.reserve_start_request(request_id, f"later-job-{index}")
+        backend.resolve_start_request(
+            request_id,
+            state = "rejected",
+            message = "Rejected",
+        )
+
+    reservation, record = backend.reserve_start_request(
+        "request-cancelled",
+        "job-must-not-start",
+    )
+
+    assert reservation == "existing"
+    assert record.error_code == "training_start_cancelled"
 
 
 def test_cancel_pending_start_prevents_worker_spawn():
@@ -339,6 +439,164 @@ def test_cancel_accepted_start_stops_and_resets_only_its_job(monkeypatch):
         ("reset", "job-current"),
     ]
     assert backend.current_start_request_id is None
+
+
+@pytest.mark.parametrize("failure_stage", ["stop", "reset"])
+def test_cancel_accepted_start_releases_tombstone_capacity_after_failure(
+    monkeypatch, failure_stage
+):
+    import core.training.training as training_module
+
+    monkeypatch.setattr(training_module, "_MAX_START_CANCEL_TOMBSTONES", 1)
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-current", "job-current")
+    backend.resolve_start_request(
+        "request-current",
+        state = "accepted",
+        message = "Training queued",
+    )
+    backend.current_start_request_id = "request-current"
+    backend.current_job_id = "job-current"
+    backend._progress.is_training = True
+
+    def stop_training(**_kwargs):
+        if failure_stage == "stop":
+            raise RuntimeError("stop failed")
+        return True
+
+    def reset_training_state(**_kwargs):
+        if failure_stage == "reset":
+            raise RuntimeError("reset failed")
+        return "reset"
+
+    monkeypatch.setattr(backend, "_stop_training_with_lifecycle_reserved", stop_training)
+    monkeypatch.setattr(backend, "reset_training_state", reset_training_state)
+
+    with pytest.raises(RuntimeError, match = f"{failure_stage} failed"):
+        backend.cancel_start_request("request-current")
+
+    assert backend._start_cancel_tombstone_reservations == {}
+    assert backend.cancel_start_request("request-after-failure")[0] == "cancelled"
+
+
+def test_concurrent_duplicate_cancel_returns_the_cancelled_tombstone(monkeypatch):
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-current", "job-current")
+    backend.resolve_start_request(
+        "request-current",
+        state = "accepted",
+        message = "Training queued",
+    )
+    backend.current_start_request_id = "request-current"
+    backend.current_job_id = "job-current"
+    backend._progress.is_training = True
+    stop_entered = threading.Event()
+    release_stop = threading.Event()
+    results = []
+
+    def stop_training(**_kwargs):
+        stop_entered.set()
+        assert release_stop.wait(timeout = 5)
+        return True
+
+    monkeypatch.setattr(backend, "_stop_training_with_lifecycle_reserved", stop_training)
+    monkeypatch.setattr(backend, "reset_training_state", lambda **_kwargs: "reset")
+
+    first = threading.Thread(
+        target = lambda: results.append(backend.cancel_start_request("request-current")),
+        daemon = True,
+    )
+    second = threading.Thread(
+        target = lambda: results.append(backend.cancel_start_request("request-current")),
+        daemon = True,
+    )
+    first.start()
+    assert stop_entered.wait(timeout = 5)
+    second.start()
+    release_stop.set()
+    first.join(timeout = 5)
+    second.join(timeout = 5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert [outcome for outcome, _record in results] == ["cancelled", "cancelled"]
+    assert all(record.error_code == "training_start_cancelled" for _outcome, record in results)
+    assert backend._start_cancel_tombstone_reservations == {}
+
+
+def test_duplicate_cancel_holds_capacity_when_the_first_cancel_fails(monkeypatch):
+    import core.training.training as training_module
+
+    monkeypatch.setattr(training_module, "_MAX_START_CANCEL_TOMBSTONES", 1)
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-current", "job-current")
+    backend.resolve_start_request(
+        "request-current",
+        state = "accepted",
+        message = "Training queued",
+    )
+    backend.current_start_request_id = "request-current"
+    backend.current_job_id = "job-current"
+    backend._progress.is_training = True
+    reset_lock = threading.Lock()
+    reset_calls = 0
+    first_reset_entered = threading.Event()
+    second_reset_entered = threading.Event()
+    first_cancel_finished = threading.Event()
+    allow_second_reset = threading.Event()
+    outcomes = {}
+
+    def reset_training_state(**_kwargs):
+        nonlocal reset_calls
+        with reset_lock:
+            reset_calls += 1
+            call_number = reset_calls
+        if call_number == 1:
+            first_reset_entered.set()
+            assert second_reset_entered.wait(timeout = 5)
+            raise RuntimeError("first reset failed")
+        second_reset_entered.set()
+        assert allow_second_reset.wait(timeout = 5)
+        return "reset"
+
+    def cancel_first():
+        try:
+            backend.cancel_start_request("request-current")
+        except RuntimeError as error:
+            outcomes["first_error"] = str(error)
+        finally:
+            first_cancel_finished.set()
+
+    def cancel_second():
+        outcomes["second"] = backend.cancel_start_request("request-current")
+
+    monkeypatch.setattr(
+        backend,
+        "_stop_training_with_lifecycle_reserved",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(backend, "reset_training_state", reset_training_state)
+    first = threading.Thread(target = cancel_first, daemon = True)
+    second = threading.Thread(target = cancel_second, daemon = True)
+    first.start()
+    assert first_reset_entered.wait(timeout = 5)
+    second.start()
+    assert second_reset_entered.wait(timeout = 5)
+    assert first_cancel_finished.wait(timeout = 5)
+
+    with pytest.raises(TrainingStartCancellationCapacityError):
+        backend.cancel_start_request("request-filler")
+
+    allow_second_reset.set()
+    first.join(timeout = 5)
+    second.join(timeout = 5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert outcomes["first_error"] == "first reset failed"
+    assert outcomes["second"][0] == "cancelled"
+    assert len(backend._start_cancel_tombstones) == 1
+    assert backend._start_cancel_tombstone_reservations == {}
 
 
 def test_cancel_rejected_start_still_stops_its_owned_worker(monkeypatch):
@@ -588,6 +846,30 @@ def test_cancel_start_route_returns_the_scoped_rejection():
     assert response.error_code == "training_start_cancelled"
 
 
+def test_cancel_start_route_reports_tombstone_capacity():
+    route = _load_training_route("training_route_cancel_capacity_test")
+
+    def reject_cancel(_start_request_id):
+        raise TrainingStartCancellationCapacityError(
+            "Too many training start cancellations are pending"
+        )
+
+    backend = SimpleNamespace(cancel_start_request = reject_cancel)
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
+        pytest.raises(route.HTTPException) as exc_info,
+    ):
+        asyncio.run(
+            route.cancel_training_start_request(
+                "request-cancel",
+                current_subject = "test-user",
+            )
+        )
+
+    assert exc_info.value.status_code == 429
+
+
 def test_cancelled_route_during_spawn_keeps_the_worker_result_authoritative():
     route = _load_training_route("training_route_cancelled_start_test")
     backend = TrainingBackend()
@@ -673,6 +955,7 @@ def test_cancelled_route_during_spawn_keeps_the_worker_result_authoritative():
 
     with (
         patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route, "_hub_unreachable", return_value = False),
         patch.object(route, "_remote_untrainable_model_format", return_value = None),
         patch.object(route, "_preflight_hf_dataset_request", new = lambda request: None),
         patch.object(route, "load_model_defaults", return_value = {}),
@@ -687,3 +970,96 @@ def test_cancelled_route_during_spawn_keeps_the_worker_result_authoritative():
     assert record.state == "accepted"
     assert backend.current_job_id == record.job_id
     assert backend.is_training_active() is True
+
+
+def test_owner_can_cancel_its_active_start_when_tombstone_capacity_is_full():
+    """Exhausted unknown-request tombstone capacity must not make the currently active
+    start uncancellable: the UI's Stop button routes to /start-requests/{id}/cancel while
+    a start request owns the run, so a 429 there would leave the worker running."""
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-owned", "job-owned")
+    backend.resolve_start_request(
+        "request-owned",
+        state = "accepted",
+        message = "Training queued",
+    )
+    backend.current_start_request_id = "request-owned"
+    backend.current_job_id = "job-owned"
+    backend._progress.is_training = True
+
+    calls = []
+    backend._stop_training_with_lifecycle_reserved = (
+        lambda **kwargs: calls.append(("stop", kwargs)) or True
+    )
+    backend.reset_training_state = (
+        lambda expected_job_id = None: calls.append(("reset", expected_job_id)) or "reset"
+    )
+
+    for index in range(_MAX_START_CANCEL_TOMBSTONES):
+        backend.cancel_start_request(f"unknown-{index}")
+    assert len(backend._start_cancel_tombstones) == _MAX_START_CANCEL_TOMBSTONES
+
+    # Unregistered ids still hit the hard cap ...
+    with pytest.raises(TrainingStartCancellationCapacityError):
+        backend.cancel_start_request("unknown-overflow")
+
+    # ... but the owner of the active start reclaims a slot and really stops the run.
+    outcome, record = backend.cancel_start_request("request-owned")
+
+    assert outcome == "cancelled"
+    assert record.error_code == "training_start_cancelled"
+    assert calls == [
+        ("stop", {"save": False, "expected_job_id": "job-owned"}),
+        ("reset", "job-owned"),
+    ]
+    assert backend.current_start_request_id is None
+    # The owner overshoots the cap by its own slot rather than evicting a live cancellation.
+    assert len(backend._start_cancel_tombstones) <= _MAX_START_CANCEL_TOMBSTONES + 1
+    assert backend._start_cancel_tombstone_reservations == {}
+
+
+def test_owner_cancel_at_capacity_keeps_other_live_cancellations():
+    """Reclaiming a slot by evicting the soonest-expiring tombstone would forget a live
+    cancellation, so a delayed /start for that id could spawn the job we just cancelled.
+    The owner overshoots the cap instead; there is only ever one active start."""
+    backend = TrainingBackend()
+    backend.cancel_start_request("victim-race")  # cancel-before-start race
+    backend.reserve_start_request("owner", "job-owner")
+    backend.resolve_start_request("owner", state = "accepted", message = "Training queued")
+    backend.current_start_request_id = "owner"
+    backend.current_job_id = "job-owner"
+    backend._progress.is_training = True
+    backend._stop_training_with_lifecycle_reserved = lambda **kwargs: True
+    backend.reset_training_state = lambda expected_job_id = None: "reset"
+
+    while len(backend._start_cancel_tombstones) < _MAX_START_CANCEL_TOMBSTONES:
+        backend.cancel_start_request(f"unknown-{len(backend._start_cancel_tombstones)}")
+
+    outcome, _ = backend.cancel_start_request("owner")
+
+    assert outcome == "cancelled"
+    assert "victim-race" in backend._start_cancel_tombstones
+    # The delayed start for the cancelled id must not spawn.
+    assert backend.reserve_start_request("victim-race", "job-victim")[0] == "existing"
+    # Unregistered ids keep hitting the hard cap.
+    with pytest.raises(TrainingStartCancellationCapacityError):
+        backend.cancel_start_request("stranger")
+
+
+def test_pending_cancels_cannot_grow_the_tombstone_table_past_the_cap():
+    """Only the owner of the active run gets the over-cap slot. A pending request is not it,
+    so start-then-cancel cannot be repeated to grow the table without bound."""
+    backend = TrainingBackend()
+    for index in range(_MAX_START_CANCEL_TOMBSTONES):
+        backend.cancel_start_request(f"unknown-{index}")
+
+    refused = 0
+    for index in range(50):
+        backend.reserve_start_request(f"pending-{index}", f"job-{index}")
+        try:
+            backend.cancel_start_request(f"pending-{index}")
+        except TrainingStartCancellationCapacityError:
+            refused += 1
+
+    assert refused >= 1
+    assert len(backend._start_cancel_tombstones) <= _MAX_START_CANCEL_TOMBSTONES

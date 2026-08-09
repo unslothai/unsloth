@@ -188,6 +188,10 @@ def test_installer_decision_stops_active_process_and_allows_idle(tmp_path: Path,
     script = f"""
 $ErrorActionPreference = "Stop"
 {_process_helpers(source)}
+# The block names the blocking processes through install.ps1's UTF-8 stdout sink
+# before it hands off to Exit-InstallFailure. Unstubbed that is a command-not-found
+# terminating error under "Stop", so the active case never reaches RESULT:blocked.
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) Write-Host $Message }}
 function Exit-InstallFailure {{
     param([string]$Message)
     return "blocked"

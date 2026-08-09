@@ -26,6 +26,23 @@ def _read(rel: str) -> str:
     return path.read_text(encoding = "utf-8")
 
 
+def _split_args(captured: str) -> list[str]:
+    """Split on top-level commas only, so `loadSpecFor(wanted, CATALOG)` survives."""
+    args, depth, current = [], 0, ""
+    for char in captured:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        if char == "," and depth == 0:
+            args.append(current)
+            current = ""
+        else:
+            current += char
+    args.append(current)
+    return args
+
+
 def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
@@ -107,7 +124,13 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert "onDismiss:" in auto_load
     # Terminal success uses a fresh finite toast after manual progress dismissal.
     assert "showAutoLoadSuccess" in auto_load
-    assert "description: undefined" in auto_load
+    # No description on the ordinary path. It stopped being the literal
+    # `description: undefined` when the CPU-fallback branch was added, so pin the
+    # branch and its undefined arm rather than one spelling of the old constant.
+    success_toast = auto_load.split("const showAutoLoadSuccess", 1)[1]
+    success_toast = success_toast.split("};", 1)[0]
+    assert "description: cpuFallbackReason" in success_toast
+    assert ": undefined," in success_toast
     assert "icon: undefined" in auto_load
     assert "duration: 5000" in auto_load
     assert "duration: 30000" not in auto_load
@@ -1065,11 +1088,19 @@ def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
         ("features/video/video-page.tsx", "VIDEO_CATALOG"),
     ):
         src = _read(rel)
-        call = re.search(
-            r"diffusionRoutePick\(\s*wanted,\s*routeSearch\.quant,\s*(.*?),?\s*\);", src, re.S
-        )
-        assert call, f"{rel}: the routed pick passes no spec"
-        assert f"loadSpecFor(wanted, {catalog})" in call.group(1), rel
+        # The middle argument, the routed filename, has been respelled more than once;
+        # only the third is load-bearing, so do not pin the second.
+        call = re.search(r"diffusionRoutePick\(\s*wanted,\s*(.*?),?\s*\);", src, re.S)
+        assert call, f"{rel}: the routed pick does not go through diffusionRoutePick"
+        # By position, not by presence: `diffusionRoutePick(wanted, routedFilename ??
+        # loadSpecFor(wanted, IMAGE_CATALOG)?.filename)` type-checks, passes the spec's
+        # filename as the quant, drops the spec, and would pass a substring check while
+        # curated single-file artifacts load as GGUF.
+        args = _split_args(call.group(1))
+        assert len(args) >= 2, f"{rel}: the routed pick passes no spec argument"
+        assert (
+            f"loadSpecFor(wanted, {catalog})" in args[1]
+        ), f"{rel}: the routed pick passes no catalog spec"
 
 
 def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
@@ -1091,15 +1122,19 @@ def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
 
 
 def test_diffusion_pages_never_drop_a_gguf_pick_silently():
-    """The fallback branch splits a local path; a repo pick reaching it has no
-    filename. It must say so instead of returning with no request and no toast."""
+    """The fallback branch splits a local path, so a repo pick reaching it has no
+    filename. It used to error; it now resolves the repo's own .gguf. Either way the
+    branch must act: returning with no request and no toast drops the pick."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         branch = re.search(
-            r'if \(!filename\.toLowerCase\(\)\.endsWith\("\.gguf"\)\) \{.*?\}', src, re.S
+            r'if \(!filename\.toLowerCase\(\)\.endsWith\("\.gguf"\)\) \{.*?\n        \}', src, re.S
         )
         assert branch, f"{rel}: gguf extension guard not found"
-        assert "toast.error(" in branch.group(0), f"{rel}: guard returns silently"
+        body = branch.group(0)
+        assert (
+            "toast.error(" in body or "loadGgufRepoPick(" in body
+        ), f"{rel}: guard returns silently"
 
 
 def test_diffusion_pages_stage_downloads_through_the_manager():
@@ -1131,13 +1166,31 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         assert "if (!active)" in ready.group(0), f"{rel}: a hidden page still takes the GPU"
         # Deferred, not dropped: something has to fire the held pick when the page returns.
         assert "stagedLoadDeferred" in ready.group(0), f"{rel}: the pick is discarded"
+        # The deps array grew when the load body moved into runStagedLoad, so match the
+        # effect by its guard and check the deps separately. Keying the boundary on
+        # `[active` instead lets a reordered array run the match on into the next hook,
+        # where loadOrStage's own handleLoadRef call satisfies the loader assertion below
+        # for a flush that loads nothing.
         flush = re.search(
-            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[active\]\);",
+            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;(.*?)\n  \}, \[([^\]]*)\]\);",
             src,
             re.S,
         )
         assert flush, f"{rel}: nothing flushes the deferred load when the page is shown"
-        assert "handleLoadRef.current(" in flush.group(0), f"{rel}: deferred load never runs"
+        deps = [dep.strip() for dep in flush.group(2).split(",")]
+        assert "active" in deps, f"{rel}: the flush does not re-run when the page is shown"
+        body = flush.group(1)
+        # Loading directly or through the visible path's helper is fine; clearing the
+        # flag and stopping is not.
+        assert (
+            "runStagedLoad()" in body or "handleLoadRef.current(" in body
+        ), f"{rel}: deferred load never runs"
+        if "runStagedLoad()" in body:
+            runner = re.search(r"const runStagedLoad = useCallback\(.*?\n  \}, \[", src, re.S)
+            assert runner, f"{rel}: runStagedLoad not found"
+            assert "handleLoadRef.current(" in runner.group(
+                0
+            ), f"{rel}: runStagedLoad loads nothing"
 
 
 def test_staged_downloads_always_scope_their_files():
@@ -1870,7 +1923,8 @@ def test_backfill_compares_server_keys_by_normalized_identity():
 
 def test_monitor_stats_exclude_model_lifecycle_rows():
     """A load, unload or download is recorded as a monitor entry but is not an HTTP call."""
-    src = " ".join(_read("features/api-monitor/use-api-monitor.ts").split())
+    # computeStats lives in stats.ts so it runs under `node --test`; the hook re-exports it.
+    src = " ".join(_read("features/api-monitor/stats.ts").split())
     assert 'if (entry.kind === "lifecycle") { continue; }' in src
     # "Requests" is a request count too, so it cannot stay entries.length.
     assert "total: requests," in src

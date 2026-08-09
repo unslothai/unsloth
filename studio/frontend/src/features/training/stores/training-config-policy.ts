@@ -83,6 +83,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
   datasetSplit: null,
   datasetEvalSplit: null,
   datasetStreaming: false,
+  manualDatasetOptionsValid: true,
   datasetManualMapping: emptyManualMapping(),
   datasetSystemPrompt: "",
   datasetLabelMapping: {},
@@ -126,7 +127,9 @@ export function canProceedForTrainingStep(state: TrainingConfigState): boolean {
         return validateS3Source(state).ok;
       }
       return (
-        state.dataset !== null && !requiresExplicitCachedDatasetSplit(state)
+        state.dataset !== null &&
+        state.manualDatasetOptionsValid &&
+        !requiresExplicitCachedDatasetSplit(state)
       );
     }
     case 4:

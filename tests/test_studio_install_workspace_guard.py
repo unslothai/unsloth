@@ -628,8 +628,11 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
         "gen() {\n"
         '    if [ ! -s "$_css_id_file" ]; then\n'
         '        _css_new_id=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d " \\n")\n'
-        '        printf "%s" "$_css_new_id" > "$_css_id_file.$$.tmp"\n'
-        '        mv "$_css_id_file.$$.tmp" "$_css_id_file"\n'
+        '        _t="$_css_id_file.$$.tmp"\n'
+        '        printf "%s" "$_css_new_id" > "$_t"\n'
+        '        ln "$_t" "$_css_id_file" 2>/dev/null \\\n'
+        '            || { [ -s "$_css_id_file" ] || mv "$_t" "$_css_id_file"; }\n'
+        '        rm -f "$_t"\n'
         "    fi\n"
         '    cat "$_css_id_file"\n'
         "}\n"
@@ -647,11 +650,120 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
     ), f"id must be lowercase hex, got {out.get('ID')!r}"
 
 
+def test_install_sh_publishes_the_id_without_clobbering():
+    """install.sh must publish the id no-clobber, so it cannot replace one the desktop app minted."""
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    fn_start = src.index('_css_id_dir="$STUDIO_HOME/share"')
+    block = src[fn_start : fn_start + 2400]
+    assert (
+        'ln "$_css_id_tmp" "$_css_id_file"' in block
+    ), "install.sh must publish the id with ln (EEXIST on a race), not a clobbering mv"
+    assert 'mv "$_css_id_tmp" "$_css_id_file"' not in block.replace(
+        '[ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"', ""
+    ), "the only remaining mv must be the no-hard-link fallback, guarded on the destination"
+    assert (
+        '[ -s "$_css_id_file" ] || mv' in block
+    ), "the mv branch must refuse to replace a usable incumbent id"
+    assert (
+        'rm -f "$_css_id_file"' not in block
+    ), "never unlink the id: an unlink opens a window where a valid id is deleted"
+    assert 'rm -f "$_css_id_tmp"' in block, "the temp sibling must not be left behind"
+
+
+def test_install_sh_id_publish_adopts_the_winner_of_a_race(tmp_path):
+    """A second writer must adopt the id already on disk, never replace it."""
+    studio_home = tmp_path / "studio"
+    (studio_home / "share").mkdir(parents = True)
+    id_file = studio_home / "share" / "studio_install_id"
+    incumbent = "a" * 64
+    id_file.write_text(incumbent, encoding = "utf-8")
+
+    # Replicate the publish step with the guard removed, so only the publication
+    # primitive decides the outcome: a clobbering mv would overwrite the incumbent.
+    publish = (
+        f'_css_id_file="{id_file}"\n'
+        '_css_id_tmp="$_css_id_file.$$.tmp"\n'
+        '_css_new_id="' + "b" * 64 + '"\n'
+        'printf "%s" "$_css_new_id" > "$_css_id_tmp"\n'
+        'if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then\n'
+        '    [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"\n'
+        "fi\n"
+        'rm -f "$_css_id_tmp"\n'
+        'cat "$_css_id_file"\n'
+    )
+    res = subprocess.run(["sh", "-c", publish], text = True, capture_output = True)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == incumbent, "the incumbent id must survive a concurrent publish"
+    leftovers = [p.name for p in (studio_home / "share").iterdir() if p.name != "studio_install_id"]
+    assert not leftovers, f"temp files must be cleaned up, found {leftovers}"
+
+
+def test_install_sh_id_publish_replaces_a_blank_incumbent(tmp_path):
+    """A zero-length id is an interrupted write: it must be replaced, never adopted.
+
+    Adopting it would bake an empty $_ExpectedStudioRootId into the launcher, which
+    permanently skips the ownership comparison in Test-StudioHealth.
+    """
+    studio_home = tmp_path / "studio"
+    (studio_home / "share").mkdir(parents = True)
+    id_file = studio_home / "share" / "studio_install_id"
+    id_file.write_text("", encoding = "utf-8")
+    fresh = "c" * 64
+
+    publish = (
+        f'_css_id_file="{id_file}"\n'
+        f'_css_new_id="{fresh}"\n'
+        '_css_id_tmp="$_css_id_file.$$.$(printf "%.8s" "$_css_new_id").tmp"\n'
+        'printf "%s" "$_css_new_id" > "$_css_id_tmp"\n'
+        'if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then\n'
+        '    [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"\n'
+        "fi\n"
+        'rm -f "$_css_id_tmp"\n'
+        'cat "$_css_id_file"\n'
+    )
+    res = subprocess.run(["sh", "-c", publish], text = True, capture_output = True)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == fresh, "a blank id must be replaced, not adopted"
+
+
+def test_install_ps1_publishes_the_id_without_clobbering():
+    """install.ps1 must publish no-clobber and adopt the winner, since it never re-reads the file."""
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    idx = src.index('$_studioIdFile = Join-Path $_studioIdDir "studio_install_id"')
+    block = src[idx : idx + 3200]
+    assert (
+        "[System.IO.File]::Move($_idTmp, $_studioIdFile)" in block
+    ), "install.ps1 must use the two-arg File.Move, which throws when the destination exists"
+    # -Force may only appear AFTER the no-clobber attempt, as the branch that
+    # replaces a blank incumbent. As the primary publish it would clobber an id
+    # the desktop app may already have handed to a running backend.
+    _force = "Move-Item -LiteralPath $_idTmp -Destination $_studioIdFile -Force"
+    assert block.index("[System.IO.File]::Move($_idTmp, $_studioIdFile)") < block.index(
+        _force
+    ), "the no-clobber File.Move must be attempted before any -Force fallback"
+    assert (
+        "catch [System.IO.IOException]" in block
+    ), "install.ps1 must catch the destination-exists IOException"
+    assert (
+        "$_adoptedRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()"
+        in block[block.index("catch [System.IO.IOException]") :]
+    ), "on a lost race install.ps1 must adopt the winner's id, since it never re-reads it later"
+    assert (
+        "$_studioRootId = $_adoptedRootId" in block
+    ), "the adopted id must become the value baked into the launcher"
+    assert (
+        "if ($_adoptedRootId)" in block
+    ), "install.ps1 must only adopt a non-empty id, so a blank one cannot become the expected id"
+    assert (
+        "Remove-Item -LiteralPath $_studioIdFile" not in block
+    ), "never unlink the id: an unlink opens a window where a valid id is deleted"
+
+
 def test_install_sh_create_shortcuts_fails_fast_when_no_entropy():
     """With no entropy source, _create_shortcuts must `return 1` not bake an empty studio_root_id."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     fn_start = src.index('_css_data_dir="$DATA_DIR"')
-    block = src[fn_start : fn_start + 3000]
+    block = src[fn_start : fn_start + 4200]
     assert (
         "[WARN] Cannot create launcher: no entropy source for studio_install_id" in block
     ), "install.sh must warn when neither urandom nor python3 is available"
@@ -886,7 +998,7 @@ def test_install_ps1_install_id_file_layout_matches_backend_read_path():
     """install.ps1 must write the id at share/studio_install_id where the backend reads it, idempotently."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     id_idx = src.index('$_studioIdDir = Join-Path $StudioHome "share"')
-    context = src[id_idx : id_idx + 1500]
+    context = src[id_idx : id_idx + 2400]
     assert (
         '$_studioIdFile = Join-Path $_studioIdDir "studio_install_id"' in context
     ), "install.ps1 must persist the id at $StudioHome\\share\\studio_install_id"
@@ -897,5 +1009,5 @@ def test_install_ps1_install_id_file_layout_matches_backend_read_path():
         "RandomNumberGenerator" in context and "GetBytes($_idBytes)" in context
     ), "install.ps1 must seed new ids from a CSPRNG (RandomNumberGenerator)"
     assert (
-        "Move-Item -LiteralPath $_idTmp" in context
+        "[System.IO.File]::Move($_idTmp, $_studioIdFile)" in context
     ), "install.ps1 must atomic-rename the temp file into place to avoid half-written ids"

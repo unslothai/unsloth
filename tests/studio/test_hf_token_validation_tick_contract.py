@@ -309,11 +309,14 @@ def test_training_start_aborts_when_semantic_config_or_token_changes():
     assert "payload.model_local_path =" not in snapshot
     assert "payload.dataset_known_cached =" not in snapshot
     assert "payload.dataset_local_path =" not in snapshot
-    assert "normalizeTrainingStartPayloadForComparison(" in snapshot
+    # The identity shape now lives in createTrainingStartInputIdentity, so assert the
+    # snapshot delegates to it and that the identity still normalizes and carries the flags.
+    assert "createTrainingStartInputIdentity(" in snapshot
+    assert "normalizeTrainingStartPayloadForComparison(" in start_inputs
     assert "isUntrainableModelFormat(payload.model_format)" in start_inputs
-    assert "modelType: config.modelType" in snapshot
-    assert "isVisionModel: config.isVisionModel" in snapshot
-    assert "isAudioModel: config.isAudioModel" in snapshot
+    assert "modelType: config.modelType" in start_inputs
+    assert "isVisionModel: config.isVisionModel" in start_inputs
+    assert "isAudioModel: config.isAudioModel" in start_inputs
     assert "useTrainingConfigStore.getState() === this.expectedConfig" not in source
 
     token_acceptance = source.split("acceptPreparedHfToken(token: string | null): boolean", 1)[
@@ -409,7 +412,9 @@ def test_superseded_start_cleanup_scopes_both_backend_mutations():
     reset_transport = api.split("export async function resetTraining", 1)[1].split(
         "export async function getTrainingStatus", 1
     )[0]
-    assert "const hasScope = scope?.expectedJobId !== undefined" in reset_transport
+    # The scope is no longer conditional: resetTraining takes a RequiredTrainingJobScope
+    # and always sends the body, which is strictly stronger than the old hasScope branch.
+    assert "scope: RequiredTrainingJobScope" in reset_transport
     assert "body: scopedTrainingBody({}, scope)" in reset_transport
 
 

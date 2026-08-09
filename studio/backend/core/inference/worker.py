@@ -27,6 +27,11 @@ from typing import Any
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
+# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
 _SHARE_OBJECT_ERROR_SIZE = -1
 
@@ -270,11 +275,24 @@ def _run_security_gates(
     # False, so check HF's security scan every load (for a LoRA, the base deserializes).
     from utils.security import evaluate_file_security
 
+    from utils.security import load_scan_target
+
     if compute_subdirs:
         from utils.security import security_load_subdirs
 
-    for target in targets:
-        _subdirs = security_load_subdirs(target, hf_token) if compute_subdirs else ()
+    scoped_targets: list[str] = []
+    consent_load_subdirs: dict[str, tuple] = {}
+    for requested_target in targets:
+        _subdirs = security_load_subdirs(requested_target, hf_token) if compute_subdirs else ()
+        target, _subdirs = load_scan_target(requested_target, _subdirs)
+        if target not in consent_load_subdirs:
+            scoped_targets.append(target)
+            consent_load_subdirs[target] = ()
+        _subdirs = tuple(dict.fromkeys((*consent_load_subdirs[target], *_subdirs)))
+        consent_load_subdirs[target] = _subdirs
+
+    for target in scoped_targets:
+        _subdirs = consent_load_subdirs[target]
         _fs = evaluate_file_security(target, hf_token = hf_token, load_subdirs = _subdirs)
         if _fs.blocked:
             _send_response(
@@ -294,11 +312,12 @@ def _run_security_gates(
     if trust_remote_code:
         from utils.security import evaluate_remote_code_consent_for_targets
         _rc = evaluate_remote_code_consent_for_targets(
-            targets,
+            scoped_targets,
             hf_token = hf_token,
             trust_remote_code = True,
             approved_fingerprint = approved_fingerprint,
             subject = subject,
+            load_subdirs_by_target = consent_load_subdirs,
         )
         if _rc.blocked:
             _send_response(
@@ -1068,8 +1087,7 @@ def run_inference_process(
         return
 
     # ── Windows: check Triton availability ──
-    # Placed ahead of the torchao stub below (which imports torch on win32 to detect ROCm),
-    # matching the training and export workers' gate-then-stub ordering.
+    # Ahead of the torchao stub below, matching the training and export workers' gate-then-stub order.
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401

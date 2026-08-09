@@ -125,6 +125,7 @@ backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
+# First, so these vars land before anything below can size an OpenMP/BLAS pool. Imports stdlib only.
 from utils.cpu_threads import configure_cpu_threads
 
 try:
@@ -132,6 +133,17 @@ try:
 except ValueError as exc:
     configured = os.environ.get("UNSLOTH_CPU_THREADS")
     raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}") from None
+
+# Windows ROCm ships no distributed backend, so torchao and the CUDA-only xformers both die on import,
+# taking diffusers/transformers with them. A stub only seeds a name nothing has imported yet, so both
+# must precede the first import below. No-op on other runtimes.
+from core._torchao_stub import (
+    install_torchao_windows_rocm_stub,
+    install_xformers_windows_rocm_stub,
+)
+
+install_xformers_windows_rocm_stub()
+install_torchao_windows_rocm_stub()
 
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before imports
 # that trigger attrs -> rich -> structlog -> platform crash.

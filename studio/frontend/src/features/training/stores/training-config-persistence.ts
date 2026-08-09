@@ -39,6 +39,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "isDatasetImage",
     "isDatasetAudio",
     "datasetCheckFailed",
+    "manualDatasetOptionsValid",
     "trainOnCompletionsDefaultPendingFor",
     "maxPositionEmbeddings",
     "s3Config",

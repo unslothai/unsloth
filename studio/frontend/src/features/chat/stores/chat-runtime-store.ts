@@ -14,6 +14,7 @@ import { create } from "zustand";
 import {
   GPU_LAYERS_AUTO,
   recoverDroppedDiffusionSplit,
+  shouldHydrateGpuPlacementControls,
 } from "../lib/gpu-placement";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
@@ -682,6 +683,7 @@ export function loadedGpuMemoryFields(resp: {
   is_diffusion?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
+  cpu_fallback_reason?: "vulkan_startup_crash" | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
@@ -706,6 +708,7 @@ export function loadedGpuMemoryFields(resp: {
       loadedGpuIds: null,
       loadedGpuIndexKind: null,
       loadedGpuMemoryMode: null,
+      loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
       nCpuMoe: 0,
@@ -717,6 +720,9 @@ export function loadedGpuMemoryFields(resp: {
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
+  const hydratePlacementControls = shouldHydrateGpuPlacementControls(
+    resp.cpu_fallback_reason,
+  );
   // Keep the user's placement pool editable across status/load hydration.
   // gpu_ids remains the effective fitted subset for diagnostics.
   const reportedGpuIds = requestedGpuIdsFromResponse(resp);
@@ -750,9 +756,13 @@ export function loadedGpuMemoryFields(resp: {
           loadedGpuLayers: resp.gpu_layers ?? null,
           loadedNCpuMoe: resp.n_cpu_moe ?? null,
           loadedSplitRatio: resp.tensor_split ?? null,
-          gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
-          nCpuMoe: resp.n_cpu_moe ?? 0,
-          splitRatio: resp.tensor_split ?? null,
+          ...(hydratePlacementControls
+            ? {
+                gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
+                nCpuMoe: resp.n_cpu_moe ?? 0,
+                splitRatio: resp.tensor_split ?? null,
+              }
+            : {}),
         }
       : {
           loadedGpuLayers: null,
@@ -779,12 +789,15 @@ export function loadedGpuMemoryFields(resp: {
     // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert standing
     // manual preference must survive it. But "manual" means a split was actually applied
     // (#7574): adopt it, or a refresh hydrates back to "auto" while the runner serves one.
-    ...(resp.is_diffusion && mode !== "manual"
-      ? droppedSplit != null
-        ? { gpuMemoryMode: "manual" as const }
-        : {}
-      : { gpuMemoryMode: mode }),
+    ...(hydratePlacementControls
+      ? resp.is_diffusion && mode !== "manual"
+        ? droppedSplit != null
+          ? { gpuMemoryMode: "manual" as const }
+          : {}
+        : { gpuMemoryMode: mode }
+      : {}),
     loadedGpuMemoryMode: mode,
+    loadedCpuFallback: resp.cpu_fallback_reason === "vulkan_startup_crash",
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
@@ -897,6 +910,14 @@ type ChatRuntimeStore = {
   // lets the attach gates flag a failed load vs "no model picked".
   lastModelLoadError: string | null;
   activeGgufVariant: string | null;
+  /**
+   * What /api/inference/status says is resident, as opposed to what the picker
+   * has selected. undefined until the first status read, so the header does not
+   * flash "not loaded" before anything is known. Loading an image or video
+   * model evicts the chat model (one GPU owner at a time), which is otherwise
+   * invisible here: the selection survives it.
+   */
+  residentCheckpoint: string | null | undefined;
   /** Whether the backend loaded the active model from a filesystem path. */
   activeModelIsLocal: boolean;
   ggufContextLength: number | null;
@@ -1083,6 +1104,8 @@ type ChatRuntimeStore = {
   gpuMemoryMode: "auto" | "manual";
   /** Backend-reported gpu memory mode; null until first hydrated. */
   loadedGpuMemoryMode: "auto" | "manual" | null;
+  /** The active model must use the staged CPU-only runtime when it is reloaded. */
+  loadedCpuFallback: boolean;
   /** Manual mode: layers to offload to GPU. -1 = Auto (--fit); >= model layer
    *  count = all. */
   gpuLayers: number;
@@ -1542,6 +1565,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
+  residentCheckpoint: undefined,
   activeModelIsLocal: false,
   ggufContextLength: null,
   ggufMaxContextLength: null,
@@ -1633,6 +1657,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedTensorParallel: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
   loadedGpuMemoryMode: null,
+  loadedCpuFallback: false,
   gpuLayers: GPU_LAYERS_AUTO,
   loadedGpuLayers: null,
   nCpuMoe: 0,
@@ -2036,6 +2061,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpoint: "",
       },
       activeGgufVariant: null,
+      // Nothing is picked, so there is nothing for residency to describe. Back
+      // to unknown rather than null: null would be read as "was evicted".
+      residentCheckpoint: undefined,
       activeModelIsLocal: false,
       activeLoadId: null,
       activeNativePathToken: null,
@@ -2095,6 +2123,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Standing preference: survives unload, unlike the per-model knobs above.
       gpuMemoryMode: readPersistedGpuMemoryMode(),
       loadedGpuMemoryMode: null,
+      loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
       nCpuMoe: 0,

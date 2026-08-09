@@ -10,9 +10,20 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
     };
   }
   if (state.status === "attach") {
+    // Only documents are indexed; images ride the next message, so mixed says both.
+    const description =
+      state.kind === "images"
+        ? "Attached to your next message."
+        : state.kind === "mixed"
+          ? "Documents indexed, images attached to your next message."
+          : "Indexed for this chat.";
+    const noun = state.kind === "images" ? "image" : "file";
     return {
-      title: state.count === 1 ? "Drop to attach file" : `Drop to attach ${state.count} files`,
-      description: "Indexed for this chat.",
+      title:
+        state.count === 1
+          ? `Drop to attach ${noun}`
+          : `Drop to attach ${state.count} ${noun}s`,
+      description,
     };
   }
   if (state.status === "valid" && state.action === "replace") {

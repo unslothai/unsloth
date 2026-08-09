@@ -238,6 +238,22 @@ def test_cached_auto_eval_excludes_training_split():
     assert local_calls == []
 
 
+def test_cached_auto_eval_excludes_every_split_in_training_instruction():
+    local_calls: list[str] = []
+
+    result = _auto_detect_eval(
+        SimpleNamespace(),
+        "org/dataset",
+        None,
+        available_splits = ["train", "validation", "test"],
+        split_loader = lambda split: local_calls.append(split) or _SizedDataset(20),
+        excluded_split = ("train", "validation"),
+    )
+
+    assert isinstance(result, _SizedDataset)
+    assert local_calls == ["test"]
+
+
 def test_cached_auto_eval_propagates_loader_failure_for_exact_resume():
     def fail_load(_split):
         raise FileNotFoundError("validation")
@@ -481,7 +497,7 @@ def test_first_remote_train_load_records_exact_dataset_snapshot(monkeypatch, tmp
         }
     }
 
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "core.training.trainer.load_dataset",
         lambda **_kwargs: train,
@@ -514,7 +530,7 @@ def test_manual_eager_slice_attests_original_hub_stream(monkeypatch, tmp_path):
         take = lambda _count: [{"text": "example"}],
     )
 
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "core.training.trainer.load_dataset",
         lambda **kwargs: stream
