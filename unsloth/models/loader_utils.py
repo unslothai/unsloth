@@ -323,7 +323,7 @@ def _prefer_legacy_lowercase_cache(
             )
             or all(
                 os.path.isfile(os.path.join(snapshot, filename))
-                for filename in ("vocab-src.json", "vocab-tgt.json")
+                for filename in ("vocab-src.json", "vocab-tgt.json", "merges.txt")
             )
             or has_tiktoken
         )
@@ -358,16 +358,28 @@ def _prefer_legacy_lowercase_cache(
             for architecture in architectures
             if isinstance(architecture, str)
         )
-        if (
+        processor_required = (
             is_vlm
             and require_processor
             and not (can_load_text_only and can_load_text_only(cache_config))
-            and not any(
+        )
+        if processor_required:
+            if not any(
                 os.path.isfile(os.path.join(snapshot, filename))
                 for filename in ("processor_config.json", "preprocessor_config.json")
+            ):
+                return False
+            model_type = (
+                cache_config.get("model_type")
+                if isinstance(cache_config, dict)
+                else getattr(cache_config, "model_type", None)
             )
-        ):
-            return False
+            if (
+                transformers_version >= Version("4.52.0")
+                and model_type in ("qwen2_5_vl", "qwen3_vl", "qwen3_vl_moe")
+                and not os.path.isfile(os.path.join(snapshot, "video_preprocessor_config.json"))
+            ):
+                return False
 
         if trust_remote_code:
             import ast
@@ -380,8 +392,16 @@ def _prefer_legacy_lowercase_cache(
                     if isinstance(auxiliary_config, dict)
                     else getattr(auxiliary_config, "auto_map", None)
                 ) or {}
-                references = auto_map.values() if isinstance(auto_map, dict) else ()
-                for reference in references:
+                entries = auto_map.items() if isinstance(auto_map, dict) else ()
+                for auto_class, reference in entries:
+                    if not isinstance(auto_class, str):
+                        continue
+                    if not require_tokenizer and "Tokenizer" in auto_class:
+                        continue
+                    if not processor_required and any(
+                        name in auto_class for name in ("Processor", "FeatureExtractor")
+                    ):
+                        continue
                     candidates = reference if isinstance(reference, (list, tuple)) else (reference,)
                     for candidate in candidates:
                         if (
@@ -395,12 +415,19 @@ def _prefer_legacy_lowercase_cache(
 
             if model_config is not None:
                 _add_auto_map_modules(model_config)
-            config_names = (
-                "config.json",
-                "tokenizer_config.json",
-                "processor_config.json",
-                "preprocessor_config.json",
-            )
+            config_names = []
+            if require_config:
+                config_names.append("config.json")
+            if require_tokenizer:
+                config_names.append("tokenizer_config.json")
+            if processor_required:
+                config_names.extend(
+                    (
+                        "processor_config.json",
+                        "preprocessor_config.json",
+                        "video_preprocessor_config.json",
+                    )
+                )
             for config_name in config_names:
                 try:
                     with open(os.path.join(snapshot, config_name), encoding = "utf-8") as file:

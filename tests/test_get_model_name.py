@@ -329,6 +329,27 @@ class TestGetModelName(unittest.TestCase):
             self.assertEqual(get_model_name("Qwen/Qwen2.5-VL-3B-Instruct", **kwargs), canonical)
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_video_vlm_cache_requires_video_processor_artifacts(self):
+        if loader_utils.transformers_version < loader_utils.Version("4.52.0"):
+            self.skipTest("separate video processors require transformers >= 4.52")
+        canonical = "unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            legacy_snapshot = _write_cached_model(legacy_cache, "legacy-main", vision = True)
+            canonical_snapshot = _write_cached_model(canonical_cache, "canonical-main", vision = True)
+            for snapshot in (canonical_snapshot, legacy_snapshot):
+                with open(os.path.join(snapshot, "config.json"), "w", encoding = "utf-8") as file:
+                    json.dump({"model_type": "qwen2_5_vl", "vision_config": {}}, file)
+            open(os.path.join(legacy_snapshot, "video_preprocessor_config.json"), "w").close()
+            kwargs = dict(load_in_4bit = True, cache_dir = cache_dir, local_files_only = True)
+
+            self.assertEqual(get_model_name("Qwen/Qwen2.5-VL-3B-Instruct", **kwargs), legacy)
+            open(os.path.join(canonical_snapshot, "video_preprocessor_config.json"), "w").close()
+            self.assertEqual(get_model_name("Qwen/Qwen2.5-VL-3B-Instruct", **kwargs), canonical)
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_supplied_vlm_config_requires_processor_artifacts(self):
         canonical = "unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit"
         legacy = canonical.lower()
@@ -403,7 +424,7 @@ class TestGetModelName(unittest.TestCase):
             ("sentencepiece.bpe.model",),
             ("sentencepiece.model",),
             ("source.spm", "target.spm"),
-            ("vocab-src.json", "vocab-tgt.json"),
+            ("vocab-src.json", "vocab-tgt.json", "merges.txt"),
             ("qwen.tiktoken",),
         )
         for tokenizer_files in tokenizer_formats:
@@ -423,6 +444,30 @@ class TestGetModelName(unittest.TestCase):
                     ),
                     legacy,
                 )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_fsmt_cache_requires_merges(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            canonical_snapshot = _write_cached_model(
+                canonical_cache, "canonical-main", tokenizer = False
+            )
+            legacy_snapshot = _write_cached_model(legacy_cache, "legacy-main", tokenizer = False)
+            for snapshot in (canonical_snapshot, legacy_snapshot):
+                for filename in ("vocab-src.json", "vocab-tgt.json"):
+                    open(os.path.join(snapshot, filename), "w").close()
+            open(os.path.join(legacy_snapshot, "merges.txt"), "w").close()
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                ),
+                legacy,
+            )
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_text_only_vlm_cache_does_not_require_processor(self):
@@ -657,6 +702,38 @@ class TestGetModelName(unittest.TestCase):
                     trust_remote_code = True,
                 ),
                 legacy,
+            )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_remote_code_ignores_external_tokenizer_and_processor_configs(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            canonical_snapshot = _write_cached_model(canonical_cache, "canonical-main")
+            legacy_snapshot = _write_cached_model(legacy_cache, "legacy-main")
+            for snapshot in (canonical_snapshot, legacy_snapshot):
+                with open(
+                    os.path.join(snapshot, "tokenizer_config.json"), "w", encoding = "utf-8"
+                ) as file:
+                    json.dump({"auto_map": {"AutoTokenizer": "tokenization_custom.Custom"}}, file)
+                with open(
+                    os.path.join(snapshot, "processor_config.json"), "w", encoding = "utf-8"
+                ) as file:
+                    json.dump({"auto_map": {"AutoProcessor": "processing_custom.Custom"}}, file)
+            open(os.path.join(legacy_snapshot, "processing_custom.py"), "w").close()
+            open(os.path.join(legacy_snapshot, "tokenization_custom.py"), "w").close()
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    require_tokenizer = False,
+                    require_processor = False,
+                    trust_remote_code = True,
+                ),
+                canonical,
             )
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
