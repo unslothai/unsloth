@@ -747,9 +747,10 @@ def image_activation_shortfall_message(
     height: Optional[int],
     batch_size: int = 1,
     family: Optional[str] = None,
+    base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
 ) -> Optional[str]:
-    """A user-facing refusal when this generation's ACTIVATIONS cannot fit the free device
-    budget, else None.
+    """A user-facing refusal when this generation's ACTIVATIONS plus the flat base overhead
+    cannot fit the free device budget, else None.
 
     Why this is a refusal and not another tuning knob: weights can be offloaded, activations
     cannot. Every offload tier moves WEIGHTS between host and device; the latents, attention
@@ -811,9 +812,16 @@ def image_activation_shortfall_message(
             batch_size = 1,
             family = family,
         )
-    except Exception:  # noqa: BLE001
-        raise
-    if needed <= int(budget) or needed <= planned:
+    except Exception:  # noqa: BLE001 -- a broken probe must never block a generation
+        return None
+    # The flat base overhead rides along with the activations: the CUDA context, the scheduler
+    # state and the fragmentation allowance all have to coexist with this pass's tensors, and the
+    # load-time plan already sums them additively for exactly that reason. Leaving it out made the
+    # guard silent by a few hundred MiB on the very card #8188 was reported from (15.92 GiB:
+    # 13,872 MiB of activations against a 14,254 MiB budget). It cannot cause a false refusal at
+    # or below the default resolution, because the `needed <= planned` arm already exempts every
+    # request the load itself budgeted for.
+    if int(needed) + max(0, int(base_overhead_mib)) <= int(budget) or needed <= planned:
         return None
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
@@ -839,6 +847,7 @@ def raise_on_image_activation_shortfall(
     height: Optional[int],
     batch_size: int = 1,
     family: Optional[str] = None,
+    base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
     logger: Any = None,
 ) -> None:
     """Refuse a generation whose activations cannot fit the free device budget. No-op whenever
@@ -854,6 +863,7 @@ def raise_on_image_activation_shortfall(
         height = height,
         batch_size = batch_size,
         family = family,
+        base_overhead_mib = base_overhead_mib,
     )
     if message is None:
         return

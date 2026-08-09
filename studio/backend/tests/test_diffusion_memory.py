@@ -754,9 +754,13 @@ def test_streamed_text_encoders_rescue_the_48_minute_plan():
     assert after.as_public_dict()["stream_text_encoders"] is True
 
 
-def test_plain_group_is_preferred_over_streaming_the_text_encoders():
+@pytest.mark.parametrize("mode", [None, MEMORY_MODE_FAST])
+def test_plain_group_is_preferred_over_streaming_the_text_encoders(mode):
     # Where the companions fit as they are, the encoders stay resident: streaming them is a small
     # loss for no gain, so the new tier must only engage as a rescue from whole-module offload.
+    # Both branches that pick a tier have to agree on that order, hence both modes here: auto has
+    # its own if/elif chain and `fast` goes through _offload_tier, so covering one leaves the
+    # other free to prefer the wrong tier.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
@@ -765,6 +769,7 @@ def test_plain_group_is_preferred_over_streaming_the_text_encoders():
         text_encoder_dense_mib = 1_400,
         runtime_headroom_mib = 8192,
         base_overhead_mib = 2048,
+        requested_mode = mode,
     )
     assert plan.offload_policy == OFFLOAD_GROUP
     assert plan.stream_text_encoders is False
@@ -994,6 +999,20 @@ def test_guard_refuses_the_oversized_frame_and_passes_the_default_one():
     assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE" in message
     # The same card at the default resolution needs 6963 MiB and must go straight through.
     assert _shortfall(1024, 1024) is None
+
+
+def test_guard_counts_the_base_overhead_alongside_the_activations():
+    # The CUDA context, scheduler state and fragmentation allowance have to coexist with this
+    # pass's tensors, and the load-time plan already sums them additively. Leaving the overhead
+    # out left the guard silent by a few hundred MiB on the exact card #8188 was reported from:
+    # a 15.92 GiB card gives a 14,254 MiB budget, which 13,872 MiB of activations fits and
+    # 13,872 + 2048 does not.
+    reported_card = _discrete(16_302, 16_302)  # idle 15.92 GiB card
+    assert _safe_device_budget_mib(reported_card) == 14_254
+    assert _shortfall(1088, 1920, memory = reported_card) is not None
+    # ... and setting the overhead to zero is exactly what makes it silent again, so the term is
+    # load-bearing rather than decorative.
+    assert _shortfall(1088, 1920, memory = reported_card, base_overhead_mib = 0) is None
 
 
 def test_guard_never_refuses_at_or_below_the_resolution_the_load_planned_for():
