@@ -103,12 +103,6 @@ def test_the_grant_widens_everything_but_the_locked_directives():
     }
     # frame-ancestors and sandbox are not resource loads, so they never produce
     # a blocked-resource report to filter.
-    assert unchanged == {
-        "object-src",
-        "base-uri",
-        "form-action",
-        "frame-ancestors",
-        "sandbox",
-    }
+    assert unchanged == {"object-src", "base-uri", "form-action", "frame-ancestors", "sandbox"}
     for locked in ("object-src", "base-uri", "form-action"):
         assert network[locked] == "'none'"
