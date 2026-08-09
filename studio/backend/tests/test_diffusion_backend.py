@@ -7937,15 +7937,19 @@ def test_cancel_generate_is_a_no_op_without_a_load(fake_runtime):
     assert DiffusionBackend().cancel_generate() is False
 
 
-def test_an_offload_memory_request_is_not_reported_as_unstaged_shards(fake_runtime, tmp_path,
-                                                                      monkeypatch):
+def test_an_offload_memory_request_is_not_reported_as_unstaged_shards(
+    fake_runtime, tmp_path, monkeypatch
+):
     """balanced, low_vram and the legacy cpu_offload flag name their policy outright, so the plan
     omits transformer/ because the dense build is skipped, not because bytes were missing.
     Reporting a second-denoiser refusal told the caller the wrong thing about their own setting.
     """
     marker = "an auto quant never downloads a second transformer"
-    for request in ({"memory_mode": "balanced"}, {"memory_mode": "low_vram"},
-                    {"cpu_offload": True}):
+    for request in (
+        {"memory_mode": "balanced"},
+        {"memory_mode": "low_vram"},
+        {"cpu_offload": True},
+    ):
         _stub_hosted_prequant(monkeypatch, cached = True)
         backend = DiffusionBackend()
         _force_cuda_target(backend, monkeypatch)
