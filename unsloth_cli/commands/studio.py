@@ -3106,8 +3106,10 @@ def _cmdlet_claimed_elsewhere(cmdlet: str, claimed: dict, source: object) -> boo
     for owned, owner in claimed.items():
         if owner is source:
             continue
-        if owned == cmdlet or fnmatch.fnmatchcase(cmdlet, owned) or fnmatch.fnmatchcase(
-            owned, cmdlet
+        if (
+            owned == cmdlet
+            or fnmatch.fnmatchcase(cmdlet, owned)
+            or fnmatch.fnmatchcase(owned, cmdlet)
         ):
             return True
     return False
