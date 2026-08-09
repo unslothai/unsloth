@@ -464,11 +464,12 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
     except Exception:
         logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
         return 0, []
-    if delete_files:
-        # A project workspace kept for a fork that has now gone: the user asked
-        # for the files on both surfaces, and nothing else would ever revisit it.
-        from core.inference.tools import collect_orphaned_project_workspaces
-        await run_in_threadpool(collect_orphaned_project_workspaces)
+    # Whatever this delete asked for: the last chat referencing a workspace the
+    # user already asked to delete can go through the plain path, and only the
+    # records marked pending are ever collected.
+    from core.inference.tools import collect_orphaned_project_workspaces
+
+    await run_in_threadpool(collect_orphaned_project_workspaces)
     return result
 
 

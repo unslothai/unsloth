@@ -13606,8 +13606,11 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
             else [d for d in sorted(dirs) if not d.startswith(".") and _servable_segment(d)]
         )
         for entry in sorted(entries):
-            # Mirrors the snapshot, dotfiles included.
-            if entry in _INTERNAL_SANDBOX_FILES or not _servable_segment(entry):
+            # Mirrors the snapshot, dotfiles included, and like it hides the
+            # bookkeeping only where we write it.
+            if base == sandbox_dir and entry in _INTERNAL_SANDBOX_FILES:
+                continue
+            if not _servable_segment(entry):
                 continue
             path = os.path.join(base, entry)
             try:

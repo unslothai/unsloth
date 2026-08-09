@@ -7198,7 +7198,15 @@ def _orphan_records_dir() -> str:
     gone, and a workspace the user pointed somewhere custom cannot be derived
     from anything else.
     """
-    return os.path.join(os.path.dirname(os.path.realpath(sandbox_root())), "orphaned-projects")
+    try:
+        from utils.paths.storage_roots import studio_root
+        return os.path.join(str(studio_root()), "orphaned-projects")
+    except Exception:
+        # Only if the studio home cannot be resolved at all: beside the sandbox
+        # root, whose parent an administrator may have made read-only.
+        return os.path.join(
+            os.path.dirname(os.path.realpath(sandbox_root())), "orphaned-projects",
+        )
 
 
 def record_orphaned_project(
@@ -11783,7 +11791,12 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
             else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
         )
         for name in names:
-            if name in _INTERNAL_SANDBOX_FILES or not _servable_segment(name):
+            # Only at the top: a tool that wrote archive/.unsloth_sandbox made an
+            # ordinary file, and dropping it hid it from every listing while
+            # still counting it as a reason to keep the sandbox.
+            if base == workdir and name in _INTERNAL_SANDBOX_FILES:
+                continue
+            if not _servable_segment(name):
                 continue
             path = os.path.join(base, name)
             try:

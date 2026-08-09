@@ -4316,7 +4316,7 @@ def test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted():
     assert 'if project.get("sandboxPath"):' in route
     assert "if not delete_files:" in route
     body = route[route.index("if not delete_files:") :]
-    assert "record_orphaned_project, project_id" in body[:400]
+    assert "record_orphaned_project," in body[:400]
     assert "False," in body[:400], "a keep must not be recorded as pending deletion"
 
 
@@ -4371,6 +4371,104 @@ def test_a_workspace_delete_finishes_once_the_tool_call_ends(tmp_path, monkeypat
     finisher.join(timeout = 5)
     assert not workspace.exists(), "the promise was never finished"
     assert tools.list_orphaned_projects() == []
+
+
+def test_a_pending_workspace_is_collected_by_a_plain_delete(tmp_path, monkeypatch):
+    """The last chat referencing it can be deleted without the switch, and the
+    workspace the user already asked to delete would wait for ever."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+
+    workspace = tmp_path / "promised-workspace"
+    workspace.mkdir()
+    (workspace / "out.csv").write_text("a,b\n", encoding = "utf-8")
+    tools.record_orphaned_project("projplain", str(workspace), True)
+
+    # The plain path, no switch.
+    asyncio.new_event_loop().run_until_complete(chat_history._remove_sandboxes([], False))
+
+    assert not workspace.exists(), "the promised delete never happened"
+
+
+def test_a_nested_file_named_like_the_marker_is_a_file(tmp_path, monkeypatch):
+    """Only the sandbox's own bookkeeping is hidden: a tool that wrote
+    archive/.unsloth_sandbox made an ordinary file."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "__LOCALID_nested1"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    before = tools._snapshot_workdir_files(str(workdir))
+    (workdir / "archive").mkdir()
+    (workdir / "archive" / tools._SANDBOX_MARKER).write_text("theirs", encoding = "utf-8")
+
+    sentinels = tools._created_file_sentinels(str(workdir), before)
+    assert "archive/.unsloth_sandbox" in sentinels, sentinels
+    # And the marker at the top is still hidden.
+    assert tools._SANDBOX_MARKER not in sentinels.replace("archive/.unsloth_sandbox", "")
+
+    listing = tools._snapshot_workdir_files(str(workdir))
+    assert "archive/.unsloth_sandbox" in listing
+    assert tools._SANDBOX_MARKER not in listing
+
+
+def test_the_listing_route_hides_the_same_names_as_the_snapshot():
+    """The two walks have to agree, or a card names a file the download route
+    refuses, or the other way round."""
+    import inspect
+
+    from routes import inference
+
+    source = inspect.getsource(inference._sandbox_listing_names)
+    assert "base == sandbox_dir and entry in _INTERNAL_SANDBOX_FILES" in source
+
+
+def test_the_orphan_records_live_under_the_studio_home(tmp_path, monkeypatch):
+    """A sandbox root an administrator created can sit in a directory nothing
+    else may write to, and the record would never be written."""
+    home = tmp_path / "home"
+    readonly_parent = tmp_path / "readonly"
+    sandbox = readonly_parent / "sandboxes"
+    sandbox.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(sandbox))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    records = Path(tools._orphan_records_dir())
+    assert str(records).startswith(str(home)), records
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    readonly_parent.chmod(0o500)
+    try:
+        tools.record_orphaned_project("projro123", str(workspace), True)
+        assert [name for name, _p, _d in tools.list_orphaned_projects()] == ["projro123"]
+    finally:
+        readonly_parent.chmod(0o700)
+
+
+def test_an_image_below_a_subdirectory_keeps_its_separators():
+    """An encoded slash is refused by proxies before the route sees it, and the
+    file card for the same file uses a real one."""
+    view = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/components/assistant-ui/python-tool-image-path.ts"
+    ).read_text(encoding = "utf-8")
+
+    assert "sandboxFilePath(sessionId, filename)" in view
+    assert "encodeURIComponent(filename)" not in view
 
 
 if __name__ == "__main__":
