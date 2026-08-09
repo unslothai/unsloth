@@ -80,9 +80,7 @@ _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
 }
 
 
-def base_repo_bf16_components_gb(
-    base_repo: Optional[str],
-) -> Optional[tuple[float, float, float]]:
+def base_repo_bf16_components_gb(base_repo: Optional[str]) -> Optional[tuple[float, float, float]]:
     """The per-base override for ``base_repo``, or None when it has none.
 
     No family fallback, unlike ``family_bf16_components_gb``: a caller that already holds a

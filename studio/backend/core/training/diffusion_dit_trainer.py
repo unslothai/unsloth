@@ -496,7 +496,6 @@ def _dense_bf16_gb(spec, base_model: str) -> float:
     run that would otherwise train."""
     try:
         from core.inference.diffusion_auto_policy import base_repo_bf16_components_gb
-
         components = base_repo_bf16_components_gb(base_model)
         if components:
             return float(components[0])
