@@ -8,12 +8,28 @@ import test from "node:test";
 // cannot be imported here. These drive the pure state helpers it consumes.
 import {
   type ApiRemoteAccessStatus,
+  type RemoteAccessRequestAxis,
   normalizeRemoteAccessStatus,
+  remoteAccessAutoStartKind,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
+  remoteAccessBlockMessageId,
+  remoteAccessDnsConflictHostname,
+  remoteAccessHeaderActionDisabled,
+  remoteAccessCustomActionsDisabled,
+  remoteAccessCustomOperationInFlight,
+  remoteAccessCustomReadiness,
+  remoteAccessCustomTeardownMessageId,
+  remoteAccessOperationRevision,
   remoteAccessPollDelay,
+  remoteAccessPreferredKind,
+  remoteAccessRequestMessageId,
   remoteAccessSelfStopPoll,
+  remoteAccessShouldClearRequestError,
   remoteAccessStopDisconnectsOrigin,
+  remoteAccessTeardownNeedsLocalOrigin,
+  remoteAccessUsableUrl,
+  remoteAccessUsesStopAction,
   remoteApiOrigin,
 } from "../src/features/settings/api/remote-access-state.ts";
 
@@ -64,6 +80,34 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       password_pending: true,
       // biome-ignore lint/style/useNamingConvention: API schema
       streaming_supported: true,
+      kind: "custom",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      connector_registered: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      tunnel_serving: true,
+      dns: "pending",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      auto_start_kind: "custom",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      auto_start_block_reason: "launch_managed",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_state: "configured",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_hostname: "studio.example.com",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_runnable: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      login_url: "https://dash.cloudflare.com/login",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_error: "dns_conflict",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_error_detail: "record exists",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_error_phase: "provision",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_error_settled: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      orphaned_hostnames: ["old.example.com"],
     }),
   );
   assert.deepEqual(s, {
@@ -79,6 +123,21 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     blockReason: null,
     passwordPending: true,
     streamingSupported: true,
+    kind: "custom",
+    connectorRegistered: true,
+    tunnelServing: true,
+    dns: "pending",
+    autoStartKind: "custom",
+    autoStartBlockReason: "launch_managed",
+    customState: "configured",
+    customHostname: "studio.example.com",
+    customRunnable: true,
+    loginUrl: "https://dash.cloudflare.com/login",
+    customError: "dns_conflict",
+    customErrorDetail: "record exists",
+    customErrorPhase: "provision",
+    customErrorSettled: true,
+    orphanedHostnames: ["old.example.com"],
   });
   // No field may normalize to undefined -- a wrong key would silently do so.
   for (const [k, v] of Object.entries(s)) {
@@ -93,6 +152,21 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.equal(s.managedBy, null);
   assert.equal(s.blockReason, null);
   assert.equal(s.passwordPending, false);
+  assert.equal(s.kind, null);
+  assert.equal(s.connectorRegistered, false);
+  assert.equal(s.tunnelServing, false);
+  assert.equal(s.dns, "unknown");
+  assert.equal(s.autoStartKind, null);
+  assert.equal(s.autoStartBlockReason, null);
+  assert.equal(s.customState, "unconfigured");
+  assert.equal(s.customHostname, null);
+  assert.equal(s.customRunnable, false);
+  assert.equal(s.loginUrl, null);
+  assert.equal(s.customError, null);
+  assert.equal(s.customErrorDetail, null);
+  assert.equal(s.customErrorPhase, null);
+  assert.equal(s.customErrorSettled, false);
+  assert.deepEqual(s.orphanedHostnames, []);
 });
 
 test("passwordPending is strict: only a real true counts", () => {
@@ -117,7 +191,7 @@ test("passwordPending is strict: only a real true counts", () => {
 
 // ── remoteAccessPollDelay ──
 
-test("poll delay is fast only while a transition is in flight", () => {
+test("poll delay is fast while a lifecycle or custom transition is in flight", () => {
   assert.equal(remoteAccessPollDelay(null), 5000);
   for (const state of ["starting", "stopping"] as const) {
     assert.equal(
@@ -131,7 +205,23 @@ test("poll delay is fast only while a transition is in flight", () => {
       5000,
     );
   }
+  for (const customState of ["provisioning", "tearing_down"] as const) {
+    assert.equal(
+      remoteAccessPollDelay(
+        normalizeRemoteAccessStatus(apiStatus({ custom_state: customState })),
+      ),
+      1000,
+    );
+  }
 });
+
+
+
+
+
+
+
+
 
 // ── remoteApiOrigin ──
 
@@ -217,7 +307,7 @@ test("stop-disconnects does not treat a path prefix as the same origin", () => {
   );
 });
 
-// ── remoteAccessBlockMessage ──
+
 
 test("every block reason the backend can emit has a message", () => {
   // Mirrors utils/remote_access_settings.py's block_reason chain.
@@ -231,7 +321,7 @@ test("every block reason the backend can emit has a message", () => {
   ];
   for (const reason of reasons) {
     for (const isDesktop of [true, false]) {
-      const msg = remoteAccessBlockMessage(reason, isDesktop);
+      const msg = remoteAccessBlockMessageId(reason, isDesktop);
       assert.ok(
         msg && msg.length > 0,
         `no message for ${reason} (desktop=${isDesktop})`,
@@ -241,22 +331,54 @@ test("every block reason the backend can emit has a message", () => {
 });
 
 test("the pending-password message is desktop-aware", () => {
-  const desktop = remoteAccessBlockMessage(
+  const desktop = remoteAccessBlockMessageId(
     "admin_password_change_required",
     true,
   );
-  const web = remoteAccessBlockMessage("admin_password_change_required", false);
+  const web = remoteAccessBlockMessageId(
+    "admin_password_change_required",
+    false,
+  );
   assert.notEqual(desktop, web);
-  // Only the web copy should send the user to the CLI.
-  assert.ok(!desktop?.includes("reset-password"));
-  assert.ok(web?.includes("reset-password"));
+  assert.equal(desktop, "passwordDesktop");
+  assert.equal(web, "passwordWeb");
+});
+
+test("the legacy block-message export preserves its English guidance", () => {
+  const cases = [
+    ["server_starting", false, "Unsloth is still starting."],
+    [
+      "admin_password_change_required",
+      true,
+      "Set a remote password before exposing this server.",
+    ],
+    [
+      "admin_password_change_required",
+      false,
+      "Change the administrator password before exposing this server. In the desktop app, run unsloth studio reset-password.",
+    ],
+    [
+      "explicitly_disabled",
+      false,
+      "This launch used --no-cloudflare. Restart without it to enable remote access.",
+    ],
+    ["launch_managed", false, "This tunnel is managed by the launch command."],
+    ["colab_managed", false, "This tunnel is managed by the Colab runtime."],
+    ["colab", false, "Remote access settings are managed by the Colab runtime."],
+  ] as const;
+  for (const [reason, desktop, message] of cases) {
+    assert.equal(remoteAccessBlockMessage(reason, desktop), message);
+  }
+  assert.equal(remoteAccessBlockMessage("something_new", false), null);
 });
 
 test("an unknown or absent reason yields no message", () => {
-  assert.equal(remoteAccessBlockMessage(null, false), null);
-  assert.equal(remoteAccessBlockMessage("something_new", false), null);
-  assert.equal(remoteAccessBlockMessage("", true), null);
+  assert.equal(remoteAccessBlockMessageId(null, false), null);
+  assert.equal(remoteAccessBlockMessageId("something_new", false), null);
+  assert.equal(remoteAccessBlockMessageId("", true), null);
 });
+
+
 
 // ── remoteAccessSelfStopPoll ──
 
