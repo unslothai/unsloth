@@ -672,25 +672,26 @@ def _is_companion_base_repo(repo_id: str) -> bool:
         return False
 
 
-def _variant_delete_empties_repo(repo_id: str, variant: str) -> bool:
-    """Whether removing *variant* would leave *repo_id* with no main GGUF at all.
+def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
+    """Whether *variant* names a file an installed checkpoint's native load actually opens.
 
-    Fails CLOSED (True) when the cache cannot be read: the caller only asks for a repo already
-    established as a companion base, so an unreadable cache means the remaining quants cannot be
-    enumerated, not that there are some.
+    Not "would this empty the repo": the asset is a FIXED filename, so a sibling quant left
+    behind substitutes for nothing. Fails CLOSED, and cheaply -- a True here only runs the
+    dependants check, which answers "nobody needs it" for every ordinary repo and lets the
+    delete through.
     """
-    from hub.services.models import cache_inventory, companion_cleanup
+    from hub.services.models import cache_inventory
+    from hub.utils import companion_assets
+    from hub.utils.gguf import extract_quant_label
+
     try:
-        scans = cache_inventory.all_hf_cache_scans()
-        repos = companion_cleanup._repos_by_id(scans).get((repo_id or "").strip().lower(), [])
-        if not repos:
-            return False
-        return not any(
-            companion_cleanup._remaining_main_gguf_variants(repo, excluding = variant)
-            for repo in repos
-        )
+        wanted = companion_assets.required_companion_asset_files(
+            cache_inventory.all_hf_cache_scans()
+        ).get((repo_id or "").strip().lower(), set())
+        target = (variant or "").strip().lower()
+        return any(extract_quant_label(name).lower() == target for name in wanted)
     except Exception as exc:  # noqa: BLE001 -- an unreadable cache is not permission to delete
-        logger.warning(f"Could not enumerate remaining quants for {repo_id}: {exc}")
+        logger.warning(f"Could not check companion assets for {repo_id}: {exc}")
         return True
 
 
@@ -791,17 +792,14 @@ def _delete_cached_model_blocking(
     # the check IS part of the destructive stage, and a caller that replaces that stage should not
     # end up with half of it still running.
     # A variant delete normally cannot touch another repo, so the guard is a whole-repo check.
-    # The exception is a companion whose asset IS a GGUF variant: the native Qwen-Image encoder
-    # is one quant inside a chat GGUF repo, so deleting the LAST main GGUF from a companion base
-    # removes the encoder just as surely as deleting the repo would, and skipping the check there
-    # unlinked it under an installed image model.
-    if (
-        variant is not None
-        and _is_companion_base_repo(repo_id)
-        and _variant_delete_empties_repo(repo_id, variant)
-    ):
-        variant = None
-    if variant is None and _is_companion_base_repo(repo_id):
+    # The exception is a companion whose asset IS a named GGUF variant: native Qwen-Image opens
+    # exactly Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf inside a chat GGUF repo, so removing that one
+    # quant strands the image checkpoint however many siblings remain, and none of them is a
+    # substitute for a fixed filename. A FLAG, never a rewrite of `variant`: that name is the
+    # destructive scope, and widening it here would delete every revision and manifest the user
+    # did not ask for, and purge a sibling quant out from under an in-flight download.
+    guard_this_delete = variant is None or _variant_is_a_required_companion_asset(repo_id, variant)
+    if guard_this_delete and _is_companion_base_repo(repo_id):
         # Fails CLOSED, and only here: the lookup above already established this repo IS a
         # companion base, so an unreadable cache means the dependants cannot be enumerated, not
         # that there are none. Every other repo skips the check entirely and is unaffected.

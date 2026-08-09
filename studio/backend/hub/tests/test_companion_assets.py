@@ -541,24 +541,31 @@ def test_a_preexisting_native_gguf_still_protects_its_encoder(monkeypatch):
     assert vae_repo not in offered and encoder_repo not in offered
 
 
-def test_deleting_the_last_quant_of_a_companion_repo_runs_the_guard(monkeypatch):
-    """The native Qwen-Image text encoder is one quant inside a chat GGUF repo, so a variant
-    delete can remove a companion asset outright. The guard only ran for whole-repo deletes, and
-    the encoder went while an image model that needs it stayed installed."""
+def test_deleting_the_companion_quant_itself_runs_the_guard(monkeypatch):
+    """Native Qwen-Image opens exactly Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf inside a chat GGUF
+    repo, so removing that one quant strands the image checkpoint however many siblings remain:
+    none of them is a substitute for a fixed filename. The guard only ran for whole-repo deletes.
+    """
     from hub.services.models import deletion
 
     encoder_repo = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
-    only_quant = _repo(encoder_repo, [("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", 4_000_000)])
-    two_quants = _repo(
-        encoder_repo,
-        [
-            ("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", 4_000_000),
-            ("Qwen2.5-VL-7B-Instruct-Q8_0.gguf", 8_000_000),
-        ],
+    _install(
+        monkeypatch,
+        _repo("some-owner/qwen-image", [("Qwen-Image-Q4_K_M.gguf", 9_000_000)]),
+        _repo(
+            encoder_repo,
+            [
+                ("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", 4_000_000),
+                ("Qwen2.5-VL-7B-Instruct-Q8_0.gguf", 8_000_000),
+            ],
+        ),
     )
-    _install(monkeypatch, only_quant)
-    assert deletion._variant_delete_empties_repo(encoder_repo, "Q4_K_M") is True
-    _install(monkeypatch, two_quants)
-    assert deletion._variant_delete_empties_repo(encoder_repo, "Q4_K_M") is False
-    # A repo that is not cached at all is not emptied by this delete.
-    assert deletion._variant_delete_empties_repo("some-owner/absent", "Q4_K_M") is False
+    # The exact quant the image load opens is guarded even with a sibling still present.
+    assert deletion._variant_is_a_required_companion_asset(encoder_repo, "Q4_K_M") is True
+    # The sibling is nobody's asset, so an ordinary variant delete stays unguarded.
+    assert deletion._variant_is_a_required_companion_asset(encoder_repo, "Q8_0") is False
+    assert deletion._variant_is_a_required_companion_asset("some-owner/unrelated", "Q4_K_M") is (
+        False
+    )
+    # ... and the guard reports the dependant, so the delete is refused rather than silently done.
+    assert companion_cleanup.companion_dependents(encoder_repo) == ["some-owner/qwen-image"]

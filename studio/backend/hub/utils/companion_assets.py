@@ -219,27 +219,65 @@ def _family_bases(repo_id: str, gguf_filename: Optional[str] = None) -> set[str]
     # deletion, so a pre-existing native GGUF with no recorded link would have had its encoder
     # listed as an unused asset and removed underneath it. The recorded links cover a load that
     # has happened since; this covers the install that predates them.
-    bases |= _sd_cpp_component_repos(fam, repo_id, gguf_filename)
+    bases |= {repo for repo, _file in _sd_cpp_component_specs(fam, repo_id, gguf_filename)}
     return _with_mirrors(bases)
 
 
-def _sd_cpp_component_repos(fam, repo_id: str, gguf_filename: Optional[str]) -> set[str]:
-    """The single-file VAE / text-encoder repos an sd.cpp load of *fam* fetches. Never raises."""
-    repos: set[str] = set()
+def _sd_cpp_component_specs(
+    fam, repo_id: str, gguf_filename: Optional[str]
+) -> set[tuple[str, str]]:
+    """``(repo, filename)`` for every single-file VAE / text encoder an sd.cpp load of *fam*
+    opens. The FILENAME matters as much as the repo: the Qwen-Image encoder is one named quant
+    inside a chat GGUF repo, so a sibling quant in the same repo is not a substitute for it.
+    Never raises."""
+    specs: set[tuple[str, str]] = set()
     try:
-        from core.inference.diffusion_families import sd_cpp_text_encoders_for
+        from core.inference.diffusion_families import sd_cpp_text_encoder_candidates
 
         vae = getattr(fam, "sd_cpp_vae", None)
-        if vae:
-            repos.add(vae[0])
-        # No header to read here, so the id + filename fallback decides the klein variant, which
-        # is the same fallback the delete guard uses when reconstructing a committed load.
-        for encoder in sd_cpp_text_encoders_for(fam, repo_id, gguf_filename) or ():
+        if vae and vae[0]:
+            specs.add((vae[0], vae[1]))
+        # EVERY set the family could pick, not the one the string fallback guesses. There is no
+        # header to read here, and a renamed FLUX.2-klein 9B file carries no size token either,
+        # so guessing answers 4B and leaves the 9B encoder the load actually fetched unprotected.
+        # Naming both costs a delete that is refused; guessing costs an installed model.
+        for encoder in sd_cpp_text_encoder_candidates(fam) or ():
             if encoder and encoder[0]:
-                repos.add(encoder[0])
+                specs.add((encoder[0], encoder[1]))
     except Exception as exc:  # noqa: BLE001 -- one missing table never hides the rest
         logger.debug("sd.cpp component derivation unavailable for %s: %s", repo_id, exc)
-    return {r for r in repos if r}
+    return specs
+
+
+def required_companion_asset_files(cache_scans) -> dict[str, set[str]]:
+    """``{repo_id_lower: {filename, ...}}`` the installed checkpoints' native loads actually open.
+
+    The repo-level view cannot answer a VARIANT delete. Native Qwen-Image opens exactly
+    ``Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf`` inside a chat GGUF repo, so removing that one quant
+    strands the image checkpoint even though the repo still holds a Q8_0 nobody can substitute.
+    """
+    gguf_names = _cached_main_gguf_names(cache_scans)
+    files: dict[str, set[str]] = {}
+    for repo_id in _cached_model_repo_ids(cache_scans):
+        fam = _detect_family(repo_id, gguf_names.get(_normalise(repo_id)))
+        if fam is None:
+            continue
+        for repo, filename in _sd_cpp_component_specs(
+            fam, repo_id, gguf_names.get(_normalise(repo_id))
+        ):
+            if filename:
+                files.setdefault(_normalise(repo), set()).add(filename)
+    return files
+
+
+def _detect_family(repo_id: str, gguf_filename: Optional[str]):
+    """``detect_family_for_pick`` that never raises and never imports at module scope."""
+    try:
+        from core.inference.diffusion_families import detect_family_for_pick
+
+        return detect_family_for_pick(repo_id, gguf_filename)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _with_mirrors(bases: Iterable[str]) -> set[str]:

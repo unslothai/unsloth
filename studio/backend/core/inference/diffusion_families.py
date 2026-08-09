@@ -1028,6 +1028,21 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
     return frozenset(r.strip().lower() for r in companions - loadable if r)
 
 
+def sd_cpp_text_encoder_candidates(fam: DiffusionFamily) -> tuple[tuple[str, str, str], ...]:
+    """EVERY text-encoder set an sd.cpp load of *fam* could pick, unioned.
+
+    For the guard, not for a load. A load reads the GGUF header and picks one; a guard
+    reconstructing a checkpoint it cannot open has no header, and for FLUX.2-klein a renamed 9B
+    file carries no size token either, so the string fallback answers 4B and the 9B encoder the
+    load actually fetched is left unprotected. Naming both costs a delete that is refused and
+    saves one that strands an installed model.
+    """
+    sets = [fam.sd_cpp_text_encoders]
+    if fam.name == "flux.2-klein":
+        sets.append(_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    return tuple(dict.fromkeys(entry for group in sets for entry in group or ()))
+
+
 def sd_cpp_text_encoders_for(
     fam: DiffusionFamily,
     repo_id: Optional[str] = None,

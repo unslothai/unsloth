@@ -130,6 +130,13 @@ def companion_dependents(
     return sorted(required.get((base_repo_id or "").strip().lower(), set()))
 
 
+def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
+    """The deletion guard's predicate, shared so the preview and the refusal cannot disagree."""
+    from hub.services.models.deletion import _variant_is_a_required_companion_asset as _impl
+
+    return _impl(repo_id, variant)
+
+
 def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
     scans = cache_inventory.all_hf_cache_scans()
     by_id = _repos_by_id(scans)
@@ -182,9 +189,14 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
         "reclaimed_bytes": reclaimed,
         "retained_companions": retained,
         "freeable_companions": freeable,
+        # Same predicate the destructive path uses, so the dialog says what the delete will do.
+        # A variant delete usually cannot strand anything, but the native Qwen-Image encoder is a
+        # named quant inside a chat GGUF repo, and previewing only whole-repo deletes left Delete
+        # enabled on it and the refusal to arrive after the user confirmed.
         "blocked_by": (
             companion_dependents(repo_id, scans, ignore_repo_ids = [repo_id])
-            if companion_assets.is_companion_base(repo_id) and variant is None
+            if companion_assets.is_companion_base(repo_id)
+            and (variant is None or _variant_is_a_required_companion_asset(repo_id, variant))
             else []
         ),
     }
