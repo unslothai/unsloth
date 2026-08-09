@@ -5586,9 +5586,9 @@ def test_a_root_that_will_not_resolve_is_a_scan_error(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "resolve", _boom)
     errors: list = []
     assert state.hf_cache_roots(errors) == []
-    assert any("network mount unavailable" in str(e) for e in errors), (
-        "the unreadable root has to be reported, not silently dropped"
-    )
+    assert any(
+        "network mount unavailable" in str(e) for e in errors
+    ), "the unreadable root has to be reported, not silently dropped"
 
 
 def test_a_partial_scan_cannot_report_the_target_as_gone(monkeypatch, tmp_path):
