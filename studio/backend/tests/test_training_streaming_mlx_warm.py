@@ -61,6 +61,27 @@ def hardware_globals():
         hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
 
 
+@pytest.fixture(autouse = True)
+def _hub_preflight_passes(monkeypatch):
+    """Let the Hub preflights succeed without asking the Hub.
+
+    This file is about the MLX guard, and its docstring already promises no network,
+    but ``start_training`` verifies the model and dataset against huggingface.co on
+    the way past validation. That call used to reach the real Hub, so the tests were
+    quietly online and would 503 whenever it was slow or unreachable.
+    """
+    monkeypatch.setattr(training_routes, "_preflight_hf_dataset_request", lambda request: None)
+    monkeypatch.setattr(
+        training_routes,
+        "_reject_untrainable_model_request",
+        lambda request, *args, **kwargs: training_routes._ModelPreflightResult(
+            model_name = request.model_name,
+            model_local_path = None,
+            cached_model_pin = None,
+        ),
+    )
+
+
 @pytest.fixture
 def spawn_calls(monkeypatch):
     """Stub the backend so a start past validation is observable without a worker."""
