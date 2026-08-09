@@ -460,3 +460,62 @@ def test_two_checkpoints_in_one_directory_get_distinguishable_labels():
     labels = [v.display_label for v in variants]
     assert labels == ["Q6_K · experiments/model-a-Q6_K", "Q6_K · experiments/model-b-Q6_K"]
     assert len(set(labels)) == 2
+
+
+def test_the_model_config_listers_advertise_the_qualified_keys(tmp_path):
+    """Three consumers read their variant identities from these two listers rather than from the
+    hub copy: the /v1 local index (``local_model_resolver`` builds ``entry.variants`` here), the
+    remote VRAM preflight (which looks for a matching ``v.quant`` to get ``main_bytes``), and the
+    picker's own remote sizing. While they grouped on the bare label the qualified rows were
+    invisible to all three, and a slash-qualified suffix is now an explicit variant, so the miss
+    is a 404 rather than a fallback onto some other checkpoint."""
+    from utils.models.model_config import list_local_gguf_variants
+
+    snapshot = tmp_path / "snap"
+    for path, _size in LTX_FILES:
+        target = snapshot / path
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"x" * 512)
+    (snapshot / "config.json").write_text("{}")
+
+    variants, _has_vision = list_local_gguf_variants(str(snapshot))
+    assert sorted(v.quant for v in variants) == sorted(
+        gguf_variant_key(path) for path, _ in LTX_FILES
+    )
+    # Every advertised key resolves back to its OWN file, which is what the row promises.
+    for variant in variants:
+        resolved = _find_local_gguf_by_variant(str(snapshot), variant.quant)
+        assert resolved is not None, variant.quant
+        assert _gguf_variant_key(Path(resolved).relative_to(snapshot).as_posix()) == variant.quant
+
+
+def test_the_ordinary_repo_keeps_its_bare_labels(tmp_path):
+    """The qualified key is only for repos that need it. Every ordinary repo must list exactly
+    the labels it listed before, or every stored pin and every /v1 model id breaks at once."""
+    from utils.models.model_config import list_local_gguf_variants
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    for name in ("model-Q4_K_M.gguf", "model-Q6_K.gguf", "BF16/model-BF16-00001-of-00002.gguf"):
+        target = snapshot / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"x" * 64)
+    (snapshot / "config.json").write_text("{}")
+    variants, _ = list_local_gguf_variants(str(snapshot))
+    assert sorted(v.quant for v in variants) == ["BF16", "Q4_K_M", "Q6_K"]
+
+
+def test_the_auto_download_map_is_keyed_like_the_plan():
+    """``_match_variant`` looks the request up in this map and the worker then looks the plan up
+    by the same string, so a map keyed on the bare label turned every qualified row into a 404
+    instead of dispatching its download."""
+    from types import SimpleNamespace
+
+    from core.inference.openai_auto_download import _gguf_variants
+
+    siblings = [SimpleNamespace(rfilename = path, size = size) for path, size in LTX_FILES]
+    sizes = _gguf_variants(siblings)
+    assert set(sizes) == {gguf_variant_key(path) for path, _ in LTX_FILES}
+    assert "distilled/ltx-2.3-22b-distilled-Q6_K" in sizes
+    # Each row is sized for its own checkpoint, not the sum of every checkpoint at that quant.
+    assert all(size > 0 for size in sizes.values())

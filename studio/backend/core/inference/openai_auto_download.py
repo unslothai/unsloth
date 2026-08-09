@@ -242,6 +242,7 @@ def _gguf_variants(siblings) -> dict[str, int]:
     quant, so the disk reserve is measured against what the worker fetches.
     """
     from hub.utils.gguf import extract_quant_label as canonical_quant_label
+    from hub.utils.gguf import gguf_variant_key
     from hub.utils.gguf_plan import build_gguf_variant_plans
     from utils.models.model_config import (
         _extract_quant_label,
@@ -257,13 +258,18 @@ def _gguf_variants(siblings) -> dict[str, int]:
         name = getattr(sibling, "rfilename", "") or ""
         if not name.lower().endswith(".gguf"):
             continue
-        quant = _extract_quant_label(name)
+        label = _extract_quant_label(name)
+        # The identity the PLAN is keyed on. A repo holding several checkpoints at one quant
+        # advertises a qualified key per checkpoint, and keying this map on the bare label left
+        # every one of those rows a hard miss here: a 404 instead of the download.
+        quant = gguf_variant_key(name)
         if not looks_like_quant(quant):
             # With no recognized quant token the extractors part ways: this one takes
             # the last hyphenated segment ("7b" of llama-7b) while the plan and worker
             # key the whole stem, so advertising ours dispatches an unresolvable variant.
             quant = canonical_quant_label(name) or quant
-        if _is_mmproj(name) or _is_mtp_drafter(name) or _is_big_endian_gguf_path(name, quant):
+        # The endian test reads a quant TOKEN, so it gets the label, not the path-qualified key.
+        if _is_mmproj(name) or _is_mtp_drafter(name) or _is_big_endian_gguf_path(name, label):
             continue
         plan = plans.get(quant.lower())
         if plan is not None:

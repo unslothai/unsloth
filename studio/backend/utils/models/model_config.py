@@ -2547,9 +2547,13 @@ def list_gguf_variants(
         if _is_mtp_drafter(fname):
             continue
 
-        quant = _extract_quant_label(fname)
-        if _is_big_endian_gguf_path(fname, quant):
+        # The endian test reads a quant TOKEN, so it keeps the label; the row identity is the
+        # variant key, so a repo holding several checkpoints at one quant advertises one row per
+        # checkpoint here too. Identical for every repo whose quant token already names its file.
+        label = _extract_quant_label(fname)
+        if _is_big_endian_gguf_path(fname, label):
             continue
+        quant = _gguf_variant_key(fname)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         if quant not in quant_first_file:
             quant_first_file[quant] = fname
@@ -2628,9 +2632,14 @@ def list_local_gguf_variants(
         rel = f.relative_to(p).as_posix()
         if _is_local_mtp_drafter(f, root, rel):
             continue
-        quant = _extract_quant_label(rel)
-        if _is_big_endian_gguf_path(rel, quant):
+        # Same split as the remote lister: label for the endian test, key for the row identity.
+        # The /v1 resolver indexes entry.variants from here, so a key it never advertises is a
+        # request that misses -- and a slash-qualified suffix is now an explicit variant, so that
+        # miss is a 404 rather than a fallback to some other checkpoint.
+        label = _extract_quant_label(rel)
+        if _is_big_endian_gguf_path(rel, label):
             continue
+        quant = _gguf_variant_key(rel)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         if quant not in quant_first_file:
             quant_first_file[quant] = rel
