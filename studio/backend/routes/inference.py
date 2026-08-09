@@ -155,6 +155,14 @@ _install_httpcore_asyncgen_silencer()
 # that bounded work out of the default executor, which drives local token streaming.
 _STATUS_PROBE_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inference-status")
 
+# Stop has to preempt exactly when the box is busy, so it gets its own workers for the same reason
+# the probes above do. Every /images/generate sits in the default executor for the whole run (it
+# blocks on the backend's serial _generate_lock), so concurrent generations can occupy that pool
+# and leave a cancel queued until the run it was meant to stop has already finished. Off the
+# default executor rather than on the event loop: cancelling a native sd.cpp run kills a process
+# tree, which is not a short call.
+_CANCEL_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inference-cancel")
+
 
 def _loaded_chat_template() -> Optional[str]:
     """Chat template of the currently loaded GGUF model, if any."""
@@ -20698,6 +20706,24 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     if _diffusion_persist_active > 0 and not progress["active"]:
         progress = {**progress, "active": True}
     return DiffusionGenerateProgressResponse(**progress)
+
+
+@studio_router.post("/images/generate/cancel")
+async def cancel_diffusion_generation(current_subject: str = Depends(get_current_subject)):
+    """Stop the in-flight image generation, mirroring POST /video/generate/cancel.
+
+    Resolved through the engine router, so it stops a diffusers denoise (at its next step
+    boundary) and a native sd.cpp run (which kills the sd-cli process tree) alike. The
+    generation's OWN request is what reports the outcome: it unwinds with the cancelled
+    sentinel, which this module already maps to a 409. ``cancelled`` is False when nothing was
+    running, so the page can settle its button back to Generate rather than wait for a
+    generation that already finished."""
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    cancelled = await asyncio.get_running_loop().run_in_executor(
+        _CANCEL_EXECUTOR, get_active_diffusion_engine().cancel_generate
+    )
+    return {"cancelled": cancelled}
 
 
 # ──────────────────────────────────────────────────────────────────────────
