@@ -1733,14 +1733,54 @@ def _reparent_surviving_forks(conn: sqlite3.Connection, deleted_ids: set[str]) -
         )
 
 
-def delete_chat_threads(ids: list[str]) -> None:
+# Only these states can already own a worker. Queued, paused, and approval rows are removed before
+# they can be claimed, so signalling them would only leave unused supervisor cancellation events.
+_ACTIVE_RESEARCH_RUN_STATUSES = (
+    "planning",
+    "running",
+    "cancelling",
+)
+
+
+def _active_research_run_ids(
+    conn: sqlite3.Connection, thread_ids: set[str] | None = None
+) -> list[str]:
+    status_placeholders = ",".join("?" for _ in _ACTIVE_RESEARCH_RUN_STATUSES)
+    if thread_ids is None:
+        rows = conn.execute(
+            f"""
+            SELECT id, created_at FROM research_runs
+            WHERE status IN ({status_placeholders})
+            """,
+            _ACTIVE_RESEARCH_RUN_STATUSES,
+        ).fetchall()
+    else:
+        rows = []
+        sorted_thread_ids = sorted(thread_ids)
+        for start in range(0, len(sorted_thread_ids), _SQLITE_IN_CHUNK_SIZE):
+            chunk = sorted_thread_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+            thread_placeholders = ",".join("?" for _ in chunk)
+            rows.extend(
+                conn.execute(
+                    f"SELECT id, created_at FROM research_runs "
+                    f"WHERE thread_id IN ({thread_placeholders}) "
+                    f"AND status IN ({status_placeholders})",
+                    (*chunk, *_ACTIVE_RESEARCH_RUN_STATUSES),
+                ).fetchall()
+            )
+    return [row["id"] for row in sorted(rows, key = lambda row: (row["created_at"], row["id"]))]
+
+
+def delete_chat_threads_with_active_research_runs(ids: list[str]) -> list[str]:
     if not ids:
-        return
+        return []
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
-        _reparent_surviving_forks(conn, set(ids))
+        thread_ids = set(ids)
+        active_research_run_ids = _active_research_run_ids(conn, thread_ids)
+        _reparent_surviving_forks(conn, thread_ids)
         conn.executemany(
             "DELETE FROM chat_attachment_tombstones WHERE thread_id = ?",
             [(id,) for id in ids],
@@ -1748,6 +1788,7 @@ def delete_chat_threads(ids: list[str]) -> None:
         conn.executemany("DELETE FROM chat_threads WHERE id = ?", [(id,) for id in ids])
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
+        return active_research_run_ids
     except Exception:
         conn.rollback()
         raise
@@ -1755,17 +1796,27 @@ def delete_chat_threads(ids: list[str]) -> None:
         conn.close()
 
 
-def clear_chat_history() -> None:
+def delete_chat_threads(ids: list[str]) -> None:
+    delete_chat_threads_with_active_research_runs(ids)
+
+
+def clear_chat_history_with_active_research_runs() -> list[str]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
+        active_research_run_ids = _active_research_run_ids(conn)
         conn.execute("DELETE FROM chat_attachment_tombstones")
         conn.execute("DELETE FROM chat_threads")
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
+        return active_research_run_ids
     finally:
         conn.close()
+
+
+def clear_chat_history() -> None:
+    clear_chat_history_with_active_research_runs()
 
 
 def count_chat_threads() -> int:
@@ -1884,7 +1935,9 @@ def list_chat_projects(include_archived: bool = False) -> list[dict]:
         conn.close()
 
 
-def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
+def delete_chat_project_with_active_research_runs(
+    id: str, delete_files: bool = False
+) -> tuple[Optional[dict], list[str]]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -1892,7 +1945,7 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
         if row is None:
             conn.rollback()
-            return None
+            return None, []
         project = _chat_project_from_row(row)
         thread_ids = {
             thread["id"]
@@ -1901,6 +1954,7 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
                 (id,),
             )
         }
+        active_research_run_ids = _active_research_run_ids(conn, thread_ids)
         _reparent_surviving_forks(conn, thread_ids)
         conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (id,))
         conn.execute("DELETE FROM chat_projects WHERE id = ?", (id,))
@@ -1908,12 +1962,17 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         conn.commit()
         if delete_files:
             _delete_project_workspace(project)
-        return project
+        return project, active_research_run_ids
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
+    project, _ = delete_chat_project_with_active_research_runs(id, delete_files = delete_files)
+    return project
 
 
 class ChatMessageConflictError(RuntimeError):

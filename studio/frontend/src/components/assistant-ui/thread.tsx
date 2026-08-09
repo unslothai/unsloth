@@ -2609,7 +2609,7 @@ const Composer: FC<{
       // record visible while backend cleanup completes.
       markChatThreadDeleted(threadIdToDelete);
       void deleteStoredChatThreads([threadIdToDelete]).catch(() => {
-        if (!historyWasCleared) {
+        if (chatHistoryClearBoundary.capture() === historyClearGeneration) {
           removeChatThreadTombstones([threadIdToDelete]);
           notifyChatHistoryUpdated();
         }

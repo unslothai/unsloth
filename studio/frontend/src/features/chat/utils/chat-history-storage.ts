@@ -34,6 +34,7 @@ import {
   settleWithin,
   waitForSettledOrRunFallback,
 } from "./bounded-settlement";
+import { classifyChatClearThreads } from "./chat-clear-classification";
 import {
   isChatThreadDeleted,
   markChatThreadsDeleted,
@@ -912,6 +913,8 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
   threadRecordClearEpoch += 1;
   failedThreadRecordByThreadId.clear();
   const pendingThreadIds = threadWriteQueue.keys();
+  const pendingThreadIdSet = new Set(pendingThreadIds);
+  let pendingCleanupConfirmation: Promise<boolean> | null = null;
   if (pendingThreadIds.length > 0) {
     const queuedCleanup = threadWriteQueue.enqueue(pendingThreadIds, () =>
       deleteChatThreads(pendingThreadIds),
@@ -919,11 +922,14 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     // A request can commit on the backend while its client promise remains wedged forever. Keep
     // the ordered cleanup above, but issue one independent batch delete after the bounded wait so
     // that lost response cannot let the row reappear after clear-all returns.
-    void waitForSettledOrRunFallback(
+    pendingCleanupConfirmation = waitForSettledOrRunFallback(
       queuedCleanup,
       () => deleteChatThreads(pendingThreadIds),
       THREAD_WRITE_WAIT_MS,
-    ).catch(() => undefined);
+    ).then(
+      () => true,
+      () => false,
+    );
   }
   // Clear both sides independently and report each outcome so the toast
   // can distinguish full vs partial success.
@@ -969,16 +975,22 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     console.error("clearStoredChats: legacy Dexie clear failed", error);
   }
 
-  result.deletedThreadIds = allThreadIds.filter((id) => {
-    const backendDeleted =
-      result.backend === "cleared" ||
-      (backendInventoryLoaded && !backendThreadIds.has(id));
-    const legacyDeleted =
-      !legacyThreadIds.has(id) || result.legacy === "cleared";
-    return backendDeleted && legacyDeleted;
+  const pendingCleanupConfirmed =
+    result.backend !== "cleared" && pendingCleanupConfirmation !== null
+      ? await pendingCleanupConfirmation
+      : false;
+  const classification = classifyChatClearThreads({
+    allThreadIds,
+    backendThreadIds,
+    legacyThreadIds,
+    pendingThreadIds: pendingThreadIdSet,
+    backendInventoryLoaded,
+    backendCleared: result.backend === "cleared",
+    legacyCleared: result.legacy === "cleared",
+    pendingCleanupConfirmed,
   });
-  const deleted = new Set(result.deletedThreadIds);
-  result.failedThreadIds = allThreadIds.filter((id) => !deleted.has(id));
+  result.deletedThreadIds = classification.deletedThreadIds;
+  result.failedThreadIds = classification.failedThreadIds;
 
   markChatThreadsDeleted(result.deletedThreadIds);
   notifyChatHistoryUpdated();

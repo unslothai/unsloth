@@ -815,9 +815,69 @@ def test_delete_thread_cancels_active_research_run(research_home):
             state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
         )
     )
-    chat_history._cancel_active_research(request, ["thread-1"])
+    chat_history.delete_threads(
+        chat_history.ChatDeleteRequest(ids = ["thread-1"]),
+        request,
+        current_subject = "alice",
+    )
 
-    assert research_db.get_run("run-1")["status"] == "cancelling"
+    assert research_db.get_run("run-1") is None
+    assert cancelled == ["run-1"]
+
+
+def test_project_delete_cancels_runs_captured_by_delete_transaction(research_home):
+    from routes import chat_history
+
+    studio_db.upsert_chat_project(
+        {
+            "id": "project-1",
+            "name": "Research project",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    studio_db.update_chat_thread("thread-1", {"projectId": "project-1"})
+    _create()
+    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    research_db.approve("run-1", 1, plan["planHash"])
+    research_db.claim_next("worker-1")
+
+    cancelled: list[str] = []
+    request = SimpleNamespace(
+        app = SimpleNamespace(
+            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
+        )
+    )
+
+    deleted = chat_history.delete_project(
+        "project-1", request, delete_files = False, current_subject = "alice"
+    )
+
+    assert deleted.id == "project-1"
+    assert studio_db.get_chat_thread("thread-1") is None
+    assert research_db.get_run("run-1") is None
+    assert cancelled == ["run-1"]
+
+
+def test_clear_history_cancels_runs_captured_by_delete_transaction(research_home):
+    from routes import chat_history
+
+    _create()
+    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    research_db.approve("run-1", 1, plan["planHash"])
+    research_db.claim_next("worker-1")
+
+    cancelled: list[str] = []
+    request = SimpleNamespace(
+        app = SimpleNamespace(
+            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
+        )
+    )
+
+    chat_history.clear_history(request, current_subject = "alice")
+
+    assert studio_db.get_chat_thread("thread-1") is None
+    assert research_db.get_run("run-1") is None
     assert cancelled == ["run-1"]
 
 

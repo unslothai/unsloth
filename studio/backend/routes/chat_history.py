@@ -23,12 +23,12 @@ from storage.studio_db import (
     ChatMessageProtectedError,
     ChatThreadPreconditionFailed,
     CorruptSettingsError,
-    clear_chat_history,
+    clear_chat_history_with_active_research_runs,
     count_chat_threads,
     count_forks_for_message,
     delete_chat_attachment,
-    delete_chat_threads,
-    delete_chat_project,
+    delete_chat_threads_with_active_research_runs,
+    delete_chat_project_with_active_research_runs,
     ensure_chat_project_workspace,
     fork_chat_thread,
     get_chat_attachment,
@@ -337,36 +337,20 @@ def patch_thread(
     return ChatThread(**thread)
 
 
-def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
-    """Signal any active research runs on these threads to stop before their rows are deleted.
-
-    Deleting a thread cascade-deletes its research_runs row, but the worker only notices at its
-    next lease check, so it can keep doing model/web/RAG work (up to a tool timeout) for a run
-    that no longer exists. Best-effort: cancellation bookkeeping must never break the deletion.
-    """
-    if not thread_ids:
-        return
-    try:
-        from storage import research_runs_db
-    except Exception:  # noqa: BLE001 - research storage optional/unavailable
-        return
+def _cancel_deleted_research_runs(request: Request, run_ids: list[str]) -> None:
+    """Signal workers for active runs captured by the deletion transaction."""
     supervisor = getattr(request.app.state, "research_supervisor", None)
-    for thread_id in thread_ids:
+    if supervisor is None:
+        return
+    for run_id in run_ids:
         try:
-            active = research_runs_db.list_active(thread_id)
-        except Exception:  # noqa: BLE001
-            continue
-        for run in active:
-            try:
-                status = research_runs_db.request_cancel(run["id"])
-                if supervisor is not None and status == "cancelling":
-                    supervisor.cancel(run["id"])
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "chat_history.cancel_active_research_failed run_id=%s",
-                    run.get("id"),
-                    exc_info = True,
-                )
+            supervisor.cancel(run_id)
+        except Exception:  # noqa: BLE001 - cancellation is best-effort after commit
+            logger.warning(
+                "chat_history.cancel_deleted_research_failed run_id=%s",
+                run_id,
+                exc_info = True,
+            )
 
 
 @router.delete("/threads")
@@ -375,8 +359,8 @@ def delete_threads(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _cancel_active_research(request, payload.ids)
-    delete_chat_threads(payload.ids)
+    deleted_research_run_ids = delete_chat_threads_with_active_research_runs(payload.ids)
+    _cancel_deleted_research_runs(request, deleted_research_run_ids)
     return {"status": "deleted"}
 
 
@@ -571,15 +555,15 @@ def delete_project(
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
-    _cancel_active_research(
-        request, [thread["id"] for thread in list_chat_threads(project_id = project_id)]
+    project, deleted_research_run_ids = delete_chat_project_with_active_research_runs(
+        project_id, delete_files = delete_files
     )
-    project = delete_chat_project(project_id, delete_files = delete_files)
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    _cancel_deleted_research_runs(request, deleted_research_run_ids)
     # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
     try:
         import os
@@ -734,8 +718,8 @@ def record_import_ledger(
 
 @router.delete("")
 def clear_history(request: Request, current_subject: str = Depends(get_current_subject)):
-    _cancel_active_research(request, [thread["id"] for thread in list_chat_threads()])
-    clear_chat_history()
+    deleted_research_run_ids = clear_chat_history_with_active_research_runs()
+    _cancel_deleted_research_runs(request, deleted_research_run_ids)
     return {"status": "deleted"}
 
 
