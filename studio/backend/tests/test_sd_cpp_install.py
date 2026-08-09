@@ -1629,7 +1629,12 @@ def test_an_unreadable_record_does_not_retire_the_memo(tmp_path, monkeypatch):
 
     real_open = builtins.open
 
-    def _readonly_record(file, mode = "r", *a, **k):
+    def _readonly_record(
+        file,
+        mode = "r",
+        *a,
+        **k,
+    ):
         if str(file).endswith(sdmod.INSTALL_RECORD) and "w" in mode:
             raise OSError("permission denied")
         return real_open(file, mode, *a, **k)
@@ -1639,7 +1644,12 @@ def test_an_unreadable_record_does_not_retire_the_memo(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "open", real_open)
     assert sdmod.installed_accelerator(root) == "cuda"
 
-    def _unreadable(file, mode = "r", *a, **k):
+    def _unreadable(
+        file,
+        mode = "r",
+        *a,
+        **k,
+    ):
         if str(file).endswith(sdmod.INSTALL_RECORD):
             raise PermissionError("the file is open in another process")
         return real_open(file, mode, *a, **k)

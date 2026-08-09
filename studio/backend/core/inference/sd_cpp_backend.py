@@ -135,9 +135,7 @@ def _tree_reader(binary: Optional[str]):
     with _tree_state:
         if _tree_installing:
             logger.info("waiting for the sd.cpp install to finish before starting a generation")
-            if not _tree_state.wait_for(
-                lambda: not _tree_installing, timeout = _TREE_WAIT_TIMEOUT_S
-            ):
+            if not _tree_state.wait_for(lambda: not _tree_installing, timeout = _TREE_WAIT_TIMEOUT_S):
                 raise RuntimeError(
                     f"the stable-diffusion.cpp install is still replacing its binaries after "
                     f"{int(_TREE_WAIT_TIMEOUT_S)}s. Try again once it has finished."
