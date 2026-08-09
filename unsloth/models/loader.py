@@ -1392,6 +1392,7 @@ class FastModel(FastBaseModel):
                 use_safetensors = kwargs.get("use_safetensors"),
                 trust_remote_code = trust_remote_code,
                 return_mapper_changed = True,
+                config = user_config,
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -1808,6 +1809,7 @@ class FastModel(FastBaseModel):
                     variant = kwargs.get("variant"),
                     use_safetensors = kwargs.get("use_safetensors"),
                     trust_remote_code = trust_remote_code,
+                    config = user_config,
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)

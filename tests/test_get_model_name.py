@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from unsloth.models.loader_utils import get_model_name
 from unsloth.models import loader_utils
@@ -322,6 +323,30 @@ class TestGetModelName(unittest.TestCase):
                 processor = False,
             )
             kwargs = dict(load_in_4bit = True, cache_dir = cache_dir, local_files_only = True)
+
+            self.assertEqual(get_model_name("Qwen/Qwen2.5-VL-3B-Instruct", **kwargs), legacy)
+            open(os.path.join(canonical_snapshot, "preprocessor_config.json"), "w").close()
+            self.assertEqual(get_model_name("Qwen/Qwen2.5-VL-3B-Instruct", **kwargs), canonical)
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_supplied_vlm_config_requires_processor_artifacts(self):
+        canonical = "unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            _write_cached_model(legacy_cache, "legacy-main", vision = True)
+            canonical_snapshot = _write_cached_model(
+                canonical_cache, "canonical-main", processor = False
+            )
+            os.remove(os.path.join(canonical_snapshot, "config.json"))
+            kwargs = dict(
+                load_in_4bit = True,
+                cache_dir = cache_dir,
+                local_files_only = True,
+                require_config = False,
+                config = SimpleNamespace(vision_config = {}),
+            )
 
             self.assertEqual(get_model_name("Qwen/Qwen2.5-VL-3B-Instruct", **kwargs), legacy)
             open(os.path.join(canonical_snapshot, "preprocessor_config.json"), "w").close()

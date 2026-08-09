@@ -253,6 +253,7 @@ def _prefer_legacy_lowercase_cache(
     variant = None,
     use_safetensors = None,
     trust_remote_code = False,
+    model_config = None,
 ):
     """Use a pre-fix lowercase cache only when offline and no canonical cache exists."""
     if (
@@ -301,18 +302,27 @@ def _prefer_legacy_lowercase_cache(
         try:
             import json
             with open(config_path, encoding = "utf-8") as config_file:
-                config = json.load(config_file)
+                cached_config = json.load(config_file)
 
-            if not isinstance(config, dict):
+            if not isinstance(cached_config, dict):
                 return False
         except (OSError, ValueError, TypeError):
             if require_config:
                 return False
-            config = {}
+            cached_config = {}
         if require_tokenizer and not _snapshot_has_tokenizer(snapshot):
             return False
-        architectures = config.get("architectures") or []
-        is_vlm = "vision_config" in config or any(
+        cache_config = model_config if model_config is not None else cached_config
+        architectures = (
+            cache_config.get("architectures")
+            if isinstance(cache_config, dict)
+            else getattr(cache_config, "architectures", None)
+        ) or []
+        is_vlm = (
+            "vision_config" in cache_config
+            if isinstance(cache_config, dict)
+            else hasattr(cache_config, "vision_config")
+        ) or any(
             architecture.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
             for architecture in architectures
             if isinstance(architecture, str)
@@ -491,6 +501,7 @@ def get_model_name(
     variant = None,
     use_safetensors = None,
     return_mapper_changed = False,
+    config = None,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -533,6 +544,7 @@ def get_model_name(
             variant,
             use_safetensors,
             trust_remote_code,
+            config,
         )
 
     if (
