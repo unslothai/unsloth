@@ -645,10 +645,9 @@ def test_the_snapshot_is_overwritten_while_import_utils_is_mid_body():
     """The window between Transformers' two reads of its own decision.
 
     `import_utils` copies the environment into `USE_TF` / `USE_JAX` at the top and
-    only derives `_tf_available` / `_flax_available` from those globals ~150 lines
-    later. A guard that lands in between finds the environment already spent and no
-    flag to clear, so writing only those two left the cached `AUTO` to mark a broken
-    backend available. The constant is the one thing still read after this point.
+    derives the flags from those globals ~150 lines later. A guard landing in between
+    finds the environment spent and no flag to clear, so writing only those two left
+    a cached `AUTO` to mark a broken backend available.
     """
     import_utils = types.ModuleType("transformers.utils.import_utils")
     import_utils.USE_TF = "AUTO"
@@ -677,12 +676,11 @@ def test_the_snapshot_is_overwritten_while_import_utils_is_mid_body():
 
 
 def test_a_broken_backend_loses_inside_the_real_import_utils_window(tmp_path):
-    """The same window, against the installed Transformers rather than a stand-in.
+    """The same window against the installed Transformers, not a stand-in.
 
-    Runs the real `import_utils.py` in two halves -- constants, then the flag
-    derivation -- with the guard in between, which is exactly what another thread
-    part-way through `import transformers` exposes. Without the constant write this
-    ends `_tf_available = True` with an unimportable TensorFlow on the path.
+    Runs the real `import_utils.py` in two halves, constants then flag derivation,
+    with the guard in between. Without the constant write this ends
+    `_tf_available = True` with an unimportable TensorFlow on the path.
     """
     _needs_v4_flag("USE_TF")
     out = _run(

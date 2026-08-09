@@ -25,19 +25,14 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # 5.x dropped both backends and ignores all of this.
 if "transformers" not in sys.modules:
     _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
-    # Overwrite unless the value is a real opt-in, rather than `setdefault`.
-    # `setdefault` keeps whatever is there, and "whatever is there" includes
-    # `AUTO` -- which Transformers reads as "enable if installed", the exact
-    # state this guard exists to prevent. A launcher that mirrors Transformers'
-    # own defaults into the environment therefore disabled the guard silently:
-    # verified with a broken TensorFlow on the path, `USE_TF=AUTO` plus today's
-    # `setdefault` leaves `_tf_available` True. Anything that is not an opt-in
-    # already means "off" to Transformers, so writing "0" over it changes no
-    # behaviour beyond closing that hole.
+    # Overwrite unless the value is a real opt-in, rather than `setdefault`:
+    # `setdefault` keeps `AUTO`, which Transformers reads as "enable if installed"
+    # - the exact state this guard prevents - so a launcher mirroring Transformers'
+    # own defaults into the environment disabled it silently. Anything that is not
+    # an opt-in already means "off", so writing "0" over it changes nothing else.
     #
-    # Same hands-off rule as the branch below: a backend that is already
-    # imported is one in use, so opting it out would strand a working
-    # `from_tf = True` load in a process that never set the variable itself.
+    # Same hands-off rule as the branch below: a backend already imported is one in
+    # use, and opting it out would strand a working `from_tf = True` load.
     for _var, _modules, _opt_ins in (
         ("USE_TF", ("tensorflow",), ("USE_TF", "FORCE_TF_AVAILABLE")),
         ("USE_FLAX", ("flax", "jax"), ("USE_FLAX",)),
@@ -50,24 +45,20 @@ if "transformers" not in sys.modules:
     del _TRUE, _var, _modules, _opt_ins
 else:
     # Usually too late for the variables, but not for the answer they feed:
-    # Transformers decided `_tf_available` / `_flax_available` from `find_spec`
-    # alone, without importing either backend, so clearing the cached flags still
-    # keeps `image_transforms` from loading a broken one. Only when the backend is
-    # genuinely unused, and never against an explicit opt-in.
+    # Transformers set `_tf_available` / `_flax_available` from `find_spec` alone,
+    # without importing either backend, so clearing the cached flags still keeps
+    # `image_transforms` from loading a broken one. Only when the backend is unused,
+    # and never against an explicit opt-in.
     #
-    # "Usually", because `"transformers" in sys.modules` does not mean
-    # Transformers finished importing. Python publishes a module object before
-    # running its body, so a thread part-way through `import transformers` -- or a
-    # `transformers` submodule importing Unsloth -- lands here while
-    # `transformers.utils.import_utils` does not exist yet and has therefore not
-    # read the environment. Verified with an audit hook on the real package: at
-    # the moment `import_utils` starts importing, `"transformers" in sys.modules`
-    # is already True. Left as flag-clearing only, this branch found nothing to
-    # clear, did nothing, and Transformers then set `_tf_available = True` anyway.
-    # So write the variables here too. Once Transformers has read them the write
-    # is inert, and inside that window it is the only thing that still decides.
-    # Doing it unconditionally is deliberate: waiting on another thread's import
-    # from module scope is a deadlock, not a fix.
+    # "Usually", because `"transformers" in sys.modules` does not mean Transformers
+    # finished importing: Python publishes a module object before running its body,
+    # so a thread part-way through `import transformers` - or a `transformers`
+    # submodule importing Unsloth - lands here with `import_utils` still absent and
+    # the environment still unread. Flag-clearing alone found nothing to clear and
+    # Transformers went on to set `_tf_available = True`, so write the variables
+    # here too: inert once they have been read, decisive inside that window. And
+    # unconditionally, because waiting on another thread's import from module scope
+    # is a deadlock, not a fix.
     _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
     _import_utils = sys.modules.get("transformers.utils.import_utils")
     for _var, _flag, _const, _modules, _opt_ins, _cached in (
@@ -104,11 +95,10 @@ else:
         os.environ[_var] = "0"
         try:
             # `import_utils` can itself be mid-body: it copies the environment into
-            # `USE_TF` / `USE_JAX` at the top and derives the flag from those same
-            # globals ~150 lines later, so between the two the environment is spent
-            # and the flag does not exist yet -- the only lever left is the constant.
-            # Present means 4.x already ran that copy, so the write is inert once the
-            # flag has been derived and decisive before it. 5.x has neither name.
+            # `USE_TF` / `USE_JAX` at the top and derives the flag from those globals
+            # ~150 lines later, so in between the environment is spent and the flag
+            # does not exist yet, leaving the constant as the only lever. Present
+            # means 4.x already ran that copy; 5.x has neither name.
             if hasattr(_import_utils, _const):
                 setattr(_import_utils, _const, "0")
             # Absent on 5.x, and a module proxy can refuse the write.
