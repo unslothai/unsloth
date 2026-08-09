@@ -794,3 +794,37 @@ def test_the_saved_adapter_carries_the_diffusers_transformer_prefix(tmp_path):
     _save_lora(str(tmp_path), {"transformer_blocks.0.attn.to_q.lora_A.weight": torch.zeros(2, 2)})
     saved = load_file(str(tmp_path / "pytorch_lora_weights.safetensors"))
     assert list(saved) == ["transformer.transformer_blocks.0.attn.to_q.lora_A.weight"]
+
+
+# ── the hosted denoiser is a component, not a base ───────────────────────────
+
+
+def test_the_hosted_prequant_denoiser_is_refused_as_a_training_base():
+    """The two registries mean opposite things by ``prequant_repos``: an image family's entry is a
+    full quantized PIPELINE mirror, a video family's is the pre-quantized DENOISER alone. Reading
+    both as bases let the H3 denoiser repo through the preflight -- its name resolves to the
+    family, the unsloth/* trust gate passes it -- so the run evicted the resident GPU workloads
+    and only then failed inside ModularPipeline.from_pretrained."""
+    from core.inference.video_families import detect_video_family
+    from core.training.diffusion_train_common import (
+        _component_only_repos,
+        resolve_trainable_family,
+    )
+
+    fam = detect_video_family("", override = "minimax-h3")
+    denoiser_repo = fam.prequant_repos[0][1]
+    assert _component_only_repos()[denoiser_repo.lower()][:2] == ("minimax-h3", "transformer")
+    with pytest.raises(ValueError) as exc:
+        resolve_trainable_family(denoiser_repo)
+    detail = str(exc.value)
+    assert "not a full model" in detail
+    assert fam.base_repo in detail  # and names what to train instead
+
+
+def test_the_real_h3_base_is_still_trainable():
+    """The other side of the same coin: the base itself must not be caught by the refusal."""
+    from core.inference.video_families import detect_video_family
+    from core.training.diffusion_train_common import resolve_trainable_family
+
+    fam = detect_video_family("", override = "minimax-h3")
+    assert resolve_trainable_family(fam.base_repo) == "minimax-h3"

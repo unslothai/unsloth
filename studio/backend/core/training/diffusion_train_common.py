@@ -157,16 +157,23 @@ def _component_only_repos() -> dict[str, tuple[str, str, str]]:
     claim it and the ``unsloth/*`` trust gate passes it. The registries' own tables are the only
     authority on what a repo actually holds, so read them rather than special-casing repo ids.
 
+    A hosted pre-quantized DENOISER (a video family's ``prequant_repos``) is the same shape: the
+    DiT alone, no pipeline around it. The image registry's identically-named table means the
+    opposite -- a full quantized pipeline mirror -- so the two are read separately rather than
+    together.
+
     A repo that is ALSO registered as a base somewhere (a full quantized pipeline mirror, a
     deploy base, a train base) is a base and never appears here."""
     from core.inference.diffusion_families import detect_family
     from core.inference.video_families import detect_video_family
 
-    families = [detect_family("", override = n) for n in supported_family_names()]
-    families += [detect_video_family("", override = n) for n in supported_video_family_names()]
+    image_families = [detect_family("", override = n) for n in supported_family_names()]
+    video_families = [detect_video_family("", override = n) for n in supported_video_family_names()]
     components: dict[str, tuple[str, str, str]] = {}
     bases: set[str] = set()
-    for fam in families:
+    for fam, is_video in [(f, False) for f in image_families] + [
+        (f, True) for f in video_families
+    ]:
         if fam is None:
             continue
         for attr in ("base_repo", "deploy_base_repo"):
@@ -174,9 +181,23 @@ def _component_only_repos() -> dict[str, tuple[str, str, str]]:
             if repo:
                 bases.add(str(repo).strip().lower())
         bases.update(str(r).strip().lower() for r in getattr(fam, "train_base_repos", ()) if r)
-        # (scheme, repo) and (base, scheme, repo): both name a FULL pipeline mirror, so both are bases.
+        # (scheme, repo) and (base, scheme, repo). The two registries mean DIFFERENT things by
+        # these tables, so they cannot be read the same way. An image family's entry is a full
+        # quantized PIPELINE mirror, and so a base. A video family's is a hosted pre-quantized
+        # DENOISER -- the DiT alone, as the field's own docstring says -- which is a component in
+        # exactly the way a pre-cast text encoder is: no model_index.json, no VAE, no scheduler.
+        # Treating one as a base is what let it through the training preflight, resolve to its
+        # family by name, pass the unsloth/* trust gate, and fail inside from_pretrained only
+        # after the resident GPU workloads had been evicted.
         for table in ("prequant_repos", "prequant_variant_repos"):
-            bases.update(str(row[-1]).strip().lower() for row in getattr(fam, table, ()) if row)
+            for row in getattr(fam, table, ()) or ():
+                if not row:
+                    continue
+                repo = str(row[-1]).strip().lower()
+                if is_video:
+                    components.setdefault(repo, (fam.name, "transformer", str(fam.base_repo)))
+                else:
+                    bases.add(repo)
         for _scheme, component, repo in getattr(fam, "te_prequant_repos", ()):
             components.setdefault(
                 str(repo).strip().lower(), (fam.name, str(component), str(fam.base_repo))
