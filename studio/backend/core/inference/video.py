@@ -1197,6 +1197,60 @@ class VideoBackend:
             return False
 
     @staticmethod
+    def _denoiser_prequant_hub_files(
+        fam: Any,
+        transformer_quant: Optional[str],
+        base: Optional[str],
+        api: Any,
+    ) -> tuple[Optional[str], list[tuple[str, int]]]:
+        """``(repo_id, [(rfilename, size)])`` for the hosted pre-quantized denoiser, or
+        ``(None, [])``.
+
+        The denoiser mirror of ``_te_prequant_hub_files``. ``_denoiser_prequant_covered`` already
+        drops the dense DiT shards from the plan, so without this the checkpoint that replaces
+        them is in no entry at all: the byte total under-reports by the size of the artifact
+        (20.25 GB for H3 int8), the disk preflight passes on a volume that cannot hold it, and an
+        offline stage completes without the one file the load needs.
+
+        Same failure rule as the encoder helper: an unreachable repo yields no files and is only
+        logged, because the plan is a staging hint and the load still falls back to dense."""
+        scheme = (transformer_quant or "").strip().lower()
+        if scheme in ("", "auto", "off", "none"):
+            return None, []
+        try:
+            from .diffusion_prequant import resolve_prequant_source
+
+            source = resolve_prequant_source(fam, scheme, base_repo = base)
+        except Exception as exc:  # noqa: BLE001 -- a bad registry entry must not sink the plan
+            logger.warning("video.denoiser_prequant_unresolved: %s", exc)
+            return None, []
+        # A local override is already on disk; only a hosted checkpoint is staged.
+        if source is None or getattr(source, "kind", None) != "repo":
+            return None, []
+        # The root name first, then the legacy scheme name: resolve_prequant_source hands back both
+        # and the load tries them in that order, so the plan must stage whichever one exists.
+        wanted = [
+            n
+            for n in (
+                getattr(source, "filename", None),
+                getattr(source, "fallback_filename", None),
+            )
+            if n
+        ]
+        try:
+            info = api.model_info(source.location, files_metadata = True)
+        except Exception as exc:  # noqa: BLE001 -- unavailable prequant means the dense DiT
+            logger.warning(
+                "video.denoiser_prequant_unavailable: %s: %s", source.location, exc
+            )
+            return None, []
+        by_name = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
+        for name in wanted:
+            if name in by_name:
+                return source.location, [(name, by_name[name])]
+        return None, []
+
+    @staticmethod
     def _te_prequant_hub_files(
         sources: dict[str, Any], api: Any
     ) -> dict[str, list[tuple[str, int]]]:
@@ -1443,6 +1497,13 @@ class VideoBackend:
             te_files = self._te_prequant_hub_files(te_sources, api)
             for component, files in te_files.items():
                 total += add(te_sources[component].location, files)
+            # The denoiser's replacement artifact, for the same reason: the base entry below drops
+            # the dense DiT shards whenever this resolves, so it has to be staged in their place.
+            dq_repo, dq_files = self._denoiser_prequant_hub_files(
+                fam, transformer_quant, base, api
+            )
+            if dq_repo:
+                total += add(dq_repo, dq_files)
             if base and not Path(base).expanduser().exists():
                 info = api.model_info(base, files_metadata = True)
                 total += add(
