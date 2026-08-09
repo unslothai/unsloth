@@ -14,7 +14,8 @@ trl==0.23.1
 # executorch>=1.0.1               # 41.5 MB - no imports in unsloth/zoo/studio
 torch-c-dlpack-ext
 sentence_transformers==5.2.0
-transformers==4.57.6
+transformers==5.5.0; python_version >= "3.10"
+transformers==4.57.6; python_version < "3.10"
 # No macOS x86_64 wheel at any version, so uv falls back to an sdist that shells out to
 # cmake. Skipping it on Intel Macs keeps that install compiler-free.
 pytorch_tokenizers; sys_platform != "darwin" or platform_machine == "arm64"

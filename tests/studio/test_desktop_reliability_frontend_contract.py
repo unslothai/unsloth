@@ -744,7 +744,9 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         source = page.read_text(encoding = "utf-8")
-        before, marker, band = source.partition("h-[48px] shrink-0 items-start justify-between")
+        # matched on the band's size alone: Images lays its header out as a grid and Video as a
+        # flex row, so the stacking contract below is what this pins, not one layout's utilities.
+        before, marker, band = source.partition("h-[48px] shrink-0")
         assert marker, page.name
         opening = before.rsplit('<div className="', 1)[1]
         for token in ("pointer-events-none", "relative", "z-40"):
@@ -760,15 +762,17 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 def test_images_header_clears_collapsed_tauri_titlebar_controls():
     """Images clears collapsed controls without overlapping its narrow-desktop tabs."""
     source = IMAGES_PAGE.read_text(encoding = "utf-8")
-    before, marker, after = source.partition("h-[48px] shrink-0 items-start justify-between")
+    before, marker, after = source.partition("h-[48px] shrink-0")
     assert marker
     opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
     header = opening + after.split("{/* Train mode", 1)[0]
 
     assert "const { isMobile, pinned } = useSidebar();" in source
-    assert "isMobile" in opening
-    assert "pl-12" in opening
-    assert "md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in opening
+    # The tracks carry the insets, so the grid stays unpadded and centres the pill on the header.
+    assert "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in opening
+    assert not re.search(r"\bp[lrx]-", opening), opening
+    assert "isMobile" in header
+    assert "pl-12" in header
     assert "!pinned && isTauri" in header
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
     assert "pl-[var(--studio-media-header-left-inset,1.5rem)]" in header
@@ -777,10 +781,12 @@ def test_images_header_clears_collapsed_tauri_titlebar_controls():
     assert '"pointer-events-auto flex min-w-0 max-w-full items-center gap-2"' in left_controls
     assert 'className="!h-[34px] max-w-full overflow-hidden"' in left_controls
 
+    # The pill is a grid item at every width, and its padding keys off the header's own width:
+    # md:/xl: are viewport queries, while the header is the viewport minus a resizable sidebar.
     mode_switch = source.split("Create | Train page-mode switch", 1)[1].split("tabs={[", 1)[0]
-    assert "md:static" in mode_switch
-    assert "xl:absolute" not in mode_switch
-    assert "md:[&>button]:px-3 xl:[&>button]:px-11" in mode_switch
+    assert "absolute" not in mode_switch
+    assert "justify-self-center" in mode_switch
+    assert "[&>button]:px-3 @min-[560px]:[&>button]:px-11" in mode_switch
 
 
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():

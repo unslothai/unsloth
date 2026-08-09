@@ -1786,7 +1786,8 @@ export function DiffusionTrainPanel({
       {/* Right: the run area. Before a run: training settings + previous-runs history; during/after: the live view. Selecting a previous run re-plots its logs read-only. */}
       {/* Sections carry no card of their own: spacing and a rule separate them. p-1.5 keeps the chart cards' outer ring from being clipped. */}
       {/* 40px off the rule, the gutter the settings column has off the page edge. */}
-      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 p-1.5 pb-7 pl-8 md:overflow-y-auto md:pl-10">
+      {/* @container: this pane is whatever is left beside the 416px rail, so sm: put four stat cells in ~266px against the 396px they need. */}
+      <div className="@container hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 p-1.5 pb-7 pl-8 md:overflow-y-auto md:pl-10">
         {viewRun && !hasRun ? (
           <>
             <div className="flex flex-col gap-3">
@@ -1803,7 +1804,7 @@ export function DiffusionTrainPanel({
                   Back
                 </Button>
               </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat label="Status" value={viewRun.status} />
                 <Stat label="Steps" value={`${viewRun.step}/${viewRun.total_steps}`} />
                 <Stat
@@ -1959,7 +1960,7 @@ export function DiffusionTrainPanel({
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat
                   label="Loss"
                   value={status?.loss != null ? status.loss.toFixed(4) : "-"}
@@ -2041,7 +2042,14 @@ export function DiffusionTrainPanel({
                   {completed
                     ? "Trained"
                     : "Stopped early; the adapter as of the last finished step was saved"}
-                  {status?.family ? ` (${status.family})` : ""} and added to the LoRA picker.
+                  {status?.family ? ` (${status.family})` : ""}
+                  {/* The LoRA picker and Deploy to Create are the Images surface, and only an
+                      adapter published into the diffusion LoRA catalog reaches them. A family
+                      trained here without that catalog (video) still saves a loadable adapter,
+                      so report the file and claim nothing more. */}
+                  {status?.catalog_path
+                    ? " and added to the LoRA picker."
+                    : ". Load it from the path below."}
                   {status?.lora_path && (
                     <span className="mt-1 block break-all">Saved: {status.lora_path}</span>
                   )}
@@ -2050,9 +2058,12 @@ export function DiffusionTrainPanel({
                   )}
                 </p>
                 <div className="mt-1 flex flex-wrap gap-2">
-                  <Button type="button" size="sm" onClick={onDeployClick}>
-                    Deploy to Create
-                  </Button>
+                  {/* A video run publishes no catalog entry, so there is nothing to deploy. */}
+                  {status?.catalog_path && (
+                    <Button type="button" size="sm" onClick={onDeployClick}>
+                      Deploy to Create
+                    </Button>
+                  )}
                   {/* Only a run stopped short can be continued; a completed one is already at its
                       target. Disabled until the run record lands (and enabled only if its
                       checkpoint really is on disk), with the backend's reason as the tooltip. */}

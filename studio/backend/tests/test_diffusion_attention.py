@@ -795,3 +795,207 @@ def test_probe_timeout_matches_the_other_wheel_callers(monkeypatch):
     monkeypatch.setattr(wu, "probe_torch_wheel_env", _probe)
     att._xformers_wheel_target()
     assert seen == {"timeout": 30, "include_windows": True}
+
+
+# ── the native dispatch's real kernel set (#8225) ────────────────────────────────
+
+
+@pytest.fixture(autouse = True)
+def _clear_sdpa_probe_cache():
+    """The probe memoises per (device, dtype) for the process; tests must not inherit it."""
+    att._SDPA_PROBE_CACHE.clear()
+    yield
+    att._SDPA_PROBE_CACHE.clear()
+
+
+def _stub_probe(
+    monkeypatch,
+    kernels,
+    *,
+    record = None,
+):
+    def _probe(device, dtype):
+        if record is not None:
+            record.append((device, dtype))
+        return tuple(kernels)
+
+    monkeypatch.setattr(att, "_probe_sdpa_kernels", _probe)
+
+
+def test_math_only_is_read_off_a_probe_not_the_flags(monkeypatch):
+    # The bug: on the reporter's gfx1200 build flash_sdp_enabled() and mem_efficient_sdp_enabled()
+    # both answer True while every dispatch to them raises "No available kernel", so dispatch
+    # degrades to math and materialises the whole N x N score matrix. Only a probe sees that.
+    _stub_probe(monkeypatch, ("math",))
+    assert att.sdpa_math_only(_target()) is True
+    assert att.available_sdpa_kernels(_target()) == ("math",)
+
+
+@pytest.mark.parametrize(
+    "kernels",
+    [
+        ("flash", "mem_efficient", "cudnn", "math"),
+        ("flash", "math"),
+        ("mem_efficient", "math"),
+        ("cudnn", "math"),
+    ],
+)
+def test_any_subquadratic_kernel_means_not_math_only(kernels, monkeypatch):
+    # Flash / mem-efficient / cuDNN are all O(N) in working set, so any one of them present means
+    # the score matrix is never materialised and there is nothing to warn about.
+    _stub_probe(monkeypatch, kernels)
+    assert att.sdpa_math_only(_target()) is False
+
+
+def test_an_unanswerable_probe_is_not_a_math_only_verdict(monkeypatch):
+    # "Only math" is a claim about the hardware. A probe that could not run (no torch, no device,
+    # an allocator failure) has made no such claim, and must not refuse or warn on a guess.
+    _stub_probe(monkeypatch, ())
+    assert att.sdpa_math_only(_target()) is False
+    assert att.warn_if_sdpa_math_only(_target(), None) is False
+
+
+def test_a_probe_that_raises_is_swallowed(monkeypatch):
+    # A diagnostic may never be the thing that fails a load.
+    def _boom(device, dtype):
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(att, "_probe_sdpa_kernels", _boom)
+    assert att.available_sdpa_kernels(_target()) == ()
+    assert att.sdpa_math_only(_target()) is False
+
+
+def test_a_target_with_no_device_is_never_probed(monkeypatch):
+    seen: list = []
+    _stub_probe(monkeypatch, ("math",), record = seen)
+    assert att.available_sdpa_kernels(types.SimpleNamespace(device = "", dtype = None)) == ()
+    assert att.available_sdpa_kernels(types.SimpleNamespace(device = None, dtype = None)) == ()
+    assert seen == []
+
+
+def test_the_probe_runs_once_per_device_and_dtype(monkeypatch):
+    # A kernel cannot appear or vanish under a running interpreter, and this sits on the load
+    # path, so the probe is memoised. cuda:0 and cuda:1 are the same device TYPE.
+    seen: list = []
+    _stub_probe(monkeypatch, ("math",), record = seen)
+    for device in ("cuda", "cuda:0", "cuda:1"):
+        assert att.sdpa_math_only(types.SimpleNamespace(device = device, dtype = "fp16")) is True
+    assert len(seen) == 1
+    # A different dtype is a different question: fused kernels are half-precision only.
+    att.sdpa_math_only(types.SimpleNamespace(device = "cuda", dtype = "fp32"))
+    assert len(seen) == 2
+
+
+def test_a_dtypeless_target_probes_in_half_precision(monkeypatch):
+    # fp32 has no fused kernel anywhere, so probing at fp32 would report "math only" on hardware
+    # where flash is perfectly healthy.
+    import torch
+
+    seen: list = []
+    _stub_probe(monkeypatch, ("flash", "math"), record = seen)
+    att.available_sdpa_kernels(types.SimpleNamespace(device = "cuda", dtype = None))
+    assert seen == [("cuda", torch.float16)]
+
+
+def test_warn_names_the_quadratic_cost(monkeypatch):
+    # The message has to say WHY a 3.4 GB model asked for 66.54 GiB, or the next report is another
+    # allocation size to divide by hand.
+    _stub_probe(monkeypatch, ("math",))
+    logged: list = []
+    logger = types.SimpleNamespace(warning = lambda fmt, *a: logged.append(fmt % a))
+
+    assert att.warn_if_sdpa_math_only(_target(), logger) is True
+    assert len(logged) == 1
+    assert "math_only" in logged[0]
+    assert "score matrix" in logged[0] and "SQUARE" in logged[0]
+
+
+def test_warn_is_silent_on_a_healthy_device(monkeypatch):
+    _stub_probe(monkeypatch, ("flash", "math"))
+    logged: list = []
+    logger = types.SimpleNamespace(warning = lambda fmt, *a: logged.append(fmt % a))
+    assert att.warn_if_sdpa_math_only(_target(), logger) is False
+    assert logged == []
+
+
+def test_apply_native_reports_a_math_only_device(monkeypatch):
+    # select_attention_backend returns None on every non-NVIDIA device, so ROCm lands on the
+    # diffusers default and torch's dispatch decides. On a card with no fused kernel that decision
+    # is math, and today nothing says so until the OOM 70 seconds later.
+    monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
+    _stub_probe(monkeypatch, ("math",))
+    logged: list = []
+    logger = types.SimpleNamespace(
+        warning = lambda fmt, *a: logged.append(fmt % a),
+        info = lambda *a, **k: None,
+    )
+
+    assert (
+        apply_attention_backend(_pipe(_FakeTransformer()), None, logger = logger, target = _target())
+        is None
+    )
+    assert len(logged) == 1 and "math_only" in logged[0]
+
+
+def test_apply_reports_a_math_only_device_for_a_unet_pipeline(monkeypatch):
+    # SDXL denoises with pipe.unet, which carries no dispatcher setter, so there is no backend to
+    # set -- but its attention runs on the same torch SDPA and has the same quadratic blow-up, so
+    # the diagnosis has to be reported for it too.
+    _stub_probe(monkeypatch, ("math",))
+    logged: list = []
+    logger = types.SimpleNamespace(
+        warning = lambda fmt, *a: logged.append(fmt % a),
+        info = lambda *a, **k: None,
+    )
+    unet_pipe = types.SimpleNamespace(unet = object())
+
+    assert apply_attention_backend(unet_pipe, None, logger = logger, target = _target()) is None
+    assert len(logged) == 1 and "math_only" in logged[0]
+
+
+def test_apply_without_a_target_probes_nothing(monkeypatch):
+    # The parameter is optional, so every existing caller keeps its exact behaviour.
+    monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
+    seen: list = []
+    _stub_probe(monkeypatch, ("math",), record = seen)
+    assert apply_attention_backend(_pipe(_FakeTransformer()), None) is None
+    assert seen == []
+
+
+def test_apply_does_not_warn_when_a_real_backend_engaged(monkeypatch):
+    # A pinned kernel is the answer to the question the probe asks, so asking it is pointless.
+    seen: list = []
+    _stub_probe(monkeypatch, ("math",), record = seen)
+    logged: list = []
+    logger = types.SimpleNamespace(
+        warning = lambda fmt, *a: logged.append(fmt % a),
+        info = lambda *a, **k: None,
+    )
+    t = _FakeTransformer()
+    assert (
+        apply_attention_backend(_pipe(t), "_native_cudnn", logger = logger, target = _target())
+        == "_native_cudnn"
+    )
+    assert seen == [] and logged == []
+
+
+def test_an_unanswerable_probe_is_not_memoised(monkeypatch):
+    """A probe that could not RUN is not an answer about the hardware. Caching it disabled the
+    warning for the rest of the process, including after the memory that broke it was freed --
+    and a device under memory pressure is exactly when this warning matters."""
+    calls: list = []
+
+    def _flaky(device, dtype):
+        calls.append(dtype)
+        if len(calls) == 1:
+            raise RuntimeError("CUDA out of memory while allocating the probe tensor")
+        return ("flash", "math")
+
+    monkeypatch.setattr(att, "_probe_sdpa_kernels", _flaky)
+
+    assert att.available_sdpa_kernels(_target()) == ()
+    assert att.sdpa_math_only(_target()) is False  # silence is still not evidence
+    # The retry answers, and only that answer is kept.
+    assert att.available_sdpa_kernels(_target()) == ("flash", "math")
+    assert att.available_sdpa_kernels(_target()) == ("flash", "math")
+    assert len(calls) == 2, "the answer must be memoised; the failure must not be"
