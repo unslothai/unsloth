@@ -1450,38 +1450,112 @@ def test_a_failed_server_upgrade_is_not_retried_by_the_cli_probe(tmp_path, monke
     assert attempts == ["cuda"], "the same bundle must not be resolved twice in one selection"
 
 
-def test_an_archive_without_a_server_drops_the_previous_one(tmp_path, monkeypatch):
-    """An upgrade whose archive ships only sd-cli left the OLD accelerator's sd-server in place,
-    while the record labelled the whole tree as the new accelerator: the backend then rediscovered
-    that stale server, trusted the record, and ran a CUDA request on the old CPU build forever."""
+def test_a_bundle_drops_the_binaries_it_did_not_supply(tmp_path, monkeypatch):
+    """Extraction MERGES, so a bundle whose layout differs from the previous one (or that ships no
+    server at all) leaves the old accelerator's executables behind -- and _layout_candidates
+    prefers build/bin over the prebuilt's versioned subdirectory, so the stale copy keeps winning
+    while the record claims the new accelerator."""
     target = tmp_path / "sd"
-    (target / "sd-bin").mkdir(parents = True)
-    stale = target / "sd-bin" / ("sd-server.exe" if sys.platform == "win32" else "sd-server")
-    stale.write_bytes(b"old-cpu-server")
+    suffix = ".exe" if sys.platform == "win32" else ""
+    old_dir = target / "build" / "bin"
+    old_dir.mkdir(parents = True)
+    (old_dir / f"sd-cli{suffix}").write_bytes(b"old-cpu-cli")
+    (old_dir / f"sd-server{suffix}").write_bytes(b"old-cpu-server")
+    new_dir = target / "sd-bundle-cuda12" / "bin"
+    new_dir.mkdir(parents = True)
+    (new_dir / f"sd-cli{suffix}").write_bytes(b"new-cuda-cli")
 
-    cli_name = "sd-cli.exe" if sys.platform == "win32" else "sd-cli"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr(f"bin/{cli_name}", "new")
+        zf.writestr(f"sd-bundle-cuda12/bin/sd-cli{suffix}", "new")
     buf.seek(0)
     with zipfile.ZipFile(buf) as zf:
-        assert sdmod._archive_ships_sd_server(zf) is False
+        supplied = sdmod._archive_binary_paths(zf, target)
 
-    sdmod._discard_stale_sd_server(target)
-    assert not stale.exists()
-    assert sdmod._locate_sd_server(target) is None
+    sdmod._discard_superseded_binaries(target, supplied)
+    # Everything this bundle did not write is gone, whatever its path or name.
+    assert not (old_dir / f"sd-cli{suffix}").exists()
+    assert not (old_dir / f"sd-server{suffix}").exists()
+    # What it did write stays.
+    assert (new_dir / f"sd-cli{suffix}").read_bytes() == b"new-cuda-cli"
 
 
-def test_an_archive_that_does_ship_a_server_keeps_it(tmp_path):
-    """The removal must key on the archive's member list, not on what is on disk: a bundle that
-    ships its own sd-server has just written it, and deleting that would break every upgrade."""
-    server_name = "sd-server.exe" if sys.platform == "win32" else "sd-server"
+def test_a_bundle_keeps_every_binary_it_wrote(tmp_path):
+    """The sweep must key on the archive's member list, not on what is on disk: deleting a copy
+    the bundle just extracted would break every install."""
+    target = tmp_path / "sd"
+    suffix = ".exe" if sys.platform == "win32" else ""
+    d = target / "bin"
+    d.mkdir(parents = True)
+    (d / f"sd-cli{suffix}").write_bytes(b"new")
+    (d / f"sd-server{suffix}").write_bytes(b"new")
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr(f"bin/{server_name}", "new")
+        zf.writestr(f"bin/sd-cli{suffix}", "new")
+        zf.writestr(f"bin/sd-server{suffix}", "new")
     buf.seek(0)
     with zipfile.ZipFile(buf) as zf:
-        assert sdmod._archive_ships_sd_server(zf) is True
+        supplied = sdmod._archive_binary_paths(zf, target)
+
+    sdmod._discard_superseded_binaries(target, supplied)
+    assert (d / f"sd-cli{suffix}").exists() and (d / f"sd-server{suffix}").exists()
+
+
+def test_a_superseded_binary_that_cannot_be_removed_fails_the_install(tmp_path, monkeypatch):
+    """A leftover binary is still RUNNABLE, so no downstream probe repairs it, and a record naming
+    the new accelerator would make _accelerator_changed trust it forever. Withhold both."""
+    target = tmp_path / "sd"
+    target.mkdir()
+    suffix = ".exe" if sys.platform == "win32" else ""
+    (target / f"sd-server{suffix}").write_bytes(b"old-cpu-server")
+
+    def _no_unlink(self, *a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(Path, "unlink", _no_unlink)
+    with pytest.raises(RuntimeError) as exc:
+        sdmod._discard_superseded_binaries(target, set())
+    assert "superseded binary" in str(exc.value)
+
+
+def test_an_external_record_update_retires_the_memo(tmp_path, monkeypatch):
+    """The memo speaks only for the record it could not replace. Once the installer CLI or another
+    Studio rewrites that file, the file is the newer answer -- otherwise this process would keep
+    reporting its own stale accelerator and treat the other one's CUDA binaries as a CPU match."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:
+        json.dump({"accelerator": "cpu", "repo": "r", "tag": "old"}, f)
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+
+    real_open = builtins.open
+
+    def _readonly_record(file, mode = "r", *a, **k):
+        if str(file).endswith(sdmod.INSTALL_RECORD) and "w" in mode:
+            raise OSError("permission denied")
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _readonly_record)
+    sdmod._write_install_record(root, accelerator = "cuda", repo = "r", tag = "t")
+    monkeypatch.setattr(builtins, "open", real_open)
+    assert sdmod.installed_accelerator(root) == "cuda"  # the memo answers for the record it saw
+
+    # Someone else installs into the same root and DOES write the record.
+    with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:
+        json.dump({"accelerator": "vulkan", "repo": "r", "tag": "newer"}, f)
+    assert sdmod.installed_accelerator(root) == "vulkan"
+    assert str(root) not in sdmod._INSTALLED_ACCELERATOR_MEMO  # and the memo is retired
+
+
+def test_a_successful_record_write_retires_an_earlier_memo(tmp_path, monkeypatch):
+    """A memo from a failed write must not outlive the write that succeeds after it."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    sdmod._INSTALLED_ACCELERATOR_MEMO[str(root)] = ("cuda", "")
+    sdmod._write_install_record(root, accelerator = "cpu", repo = "r", tag = "t")
+    assert str(root) not in sdmod._INSTALLED_ACCELERATOR_MEMO
+    assert sdmod.installed_accelerator(root) == "cpu"
 
 
 def test_the_stop_is_reserved_before_the_server_is_unpublished(tmp_path, monkeypatch):
@@ -1572,18 +1646,75 @@ def test_a_stale_unwritable_record_does_not_outrank_what_was_just_installed(tmp_
     assert sdmod.installed_accelerator(root) == "cuda"
 
 
-def test_a_stale_server_that_cannot_be_removed_fails_the_install(tmp_path, monkeypatch):
-    """A leftover server is still RUNNABLE, so no downstream probe repairs it, and a record naming
-    the new accelerator would make _accelerator_changed trust it forever. Withhold both."""
-    root = tmp_path / "sd"
-    root.mkdir()
-    stale = root / ("sd-server.exe" if sys.platform == "win32" else "sd-server")
-    stale.write_bytes(b"old-cpu-server")
 
-    def _no_unlink(self, *a, **k):
-        raise OSError("permission denied")
 
-    monkeypatch.setattr(Path, "unlink", _no_unlink)
-    with pytest.raises(RuntimeError) as exc:
-        sdmod._discard_stale_sd_server(root)
-    assert "superseded sd-server" in str(exc.value)
+def test_a_generation_cannot_start_inside_the_install_window(tmp_path, monkeypatch):
+    """The window a point-in-time check leaves open: the tree is idle when the install is decided,
+    then the download runs for seconds or minutes, and a generation admitted in that gap launches
+    the very sd-cli the extraction overwrites. Admission and the install are one decision, held
+    across the whole install, not sampled before the download."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+
+    started = threading.Event()
+    release = threading.Event()
+    admitted_during_install: list = []
+
+    def _slow_install(**kwargs):
+        started.set()  # standing in for the multi-GB download
+        release.wait(5)
+        server.write_bytes(b"cuda-build")
+        sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
+        return root / "sd-bin" / "sd-cli"
+
+    monkeypatch.setattr(sdmod, "install", _slow_install)
+
+    installer = threading.Thread(
+        target = lambda: bk.ensure_sd_server_binary(accelerator = "cuda"), daemon = True
+    )
+    installer.start()
+    assert started.wait(5), "the install did not start"
+
+    def _try_generate():
+        with bk._tree_reader():
+            admitted_during_install.append(bk._tree_installing)
+
+    generator = threading.Thread(target = _try_generate, daemon = True)
+    generator.start()
+    generator.join(1.0)
+    assert generator.is_alive(), "a generation must not be admitted while the tree is being replaced"
+    assert admitted_during_install == []
+
+    release.set()
+    installer.join(5)
+    generator.join(5)
+    assert not generator.is_alive(), "the generation must be admitted once the install is done"
+    assert admitted_during_install == [False]
+    assert server.read_bytes() == b"cuda-build"
+
+
+def test_an_install_stands_down_while_a_generation_is_running(tmp_path, monkeypatch):
+    """The other direction of the same handshake, so the two can never interleave."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    monkeypatch.setattr(
+        sdmod, "install", lambda **_k: pytest.fail("no install while a generation is running")
+    )
+
+    with bk._tree_reader():
+        assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+        assert server.read_bytes() == b"cpu-build"
