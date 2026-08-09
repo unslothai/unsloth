@@ -4344,7 +4344,9 @@ def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_ex
         "transformer/diffusion_pytorch_model.safetensors.index.json",
         *(f"transformer/{name}" for name in shard_names),
     ]
-    _fake_hub_cache(monkeypatch, tmp_path / "hub", base_repo, files, revision = revision, ref = revision)
+    _fake_hub_cache(
+        monkeypatch, tmp_path / "hub", base_repo, files, revision = revision, ref = revision
+    )
     index = (
         tmp_path
         / "hub"
@@ -5223,7 +5225,9 @@ def test_the_dense_builder_reads_transformer_from_the_hub_id_not_the_staged_snap
     assert seen == ["unsloth/Z-Image-Turbo"]
 
 
-def test_the_dense_builder_reuses_a_complete_staged_transformer(fake_runtime, tmp_path, monkeypatch):
+def test_the_dense_builder_reuses_a_complete_staged_transformer(
+    fake_runtime, tmp_path, monkeypatch
+):
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(

@@ -3299,9 +3299,7 @@ class DiffusionBackend:
         # A proven-complete local snapshot is terminal safely and avoids a second download. A
         # partial snapshot must never be passed here: diffusers raises per missing shard instead
         # of completing it from the Hub, so the completeness probe falls back to the repo id.
-        dense_root = DiffusionBackend._complete_dense_transformer_root(
-            fetch_base, base_local_dir
-        )
+        dense_root = DiffusionBackend._complete_dense_transformer_root(fetch_base, base_local_dir)
         if dense_root is None and fetch_base != base:
             dense_root = DiffusionBackend._complete_dense_transformer_root(base, base_local_dir)
         transformer = transformer_cls.from_pretrained(
