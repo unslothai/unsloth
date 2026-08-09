@@ -1577,3 +1577,17 @@ def test_the_streamed_encoders_are_hooked_leaf_by_leaf(monkeypatch):
     for name, kw in denoisers.items():
         assert kw["offload_type"] == "block_level", name
         assert kw["num_blocks_per_group"] is not None, name
+
+
+def test_the_batch_remedy_appears_only_when_a_batch_was_budgeted():
+    """The guard budgets one image everywhere except a Windows multi-image chunk, so a refusal
+    almost always means one image does not fit. Telling that caller to use a smaller batch points
+    them at the one change that provably cannot alter the decision."""
+    single = _shortfall(1088, 1920)
+    assert single is not None
+    assert "smaller batch size" not in single
+    assert "smaller resolution," in single
+    batched = _shortfall(1024, 1024, batch_size = 4)
+    assert batched is not None
+    assert "at a batch of 4" in batched
+    assert "or a smaller batch size" in batched

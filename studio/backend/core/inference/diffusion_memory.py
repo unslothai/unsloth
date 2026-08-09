@@ -987,8 +987,12 @@ def image_activation_shortfall_message(
         f"{int(free) / 1024:.2f} GB currently free, after reserving room for fragmentation and "
         "other processes). Working memory holds this pass's latents and attention buffers, which "
         "cannot be offloaded to the CPU the way weights can, so no memory mode recovers this. "
-        "Generate at a smaller resolution or a smaller batch size, free device memory by closing "
-        f"other applications, or set {OVERSIZED_GENERATE_ENV}=1 to attempt it anyway."
+        # Only when the batch is what was budgeted. A refusal measured on ONE image cannot be
+        # answered by asking for fewer, and pointing there sends the caller at the one change
+        # that provably will not help.
+        f"Generate at a smaller resolution{' or a smaller batch size' if batch > 1 else ''}, "
+        "free device memory by closing other applications, or set "
+        f"{OVERSIZED_GENERATE_ENV}=1 to attempt it anyway."
     )
 
 
