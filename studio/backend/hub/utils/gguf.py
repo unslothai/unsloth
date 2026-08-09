@@ -140,6 +140,32 @@ def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
 
+# Every repo that bundles H3's denoisers together with its companion models. The Unsloth mirror
+# carries the Qwen3-VL text-encoder quants beside the denoisers, so it needs the same filtering as
+# the community repack it replaced; listing only one of them would let the encoder GGUFs be
+# aggregated as if they were selectable transformer quants.
+_H3_BUNDLE_REPOS = frozenset({"leejet/minimax-h3-gguf", "unsloth/minimax-h3-gguf"})
+
+
+def is_h3_bundle_repo(repo_id: str) -> bool:
+    return repo_id.strip().lower() in _H3_BUNDLE_REPOS
+
+
+# Both released denoiser partitions are valid picks -- which one is picked IS the task. Kept in
+# step with validate_h3_transformer_filename in core/inference/video_minimax_h3.py, which the load
+# enforces; listing only FL2VA hid every published Ref2VA quant from the picker even though the
+# loader routes it and the reference UI depends on it.
+_H3_DENOISER_PARTITIONS = ("minimax_h3_fl2va", "minimax_h3_ref2va")
+
+
+def _is_selectable_repo_gguf(repo_id: str, filename: str) -> bool:
+    """Hide auxiliary GGUFs from repos that bundle several model roles."""
+    if is_h3_bundle_repo(repo_id):
+        name = Path(filename).name.lower()
+        return name.startswith(_H3_DENOISER_PARTITIONS) and name.endswith(".gguf")
+    return True
+
+
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 
 
@@ -691,6 +717,8 @@ def list_gguf_variants(
         filename = getattr(sibling, "rfilename", None)
         if not isinstance(filename, str) or not is_gguf_filename(filename):
             continue
+        if not _is_selectable_repo_gguf(repo_id, filename):
+            continue
         if is_mtp_drafter_path(filename):
             continue
         if is_mmproj_filename(filename):
@@ -747,8 +775,16 @@ def list_local_gguf_variants(
 
     main_files: list[tuple[str, int]] = []
     has_vision = False
+    # Match the cache dir of ANY H3 bundle repo, not just one of them: the same aggregation runs
+    # over whichever mirror the user actually downloaded.
+    root_key = root.as_posix().lower()
+    h3_bundle_repo = next(
+        (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in root_key), None
+    )
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
+        if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
+            continue
         if is_mmproj_filename(file.name):
             # A projector llama.cpp cannot open is not vision support.
             try:
