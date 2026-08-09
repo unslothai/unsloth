@@ -367,6 +367,10 @@ def run_diffusion_lora_training(
                 lora_path = None,
                 stopped = True,
                 steps_run = 0,
+                # Same disposition the full path reports. A stop with save=false is a DISCARD
+                # however early it lands, and without it the resume fallback offers the source
+                # bundle back as though the attempt were still live.
+                discarded = not save_on_stop,
             )
             return str(out_dir)
 
@@ -462,6 +466,8 @@ def run_diffusion_lora_training(
                     lora_path = None,
                     stopped = True,
                     steps_run = 0,
+                    # As above: a discard is a discard however early the stop lands.
+                    discarded = not save_on_stop,
                 )
                 return str(out_dir)
             else:
@@ -557,6 +563,9 @@ def run_diffusion_lora_training(
                 # unresumable -- cancelling a retrain destroyed the thing being retrained. The
                 # clear happens on the completion path instead, once the new adapter is saved.
                 discard_existing = False,
+                # And the bundles that were here before this run: a branched resume must not
+                # prune the higher-numbered checkpoints it did not write.
+                preexisting = preexisting_checkpoints,
             )
 
         for opt_step in range(resumed, cfg.train_steps):

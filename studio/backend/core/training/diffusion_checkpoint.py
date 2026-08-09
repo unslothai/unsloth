@@ -114,6 +114,11 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("cache_variants", "cached crop variants"),
     ("center_crop", "centre cropping"),
     ("random_flip", "random flipping"),
+    # The matmul kernels. _apply_perf_flags routes CUDA matmuls through TF32 or strict fp32
+    # from this, so restoring moments produced under one into a run using the other continues
+    # the trajectory at a different numeric precision -- and off is the documented strict
+    # reproducibility mode, which a resume that silently defaults it back on undoes.
+    ("enable_tf32", "TF32 matmuls"),
     # The update shape. The batch and accumulation counts decide how many samples each
     # optimizer step consumes, and the clip norm is applied to the restored moments on the
     # very next update, so all three change the trajectory the checkpoint was produced on.
@@ -149,6 +154,7 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "cache_variants",
         "center_crop",
         "random_flip",
+        "enable_tf32",
         "train_batch_size",
         "gradient_accumulation_steps",
         "max_grad_norm",
@@ -221,6 +227,7 @@ class CheckpointIdentity:
     cache_variants: Optional[int] = None
     center_crop: Optional[str] = None
     random_flip: Optional[str] = None
+    enable_tf32: Optional[str] = None
     train_batch_size: Optional[int] = None
     gradient_accumulation_steps: Optional[int] = None
     # Text, so 0.0 (clipping disabled) is a value and None stays "not recorded".
@@ -253,6 +260,7 @@ class CheckpointIdentity:
             "cache_variants": self.cache_variants,
             "center_crop": self.center_crop,
             "random_flip": self.random_flip,
+            "enable_tf32": self.enable_tf32,
             "train_batch_size": self.train_batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "max_grad_norm": self.max_grad_norm,
@@ -294,6 +302,7 @@ class CheckpointIdentity:
                 cache_variants = _optional_int(data.get("cache_variants")),
                 center_crop = _optional_str(data.get("center_crop")),
                 random_flip = _optional_str(data.get("random_flip")),
+                enable_tf32 = _optional_str(data.get("enable_tf32")),
                 train_batch_size = _optional_int(data.get("train_batch_size")),
                 gradient_accumulation_steps = _optional_int(data.get("gradient_accumulation_steps")),
                 max_grad_norm = _optional_str(data.get("max_grad_norm")),
@@ -539,6 +548,7 @@ def identity_for_config(
         cache_variants = int(getattr(cfg, "cache_variants", 0) or 0),
         center_crop = _flag_key(getattr(cfg, "center_crop", None)),
         random_flip = _flag_key(getattr(cfg, "random_flip", None)),
+        enable_tf32 = _flag_key(getattr(cfg, "enable_tf32", None)),
         train_batch_size = int(getattr(cfg, "train_batch_size", 0) or 0),
         gradient_accumulation_steps = int(getattr(cfg, "gradient_accumulation_steps", 0) or 0),
         max_grad_norm = f"{round(float(getattr(cfg, 'max_grad_norm', 0.0) or 0.0), 6)}",
@@ -706,6 +716,7 @@ def save_checkpoint(
     save_total_limit: int = DEFAULT_SAVE_TOTAL_LIMIT,
     discard_existing: bool = False,
     source_checkpoint: Optional[str | os.PathLike[str]] = None,
+    preexisting: "Optional[Iterable[Any]]" = None,
 ) -> str:
     """Write one resumable ``checkpoint-<step>`` bundle and return its path.
 
@@ -863,6 +874,7 @@ def save_checkpoint(
         keep = save_total_limit,
         protect = final,
         also_protect = _source_bundle_path(root, source_checkpoint),
+        preexisting = preexisting,
     )
     return str(final)
 
@@ -1112,6 +1124,7 @@ def prune_checkpoints(
     *,
     protect: Optional[Path] = None,
     also_protect: Optional[Path] = None,
+    preexisting: "Optional[Iterable[Any]]" = None,
 ) -> None:
     """Keep only the ``keep`` newest ``checkpoint-<N>`` bundles. ``keep <= 0`` keeps all.
 
@@ -1120,10 +1133,19 @@ def prune_checkpoints(
     and 30 still present and keep=2, and the bundle just written is the one deleted -- while the
     service reports checkpoint_saved for a path that no longer exists, and the run's own start
     fence stops those older bundles from making it resumable. So the caller pins the one it just
-    promoted, and the limit applies to the rest."""
+    promoted, and the limit applies to the rest.
+
+    ``preexisting`` are the bundles that were in the directory before this run wrote anything.
+    They are not this run's to spend: the supported branched resume (continue checkpoint-10
+    while 20 and 30 are still there) pins 10 and the new 15, drops ``keep`` to zero and used to
+    delete 20 and 30 outright -- irreversibly, and a later stop-without-saving cannot bring them
+    back. They are excluded entirely, so the limit governs only what this run wrote."""
     if keep <= 0:
         return
-    survivors = list_checkpoints(output_dir)
+    kept_from_before = {
+        Path(entry[0]) if isinstance(entry, tuple) else Path(entry) for entry in (preexisting or ())
+    }
+    survivors = [c for c in list_checkpoints(output_dir) if c not in kept_from_before]
     for pinned in (protect, also_protect):
         if pinned is not None and pinned in survivors:
             # It occupies one of the kept slots whether or not it sorted into the top `keep`.

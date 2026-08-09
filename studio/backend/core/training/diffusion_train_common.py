@@ -1230,6 +1230,7 @@ def write_resume_checkpoint(
     rng_streams: Optional[dict[str, Any]] = None,
     progress: Optional[dict[str, Any]] = None,
     discard_existing: bool = False,
+    preexisting: Optional[Any] = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Write one resume bundle for the run, returning ``(checkpoint_path, error)``.
 
@@ -1261,6 +1262,10 @@ def write_resume_checkpoint(
             # "we are re-saving the bundle we started from" apart from "another run left a
             # bundle at this number".
             source_checkpoint = getattr(cfg, "resume_from_checkpoint", None),
+            # Bundles that predated this run are never pruned to make room for its own: a
+            # branched resume beside higher-numbered checkpoints used to delete them on the
+            # first save, irreversibly.
+            preexisting = preexisting,
         )
         # Reported per save, not only at the end: a run that later CRASHES must still be known to
         # have resumable state (and a run whose write failed must still be known to be blocked).

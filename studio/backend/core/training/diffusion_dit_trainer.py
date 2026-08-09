@@ -1563,7 +1563,16 @@ def run_dit_lora_training(
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
         _emit(
-            on_event, "complete", output_dir = str(out_dir), lora_path = None, stopped = True, steps_run = 0
+            on_event,
+            "complete",
+            output_dir = str(out_dir),
+            lora_path = None,
+            stopped = True,
+            steps_run = 0,
+            # Same disposition the full path reports. A stop with save=false is a DISCARD
+            # however early it lands, and without it the resume fallback offers the source
+            # bundle back as though the attempt were still live.
+            discarded = not save_on_stop,
         )
         return str(out_dir)
 
@@ -1678,6 +1687,8 @@ def _train_dit(
                     lora_path = None,
                     stopped = True,
                     steps_run = 0,
+                    # As above: a discard is a discard however early the stop lands.
+                    discarded = not save_on_stop,
                 )
                 return str(out_dir)
     if latent_cache is not None and vae is not None:
@@ -1850,6 +1861,9 @@ def _train_dit(
             # unresumable -- cancelling a retrain destroyed the thing being retrained. The
             # clear happens on the completion path instead, once the new adapter is saved.
             discard_existing = False,
+            # And the bundles that were here before this run: a branched resume must not
+            # prune the higher-numbered checkpoints it did not write.
+            preexisting = preexisting_checkpoints,
         )
 
     # bf16 autocast around the forward + loss, matching the diffusers dreambooth scripts: it reconciles the fp32 LoRA params with the bnb 4-bit base matmuls. Without it the 4-bit backward on FLUX dies.

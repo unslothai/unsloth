@@ -2361,3 +2361,90 @@ def test_optimizer_moments_are_refused_when_the_parameter_order_moved(run_dir):
     resumed = _Run(run_dir, resume_from_checkpoint = path)
     with pytest.raises(dc.ResumeError, match = "different parameter order"):
         resumed.restore()
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["core.training.diffusion_lora_trainer", "core.training.diffusion_dit_trainer"],
+)
+def test_every_completion_reports_whether_the_run_was_discarded(module):
+    """A stop with save=false is a DISCARD however early it lands.
+
+    Both trainers leave early when the stop arrives during the base-model load or the latent
+    cache build, and those completions omitted `discarded`. The service then never marked the
+    attempt discarded, and describe_resume_state's source fallback offered the bundle the run
+    had been validated against -- so the UI showed Resume for an attempt the user had explicitly
+    thrown away."""
+    import importlib
+    from pathlib import Path as _Path
+
+    source = _Path(importlib.import_module(module).__file__).read_text(encoding = "utf-8")
+    completions = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_emit"
+        and any(
+            isinstance(arg, ast.Constant) and arg.value == "complete" for arg in node.args
+        )
+    ]
+    assert completions, f"{module} must emit a completion"
+    for call in completions:
+        assert any(kw.arg == "discarded" for kw in call.keywords), (
+            f"a completion in {module} at line {call.lineno} does not say whether the run was "
+            "discarded"
+        )
+
+
+def test_a_branched_resume_does_not_prune_the_bundles_it_found(run_dir):
+    """The supported explicit-checkpoint flow: continue checkpoint-10 while 20 and 30 are still
+    in the directory. Saving 15 with the default limit of 2 pinned 10 and 15, dropped keep to
+    zero and deleted 20 and 30 outright -- bundles this run never wrote and a later
+    stop-without-saving cannot bring back."""
+    # keep-all while seeding, so the three bundles the branch has to survive are really there.
+    seeded = _Run(run_dir, save_total_limit = 0)
+    for step in (10, 20, 30):
+        seeded.step_once(0.5)
+        seeded.save(step)
+    preexisting = dc.snapshot_checkpoints(run_dir)
+    assert {p.name for p, _ in preexisting} == {
+        "checkpoint-10",
+        "checkpoint-20",
+        "checkpoint-30",
+    }
+
+    resumed = _Run(run_dir, resume_from_checkpoint = str(run_dir / "checkpoint-10"))
+    resumed.step_once(1.5)
+    path, error = resumed.save(15, preexisting = preexisting)
+    assert error is None and path == str(run_dir / "checkpoint-15")
+
+    survivors = {p.name for p in dc.list_checkpoints(run_dir)}
+    assert survivors == {
+        "checkpoint-10",
+        "checkpoint-15",
+        "checkpoint-20",
+        "checkpoint-30",
+    }, survivors
+
+
+def test_the_tf32_setting_is_part_of_the_identity(run_dir):
+    """_apply_perf_flags routes CUDA matmuls through TF32 or strict fp32 from this flag, so a
+    resume that silently defaults it back on continues the restored moments under different
+    numeric kernels -- and undoes the strict-reproducibility mode the user asked for. The API
+    field is optional, so omitting it on the resume request is the ordinary way to hit this."""
+    import dataclasses
+
+    strict = _Run(run_dir)
+    strict.cfg = dataclasses.replace(strict.cfg, enable_tf32 = False)
+    strict.identity = dc.identity_for_config(strict.cfg)
+    assert strict.identity.enable_tf32 == "off"
+    path, error = strict.save(4)
+    assert error is None and path is not None
+
+    default = dc.identity_for_config(dataclasses.replace(strict.cfg, enable_tf32 = True))
+    assert default.enable_tf32 == "on"
+    with pytest.raises(dc.ResumeError, match = "TF32"):
+        dc.preflight_resume(path, identity = default, target_steps = 500)
+    # And the matching setting still resumes.
+    assert dc.preflight_resume(path, identity = strict.identity, target_steps = 500)[1] == 4
