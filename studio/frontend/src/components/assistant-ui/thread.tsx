@@ -2204,6 +2204,9 @@ const Composer: FC<{
     }
     const targetKey = nativeAttachmentTargetKey;
     const identityAtSetup = composerIdentityRef.current;
+    useNativeIntentStore
+      .getState()
+      .claimAudioAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
 
@@ -2211,11 +2214,15 @@ const Composer: FC<{
     // switch parks the clip back on the chat that received the drop.
     const stillThisComposer = () =>
       composerIdentityRef.current === identityAtSetup;
+    // A fresh chat persisting remounts this composer, so the key it moves to is
+    // not visible here. Tag the batch instead; the next instance claims it.
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
         : targetKey;
-      useNativeIntentStore.getState().addAudioAttachments(key, intents);
+      const store = useNativeIntentStore.getState();
+      store.addAudioAttachments(key, intents);
+      store.noteAudioDropOwner(key, identityAtSetup);
     };
 
     const drainPendingAudio = async () => {
@@ -2241,6 +2248,9 @@ const Composer: FC<{
                 description:
                   error instanceof Error ? error.message : String(error),
               });
+              // A send parked on this clip must not go out as bare text once the
+              // flag clears: the user is owed the toast and their draft.
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
               continue;
             }
             // The read is async: a chat switch in that window must not drop the
@@ -2259,6 +2269,7 @@ const Composer: FC<{
                 description:
                   error instanceof Error ? error.message : String(error),
               });
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
             }
           }
         }
@@ -2285,6 +2296,17 @@ const Composer: FC<{
     };
 
     const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      // The predecessor's requeue can land after the claim at setup, so keep
+      // watching rather than claiming once.
+      const orphaned = Object.entries(state.audioDropOwners).some(
+        ([key, owner]) => owner === identityAtSetup && key !== targetKey,
+      );
+      if (orphaned) {
+        useNativeIntentStore
+          .getState()
+          .claimAudioAttachments(identityAtSetup, targetKey);
+        return;
+      }
       if ((state.pendingAudioAttachments[targetKey]?.length ?? 0) > 0) {
         void drainPendingAudio();
       }

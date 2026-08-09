@@ -528,9 +528,12 @@ pub fn open_path_token(
     open::that_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
 }
 
-// Covers the largest client-side limit (audio, 25 MB); images stay capped at
-// 20 MB by the composer itself.
+// Covers the largest client-side limit (audio, 25 MB).
 const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+// Images have to stop here rather than at the audio limit: the composer rejects
+// them over 20 MB by throwing without a toast, and the drop drain swallows that
+// as "the adapter already reported it", so a larger read loses them silently.
+const MAX_NATIVE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -602,11 +605,16 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     let mime_type = attachment_mime_type(path).ok_or_else(|| {
         "Only chat image and audio attachments can be read inline.".to_string()
     })?;
+    let max_bytes = if mime_type.starts_with("image/") {
+        MAX_NATIVE_IMAGE_BYTES
+    } else {
+        MAX_NATIVE_ATTACHMENT_BYTES
+    };
     let file = open_attachment_file(path)?;
     let metadata = file
         .metadata()
         .map_err(|e| format!("Path is no longer available: {e}"))?;
-    if !metadata.is_file() || metadata.len() > MAX_NATIVE_ATTACHMENT_BYTES {
+    if !metadata.is_file() || metadata.len() > max_bytes {
         return Err("Attachment is unavailable or too large.".to_string());
     }
     // path_for_operation validated a fingerprint against the path; bind the
@@ -621,10 +629,10 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     }
     // The file can grow between the stat and the read, so cap the reader itself.
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(MAX_NATIVE_ATTACHMENT_BYTES + 1)
+    file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| format!("Could not read image attachment: {e}"))?;
-    if bytes.len() as u64 > MAX_NATIVE_ATTACHMENT_BYTES {
+        .map_err(|e| format!("Could not read attachment: {e}"))?;
+    if bytes.len() as u64 > max_bytes {
         return Err("Attachment is unavailable or too large.".to_string());
     }
     let name = path
@@ -746,9 +754,35 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    // The composer throws on images over its own 20 MB limit without toasting,
+    // and the drop drain swallows that, so reading past the image cap here would
+    // make the file disappear instead of reporting it.
     #[test]
-    fn image_read_refuses_more_than_the_cap() {
+    fn image_read_refuses_more_than_the_image_cap() {
         let path = temp_path("huge").with_extension("png");
+        fs::write(&path, vec![0u8; MAX_NATIVE_IMAGE_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(err) = read_attachment_payload(&entry) else {
+            panic!("expected the read to be refused");
+        };
+        assert!(err.contains("too large"), "unexpected error: {err}");
+        let _ = fs::remove_file(path);
+    }
+
+    // Audio keeps the larger cap: the caps are per kind, not one shared ceiling.
+    #[test]
+    fn audio_read_allows_more_than_the_image_cap() {
+        let path = temp_path("clip").with_extension("wav");
+        fs::write(&path, vec![0u8; MAX_NATIVE_IMAGE_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let payload = read_attachment_payload(&entry).expect("audio under the audio cap reads");
+        assert_eq!(payload.mime_type, "audio/wav");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn audio_read_refuses_more_than_the_audio_cap() {
+        let path = temp_path("huge").with_extension("wav");
         fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
         let (_state, entry) = attachment_entry(&path);
         let Err(err) = read_attachment_payload(&entry) else {

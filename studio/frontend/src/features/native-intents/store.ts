@@ -26,6 +26,9 @@ interface NativeIntentState {
   // Owner of a queued image batch, by composer identity. A remount means the
   // outgoing instance cannot hand the batch over itself, so it leaves a note.
   imageDropOwners: Record<string, string>;
+  // Same, for audio: a new chat materializing mid-read re-keys the composer, and
+  // without a note the clip stays parked under the key it was dropped on.
+  audioDropOwners: Record<string, string>;
   addIntent: (intent: NativeIntent) => void;
   addAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   addImageAttachments: (targetKey: string, intents: NativeIntent[]) => void;
@@ -40,6 +43,8 @@ interface NativeIntentState {
   failImageDropRegistration: (targetKey: string) => void;
   noteImageDropOwner: (targetKey: string, identity: string) => void;
   claimImageAttachments: (identity: string, targetKey: string) => void;
+  noteAudioDropOwner: (targetKey: string, identity: string) => void;
+  claimAudioAttachments: (identity: string, targetKey: string) => void;
   clearModelIntent: (intentId?: string) => void;
 }
 
@@ -52,6 +57,7 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   registeringAudioDrops: 0,
   imageDropFailures: {},
   imageDropOwners: {},
+  audioDropOwners: {},
   addAttachments: (targetKey, intents) => {
     const current = get().pendingAttachments;
     const pendingAttachments = enqueueNativeAttachments(
@@ -169,6 +175,37 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
     const nextOwners = { ...owners };
     for (const key of stale) delete nextOwners[key];
     set({ pendingImageAttachments, imageDropOwners: nextOwners });
+  },
+  noteAudioDropOwner: (targetKey, identity) => {
+    if (!identity) return;
+    set({ audioDropOwners: { ...get().audioDropOwners, [targetKey]: identity } });
+  },
+  claimAudioAttachments: (identity, targetKey) => {
+    if (!identity) return;
+    const owners = get().audioDropOwners;
+    const stale = Object.keys(owners).filter(
+      (key) => owners[key] === identity && key !== targetKey,
+    );
+    if (stale.length === 0) return;
+    const queues = get().pendingAudioAttachments;
+    let pendingAudioAttachments = queues;
+    for (const key of stale) {
+      const queued = queues[key] ?? [];
+      if (queued.length > 0) {
+        pendingAudioAttachments = enqueueNativeAttachments(
+          pendingAudioAttachments,
+          targetKey,
+          queued,
+        );
+      }
+      if (key in pendingAudioAttachments) {
+        pendingAudioAttachments = { ...pendingAudioAttachments };
+        delete pendingAudioAttachments[key];
+      }
+    }
+    const nextOwners = { ...owners };
+    for (const key of stale) delete nextOwners[key];
+    set({ pendingAudioAttachments, audioDropOwners: nextOwners });
   },
   addIntent: (intent) => {
     if (intent.kind !== "model") {
