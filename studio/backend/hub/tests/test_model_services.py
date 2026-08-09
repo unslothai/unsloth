@@ -6737,9 +6737,7 @@ def test_a_deleted_snapshot_link_is_absent_even_with_its_blob_left_behind(monkey
         "gguf_variant_blob_hashes",
         lambda *_a, **_kw: frozenset({"mainhash"}),
     )
-    monkeypatch.setattr(
-        snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry]
-    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry])
     monkeypatch.setattr(
         downloads,
         "_registry",
@@ -6793,9 +6791,7 @@ def test_a_stale_revisions_filenames_do_not_settle_the_resolved_one(monkeypatch,
         "gguf_variant_blob_hashes",
         lambda *_a, **_kw: frozenset({"newhash"}),
     )
-    monkeypatch.setattr(
-        snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry]
-    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry])
     monkeypatch.setattr(
         downloads,
         "_registry",
