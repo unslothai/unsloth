@@ -128,14 +128,14 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # Model-card ratios use H3's canvas rule. Keep the legacy 1024 square and cheaper
         # 16:9 tiers for compatibility.
         resolution_presets = (
-            (1344, 768),   # 16:9
-            (1536, 672),   # 21:9
-            (1024, 768),   # 4:3
+            (1344, 768),  # 16:9
+            (1536, 672),  # 21:9
+            (1024, 768),  # 4:3
             (1024, 1024),  # 1:1
-            (768, 1024),   # 3:4
-            (768, 1344),   # 9:16
-            (960, 544),    # 16:9, faster
-            (544, 960),    # 9:16, faster
+            (768, 1024),  # 3:4
+            (768, 1344),  # 9:16
+            (960, 544),  # 16:9, faster
+            (544, 960),  # 9:16, faster
         ),
         duration_presets = (5.0, 10.0, 14.4),
         # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.

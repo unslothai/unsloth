@@ -44,9 +44,9 @@ def test_the_pin_file_exists_and_names_an_exact_revision():
     urls = [line for line in lines if "://" in line]
     assert len(urls) == 1, f"expected exactly one pinned URL, got {urls}"
     # A branch or tag would move under us; only a 40-char commit sha is reproducible.
-    assert re.search(r"/archive/[0-9a-f]{40}\.zip", urls[0]), (
-        f"the diffusers pin must name a full commit sha, not a moving ref: {urls[0]}"
-    )
+    assert re.search(
+        r"/archive/[0-9a-f]{40}\.zip", urls[0]
+    ), f"the diffusers pin must name a full commit sha, not a moving ref: {urls[0]}"
     assert 'python_version >= "3.10"' in urls[0], (
         "diffusers dropped Python 3.9 in 0.38, so the archive needs a >= 3.10 marker or "
         "the resolver has no candidate at all on a 3.9 host"
@@ -107,8 +107,15 @@ def test_the_pin_step_runs_after_every_other_requirements_install():
     pin_at = source.index("diffusers-pin.txt")
     later = [
         name
-        for name in ("extras.txt", "extras-no-deps.txt", "studio.txt", "base.txt",
-                     "no-torch-runtime.txt", "data-designer-deps.txt", "data-designer.txt")
+        for name in (
+            "extras.txt",
+            "extras-no-deps.txt",
+            "studio.txt",
+            "base.txt",
+            "no-torch-runtime.txt",
+            "data-designer-deps.txt",
+            "data-designer.txt",
+        )
         if source.rfind(name) > pin_at
     ]
     assert not later, f"these requirements files are installed after the diffusers pin: {later}"

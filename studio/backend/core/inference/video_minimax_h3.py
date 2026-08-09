@@ -385,7 +385,9 @@ class MiniMaxH3StagedReferences:
     audios: tuple[str, ...] = ()
 
 
-def stage_h3_references(references: MiniMaxH3References, scratch: Path) -> MiniMaxH3StagedReferences:
+def stage_h3_references(
+    references: MiniMaxH3References, scratch: Path
+) -> MiniMaxH3StagedReferences:
     """Stage references in sd-cli's positional file layout.
 
     Video soundtracks must form a prefix because sd-cli pairs them by index.
@@ -463,15 +465,16 @@ def h3_diffusers_references(references: MiniMaxH3References) -> list:
         )
     for waveform, sample_rate in references.audios:
         built.append(
-            MiniMaxH3AudioReference(
-                audio = waveform_tensor(waveform), sample_rate = sample_rate
-            )
+            MiniMaxH3AudioReference(audio = waveform_tensor(waveform), sample_rate = sample_rate)
         )
     return built
 
 
 def h3_conditioning_mode(
-    *, has_first: bool = False, has_last: bool = False, has_references: bool = False
+    *,
+    has_first: bool = False,
+    has_last: bool = False,
+    has_references: bool = False,
 ) -> str:
     """The task name for one request's conditioning, as MiniMax-H3 and sd.cpp name them.
 

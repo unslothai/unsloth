@@ -3343,9 +3343,7 @@ class VideoGenerateRequest(BaseModel):
         audios = self.reference_audios or []
         total = len(images) + len(videos) + len(audios)
         if total > 12:
-            raise ValueError(
-                f"MiniMax-H3 takes at most 12 references in total, got {total}"
-            )
+            raise ValueError(f"MiniMax-H3 takes at most 12 references in total, got {total}")
         # Standalone audio must accompany an image or video reference.
         if audios and not images and not videos:
             raise ValueError(

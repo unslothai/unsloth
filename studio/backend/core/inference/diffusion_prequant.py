@@ -160,9 +160,7 @@ def usable_prequant_source(
     memory planning falls back to dense-fit checks up front, instead of the loader refusing
     the path only after the resident pipeline was evicted and dense bf16 materialises under
     a plan that never budgeted for it (evict-then-OOM). Hosted-repo sources are unaffected."""
-    src = resolve_prequant_source(
-        fam, scheme, path_override = path_override, base_repo = base_repo
-    )
+    src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is not None and src.kind == "path" and not local_prequant_path_ready(src.location):
         return None
     return src
@@ -643,7 +641,11 @@ def _same_base_model(a: str, b: str) -> bool:
 
 
 def pin_prequantized_module(
-    manager: Any, module: Any, device: Any, *, logger: Any = None
+    manager: Any,
+    module: Any,
+    device: Any,
+    *,
+    logger: Any = None,
 ) -> bool:
     """Keep a pre-quantized module resident on ``device``, out of a ComponentsManager's rotation.
 

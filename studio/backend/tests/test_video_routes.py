@@ -90,7 +90,6 @@ class _FakeBackend(video_module.VideoBackend):
         import types
 
         from core.inference.video_families import detect_video_family
-
         self._state = (
             types.SimpleNamespace(
                 family = detect_video_family("Lightricks/LTX-2"),

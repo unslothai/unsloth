@@ -2274,7 +2274,6 @@ class VideoBackend:
                 # and take it out of the rotation. Nothing else changes: the encoder and the VAEs
                 # keep their hooks and still offload around it.
                 from .diffusion_prequant import pin_prequantized_module
-
                 denoiser_pinned = pin_prequantized_module(
                     manager, getattr(pipe, "transformer", None), device, logger = logger
                 )
@@ -2285,11 +2284,7 @@ class VideoBackend:
                     memory_mode,
                     offload_policy,
                     "MiniMax-H3 ComponentsManager auto CPU offload"
-                    + (
-                        "; the pre-quantized denoiser stays resident"
-                        if denoiser_pinned
-                        else ""
-                    ),
+                    + ("; the pre-quantized denoiser stays resident" if denoiser_pinned else ""),
                 ),
                 "speed_mode": (None, "off", "modular pipeline uses its native execution path"),
                 "attention_backend": (None, "native", "Diffusers model default"),
@@ -2770,7 +2765,6 @@ class VideoBackend:
                     kwargs["last_image"] = last_pil
                 if references:
                     from .video_minimax_h3 import h3_diffusers_references
-
                     kwargs["references"] = h3_diffusers_references(references)
                 # Set scheduler shifts every run so prior requests cannot leak state.
                 for component, value in (
@@ -2940,7 +2934,6 @@ class VideoBackend:
         first = last = None
         if first_frame or last_frame:
             from .diffusion import decode_b64_image
-
             first = decode_b64_image(first_frame, mode = "RGB") if first_frame else None
             last = decode_b64_image(last_frame, mode = "RGB") if last_frame else None
 
@@ -2951,7 +2944,9 @@ class VideoBackend:
             # family declares presets: an unusual/custom one with an empty tuple used to die here
             # with an IndexError (a 500) before the request reached the worker. Fall back to the
             # generic 768x512 the rest of the video path already treats as the default canvas.
-            default_w, default_h = fam.resolution_presets[0] if fam.resolution_presets else (768, 512)
+            default_w, default_h = (
+                fam.resolution_presets[0] if fam.resolution_presets else (768, 512)
+            )
             width, height = snap_video_size(
                 fam,
                 width or default_w,
@@ -2962,9 +2957,7 @@ class VideoBackend:
             first = fit_h3_keyframe(first, width, height, anchor = H3_ANCHOR_FIRST)
         if last is not None:
             last = fit_h3_keyframe(last, width, height, anchor = H3_ANCHOR_LAST)
-        conditioning = h3_conditioning_mode(
-            has_first = first is not None, has_last = last is not None
-        )
+        conditioning = h3_conditioning_mode(has_first = first is not None, has_last = last is not None)
         return first, last, width, height, conditioning
 
     @staticmethod
@@ -3060,7 +3053,9 @@ class VideoBackend:
 
         fitted_images = tuple(
             fit_h3_reference_image(
-                decode_b64_image(item, mode = "RGB"), width = width, height = height,
+                decode_b64_image(item, mode = "RGB"),
+                width = width,
+                height = height,
                 policy = policy,
             )
             for item in images
@@ -3173,6 +3168,7 @@ class VideoBackend:
         output_path = Path(tmp.name)
         # Stage in-memory conditioning in sd-cli's temporary disk format.
         with tempfile.TemporaryDirectory(prefix = "unsloth-h3-keyframes-") as scratch:
+
             def stage(image: Any, name: str) -> Optional[str]:
                 if image is None:
                     return None
@@ -3412,10 +3408,8 @@ class VideoBackend:
             "has_audio": fam.has_audio,
             "supports_cfg": fam.supports_cfg,
             # Expose only conditioning supported by the resident partition.
-            "supports_keyframes": fam.supports_keyframes
-            and state.h3_task != H3_TASK_REFERENCES,
-            "supports_references": fam.supports_references
-            and state.h3_task == H3_TASK_REFERENCES,
+            "supports_keyframes": fam.supports_keyframes and state.h3_task != H3_TASK_REFERENCES,
+            "supports_references": fam.supports_references and state.h3_task == H3_TASK_REFERENCES,
             "h3_task": state.h3_task,
             "defaults": {
                 "steps": default_steps,

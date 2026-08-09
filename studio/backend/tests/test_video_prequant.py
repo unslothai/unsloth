@@ -120,12 +120,17 @@ def test_the_h3_primary_name_is_what_memory_planning_credits():
     src = resolve_prequant_source(fam, "int8")
     seen = {}
 
-    def _fake_try_to_load_from_cache(repo_id, filename, cache_dir = None):
+    def _fake_try_to_load_from_cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
         seen["filename"] = filename
         return "/cache/blobs/h3" if filename == "MiniMax-H3-INT8.pt" else None
 
     import huggingface_hub
     import os
+
     real_hub = huggingface_hub.try_to_load_from_cache
     real_isfile = os.path.isfile
     huggingface_hub.try_to_load_from_cache = _fake_try_to_load_from_cache

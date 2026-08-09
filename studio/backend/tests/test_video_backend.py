@@ -3488,17 +3488,13 @@ def test_h3_native_generate_names_each_keyframe_combination(monkeypatch):
     assert calls[-1]["params"].init_img is None and calls[-1]["params"].end_img is None
 
     assert (
-        backend.generate(prompt = "p", width = 960, height = 544, first_frame = image)[
-            "conditioning"
-        ]
+        backend.generate(prompt = "p", width = 960, height = 544, first_frame = image)["conditioning"]
         == "i2va"
     )
     assert calls[-1]["params"].end_img is None
 
     assert (
-        backend.generate(prompt = "p", width = 960, height = 544, last_frame = image)[
-            "conditioning"
-        ]
+        backend.generate(prompt = "p", width = 960, height = 544, last_frame = image)["conditioning"]
         == "l2va"
     )
     assert calls[-1]["params"].init_img is None
@@ -3604,7 +3600,6 @@ def test_h3_modular_load_pins_a_hosted_prequant_denoiser_out_of_the_offload_rota
     """
     import types
 
-
     from core.inference.video import VideoBackend
 
     calls: dict = {}
@@ -3703,9 +3698,7 @@ def test_h3_native_progress_reads_only_the_denoise_bar(monkeypatch):
             seen = []
             for line in transcript:
                 on_log(line)
-                seen.append(
-                    (backend._gen["step"], backend._gen["total"], backend._gen["phase"])
-                )
+                seen.append((backend._gen["step"], backend._gen["total"], backend._gen["phase"]))
             calls.append(seen)
             return Path("/tmp/does-not-exist.webm")
 
@@ -3820,13 +3813,16 @@ def _h3_ref_backend(monkeypatch, calls):
     """The native backend with the Ref2VA partition resident instead of FL2VA."""
     backend = _h3_native_backend(monkeypatch, calls)
     object.__setattr__(backend._state, "h3_task", "ref2va")
-    object.__setattr__(
-        backend._state, "gguf_filename", "minimax_h3_ref2va_pruned-Q4_K_M.gguf"
-    )
+    object.__setattr__(backend._state, "gguf_filename", "minimax_h3_ref2va_pruned-Q4_K_M.gguf")
     return backend
 
 
-def _reference_video_data_url(seconds=3.0, fps=24, size=(160, 96), with_audio=True):
+def _reference_video_data_url(
+    seconds = 3.0,
+    fps = 24,
+    size = (160, 96),
+    with_audio = True,
+):
     """A real encoded MP4, so the decode path is exercised rather than stubbed."""
     import base64
     import io
@@ -3835,17 +3831,17 @@ def _reference_video_data_url(seconds=3.0, fps=24, size=(160, 96), with_audio=Tr
     np = pytest.importorskip("numpy")
 
     buf = io.BytesIO()
-    with av.open(buf, mode="w", format="mp4") as out:
-        video = out.add_stream("libx264", rate=fps)
+    with av.open(buf, mode = "w", format = "mp4") as out:
+        video = out.add_stream("libx264", rate = fps)
         video.width, video.height = size
         video.pix_fmt = "yuv420p"
         audio = None
         if with_audio:
-            audio = out.add_stream("aac", rate=44_100)
+            audio = out.add_stream("aac", rate = 44_100)
             audio.layout = "stereo"
         for index in range(int(seconds * fps)):
             frame = av.VideoFrame.from_ndarray(
-                np.full((size[1], size[0], 3), index % 255, dtype=np.uint8), format="rgb24"
+                np.full((size[1], size[0], 3), index % 255, dtype = np.uint8), format = "rgb24"
             )
             for packet in video.encode(frame):
                 out.mux(packet)
@@ -3854,8 +3850,8 @@ def _reference_video_data_url(seconds=3.0, fps=24, size=(160, 96), with_audio=Tr
             total = int(seconds * 44_100)
             while written < total:
                 count = min(1024, total - written)
-                samples = np.zeros((1, count * 2), dtype=np.int16)
-                frame = av.AudioFrame.from_ndarray(samples, format="s16", layout="stereo")
+                samples = np.zeros((1, count * 2), dtype = np.int16)
+                frame = av.AudioFrame.from_ndarray(samples, format = "s16", layout = "stereo")
                 frame.sample_rate = 44_100
                 for packet in audio.encode(frame):
                     out.mux(packet)
@@ -3873,7 +3869,7 @@ def test_h3_reference_video_decodes_onto_the_models_own_clock():
 
     import base64
 
-    blob = base64.b64decode(_reference_video_data_url(seconds=3.0, fps=30).split(",", 1)[1])
+    blob = base64.b64decode(_reference_video_data_url(seconds = 3.0, fps = 30).split(",", 1)[1])
     frames, waveform, sample_rate = decode_h3_reference_video(blob)
     # 3 seconds at 24 fps whatever the container's own rate was.
     assert len(frames) == 72
@@ -3888,7 +3884,7 @@ def test_h3_reference_video_refuses_a_clip_below_the_trained_window():
 
     from core.inference.video_minimax_h3 import decode_h3_reference_video
 
-    blob = base64.b64decode(_reference_video_data_url(seconds=0.5).split(",", 1)[1])
+    blob = base64.b64decode(_reference_video_data_url(seconds = 0.5).split(",", 1)[1])
     with pytest.raises(ValueError, match = "2 to 15 seconds"):
         decode_h3_reference_video(blob)
 
@@ -3900,7 +3896,7 @@ def test_h3_reference_video_refuses_instead_of_silently_truncating_a_long_clip()
     from core.inference.video_minimax_h3 import decode_h3_reference_video
 
     blob = base64.b64decode(
-        _reference_video_data_url(seconds=15.1, fps=24, with_audio=False).split(",", 1)[1]
+        _reference_video_data_url(seconds = 15.1, fps = 24, with_audio = False).split(",", 1)[1]
     )
     with pytest.raises(ValueError, match = "longer than 15s"):
         decode_h3_reference_video(blob)
@@ -3914,8 +3910,8 @@ def test_h3_native_refuses_a_later_video_soundtrack_after_a_silent_video(monkeyp
         backend.begin_generate(
             prompt = "match <Video 1> and <Video 2>",
             reference_videos = [
-                {"video": _reference_video_data_url(with_audio=False)},
-                {"video": _reference_video_data_url(with_audio=True)},
+                {"video": _reference_video_data_url(with_audio = False)},
+                {"video": _reference_video_data_url(with_audio = True)},
             ],
         )
 
@@ -3926,17 +3922,17 @@ def test_h3_reference_images_are_fitted_to_the_requested_policy():
 
     source = Image.new("RGB", (6000, 3000), (0, 0, 0))
     # "match" brings the reference down to the generation's pixel area, aspect kept.
-    matched = fit_h3_reference_image(source, width=960, height=544, policy="match")
-    assert matched.size[0] / matched.size[1] == pytest.approx(2.0, abs=0.05)
+    matched = fit_h3_reference_image(source, width = 960, height = 544, policy = "match")
+    assert matched.size[0] / matched.size[1] == pytest.approx(2.0, abs = 0.05)
     assert matched.size[0] * matched.size[1] <= 960 * 544 * 1.1
     # "max" targets the reference pipeline's own 2048px short edge instead.
-    biggest = fit_h3_reference_image(source, width=960, height=544, policy="max")
+    biggest = fit_h3_reference_image(source, width = 960, height = 544, policy = "max")
     assert min(biggest.size) == 2048 and max(biggest.size) == 4096
     # Neither ever upscales a source already under its target; it only snaps to 32.
     small = Image.new("RGB", (128, 128), (0, 0, 0))
-    assert fit_h3_reference_image(small, width=1344, height=768, policy="max").size == (128, 128)
+    assert fit_h3_reference_image(small, width = 1344, height = 768, policy = "max").size == (128, 128)
     with pytest.raises(ValueError, match = "policy"):
-        fit_h3_reference_image(source, width=960, height=544, policy="huge")
+        fit_h3_reference_image(source, width = 960, height = 544, policy = "huge")
 
 
 def test_h3_native_generate_stages_every_reference_kind(monkeypatch, tmp_path):
@@ -3954,7 +3950,8 @@ def test_h3_native_generate_stages_every_reference_kind(monkeypatch, tmp_path):
             staged["video_audios"] = [Path(p).name for p in params.ref_video_audios]
             staged["audios"] = [Path(p).name for p in params.ref_audios]
             staged["wav_ok"] = all(
-                Path(p).read_bytes()[:4] == b"RIFF" for p in params.ref_video_audios + params.ref_audios
+                Path(p).read_bytes()[:4] == b"RIFF"
+                for p in params.ref_video_audios + params.ref_audios
             )
             staged["keyframes"] = (params.init_img, params.end_img)
             return Path("/tmp/does-not-exist.webm")
@@ -3987,7 +3984,7 @@ def test_h3_native_generate_stages_every_reference_kind(monkeypatch, tmp_path):
     assert result["conditioning"] == "ref2va"
 
 
-def _data_url_wav(seconds=1.0, rate=32_000):
+def _data_url_wav(seconds = 1.0, rate = 32_000):
     import base64
     import io
     import math
@@ -4001,7 +3998,7 @@ def _data_url_wav(seconds=1.0, rate=32_000):
         frames = bytearray()
         for i in range(int(seconds * rate)):
             value = int(8000 * math.sin(2 * math.pi * 440 * i / rate))
-            frames += int(value).to_bytes(2, "little", signed=True) * 2
+            frames += int(value).to_bytes(2, "little", signed = True) * 2
         handle.writeframes(bytes(frames))
     return "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode()
 
@@ -4082,9 +4079,17 @@ def test_h3_modular_load_brings_up_the_requested_partition(monkeypatch):
 
     backend = VideoBackend()
     status = backend._load_h3_modular_pipeline(
-        diffusers = diffusers, torch = torch, fam = fam, repo_id = "MiniMaxAI/MiniMax-H3",
-        base = fam.base_repo, kind = "pipeline", dtype = torch.bfloat16, device = "cuda",
-        hf_token = None, memory_mode = None, h3_task = "ref2va",
+        diffusers = diffusers,
+        torch = torch,
+        fam = fam,
+        repo_id = "MiniMaxAI/MiniMax-H3",
+        base = fam.base_repo,
+        kind = "pipeline",
+        dtype = torch.bfloat16,
+        device = "cuda",
+        hf_token = None,
+        memory_mode = None,
+        h3_task = "ref2va",
     )
     assert seen["workflow"] == "ref2va"
     assert status["supports_references"] is True and status["supports_keyframes"] is False
@@ -4151,20 +4156,28 @@ def test_h3_modular_generate_sets_both_schedule_shifts(fake_runtime, monkeypatch
     backend = VideoBackend()
     fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
     backend._state = _VideoLoadState(
-        pipe = _ModularPipe(), family = fam, repo_id = "MiniMaxAI/MiniMax-H3",
-        base_repo = fam.base_repo, device = "cpu", dtype = "bfloat16", kind = "pipeline",
-        engine = "diffusers", h3_task = "fl2va",
+        pipe = _ModularPipe(),
+        family = fam,
+        repo_id = "MiniMaxAI/MiniMax-H3",
+        base_repo = fam.base_repo,
+        device = "cpu",
+        dtype = "bfloat16",
+        kind = "pipeline",
+        engine = "diffusers",
+        h3_task = "fl2va",
     )
-    monkeypatch.setattr(
-        VideoBackend, "_encode_mp4", staticmethod(lambda *a, **k: b"MP4")
-    )
+    monkeypatch.setattr(VideoBackend, "_encode_mp4", staticmethod(lambda *a, **k: b"MP4"))
     monkeypatch.setattr("core.inference.video.contextlib", contextlib)
 
     result = backend.generate(prompt = "p", width = 960, height = 544, steps = 2)
     assert shifts["video"] == 12.0 and shifts["audio"] == 3.0
 
     backend.generate(
-        prompt = "p", width = 960, height = 544, steps = 2, flow_shift = 7.0,
+        prompt = "p",
+        width = 960,
+        height = 544,
+        steps = 2,
+        flow_shift = 7.0,
         audio_flow_shift = 4.0,
     )
     assert shifts["video"] == 7.0 and shifts["audio"] == 4.0
@@ -4197,9 +4210,10 @@ def test_h3_ref2va_partition_refuses_a_reference_less_request(monkeypatch):
     assert backend.generate_progress()["active"] is False
     # The FL2VA partition is where text-only belongs, and it still takes it.
     keyframe_backend = _h3_native_backend(monkeypatch, [])
-    assert keyframe_backend.generate(
-        prompt = "a fox in snow", width = 640, height = 384
-    )["conditioning"] == "t2va"
+    assert (
+        keyframe_backend.generate(prompt = "a fox in snow", width = 640, height = 384)["conditioning"]
+        == "t2va"
+    )
 
 
 def test_h3_vae_trim_keeps_the_encoder_for_the_workflows_that_encode():
