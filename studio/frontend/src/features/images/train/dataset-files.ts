@@ -8,17 +8,21 @@ export const DATASET_FILE_ACCEPT = [...DATASET_IMAGE_EXTS, ...DATASET_TEXT_EXTS]
 
 const ACCEPTED = new Set([...DATASET_IMAGE_EXTS, ...DATASET_TEXT_EXTS]);
 
+// a caption jsonl runs to kilobytes, so scan a prefix rather than decoding the whole upload.
+const METADATA_SCAN_BYTES = 1024 * 1024;
+
 // starlette caps a multipart body at 1000 file parts and fastapi does not raise it, so a larger
 // selection is sent in slices; the endpoint accumulates repeat uploads into the same folder.
 export const DATASET_UPLOAD_CHUNK = 500;
 
 /** slice `files` so no request exceeds the part cap or `maxBytes`, keeping casefold-equal
  *  names together: a repeat upload replaces a same-name destination, and the backend can only
- *  compare names inside one request. */
+ *  compare names inside one request. A single group over `maxBytes` still ships whole, since
+ *  splitting it is exactly what lets the second request overwrite the first. */
 export function chunkDatasetUpload(files: File[], maxBytes: number): File[][] {
   const groups = new Map<string, File[]>();
   for (const file of files) {
-    const key = file.name.toLowerCase();
+    const key = destinationName(file).toLowerCase();
     const group = groups.get(key);
     if (group) group.push(file);
     else groups.set(key, [file]);
@@ -51,7 +55,7 @@ export async function metadataKeyedOnSubfolders(files: File[]): Promise<string |
     if (!file.name.toLowerCase().endsWith(".jsonl")) continue;
     let text: string;
     try {
-      text = await file.text();
+      text = await file.slice(0, METADATA_SCAN_BYTES).text();
     } catch {
       continue; // unreadable here is the backend's problem, not a reason to block the upload
     }
@@ -66,13 +70,20 @@ export async function metadataKeyedOnSubfolders(files: File[]): Promise<string |
       }
       if (!row || typeof row !== "object") continue;
       const record = row as Record<string, unknown>;
-      const key = record.file_name ?? record.image ?? record.file;
+      const key = record.file_name || record.image || record.file;
       if (typeof key === "string" && (key.includes("/") || key.includes("\\"))) {
         return file.name;
       }
     }
   }
   return null;
+}
+
+/** the name the upload stores this file under, matching the normalisation in training.py. */
+export function destinationName(file: File): string {
+  const base = file.name.replace(/\\/g, "/").split("/").pop() ?? "";
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: the backend strips nulls here too
+  return base.trim().replace(/\0/g, "");
 }
 
 function extensionOf(name: string): string {
@@ -126,7 +137,9 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
 
   for (const file of input) {
     if (inHiddenPath(file)) continue;
-    const ext = extensionOf(file.name);
+    // keyed on the stored name, so " cat.png" and "cat.png" are seen as one destination
+    const dest = destinationName(file);
+    const ext = extensionOf(dest);
     if (!ACCEPTED.has(ext)) {
       skipped += 1;
       continue;
@@ -134,7 +147,7 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
     // a dataset folder is flat, so two tree paths sharing a basename are one destination.
     // matched exactly: only the backend knows whether the dataset filesystem folds case.
     const path = displayPath(file);
-    const previous = seen.get(file.name);
+    const previous = seen.get(dest);
     if (previous !== undefined) {
       collisions.push({ kind: "name", first: previous, second: path });
       continue;
@@ -143,20 +156,20 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
     // two images sharing a stem resolve to one <stem>.txt caption, which the backend refuses;
     // _shares_sidecar clashes when the stems match exactly, or when the full names differ once
     // casefolded, so only a pure extension-case pair of one stem spelling is exempt.
-    const stem = isImage ? file.name.slice(0, file.name.length - ext.length) : null;
+    const stem = isImage ? dest.slice(0, dest.length - ext.length) : null;
     if (stem !== null) {
       const key = stem.toLowerCase();
       const clash = imageStems.get(key);
       if (
         clash !== undefined &&
-        (clash.stem === stem || clash.name.toLowerCase() !== file.name.toLowerCase())
+        (clash.stem === stem || clash.name.toLowerCase() !== dest.toLowerCase())
       ) {
         collisions.push({ kind: "stem", first: clash.path, second: path });
         continue;
       }
-      if (clash === undefined) imageStems.set(key, { name: file.name, stem, path });
+      if (clash === undefined) imageStems.set(key, { name: dest, stem, path });
     }
-    seen.set(file.name, path);
+    seen.set(dest, path);
     files.push(file);
     if (isImage) imageCount += 1;
     else captionCount += 1;
@@ -207,13 +220,19 @@ async function walkEntry(entry: FileSystemEntry, out: File[], prefix = ""): Prom
 /** every file in a drop, descending into any dropped folders; throws if the walk cannot finish. */
 export async function filesFromDataTransfer(transfer: DataTransfer): Promise<File[]> {
   const entries: FileSystemEntry[] = [];
+  let fileItems = 0;
   for (const item of Array.from(transfer.items ?? [])) {
     if (item.kind !== "file") continue;
+    fileItems += 1;
     const entry = item.webkitGetAsEntry?.();
     if (entry) entries.push(entry);
   }
   // still synchronous here, so the drag data store is readable; it is protected once drop yields.
   if (entries.length === 0) return Array.from(transfer.files ?? []);
+  if (entries.length < fileItems) {
+    // some items resolved and some did not, so the walk would quietly upload part of the drop.
+    throw new Error("Some dropped items could not be read.");
+  }
   const out: File[] = [];
   // no partial result: a half-walked folder would upload as if it were the whole dataset.
   for (const entry of entries) await walkEntry(entry, out);

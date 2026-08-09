@@ -224,6 +224,31 @@ test("gives dropped files their folder path, so a collision names both sides", a
   ]);
 });
 
+test("normalizes to the stored name, so a leading space is not a second destination", () => {
+  // training.py stores Path(name).name.strip(), so " cat.png" and "cat.png" are one file.
+  const result = selectDatasetFiles([picked(" cat.png"), picked("cat.png")]);
+
+  assert.equal(result.files.length, 1);
+  assert.equal(result.collisions.length, 1);
+
+  // and the same normalisation groups them into one request rather than two repeat uploads.
+  const chunks = chunkDatasetUpload([sized(" cat.png", 1), sized("cat.png", 1)], 1024 * 1024);
+  assert.equal(chunks.length, 1);
+});
+
+test("rejects a drop whose items do not all resolve to entries", async () => {
+  // a partly resolvable drop would otherwise upload a subset under an all-or-nothing contract.
+  const dt = {
+    items: [
+      { kind: "file", webkitGetAsEntry: () => fileEntry("ok.png") },
+      { kind: "file", webkitGetAsEntry: () => null },
+    ],
+    files: [new File(["x"], "ok.png"), new File(["x"], "ghost.png")],
+  } as unknown as DataTransfer;
+
+  await assert.rejects(filesFromDataTransfer(dt), /could not be read/);
+});
+
 test("keeps casefold-equal names in one request, which the backend can only compare there", () => {
   const files = [
     ...Array.from({ length: 499 }, (_, i) => sized(`img_${i}.png`, 1)),
@@ -265,6 +290,13 @@ test("flags metadata keyed on a subfolder, which flattening would silently unmat
   // metadata written on windows keys rows with a backslash
   const win = new File(['{"file_name": "images\\\\001.png"}\n'], "metadata.jsonl");
   assert.equal(await metadataKeyedOnSubfolders([win]), "metadata.jsonl");
+
+  // _load_metadata_captions falls back on the first TRUTHY key, so an empty file_name defers
+  const blank = new File(
+    ['{"file_name": "", "image": "images/001.png"}\n'],
+    "metadata.jsonl",
+  );
+  assert.equal(await metadataKeyedOnSubfolders([blank]), "metadata.jsonl");
 });
 
 test("refuses a partly read folder instead of uploading it as complete", async () => {
