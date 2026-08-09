@@ -680,7 +680,6 @@ def _variant_delete_empties_repo(repo_id: str, variant: str) -> bool:
     enumerated, not that there are some.
     """
     from hub.services.models import cache_inventory, companion_cleanup
-
     try:
         scans = cache_inventory.all_hf_cache_scans()
         repos = companion_cleanup._repos_by_id(scans).get((repo_id or "").strip().lower(), [])
