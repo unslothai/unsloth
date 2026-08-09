@@ -56,3 +56,19 @@ test("the staged plan reads the precision live, not the value it closed over", (
     "the ref must be kept current on every render",
   );
 });
+
+test("the staged plan carries the memory request too", () => {
+  // The route refuses an explicit precision under balanced or low_vram only when it can see the
+  // memory mode. Omitting it here meant the plan succeeded, tens of GB were staged, and the
+  // identical pick was then rejected by /video/load -- the regression the plan gate exists for.
+  const call = source.slice(
+    source.indexOf("await getVideoDownloadPlan({"),
+    source.indexOf("await getVideoDownloadPlan({") + 1200,
+  );
+  assert.ok(call.includes("memory_mode:"), "the plan must be asked with the memory request");
+  assert.ok(
+    call.includes("memoryModeRef.current"),
+    "and read it live, like the precision",
+  );
+  assert.ok(source.includes("memoryModeRef.current = memoryMode"));
+});

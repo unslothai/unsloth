@@ -118,6 +118,7 @@ from .diffusion_precision import (
     quantize_text_encoders,
     te_quant_needs_resident_weights,
     te_quant_supported,
+    torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
 from .diffusion_prequant import (
@@ -995,7 +996,14 @@ class DiffusionBackend:
         # where the torchao stub kills int8 while fp8 still works.
         te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
         te_reason = None
-        if te_effective is not None and not te_quant_supported(target, te_effective):
+        if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
+            # The casters import torchao only after the pipeline is downloaded and built, so a
+            # broken or absent install failed through load-progress instead of this 409.
+            te_reason = (
+                "torchao is not importable on this install, and these encoder modes are torchao "
+                "quantisations"
+            )
+        elif te_effective is not None and not te_quant_supported(target, te_effective):
             te_reason = (
                 "this device does not have the tensor cores that backend needs (a CUDA GPU in "
                 "bf16, plus fp8 / int8 / NVFP4 support depending on the mode)"

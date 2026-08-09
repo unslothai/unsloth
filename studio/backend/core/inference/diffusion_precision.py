@@ -34,6 +34,8 @@ from .diffusion_auto_policy import (
 )
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
+from functools import lru_cache
+
 from core._torchao_stub import is_stubbed
 
 TE_QUANT_FP8 = "fp8"
@@ -96,6 +98,24 @@ def te_quant_needs_resident_weights(mode: Optional[str]) -> bool:
     active. Plain layerwise fp8 is a dtype cast and is unaffected.
     """
     return mode in _TE_TORCHAO_MODES
+
+
+@lru_cache(maxsize = 1)
+def torchao_quantize_importable() -> bool:
+    """Whether ``torchao.quantization.quantize_`` is really there and really torchao's.
+
+    The casters import it only after the pipeline has been downloaded and built, so a broken or
+    absent install failed through load-progress rather than the pre-load 409 the strict contract
+    promises. The pre-handoff gates ask this so the refusal arrives before the download.
+    ``is_stubbed`` covers the Windows-ROCm stub, whose quantize_ is a no-op that would otherwise
+    report the mode applied against an untouched bf16 encoder. Cached: the answer cannot change
+    inside a process, and the gate runs on every load.
+    """
+    try:
+        from torchao.quantization import quantize_  # noqa: F401
+    except Exception:  # noqa: BLE001 -- absent, broken build, missing native symbol
+        return False
+    return not is_stubbed("torchao")
 
 
 def te_quant_supported(target: Any, mode: str) -> bool:

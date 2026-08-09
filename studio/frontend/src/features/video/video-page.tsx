@@ -1409,6 +1409,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // /video/load rejected the same pick.
   const transformerQuantRef = useRef(transformerQuant);
   transformerQuantRef.current = transformerQuant;
+  // And the memory request, for the same reason and through the same ref: the route refuses an
+  // explicit precision under balanced or low_vram only when it is told the memory mode, so a
+  // plan asked without it staged tens of GB and left the 409 to the load.
+  const memoryModeRef = useRef(memoryMode);
+  memoryModeRef.current = memoryMode;
   // A download finishing while this page is hidden must not evict the model the visible page loaded. The pick is held, not dropped.
   const stagedLoadDeferred = useRef(false);
   // A pick made while the download ran already owns the page; only the newest may load. `isLatest`, not `holds`: leaving the
@@ -1461,6 +1466,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             opts.kind === "pipeline" && transformerQuantRef.current !== "auto"
               ? transformerQuantRef.current
               : undefined,
+          // The same memory request handleLoad sends: the precision gate refuses the
+          // offload-forcing modes only when it can see them.
+          memory_mode:
+            memoryModeRef.current === "auto" ? undefined : memoryModeRef.current,
         });
         // Superseded mid-plan: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
         if (!owns()) return false;

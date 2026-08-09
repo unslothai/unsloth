@@ -1918,8 +1918,9 @@ def test_an_offloading_memory_request_refuses_a_torchao_text_encoder(monkeypatch
         "_resolve_device_target",
         lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
     )
-    # Support is not what is under test here, and it reads the live device.
+    # Support and the torchao install are not what is under test here.
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
+    monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: True)
     with pytest.raises(RuntimeError) as excinfo:
         backend.assert_precision_available(
             # A family WITH an int8 schedule, so the int8 case is not downgraded to fp8 first.
@@ -1944,9 +1945,53 @@ def test_layerwise_fp8_survives_an_offloading_memory_request(monkeypatch):
         lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
     )
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
+    monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: True)
     backend.assert_precision_available(
         types.SimpleNamespace(name = "qwen-image"),
         model_kind = "gguf",
         text_encoder_quant = "fp8",
         memory_mode = "low_vram",
+    )
+
+
+@pytest.mark.parametrize("mode", ["int8", "fp8_dynamic", "nvfp4"])
+def test_a_broken_torchao_refuses_a_torchao_text_encoder_before_the_download(monkeypatch, mode):
+    """The casters import torchao only after the pipeline has been downloaded and built, so an
+    absent or broken install failed through load-progress instead of the pre-load 409 the strict
+    contract promises. The device check cannot see it: a CUDA bf16 host with no torchao passes
+    every capability test."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+    )
+    monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
+    monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: False)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "qwen-image"),
+            model_kind = "gguf",
+            text_encoder_quant = mode,
+        )
+    assert "torchao is not importable" in str(excinfo.value)
+
+
+def test_layerwise_fp8_does_not_need_torchao(monkeypatch):
+    """fp8 is a plain dtype cast, so a host without torchao still runs it and refusing it would
+    reject a load that works."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+    )
+    monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
+    monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: False)
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "qwen-image"), model_kind = "gguf", text_encoder_quant = "fp8"
     )
