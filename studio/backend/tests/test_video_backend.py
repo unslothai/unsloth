@@ -2461,7 +2461,7 @@ def test_unified_memory_refuses_an_oversized_video_load(fake_runtime, monkeypatc
     _run_load stringifies this onto load_progress, so the text is what the UI toasts."""
     import core.inference.video as video_mod
 
-    monkeypatch.setattr(video_mod, "snapshot_device_memory", _unified_snapshot(16))
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(16))
 
     backend = VideoBackend()
     with pytest.raises(RuntimeError) as excinfo:
@@ -2478,7 +2478,7 @@ def test_unified_memory_allows_a_video_load_that_fits(fake_runtime, monkeypatch)
     # The same family on a 128 GiB Mac fits, so the refusal must stay out of the way.
     import core.inference.video as video_mod
 
-    monkeypatch.setattr(video_mod, "snapshot_device_memory", _unified_snapshot(128))
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(128))
 
     backend = VideoBackend()
     status = backend.load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")
@@ -2489,7 +2489,7 @@ def test_unified_memory_refusal_is_overridable_at_the_video_load_seam(fake_runti
     import core.inference.video as video_mod
     from core.inference.diffusion_memory import UNIFIED_OVERSIZE_ENV
 
-    monkeypatch.setattr(video_mod, "snapshot_device_memory", _unified_snapshot(16))
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(16))
     monkeypatch.setenv(UNIFIED_OVERSIZE_ENV, "1")
 
     backend = VideoBackend()
@@ -2506,9 +2506,60 @@ def test_discrete_vram_video_load_is_unaffected_by_the_refusal(fake_runtime, mon
 
     monkeypatch.setattr(
         video_mod,
-        "snapshot_device_memory",
+        "settled_snapshot_device_memory",
         lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", 13_107, 16_384),
     )
 
     backend = VideoBackend()
     assert backend.load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")["loaded"] is True
+
+
+def test_a_precast_text_encoder_is_sized_before_the_unified_refusal(monkeypatch):
+    """LTX-2's table budgets a 24.4 GB dense text encoder, but a hosted pre-cast fp8 encoder
+    replaces it during assembly. That only overlaps this refusal on an INTEGRATED-CUDA device,
+    where te_quant_supported's "cuda" requirement and unified memory both hold, and there it
+    refused a load whose real footprint fits."""
+    import core.inference.diffusion_te_prequant as tp
+    import core.inference.video as video_mod
+
+    fam = type("F", (), {"name": "ltx-2", "bf16_components_gb": (37.8, 24.4, 5.5)})()
+    mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+    kwargs = dict(
+        te_quant_mode = "fp8", target = None, encoder_gb = 24.4,
+        mib_per_gb = mib_per_gb, dtype_scale = 1.0,
+    )
+
+    # No pre-cast encoder resolves: no saving, so the dense figure stands.
+    monkeypatch.setattr(tp, "te_prequant_sources", lambda *a, **k: {})
+    assert video_mod._te_prequant_saving_mib(fam, **kwargs) == 0
+
+    # With sources resolving, the saving is the dense encoder minus its fp8 steady size:
+    # 24.4 GB at the 0.55 fp8 steady factor leaves about 13.4 GB resident.
+    monkeypatch.setattr(tp, "te_prequant_sources", lambda *a, **k: {"text_encoder": object()})
+    saving = video_mod._te_prequant_saving_mib(fam, **kwargs)
+    assert 10_000 < saving < 11_500
+
+
+def test_the_mps_allocator_cache_is_released_before_the_budget_is_read(monkeypatch):
+    """Dropping a pipeline leaves its buffers RESERVED in torch's MPS caching allocator. The
+    budget is a system-memory reading, which counts those bytes as used, so without emptying the
+    cache first a model swap that fits is refused. torch.mps.empty_cache "releases all unoccupied
+    cached memory currently held by the caching allocator"."""
+    import sys
+    import types
+
+    import core.inference.diffusion_memory as dm
+
+    calls: list = []
+    fake_torch = types.SimpleNamespace(
+        mps = types.SimpleNamespace(empty_cache = lambda: calls.append("mps"))
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(
+        dm,
+        "snapshot_device_memory",
+        lambda t: dm.DeviceMemory("mps", "mps", "unified_memory", 1, 2),
+    )
+
+    dm.settled_snapshot_device_memory(types.SimpleNamespace(device = "mps", backend = "mps"))
+    assert calls == ["mps"], "the MPS allocator must be emptied before the reading is taken"

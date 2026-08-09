@@ -160,8 +160,25 @@ def settled_snapshot_device_memory(
     fell back to offloaded GGUF; the identical retry saw >= 124 GB and went resident). Settle
     the allocator (synchronize + empty_cache, best-effort) and take the MAX free over a few
     spaced reads: a transient can only SHRINK free, so the max rejects transient undercounts
-    while a persistent tenant still caps every read. Non-cuda targets keep the single read."""
-    if getattr(target, "device", "cpu") != "cuda":
+    while a persistent tenant still caps every read. Non-cuda targets keep the single read.
+
+    On mps the budget is system memory, and torch's MPS caching allocator holds the previous
+    pipeline's freed buffers as reserved -- which reads as used system memory. Release them first,
+    or a swap is budgeted against a pool that only looks too small
+    (torch.mps.empty_cache: "Releases all unoccupied cached memory currently held by the caching
+    allocator so that those can be used in other GPU applications")."""
+    device = getattr(target, "device", "cpu")
+    if device == "mps":
+        try:
+            import torch
+
+            empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
+            if callable(empty_cache):
+                empty_cache()
+        except Exception:  # noqa: BLE001 — settle is best-effort; the snapshot below still runs
+            pass
+        return snapshot_device_memory(target)
+    if device != "cuda":
         return snapshot_device_memory(target)
     try:
         import torch

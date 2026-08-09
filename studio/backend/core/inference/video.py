@@ -65,7 +65,7 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     raise_on_unified_memory_shortfall,
-    snapshot_device_memory,
+    settled_snapshot_device_memory,
 )
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -463,6 +463,34 @@ def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
     if fam.is_moe and getattr(pipe, "transformer_2", None) is not None:
         return (pipe, _SecondDiTView(pipe))
     return (pipe,)
+
+
+def _te_prequant_saving_mib(
+    fam: VideoFamily,
+    *,
+    te_quant_mode: Optional[str],
+    target: Any,
+    encoder_gb: float,
+    mib_per_gb: float,
+    dtype_scale: float,
+) -> int:
+    """How much of the family table's dense text-encoder budget a hosted pre-cast fp8 encoder
+    gives back, in MiB; 0 when no pre-cast encoder resolves for this pick.
+
+    ``te_prequant_sources`` is pure (no IO) and is the SAME gate assembly uses, so this can never
+    claim a saving the load does not take. fp8 keeps the existing steady-state factor, the one the
+    transformer re-plan already sizes fp8 weights with."""
+    try:
+        from .diffusion_te_prequant import te_prequant_sources
+
+        if not te_prequant_sources(fam, te_quant_mode = te_quant_mode, target = target):
+            return 0
+        factor = _QUANT_STEADY_FACTOR.get("fp8")
+        if not factor:
+            return 0
+        return max(0, int(encoder_gb * (1.0 - factor) * mib_per_gb * dtype_scale))
+    except Exception:  # noqa: BLE001 — sizing aid only; fall back to the dense figure
+        return 0
 
 
 class VideoBackend:
@@ -1296,7 +1324,9 @@ class VideoBackend:
             transformer_quant = "off" if speed_off else TQ_AUTO
 
         # ── memory plan: family-table resident estimate + frames-aware headroom.
-        device_memory = snapshot_device_memory(target)
+        # Settled, not raw: this plan is the one the unified-memory refusal below judges, so the
+        # previous pipeline's cached-but-free allocator buffers must not read as occupied.
+        device_memory = settled_snapshot_device_memory(target)
         components = fam.bf16_components_gb
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         if kind == "pipeline":
@@ -1373,11 +1403,43 @@ class VideoBackend:
                     plan = replanned
                     quant_replanned = True
 
+        # A hosted pre-cast fp8 text encoder REPLACES the dense one during assembly below, so the
+        # dense table figure is not what ends up resident (LTX-2 budgets 24.4 GB for its encoder;
+        # the pre-cast artifact is ~13 GB). This only overlaps the refusal on an integrated-CUDA
+        # device, where te_quant_supported's "cuda" requirement and unified memory both hold, and
+        # there it would turn away a load that fits. Size the encoder the load will really use.
+        refusal_plan = plan
+        if components is not None:
+            saving_mib = _te_prequant_saving_mib(
+                fam,
+                te_quant_mode = text_encoder_quant,
+                target = target,
+                encoder_gb = components[1],
+                mib_per_gb = mib_per_gb,
+                dtype_scale = dtype_scale,
+            )
+            committed_dense = plan.estimates.get("model_dense_mib")
+            if saving_mib and committed_dense is not None:
+                refusal_plan = plan_diffusion_memory(
+                    target = target,
+                    device_memory = device_memory,
+                    model_dense_mib = max(1, int(committed_dense) - saving_mib),
+                    runtime_headroom_mib = runtime_mib,
+                    # The quant re-plan folds the companions into model_dense_mib already.
+                    companion_dense_mib = (
+                        None
+                        if quant_replanned or companion_mib is None
+                        else max(1, companion_mib - saving_mib)
+                    ),
+                    requested_mode = normalize_memory_mode(memory_mode),
+                )
         # On unified memory the plan's 'none' policy is a placement, not a fit: there is no
         # offload tier left to fall back to, so an oversized load is killed by the OS with no
         # torch OOM to catch. Refuse now, after the eviction above and after the quant re-plan
         # (CUDA-only, but check the plan we committed to), before any weight is materialised.
-        raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
+        raise_on_unified_memory_shortfall(
+            refusal_plan, family = getattr(fam, "name", None), logger = logger
+        )
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)

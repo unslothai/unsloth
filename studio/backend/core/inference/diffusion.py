@@ -24,7 +24,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -77,6 +77,7 @@ from .diffusion_memory import (
     raise_on_unified_memory_shortfall,
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
+    unified_memory_shortfall_message,
 )
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -2367,8 +2368,15 @@ class DiffusionBackend:
                 # CUDA-only -- and its 'none' policy is a placement, not a fit. Refuse here,
                 # after the eviction above freed the previous pipeline (so the free reading is
                 # the memory this load actually gets) and before any weight is materialised.
+                # A pipeline's weight term is cached SHARD bytes, which is a download size, not a
+                # resident one: Z-Image and Lumina ship fp32 shards that halve when loaded as bf16
+                # (the size table records 24.6 GB of Z-Image shards as 12.3 GB resident). Refusing
+                # on the download figure would turn away a load that fits, so judge the refusal
+                # against the table's resident total whenever it knows this base.
                 raise_on_unified_memory_shortfall(
-                    plan, family = getattr(fam, "name", None), logger = logger
+                    self._resident_sized_plan(plan, fam, base, target, kind),
+                    family = getattr(fam, "name", None),
+                    logger = logger,
                 )
 
                 # The caller's RAW request, captured before the tri-state below rewrites it: status
@@ -2646,7 +2654,23 @@ class DiffusionBackend:
                                 # at the snapshot the load will read, not the live root alone.
                                 base_local_dir = _base_local_dir,
                             )
-                            if dense_plan.offload_policy != OFFLOAD_NONE:
+                            # On unified memory the policy cannot express a misfit -- the planner
+                            # returns 'none' for ANY size there, because offload shuffles bytes
+                            # within one pool -- so the check above never fires and the dense build
+                            # proceeds to be OS-killed. Size it explicitly instead, and decline to
+                            # the packed GGUF (which already passed the load-level refusal) rather
+                            # than raising: a fallback that fits is better than no load at all.
+                            unified_shortfall = unified_memory_shortfall_message(
+                                dense_plan, family = getattr(fam, "name", None)
+                            )
+                            if unified_shortfall is not None:
+                                dense_possible = False
+                                dense_fallback_allowed = False
+                                dense_decline_reason = (
+                                    "the dense bf16 transformer this quant is built from does not "
+                                    f"fit this device's unified memory ({dense_mib} MiB)"
+                                )
+                            elif dense_plan.offload_policy != OFFLOAD_NONE:
                                 dense_possible = False
                                 dense_fallback_allowed = False
                                 dense_decline_reason = (
@@ -3546,6 +3570,46 @@ class DiffusionBackend:
         pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
         pipe.to(device)
         return pipe
+
+    def _resident_sized_plan(
+        self,
+        plan: Any,
+        fam: DiffusionFamily,
+        base: str,
+        target: DiffusionDeviceTarget,
+        kind: str,
+    ) -> Any:
+        """``plan`` with its weight term replaced by the family table's bf16-RESIDENT total, for
+        the unified-memory refusal only.
+
+        A full-pipeline plan sizes weights from cached shard bytes, which is what the repo stores,
+        not what ends up resident: a family shipping fp32 shards (Z-Image, Lumina) halves on the
+        bf16 cast, so the refusal would reject a load that comfortably fits. The table is
+        documented as post-cast resident sizes, so it is the right number to refuse on. Only ever
+        LOWERS the estimate -- a table that reads higher than the shards (a narrow fp8 base that
+        upcasts) is already handled in the plan, and taking the max here would double-count it.
+        Left alone entirely for single-file/GGUF kinds, whose on-disk size IS their resident size,
+        and on any target that is not sized in bf16."""
+        try:
+            if kind != "pipeline":
+                return plan
+            import torch
+
+            if getattr(target, "dtype", None) not in (torch.bfloat16, torch.float16):
+                return plan
+            table = family_bf16_components_gb(fam, base)
+            if table is None:
+                return plan
+            current = plan.estimates.get("model_dense_mib")
+            table_mib = int(sum(table) * (1000.0**3) / (1024.0 * 1024.0))
+            if current is None or table_mib >= int(current):
+                return plan
+            return replace(
+                plan,
+                estimates = {**plan.estimates, "model_dense_mib": table_mib},
+            )
+        except Exception:  # noqa: BLE001 — sizing aid only; refuse on the plan as built
+            return plan
 
     def _plan_memory(
         self,

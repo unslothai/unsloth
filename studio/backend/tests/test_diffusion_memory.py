@@ -997,3 +997,30 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
                 f"weights+overhead={dense + DEFAULT_BASE_OVERHEAD_MIB} MiB, "
                 f"budget={plan.estimates['safe_device_budget_mib']} MiB"
             )
+
+
+# -- the unified refusal is judged on resident sizes, not download sizes --------
+
+
+def test_unified_memory_policy_cannot_express_a_misfit():
+    """Why the dense-quant fast path needed its own explicit check: on unified memory the planner
+    returns OFFLOAD_NONE for ANY size (offload just shuffles bytes within one pool), so the
+    "policy is not none" test the dense re-plan relied on can never fire there."""
+    from core.inference.diffusion_memory import (
+        DeviceMemory,
+        OFFLOAD_NONE,
+        plan_diffusion_memory,
+        unified_memory_shortfall_message,
+    )
+
+    target = type("T", (), {"supports_model_cpu_offload": True, "device": "cuda"})()
+    memory = DeviceMemory("cuda", "cuda", "unified_memory", 8_000, 16_000)
+    plan = plan_diffusion_memory(
+        target = target,
+        device_memory = memory,
+        model_dense_mib = 90_000,  # wildly oversized
+        runtime_headroom_mib = 1_000,
+    )
+    assert plan.offload_policy == OFFLOAD_NONE
+    # ... but the explicit sizing check does see the shortfall.
+    assert unified_memory_shortfall_message(plan, family = "flux.1") is not None
