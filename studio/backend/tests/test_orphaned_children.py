@@ -43,7 +43,6 @@ def _load_installer_module():
     return module
 
 
-
 def _alive(pid: int) -> bool:
     if IS_WINDOWS:
         out = subprocess.run(
@@ -1981,7 +1980,9 @@ def test_the_installer_waits_for_its_validation_group_not_the_leader(tmp_path):
         encoding = "utf-8",
     )
     proc = subprocess.Popen(
-        [sys.executable, str(script)], stdout = subprocess.PIPE, text = True,
+        [sys.executable, str(script)],
+        stdout = subprocess.PIPE,
+        text = True,
         start_new_session = True,
     )
     try:
@@ -2006,7 +2007,8 @@ def test_a_validation_group_that_will_not_die_is_not_announced_as_stopped(monkey
     installer = _load_installer_module()
 
     proc = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session = True,
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session = True,
     )
     try:
         # Signals go nowhere: what an unkillable member looks like from here.
@@ -2052,7 +2054,11 @@ def test_an_installer_timeout_takes_its_announced_children_with_it(monkeypatch):
     monkeypatch.setattr(update_flow.subprocess, "Popen", lambda *a, **k: FakeProc())
     with pytest.raises(RuntimeError, match = "timed out"):
         update_flow.stream_installer(
-            ["x"], {}, timeout_seconds = 1, job = {}, job_lock = threading.Lock(),
+            ["x"],
+            {},
+            timeout_seconds = 1,
+            job = {},
+            job_lock = threading.Lock(),
         )
 
     assert terminated == [9931], terminated
@@ -2066,7 +2072,7 @@ def test_a_diffusion_group_is_reachable_after_its_leader_has_gone():
     ).read_text(encoding = "utf-8")
 
     assert "self._diffusion_pgid = self._leading_process_group(self._process.pid)" in source
-    kill = source[source.index("def _kill_process(self):"):]
+    kill = source[source.index("def _kill_process(self):") :]
     kill = kill[: kill.index("def ", 10)]
     assert 'getattr(self, "_diffusion_pgid", None)' in kill, "only asks a leader that may be gone"
     assert "self._diffusion_pgid = None" in kill, "kept a group id past its kill"

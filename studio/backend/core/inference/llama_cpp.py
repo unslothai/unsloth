@@ -13427,9 +13427,9 @@ class LlamaCppBackend:
         # answering. The diffusion shim leads its own group so the startup sweep
         # can reach its visual server; this is what takes that group down on an
         # ordinary stop, which is the only path the desktop shutdown waits for.
-        _pgid = self._leading_process_group(
-            getattr(self._process, "pid", None)
-        ) or getattr(self, "_diffusion_pgid", None)
+        _pgid = self._leading_process_group(getattr(self._process, "pid", None)) or getattr(
+            self, "_diffusion_pgid", None
+        )
         try:
             if terminable:
                 self._process.terminate()
