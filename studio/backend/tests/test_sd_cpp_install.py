@@ -1251,9 +1251,13 @@ def test_the_one_shot_fallback_keeps_the_requested_accelerator(tmp_path, monkeyp
     monkeypatch.setattr(
         bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(backend = "cuda")
     )
-    monkeypatch.setattr(bk, "SdCppEngine", lambda binary: types.SimpleNamespace(
-        binary = binary, is_available = lambda: True, version = lambda: "x"
-    ))
+    monkeypatch.setattr(
+        bk,
+        "SdCppEngine",
+        lambda binary: types.SimpleNamespace(
+            binary = binary, is_available = lambda: True, version = lambda: "x"
+        ),
+    )
 
     def _install(**kwargs):
         raise AssertionError(f"no reinstall may happen here (asked for {kwargs['accelerator']})")
