@@ -220,6 +220,21 @@ test("a GGUF video row names its selected quant instead of its compute dtype", (
   assert.equal(video.detail, "wan · GGUF · Q4_K_M · cuda");
 });
 
+test("a lowercase quant filename still reads as an upper-case quant", () => {
+  // Plenty of Hub repos ship z-image-turbo-q8_0.gguf; every other quant label in the
+  // UI is upper-cased, so the row must not be the one place that shows q8_0.
+  const [image] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+    model_kind: "gguf",
+    gguf_variant: "q8_0",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(image.detail, "z-image · GGUF · Q8_0 · cuda");
+});
+
 test("a GGUF image load does not print GGUF twice", () => {
   const [image] = describeDiffusionStatus({
     loaded: true,
