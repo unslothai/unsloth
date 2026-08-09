@@ -756,3 +756,24 @@ def test_snapshot_options_keep_a_compressed_csv_split(tmp_path):
 
     # Compressed bytes say nothing about the rows inside, so the split still stands.
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_drop_a_split_holding_an_empty_json_container(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _rows(snapshot, "train.jsonl")
+    (snapshot / "test.json").write_text("[]", encoding = "utf-8")
+
+    # `[]` parses fine and yields no row, so datasets builds train around it.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_legacy_lzma_stream(tmp_path):
+    import lzma
+
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "train.jsonl.lzma").write_bytes(
+        lzma.compress(b'{"text":"row"}\n', format = lzma.FORMAT_ALONE)
+    )
+
+    # datasets registers .xz for its filter, not the alone-format .lzma.
+    assert local_options._snapshot_options(snapshot) == set()

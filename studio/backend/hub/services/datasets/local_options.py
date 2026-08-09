@@ -279,10 +279,11 @@ _IGNORED_DATA_FILENAMES = frozenset(
     }
 )
 # What fsspec can decompress in a Studio install, as suffixes that sit after the real one.
-_COMPRESSION_EXTENSIONS = frozenset({".gz", ".gzip", ".bz2", ".xz", ".lzma", ".zip"})
+_COMPRESSION_EXTENSIONS = frozenset({".gz", ".gzip", ".bz2", ".xz", ".zip"})
 # Named by datasets but needing codecs a Studio install does not ship, so they raise
 # "Compression type not supported" and offering them would put a dead split in the picker.
-_UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4"})
+# .lzma is the legacy alone-format: datasets registers .xz for its filter, not this.
+_UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4", ".lzma"})
 # datasets picks one builder for the whole dataset, from the extensions it finds. Splits
 # that disagree make it raise, so a snapshot mixing formats is not offerable at all.
 _MODULE_EXTENSIONS = {
@@ -560,7 +561,8 @@ def _rowless(path: Path, name: str, module: str) -> bool:
     except OSError:
         return True
     if module == "json":
-        return not head.strip()
+        # A canonical empty container parses fine and yields no row.
+        return head.strip() in (b"", b"[]", b"{}")
     # A header with no row under it. Anything longer than the probe has one.
     return len(head) < _ROW_PROBE_BYTES and len([x for x in head.splitlines() if x.strip()]) < 2
 
