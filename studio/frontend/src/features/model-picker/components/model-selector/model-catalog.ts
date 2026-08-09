@@ -325,7 +325,13 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
   {
     // The distilled 2.3 release: Lightricks' own bf16/fp8 single-file DiT checkpoints (loaded against the already-trusted LTX-2
     // base for the VAE / Gemma3 encoder) plus the GGUF quants. The single-file ones keep the ~50 GB encoder in bf16, so consumer GPUs route to GGUF.
-    canonicalId: "unsloth/LTX-2.3",
+    // Keyed on the artifact that exists: unsloth/LTX-2.3 was never published (404), and an
+    // `unsloth/*` id that is not an artifact clears both the picker's owner guard and the
+    // backend's, so a pick that reached the fall-through was loaded as a pipeline and only died
+    // at the Hub. Lightricks/LTX-2.3 IS an artifact below, so that fall-through cannot fire.
+    // unsloth/LTX-2.3 still resolves to this group: the GGUF artifact claims the same
+    // suffix-stripped key.
+    canonicalId: "Lightricks/LTX-2.3",
     displayName: "LTX 2.3 distilled",
     description: "Text-to-video with audio",
     scope: "video",

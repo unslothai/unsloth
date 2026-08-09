@@ -144,6 +144,73 @@ def _should_skip_auto_packing_error(exc: Exception) -> bool:
     return any(msg in message for msg in _AUTO_PACK_SKIP_MESSAGES)
 
 
+def _should_skip_auto_padding_free_error(exc: Exception) -> bool:
+    """Net for a TRL that words the padding-free / `max_length` guard differently.
+
+    rl.py already handles the known wording; both terms must appear here so an
+    unrelated ValueError still propagates.
+    """
+    message = str(exc).lower()
+    return "padding_free" in message and "max_length" in message
+
+
+def _bound_splits(original_init, args, kwargs):
+    """`(train_dataset, eval_dataset)` as the wrapped `__init__` will see them.
+
+    Bound through the signature rather than indexed positionally: TRL has moved
+    these parameters between releases, and a hardcoded index silently reads the
+    data collator on the version that did.
+    """
+    try:
+        bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs)
+    except Exception:
+        return kwargs.get("train_dataset"), kwargs.get("eval_dataset")
+    return bound.arguments.get("train_dataset"), bound.arguments.get("eval_dataset")
+
+
+def _cap_is_enforceable_without_padding_free(config, train, evals) -> bool:
+    """Whether dropping padding-free actually leaves something enforcing the cap.
+
+    This fallback only runs when the exact source-text match in `rl.py` missed
+    TRL's guard, which means the generated pre-tokenized truncation block was
+    never inserted either. Turning `padding_free` off keeps `max_length` for
+    TRL's collator, and that collator does not truncate: rows that already carry
+    `input_ids` reach the model at full length. So the retry would convert a
+    hard error into a silently uncapped run, which is strictly worse.
+
+    Raw splits are fine -- prep tokenizes them under `max_length`. Only rows that
+    are already tokenized are at risk, so scan for those and let the original
+    error propagate when any is over.
+
+    A packed split is fine too: the packer owns the overflow and chunks it, so
+    an overlength row there is not an unenforced cap. `packing` and
+    `eval_packing` are resolved separately because they can differ, and the
+    generated exact-match path already excludes eval-packed splits from its own
+    scan -- scanning them here refused a configuration that path accepts.
+    """
+    cap = getattr(config, "max_length", None)
+    if not cap:
+        return True
+    try:
+        from unsloth.models.rl import pretokenized_within_cap, splits_within_cap
+    except Exception:
+        return True  # nothing to check against; do not invent a failure
+    packing = bool(getattr(config, "packing", False))
+    # TRL's own default: `eval_packing = None` means "whatever `packing` is".
+    eval_packing = getattr(config, "eval_packing", None)
+    eval_packing = packing if eval_packing is None else bool(eval_packing)
+    if not packing and not pretokenized_within_cap(train, cap):
+        return False
+    return eval_packing or splits_within_cap(evals, cap)
+
+
+def _disable_padding_free(config):
+    if config is None:
+        return
+    if hasattr(config, "padding_free"):
+        setattr(config, "padding_free", False)
+
+
 _VISION_DATASET_KEYS = frozenset(
     {
         "image",
@@ -848,6 +915,17 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 )
                 _disable_sample_packing(config_arg)
                 packing_active = False
+                original_init(self, *args, **kwargs)
+            elif auto_padding_free_active and _should_skip_auto_padding_free_error(exc):
+                train, evals = _bound_splits(original_init, args, kwargs)
+                if not _cap_is_enforceable_without_padding_free(config_arg, train, evals):
+                    raise
+                logger.info(
+                    "Unsloth: Auto padding-free disabled because the trainer rejected it (%s).",
+                    exc,
+                )
+                _disable_padding_free(config_arg)
+                auto_padding_free_active = False
                 original_init(self, *args, **kwargs)
             else:
                 raise
