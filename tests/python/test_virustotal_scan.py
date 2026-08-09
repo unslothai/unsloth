@@ -1092,7 +1092,7 @@ class TestWorkflowOrdering:
         assert draft["default"] is True
 
         create = self._publish_step_map()["Create versioned release"]["run"]
-        assert 'release_flags+=(--draft)' in create
+        assert "release_flags+=(--draft)" in create
         assert '"$RELEASE_DRAFT" = "true"' in create
 
         heading = vt.SUMMARY_HEADING.lower()
