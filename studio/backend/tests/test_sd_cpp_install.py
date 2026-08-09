@@ -21,6 +21,7 @@ import hashlib  # noqa: E402
 import builtins  # noqa: E402
 import types  # noqa: E402
 import threading  # noqa: E402
+import time  # noqa: E402
 import io  # noqa: E402
 import re  # noqa: E402
 import json  # noqa: E402
@@ -2026,3 +2027,28 @@ def test_a_re_found_cli_goes_through_the_usability_gate(tmp_path, monkeypatch):
     # Ours and unrunnable, so the gate removed it and the next load reinstalls cleanly.
     assert not new.exists()
     assert bk._failed_accelerator_upgrades == set()
+
+
+def test_a_cancelled_request_leaves_the_install_wait(tmp_path, monkeypatch):
+    """The caller holds the generate lock across this wait, so a cancel or unload that could not
+    get out of it reads as a hung Studio for up to the whole 900s while nothing has even started.
+    Nothing notifies the condition on cancel, so the wait has to re-check rather than block once."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch)
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"managed")
+
+    monkeypatch.setattr(bk, "_tree_installing", True)  # a long install is extracting
+    monkeypatch.setattr(bk, "_TREE_WAIT_TICK_S", 0.02)
+    cancel = threading.Event()
+    threading.Timer(0.1, cancel.set).start()
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError) as exc:
+        with bk._tree_reader(str(managed), cancel):
+            pytest.fail("a cancelled request must not be admitted either")
+    # Out in well under the 900s timeout, and reported as a cancellation, not a timeout.
+    assert time.monotonic() - started < 30
+    assert "cancel" in str(exc.value).lower()
+    assert bk._tree_readers == 0

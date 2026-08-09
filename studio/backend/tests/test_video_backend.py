@@ -3640,8 +3640,11 @@ def test_h3_keyframe_fit_stretches_the_first_and_crops_the_last():
         fit_h3_keyframe(source, 64, 64, anchor = "middle")
 
 
-def _h3_native_backend(monkeypatch, calls):
-    """A backend with an H3 sd.cpp state whose engine records the params it was handed."""
+def _h3_native_backend(monkeypatch, calls, binary = None):
+    """A backend with an H3 sd.cpp state whose engine records the params it was handed.
+
+    ``binary`` stands in for what _run_load_h3_native resolves and vets: the engine gets the path
+    and the runtime records that file's identity, exactly as the real load does."""
     from core.inference.video import _VideoLoadState
     from core.inference.video_minimax_h3 import MiniMaxH3NativeRuntime
 
@@ -3669,8 +3672,18 @@ def _h3_native_backend(monkeypatch, calls):
 
     backend = VideoBackend()
     fam = _detect_load_family("unsloth/MiniMax-H3-GGUF", None, "minimax-h3")
+    from core.inference.video import _sd_cli_identity
+
+    engine = _Engine()
+    if binary is not None:
+        engine.binary = str(binary)
     backend._state = _VideoLoadState(
-        pipe = MiniMaxH3NativeRuntime(engine = _Engine(), files = object(), offload_flags = ()),
+        pipe = MiniMaxH3NativeRuntime(
+            engine = engine,
+            files = object(),
+            offload_flags = (),
+            binary_identity = _sd_cli_identity(str(binary)) if binary is not None else None,
+        ),
         family = fam,
         repo_id = "unsloth/MiniMax-H3-GGUF",
         base_repo = fam.base_repo,
@@ -5057,8 +5070,7 @@ def test_a_managed_h3_native_run_holds_the_install_off(monkeypatch, tmp_path):
     managed.write_bytes(b"managed")
 
     calls: list = []
-    backend = _h3_native_backend(monkeypatch, calls)
-    backend._state.pipe.engine.binary = str(managed)
+    backend = _h3_native_backend(monkeypatch, calls, binary = managed)
 
     held: list = []
     inner = backend._state.pipe.engine.generate_video
@@ -5089,8 +5101,7 @@ def test_an_unmanaged_h3_native_run_takes_no_claim(monkeypatch, tmp_path):
     outside.write_bytes(b"my own build")
 
     calls: list = []
-    backend = _h3_native_backend(monkeypatch, calls)
-    backend._state.pipe.engine.binary = str(outside)
+    backend = _h3_native_backend(monkeypatch, calls, binary = outside)
 
     held: list = []
     inner = backend._state.pipe.engine.generate_video
@@ -5106,10 +5117,10 @@ def test_an_unmanaged_h3_native_run_takes_no_claim(monkeypatch, tmp_path):
 
 
 def test_an_in_place_binary_swap_stops_the_h3_run(monkeypatch, tmp_path):
-    """Existence is not identity. An install that lands while this generation waits can put its
-    replacement at the SAME path, and that build is not the one ensure_h3_sd_cpp_binary vetted at
-    load: a different accelerator, or one predating the H3 options, which aborts partway through a
-    render nobody wants to repeat."""
+    """Existence is not identity, and the identity has to be the one recorded when
+    ensure_h3_sd_cpp_binary vetted the file. An install that lands at the SAME path leaves a build
+    that is not the one this runtime was checked against: a different accelerator, or one predating
+    the H3 options, which aborts partway through a render nobody wants to repeat."""
     pytest.importorskip("PIL.Image")
     import contextlib
     import os
@@ -5124,30 +5135,30 @@ def test_an_in_place_binary_swap_stops_the_h3_run(monkeypatch, tmp_path):
     managed.write_bytes(b"the build the load checked")
 
     calls: list = []
-    backend = _h3_native_backend(monkeypatch, calls)
-    backend._state.pipe.engine.binary = str(managed)
+    backend = _h3_native_backend(monkeypatch, calls, binary = managed)
     monkeypatch.setattr(bk, "_sd_cpp_backend", None)
 
+    # Unchanged since the load: the run goes ahead.
+    backend.generate(prompt = "p", width = 960, height = 544)
+    assert len(calls) == 1
+
+    # The install landed BEFORE this generation, not during it. Two reads taken now would agree
+    # with each other, which is exactly why the comparison is against the load-time value.
+    managed.write_bytes(b"some other accelerator's build")
+    os.utime(managed, (1, 1))
+    with pytest.raises(RuntimeError, match = "Reload the model"):
+        backend.generate(prompt = "p", width = 960, height = 544)
+    assert len(calls) == 1, "the run must not reach a build the load never checked"
+
+    # A replacement that lands DURING the wait is caught the same way.
     @contextlib.contextmanager
-    def _install_lands_during_the_wait(_binary):
-        # Same path, different build: exactly what an in-place replacement leaves behind.
-        managed.write_bytes(b"some other accelerator's build")
-        os.utime(managed, (1, 1))
+    def _install_lands_during_the_wait(_binary, _cancel = None):
+        managed.write_bytes(b"yet another build")
+        os.utime(managed, (2, 2))
         yield
 
+    backend = _h3_native_backend(monkeypatch, calls, binary = managed)
     monkeypatch.setattr(bk, "_tree_reader", _install_lands_during_the_wait)
     with pytest.raises(RuntimeError, match = "Reload the model"):
         backend.generate(prompt = "p", width = 960, height = 544)
-    assert calls == [], "the run must not reach a build the load never checked"
-
-    # A binary that vanished during the wait is the same answer.
-    @contextlib.contextmanager
-    def _install_removes_it(_binary):
-        managed.unlink()
-        yield
-
-    managed.write_bytes(b"the build the load checked")
-    monkeypatch.setattr(bk, "_tree_reader", _install_removes_it)
-    with pytest.raises(RuntimeError, match = "Reload the model"):
-        backend.generate(prompt = "p", width = 960, height = 544)
-    assert calls == []
+    assert len(calls) == 1

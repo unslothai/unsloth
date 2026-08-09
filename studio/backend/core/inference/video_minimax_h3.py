@@ -587,6 +587,13 @@ class MiniMaxH3NativeRuntime:
     engine: Any
     files: Any
     offload_flags: tuple[str, ...]
+    # (size, mtime_ns) of the sd-cli this runtime was built on, taken at load, right after
+    # ensure_h3_sd_cpp_binary vetted it for H3 support and accelerator. Every generation compares
+    # against THIS, not against whatever the path holds when it starts: an install that lands
+    # between the load and a generation replaces the binary in place, and two reads taken after it
+    # agree with each other while agreeing with nothing that was ever checked. None means the
+    # identity could not be taken, which reads as "cannot vouch" rather than "unchanged".
+    binary_identity: Optional[tuple[int, int]] = None
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:

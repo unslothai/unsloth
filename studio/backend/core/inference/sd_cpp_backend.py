@@ -98,6 +98,9 @@ _tree_readers = 0
 _tree_installing = False
 # A download can legitimately take minutes; wait rather than run a binary that is being replaced.
 _TREE_WAIT_TIMEOUT_S = 900.0
+# How often the wait re-checks for cancellation. Nothing notifies the condition when a request is
+# cancelled, so a single long wait would hold the generate lock past an unload.
+_TREE_WAIT_TICK_S = 0.5
 
 
 @contextlib.contextmanager
@@ -119,7 +122,7 @@ def _tree_claimed_for_install():
 
 
 @contextlib.contextmanager
-def _tree_reader(binary: Optional[str]):
+def _tree_reader(binary: Optional[str], cancel_event: Optional[threading.Event] = None):
     """Run ``binary`` out of the managed tree, holding off any install for the duration.
 
     Only a MANAGED copy needs this. An sd-cli from ``SD_CLI_PATH`` / ``UNSLOTH_SD_CPP_PATH``, an
@@ -127,7 +130,12 @@ def _tree_reader(binary: Optional[str]):
     that generation behind an unrelated bundle download for nothing (and, on a timeout, fail it).
 
     A timeout is NOT admission: the install still holds the tree, and starting the binary it is
-    replacing is the exact race this exists to prevent."""
+    replacing is the exact race this exists to prevent.
+
+    The wait is cancellable. The caller already holds the generate lock here, so an unload or a
+    cancel that could not get out of this would read as a hung Studio for up to the whole timeout
+    while nothing has even started. Nothing notifies the condition on cancel, so the wait is
+    re-checked on a short tick rather than once."""
     global _tree_readers
     if not is_managed_binary(binary):
         yield
@@ -135,10 +143,18 @@ def _tree_reader(binary: Optional[str]):
     with _tree_state:
         if _tree_installing:
             logger.info("waiting for the sd.cpp install to finish before starting a generation")
-            if not _tree_state.wait_for(lambda: not _tree_installing, timeout = _TREE_WAIT_TIMEOUT_S):
-                raise RuntimeError(
-                    f"the stable-diffusion.cpp install is still replacing its binaries after "
-                    f"{int(_TREE_WAIT_TIMEOUT_S)}s. Try again once it has finished."
+            deadline = time.monotonic() + _TREE_WAIT_TIMEOUT_S
+            while _tree_installing:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"the stable-diffusion.cpp install is still replacing its binaries after "
+                        f"{int(_TREE_WAIT_TIMEOUT_S)}s. Try again once it has finished."
+                    )
+                _tree_state.wait_for(
+                    lambda: not _tree_installing, timeout = min(remaining, _TREE_WAIT_TICK_S)
                 )
         _tree_readers += 1
     try:
@@ -1043,6 +1059,32 @@ class SdCppDiffusionBackend:
                 server: Optional[SdCppServer] = None
                 if mode == "server":
                     assert server_binary is not None
+                    # _fetch_assets above runs for minutes with no claim on the tree (there is
+                    # nothing executing in it yet to claim for), so an install can have swept this
+                    # path between layouts since _resolve_backend picked it. Re-resolve before
+                    # starting: the stale path would drop the load to one-shot for nothing, or
+                    # start a build this load did not select. No install from here (allow_install
+                    # False) -- this is a re-read, not a second upgrade attempt.
+                    refreshed = ensure_sd_server_binary(
+                        allow_install = False, accelerator = self._resolved_accelerator()
+                    )
+                    if refreshed and refreshed != server_binary:
+                        logger.info(
+                            "sd-server moved during the asset download: %s -> %s",
+                            server_binary,
+                            refreshed,
+                        )
+                        server_binary = refreshed
+                    if not server_binary or not _server_binary_runnable(server_binary):
+                        # Nothing runnable survived the replacement; the one-shot CLI is the
+                        # documented fallback and _resolve_engine re-resolves it from scratch.
+                        logger.warning(
+                            "sd-server is no longer usable after the asset download; "
+                            "falling back to one-shot sd-cli."
+                        )
+                        mode, server_binary, engine = "oneshot", None, self._resolve_engine()
+                if mode == "server":
+                    assert server_binary is not None
                     server = SdCppServer(server_binary)
                     # The object to clear from _pending_server below. ``server`` itself is set to
                     # None when start() fails and the load falls back to one-shot, and comparing
@@ -1863,7 +1905,7 @@ class SdCppDiffusionBackend:
                 # duration (and wait here if one is already extracting).
                 # getattr: an INJECTED engine is the unit-test seam / escape hatch and need not
                 # name a file at all, and nothing without a path is a binary an install replaces.
-                with _tree_reader(getattr(engine, "binary", None)):
+                with _tree_reader(getattr(engine, "binary", None), cancel):
                     # Re-resolve INSIDE the claim. An install that finished while this image was
                     # waiting can have put its sd-cli somewhere else and swept the copy resolved
                     # above, so the cached path would launch a file that is no longer there. Also

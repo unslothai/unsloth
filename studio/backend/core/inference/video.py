@@ -1187,6 +1187,10 @@ class VideoBackend:
 
         runtime = MiniMaxH3NativeRuntime(
             engine = engine,
+            # Pinned HERE, where ensure_h3_sd_cpp_binary has just vetted this exact file for H3
+            # support and accelerator. Taking it at generation time instead would compare a
+            # replacement against itself.
+            binary_identity = _sd_cli_identity(binary),
             files = SdCppModelFiles(
                 diffusion_model = str(resolved[0]),
                 llm = str(resolved[1]),
@@ -3676,17 +3680,26 @@ class VideoBackend:
             from .sd_cpp_backend import _tree_reader
 
             binary = getattr(runtime.engine, "binary", None)
-            # Identity, not existence. An install that lands while this generation waits can put
-            # its replacement at the SAME path, and then the file is still there but it is not the
-            # build ensure_h3_sd_cpp_binary vetted at load: a different accelerator, or one
-            # predating the H3 options, which aborts partway through a render nobody wants to
-            # repeat. Cheap enough to take on every image, and it covers deletion too.
-            binary_identity = _sd_cli_identity(binary)
+            # Identity, not existence, and the identity RECORDED AT LOAD. An install can replace
+            # the binary in place, leaving a file that still exists but is not the build
+            # ensure_h3_sd_cpp_binary vetted: a different accelerator, or one predating the H3
+            # options, which aborts partway through a render nobody wants to repeat. Comparing two
+            # reads taken now would miss that entirely whenever the install landed before this
+            # generation started, since both would see the replacement and agree.
+            binary_identity = getattr(runtime, "binary_identity", None)
             try:
                 try:
-                    with _tree_reader(binary):
+                    with _tree_reader(binary, cancel):
+                        current_identity = _sd_cli_identity(binary)
+                        # Unreadable now (swept), or readable but not what the load vetted. A
+                        # runtime carrying no recorded identity cannot answer the second question,
+                        # so it is held to the first rather than refused outright.
                         if binary and (
-                            binary_identity is None or _sd_cli_identity(binary) != binary_identity
+                            current_identity is None
+                            or (
+                                binary_identity is not None
+                                and current_identity != binary_identity
+                            )
                         ):
                             # The engine is committed at load, so this cannot be re-resolved
                             # underneath a live generation the way the image path can. Say so
