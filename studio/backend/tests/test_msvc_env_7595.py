@@ -91,7 +91,10 @@ def test_ensure_imports_env_then_rechecks(tmp_path, monkeypatch):
 def _gate(monkeypatch, *, triton_importable, msvc_ok):
     """Drive the gate with a stubbed triton + MSVC outcome; return the log."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    # setenv first: delenv(raising = False) records nothing when the var is
+    # absent, so the gate's write would leak into the rest of the session.
+    monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE")
     # A None entry in sys.modules makes `import triton` raise ImportError.
     monkeypatch.setitem(
         sys.modules, "triton", types.ModuleType("triton") if triton_importable else None
@@ -107,7 +110,8 @@ def _gate(monkeypatch, *, triton_importable, msvc_ok):
 
 def test_gate_is_noop_off_win32(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE")
     monkeypatch.setattr(
         _msvc_env,
         "ensure_msvc_env_for_triton",

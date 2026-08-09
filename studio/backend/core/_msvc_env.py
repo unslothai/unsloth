@@ -36,8 +36,10 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-_VS_EDITIONS = ("BuildTools", "Community", "Professional", "Enterprise")
-_VS_YEAR_DIRS = ("2022", "2019", "2017")
+# Mirrors setup.ps1's Find-VsBuildTools; keep the two in sync. VS 2026 installs
+# under "18" or "2026", and newest must come first or an older VS wins the scan.
+_VS_EDITIONS = ("BuildTools", "Community", "Professional", "Enterprise", "Preview")
+_VS_YEAR_DIRS = ("18", "2026", "2022", "2019", "2017")
 # Env keys vcvarsall establishes that Triton's clang-cl needs.
 _CARRY = ("INCLUDE", "LIB", "LIBPATH", "PATH")
 
@@ -173,6 +175,11 @@ def gate_torch_compile_on_windows(log: logging.Logger) -> None:
     No-op off win32. Workers call this before importing torch: Triton being
     importable is necessary but not sufficient, because its clang-cl JIT still
     needs the CRT headers (#7595).
+
+    The env import is the load-bearing half and is not conditional on the gate's
+    verdict: unsloth's own Triton kernels (kernels/rms_layernorm.py, swiglu.py,
+    ...) compile through the same clang-cl path, so they need INCLUDE even where
+    the training worker later disables dynamo for Windows ROCm (section 1f).
     """
     if sys.platform != "win32":
         return
