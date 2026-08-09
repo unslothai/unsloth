@@ -609,9 +609,12 @@ async function retryFailedThreadRecord(
   const queued = threadWriteQueues.has(threadId);
   if (createRecord) {
     failedThreadRecordByThreadId.delete(threadId);
-    enqueueStoredChatThreadWrite(threadId, createRecord).catch(() => undefined);
+    // Through the tracker, not a raw enqueue: a retry that fails again has to re-register the
+    // creator, or the next write finds nothing to retry and 404s from then on.
+    trackStoredChatThreadRecord(threadId, createRecord);
   } else if (!queued) {
-    return undefined;
+    // The write can commit between the caller's read and this check, which clears the queue.
+    return (await getChatThread(threadId)) ?? undefined;
   }
   await awaitStoredChatThreadWrites(threadId);
   const thread = await getChatThread(threadId);
@@ -888,16 +891,23 @@ export async function deleteStoredChatThreads(
   const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
   if (ids.length === 0) return;
   // Queued per thread rather than raced against the writes: FIFO puts each delete after any row
-  // write already in flight, so one landing late cannot resurrect the thread. The wait is bounded
-  // and the delete stays queued regardless, so a wedged write only delays it.
-  await settleWithin(
-    Promise.all(
-      ids.map((id) =>
-        enqueueStoredChatThreadWrite(id, () => deleteChatThreads([id])),
-      ),
-    ),
-    THREAD_WRITE_WAIT_MS,
+  // write already in flight, so one landing late cannot resurrect the thread.
+  const deletes = ids.map((id) =>
+    enqueueStoredChatThreadWrite(id, () => deleteChatThreads([id])),
   );
+  // Bounded, since a wedged write ahead of a delete only delays it and the delete stays queued.
+  // settleWithin resolves a microtask after `settled` does, so a completed batch always wins.
+  const settled = Promise.allSettled(deletes);
+  const outcomes = await Promise.race([
+    settled,
+    settleWithin(settled, THREAD_WRITE_WAIT_MS).then(() => null),
+  ]);
+  // A failure that did land still propagates: callers roll back their optimistic tombstone and
+  // surface a toast on it.
+  const failure = outcomes?.find((outcome) => outcome.status === "rejected");
+  if (failure) {
+    throw failure.reason;
+  }
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();
