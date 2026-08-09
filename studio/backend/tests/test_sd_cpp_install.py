@@ -18,6 +18,7 @@ if str(_STUDIO) not in sys.path:
     sys.path.insert(0, str(_STUDIO))
 
 import hashlib  # noqa: E402
+import types  # noqa: E402
 import io  # noqa: E402
 import re  # noqa: E402
 import json  # noqa: E402
@@ -1013,4 +1014,75 @@ def test_a_failed_upgrade_keeps_the_working_binary_and_stops_retrying(tmp_path, 
     assert bk.ensure_sd_server_binary(accelerator = "vulkan") == str(server)
     assert bk.ensure_sd_server_binary(accelerator = "vulkan") == str(server)
     assert len(attempts) == 1, "the hopeless upgrade must be attempted once, not once per load"
+    assert server.read_bytes() == b"cpu-build"
+
+
+def test_the_upgrade_waits_for_the_resident_server_to_stop(tmp_path, monkeypatch):
+    """The install replaces the sd-server file, and the resident server is executing that exact
+    path: Linux refuses to open a running executable for writing (ETXTBSY) and Windows locks it.
+    Resolving must therefore NOT install while a server is up; the load retries once it is
+    stopped, which is the only moment the file is free."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(backend = "cuda")
+    )
+    installs: list = []
+
+    def _install(**kwargs):
+        installs.append(kwargs)
+        server.write_bytes(b"cuda-build")
+        sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
+        return root / "sd-bin" / "sd-cli"
+
+    monkeypatch.setattr(sdmod, "install", _install)
+
+    backend = bk.SdCppDiffusionBackend()
+    # A resident server is up: resolving must hand back the existing binary and install nothing.
+    backend._state = types.SimpleNamespace(server = object())
+    mode, resolved, _engine = backend._resolve_backend()
+    assert mode == "server" and resolved == str(server)
+    assert installs == [], "no install may run while the server holds its own executable"
+    assert server.read_bytes() == b"cpu-build"
+
+    # Once it is stopped, the deferred upgrade lands.
+    backend._state = None
+    upgraded = backend._upgrade_server_after_teardown(str(server))
+    assert [k["accelerator"] for k in installs] == ["cuda"]
+    assert upgraded == str(server) and server.read_bytes() == b"cuda-build"
+    # Now that the record matches, a later teardown does not reinstall again.
+    assert backend._upgrade_server_after_teardown(str(server)) == str(server)
+    assert len(installs) == 1
+
+
+def test_a_failed_post_teardown_upgrade_keeps_the_existing_server(tmp_path, monkeypatch):
+    """An upgrade may never cost the load the binary it already had."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(backend = "cuda")
+    )
+
+    def _boom(**_kwargs):
+        raise RuntimeError("no prebuilt for this host")
+
+    monkeypatch.setattr(sdmod, "install", _boom)
+
+    backend = bk.SdCppDiffusionBackend()
+    backend._state = None
+    assert backend._upgrade_server_after_teardown(str(server)) == str(server)
     assert server.read_bytes() == b"cpu-build"

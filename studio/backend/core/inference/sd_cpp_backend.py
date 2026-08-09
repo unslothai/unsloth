@@ -479,8 +479,14 @@ class SdCppDiffusionBackend:
         accelerator = _install_accelerator_for(
             getattr(resolve_diffusion_device_target(), "backend", "cpu")
         )
+        # An accelerator upgrade REPLACES the sd-server file, and this runs before the load stops
+        # the resident one -- which is executing that exact path. Linux refuses to open a running
+        # executable for writing (ETXTBSY) and Windows locks it, so installing here would fail
+        # every time a native model is loaded. Defer it: resolve against what is on disk now, and
+        # let the load re-run this once the old server is stopped (see _upgrade_server_after_teardown).
+        upgrade_pending = self._state is not None and self._state.server is not None
         server_binary = ensure_sd_server_binary(
-            allow_install = _install_allowed(), accelerator = accelerator
+            allow_install = _install_allowed() and not upgrade_pending, accelerator = accelerator
         )
         if server_binary is not None:
             return "server", server_binary, None
@@ -488,6 +494,33 @@ class SdCppDiffusionBackend:
             "sd-server not found; falling back to one-shot sd-cli (reloads the model per image)."
         )
         return "oneshot", None, self._resolve_engine()
+
+    def _upgrade_server_after_teardown(self, server_binary: Optional[str]) -> Optional[str]:
+        """Retry the accelerator-matched install now the resident server has been stopped.
+
+        A no-op unless the binary on disk was built for a different accelerator than this host now
+        asks for. Returns the upgraded path, or the one passed in when nothing changed or the
+        install could not deliver -- never None while a usable binary exists, so a failed upgrade
+        keeps the load running on the build it already had."""
+        if server_binary is None or not _install_allowed():
+            return server_binary
+        try:
+            from core.inference.diffusion_engine_router import _install_accelerator_for
+
+            accelerator = _install_accelerator_for(
+                getattr(resolve_diffusion_device_target(), "backend", "cpu")
+            )
+            if not _accelerator_changed(server_binary, accelerator):
+                return server_binary
+            logger.info(
+                "sd-server was built for a different accelerator; installing the %s build now the "
+                "resident server is stopped",
+                accelerator,
+            )
+            return ensure_sd_server_binary(allow_install = True, accelerator = accelerator) or server_binary
+        except Exception as exc:  # noqa: BLE001 -- an upgrade may never fail the load
+            logger.warning("sd-server accelerator upgrade failed: %s", exc)
+            return server_binary
 
     # ── Background load + progress ─────────────────────────────────────────
 
@@ -680,6 +713,11 @@ class SdCppDiffusionBackend:
                     self._state = None  # the old model is being torn down
                 if old_state is not None and old_state.server is not None:
                     old_state.server.stop()
+                    # The file is free now, so an accelerator upgrade deferred in _resolve_backend
+                    # can land. Nothing else holds it: this runs under both locks, the old server
+                    # is stopped and no generation can start.
+                    if mode == "server":
+                        server_binary = self._upgrade_server_after_teardown(server_binary)
                 # A new checkpoint earns a fresh attempt on the GPU backend: the previous abort says nothing about this graph.
                 self._cpu_backend_forced = False
                 server: Optional[SdCppServer] = None
