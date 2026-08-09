@@ -1257,7 +1257,7 @@ def prune_checkpoints(
     # disk on a long run. An entry with no identity (an older caller, or a bundle that could not
     # be read) keeps the pathname behaviour, which errs towards keeping.
     kept_from_before: set[Path] = set()
-    for entry in (preexisting or ()):
+    for entry in preexisting or ():
         if isinstance(entry, tuple):
             path, identity = Path(entry[0]), entry[1]
             if identity is not None and _bundle_identity(path) != identity:

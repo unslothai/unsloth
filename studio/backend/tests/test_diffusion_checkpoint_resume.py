@@ -2902,5 +2902,6 @@ def test_the_resolved_base_precision_is_part_of_the_identity(run_dir):
     # ...and a side that never resolved one reads as "cannot tell" rather than as a mismatch,
     # which is what keeps the route's pre-eviction preflight and the SDXL trainer unaffected.
     import dataclasses
+
     unknown = dataclasses.replace(fell_back.identity, base_precision_effective = None)
     assert dc.preflight_resume(path, identity = unknown, target_steps = 500)[1] == 4

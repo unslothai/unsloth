@@ -686,8 +686,9 @@ def test_a_child_that_cleaned_up_is_not_cleaned_up_again(tmp_path, monkeypatch):
     monkeypatch.setattr(svc, "_persist_run_record", lambda **_kw: None)
 
     svc._pump_loop(
-        _OneEvent({"type": "complete", "output_dir": str(tmp_path), "stopped": True,
-                   "discarded": True}),
+        _OneEvent(
+            {"type": "complete", "output_dir": str(tmp_path), "stopped": True, "discarded": True}
+        ),
         proc,
     )
 
@@ -716,8 +717,7 @@ def test_a_checkpoint_makes_the_run_recoverable_before_it_ends(tmp_path, monkeyp
 
     # A landed checkpoint asks for the record...
     svc._apply_event(
-        {"type": "checkpoint_saved", "checkpoint_path": str(tmp_path / "checkpoint-40"),
-         "step": 40}
+        {"type": "checkpoint_saved", "checkpoint_path": str(tmp_path / "checkpoint-40"), "step": 40}
     )
     assert svc._persist_interim is True
     # ...and the pump writes it, rather than waiting for a terminal event that may never come.
