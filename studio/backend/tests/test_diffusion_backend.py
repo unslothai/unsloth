@@ -7343,17 +7343,17 @@ def test_a_cached_lower_rung_survives_the_unstaged_decline(fake_runtime, tmp_pat
     assert marker in _reason(None)
 
 
-def test_the_cache_probe_sees_a_moved_cache_root():
-    """_prefetch_files resolves each file through whichever root holds it
-    (reuse_other_cache_root), so a snapshot left behind by a cache-folder change satisfies the
-    pull without moving a byte. Reading the live root alone declined the fast path for a base
-    that is entirely on disk."""
+def test_the_cache_probe_reads_the_root_the_dense_load_will_use():
+    """Tempting to count the import-time root, since _prefetch_files would not re-fetch from it.
+    But the consumer of this verdict is the dense fast path, and that calls from_pretrained
+    pinned to hub_cache_dir(), so a hit in the other root widens the plan and then downloads the
+    whole transformer again after eviction -- the exact outcome the check exists to prevent."""
     import inspect
 
     from core.inference.diffusion_families import cache_holds_files
 
     src = inspect.getsource(cache_holds_files)
-    assert "other_root = True" in src
+    assert "other_root" not in src.split('"""')[-1]
 
 
 # ── the variant hint feeding the runtime-headroom estimate ────────────────────
@@ -7935,3 +7935,27 @@ def test_a_completed_generation_stops_advertising_itself_as_cancellable(
 def test_cancel_generate_is_a_no_op_without_a_load(fake_runtime):
     # The route calls this unconditionally, so an idle backend must answer False, not raise.
     assert DiffusionBackend().cancel_generate() is False
+
+
+def test_an_offload_memory_request_is_not_reported_as_unstaged_shards(fake_runtime, tmp_path,
+                                                                      monkeypatch):
+    """balanced, low_vram and the legacy cpu_offload flag name their policy outright, so the plan
+    omits transformer/ because the dense build is skipped, not because bytes were missing.
+    Reporting a second-denoiser refusal told the caller the wrong thing about their own setting.
+    """
+    marker = "an auto quant never downloads a second transformer"
+    for request in ({"memory_mode": "balanced"}, {"memory_mode": "low_vram"},
+                    {"cpu_offload": True}):
+        _stub_hosted_prequant(monkeypatch, cached = True)
+        backend = DiffusionBackend()
+        _force_cuda_target(backend, monkeypatch)
+        (tmp_path / "m.gguf").write_bytes(b"x")
+        status = backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            _transformer_prefetched = False,
+            **request,
+        )
+        reason = str(status.get("resolved", {}).get("transformer_quant", {}).get("reason") or "")
+        assert marker not in reason, request

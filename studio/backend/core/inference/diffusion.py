@@ -2687,6 +2687,11 @@ class DiffusionBackend:
                     and transformer_quant_auto
                     and not baking_loras
                     and normalize_transformer_quant(transformer_quant) is not None
+                    # An offload policy named by the REQUEST skips the dense build outright, and
+                    # the plan omits transformer/ for that reason rather than for want of cached
+                    # bytes. Reporting it as a second-denoiser refusal told the caller the wrong
+                    # thing about their own memory setting.
+                    and not _memory_request_forces_offload(memory_mode, cpu_offload)
                 ):
                     uncached_prequant = _uncached_prequant_repo(
                         fam,
