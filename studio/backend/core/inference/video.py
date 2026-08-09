@@ -1947,6 +1947,7 @@ class VideoBackend:
                 diffusers = diffusers,
                 torch = torch,
                 fam = fam,
+                target = target,
                 repo_id = repo_id,
                 base = base,
                 kind = kind,
@@ -2557,6 +2558,58 @@ class VideoBackend:
         )
         return self.status()
 
+    @staticmethod
+    def _raise_on_modular_unified_shortfall(
+        fam: VideoFamily,
+        *,
+        target: Any,
+        dtype: Any,
+        device: str,
+        memory_mode: Optional[str],
+        scheme: Optional[str],
+    ) -> None:
+        """Refuse a modular (MiniMax-H3) load whose components cannot fit unified memory.
+
+        The conventional path plans and refuses in ``load_pipeline``; the modular dispatch returns
+        before that, so the one family whose dense component set is 144.2 GB -- the largest by a
+        wide margin, and the one the refusal matrix says must be declined on every Mac it models --
+        was the only one that never reached the check.
+
+        Sized on what ``load_components`` will actually build: the family's dense bf16 table, with
+        the denoiser priced at its steady quantised size when a hosted pre-quantized checkpoint is
+        about to be seeded in its place. Best-effort like the rest of the sizing helpers -- a
+        family with no table, or an unreadable device, plans nothing and the load proceeds as
+        before."""
+        components = getattr(fam, "bf16_components_gb", None)
+        if not components:
+            return
+        import torch
+
+        # Same rule as the conventional path: the table is bf16, so an fp32 promotion on an
+        # accelerator doubles it.
+        dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
+        transformer_gb, text_encoder_gb, vae_gb = components
+        # Only a scheme with a hosted checkpoint replaces the dense denoiser; anything else (auto
+        # included) keeps the released bfloat16 components, which is what the modular loader does.
+        factor = _QUANT_STEADY_FACTOR.get(scheme) if scheme else None
+        if factor is not None:
+            transformer_gb *= factor
+        mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+        plan = plan_diffusion_memory(
+            target = target,
+            device_memory = settled_snapshot_device_memory(target),
+            model_dense_mib = int(
+                (transformer_gb + text_encoder_gb + vae_gb) * dtype_scale * mib_per_gb
+            ),
+            runtime_headroom_mib = estimate_video_runtime_mib(
+                width = fam.resolution_presets[0][0],
+                height = fam.resolution_presets[0][1],
+                num_frames = fam.default_num_frames,
+            ),
+            requested_mode = normalize_memory_mode(memory_mode),
+        )
+        raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
+
     def _load_h3_modular_pipeline(
         self,
         *,
@@ -2572,6 +2625,7 @@ class VideoBackend:
         memory_mode: Optional[str],
         transformer_quant: Optional[str] = None,
         h3_task: Optional[str] = None,
+        target: Any = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -2610,6 +2664,21 @@ class VideoBackend:
                 f"no hosted pre-quantized {scheme} checkpoint for {fam.name} reference video"
             )
             scheme = None
+        # The conventional loader refuses an oversized unified-memory load before any weight is
+        # materialised; this workflow returns above that check, so it runs its own here. It has to:
+        # load_components builds every component dense, and the ComponentsManager's CPU offload
+        # frees nothing on unified memory (host and device are one pool), so H3's 144.2 GB
+        # component set is an OS kill with no torch OOM to catch. Placed after `scheme` settles and
+        # before ANY weight is opened -- the hosted pre-quantized denoiser below is materialised on
+        # the CPU, which is the same memory.
+        self._raise_on_modular_unified_shortfall(
+            fam,
+            target = target if target is not None else resolve_diffusion_device_target(),
+            dtype = dtype,
+            device = device,
+            memory_mode = memory_mode,
+            scheme = scheme,
+        )
         if scheme is not None:
             from .diffusion_prequant import load_prequantized_transformer, resolve_prequant_source
             from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES

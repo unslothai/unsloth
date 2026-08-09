@@ -2817,7 +2817,16 @@ class DiffusionBackend:
                                         transformer_resident_override_mib = (
                                             prequant_candidate.transient_transformer_mib
                                         ),
-                                        companion_override_mib = prequant_candidate.companions_mib,
+                                        # companions_mib is the DENSE encoder plus the VAE, but
+                                        # assembly is handed text_encoder_quant and injects the
+                                        # pre-cast encoder when one is configured. Price that
+                                        # share the way the load-level plan does, or a footprint
+                                        # that fits is declined on bytes never materialised.
+                                        companion_override_mib = (
+                                            self._precast_scaled_companions_mib(
+                                                prequant_candidate, fam, target, text_encoder_quant
+                                            )
+                                        ),
                                     ),
                                     family = getattr(fam, "name", None),
                                 )
@@ -2885,7 +2894,10 @@ class DiffusionBackend:
                                     transformer_resident_override_mib = (
                                         retry_candidate.transient_transformer_mib
                                     ),
-                                    companion_override_mib = retry_candidate.companions_mib,
+                                    # Same pre-cast encoder pricing as the fit check above.
+                                    companion_override_mib = self._precast_scaled_companions_mib(
+                                        retry_candidate, fam, target, text_encoder_quant
+                                    ),
                                 )
                                 if retry_candidate is not None
                                 else None
@@ -3734,6 +3746,36 @@ class DiffusionBackend:
         pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
         pipe.to(device)
         return pipe
+
+    @staticmethod
+    def _precast_scaled_companions_mib(
+        candidate: Any, fam: DiffusionFamily, target: Any, text_encoder_quant: Optional[str]
+    ) -> Optional[int]:
+        """``candidate.companions_mib`` with the text-encoder share priced at the PRE-CAST size
+        when this pick takes its encoder from a hosted fp8 checkpoint.
+
+        The estimate is always the DENSE encoder plus the VAE, but assembly is handed
+        ``text_encoder_quant`` and injects the pre-cast encoder when one is configured, so the
+        unified-memory fit check below would refuse on bytes the load never materialises: for
+        FLUX.2-dev's Mistral-24B that is ~17 GB of an encoder the pipeline never builds. Keyed on
+        the same ``te_prequant_budget_scale`` the load-level resident plan uses, so a budget cannot
+        claim a saving the load does not take. The VAE share is untouched: nothing on this path
+        quantises it."""
+        companions = getattr(candidate, "companions_mib", None)
+        if companions is None:
+            return None
+        try:
+            from .diffusion_te_prequant import te_prequant_budget_scale
+
+            scale = te_prequant_budget_scale(
+                fam, te_quant_mode = text_encoder_quant, target = target
+            )
+            encoders = int(getattr(candidate, "text_encoders_mib", 0) or 0)
+            if scale == 1.0 or encoders <= 0:
+                return int(companions)
+            return int(companions) - encoders + int(encoders * scale)
+        except Exception:  # noqa: BLE001 -- sizing aid only; the dense total still refuses safely
+            return int(companions)
 
     def _resident_sized_plan(
         self,

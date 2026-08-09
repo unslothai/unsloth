@@ -7727,3 +7727,60 @@ def test_a_whole_pipeline_single_file_is_not_charged_for_cached_companions(fake_
         plan, fam, "stabilityai/stable-diffusion-xl-base-1.0", target, "single_file"
     )
     assert sized.estimates["model_dense_mib"] == 7_000
+
+
+def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, monkeypatch):
+    """``DenseQuantEstimate.companions_mib`` is always the DENSE encoder plus the VAE, but the
+    assembly this check is sizing is handed ``text_encoder_quant`` and injects the pre-cast
+    encoder. Refusing on the dense figure declines a prequant that fits on bytes never
+    materialised -- for FLUX.2-dev's Mistral-24B that is tens of GB. The load-level resident plan
+    already applies te_prequant_budget_scale; this is the same scale on the same estimate."""
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
+
+    fam = detect_family("black-forest-labs/FLUX.2-dev")
+    assert fam is not None and fam.te_prequant_repos, "the fixture family lost its pre-cast repo"
+    # 48 GB of encoder, 0.4 GB of VAE, in the estimate's own units.
+    encoders = 48_000
+    candidate = types.SimpleNamespace(companions_mib = encoders + 400, text_encoders_mib = encoders)
+
+    scaled = DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8")
+    # No pre-cast encoder resolves in this environment unless te_prequant_sources says so, so pin
+    # the two outcomes on the resolver rather than assuming one.
+    from core.inference.diffusion_te_prequant import te_prequant_sources
+
+    if te_prequant_sources(fam, te_quant_mode = "fp8", target = object()):
+        assert scaled == 400 + int(encoders * TE_PREQUANT_BUDGET_SCALE)
+        assert scaled < candidate.companions_mib
+    else:
+        assert scaled == candidate.companions_mib
+
+    # No encoder quant requested: the estimate is passed through untouched, byte for byte.
+    assert (
+        DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), None)
+        == candidate.companions_mib
+    )
+    # The VAE share is never scaled, and a candidate with no split degrades to the dense total.
+    no_split = types.SimpleNamespace(companions_mib = 1234, text_encoders_mib = 0)
+    assert DiffusionBackend._precast_scaled_companions_mib(no_split, fam, object(), "fp8") == 1234
+    # An estimate with no companions at all stays None, which _plan_memory reads as "no override".
+    empty = types.SimpleNamespace(companions_mib = None)
+    assert DiffusionBackend._precast_scaled_companions_mib(empty, fam, object(), "fp8") is None
+
+
+def test_the_pre_cast_companion_scale_matches_the_load_level_plan(fake_runtime, monkeypatch):
+    """Both sides must read the same scale from the same resolver, or the fit check and the plan
+    it gates disagree about what the load builds."""
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("black-forest-labs/FLUX.2-dev")
+    monkeypatch.setattr(
+        "core.inference.diffusion_te_prequant.te_prequant_budget_scale",
+        lambda fam, *, te_quant_mode, target: 0.5 if te_quant_mode == "fp8" else 1.0,
+    )
+    candidate = types.SimpleNamespace(companions_mib = 10_400, text_encoders_mib = 10_000)
+    assert (
+        DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8") == 5_400
+    )

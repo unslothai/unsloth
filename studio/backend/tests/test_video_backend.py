@@ -5237,3 +5237,95 @@ def test_unified_memory_refuses_on_the_dense_peak_even_when_a_quant_is_requested
             "Lightricks/LTX-2", model_kind = "pipeline", transformer_quant = "auto"
         )
     assert "unified memory" in str(excinfo.value)
+
+
+def test_unified_memory_refuses_the_h3_modular_load_before_load_components(
+    fake_runtime, monkeypatch
+):
+    """MiniMax-H3 returns into the modular workflow ABOVE load_pipeline's refusal, so the one
+    family the matrix says must be declined on every Mac it models was the only one that never
+    reached the check. load_components builds every component dense and the ComponentsManager's
+    CPU offload frees nothing on unified memory, so 144.2 GB of components is an OS kill with no
+    torch OOM to catch."""
+    import core.inference.video as video_mod
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+
+    torch = sys.modules["torch"]
+    diffusers = sys.modules["diffusers"]
+    diffusers.ComponentsManager = _FakeComponentsManager
+    diffusers.ModularPipeline = _FakeModularPipeline
+    _FakeModularPipeline.instance = None
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = True,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda: target)
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(128))
+
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError) as excinfo:
+        backend._load_h3_modular_pipeline(
+            diffusers = diffusers,
+            torch = torch,
+            fam = fam,
+            repo_id = "MiniMaxAI/MiniMax-H3",
+            base = fam.base_repo,
+            kind = "pipeline",
+            dtype = torch.bfloat16,
+            device = "mps",
+            hf_token = None,
+            memory_mode = None,
+            target = target,
+        )
+    message = str(excinfo.value)
+    assert "minimax-h3" in message and "unified memory" in message
+    # Refused BEFORE any component was built.
+    assert _FakeModularPipeline.instance is not None
+    assert _FakeModularPipeline.instance.load_kwargs is None
+    assert backend.status()["loaded"] is False
+
+
+def test_the_h3_modular_refusal_prices_a_seeded_prequant_denoiser(fake_runtime, monkeypatch):
+    """A hosted pre-quantized checkpoint replaces the dense 66.3 GB denoiser, so the refusal must
+    size that instead -- refusing it on the dense figure would reject a load that never builds
+    those weights. It is still the whole component set: the encoder and the VAEs load dense."""
+    import core.inference.video as video_mod
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    transformer_gb, te_gb, vae_gb = fam.bf16_components_gb
+    seen: list[int] = []
+
+    def _capture(*, model_dense_mib = None, **kwargs):
+        seen.append(int(model_dense_mib or 0))
+        return types.SimpleNamespace(offload_policy = "none", estimates = {}, device_memory = None)
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _capture)
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", lambda t: None)
+    monkeypatch.setattr(video_mod, "raise_on_unified_memory_shortfall", lambda *a, **k: None)
+
+    for scheme, expected_transformer in (
+        (None, transformer_gb),
+        ("fp8", transformer_gb * 0.55),
+        # An unknown scheme has no factor, so it falls back to the dense figure rather than
+        # inventing a saving.
+        ("bogus", transformer_gb),
+    ):
+        VideoBackend._raise_on_modular_unified_shortfall(
+            fam,
+            target = None,
+            dtype = sys.modules["torch"].bfloat16,
+            device = "mps",
+            memory_mode = None,
+            scheme = scheme,
+        )
+        assert seen[-1] == int(
+            (expected_transformer + te_gb + vae_gb) * (1000.0**3 / (1024.0 * 1024.0))
+        ), scheme
