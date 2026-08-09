@@ -499,8 +499,9 @@ def _one_module(grouped: dict[str, list[PurePosixPath]]) -> Optional[str]:
 
 def _offerable(entries: list[PurePosixPath], snapshot: Path, module: str) -> Optional[bool]:
     """True when the split holds data Studio can train on, False when it holds none, None
-    when a file the builder would read escapes the cache. datasets reads every file in the
-    split, so one escape condemns the config rather than the single file."""
+    when the config is unusable. datasets reads every file in the split, so one file that
+    escapes the cache, or one the builder chokes on, condemns the config rather than
+    the single file."""
     trainable = False
     empty = False
     for path in entries:
@@ -515,8 +516,11 @@ def _offerable(entries: list[PurePosixPath], snapshot: Path, module: str) -> Opt
             empty = True
             continue
         trainable = True
-    # Every builder but json fails outright on a file with no rows; json skips it.
-    return trainable and not (empty and module != "json")
+    # Every builder but json fails outright on a file with no rows, and datasets prepares
+    # every split before handing one back, so such a file condemns its siblings too.
+    if empty and module != "json":
+        return None
+    return trainable
 
 
 def _empty_payload(path: Path) -> bool:
@@ -576,7 +580,11 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             # datasets raises out of DatasetCard.load, so no option here would ever start.
             return options
         if isinstance(card_data, dict):
-            declared = bool(card_data.get("configs")) or bool(card_data.get("dataset_info"))
+            # datasets merges the standalone YAML into the card, so a README that
+            # declares nothing does not undo a declaration made there.
+            declared = declared or bool(card_data.get("configs")) or bool(
+                card_data.get("dataset_info")
+            )
             _add_config_options(options, card_data.get("configs"))
             _add_dataset_info_options(options, card_data.get("dataset_info"))
 

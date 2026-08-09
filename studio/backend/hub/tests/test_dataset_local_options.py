@@ -541,3 +541,33 @@ def test_snapshot_options_stand_down_beside_a_card_outside_the_cache(tmp_path):
     _rows(snapshot, "records.jsonl")
 
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_every_split_when_a_sibling_is_empty(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+    (snapshot / "test.csv").write_text("", encoding = "utf-8")
+
+    # datasets prepares both splits, so the empty test file fails train as well.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_a_json_split_beside_an_empty_sibling(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _rows(snapshot, "train.jsonl")
+    (snapshot / "test.jsonl").write_text("", encoding = "utf-8")
+
+    # The json builder skips a file with no rows rather than failing the build.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_stand_down_when_standalone_yaml_declares_a_config(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / ".huggingface.yaml").write_text(
+        "configs:\n- config_name: foo\n  data_files: train.jsonl\n", encoding = "utf-8"
+    )
+    (snapshot / "README.md").write_text("---\nlicense: mit\n---\n", encoding = "utf-8")
+    _rows(snapshot, "train.jsonl")
+
+    # A README declaring nothing must not undo the standalone YAML's declaration.
+    assert local_options._snapshot_options(snapshot) == set()
