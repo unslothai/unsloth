@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import errno
+import os
 import shutil
+import stat as stat_module
 import sys
 from pathlib import Path, PureWindowsPath
 from typing import Iterable, Iterator, Optional
@@ -24,13 +26,27 @@ TRANSPORT_MARKER_NAME = ".transport"
 INCOMPLETE_SUFFIX = ".incomplete"
 
 
-def _safe_is_dir(path: Path) -> bool:
+def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:
     """``Path.is_dir()`` returning False instead of raising when the path or a
     parent is unreadable (e.g. a restricted ``~/.cache/huggingface/hub``), so
-    cache enumeration skips that root rather than 500ing."""
+    cache enumeration skips that root rather than 500ing.
+
+    ``scan_errors`` collects the swallowed error. A caller that only wants the dirs does not
+    care, but "we could not even stat the root" and "the root is not there" are different
+    answers to a hydrating job -- the first is not evidence the cache was deleted.
+
+    os.stat, not Path.is_dir(): as of 3.14 is_dir() answers False for EVERY OSError instead of
+    raising some and suppressing others, so the handler below could never see a permission or
+    network-mount failure and the root was recorded as a measured absence. Stat says which it
+    was.
+    """
     try:
-        return path.is_dir()
-    except OSError:
+        return stat_module.S_ISDIR(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False  # genuinely not a directory here; that IS the answer
+    except (OSError, ValueError) as exc:
+        if scan_errors is not None:
+            scan_errors.append(exc)
         return False
 
 
@@ -41,20 +57,25 @@ def same_existing_path(first: Path, second: Path) -> bool:
         return False
 
 
-def hf_cache_root(*, create: bool = False, root: Optional[Path] = None) -> Optional[Path]:
+def hf_cache_root(
+    *,
+    create: bool = False,
+    root: Optional[Path] = None,
+    scan_errors: Optional[list] = None,
+) -> Optional[Path]:
     from utils.hf_cache_settings import get_hf_cache_paths
 
     root = root or get_hf_cache_paths().hub_cache
     if create:
         try:
             root.mkdir(parents = True, exist_ok = True)
-        except OSError:
+        except OSError as exc:
             return None
         return root
-    return root if _safe_is_dir(root) else None
+    return root if _safe_is_dir(root, scan_errors) else None
 
 
-def hf_cache_roots() -> list[Path]:
+def hf_cache_roots(scan_errors: Optional[list] = None) -> list[Path]:
     from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
     from utils.hf_cache_settings import known_hf_hub_caches
 
@@ -62,11 +83,17 @@ def hf_cache_roots() -> list[Path]:
     seen: set[str] = set()
 
     def _add(path: Optional[Path]) -> None:
-        if path is None or not _safe_is_dir(path):
+        if path is None or not _safe_is_dir(path, scan_errors):
             return
         try:
             key = str(path.resolve())
-        except OSError:
+        except OSError as exc:
+            # A root that stats but will not resolve -- an intermittent network mount, a
+            # Windows reparse point -- is a root we could not read, not a root that is gone.
+            # Dropping it silently let the progress scan answer "measured, no cache", which
+            # hydration acts on by retiring a download whose files may be entirely intact.
+            if scan_errors is not None:
+                scan_errors.append(exc)
             return
         if key in seen:
             return
@@ -318,14 +345,28 @@ def _repo_dir_has_broken_snapshot_symlinks(repo_dir: Path) -> bool:
     return False
 
 
-def iter_repo_cache_dirs(repo_type: str, repo_id: str) -> Iterator[Path]:
+def iter_repo_cache_dirs(
+    repo_type: str,
+    repo_id: str,
+    *,
+    scan_errors: Optional[list] = None,
+) -> Iterator[Path]:
+    """Cache dirs for this repo, skipping a root that cannot be listed.
+
+    ``scan_errors`` collects those skips. Suppressing them is right for every caller that
+    only wants the dirs, but hydration reads "no dirs" as "the cache was wiped and this
+    persisted job can be retired" -- and a root that raised EACCES or EIO is not evidence
+    of that. A caller that passes a list can tell the two apart.
+    """
     target = target_dir_name(repo_type, repo_id)
-    for root in hf_cache_roots():
+    for root in hf_cache_roots(scan_errors = scan_errors):
         try:
             for entry in root.iterdir():
                 if entry.name.lower() == target:
                     yield entry
-        except OSError:
+        except OSError as exc:
+            if scan_errors is not None:
+                scan_errors.append(exc)
             continue
 
 
@@ -363,8 +404,10 @@ def iter_active_repo_cache_dirs(
     repo_id: str,
     *,
     root: Optional[Path] = None,
+    scan_errors: Optional[list] = None,
 ) -> Iterator[Path]:
-    root = hf_cache_root(root = root)
+    # The stat itself can fail on a restricted root, and that is not evidence of absence.
+    root = hf_cache_root(root = root, scan_errors = scan_errors)
     if root is None:
         return
     target = target_dir_name(repo_type, repo_id)
@@ -372,7 +415,9 @@ def iter_active_repo_cache_dirs(
         for entry in root.iterdir():
             if entry.name.lower() == target:
                 yield entry
-    except OSError:
+    except OSError as exc:  # see iter_repo_cache_dirs on why the caller may want this
+        if scan_errors is not None:
+            scan_errors.append(exc)
         return
 
 
@@ -382,16 +427,41 @@ def preferred_repo_cache_dirs(
     *,
     force_active: bool = False,
     active_root: Optional[Path] = None,
+    scan_errors: Optional[list] = None,
 ) -> list[Path]:
-    active_entries = list(iter_active_repo_cache_dirs(repo_type, repo_id, root = active_root))
+    # iter_active_repo_cache_dirs already matches case-insensitively, so a repo
+    # dir the active root does hold is found whatever its casing; the canonical
+    # name below is only ever a placeholder for one that is not there yet.
+    active_entries = list(
+        iter_active_repo_cache_dirs(repo_type, repo_id, root = active_root, scan_errors = scan_errors)
+    )
     if active_entries:
         return active_entries
     if force_active:
-        root = hf_cache_root(root = active_root)
+        # A running or cancelling job writes into the active root and nowhere
+        # else, so its progress may only ever be read from there. hf_cache_root
+        # returns None for a root that is not a directory yet -- the first
+        # download into a freshly configured cache creates it -- and falling
+        # through from there would read a previous cache's completed copy as
+        # this run's progress and finalize a job that has not written a byte.
+        # Name the directory this run will create instead.
+        root = hf_cache_root(root = active_root) or active_root or _configured_hub_cache()
         if root is not None:
             canonical = repo_cache_dir_name(repo_type, repo_id)
             return [root / canonical]
-    return list(iter_repo_cache_dirs(repo_type, repo_id))
+    return list(iter_repo_cache_dirs(repo_type, repo_id, scan_errors = scan_errors))
+
+
+def _configured_hub_cache() -> Optional[Path]:
+    # Path()-wrapped: the setting is typed Path, but a caller (or a test) that
+    # hands back a str would otherwise turn `root / name` above into a TypeError
+    # that surfaces as an empty progress reading -- the very card being fixed.
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        configured = get_hf_cache_paths().hub_cache
+        return Path(configured) if configured else None
+    except Exception:
+        return None
 
 
 def has_incomplete_blobs(repo_type: str, repo_id: str) -> bool:

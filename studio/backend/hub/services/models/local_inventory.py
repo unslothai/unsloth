@@ -113,6 +113,24 @@ def _has_immediate_model_weight(
     return False
 
 
+def _is_diffusers_pipeline_dir(path: Path) -> bool:
+    """True for a diffusers PIPELINE root: a top-level ``model_index.json`` with the weights in
+    component subdirs (``transformer/``, ``vae/``, ``text_encoder/`` ...).
+
+    Every image and video model downloaded as a pipeline has this shape and NO root
+    ``config.json``, so the root-config-plus-loose-weights test below rejects it. Without this the
+    Images and Video pickers cannot see a pipeline the user already has on disk, and the LM Studio
+    publisher walk descends into it and offers its components (``vae``, ``transformer``, ...) as
+    separate models, none of which any loader can start.
+
+    ``routes.models._local_pipeline_index`` is the same test; the two scanners are separate
+    modules, and only that one had it."""
+    try:
+        return (path / "model_index.json").is_file()
+    except OSError:
+        return False
+
+
 def _has_immediate_model_signal(
     path: Path, *, probe_limit: int = _MODEL_SIGNAL_PROBE_LIMIT
 ) -> bool:
@@ -121,10 +139,14 @@ def _has_immediate_model_signal(
             return True
     except OSError:
         return False
+    if _is_diffusers_pipeline_dir(path):
+        return True
     return _has_immediate_model_weight(path, probe_limit = probe_limit)
 
 
 def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool:
+    if _is_diffusers_pipeline_dir(path):
+        return True
     if entry_limit is None:
         return _is_model_directory(path)
     try:
@@ -416,9 +438,9 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
-    # If the dir is itself a model dir (config + weights), it's not an LM Studio
-    # publisher structure -- return it as a single entry rather than descend.
-    if _is_model_directory(lm_dir):
+    # If the dir is itself a model dir (config + weights, or a diffusers pipeline root), it's not
+    # an LM Studio publisher structure -- return it as a single entry rather than descend.
+    if _is_model_directory(lm_dir) or _is_diffusers_pipeline_dir(lm_dir):
         try:
             updated_at = lm_dir.stat().st_mtime
         except OSError:
@@ -461,8 +483,9 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     )
                 continue
 
-            # Child is itself a model dir: surface it directly, not as a publisher.
-            if _is_model_directory(child):
+            # Child is itself a model dir: surface it directly, not as a publisher. A diffusers
+            # pipeline counts, or its component subdirs are walked as if they were models.
+            if _is_model_directory(child) or _is_diffusers_pipeline_dir(child):
                 try:
                     updated_at = child.stat().st_mtime
                 except OSError:
@@ -712,6 +735,15 @@ def _scan_custom_folder(
     from utils.models.model_config import detect_gguf_model
 
     supported_formats: set[ModelFormat] = {"gguf", "safetensors", "adapter"}
+
+    def _is_supported(m: LocalModelInfo) -> bool:
+        # A diffusers pipeline keeps its weights in component subdirs, so the root has no loose
+        # weight file to classify and lands as "unknown". It is exactly what the Images and Video
+        # loaders take, so judge it on its shape rather than on a format the layout cannot report.
+        if m.model_format in supported_formats:
+            return True
+        return _is_diffusers_pipeline_dir(Path(m.path))
+
     generic = [
         m
         for m in (
@@ -730,7 +762,7 @@ def _scan_custom_folder(
             )
             + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
         )
-        if m.model_format in supported_formats
+        if _is_supported(m)
         if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
     ]
     selectable = []

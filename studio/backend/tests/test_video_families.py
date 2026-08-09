@@ -16,6 +16,18 @@ from core.inference.video_families import (
     snap_video_size,
     supported_video_family_names,
 )
+from core.inference.video_minimax_h3 import (
+    estimate_h3_diffusers_host_ram_gb,
+    estimate_h3_diffusers_vram_gb,
+)
+
+
+def test_h3_measured_diffusers_memory_estimates():
+    assert estimate_h3_diffusers_vram_gb(960, 544, 124) == pytest.approx(73.68, abs = 0.02)
+    assert estimate_h3_diffusers_vram_gb(1344, 768, 124) == pytest.approx(78.74, abs = 0.02)
+    assert estimate_h3_diffusers_vram_gb(1344, 768, 345) == pytest.approx(96.98, abs = 0.02)
+    assert estimate_h3_diffusers_host_ram_gb(126) == 150
+    assert estimate_h3_diffusers_host_ram_gb(132) == 85
 
 
 @pytest.mark.parametrize(
@@ -145,12 +157,29 @@ def test_generation_defaults_distilled_vs_dev():
 
 def test_supported_names():
     assert supported_video_family_names() == (
+        "minimax-h3",
         "ltx-2",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
     )
+
+
+def test_minimax_h3_family_and_frame_lattice():
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert fam is not None and fam.name == "minimax-h3"
+    # fl2va loads the superset that also serves text-only requests.
+    assert fam.modular_workflow == "fl2va"
+    assert fam.has_audio is True
+    assert fam.supports_keyframes is True
+    assert fam.supports_cfg is False
+    assert fam.frame_step == 17
+    assert fam.frame_offset == 5
+    assert snap_num_frames(fam, 124) == 124
+    assert snap_num_frames(fam, 125) == 141
+    assert snap_num_frames(fam, 1) == 124
+    assert snap_num_frames(fam, 999) == 345
 
 
 def test_wan_snap_num_frames_4k_plus_1():
@@ -339,3 +368,26 @@ def test_curated_gguf_repos_are_unsloth_mirrors():
     curated = {fam.name: fam.gguf_repo for fam in _FAMILIES if fam.gguf_repo}
     assert curated["wan2.2-ti2v-5b"] == "unsloth/Wan2.2-TI2V-5B-GGUF"
     assert all(repo.startswith("unsloth/") for repo in curated.values()), curated
+
+
+def test_minimax_h3_offers_every_advertised_aspect_ratio():
+    from core.inference.video_minimax_h3 import H3_CANVAS_MAX_PIXELS, h3_canvas_for_aspect
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    presets = fam.resolution_presets
+    ratios = {round(w / h, 3) for w, h in presets}
+    # The six ratios advertised by the model card.
+    for aspect in ((21, 9), (16, 9), (4, 3), (1, 1), (3, 4), (9, 16)):
+        derived = h3_canvas_for_aspect(*aspect)
+        assert round(derived[0] / derived[1], 3) in ratios, f"{aspect} has no preset"
+    assert fam.resolution_presets[0] == (1344, 768), "16:9 stays the default"
+
+    # Reduced tiers may be smaller than the resolved canvas. The legacy 1024 square is the
+    # only entry above the area cap.
+    for width, height in presets:
+        assert width % 32 == 0 and height % 32 == 0, (width, height)
+        if (width, height) == (1024, 1024):
+            continue
+        assert width * height <= H3_CANVAS_MAX_PIXELS, (width, height)
+        rule_width, rule_height = h3_canvas_for_aspect(width, height)
+        assert width <= rule_width and height <= rule_height, (width, height)

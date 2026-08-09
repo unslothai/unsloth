@@ -18,6 +18,94 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
+
+    # The user's PowerShell profile has already run by the time this does, and the documented
+    # "irm https://unsloth.ai/install.ps1 | iex" entry point has no script file to re-launch
+    # with -NoProfile, so each way a profile can reach in here is cut individually below.
+    #
+    # Off, not Latest: this script predates strict mode, testing environment variables that are
+    # legitimately unset and reading $script: state only some branches assign. Scoped to here
+    # and below, so the caller keeps its own.
+    Set-StrictMode -Off
+
+    # A profile that sets 'None' -- the startup-time tweak people copy -- is fatal on PowerShell
+    # 7, which loads NO modules at startup: Test-Path, Write-Host, Select-Object,
+    # ConvertFrom-Json, Get-FileHash, Invoke-WebRequest, Expand-Archive, Start-Process and
+    # Get-Content stop resolving, while 5.1 preloads Utility and Management and survives. First
+    # of the four, because the proxy handoff below calls ConvertTo-Json from Utility too.
+    $PSModuleAutoLoadingPreference = 'All'
+
+    # Proxy keys are kept rather than dropped: on a locked-down corporate host such an entry may
+    # be the sole route to python.org and the uv release. IsMatch, not -match, so the filter
+    # leaves no $Matches behind for the rest of the install.
+    $_UnslothKeptDefaults = @{}
+    foreach ($_UnslothDefaultKey in @($PSDefaultParameterValues.Keys)) {
+        # IgnoreCase: 'invoke-webrequest:proxy' is valid PowerShell and binds the same
+        # parameter, so a case-sensitive filter drops a working proxy on a technicality.
+        if ($_UnslothDefaultKey -is [string] -and
+            [regex]::IsMatch(
+                $_UnslothDefaultKey,
+                ':Proxy(Credential|UseDefaultCredentials)?$',
+                [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+            $_UnslothKeptDefaults[$_UnslothDefaultKey] = $PSDefaultParameterValues[$_UnslothDefaultKey]
+        }
+    }
+    # One profile entry such as 'Start-Process:WindowStyle' or 'Invoke-WebRequest:TimeoutSec'
+    # silently rebinds every process launch and download here. Assigning with no scope qualifier
+    # shadows the caller's table for this scope and below only.
+    $PSDefaultParameterValues = $_UnslothKeptDefaults
+
+    # The kept proxies travel to studio/setup.ps1 (launched -NoProfile by unsloth_cli, and it
+    # downloads the VC++ runtime and the uv installer) as JSON in _UNSLOTH_PS_PROXY_DEFAULTS,
+    # since a PowerShell variable does not cross a process boundary. Credentials do not travel:
+    # a PSCredential does not serialize, and an environment variable is the wrong place for one.
+    $_UnslothProxyHandoff = @{}
+    foreach ($_UnslothDefaultKey in @($_UnslothKeptDefaults.Keys)) {
+        $_UnslothDefaultValue = $_UnslothKeptDefaults[$_UnslothDefaultKey]
+        # [uri] is the form the parameter actually takes and serializes to its own string.
+        if ($_UnslothDefaultValue -is [uri]) {
+            $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultValue.AbsoluteUri
+        } elseif ($_UnslothDefaultValue -is [string] -or $_UnslothDefaultValue -is [bool]) {
+            $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultValue
+        } elseif ($_UnslothDefaultValue -is [scriptblock]) {
+            # A script block is the supported form for a DYNAMIC default, e.g.
+            # { [uri]$env:CORP_PROXY }, evaluated per call by Invoke-WebRequest. Evaluate here
+            # and hand over the RESULT: executable code must not cross into the child.
+            try {
+                $_UnslothDefaultResolved = & $_UnslothDefaultValue
+                if ($_UnslothDefaultResolved -is [uri]) {
+                    $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultResolved.AbsoluteUri
+                } elseif ($_UnslothDefaultResolved -is [string] -or
+                          $_UnslothDefaultResolved -is [bool]) {
+                    $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultResolved
+                }
+            } catch { }
+        }
+    }
+    # A FUNCTION-local, not $script: or an environment variable: under "irm ... | iex" this runs
+    # in the caller's own session, and the value can carry credentials (http://user:secret@proxy
+    # is the ordinary corporate form) that must not outlive the install on any of the dozens of
+    # return paths. Module-qualified serializer, as in the probe: a profile alias or function
+    # named ConvertTo-Json would otherwise reshape this record or throw out of the prologue.
+    $UnslothProxyHandoffJson =
+        if ($_UnslothProxyHandoff.Count -gt 0) {
+            $_UnslothProxyHandoff | Microsoft.PowerShell.Utility\ConvertTo-Json -Compress
+        }
+        else { $null }
+
+    # PowerShell 7 only, and $false is its default: a profile that flips it on turns every
+    # non-zero native exit into a terminating error, which with "Stop" above would throw out of
+    # the setup handoff instead of reaching Exit-InstallFailure. Harmless on 5.1, where the
+    # variable does not exist.
+    $PSNativeCommandUseErrorActionPreference = $false
+
+    # Reset per invocation, for the reason at $script:IsIntelXpu further down: under
+    # "irm ... | iex" $script: is the caller's session scope, so a second run in the same
+    # console would start on the first run's state. These two are the only ones no later
+    # statement re-assigns unconditionally.
+    $script:UvExe = 'uv'
+    $script:UvInstallDestDir = $null
+
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
 
     # Same fix as studio/setup.ps1, for the same reason. This script also calls
@@ -1918,7 +2006,14 @@ exit 0
         }
 
     Write-TauriLog "STEP" "Checking system dependencies"
-    $script:WingetAvailable = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+    # -CommandType Application, as for Resolve-UvExecutable below: winget installs Python AND uv,
+    # so a profile "function winget {...}" or "Set-Alias winget ..." would otherwise receive both
+    # installs. The resolved path is pinned so the five call sites cannot be re-resolved later.
+    $script:WingetExe = (
+        Get-Command winget -CommandType Application -All -ErrorAction SilentlyContinue |
+            Where-Object { $_.Source } | Select-Object -First 1 -ExpandProperty Source
+    )
+    $script:WingetAvailable = [bool]$script:WingetExe
     if ($script:WingetAvailable) {
         step "winget" "available"
     } else {
@@ -2185,7 +2280,7 @@ exit 0
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
-                winget install -e --id "Python.Python.$PythonVersion" --source winget --architecture x64 --accept-package-agreements --accept-source-agreements
+                & $script:WingetExe install -e --id "Python.Python.$PythonVersion" --source winget --architecture x64 --accept-package-agreements --accept-source-agreements
             } catch { }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
@@ -2224,7 +2319,7 @@ exit 0
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
-                winget install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements
+                & $script:WingetExe install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements
                 $wingetExit = $LASTEXITCODE
             } catch { $wingetExit = 1 }
             $ErrorActionPreference = $prevEAP
@@ -2241,7 +2336,7 @@ exit 0
                 substep "Python not found on PATH after winget. Retrying with --force..." "Yellow"
                 $ErrorActionPreference = "Continue"
                 try {
-                    winget install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements --force
+                    & $script:WingetExe install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements --force
                     $wingetExit = $LASTEXITCODE
                 } catch { $wingetExit = 1 }
                 $ErrorActionPreference = $prevEAP
@@ -2300,17 +2395,81 @@ exit 0
     # ── Install uv ──
     Write-TauriLog "STEP" "Installing uv package manager"
     $UvMinVersion = "0.8.16"
+
+    # PowerShell ranks aliases and functions above anything on PATH, so a profile carrying
+    # "Set-Alias uv ..." or "function uv {...}" captures every bare uv call here and the version
+    # probe reads a good uv as broken. $null when nothing named uv resolves to an executable, so
+    # the caller's "not installed yet" branch keeps its meaning.
+    function Resolve-UvExecutable {
+        # @(): a one-element return unrolls to a bare string, and indexing THAT gives its
+        # first character.
+        $candidates = @(Get-UvExecutableCandidates)
+        if ($candidates.Count -gt 0) { return $candidates[0] }
+        return $null
+    }
+
+    # Every uv this machine offers, in the order the bare token would pick them: alias first,
+    # then PATH. A LIST rather than one answer, so the version gate can move past an alias
+    # pointing at a stale uv and still find a current one.
+    function Get-UvExecutableCandidates {
+        # An ALIAS pointing at a real executable FIRST, because PowerShell resolves aliases
+        # ahead of PATH. Followed only as far as an Application, returning the resolved path so
+        # the rest of the script is not back in command discovery.
+        $found = [System.Collections.Generic.List[string]]::new()
+        $alias = Get-Command uv -CommandType Alias -ErrorAction SilentlyContinue
+        while ($alias -and $alias.ResolvedCommand) {
+            $target = $alias.ResolvedCommand
+            if ($target.CommandType -eq 'Application' -and $target.Source) {
+                $found.Add($target.Source)
+                break
+            }
+            if ($target.CommandType -ne 'Alias') { break }
+            $alias = $target
+        }
+        # -All, because Get-Command's choice among several matches is otherwise incidental.
+        # Applications come back in PATH order, so with no profile overrides this is the uv the
+        # bare token would run.
+        $apps = @(
+            Get-Command uv -CommandType Application -All -ErrorAction SilentlyContinue |
+                Where-Object { $_.Source }
+        )
+        foreach ($app in $apps) {
+            if (-not $found.Contains($app.Source)) { $found.Add($app.Source) }
+        }
+        if ($found.Count -gt 0) { return @($found) }
+        # Anything else named uv is a function, a cmdlet, or an alias to one, and handing back
+        # the bare token would let a wrapper answering `--version` pass the gate and then
+        # receive every install command. An empty list means "not installed yet", so uv gets
+        # installed and the gate re-probes.
+        return @()
+    }
+
     function Test-UvVersionOk {
-        $cmd = Get-Command uv -ErrorAction SilentlyContinue
-        if (-not $cmd) { return $false }
+        # EVERY candidate, not just the first, so an alias pointing at a stale uv cannot hide a
+        # current uv on PATH. Alias first still, so a passing alias keeps winning.
+        foreach ($exe in Get-UvExecutableCandidates) {
+            if (Test-UvCandidateVersion $exe) { return $true }
+        }
+        return $false
+    }
+
+    function Test-UvCandidateVersion {
+        param([string]$exe)
+        if (-not $exe) { return $false }
         try {
-            $raw = (& uv --version 2>$null | Select-Object -First 1)
+            $raw = (& $exe --version 2>$null | Select-Object -First 1)
         } catch {
             return $false
         }
         if ($raw -notmatch 'uv\s+([0-9]+(?:\.[0-9]+)+)') { return $false }
         try {
-            return ([version]$Matches[1] -ge [version]$UvMinVersion)
+            if ([version]$Matches[1] -ge [version]$UvMinVersion) {
+                # Pin the executable that actually answered: every install command below runs
+                # this path, so a later Refresh-SessionPath or a profile alias cannot swap it.
+                $script:UvExe = $exe
+                return $true
+            }
+            return $false
         } catch {
             return $false
         }
@@ -2421,7 +2580,9 @@ exit 0
     }
 
     if (-not (Test-UvVersionOk)) {
-        if (Get-Command uv -ErrorAction SilentlyContinue) {
+        # Resolve-UvExecutable, not a bare Get-Command: a profile alias named uv would
+        # otherwise report "updating" on what is in fact a first install.
+        if (Resolve-UvExecutable) {
             substep "updating uv package manager..."
         } else {
             substep "installing uv package manager..."
@@ -2429,9 +2590,9 @@ exit 0
         if ($script:WingetAvailable) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
-            try { winget upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
             if (-not (Test-UvVersionOk)) {
-                try { winget install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+                try { & $script:WingetExe install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
             }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
@@ -2820,7 +2981,7 @@ exit 0
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
-        $venvExit = Invoke-InstallCommand -Label "create virtual environment" { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+        $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $script:UvExe venv $VenvDir --python "$($DetectedPython.Path)" }
         if ($venvExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
@@ -3597,6 +3758,20 @@ exit 0
         return "${scheme}://${host_}"
     }
 
+    # Append a path to a URL that may carry ?query / #fragment auth. A private mirror is
+    # allowed to be "https://mirror/whl?token=abc", and a naive "$base/$leaf" put the leaf
+    # INSIDE the token value, leaving the path still /whl -- so the tokenized mirror this
+    # exists to honour was the one case that could not resolve a wheel.
+    function Join-UrlPath {
+        param([string]$Base, [string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Base)) { return $Path }
+        $cut = $Base.IndexOfAny([char[]]('?', '#'))
+        if ($cut -lt 0) { return "$($Base.TrimEnd('/'))/$Path" }
+        $head = $Base.Substring(0, $cut).TrimEnd('/')
+        $tail = $Base.Substring($cut)
+        return "$head/$Path$tail"
+    }
+
     # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
     # torch.__version__ -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu,
     # matching setup.ps1's stale-venv parse.
@@ -3656,6 +3831,138 @@ exit 0
         $torchVer = $probe.Output.Trim()
         if (-not $torchVer) { return $null }
         return ConvertTo-TorchFlavorTag $torchVer
+    }
+
+    # Full installed torch version in $PythonExe's venv ("2.10.0+cu130"), or $null. Separate
+    # from Get-InstalledTorchTag because the xFormers pin below needs the RELEASE as well as
+    # the flavor: xFormers publishes one wheel per exact torch patch (2.9.0 -> 0.0.33.post1,
+    # 2.9.1 -> 0.0.33.post2, 2.10.0 -> 0.0.34), not per minor.
+    function Get-InstalledTorchVersion {
+        param([string]$PythonExe)
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
+        $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.__version__)'
+        if (-not $probe.Ok) { return $null }
+        $torchVer = $probe.Output.Trim()
+        if (-not $torchVer) { return $null }
+        return $torchVer
+    }
+
+    # ── xFormers must match the torch BUILD, not just the torch version ──
+    # xformers/_C.pyd is linked against one exact (torch, CUDA) pair. Loaded beside any
+    # other pair torch.ops.load_library raises, and xformers/_cpp_lib.py turns that into a
+    # log warning rather than an error -- so the import "succeeds" and memory-efficient
+    # attention, SwiGLU and the sparse ops are all silently gone. PyPI publishes only the
+    # CUDA-12.8 flavour, which is why a cu130 install that lets pip resolve xformers ends up
+    # reporting "xFormers was built for PyTorch 2.10.0+cu128 (you have 2.10.0+cu130)".
+    #
+    # Resolve from the same index the torch install used, so UNSLOTH_TORCH_INDEX_URL /
+    # UNSLOTH_TORCH_INDEX_FAMILY / UNSLOTH_PYTORCH_MIRROR keep working unchanged. Every row
+    # below was HEAD-verified live on download.pytorch.org and its xformers/cpp_lib.json read
+    # back, e.g. cu130/xformers-0.0.34 reports {"torch": "2.10.0+cu130"}. Keep in step with
+    # _XFORMERS_WHEEL_VERSIONS in studio/backend/utils/wheel_utils.py and the matrix in
+    # tests/python/test_windows_xformers_wheel_match.py.
+    #
+    # Deliberately NOT a floor-and-let-pip-pick: the cu130 index also serves
+    # xformers-0.0.35, whose extension is built for torch 2.10.0 while its metadata only
+    # asks for torch>=2.10, so a resolver is free to pair it with a torch it cannot load.
+    #
+    # torch 2.7.0 (xFormers 0.0.30) is deliberately absent: it predates the stable-ABI
+    # switch, publishes one wheel per interpreter and stops at cp312, and this installer
+    # defaults to Python 3.13 -- so the row would resolve to a wheel that does not exist.
+    $script:XformersWheelVersions = @{
+        "2.7.1"  = @{ "cu126" = "0.0.31.post1"; "cu128" = "0.0.31.post1" }
+        "2.8.0"  = @{ "cu126" = "0.0.32.post2"; "cu128" = "0.0.32.post2"; "cu129" = "0.0.32.post2" }
+        "2.9.0"  = @{ "cu126" = "0.0.33.post1"; "cu128" = "0.0.33.post1"; "cu130" = "0.0.33.post1" }
+        "2.9.1"  = @{ "cu126" = "0.0.33.post2"; "cu128" = "0.0.33.post2"; "cu130" = "0.0.33.post2" }
+        "2.10.0" = @{ "cu126" = "0.0.34";       "cu128" = "0.0.34";       "cu130" = "0.0.34" }
+        # Stable-ABI era: 0.0.35 targets torch 2.10+ and upstream guarantees it works on
+        # any later release, so one row per torch covers 2.11 onward with the same wheel.
+        "2.11.0" = @{ "cu126" = "0.0.35";       "cu128" = "0.0.35";       "cu130" = "0.0.35" }
+        "2.12.0" = @{ "cu126" = "0.0.35";       "cu128" = "0.0.35";       "cu130" = "0.0.35" }
+        "2.13.0" = @{ "cu126" = "0.0.35";       "cu128" = "0.0.35";       "cu130" = "0.0.35" }
+    }
+
+    # The stable-ABI era in one place: every torch STRICTLY ABOVE the floor resolves to this
+    # wheel, which is compiled against the floor release and works on any later one by
+    # upstream's own guarantee. The exact rows above still win.
+    #
+    # An exact-key table alone refuses the PATCH releases -- 2.10.1, 2.11.1, 2.12.1 are all
+    # supported builds, and none of them can be listed here, because they are published
+    # after this script ships. Each one silently left the machine with no xFormers.
+    $script:XformersStableAbiFloor = "2.10.0"
+    $script:XformersStableAbiVersion = "0.0.35"
+    $script:XformersStableAbiFamilies = @("cu126", "cu128", "cu130")
+
+    # "2.12.1" -> [version]2.12.1, or $null for a dev/rc/nightly string, which names no
+    # released torch and must not be swept into the era comparison.
+    function ConvertTo-TorchReleaseVersion {
+        param([string]$Release)
+        if (-not $Release -or -not [regex]::IsMatch($Release, '^\d+(\.\d+)*$')) { return $null }
+        try { return [version]$Release } catch { return $null }
+    }
+
+    # xFormers version built for exactly ($TorchVersion, $CudaTag), or $null when that pair
+    # has no published wheel -- in which case we install nothing rather than a mismatch.
+    function Get-XformersWheelVersion {
+        param([string]$TorchVersion, [string]$CudaTag)
+        if (-not $TorchVersion -or -not $CudaTag) { return $null }
+        # "2.10.0+cu130" -> "2.10.0"; a dev/rc suffix has no wheel and must miss the table.
+        $release = ($TorchVersion -split '\+', 2)[0].Trim()
+        if ($script:XformersWheelVersions.ContainsKey($release)) {
+            $byFamily = $script:XformersWheelVersions[$release]
+            if ($byFamily.ContainsKey($CudaTag)) { return $byFamily[$CudaTag] }
+            return $null
+        }
+        # Not listed: above the stable-ABI floor the answer is known without a row.
+        $parsed = ConvertTo-TorchReleaseVersion $release
+        if ($null -eq $parsed) { return $null }
+        if ($parsed -gt [version]$script:XformersStableAbiFloor -and $script:XformersStableAbiFamilies -contains $CudaTag) {
+            return $script:XformersStableAbiVersion
+        }
+        return $null
+    }
+
+    # The torch build the SELECTED wheel records in its cpp_lib.json, which is what
+    # Get-InstalledXformersBuild reads back. For an exact-era wheel that is the resident
+    # torch; for the stable-ABI wheel it is the floor release it was compiled against, so
+    # comparing against the resident torch marked a perfectly good 0.0.35 as mismatched and
+    # force-reinstalled it on every run.
+    function Get-XformersExpectedTorchBuild {
+        param([string]$Version, [string]$TorchVersion, [string]$CudaTag)
+        if ($Version -eq $script:XformersStableAbiVersion) {
+            return "$($script:XformersStableAbiFloor)+$CudaTag"
+        }
+        return $TorchVersion
+    }
+
+    # The interpreter tag in the wheel FILENAME: 0.0.31..0.0.34 ship one cp39-abi3 wheel,
+    # 0.0.35 switched to py39-none (a packaging change -- the extension never bound the
+    # CPython ABI). Unknown releases return $null so a direct URL is never guessed.
+    # Mirrors _XFORMERS_FILENAME_PYTHON_TAGS in studio/backend/utils/wheel_utils.py.
+    function Get-XformersFilenamePythonTag {
+        param([string]$Version)
+        $parsed = ConvertTo-TorchReleaseVersion (($Version -split '[^0-9.]', 2)[0].TrimEnd('.'))
+        if ($null -eq $parsed) { return $null }
+        if ($parsed -ge [version]"0.0.31" -and $parsed -le [version]"0.0.34") { return "cp39-abi3" }
+        if ($parsed -eq [version]"0.0.35") { return "py39-none" }
+        return $null
+    }
+
+    # What the RESIDENT xformers actually is: "<version> <torch-it-was-built-for>", e.g.
+    # "0.0.34 2.10.0+cu128", or $null when xformers is absent or carries no build metadata.
+    # BOTH halves are needed. The version alone cannot tell cu126 from cu128 from cu130 --
+    # all three publish the same version string -- and the build tag alone cannot tell
+    # 0.0.34 from 0.0.35, which report the same torch. Read from disk rather than
+    # "import xformers" so a mismatched .pyd cannot log its own warning into the probe.
+    function Get-InstalledXformersBuild {
+        param([string]$PythonExe)
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
+        $code = 'import importlib.metadata as m,importlib.util,json,os;s=importlib.util.find_spec(''xformers'');l=(list(s.submodule_search_locations) if s and s.submodule_search_locations else []);p=(os.path.join(l[0],''cpp_lib.json'') if l else '''');t=(json.load(open(p))[''version''][''torch''] if p and os.path.isfile(p) else '''');v=m.version(''xformers'') if l else '''';print((v + '' '' + t) if (v and t) else '''')'
+        $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code $code
+        if (-not $probe.Ok) { return $null }
+        $build = $probe.Output.Trim()
+        if (-not $build) { return $null }
+        return $build
     }
 
     # Post-install XPU runtime check. A +xpu wheel installing is not proof the GPU is usable: on
@@ -3848,21 +4155,21 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.8" "unsloth-zoo>=2026.8.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
                 # is --no-deps). All transitive deps are torch-free.
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.8" "unsloth-zoo>=2026.8.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -3870,13 +4177,13 @@ exit 0
         }
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -3893,7 +4200,7 @@ exit 0
             # ABI-incompatible torchvision/torchaudio on AMD's per-arch index.
             $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
             $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
             if ($torchInstallExit -ne 0) {
                 # Transient AMD-index failure: fall back to a CPU base (Unsloth setup retries
                 # ROCm). Use an explicit CPU index -- for a pinned ROCm index $TorchIndexUrl IS
@@ -3904,7 +4211,7 @@ exit 0
                 # torch (e.g. 2.10.0+rocm on gfx110X/gfx90a) that still satisfies the CPU
                 # torch>= range, so without it uv would keep the ROCm build and only swap
                 # the companions -- a mismatched venv the flavor-repair block won't fix.
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $CpuFallbackIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { & $script:UvExe pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-StudioLine "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -3936,12 +4243,12 @@ exit 0
                 substep "windows on arm: skipping torchaudio (upstream publishes no win_arm64 wheel)."
                 $_xpuCpuSpecs = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0")
             }
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { uv pip install --python $VenvPython --force-reinstall @_xpuSpecs --default-index $TorchIndexUrl }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { & $script:UvExe pip install --python $VenvPython --force-reinstall @_xpuSpecs --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 # Transient XPU-index failure: fall back to CPU base.
                 $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
                 substep "XPU PyTorch install failed (exit $torchInstallExit); using a CPU base." "Yellow"
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall @_xpuCpuSpecs --default-index $CpuFallbackIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { & $script:UvExe pip install --python $VenvPython --force-reinstall @_xpuCpuSpecs --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-StudioLine "[ERROR] Failed to install PyTorch (XPU and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -3977,7 +4284,7 @@ exit 0
                 substep "win_arm64 wheel); torch and torchvision install normally."
                 $_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec)
             }
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { & $script:UvExe pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -3989,21 +4296,21 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.8" "unsloth-zoo>=2026.8.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.8" "unsloth-zoo>=2026.8.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -4012,13 +4319,13 @@ exit 0
 
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -4029,25 +4336,25 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.8.5" "unsloth>=2026.8.8" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.6" "unsloth>=2026.8.9" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -4069,7 +4376,7 @@ exit 0
     # $TorchIndexUrl, so a failed XPU install reads as "cpu" here. Best-effort: a failure warns.
     if (-not $SkipTorch -and (Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
         substep "installing bitsandbytes with Intel XPU kernels..."
-        $bnbXpuExit = Invoke-InstallCommandRetry -Label "install bitsandbytes (Intel XPU)" { uv pip install --python $VenvPython --no-deps "bitsandbytes>=0.50.0" }
+        $bnbXpuExit = Invoke-InstallCommandRetry -Label "install bitsandbytes (Intel XPU)" { & $script:UvExe pip install --python $VenvPython --no-deps "bitsandbytes>=0.50.0" }
         if ($bnbXpuExit -ne 0) {
             substep "[WARN] could not install an XPU-capable bitsandbytes (exit $bnbXpuExit); 4-bit QLoRA may be unavailable." "Yellow"
         }
@@ -4103,7 +4410,7 @@ exit 0
                     $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
                     $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
                     if ($torchFixExit -ne 0) {
                         Write-StudioLine "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
@@ -4117,7 +4424,7 @@ exit 0
                     # fails the repair before setup.ps1's ARM-aware fallback.
                     $_fixSpecs = if ($expectedTorchTag -eq 'xpu') { Get-XpuTorchSpecs -Platform (Get-VenvPlatformTag -PythonExe $VenvPython) }
                                  else { @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0") }
-                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { uv pip install --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { & $script:UvExe pip install --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     if ($torchFixExit -ne 0) {
                         Write-StudioLine "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
@@ -4131,6 +4438,114 @@ exit 0
                 Write-StudioLine "  [WARN] PyTorch is CPU-only but a $expectedTorchTag GPU build was expected for this machine." -ForegroundColor Yellow
                 Write-StudioLine "  [WARN] Training and GPU inference will run on CPU until this is fixed." -ForegroundColor Yellow
                 Write-StudioLine "  [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU." -ForegroundColor Yellow
+            }
+        }
+    }
+
+    # ── Pin xFormers to the wheel built for the torch that is actually installed ──
+    # See $script:XformersWheelVersions above for why a version floor is not enough.
+    # Runs AFTER the flavor repair so it reads the final torch, and keys off THAT torch
+    # rather than off $TorchIndexUrl, which the repair does not always reconcile (it is
+    # skipped when the expected tag is 'cpu' or unrecognised, so a migrated venv can hold
+    # a +cu128 torch while the index leaf says /cpu, and /cpu serves no usable xFormers).
+    # xFormers is an optional accelerator, so every failure here warns and the install
+    # continues on torch SDPA; and when no wheel matches we install NOTHING, because
+    # installing a mismatched one is the bug being fixed. UNSLOTH_SKIP_XFORMERS=1 opts out.
+    if (-not $SkipTorch -and $env:UNSLOTH_SKIP_XFORMERS -ne "1") {
+        $_xfTorchVersion = Get-InstalledTorchVersion -PythonExe $VenvPython
+        $_xfCudaTag = ConvertTo-TorchFlavorTag $_xfTorchVersion
+        # cu<digits> only: cpu / rocm / xpu torch has no xFormers wheel on any index.
+        # IsMatch, not -match, so this does not clobber $Matches for the enclosing scope.
+        if ($_xfTorchVersion -and [regex]::IsMatch([string]$_xfCudaTag, '^cu\d+$')) {
+            $_xfVersion = Get-XformersWheelVersion -TorchVersion $_xfTorchVersion -CudaTag $_xfCudaTag
+            if (-not $_xfVersion) {
+                # "not in the table", which also covers families we have no row for (cu118,
+                # cu124) as well as torch releases upstream never built against.
+                substep "no matching xFormers wheel for torch $_xfTorchVersion -- skipping it (attention falls back to torch SDPA)."
+            } elseif ((Get-InstalledXformersBuild -PythonExe $VenvPython) -eq "$_xfVersion $(Get-XformersExpectedTorchBuild -Version $_xfVersion -TorchVersion $_xfTorchVersion -CudaTag $_xfCudaTag)") {
+                substep "xFormers $_xfVersion already matches torch $_xfTorchVersion."
+            } else {
+                # How to fetch it, in two cases.
+                #
+                # An EXPLICIT index pin is authoritative and stays whole. Its final component
+                # is not required to be the CUDA family: a documented full-URL override can be
+                # an authenticated PEP 503 mirror, and comparing its leaf threw exactly that
+                # index away -- the one that had just supplied the resident CUDA torch --
+                # leaving an air-gapped host unable to reach any wheel at all.
+                #
+                # Otherwise install the DIRECT wheel URL rather than resolving a version off
+                # an index. --default-index does not make an index exclusive (uv's --index /
+                # UV_INDEX are used "in addition to" it), and cu126 / cu128 / cu130 publish
+                # the SAME version string, so a machine with UV_INDEX set -- PyPI's CUDA-12.8
+                # build, say -- could satisfy a pinned 0.0.35 from the wrong family and
+                # recreate the silent extension failure this whole step exists to prevent.
+                # A URL cannot be resolved anywhere else. UNSLOTH_PYTORCH_MIRROR is still
+                # honoured, as it is everywhere else in this script.
+                $_xfIndexUrl = $null
+                $_xfWheelUrl = $null
+                $_xfPyTag = Get-XformersFilenamePythonTag $_xfVersion
+                $_xfWheelName = if ($_xfPyTag) { "xformers-$_xfVersion-$_xfPyTag-win_amd64.whl" } else { $null }
+                # A FULL-URL override only. UNSLOTH_TORCH_INDEX_FAMILY also sets
+                # $TorchIndexPinned, and routing that through the index reintroduced the very
+                # hole above: cu126 / cu128 / cu130 share a version string, so a machine-level
+                # UV_INDEX could satisfy the pin with the wrong family. A family pin names a
+                # leaf we can build a direct URL from, so it takes the URL path.
+                if ($TorchIndexUrl -and -not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
+                    # Even here, prefer a URL. When the override already names a CUDA leaf
+                    # (.../cu130, the documented shape) the wheel can be addressed under it
+                    # directly, which no UV_INDEX can substitute for. Only an override whose
+                    # leaf is not a family -- a bare PEP 503 mirror root -- has to be resolved,
+                    # and that one gets the machine-level indexes cleared below.
+                    $_xfOverrideLeaf = Get-TorchIndexLeafName $TorchIndexUrl
+                    if ($_xfWheelName -and [regex]::IsMatch($_xfOverrideLeaf, '^cu\d+$')) {
+                        $_xfWheelUrl = Join-UrlPath $TorchIndexUrl $_xfWheelName
+                    } else {
+                        $_xfIndexUrl = $TorchIndexUrl
+                    }
+                } else {
+                    $_xfBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR } else { "https://download.pytorch.org/whl" }
+                    if ($_xfWheelName) {
+                        $_xfWheelUrl = Join-UrlPath $_xfBase "$_xfCudaTag/$_xfWheelName"
+                    } else {
+                        # Unknown filename shape: fall back to the index rather than guessing
+                        # a URL that 404s.
+                        $_xfIndexUrl = Join-UrlPath $_xfBase $_xfCudaTag
+                    }
+                }
+                $_xfSource = if ($_xfWheelUrl) { $_xfWheelUrl } else { $_xfIndexUrl }
+                substep "installing xFormers $_xfVersion for torch $_xfTorchVersion ($(Remove-IndexUrlCredentials $_xfSource))..."
+                # --no-deps: the wheel declares torch==<exact release>, and acting on that can
+                #   pull a PyPI (CUDA 12.8) torch over the CUDA build just installed.
+                # --reinstall-package: cu126 / cu128 / cu130 all publish the SAME xformers
+                #   version string, so a wrong-CUDA wheel is invisible to a version check and
+                #   would otherwise be left in place on an upgrade of a broken install.
+                # Go through $script:UvExe when something has resolved one, so this call
+                # cannot be captured by a profile alias named uv. That variable is not set
+                # on this branch; Get-Variable rather than a bare read so the lookup is
+                # also safe under a profile's Set-StrictMode.
+                $_xfUv = Get-Variable -Name 'UvExe' -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+                if (-not $_xfUv) { $_xfUv = 'uv' }
+                $_xfExit = if ($_xfWheelUrl) {
+                    Invoke-InstallCommandRetry -Label "install xFormers" { & $_xfUv pip install --python $VenvPython --no-deps --reinstall-package xformers $_xfWheelUrl }
+                } else {
+                    # --default-index does not make an index exclusive: uv reads UV_INDEX and
+                    # UV_EXTRA_INDEX_URL "in addition to" it, and every CUDA family publishes the
+                    # SAME xformers version, so a machine-level index could satisfy the pin from
+                    # the wrong one. Cleared for this call only, and restored after.
+                    $_xfSavedIndex = $env:UV_INDEX
+                    $_xfSavedExtra = $env:UV_EXTRA_INDEX_URL
+                    try {
+                        $env:UV_INDEX = $null
+                        $env:UV_EXTRA_INDEX_URL = $null
+                        Invoke-InstallCommandRetry -Label "install xFormers" { & $_xfUv pip install --python $VenvPython --no-deps --reinstall-package xformers "xformers==$_xfVersion" --default-index $_xfIndexUrl }
+                    } finally {
+                        $env:UV_INDEX = $_xfSavedIndex
+                        $env:UV_EXTRA_INDEX_URL = $_xfSavedExtra
+                    }
+                }
+                if ($_xfExit -ne 0) {
+                    substep "[WARN] could not install xFormers $_xfVersion (exit $_xfExit); attention falls back to torch SDPA." "Yellow"
+                }
             }
         }
     }
@@ -4157,7 +4572,7 @@ exit 0
         }
         substep "CI: overlaying source checkout (editable, no deps): $CiOverlayRoot"
         # Retry: the editable build fetches its backend from PyPI, same network risk.
-        $CiOverlayExit = Invoke-InstallCommandRetry -Label "overlay CI source checkout" -Command { uv pip install --python $VenvPython --no-deps -e $CiOverlayRoot }
+        $CiOverlayExit = Invoke-InstallCommandRetry -Label "overlay CI source checkout" -Command { & $script:UvExe pip install --python $VenvPython --no-deps -e $CiOverlayRoot }
         if ($CiOverlayExit -ne 0) {
             return (Exit-InstallFailure "Failed to overlay the CI source checkout (exit code $CiOverlayExit)" $CiOverlayExit)
         }
@@ -4229,6 +4644,15 @@ exit 0
     $previousSetupRuntimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
     $hadPreviousSetupRuntimeGateHandoff = ($null -ne $previousSetupRuntimeGateHandoff)
     $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
+    # The proxy defaults kept out of the discarded profile table, for the duration of the child
+    # only. setup.ps1 runs with -NoProfile and downloads on its own; see the prologue.
+    $previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS
+    $hadPreviousProxyHandoff = ($null -ne $previousProxyHandoff)
+    # Set even when there is nothing to hand over: its ABSENCE is how the CLI recognises a
+    # standalone update and goes looking through the user's profiles. An empty object says "the
+    # installer looked, and there is none".
+    $env:_UNSLOTH_PS_PROXY_DEFAULTS =
+        if ($UnslothProxyHandoffJson) { $UnslothProxyHandoffJson } else { '{}' }
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
@@ -4248,6 +4672,14 @@ exit 0
         } else {
             Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue
         }
+        if ($hadPreviousProxyHandoff) {
+            $env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff
+        } else {
+            Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
+        }
+        # ...and the copy this function holds goes with it, rather than sitting in the frame for
+        # the rest of a long install.
+        $UnslothProxyHandoffJson = $null
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
