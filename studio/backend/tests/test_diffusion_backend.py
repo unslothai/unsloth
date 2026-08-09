@@ -6196,3 +6196,66 @@ def test_generate_guard_leaves_a_large_batch_to_the_oom_backoff(fake_runtime, tm
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     out = backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 4, batch_size = 8)
     assert len(out["images"]) == 8
+
+
+def test_dense_quant_candidate_replan_prices_the_streamed_encoder_tier(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # 8081's reported plan came from THIS path, not the cache walk: transformer 6451 at int8 and
+    # companions 7820 are the family component table's numbers, supplied as overrides. The
+    # text-encoder share has to be threaded through the same override or the streamed-encoder tier
+    # is unreachable on exactly the path that produced the 48-minute load.
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            transient_transformer_mib = 6_451,
+            companions_mib = 7_820,
+            text_encoders_mib = 7_629,
+            prequant = True,
+        ),
+    )
+    seen = []
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            # Initial GGUF plan: force offload so the candidate replan branch is entered.
+            return dataclasses.replace(real, offload_policy = "model")
+        seen.append(k.get("text_encoder_override_mib"))
+        return dataclasses.replace(real, offload_policy = "model")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_load_dense_quant_pipeline",
+        lambda self, *a, **k: (_ for _ in ()).throw(
+            RuntimeError("test: stop after reaching the fast path")
+        ),
+    )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "int8",
+    )
+    assert seen and all(value == 7_629 for value in seen)
