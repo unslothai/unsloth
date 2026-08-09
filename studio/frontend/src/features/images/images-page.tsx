@@ -1326,6 +1326,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // asynchronous: a slow cancel from the PREVIOUS run must neither swallow this run's Stop nor,
   // when it finally settles, release this run's guard.
   const cancelInFlight = useRef<number | null>(null);
+  // Aborts the Stop still on the wire, if any. A pending cancel outlives its run when it is
+  // waiting on a 401 refresh-and-replay, and the replay would then target whatever is generating
+  // by the time it lands. Dropping it as the next run starts is what keeps that from happening.
+  const cancelAbort = useRef<AbortController | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
@@ -2584,6 +2588,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // refresh-and-replay is the slow case) would otherwise leave the guard set and swallow this
     // run's own Stop entirely.
     cancelInFlight.current = null;
+    // Any Stop still pending belongs to the run that just ended, so it must not reach the server
+    // now that a new one is starting.
+    cancelAbort.current?.abort();
+    cancelAbort.current = null;
     runToken.current += 1;
     // Poll the backend's per-step progress across the whole run so the bar tracks live denoising steps. A named poll body
     // (guarded against overlap) also serves the visibilitychange listener, so a throttled tab catches up when visible.
@@ -2710,12 +2718,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         genVisibilityListener.current = null;
       }
       cancelRequested.current = false;
-      // Refresh on EVERY exit, not just the successful one. A generation can change server-side
-      // status (Speed=Auto compiles on the 3rd LoRA-free run and supports_lora flips false), and a
-      // cancelled native run can leave no model at all: when the native cancel is not reflected
-      // within its grace window, sd-server is stopped outright and the backend reloads on the next
-      // generate, so a page that skipped this kept showing a model that is gone. Cheap status GET.
-      if (isMounted.current) void refreshStatus();
+      // Refresh on EVERY exit, not just the successful one, and AWAIT it before Generate comes
+      // back. A generation can change server-side status (Speed=Auto compiles on the 3rd LoRA-free
+      // run and supports_lora flips false), and a cancelled native run can leave no model at all:
+      // when the native cancel is not reflected within its grace window, sd-server is stopped
+      // outright. Re-enabling Generate first would offer a button that 409s against a backend with
+      // nothing loaded. Cheap status GET, so the wait is not felt.
+      if (isMounted.current) await refreshStatus();
       setBusy(null);
       setGenDone(null);
       setGenStep(null);
@@ -2732,19 +2741,25 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const token = runToken.current;
     if (cancelInFlight.current === token) return;
     cancelInFlight.current = token;
+    const abort = new AbortController();
+    cancelAbort.current = abort;
     try {
-      const { cancelled } = await cancelDiffusionGeneration();
+      const { cancelled } = await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
     } catch {
-      // The request never landed, so the denoise in flight keeps running. The latch still stops
-      // the remaining runs, but the click cannot be treated as handled: say so, and stop it
-      // explaining away an error the run raises later.
-      cancelAcked.current = false;
-      toast.error("Could not reach the server to stop this generation; it is still running");
+      // An abort means the next run dropped this one on purpose; it belongs to a generation that
+      // is already over, so there is nothing to report. Otherwise the request never landed, the
+      // denoise in flight keeps running, and the click cannot be treated as handled: say so, and
+      // stop it explaining away an error the run raises later.
+      if (!abort.signal.aborted) {
+        cancelAcked.current = false;
+        toast.error("Could not reach the server to stop this generation; it is still running");
+      }
     } finally {
-      // Only if it is still ours: a slow cancel from an earlier run must not release the guard a
-      // later run set, or a duplicate click gets through and can land on a generation after this.
+      // Only if they are still ours: a slow cancel from an earlier run must not release the guard
+      // a later run set, or a duplicate click gets through and can land on a generation after it.
       if (cancelInFlight.current === token) cancelInFlight.current = null;
+      if (cancelAbort.current === abort) cancelAbort.current = null;
     }
   }, []);
 
