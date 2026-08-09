@@ -708,7 +708,11 @@ def test_the_int8_trainer_path_passes_the_family_through(monkeypatch):
     """The exclusions only apply if the trainer asks for them by family."""
     seen: dict = {}
 
-    def _fake_quantize(model, config, filter_fn = None):
+    def _fake_quantize(
+        model,
+        config,
+        filter_fn = None,
+    ):
         seen["filter_fn"] = filter_fn
 
     fake = types.ModuleType("torchao.quantization")
@@ -754,7 +758,12 @@ def test_the_connector_padding_side_is_read_after_encode_prompt():
             self.tokenizer.padding_side = "left"
             return torch.zeros(1, 4, 8), torch.ones(1, 4), None, None
 
-        def connectors(self, pe, mask, padding_side = "left"):
+        def connectors(
+            self,
+            pe,
+            mask,
+            padding_side = "left",
+        ):
             seen.append(padding_side)
             return torch.zeros(1, 4, 8), torch.zeros(1, 4, 8), torch.ones(1, 4)
 
