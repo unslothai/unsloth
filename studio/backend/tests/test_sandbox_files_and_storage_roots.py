@@ -3931,5 +3931,101 @@ def test_the_research_loop_keeps_a_pages_file_line():
     assert source.count('strip_result_for_model(result, "web_search")') == 2
 
 
+def test_a_workspace_delete_waits_for_the_tool_calls_in_it(tmp_path, monkeypatch):
+    """Cancelling only asks. A call already in the executor still has its cwd
+    in there, and removing it underneath strands whatever it writes next."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "project-abc123"
+    assert tools.project_session_id("abc123") == session
+
+    with tools._session_in_flight(session):
+        assert tools.wait_for_sessions_idle([session], timeout = 0.2) is False
+    assert tools.wait_for_sessions_idle([session], timeout = 0.2) is True
+
+    import inspect
+
+    from routes import chat_history
+
+    route = inspect.getsource(chat_history.delete_project)
+    assert route.index("run_in_threadpool(wait_for_sessions_idle") < route.index(
+        "run_in_threadpool(delete_project_workspace, project)"
+    )
+
+
+def test_a_reference_is_a_session_id_not_a_piece_of_prose(tmp_path, monkeypatch):
+    """A short id matches ordinary text, and an id JSON has to escape does not
+    match itself: one keeps a sandbox for ever, the other deletes a live one."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread({
+        "id": "keeper",
+        "title": "t",
+        "modelType": "local",
+        "modelId": "m",
+        "createdAt": 1,
+        "updatedAt": 1,
+    })
+    quoted = 'client"v1'
+    studio_db.upsert_chat_message({
+        "id": "m1",
+        "threadId": "keeper",
+        "role": "assistant",
+        "content": [{"type": "text", "sessionId": quoted}],
+        "createdAt": 1,
+    })
+    studio_db.upsert_chat_message({
+        "id": "m2",
+        "threadId": "keeper",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "the report is in chat abc"}],
+        "createdAt": 2,
+    })
+
+    # The escaped id is found ...
+    assert studio_db.sandbox_is_referenced_elsewhere(quoted) is True
+    # ... and a short id that only appears inside prose is not.
+    assert studio_db.sandbox_is_referenced_elsewhere("abc") is False
+
+
+def test_a_project_workspace_a_fork_still_shows_is_kept():
+    """A chat forked out of the project keeps cards for the shared workspace,
+    and it is not one of the ids the project delete removes."""
+    import inspect
+
+    from routes import chat_history
+
+    route = inspect.getsource(chat_history.delete_project)
+    assert "project_session_id(project_id)" in route
+    assert "sandbox_is_referenced_elsewhere, shared" in route
+    assert route.index("sandbox_is_referenced_elsewhere, shared") < route.index(
+        "run_in_threadpool(delete_project_workspace, project)"
+    )
+
+
+def test_a_project_delete_cancels_the_research_it_removed():
+    """The rows cascade with the threads, so after the transaction there is
+    nothing left to look the runs up by."""
+    import inspect
+
+    from routes import chat_history
+    from storage import studio_db
+
+    storage = inspect.getsource(studio_db.delete_chat_project)
+    assert 'project["activeResearchRunIds"] = active_runs' in storage
+    assert storage.index("SELECT id FROM research_runs") < storage.index(
+        "DELETE FROM chat_threads"
+    )
+
+    route = inspect.getsource(chat_history.delete_project)
+    assert '_cancel_research_runs(request, list(project.get("activeResearchRunIds")' in route
+    assert "_cancel_active_research(request, member_ids)" not in route
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

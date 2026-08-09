@@ -363,6 +363,24 @@ def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
                 )
 
 
+def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
+    """Stop these research runs by id. Best effort, like every cleanup here."""
+    if not run_ids:
+        return
+    try:
+        from storage import research_runs_db
+    except Exception:  # noqa: BLE001 - research storage optional/unavailable
+        return
+    supervisor = getattr(request.app.state, "research_supervisor", None)
+    for run_id in run_ids:
+        try:
+            status = research_runs_db.request_cancel(run_id)
+            if supervisor is not None and status == "cancelling":
+                supervisor.cancel(run_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not cancel research run %s", run_id, exc_info = True)
+
+
 def _cancel_active_generations(thread_ids: list[str]) -> None:
     """Stop any generation still running for these threads.
 
@@ -647,13 +665,32 @@ async def delete_project(
     # before survives. Cancelling or deleting from an earlier listing would stop
     # a chat that is still there and remove the files it wrote.
     member_ids = list(project.get("memberIds") or [])
-    _cancel_active_research(request, member_ids)
+    # By run id: the rows are gone by now, so there is nothing left to look up.
+    _cancel_research_runs(request, list(project.get("activeResearchRunIds") or []))
     _cancel_active_generations(member_ids)
     if delete_files:
         from starlette.concurrency import run_in_threadpool
 
-        from storage.studio_db import delete_project_workspace
-        await run_in_threadpool(delete_project_workspace, project)
+        from core.inference.tools import project_session_id, wait_for_sessions_idle
+        from storage.studio_db import (
+            delete_project_workspace,
+            sandbox_is_referenced_elsewhere,
+        )
+
+        # Cancelling only asks; a tool call already in the executor is still
+        # running with its cwd in there, and removing that cwd underneath it
+        # either kills the call or strands what it writes next.
+        await run_in_threadpool(wait_for_sessions_idle, member_ids)
+        # A chat forked out of the project still shows cards for the shared
+        # workspace, and the fork is not one of the ids deleted here.
+        shared = project_session_id(project_id)
+        if await run_in_threadpool(sandbox_is_referenced_elsewhere, shared, None):
+            logger.info(
+                "Kept project workspace %s: a surviving chat still shows its files",
+                project_id,
+            )
+        else:
+            await run_in_threadpool(delete_project_workspace, project)
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)

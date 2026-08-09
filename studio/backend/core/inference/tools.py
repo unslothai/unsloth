@@ -8180,6 +8180,31 @@ def _claimed_by_this_run(session_id: str, root: str) -> "str | None":
     return cached
 
 
+def project_session_id(project_id: str) -> str:
+    """The sandbox session a project's chats share."""
+    return f"{_PROJECT_SESSION_PREFIX}{project_id}"
+
+
+def wait_for_sessions_idle(session_ids, timeout: float = 10.0) -> bool:
+    """Wait until no tool call is running for these sessions. True if none is.
+
+    Cancelling a generation only sets its event, so the call inside the executor
+    is still using its working directory for a moment after.
+    """
+    keys = {_session_key(session_id) for session_id in session_ids or []}
+    if not keys:
+        return True
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        with _active_sessions_lock:
+            busy = any(_active_sessions.get(key, 0) > 0 for key in keys)
+        if not busy:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
 def sandbox_removal_deferred(session_id: str) -> bool:
     """Whether this session's removal is queued behind a running tool call.
 
