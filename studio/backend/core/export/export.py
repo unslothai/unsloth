@@ -1130,8 +1130,13 @@ class ExportBackend:
                                 "GGUF conversion produced a symlinked Modelfile, "
                                 f"refusing to relocate it: {modelfile}"
                             )
-                        shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
-                        logger.info(f"Relocated Modelfile → {abs_save_dir}/")
+                        # Optional artifact: unsloth generates it best-effort, so a locked or
+                        # read-only destination must not fail an export whose GGUFs all landed.
+                        try:
+                            shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
+                            logger.info(f"Relocated Modelfile → {abs_save_dir}/")
+                        except OSError as exception:
+                            logger.warning(f"Could not relocate the Modelfile: {exception}")
                 finally:
                     # Preserve any GGUF that could not be relocated. The imatrix is an input,
                     # so counting it would retain the merged checkpoint on every such export.

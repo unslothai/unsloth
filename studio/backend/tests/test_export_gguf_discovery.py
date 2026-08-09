@@ -13,6 +13,7 @@ Reuses the harness in test_export_absolute_paths.py.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -397,3 +398,29 @@ def test_imatrix_named_like_the_output_does_not_suppress_the_real_gguf(monkeypat
     assert success is True, message
     assert (save_dir / "MyModel.Q5_K_M.gguf").read_bytes() == b"GGUF"
     assert list(save_dir.glob("_tmp_model_*")) == []
+
+
+def test_modelfile_relocation_failure_does_not_fail_the_export(monkeypatch, tmp_path):
+    """The Modelfile is optional, so a locked destination must not sink placed GGUFs."""
+
+    class _Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            out = Path(f"{model_save_path}_gguf")
+            _gguf(out / "MyModel.Q5_K_M.gguf")
+            (out / "Modelfile").write_text("FROM MyModel.Q5_K_M.gguf", encoding = "utf-8")
+
+    export_mod, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
+    real_move = export_mod.shutil.move
+
+    def _move(src, dst, *args, **kwargs):
+        if os.path.basename(str(dst)) == "Modelfile":
+            raise PermissionError("destination Modelfile is locked")
+        return real_move(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(export_mod.shutil, "move", _move)
+
+    success, message, _p = backend.export_gguf(str(save_dir), "q5_k_m")
+
+    assert success is True, message
+    assert (save_dir / "MyModel.Q5_K_M.gguf").is_file()
+    assert not (save_dir / "Modelfile").exists()
