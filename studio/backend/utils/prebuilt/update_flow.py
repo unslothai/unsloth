@@ -327,14 +327,18 @@ def stream_installer(
 
     announced: set[int] = set()
 
+    def _stop_announced() -> None:
+        # This process keeps running after an installer error, so no startup
+        # sweep is coming and its own record shields these from one anyway: a
+        # validation server left here holds the GPU and the staged files
+        # through the retry that follows.
+        while announced:
+            terminate_pid(announced.pop())
+
     def _kill_on_timeout() -> None:
         timed_out.set()
         proc.kill()
-        # This process keeps running after the error, so no startup sweep is
-        # coming: a validation server left here holds the GPU and the staged
-        # files through the retry that follows.
-        for child_pid in list(announced):
-            terminate_pid(child_pid)
+        _stop_announced()
 
     watchdog = threading.Timer(timeout_seconds, _kill_on_timeout)
     watchdog.daemon = True
@@ -367,6 +371,9 @@ def stream_installer(
         watchdog.cancel()
         if proc.poll() is not None:
             forget_pid(proc.pid)
+        # Anything it started and never reported as stopped, whether it timed
+        # out, exited nonzero, or died mid-line.
+        _stop_announced()
     if timed_out.is_set():
         raise RuntimeError(f"installer timed out after {timeout_seconds}s")
     if returncode != 0:

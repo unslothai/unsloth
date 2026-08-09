@@ -2080,5 +2080,73 @@ def test_a_diffusion_group_is_reachable_after_its_leader_has_gone():
     assert "self._diffusion_pgid = None" in kill, "kept a group id past its kill"
 
 
+def test_a_failed_installer_takes_its_announced_children_with_it(monkeypatch):
+    """A nonzero exit leaves this process running, and its own live record
+    shields those children from a sweep that will not run anyway."""
+    from utils.prebuilt import update_flow
+
+    terminated = []
+    monkeypatch.setattr(update_flow, "adopt_pid", lambda pid: None)
+    monkeypatch.setattr(update_flow, "forget_pid", lambda pid: None)
+    monkeypatch.setattr(update_flow, "terminate_pid", lambda pid: terminated.append(pid))
+
+    class FakeProc:
+        pid = 4321
+        stdout = iter([
+            "UNSLOTH_INSTALLER_CHILD started 9941\n",
+            "boom\n",
+        ])
+
+        def wait(self):
+            return 3
+
+        def poll(self):
+            return 3
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(update_flow.subprocess, "Popen", lambda *a, **k: FakeProc())
+    with pytest.raises(update_flow.InstallerExit):
+        update_flow.stream_installer(
+            ["x"], {}, timeout_seconds = 30, job = {}, job_lock = threading.Lock(),
+        )
+
+    assert terminated == [9941], terminated
+
+
+def test_a_server_the_installer_reported_stopped_is_not_killed_twice(monkeypatch):
+    """The ordinary path: it said the group was gone, so there is nothing left
+    to terminate."""
+    from utils.prebuilt import update_flow
+
+    terminated = []
+    monkeypatch.setattr(update_flow, "adopt_pid", lambda pid: None)
+    monkeypatch.setattr(update_flow, "forget_pid", lambda pid: None)
+    monkeypatch.setattr(update_flow, "terminate_pid", lambda pid: terminated.append(pid))
+
+    class FakeProc:
+        pid = 4321
+        stdout = iter([
+            "UNSLOTH_INSTALLER_CHILD started 9942\n",
+            "UNSLOTH_INSTALLER_CHILD stopped 9942\n",
+        ])
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(update_flow.subprocess, "Popen", lambda *a, **k: FakeProc())
+    update_flow.stream_installer(
+        ["x"], {}, timeout_seconds = 30, job = {}, job_lock = threading.Lock(),
+    )
+    assert terminated == []
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
