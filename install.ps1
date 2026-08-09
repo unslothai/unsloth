@@ -20,39 +20,24 @@ function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
     # The user's PowerShell profile has already run by the time this does, and the documented
-    # entry point -- "irm https://unsloth.ai/install.ps1 | iex" -- has no script file to
-    # re-launch with -NoProfile, so each way a profile can reach in here is cut individually
-    # below. Reported as: an install that fails in a normal console succeeds under -NoProfile.
+    # "irm https://unsloth.ai/install.ps1 | iex" entry point has no script file to re-launch
+    # with -NoProfile, so each way a profile can reach in here is cut individually below.
     #
-    # Strict mode first, because the filtering below reads a variable a profile owns. This
-    # script predates Set-StrictMode: it tests environment variables that are legitimately
-    # unset ($env:X -in @(...)) and reads $script: state only some branches assign, both of
-    # which Latest promotes to terminating errors. Scoped to here and below, so the caller
-    # keeps its own -- the same reason $ErrorActionPreference above needs no restore.
+    # Off, not Latest: this script predates strict mode, testing environment variables that are
+    # legitimately unset and reading $script: state only some branches assign. Scoped to here
+    # and below, so the caller keeps its own.
     Set-StrictMode -Off
 
-    # $PSDefaultParameterValues is the widest of them. One entry such as
-    # 'Start-Process:WindowStyle' or 'Invoke-WebRequest:TimeoutSec' silently rebinds every
-    # process launch and download here, and the resulting failure names none of it. Assigning
-    # with no scope qualifier shadows the caller's table for this scope and below only.
-    #
-    # Proxy keys are kept rather than dropped: on a locked-down corporate host such an entry
-    # may be the sole route to python.org and the uv release, and the people this fix is for
-    # never ran -NoProfile. They also travel to studio/setup.ps1 (launched -NoProfile by
-    # unsloth_cli, downloads the VC++ runtime and the uv installer) as JSON in
-    # _UNSLOTH_PS_PROXY_DEFAULTS, since a PowerShell variable does not cross a process
-    # boundary. Credentials do not: a PSCredential does not serialize, and an environment
-    # variable is the wrong place for one.
-    # 'All' is the default. A profile that sets 'None' -- the startup-time tweak people copy --
-    # is fatal on PowerShell 7, which loads NO modules at startup: Test-Path, Write-Host,
-    # Select-Object, ConvertFrom-Json, Get-FileHash, Invoke-WebRequest, Expand-Archive,
-    # Start-Process and Get-Content all stop resolving. Windows PowerShell 5.1 preloads Utility
-    # and Management and survives, which is why this reproduces on one machine and not another.
-    # FIRST of the four: the proxy handoff below calls ConvertTo-Json, also in
-    # Microsoft.PowerShell.Utility, so under 'None' it would throw before this line ran.
+    # A profile that sets 'None' -- the startup-time tweak people copy -- is fatal on PowerShell
+    # 7, which loads NO modules at startup: Test-Path, Write-Host, Select-Object,
+    # ConvertFrom-Json, Get-FileHash, Invoke-WebRequest, Expand-Archive, Start-Process and
+    # Get-Content stop resolving, while 5.1 preloads Utility and Management and survives. First
+    # of the four, because the proxy handoff below calls ConvertTo-Json from Utility too.
     $PSModuleAutoLoadingPreference = 'All'
 
-    # IsMatch, not -match, so the filter leaves no $Matches behind for the rest of the install.
+    # Proxy keys are kept rather than dropped: on a locked-down corporate host such an entry may
+    # be the sole route to python.org and the uv release. IsMatch, not -match, so the filter
+    # leaves no $Matches behind for the rest of the install.
     $_UnslothKeptDefaults = @{}
     foreach ($_UnslothDefaultKey in @($PSDefaultParameterValues.Keys)) {
         # IgnoreCase: 'invoke-webrequest:proxy' is valid PowerShell and binds the same
@@ -65,23 +50,27 @@ function Install-UnslothStudio {
             $_UnslothKeptDefaults[$_UnslothDefaultKey] = $PSDefaultParameterValues[$_UnslothDefaultKey]
         }
     }
+    # One profile entry such as 'Start-Process:WindowStyle' or 'Invoke-WebRequest:TimeoutSec'
+    # silently rebinds every process launch and download here. Assigning with no scope qualifier
+    # shadows the caller's table for this scope and below only.
     $PSDefaultParameterValues = $_UnslothKeptDefaults
 
+    # The kept proxies travel to studio/setup.ps1 (launched -NoProfile by unsloth_cli, and it
+    # downloads the VC++ runtime and the uv installer) as JSON in _UNSLOTH_PS_PROXY_DEFAULTS,
+    # since a PowerShell variable does not cross a process boundary. Credentials do not travel:
+    # a PSCredential does not serialize, and an environment variable is the wrong place for one.
     $_UnslothProxyHandoff = @{}
     foreach ($_UnslothDefaultKey in @($_UnslothKeptDefaults.Keys)) {
         $_UnslothDefaultValue = $_UnslothKeptDefaults[$_UnslothDefaultKey]
-        # [uri] is the form the parameter actually takes and serializes to its own string. A
-        # PSCredential is left behind: it does not round-trip.
+        # [uri] is the form the parameter actually takes and serializes to its own string.
         if ($_UnslothDefaultValue -is [uri]) {
             $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultValue.AbsoluteUri
         } elseif ($_UnslothDefaultValue -is [string] -or $_UnslothDefaultValue -is [bool]) {
             $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultValue
         } elseif ($_UnslothDefaultValue -is [scriptblock]) {
             # A script block is the supported form for a DYNAMIC default, e.g.
-            # { [uri]$env:CORP_PROXY }, evaluated per call by Invoke-WebRequest -- so the
-            # installer downloaded fine while the -NoProfile setup child got nothing. Evaluate
-            # here and hand over the RESULT: executable code must not cross into the child, and
-            # the block may read state that only exists in this session.
+            # { [uri]$env:CORP_PROXY }, evaluated per call by Invoke-WebRequest. Evaluate here
+            # and hand over the RESULT: executable code must not cross into the child.
             try {
                 $_UnslothDefaultResolved = & $_UnslothDefaultValue
                 if ($_UnslothDefaultResolved -is [uri]) {
@@ -93,14 +82,11 @@ function Install-UnslothStudio {
             } catch { }
         }
     }
-    # Held in a FUNCTION-local: not published to the environment, and not $script:. Under
-    # "irm ... | iex" this runs in the caller's own session, so an environment variable set here
-    # would outlive the install on every early-return path and a later `unsloth studio update`
-    # would reapply stale JSON. The value can carry credentials (http://user:secret@proxy is the
-    # ordinary corporate form) and the installer returns from dozens of places, so cleanup near
-    # the setup child would cover one of them; a local dies with the frame on every path, throw
-    # included. Module-qualified serializer, as in the probe: a profile alias or function named
-    # ConvertTo-Json would otherwise reshape this record or throw out of the prologue.
+    # A FUNCTION-local, not $script: or an environment variable: under "irm ... | iex" this runs
+    # in the caller's own session, and the value can carry credentials (http://user:secret@proxy
+    # is the ordinary corporate form) that must not outlive the install on any of the dozens of
+    # return paths. Module-qualified serializer, as in the probe: a profile alias or function
+    # named ConvertTo-Json would otherwise reshape this record or throw out of the prologue.
     $UnslothProxyHandoffJson =
         if ($_UnslothProxyHandoff.Count -gt 0) {
             $_UnslothProxyHandoff | Microsoft.PowerShell.Utility\ConvertTo-Json -Compress
@@ -109,16 +95,14 @@ function Install-UnslothStudio {
 
     # PowerShell 7 only, and $false is its default: a profile that flips it on turns every
     # non-zero native exit into a terminating error, which with "Stop" above would throw out of
-    # the setup handoff instead of reaching Exit-InstallFailure -- no rollback, no Tauri error
-    # record. Invoke-InstallCommand already drops to "Continue" for its own native calls, so
-    # this covers the ones outside it. Harmless on 5.1, where the variable does not exist.
+    # the setup handoff instead of reaching Exit-InstallFailure. Harmless on 5.1, where the
+    # variable does not exist.
     $PSNativeCommandUseErrorActionPreference = $false
 
     # Reset per invocation, for the reason at $script:IsIntelXpu further down: under
     # "irm ... | iex" $script: is the caller's session scope, so a second run in the same
     # console would start on the first run's state. These two are the only ones no later
-    # statement re-assigns unconditionally -- $script:UvInstallDestDir is written only on the
-    # pinned-release fallback, $script:UvExe when uv resolves below.
+    # statement re-assigns unconditionally.
     $script:UvExe = 'uv'
     $script:UvInstallDestDir = $null
 
@@ -2022,10 +2006,9 @@ exit 0
         }
 
     Write-TauriLog "STEP" "Checking system dependencies"
-    # -CommandType Application, as for Resolve-UvExecutable below: winget installs Python AND
-    # uv, so a profile "function winget {...}" or "Set-Alias winget ..." -- the wrappers people
-    # write to inject --accept-* or pin a source -- would otherwise receive both installs. The
-    # resolved path is pinned so the five call sites cannot be re-resolved onto it later.
+    # -CommandType Application, as for Resolve-UvExecutable below: winget installs Python AND uv,
+    # so a profile "function winget {...}" or "Set-Alias winget ..." would otherwise receive both
+    # installs. The resolved path is pinned so the five call sites cannot be re-resolved later.
     $script:WingetExe = (
         Get-Command winget -CommandType Application -All -ErrorAction SilentlyContinue |
             Where-Object { $_.Source } | Select-Object -First 1 -ExpandProperty Source
@@ -2413,12 +2396,10 @@ exit 0
     Write-TauriLog "STEP" "Installing uv package manager"
     $UvMinVersion = "0.8.16"
 
-    # Resolve uv to an executable instead of leaving the bare token to command discovery.
     # PowerShell ranks aliases and functions above anything on PATH, so a profile carrying
-    # "Set-Alias uv ..." or "function uv {...}" -- the wrappers people write to pin uv at a
-    # project venv -- captures every uv call here, and the version probe then reads a good uv
-    # as broken and ends at "uv could not be installed". $null when nothing named uv resolves
-    # to an executable, so the caller's "not installed yet" branch keeps its meaning.
+    # "Set-Alias uv ..." or "function uv {...}" captures every bare uv call here and the version
+    # probe reads a good uv as broken. $null when nothing named uv resolves to an executable, so
+    # the caller's "not installed yet" branch keeps its meaning.
     function Resolve-UvExecutable {
         # @(): a one-element return unrolls to a bare string, and indexing THAT gives its
         # first character.
@@ -2428,18 +2409,12 @@ exit 0
     }
 
     # Every uv this machine offers, in the order the bare token would pick them: alias first,
-    # then PATH. A LIST rather than one answer, because the version gate has to be able to move
-    # on -- an alias pointing at a stale uv made the probe return that same binary forever, so
-    # a current uv already on PATH (or one winget had just installed) was never consulted.
+    # then PATH. A LIST rather than one answer, so the version gate can move past an alias
+    # pointing at a stale uv and still find a current one.
     function Get-UvExecutableCandidates {
-        # -All: without it Get-Command's ordering across several matches is incidental rather
-        # than documented, and picking the wrong one silently changes which uv runs on a
-        # machine that has two.
-        # An ALIAS pointing at a real executable FIRST, because that is what the bare token
-        # would run: PowerShell resolves aliases ahead of PATH. Deferring to the PATH list made
-        # the alias branch unreachable on any machine that also has some uv on PATH. Followed
-        # only as far as an Application, returning the resolved path rather than the alias
-        # name, so the rest of the script is not back in command discovery.
+        # An ALIAS pointing at a real executable FIRST, because PowerShell resolves aliases
+        # ahead of PATH. Followed only as far as an Application, returning the resolved path so
+        # the rest of the script is not back in command discovery.
         $found = [System.Collections.Generic.List[string]]::new()
         $alias = Get-Command uv -CommandType Alias -ErrorAction SilentlyContinue
         while ($alias -and $alias.ResolvedCommand) {
@@ -2451,28 +2426,27 @@ exit 0
             if ($target.CommandType -ne 'Alias') { break }
             $alias = $target
         }
+        # -All, because Get-Command's choice among several matches is otherwise incidental.
+        # Applications come back in PATH order, so with no profile overrides this is the uv the
+        # bare token would run.
         $apps = @(
             Get-Command uv -CommandType Application -All -ErrorAction SilentlyContinue |
                 Where-Object { $_.Source }
         )
-        # Applications come back in PATH order (PATHEXT deciding within a directory), so with
-        # no profile overrides this is the uv the bare token would run.
         foreach ($app in $apps) {
             if (-not $found.Contains($app.Source)) { $found.Add($app.Source) }
         }
         if ($found.Count -gt 0) { return @($found) }
-        # Anything else named uv is a function, a cmdlet, or an alias to one. Do NOT hand back
-        # the bare token: a wrapper answering `--version` with a plausible number would pass
-        # the version gate and then receive every install command. An empty list keeps the
-        # caller's "not installed yet" meaning, so uv gets installed and the gate re-probes.
+        # Anything else named uv is a function, a cmdlet, or an alias to one, and handing back
+        # the bare token would let a wrapper answering `--version` pass the gate and then
+        # receive every install command. An empty list means "not installed yet", so uv gets
+        # installed and the gate re-probes.
         return @()
     }
 
     function Test-UvVersionOk {
-        # EVERY candidate, not just the first: an alias pointing at a stale uv used to be the
-        # only one probed, so a current uv on PATH -- including one winget or the pinned
-        # release had just installed -- could not rescue the run. Alias first still, so a
-        # passing alias keeps winning.
+        # EVERY candidate, not just the first, so an alias pointing at a stale uv cannot hide a
+        # current uv on PATH. Alias first still, so a passing alias keeps winning.
         foreach ($exe in Get-UvExecutableCandidates) {
             if (Test-UvCandidateVersion $exe) { return $true }
         }
@@ -2492,8 +2466,6 @@ exit 0
             if ([version]$Matches[1] -ge [version]$UvMinVersion) {
                 # Pin the executable that actually answered: every install command below runs
                 # this path, so a later Refresh-SessionPath or a profile alias cannot swap it.
-                # The probes run against a PATH this script is still editing, so the last
-                # successful one wins -- the uv the PATH-order loop further down settled on.
                 $script:UvExe = $exe
                 return $true
             }
@@ -4676,11 +4648,9 @@ exit 0
     # only. setup.ps1 runs with -NoProfile and downloads on its own; see the prologue.
     $previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS
     $hadPreviousProxyHandoff = ($null -ne $previousProxyHandoff)
-    # Set even when there is nothing to hand over. Its ABSENCE is how the CLI recognises a
-    # standalone update and goes looking through the user's profiles, so omitting it here made
-    # an installer launch -- including one started with -NoProfile or by the desktop app --
-    # reload those profiles and reapply a stale proxy during setup. An empty object says
-    # "the installer looked, and there is none".
+    # Set even when there is nothing to hand over: its ABSENCE is how the CLI recognises a
+    # standalone update and goes looking through the user's profiles. An empty object says "the
+    # installer looked, and there is none".
     $env:_UNSLOTH_PS_PROXY_DEFAULTS =
         if ($UnslothProxyHandoffJson) { $UnslothProxyHandoffJson } else { '{}' }
     try {
@@ -4707,9 +4677,8 @@ exit 0
         } else {
             Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
         }
-        # ...and the copy this function holds goes with it, rather than sitting in the frame
-        # for the rest of a long install. It is function-local, so every other exit path drops
-        # it too.
+        # ...and the copy this function holds goes with it, rather than sitting in the frame for
+        # the rest of a long install.
         $UnslothProxyHandoffJson = $null
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue

@@ -2821,12 +2821,12 @@ def _wait_for_windows_setup_process(process) -> int:
         raise
 
 
-# -NoProfile below drops $PSDefaultParameterValues wholesale, and on a corporate host a
-# profile entry such as 'Invoke-WebRequest:Proxy' may be the only route to the VC++ runtime
-# and the uv installer that setup.ps1 downloads. install.ps1 keeps exactly the proxy keys out
-# of the table it discards and hands them over; a standalone update has no installer above it,
-# so the probe below asks a short-lived PowerShell that DOES load the profile. Same filter as
-# install.ps1: proxy-shaped keys only, case-insensitive, and only values that survive JSON.
+# -NoProfile below drops $PSDefaultParameterValues wholesale, and on a corporate host a profile
+# entry such as 'Invoke-WebRequest:Proxy' may be the only route to the VC++ runtime and the uv
+# installer setup.ps1 downloads. install.ps1 hands over the keys it kept; a standalone update
+# has no installer above it, so the probe below asks a short-lived PowerShell that DOES load
+# the profile.
+
 # Markers unlikely in a banner, and fixed so both sides agree.
 _PROXY_PROBE_BEGIN = "<<UNSLOTH_PROXY_DEFAULTS>>"
 _PROXY_PROBE_END = "<</UNSLOTH_PROXY_DEFAULTS>>"
@@ -2834,50 +2834,43 @@ _PROXY_PROBE_END = "<</UNSLOTH_PROXY_DEFAULTS>>"
 _PS_PROXY_PROBE = (
     "$ErrorActionPreference = 'SilentlyContinue'; "
     # Windows PowerShell 5.1 writes REDIRECTED output in the console code page while this
-    # process decodes UTF-8: a non-ASCII proxy value (an IDN host, a password) came back with
-    # replacement characters, still parsed as JSON, and handed setup a proxy that does not
-    # work. Costs nothing on pwsh, which is already UTF-8.
+    # process decodes UTF-8, so a non-ASCII proxy value came back with replacement characters,
+    # still parsed as JSON, and handed setup a proxy that does not work.
     "try { [Console]::OutputEncoding = "
     "New-Object System.Text.UTF8Encoding $false } catch { }; "
     "try { $OutputEncoding = [Console]::OutputEncoding } catch { }; "
     "$PSModuleAutoLoadingPreference = 'All'; "
-    # Launched -NoProfile, with the caller's own profiles dot-sourced by name instead. Left to
-    # itself this process (pwsh.exe / powershell.exe) loads the CONSOLEHOST profile, which is
-    # an unrelated host's for a caller in the VS Code Integrated Console -- that keeps its
-    # proxy defaults in Microsoft.VSCode_profile.ps1 -- so the probe reported no proxy on
-    # exactly the host that needed one. $PROFILE is fully populated under -NoProfile (the paths
-    # are computed, not loaded), so naming them is exact rather than incidental.
-    #
-    # ONLY the caller's host profile, named by _UNSLOTH_PS_HOST_PROFILE, and only when the
-    # caller could be identified: sourcing every Microsoft.*_profile.ps1 in the directory ran
-    # profiles for hosts nobody was using, which can print, overwrite the console's
-    # $PSDefaultParameterValues, or exit before the record is written.
-    #
-    # All-users first, PowerShell's own startup order: a machine-managed proxy lives in
-    # AllUsersAllHosts on a domain-joined box and the user profile never mentions it, and the
-    # user's profile only overrides the machine's if it runs last.
-    #
-    # The named host profile is ADDED, never substituted: TERM_PROGRAM=vscode is set by every
-    # VS Code integrated terminal, not only the PowerShell extension's own host, so a plain
-    # pwsh terminal there loads Microsoft.PowerShell_profile.ps1 and substitution missed the
-    # proxy it actually has. Current-host profile runs LAST.
+    # Launched -NoProfile, with the caller's profiles dot-sourced by name instead, because left
+    # to itself this process loads the CONSOLEHOST profile -- an unrelated host's for a caller
+    # in the VS Code console. $PROFILE is fully populated under -NoProfile (the paths are
+    # computed, not loaded), so naming them is exact.
     "$__unslothHostProfileName = $env:_UNSLOTH_PS_HOST_PROFILE; "
+    # All-users first, PowerShell's own startup order: a machine-managed proxy lives in
+    # AllUsersAllHosts on a domain-joined box, and the user's profile only overrides it by
+    # running last.
     "try { $__unslothProfiles = @($PROFILE.AllUsersAllHosts); "
+    # ONLY the caller's host profile, and only when the caller could be identified: sourcing
+    # every Microsoft.*_profile.ps1 in the directory ran profiles for hosts nobody was using,
+    # which can print, clobber $PSDefaultParameterValues, or exit before the record is written.
     "if ($__unslothHostProfileName) { "
     "$__unslothProfiles += (Join-Path (Split-Path -Parent $PROFILE.AllUsersCurrentHost) "
     "$__unslothHostProfileName) }; "
     "$__unslothProfiles += $PROFILE.AllUsersCurrentHost; "
     "$__unslothProfiles += $PROFILE.CurrentUserAllHosts; "
+    # ADDED, never substituted: TERM_PROGRAM=vscode is set by every VS Code integrated terminal,
+    # not only the PowerShell extension's own host, so a plain pwsh terminal there loads
+    # Microsoft.PowerShell_profile.ps1 and substitution missed the proxy it actually has.
     "if ($__unslothHostProfileName) { "
     "$__unslothProfiles += (Join-Path (Split-Path -Parent $PROFILE.CurrentUserCurrentHost) "
     "$__unslothHostProfileName) }; "
+    # Current-host profile LAST.
     "$__unslothProfiles += $PROFILE.CurrentUserCurrentHost; "
     "foreach ($__unslothProfile in ($__unslothProfiles | Select-Object -Unique)) { "
     "if ($__unslothProfile -and (Test-Path -LiteralPath $__unslothProfile -PathType Leaf)) { "
     "try { . $__unslothProfile } catch { } } } } catch { }; "
-    # Re-pinned: setting [Console]::OutputEncoding is an ordinary profile customization and it
-    # overrides the pin above. The parent decodes this stream as UTF-8, so a console left on
-    # UTF-16 or a legacy code page corrupts the framed record and the proxy URI with it.
+    # Re-pinned, because setting [Console]::OutputEncoding is an ordinary profile customization
+    # that overrides the pin above. The parent decodes this stream as UTF-8, so a console left
+    # on a legacy code page corrupts the framed record and the proxy URI with it.
     "try { [Console]::OutputEncoding = "
     "New-Object System.Text.UTF8Encoding $false } catch { }; "
     "try { $OutputEncoding = [Console]::OutputEncoding } catch { }; "
@@ -2889,24 +2882,18 @@ _PS_PROXY_PROBE = (
     "if ($v -is [uri]) { $out[$k] = $v.AbsoluteUri } "
     "elseif ($v -is [string] -or $v -is [bool]) { $out[$k] = $v } "
     # A script block is the supported form for a DYNAMIC default -- e.g.
-    # { [uri]$env:CORP_PROXY } -- evaluated per call by Invoke-WebRequest. Dropping it handed
-    # the -NoProfile child no proxy on a host whose caller downloads fine. Evaluate here and
+    # { [uri]$env:CORP_PROXY } -- evaluated per call by Invoke-WebRequest. Evaluate here and
     # serialize the RESULT: executable code must not cross the handoff.
     "elseif ($v -is [scriptblock]) { try { $r = & $v; "
     "if ($r -is [uri]) { $out[$k] = $r.AbsoluteUri } "
     "elseif ($r -is [string] -or $r -is [bool]) { $out[$k] = $r } } catch { } } } }; "
-    # FRAMED, not bare: the profile has already run and is free to print a banner, a MOTD or a
-    # "loading modules" line. Bare, that output arrived ahead of the JSON, the parse threw, and
-    # the whole answer was discarded.
-    # $out holds copies, so the profile's own table has said all it is going to and is now only
-    # a hazard: ConvertTo-Json:AsArray = $true is a legitimate setting that turns this record
-    # into a JSON array, which the reader rejects for not being a dictionary. Same for anything
-    # else the table aims at Write-Output or ConvertTo-Json.
+    # $out already holds copies, so the profile's table is now only a hazard:
+    # ConvertTo-Json:AsArray = $true is a legitimate setting that turns this record into a JSON
+    # array, which the reader rejects for not being a dictionary.
     "$PSDefaultParameterValues = @{}; "
-    # Module-qualified, as with the uv lookup: an alias or function named ConvertTo-Json or
-    # Write-Output in the profile shadows the bare name, and a wrapper that reshapes the output
-    # produces a frame the reader cannot parse. Clearing the defaults table does not cover a
-    # command override.
+    # FRAMED, not bare: the profile is free to print a banner or a MOTD, and that output
+    # arriving ahead of the JSON made the parse throw. Module-qualified, as with the uv lookup:
+    # an alias named ConvertTo-Json or Write-Output would otherwise reshape the frame.
     f"if ($out.Count -gt 0) {{ "
     f"Microsoft.PowerShell.Utility\\Write-Output '{_PROXY_PROBE_BEGIN}'; "
     f"$out | Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress; "
@@ -2914,9 +2901,8 @@ _PS_PROXY_PROBE = (
 )
 
 
-# What the CALLER's host names its own CurrentUserCurrentHost profile, when we can tell. VS Code
-# is the case that matters and the one that announces itself; an unidentifiable host gets no
-# extra profile rather than someone else's.
+# What the CALLER's host names its own CurrentUserCurrentHost profile, when we can tell. An
+# unidentifiable host gets no extra profile rather than someone else's.
 _HOST_PROFILE_BY_TERM_PROGRAM = {"vscode": "Microsoft.VSCode_profile.ps1"}
 
 
@@ -2951,18 +2937,14 @@ def _framed_probe_record(stdout: str) -> Optional[str]:
 def _profile_probe_hosts() -> list[str]:
     r"""The PowerShell hosts whose profile to ask, most likely caller first.
 
-    The two editions keep SEPARATE profiles, and `unsloth studio update` is typed into
-    whichever one the user has open. Probing only powershell.exe missed a proxy living in the
-    PowerShell 7 profile. Both are asked; the caller's edition goes first so its value wins.
+    The two editions keep SEPARATE profiles, so both are asked and the caller's edition goes
+    first, its value winning on merge.
 
     The caller is inferred from PSModulePath, which every host exports: Windows PowerShell's
     points at ``...\WindowsPowerShell\v1.0\Modules`` and pwsh's at ``...\PowerShell\7\Modules``.
-
-    By ORDER, not by absence. A machine can have both trees on PSModulePath at once -- 5.1
-    launched from a session that already had 7's path, the mixed case studio/setup.ps1
-    documents -- so "7 is present, so the caller is 7" hands precedence to the wrong profile.
-    Each host puts its OWN module directory first, so the earliest tree names the caller.
-    Neither present, or both at the same position: keep the default order rather than guess.
+    By ORDER, not by absence, since a machine can have both trees on PSModulePath at once and
+    each host puts its OWN module directory first. Neither present, or both at the same
+    position: keep the default order rather than guess.
     """
     hosts = ["pwsh.exe", "powershell.exe"]
     module_path = os.environ.get("PSModulePath", "").lower()
@@ -2976,8 +2958,8 @@ def _profile_probe_hosts() -> list[str]:
 # Annotations below are quoted: this module has no `from __future__ import annotations`, and on
 # Python 3.9 evaluating `str | list[str]` at def time raises TypeError, taking the CLI import
 # with it.
-# The whole profile probe's budget, shared across however many hosts are tried. A profile that
-# is slow, interactive or broken costs this once and the child proceeds as it does today.
+
+# The whole profile probe's budget, shared across however many hosts are tried.
 _PROFILE_PROBE_TIMEOUT_SECONDS = 20.0
 
 
@@ -2985,25 +2967,22 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
     """The caller's profile proxy defaults as JSON, or None.
 
     install.ps1 hands these over in the environment, but a standalone `unsloth studio update`
-    has no installer above it: the profile ran in the console the user typed into, and a
-    PowerShell variable does not reach this Python process, let alone the -NoProfile child
-    below it. So ask for it, in a throwaway process whose only job is to print the table.
+    has no installer above it and a PowerShell variable does not reach this Python process. So
+    ask for it, in a throwaway process whose only job is to print the table.
 
-    Several hosts may be given: their answers are MERGED, earlier hosts winning per key, so a
-    machine whose proxy lives in only one of the two profiles is still covered.
+    Several hosts may be given: their answers are MERGED, earlier hosts winning per key.
 
     Best effort. A slow, interactive or broken profile costs one timeout and the child proceeds
     as it does today."""
     hosts = [powershell] if isinstance(powershell, str) else list(powershell)
-    # ONE budget for the whole probe, not one per host: both editions installed and both
-    # profiles hung meant two full timeouts back to back, so every standalone setup or update
-    # stalled for twice the stated best-effort cost.
+    # ONE budget for the whole probe, not one per host: with both editions installed, two hung
+    # profiles would otherwise stall every standalone update for twice the stated cost.
     deadline = time.monotonic() + _PROFILE_PROBE_TIMEOUT_SECONDS
     merged: dict = {}
     # $PSDefaultParameterValues keys are case-INSENSITIVE, so "Invoke-WebRequest:Proxy" and
-    # "invoke-webrequest:proxy" are one entry to PowerShell and two to a Python dict. Carrying
-    # both meant the prelude replayed them in order and the lower-priority host's spelling
-    # landed last, reversing the earlier-host-wins rule. The first spelling seen is handed on.
+    # "invoke-webrequest:proxy" are one entry to PowerShell and two to a Python dict. Only the
+    # first spelling seen is handed on, or the prelude would replay both and let the
+    # lower-priority host's land last.
     claimed: dict = {}
     seen_keys: set = set()
     for host in hosts:
@@ -3024,11 +3003,10 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
                 env = _profile_probe_env(),
                 capture_output = True,
                 text = True,
-                # The profile printed before the record and may have said anything in any
-                # encoding. text=True alone decodes with the locale codec and STRICT errors, so
-                # a UTF-8 banner on an ANSI console raised UnicodeDecodeError -- neither
-                # OSError nor SubprocessError, so it escaped this handler and took the update
-                # down. The record is ASCII; the banner may arrive mangled and be discarded.
+                # text=True alone decodes with the locale codec and STRICT errors, so a UTF-8
+                # profile banner on an ANSI console raised UnicodeDecodeError -- neither
+                # OSError nor SubprocessError, so it escaped the handler below and took the
+                # update down.
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = remaining,
@@ -3047,11 +3025,9 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
             continue
         if not isinstance(parsed, dict) or not parsed:
             continue
-        # Per CMDLET, not per key. Filling a missing companion parameter from the other
-        # edition's profile builds a configuration neither host has -- the earlier host's Proxy
-        # plus the later host's ProxyUseDefaultCredentials, offering the user's Windows
-        # credentials to a proxy whose own profile never asked for that. A cmdlet is claimed
-        # whole by the first host that configures it.
+        # Per CMDLET, not per key: pairing the earlier host's Proxy with the later host's
+        # ProxyUseDefaultCredentials would offer the user's Windows credentials to a proxy whose
+        # own profile never asked for that. A cmdlet is claimed whole by the first host.
         for key, value in parsed.items():
             if not isinstance(key, str):
                 continue
@@ -3077,10 +3053,8 @@ def _cmdlet_claimed_elsewhere(cmdlet: str, claimed: dict, source: object) -> boo
     """Whether another host already owns the cmdlet family ``cmdlet`` belongs to.
 
     A literal comparison is not enough: the command half of a $PSDefaultParameterValues key may
-    be a wildcard, and PowerShell applies such an entry to every cmdlet it matches. One host
-    supplying ``Invoke-Web*:Proxy`` and the other ``Invoke-WebRequest:ProxyUseDefaultCredentials``
-    therefore configures ONE invocation from two profiles, which is what the per-cmdlet rule
-    exists to prevent. Overlap in either direction claims the family.
+    be a wildcard, and PowerShell applies such an entry to every cmdlet it matches. Overlap in
+    either direction claims the family.
     """
     wild = _WILDCARD_CHARS.intersection(cmdlet)
     for owned, owner in claimed.items():
@@ -3088,10 +3062,9 @@ def _cmdlet_claimed_elsewhere(cmdlet: str, claimed: dict, source: object) -> boo
             continue
         if owned == cmdlet:
             return True
-        # Two patterns can share matches without either matching the other AS A STRING --
-        # Invoke-Web* and *-WebRequest both apply to Invoke-WebRequest -- and settling that
-        # properly means intersecting two glob languages. Overlap is assumed instead: the cost
-        # is a second host's unrelated wildcard entry going unmerged.
+        # Two patterns can share matches without either matching the other AS A STRING
+        # (Invoke-Web* and *-WebRequest both apply to Invoke-WebRequest), so overlap is assumed
+        # rather than intersecting two glob languages.
         if wild and _WILDCARD_CHARS.intersection(owned):
             return True
         if fnmatch.fnmatchcase(cmdlet, owned) or fnmatch.fnmatchcase(owned, cmdlet):
@@ -3101,10 +3074,10 @@ def _cmdlet_claimed_elsewhere(cmdlet: str, claimed: dict, source: object) -> boo
 
 _PS_PROXY_DEFAULTS_PRELUDE = (
     "$__unslothProxyDefaults = $env:_UNSLOTH_PS_PROXY_DEFAULTS; "
-    # Read once, then GONE from the environment. A profile proxy can carry credentials
-    # (http://user:secret@proxy is the ordinary corporate form), and every native process setup
-    # starts inherits the environment it was launched with. The value is needed by this
-    # session's $PSDefaultParameterValues, which is not inherited, and nowhere below it.
+    # Read once, then GONE from the environment: a profile proxy can carry credentials
+    # (http://user:secret@proxy is the ordinary corporate form) and every native process setup
+    # starts would otherwise inherit it. Needed only by this session's
+    # $PSDefaultParameterValues, which is not inherited.
     "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue; "
     "if ($__unslothProxyDefaults) { try { "
     "(ConvertFrom-Json $__unslothProxyDefaults).PSObject.Properties | ForEach-Object { "
@@ -3129,19 +3102,16 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
 
     if platform.system() == "Windows":
         powershell_args = ["powershell.exe"]
-        # install.ps1 publishes this around the handoff; a standalone update has to go and find
-        # it, because -NoProfile below drops the profile that holds it.
-        # PRESENCE, not truthiness: install.ps1 sets this to "{}" when it found no proxy, and
-        # treating that as "nobody handed anything over" sent an installer launch off to reload
-        # the very profiles it had deliberately discarded.
+        # PRESENCE, not truthiness: install.ps1 publishes this around the handoff and sets it to
+        # "{}" when it found no proxy, so treating that as "nobody handed anything over" would
+        # send an installer launch off to reload the profiles it deliberately discarded.
         if os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS") is None:
             probed = _probe_profile_proxy_defaults(_profile_probe_hosts() or ["powershell.exe"])
             if probed:
                 env = {**(env or os.environ), "_UNSLOTH_PS_PROXY_DEFAULTS": probed}
-        # -NoProfile unconditionally, not just on the hidden branch. A profile that aliases uv
-        # or python, or sets Set-StrictMode / $PSDefaultParameterValues, breaks setup.ps1 the
-        # same way it used to break install.ps1 -- which hands off to exactly here, from a
-        # console where stdout is a tty and the hidden branch therefore does not fire.
+        # -NoProfile unconditionally, not just on the hidden branch: install.ps1 hands off to
+        # exactly here from a console where stdout is a tty, so the hidden branch does not fire
+        # and a profile that aliases uv or python would break setup.ps1.
         powershell_args.append("-NoProfile")
         if _should_hide_windows_subprocesses():
             powershell_args.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
@@ -3209,9 +3179,8 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
 
     if is_windows:
         ps_argv: list[str] = ["powershell.exe"]
-        # -NoProfile unconditionally, as in _run_setup_script above: this runs install.ps1, and
-        # gating it on the hidden branch left the visible path -- a console, where a profile is
-        # exactly what IS loaded -- without it.
+        # -NoProfile unconditionally, as in _run_setup_script above: gating it on the hidden
+        # branch left the visible console path, where a profile is exactly what IS loaded.
         ps_argv.append("-NoProfile")
         if _should_hide_windows_subprocesses():
             ps_argv.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
