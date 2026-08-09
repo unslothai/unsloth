@@ -503,6 +503,25 @@ _ZOO_MAP_NUM_PROC_ASSIGNMENT = re.compile(
     flags = re.MULTILINE,
 )
 
+# The Zoo seeds its truncation length from args.max_length and only falls through
+# to args.max_seq_length when that is 0. rl.py now hands TRL >= 1.0.0 a None
+# there, so normalise it or the fall-through is skipped and nothing truncates.
+_ZOO_MAX_LENGTH_SEED = re.compile(
+    r"^(?P<indent>[ \t]*)max_seq_length[ \t]*=[ \t]*getattr\(args,[ \t]*[\"']max_length[\"'],[ \t]*0\)[ \t]*$",
+    flags = re.MULTILINE,
+)
+
+
+def _same_source(text):
+    """`text` with quote style normalised, for comparing two spellings of a line.
+
+    The narrow regexes here already accept either quote, so the idempotence check
+    has to as well: a Zoo carrying the replacement with single quotes matched
+    neither the literal nor the `$`-anchored regex, and `required = True` then
+    raised on every SFT trainer over behaviour already present.
+    """
+    return text.replace("'", '"')
+
 
 def _replace_or_fallback(
     function,
@@ -512,6 +531,8 @@ def _replace_or_fallback(
     fallback_pattern,
     fallback_new,
     where = "",
+    required = False,
+    consequence = "",
 ):
     """str.replace over a wide anchor, with a narrower anchor to fall back on.
 
@@ -527,7 +548,22 @@ def _replace_or_fallback(
     So: try the wide anchor, then a narrow one that survives more drift, and warn
     only when both miss. `fallback_new` is an `re.sub` template, so it can carry
     the matched indentation over with `\\g<indent>`.
+
+    `required = True` keeps the two-anchor tolerance but raises rather than warns
+    when BOTH miss, for an edit whose absence is not the no-op it looks like.
+    `consequence` says what that absence does, since the warning below speaks only
+    about the worker count.
     """
+    # Already done upstream, and checked FIRST. An edit is only missing if its
+    # RESULT is missing, and a Zoo that adopts the replacement itself is the
+    # forward case this has to survive. Ordering matters twice over: `old` is a
+    # prefix of `new` for the max_length seed, so the wide anchor below matches
+    # the already-normalized line and appended a second `or 0` to it, while a
+    # differently spelled upstream form matches no anchor at all and used to
+    # raise under `required = True` -- failing every SFT trainer over behaviour
+    # that is already present.
+    if _same_source(new) in _same_source(function):
+        return function
     if old in function:
         return function.replace(old, new, 1)
 
@@ -540,6 +576,11 @@ def _replace_or_fallback(
         )
         return function
 
+    if required:
+        raise RuntimeError(
+            f"Unsloth: failed to apply a required source edit ({where}) "
+            f"(anchor not found){consequence}; please file a bug report."
+        )
     _warn_once(
         where,
         f"Unsloth: skipped an optional source edit ({where}) (anchor not found); "
@@ -583,6 +624,24 @@ def sft_trainer_prepare_dataset(function_name, function):
                     "Unsloth: failed to install wrapped-packing support into "
                     "sft_prepare_dataset (signature not found); please file a bug report."
                 )
+            function = _replace_or_fallback(
+                function,
+                '    max_seq_length = getattr(args, "max_length", 0)',
+                '    max_seq_length = getattr(args, "max_length", 0) or 0',
+                fallback_pattern = _ZOO_MAX_LENGTH_SEED,
+                fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
+                where = "sft_prepare_dataset max_length seed",
+                # Not optional, unlike the worker count this helper was written for.
+                # The generated trainer clears `args.max_length` for padding-free, so
+                # an unrewritten seed reads that `None` instead of the `0` that makes
+                # the guard below fall through to `max_seq_length`: raw datasets stop
+                # being truncated, or `None > 0` raises. Both anchors missing means
+                # the neighbouring _require_replace edits have almost certainly gone
+                # too, so this raises where they do rather than one call later.
+                required = True,
+                consequence = ", so `max_length` would not be enforced for raw "
+                "datasets under padding-free batching",
+            )
             # why: route each edit through _require_replace so a drifted anchor fails
             # loudly instead of leaving a dangling reference to the setup variables.
             function = _require_replace(

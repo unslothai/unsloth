@@ -31,8 +31,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Once, OnceLock};
+use std::sync::{Mutex, MutexGuard, Once, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
@@ -158,9 +157,7 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, Str
     if enabled {
         harden_autostart_entry(&app);
     }
-    autolaunch
-        .is_enabled()
-        .map_err(|error| error.to_string())
+    autolaunch.is_enabled().map_err(|error| error.to_string())
 }
 
 fn harden_autostart_entry(app: &tauri::AppHandle) {
@@ -615,15 +612,26 @@ fn set_training_active(state: tauri::State<'_, TrainingActivityState>, active: b
     }
 }
 
+fn training_is_active(app: &tauri::AppHandle) -> bool {
+    let Some(state) = app.try_state::<TrainingActivityState>() else {
+        return false;
+    };
+    state.lock().map(|running| *running).unwrap_or(false)
+}
+
+fn install_is_active(app: &tauri::AppHandle) -> bool {
+    let Some(state) = app.try_state::<install::InstallState>() else {
+        return false;
+    };
+    install::is_install_running(&state)
+}
+
 /// Ask before quitting while training is starting or active (true to proceed).
-/// request_quit only, as below.
+/// Called only from the shared confirmation sequence below.
 fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-    let Some(state) = app.try_state::<TrainingActivityState>() else {
-        return true;
-    };
-    if !state.lock().map(|running| *running).unwrap_or(false) {
+    if !training_is_active(app) {
         return true;
     }
     app.dialog()
@@ -672,18 +680,24 @@ fn set_renderer_activity(state: tauri::State<'_, RendererActivityState>, kind: &
     apply_renderer_activity(state.inner(), kind, active);
 }
 
+fn current_renderer_activity(app: &tauri::AppHandle) -> RendererActivity {
+    let Some(state) = app.try_state::<RendererActivityState>() else {
+        return RendererActivity::default();
+    };
+    state
+        .lock()
+        .map(|activity| RendererActivity {
+            downloads: activity.downloads,
+            shell_update: activity.shell_update,
+        })
+        .unwrap_or_default()
+}
+
 /// Ask before quitting mid shell update (true to proceed). request_quit only, as below.
 fn confirm_quit_during_shell_update(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-    let Some(state) = app.try_state::<RendererActivityState>() else {
-        return true;
-    };
-    if !state
-        .lock()
-        .map(|activity| activity.shell_update)
-        .unwrap_or(false)
-    {
+    if !current_renderer_activity(app).shell_update {
         return true;
     }
     app.dialog()
@@ -704,14 +718,7 @@ fn confirm_quit_during_shell_update(app: &tauri::AppHandle) -> bool {
 fn confirm_quit_during_downloads(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-    let Some(state) = app.try_state::<RendererActivityState>() else {
-        return true;
-    };
-    if !state
-        .lock()
-        .map(|activity| activity.downloads)
-        .unwrap_or(false)
-    {
+    if !current_renderer_activity(app).downloads {
         return true;
     }
     app.dialog()
@@ -729,15 +736,13 @@ fn confirm_quit_during_downloads(app: &tauri::AppHandle) -> bool {
 }
 
 /// Ask before quitting mid-install (true to proceed): `cleanup_child_processes` SIGTERMs the
-/// installer, leaving a venv that looks healthy but cannot start. request_quit only, since
-/// RunEvent::Exit must never block on a dialog nobody can answer.
+/// installer, leaving a venv that looks healthy but cannot start. The shared confirmation
+/// sequence is never called from RunEvent::Exit, which must not block on a dialog nobody can
+/// answer.
 fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-    let Some(install_state) = app.try_state::<install::InstallState>() else {
-        return true;
-    };
-    if !install::is_install_running(&install_state) {
+    if !install_is_active(app) {
         return true;
     }
     app.dialog()
@@ -779,6 +784,21 @@ fn confirm_quit_during_update(app: &tauri::AppHandle) -> bool {
             "Keep updating".to_string(),
         ))
         .blocking_show()
+}
+
+/// Native AppKit termination needs to decide synchronously whether it can terminate now or must
+/// return NSTerminateLater while the shared confirmation sequence runs.
+#[cfg(target_os = "macos")]
+fn quit_requires_confirmation(app: &tauri::AppHandle) -> bool {
+    let update_active = app
+        .try_state::<update::UpdateState>()
+        .is_some_and(|state| update::is_update_running(&state));
+    let renderer = current_renderer_activity(app);
+    install_is_active(app)
+        || update_active
+        || renderer.shell_update
+        || training_is_active(app)
+        || renderer.downloads
 }
 
 fn cleanup_child_processes(app: &tauri::AppHandle) {
@@ -884,21 +904,106 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-/// One quit confirmation at a time: the dialogs are unparented, so repeat close
-/// presses would stack another one.
-static QUIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+/// Coordinates the one visible quit confirmation and, on macOS, one AppKit termination request
+/// waiting for that confirmation's answer.
+struct QuitConfirmationState {
+    in_progress: bool,
+    #[cfg(target_os = "macos")]
+    termination_reply_pending: bool,
+}
 
-/// Clears the flag on cancel or panic, so a quit cannot leave the close button inert.
-struct QuitGuard;
+static QUIT_CONFIRMATION_STATE: Mutex<QuitConfirmationState> = Mutex::new(QuitConfirmationState {
+    in_progress: false,
+    #[cfg(target_os = "macos")]
+    termination_reply_pending: false,
+});
+
+fn lock_quit_confirmation_state() -> MutexGuard<'static, QuitConfirmationState> {
+    QUIT_CONFIRMATION_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Clears the flag on cancel, spawn failure, or panic, so a quit cannot leave the app inert.
+struct QuitGuard {
+    active: bool,
+}
+
+impl QuitGuard {
+    fn new() -> Self {
+        Self { active: true }
+    }
+
+    /// Atomically close this confirmation to new attachments and take the AppKit reply, if any.
+    /// Once `in_progress` becomes false, a later system request starts its own confirmation instead
+    /// of attaching after this worker's final drain.
+    fn finish(mut self) -> bool {
+        let mut state = lock_quit_confirmation_state();
+        state.in_progress = false;
+        #[cfg(target_os = "macos")]
+        let reply_pending = std::mem::take(&mut state.termination_reply_pending);
+        #[cfg(not(target_os = "macos"))]
+        let reply_pending = false;
+        self.active = false;
+        reply_pending
+    }
+}
 
 impl Drop for QuitGuard {
     fn drop(&mut self) {
-        QUIT_IN_PROGRESS.store(false, Ordering::SeqCst);
+        if self.active {
+            let mut state = lock_quit_confirmation_state();
+            state.in_progress = false;
+            #[cfg(target_os = "macos")]
+            {
+                state.termination_reply_pending = false;
+            }
+        }
     }
 }
 
 fn begin_quit() -> Option<QuitGuard> {
-    (!QUIT_IN_PROGRESS.swap(true, Ordering::SeqCst)).then_some(QuitGuard)
+    let mut state = lock_quit_confirmation_state();
+    if state.in_progress {
+        return None;
+    }
+    state.in_progress = true;
+    Some(QuitGuard::new())
+}
+
+#[cfg(target_os = "macos")]
+enum TerminationConfirmation {
+    Now,
+    Start(QuitGuard),
+    Attached,
+    Duplicate,
+}
+
+/// Atomically attach AppKit to a menu/tray confirmation that is already visible, or reserve the
+/// guard for a new confirmation. This closes the race between checking `in_progress` and marking
+/// the system termination pending.
+#[cfg(target_os = "macos")]
+fn begin_or_attach_termination(requires_confirmation: bool) -> TerminationConfirmation {
+    let mut state = lock_quit_confirmation_state();
+    if state.termination_reply_pending {
+        return TerminationConfirmation::Duplicate;
+    }
+    if state.in_progress {
+        state.termination_reply_pending = true;
+        return TerminationConfirmation::Attached;
+    }
+    if !requires_confirmation {
+        return TerminationConfirmation::Now;
+    }
+    state.in_progress = true;
+    state.termination_reply_pending = true;
+    TerminationConfirmation::Start(QuitGuard::new())
+}
+
+#[cfg(target_os = "macos")]
+fn take_pending_termination_reply() -> bool {
+    let mut state = lock_quit_confirmation_state();
+    std::mem::take(&mut state.termination_reply_pending)
 }
 
 /// Asks the renderer for the closing overlay. Reaping the backend takes up to ~18s on
@@ -1017,54 +1122,206 @@ fn quit_sequence(
     true
 }
 
-/// Confirm, reap the backend, then exit. Off the caller's thread because the confirmations
-/// block, and never exit first: that would orphan the backend tree.
-fn request_quit(app: &tauri::AppHandle) {
-    let Some(guard) = begin_quit() else {
-        info!("Quit already awaiting confirmation, ignoring the repeat request");
-        return;
+/// Run the complete upstream confirm-overlay-reap sequence off the caller's thread, then hand its
+/// verdict to `done`. `reserved_guard` lets AppKit atomically attach-or-reserve before spawning;
+/// ordinary menu and tray requests acquire the guard here.
+fn spawn_quit_confirmation<F>(
+    app: &tauri::AppHandle,
+    reserved_guard: Option<QuitGuard>,
+    done: F,
+) -> bool
+where
+    F: FnOnce(&tauri::AppHandle, bool) + Send + 'static,
+{
+    let guard = match reserved_guard {
+        Some(guard) => guard,
+        None => {
+            let Some(guard) = begin_quit() else {
+                info!("Quit already awaiting confirmation, ignoring the repeat request");
+                return false;
+            };
+            guard
+        }
     };
     let app = app.clone();
-    // The guard moves into the closure, so a failed spawn drops it and the next request retries.
     let spawned = std::thread::Builder::new()
         .name("request-quit".to_string())
         .spawn(move || {
-            let _guard = guard;
             // Driven from here rather than the CloseRequested arm so the tray Quit is
             // covered on the same terms as the close button.
-            let quitting = quit_sequence(
-                || {
-                    confirm_quit_during_install(&app)
-                        && confirm_quit_during_update(&app)
-                        && confirm_quit_during_shell_update(&app)
-                        && confirm_quit_during_training(&app)
-                        && confirm_quit_during_downloads(&app)
-                },
-                || {
-                    quit_raises_the_overlay(
-                        // Windows only. macOS never reaches here from the close button,
-                        // which hides to the tray, and on Linux the button already quit
-                        // without an overlay: the freeze this covers was reported on
-                        // Windows, where stop_backend spends its liveness, shutdown and
-                        // CTRL_BREAK budgets in series.
-                        cfg!(target_os = "windows"),
-                        || {
-                            app.get_webview_window("main")
-                                .map(|window| window.is_visible().map_err(|e| e.to_string()))
-                        },
-                    )
-                },
-                || cleanup_child_processes(&app),
-                |event| {
-                    let _ = app.emit(event, ());
-                },
-            );
-            if quitting {
-                app.exit(0);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                quit_sequence(
+                    || {
+                        confirm_quit_during_install(&app)
+                            && confirm_quit_during_update(&app)
+                            && confirm_quit_during_shell_update(&app)
+                            && confirm_quit_during_training(&app)
+                            && confirm_quit_during_downloads(&app)
+                    },
+                    || {
+                        quit_raises_the_overlay(
+                            // Windows only. macOS never reaches here from the close button,
+                            // which hides to the tray, and on Linux the button already quit
+                            // without an overlay: the freeze this covers was reported on
+                            // Windows, where stop_backend spends its liveness, shutdown and
+                            // CTRL_BREAK budgets in series.
+                            cfg!(target_os = "windows"),
+                            || {
+                                app.get_webview_window("main")
+                                    .map(|window| window.is_visible().map_err(|e| e.to_string()))
+                            },
+                        )
+                    },
+                    || cleanup_child_processes(&app),
+                    |event| {
+                        let _ = app.emit(event, ());
+                    },
+                )
+            }));
+            let proceed = result.as_ref().copied().unwrap_or(false);
+            let reply_pending = guard.finish();
+            #[cfg(target_os = "macos")]
+            if reply_pending {
+                reply_to_termination_request(&app, proceed);
             }
+            if let Err(payload) = result {
+                std::panic::resume_unwind(payload);
+            }
+            done(&app, proceed);
         });
     if let Err(error) = spawned {
         warn!("Could not spawn the quit thread: {error}");
+        return false;
+    }
+    true
+}
+
+/// Confirm, reap the backend, then ask Tauri to exit. Never exit first: that would orphan the
+/// backend tree. AppHandle::exit then emits ExitRequested and Exit; the latter is an idempotent
+/// cleanup safety net below.
+fn request_quit(app: &tauri::AppHandle) {
+    spawn_quit_confirmation(app, None, |app, proceed| {
+        if proceed {
+            app.exit(0);
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+const APP_QUIT_MENU_ID: &str = "app-quit";
+
+/// Replace the predefined native Quit role with our own event, so Cmd+Q enters the same guarded
+/// confirmation path as the tray instead of reaching AppKit termination first.
+#[cfg(target_os = "macos")]
+fn setup_quit_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let handle = app.handle();
+    let menu = tauri::menu::Menu::default(handle)?;
+    let Some(app_menu) = menu
+        .items()?
+        .first()
+        .and_then(|item| item.as_submenu().cloned())
+    else {
+        return Ok(());
+    };
+    if let Some(quit) = app_menu.items()?.last() {
+        app_menu.remove(quit)?;
+    }
+    let quit = MenuItemBuilder::with_id(APP_QUIT_MENU_ID, "Quit Unsloth")
+        .accelerator("CmdOrCtrl+Q")
+        .build(app)?;
+    app_menu.append(&quit)?;
+    app.set_menu(menu)?;
+    app.on_menu_event(|app, event| {
+        if event.id() == APP_QUIT_MENU_ID {
+            request_quit(app);
+        }
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+static TERMINATE_APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "macos")]
+extern "C-unwind" fn application_should_terminate(
+    _this: *mut objc2::runtime::AnyObject,
+    _cmd: objc2::runtime::Sel,
+    _sender: *mut objc2::runtime::AnyObject,
+) -> usize {
+    const NS_TERMINATE_CANCEL: usize = 0;
+    const NS_TERMINATE_NOW: usize = 1;
+    const NS_TERMINATE_LATER: usize = 2;
+
+    let Some(app) = TERMINATE_APP_HANDLE.get() else {
+        return NS_TERMINATE_NOW;
+    };
+    match begin_or_attach_termination(quit_requires_confirmation(app)) {
+        TerminationConfirmation::Now => NS_TERMINATE_NOW,
+        TerminationConfirmation::Attached => NS_TERMINATE_LATER,
+        TerminationConfirmation::Duplicate => NS_TERMINATE_CANCEL,
+        TerminationConfirmation::Start(guard) => {
+            if spawn_quit_confirmation(app, Some(guard), |_, _| {}) {
+                NS_TERMINATE_LATER
+            } else {
+                // The worker never started, so no caller can deliver the promised reply.
+                take_pending_termination_reply();
+                NS_TERMINATE_CANCEL
+            }
+        }
+    }
+}
+
+/// Deliver the NSTerminateLater verdict. AppKit expects it on the main thread;
+/// if the main loop is already gone, so is the pending termination request.
+#[cfg(target_os = "macos")]
+fn reply_to_termination_request(app: &tauri::AppHandle, proceed: bool) {
+    use objc2::runtime::{AnyObject, Bool};
+
+    let result = app.run_on_main_thread(move || unsafe {
+        let nsapp: *mut AnyObject =
+            objc2::msg_send![objc2::class!(NSApplication), sharedApplication];
+        let () = objc2::msg_send![nsapp, replyToApplicationShouldTerminate: Bool::new(proceed)];
+    });
+    if let Err(error) = result {
+        warn!("Could not reply to the pending termination request: {error}");
+    }
+}
+
+/// Dock quits, logout and AppleScript quits ask the delegate via
+/// `applicationShouldTerminate:`, which tao leaves unimplemented, so they
+/// terminate without reaching the menu handler above. Add the missing method to
+/// tao's delegate: when a run is active the answer is deferred with
+/// NSTerminateLater until the user confirms, otherwise keep the stock path
+/// (`applicationWillTerminate` -> RunEvent::Exit -> cleanup).
+#[cfg(target_os = "macos")]
+fn setup_terminate_interception(app: &tauri::App) {
+    use objc2::ffi::{class_addMethod, object_getClass};
+    use objc2::runtime::{AnyObject, Imp, Sel};
+
+    let _ = TERMINATE_APP_HANDLE.set(app.handle().clone());
+    unsafe {
+        let nsapp: *mut AnyObject =
+            objc2::msg_send![objc2::class!(NSApplication), sharedApplication];
+        let delegate: *mut AnyObject = objc2::msg_send![nsapp, delegate];
+        if delegate.is_null() {
+            warn!("No NSApplication delegate; external quits will not be confirmed");
+            return;
+        }
+        let imp: Imp = std::mem::transmute(
+            application_should_terminate
+                as extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> usize,
+        );
+        let added = class_addMethod(
+            object_getClass(delegate).cast_mut(),
+            objc2::sel!(applicationShouldTerminate:),
+            imp,
+            c"Q@:@".as_ptr(),
+        );
+        if !added.as_bool() {
+            warn!(
+                "Could not hook applicationShouldTerminate; external quits will not be confirmed"
+            );
+        }
     }
 }
 
@@ -1179,8 +1436,8 @@ fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("unsloth-webview-cache")
         .setup(|app, _api| {
             let version = app.package_info().version.to_string();
-            let _ = WEBVIEW_PROFILE_LOCK
-                .set(clear_webview_caches(&app.config().identifier, &version));
+            let _ =
+                WEBVIEW_PROFILE_LOCK.set(clear_webview_caches(&app.config().identifier, &version));
             Ok(())
         })
         .build()
@@ -1317,6 +1574,11 @@ fn main() {
             setup_custom_titlebar(app)?;
             #[cfg(all(windows, not(debug_assertions)))]
             setup_windows_browser_guards(app)?;
+            #[cfg(target_os = "macos")]
+            {
+                setup_quit_menu(app)?;
+                setup_terminate_interception(app);
+            }
             setup_tray(app)?;
             #[cfg(unix)]
             setup_unix_termination_signals(app)?;
@@ -1406,7 +1668,10 @@ mod tests {
         file.write_all(b"fresh").unwrap();
         file.flush().unwrap();
 
-        assert_eq!(fs::read_to_string(&rotated_path).unwrap(), "stale-and-oversized");
+        assert_eq!(
+            fs::read_to_string(&rotated_path).unwrap(),
+            "stale-and-oversized"
+        );
         assert_eq!(fs::read_to_string(&log_path).unwrap(), "fresh");
     }
 
@@ -1496,7 +1761,10 @@ mod tests {
         fs::write(root.join("WebKitCache"), b"still open").unwrap();
 
         let lock = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
-        assert!(!root.join("CacheStorage").exists(), "the deletable cache stayed");
+        assert!(
+            !root.join("CacheStorage").exists(),
+            "the deletable cache stayed"
+        );
         assert!(
             !root.join(".webview-cache-cleared").exists(),
             "stamping a partial clear makes every later launch skip the retry"
@@ -1508,7 +1776,10 @@ mod tests {
         fs::create_dir_all(root.join("WebKitCache")).unwrap();
         let lock = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
         assert!(!root.join("WebKitCache").exists(), "the retry did not run");
-        assert!(root.join(".webview-cache-cleared").exists(), "the retry did not stamp");
+        assert!(
+            root.join(".webview-cache-cleared").exists(),
+            "the retry did not stamp"
+        );
         drop(lock);
     }
 
@@ -1523,13 +1794,19 @@ mod tests {
         // The first launch clears and holds the lock, as main() does.
         let live = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
         assert!(live.is_some(), "the clearing instance must get the lock");
-        assert!(!root.join("WebKitCache").exists(), "the first launch did not clear");
+        assert!(
+            !root.join("WebKitCache").exists(),
+            "the first launch did not clear"
+        );
 
         // A second launch past single-instance (no session bus) must leave it alone.
         fs::create_dir_all(root.join("WebKitCache")).unwrap();
         let second = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.1"));
         assert!(second.is_none(), "a duplicate launch took the lock");
-        assert!(root.join("WebKitCache").exists(), "deleted a live instance's cache");
+        assert!(
+            root.join("WebKitCache").exists(),
+            "deleted a live instance's cache"
+        );
 
         // Exit or crash drops the lock, so the next launch clears.
         drop(live);
@@ -1538,29 +1815,83 @@ mod tests {
         // newer executable started alongside it could delete the live profile.
         fs::create_dir_all(root.join("WebKitCache")).unwrap();
         let stamped = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
-        assert!(stamped.is_some(), "a stamped launch dropped the profile lock");
-        assert!(root.join("WebKitCache").exists(), "a stamped launch cleared anyway");
+        assert!(
+            stamped.is_some(),
+            "a stamped launch dropped the profile lock"
+        );
+        assert!(
+            root.join("WebKitCache").exists(),
+            "a stamped launch cleared anyway"
+        );
         let racer = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.1"));
-        assert!(racer.is_none(), "a newer launch took the lock from a stamped instance");
-        assert!(root.join("WebKitCache").exists(), "deleted a stamped instance's cache");
+        assert!(
+            racer.is_none(),
+            "a newer launch took the lock from a stamped instance"
+        );
+        assert!(
+            root.join("WebKitCache").exists(),
+            "deleted a stamped instance's cache"
+        );
         drop(stamped);
 
         let next = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.1"));
-        assert!(!root.join("WebKitCache").exists(), "a released lock still blocked the clear");
+        assert!(
+            !root.join("WebKitCache").exists(),
+            "a released lock still blocked the clear"
+        );
         drop(next);
     }
 
-    // One test, not three: `QUIT_IN_PROGRESS` is process-global and cargo tests run in parallel.
+    // One test, not three: the quit coordinator is process-global and cargo tests run in parallel.
     #[test]
     fn quit_guard_admits_one_quit_and_always_re_arms() {
-        assert!(!QUIT_IN_PROGRESS.load(Ordering::SeqCst));
+        assert!(!lock_quit_confirmation_state().in_progress);
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(matches!(
+                begin_or_attach_termination(false),
+                TerminationConfirmation::Now
+            ));
+            assert!(!take_pending_termination_reply());
+        }
 
         {
-            let _first = begin_quit().expect("the first quit must be admitted");
+            let first = begin_quit().expect("the first quit must be admitted");
             assert!(
                 begin_quit().is_none(),
                 "a repeat close must not stack a second confirmation"
             );
+
+            #[cfg(target_os = "macos")]
+            {
+                assert!(matches!(
+                    begin_or_attach_termination(false),
+                    TerminationConfirmation::Attached
+                ));
+                assert!(matches!(
+                    begin_or_attach_termination(true),
+                    TerminationConfirmation::Duplicate
+                ));
+                assert!(
+                    first.finish(),
+                    "finishing must atomically take the attached AppKit reply"
+                );
+                assert!(!take_pending_termination_reply());
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            assert!(!first.finish());
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let guard = match begin_or_attach_termination(true) {
+                TerminationConfirmation::Start(guard) => guard,
+                _ => panic!("an idle active state must start its own confirmation"),
+            };
+            assert!(guard.finish());
+            assert!(!lock_quit_confirmation_state().in_progress);
         }
 
         // Cancelling drops the guard, which re-arms the close button.
@@ -1570,9 +1901,19 @@ mod tests {
 
         let unwound = std::panic::catch_unwind(|| {
             let _guard = begin_quit().expect("admitted");
+            #[cfg(target_os = "macos")]
+            assert!(matches!(
+                begin_or_attach_termination(true),
+                TerminationConfirmation::Attached
+            ));
             panic!("quit thread unwound");
         });
         assert!(unwound.is_err());
+        #[cfg(target_os = "macos")]
+        assert!(
+            !take_pending_termination_reply(),
+            "unwinding must not leave a stale duplicate request"
+        );
         assert!(
             begin_quit().is_some(),
             "a panicking quit must release the guard"
@@ -1607,7 +1948,10 @@ mod tests {
             |event| events.borrow_mut().push(event.to_string()),
         );
 
-        assert!(quitting, "the overlay is presentation, not part of quitting");
+        assert!(
+            quitting,
+            "the overlay is presentation, not part of quitting"
+        );
         assert_eq!(
             events.into_inner(),
             ["reap"],
@@ -1765,7 +2109,8 @@ mod tests {
 
     #[test]
     fn autostart_hardening_quotes_a_binary_path_with_spaces() {
-        let entry = "[Desktop Entry]\nExec=/home/n/My Apps/Unsloth.AppImage --hidden\nTerminal=false";
+        let entry =
+            "[Desktop Entry]\nExec=/home/n/My Apps/Unsloth.AppImage --hidden\nTerminal=false";
         let hardened = hardened_autostart_entry(entry).expect("guard must be added");
         assert!(hardened.contains("Exec=\"/home/n/My Apps/Unsloth.AppImage\" --hidden\n"));
         // TryExec is a plain string field, so the path stays unquoted.
@@ -1823,7 +2168,9 @@ mod tests {
         assert!(autostart_entry_disabled(
             "[Desktop Entry]\nX-GNOME-Autostart-enabled=false"
         ));
-        assert!(!autostart_entry_disabled("[Desktop Entry]\nExec=/a --hidden"));
+        assert!(!autostart_entry_disabled(
+            "[Desktop Entry]\nExec=/a --hidden"
+        ));
     }
 
     #[test]
@@ -1841,8 +2188,9 @@ mod tests {
 
     #[test]
     fn windows_run_command_quotes_a_spaced_path() {
-        let quoted =
-            quoted_windows_run_command(r"C:\Users\Jane Doe\AppData\Local\Unsloth\Unsloth.exe --hidden");
+        let quoted = quoted_windows_run_command(
+            r"C:\Users\Jane Doe\AppData\Local\Unsloth\Unsloth.exe --hidden",
+        );
         assert_eq!(
             quoted.as_deref(),
             Some(r#""C:\Users\Jane Doe\AppData\Local\Unsloth\Unsloth.exe" --hidden"#),
@@ -1871,7 +2219,9 @@ mod tests {
     }
 
     fn renderer_activity(state: &RendererActivityState) -> (bool, bool) {
-        let activity = state.lock().expect("the activity mutex must not be poisoned");
+        let activity = state
+            .lock()
+            .expect("the activity mutex must not be poisoned");
         (activity.downloads, activity.shell_update)
     }
 
