@@ -835,6 +835,7 @@ def _auto_gguf_dense_download_reason(
     *,
     base_repo: Optional[str],
     prequant_path: Optional[str],
+    base_local_dir: Optional[str] = None,
 ) -> Optional[str]:
     """Why an AUTO-derived dense quant would DOWNLOAD a second denoiser, or None when safe.
 
@@ -855,6 +856,10 @@ def _auto_gguf_dense_download_reason(
             fam, scheme, path_override = prequant_path, base_repo = base_repo
         )
         if source is None:
+            if base_repo and DiffusionBackend._complete_dense_transformer_root(
+                base_repo, base_local_dir
+            ):
+                return None
             return "the base repository's dense transformer"
         # A usable local override is the operator's own file, so it never downloads.
         if source.kind != "repo":
@@ -2010,6 +2015,81 @@ class DiffusionBackend:
         return snapshot if snapshot.is_dir() else None
 
     @staticmethod
+    def _dense_transformer_tree_complete(root: Path) -> bool:
+        """Whether ``root/transformer`` is a self-contained diffusers checkpoint.
+
+        A directory plus one shard is not a cache hit: interrupted Hub downloads expose the
+        snapshot before every shard lands. Require the transformer config and either a complete
+        weight-map index or the canonical unsharded weight file. Never follows names outside the
+        transformer directory, while ordinary Hub blob symlinks remain valid ``is_file`` hits.
+        """
+        transformer = root / "transformer"
+        if not (transformer / "config.json").is_file():
+            return False
+
+        try:
+            indexes = list(transformer.glob("*.index.json"))
+        except OSError:
+            return False
+        for index in indexes:
+            try:
+                weight_map = json.loads(index.read_text(encoding = "utf-8")).get("weight_map")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if not isinstance(weight_map, dict) or not weight_map:
+                continue
+            names = set(weight_map.values())
+            if all(
+                isinstance(name, str)
+                and name
+                and not Path(name).is_absolute()
+                and ".." not in Path(name).parts
+                and (transformer / name).is_file()
+                for name in names
+            ):
+                return True
+
+        return any(
+            (transformer / name).is_file()
+            for name in (
+                "diffusion_pytorch_model.safetensors",
+                "diffusion_pytorch_model.bin",
+            )
+        )
+
+    @staticmethod
+    def _complete_dense_transformer_root(
+        base: str, staged_dir: Optional[str] = None
+    ) -> Optional[str]:
+        """A local/base-cache root whose dense transformer is complete, or ``None``.
+
+        Only each cache root's live ``refs/main`` snapshot is eligible. This mirrors the branch
+        lookup that ``from_pretrained`` performs and excludes complete but superseded revisions.
+        ``staged_dir`` is already a resolved snapshot from this load's prefetch/preflight.
+        """
+        candidates: list[Path] = []
+        if staged_dir:
+            candidates.append(Path(staged_dir).expanduser())
+        local = Path(base).expanduser()
+        if local.is_dir():
+            candidates.append(local)
+        else:
+            for repo_dir in DiffusionBackend._hub_cache_repo_dirs(base):
+                snapshot = DiffusionBackend._live_snapshot_dir(repo_dir)
+                if snapshot is not None:
+                    candidates.append(snapshot)
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = os.path.normcase(os.path.normpath(str(candidate)))
+            if key in seen:
+                continue
+            seen.add(key)
+            if DiffusionBackend._dense_transformer_tree_complete(candidate):
+                return str(candidate)
+        return None
+
+    @staticmethod
     def _cache_bytes(repo_id: str) -> int:
         """Bytes of ``repo_id`` on disk across every cache root, for progress and the pipeline plan.
 
@@ -2386,7 +2466,10 @@ class DiffusionBackend:
                 # unbudgeted dense bf16 transformer. Also false when the prefetch skipped the base repo's transformer/ shards, since
                 # the fallback would pull them HERE, inside the load lock, after eviction, where unload cannot preempt it and
                 # progress already reported 100%.
-                dense_fallback_allowed = bool(_transformer_prefetched)
+                dense_fallback_allowed = bool(
+                    _transformer_prefetched
+                    or DiffusionBackend._complete_dense_transformer_root(base, _base_local_dir)
+                )
                 # A GGUF pick with the scheme left to us may use a replacement only when it is
                 # already local. Fetching an uncached pre-quant OR the base dense transformer means
                 # buying a second multi-GB denoiser and never running the GGUF. Explicit schemes,
@@ -2400,6 +2483,7 @@ class DiffusionBackend:
                         transformer_quant,
                         base_repo = base,
                         prequant_path = transformer_prequant_path,
+                        base_local_dir = _base_local_dir,
                     )
                     if dense_download_reason is not None:
                         logger.info(
@@ -3212,13 +3296,16 @@ class DiffusionBackend:
             raise RuntimeError(
                 "prequant checkpoint unavailable and the dense transformer does not fit resident"
             )
-        # Deliberately the hub id, not base_local_dir: diffusers treats a local directory as
-        # terminal (_get_model_file raises rather than falling back to the hub) and a sharded load
-        # raises per missing shard, so a partial snapshot would drop a build the hub id completes.
-        # Off the hub id a base only the other root holds costs a re-download, or 401s into the
-        # GGUF fallback, which is what main does today.
+        # A proven-complete local snapshot is terminal safely and avoids a second download. A
+        # partial snapshot must never be passed here: diffusers raises per missing shard instead
+        # of completing it from the Hub, so the completeness probe falls back to the repo id.
+        dense_root = DiffusionBackend._complete_dense_transformer_root(
+            fetch_base, base_local_dir
+        )
+        if dense_root is None and fetch_base != base:
+            dense_root = DiffusionBackend._complete_dense_transformer_root(base, base_local_dir)
         transformer = transformer_cls.from_pretrained(
-            fetch_base,
+            dense_root or fetch_base,
             subfolder = "transformer",
             torch_dtype = dtype,
             token = hf_token,

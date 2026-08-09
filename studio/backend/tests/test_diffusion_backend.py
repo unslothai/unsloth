@@ -4326,6 +4326,74 @@ def test_auto_quant_declines_dense_fallback_when_no_prequant_exists(
     assert _FakeTransformer.last["path"]
 
 
+def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_exists(
+    fake_runtime, tmp_path, monkeypatch
+):
+    import json
+
+    from core.inference import diffusion as dmod
+
+    base_repo = "Qwen/Qwen-Image-Edit-2511"
+    revision = "cached-dense"
+    shard_names = [
+        "diffusion_pytorch_model-00001-of-00002.safetensors",
+        "diffusion_pytorch_model-00002-of-00002.safetensors",
+    ]
+    files = [
+        "transformer/config.json",
+        "transformer/diffusion_pytorch_model.safetensors.index.json",
+        *(f"transformer/{name}" for name in shard_names),
+    ]
+    _fake_hub_cache(monkeypatch, tmp_path / "hub", base_repo, files, revision = revision, ref = revision)
+    index = (
+        tmp_path
+        / "hub"
+        / "models--Qwen--Qwen-Image-Edit-2511"
+        / "snapshots"
+        / revision
+        / "transformer"
+        / "diffusion_pytorch_model.safetensors.index.json"
+    )
+    index.write_text(
+        json.dumps({"weight_map": {"a": shard_names[0], "b": shard_names[1]}}),
+        encoding = "utf-8",
+    )
+    cached_root = index.parents[1]
+    assert DiffusionBackend._complete_dense_transformer_root(base_repo) == str(cached_root)
+    missing_shard = cached_root / "transformer" / shard_names[1]
+    missing_shard.unlink()
+    assert DiffusionBackend._complete_dense_transformer_root(base_repo) is None
+    missing_shard.write_bytes(b"x")
+    assert DiffusionBackend._complete_dense_transformer_root(base_repo) == str(cached_root)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(prequant = False, steady_total_mib = None),
+    )
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    fam = detect_family("x", override = "qwen-image-edit-2511")
+    assert backend._dense_quant_prefetch_needed(fam, {"base_repo": base_repo}) is True
+    calls = _spy_dense_quant(monkeypatch)
+    pick = tmp_path / "pick"
+    pick.mkdir()
+    (pick / "m.gguf").write_bytes(b"x")
+
+    backend.load_pipeline(
+        str(pick),
+        gguf_filename = "m.gguf",
+        base_repo = base_repo,
+        family_override = "qwen-image-edit-2511",
+    )
+
+    assert len(_dense_calls(calls, backend)) == 1
+
+
 @pytest.mark.parametrize("loras", [[("adapter", 0.0)], [("a", 0.0), ("b", 0.0)]])
 def test_all_zero_weight_loras_do_not_look_like_a_bake(loras, fake_runtime, tmp_path, monkeypatch):
     # Weight 0 is disabled everywhere else, so plain truthiness on the list would call this a bake,
@@ -5155,6 +5223,50 @@ def test_the_dense_builder_reads_transformer_from_the_hub_id_not_the_staged_snap
     assert seen == ["unsloth/Z-Image-Turbo"]
 
 
+def test_the_dense_builder_reuses_a_complete_staged_transformer(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: None)
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda pipe, target, **kw: "fp8")
+    monkeypatch.setattr(
+        DiffusionBackend, "_assemble_pipe", staticmethod(lambda *a, **k: _FakePipe())
+    )
+    snapshot = tmp_path / "snapshot"
+    transformer = snapshot / "transformer"
+    transformer.mkdir(parents = True)
+    (transformer / "config.json").write_text("{}", encoding = "utf-8")
+    (transformer / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    seen: list = []
+
+    class _Transformer:
+        @classmethod
+        def from_pretrained(cls, source, **kw):
+            seen.append(source)
+            return object()
+
+    backend = DiffusionBackend()
+    target = _force_cuda_target(backend, monkeypatch)
+    _pipe, scheme = backend._load_dense_quant_pipeline(
+        _Transformer,
+        object(),
+        "Tongyi-MAI/Z-Image-Turbo",
+        "cuda",
+        None,
+        None,
+        target,
+        "fp8",
+        None,
+        fam = detect_family("unsloth/Z-Image-GGUF"),
+        base_local_dir = str(snapshot),
+    )
+
+    assert scheme == "fp8"
+    assert seen == [str(snapshot)]
+
+
 def test_reset_step_cache_helper_is_best_effort():
     # Prefer the real CacheMixin hook (_reset_stateful_cache): reset_stateful_hooks lives only on the HookRegistry, so the old lookup was a silent no-op.
     calls = []
@@ -5773,7 +5885,7 @@ _QWEN_EDIT_BASE_SIBLINGS = [
 
 
 def test_qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transformer(
-    fake_runtime, monkeypatch
+    fake_runtime, tmp_path, monkeypatch
 ):
     """Prevent the reported Q6 -> 58 GB second download without transferring model bytes.
 
@@ -5795,6 +5907,7 @@ def test_qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transfor
         },
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base_repo)
+    _split_cache_roots(tmp_path, monkeypatch)
     _no_cache(monkeypatch)
 
     backend = DiffusionBackend()
@@ -5821,7 +5934,7 @@ def test_qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transfor
         checkpoint_repo,
         gguf_filename = _QWEN_EDIT_Q6,
     )
-    auto_base = next(e for e in auto["entries"] if e["repo_id"] == base_repo)
+    auto_base = next(e for e in auto["entries"] if e["gguf_filename"] is None)
     auto_transformer = [f for f in auto_base["files"] if f.startswith("transformer/")]
     assert auto_transformer == []
     assert 16_000_000_000 < auto_base["bytes"] < 18_000_000_000
@@ -5831,7 +5944,7 @@ def test_qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transfor
         gguf_filename = _QWEN_EDIT_Q6,
         transformer_quant = "int8",
     )
-    explicit_base = next(e for e in explicit["entries"] if e["repo_id"] == base_repo)
+    explicit_base = next(e for e in explicit["entries"] if e["gguf_filename"] is None)
     explicit_transformer = [f for f in explicit_base["files"] if f.startswith("transformer/")]
     assert len(explicit_transformer) == 5
     assert 55_000_000_000 < explicit_base["bytes"] < 60_000_000_000
