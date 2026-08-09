@@ -1321,11 +1321,11 @@ def test_the_probe_loads_only_the_callers_own_host_profile(monkeypatch):
     probe = studio_cmd._PS_PROXY_PROBE
     assert "$env:_UNSLOTH_PS_HOST_PROFILE" in probe
     assert "Microsoft.*_profile.ps1" not in probe, "no directory-wide sourcing"
+    # The two the caller's session would have loaded, named explicitly...
+    assert "$PROFILE.CurrentUserAllHosts" in probe
     assert "CurrentUserCurrentHost" in probe
-    # From the user's own profile directory only, and never the one already loaded.
-    assert "Split-Path -Parent $__unslothProfile" in probe
-    assert "-ne $__unslothProfile" in probe
-    # And before the table is read, or it would snapshot the defaults that profile sets.
+    assert "Split-Path -Parent $PROFILE.CurrentUserCurrentHost" in probe
+    # ...and before the table is read, or it would snapshot the wrong defaults.
     assert probe.find("_UNSLOTH_PS_HOST_PROFILE") < probe.find("$out = @{}")
 
     # The caller's host is named from the environment it announces itself in.
@@ -1401,3 +1401,27 @@ def test_the_profile_probe_shares_one_timeout_across_hosts(monkeypatch):
     # One budget for the whole probe, however many hosts it tries.
     assert sum(asked) <= budget + 0.05, asked
     assert elapsed < budget * 1.8, elapsed
+
+
+def test_the_probe_child_runs_with_no_profile(monkeypatch):
+    """Without -NoProfile the probe host loads its OWN ConsoleHost profile before the script
+    runs: an unrelated profile that prints, rewrites $PSDefaultParameterValues or calls exit
+    got in the way, and it is still not the profile a VS Code caller keeps its defaults in.
+    With -NoProfile nothing has run, and the two profiles the caller's session would have
+    loaded ($PROFILE.CurrentUserAllHosts plus its host profile) are dot-sourced by name --
+    $PROFILE is fully populated under -NoProfile because the paths are computed, not loaded."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    seen: list[list[str]] = []
+
+    def _capture(argv, **kwargs):
+        seen.append(list(argv))
+        raise OSError("no powershell here")
+
+    monkeypatch.setattr(studio_cmd.subprocess, "run", _capture)
+    studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"])
+
+    assert seen, "the probe must have been attempted"
+    assert "-NoProfile" in seen[0]
+    # Ahead of -Command, like every other PowerShell child in the tree spells it.
+    assert seen[0].index("-NoProfile") < seen[0].index("-Command")

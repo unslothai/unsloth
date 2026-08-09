@@ -2854,15 +2854,21 @@ _PS_PROXY_PROBE = (
     # caller could be identified. Sourcing every Microsoft.*_profile.ps1 in the directory ran
     # profiles belonging to hosts nobody was using: they can overwrite the console's
     # $PSDefaultParameterValues, have side effects, or call exit before the record is written.
-    "try { $__unslothHostProfileName = $env:_UNSLOTH_PS_HOST_PROFILE; "
+    # Launched with -NoProfile, so NOTHING has run yet, and the two profiles the caller's
+    # session would have loaded are dot-sourced by name instead. Letting PowerShell load its own
+    # ConsoleHost profile put an unrelated host's profile in the way -- it can print, rewrite
+    # $PSDefaultParameterValues, or exit before the record is written -- while still not being
+    # the profile a VS Code caller keeps its defaults in. $PROFILE is fully populated under
+    # -NoProfile (the paths are computed, not loaded), so this is exact rather than incidental.
+    "try { $__unslothProfiles = @($PROFILE.CurrentUserAllHosts); "
+    "$__unslothHostProfileName = $env:_UNSLOTH_PS_HOST_PROFILE; "
     "if ($__unslothHostProfileName) { "
-    "$__unslothProfile = $PROFILE.CurrentUserCurrentHost; "
-    "if ($__unslothProfile) { "
-    "$__unslothHostProfile = Join-Path (Split-Path -Parent $__unslothProfile) "
-    "$__unslothHostProfileName; "
-    "if (($__unslothHostProfile -ne $__unslothProfile) -and "
-    "(Test-Path -LiteralPath $__unslothHostProfile -PathType Leaf)) { "
-    "try { . $__unslothHostProfile } catch { } } } } } catch { }; "
+    "$__unslothProfiles += (Join-Path (Split-Path -Parent $PROFILE.CurrentUserCurrentHost) "
+    "$__unslothHostProfileName) } else { "
+    "$__unslothProfiles += $PROFILE.CurrentUserCurrentHost }; "
+    "foreach ($__unslothProfile in ($__unslothProfiles | Select-Object -Unique)) { "
+    "if ($__unslothProfile -and (Test-Path -LiteralPath $__unslothProfile -PathType Leaf)) { "
+    "try { . $__unslothProfile } catch { } } } } catch { }; "
     "$out = @{}; "
     "foreach ($k in @($PSDefaultParameterValues.Keys)) { "
     "if ($k -is [string] -and [regex]::IsMatch($k, ':Proxy(Credential|UseDefaultCredentials)?$', "
@@ -2994,6 +3000,7 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
             probe = subprocess.run(
                 [
                     host,
+                    "-NoProfile",
                     "-NonInteractive",
                     "-ExecutionPolicy",
                     "Bypass",
