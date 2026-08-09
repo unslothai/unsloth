@@ -1878,11 +1878,13 @@ def test_a_tree_taskkill_could_not_take_keeps_its_record(tmp_path, monkeypatch):
 
     def write_record():
         (tmp_path / "previous.json").write_text(
-            json.dumps({
-                "owner_pid": 999_101,
-                "owner_identity": "an-owner-that-is-gone",
-                "children": [{"pid": 999_102, "identity": "1", "pgid": None}],
-            }),
+            json.dumps(
+                {
+                    "owner_pid": 999_101,
+                    "owner_identity": "an-owner-that-is-gone",
+                    "children": [{"pid": 999_102, "identity": "1", "pgid": None}],
+                }
+            ),
             encoding = "utf-8",
         )
 
