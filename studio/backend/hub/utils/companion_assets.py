@@ -103,7 +103,11 @@ def _write_companion_links(links: dict[str, list[str]]) -> bool:
     payload = {"version": _LINKS_VERSION, "links": links}
     tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
-        tmp.write_text(json.dumps(payload, indent = 2, sort_keys = True), encoding = "utf-8")
+        # NOT sort_keys: json.loads keeps document order, so the file IS the recency record the
+        # trim above reads. Sorting it made the next read alphabetical, and the trim then evicted
+        # the lexicographically smallest link rather than the oldest -- so a link recorded minutes
+        # ago could go, and its base become deletable while the checkpoint was still installed.
+        tmp.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
         os.replace(tmp, path)
         return True
     except OSError as exc:
@@ -141,6 +145,10 @@ def record_companion_link(checkpoint_repo_id: str, base_repo_id: str) -> bool:
         existing = links.get(_normalise(checkpoint), [])
         if any(_normalise(b) == _normalise(base) for b in existing):
             return False
+        # Re-inserted at the end, not updated in place: recording is the only recency signal the
+        # trim has, so a checkpoint that just resolved must not keep an old position and be
+        # evicted ahead of one nothing has touched since.
+        links.pop(_normalise(checkpoint), None)
         links[_normalise(checkpoint)] = [*existing, base]
         return _write_companion_links(links)
 

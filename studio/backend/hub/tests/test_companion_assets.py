@@ -340,3 +340,72 @@ def test_a_cached_mirror_and_its_upstream_do_not_pin_each_other(monkeypatch):
         for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
     ]
     assert offered == ["black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"]
+
+
+def test_the_link_trim_keeps_the_newest_not_the_alphabetically_last(monkeypatch):
+    """The cap drops the OLDEST recorded checkpoints, and insertion order is the only record of
+    which those are. Serialising with sort_keys made the next read alphabetical, so the trim
+    evicted the lexicographically smallest instead: a link recorded seconds ago could go, and
+    its non-table companion base then looked deletable while the checkpoint was still installed.
+    """
+    monkeypatch.setattr(companion_assets, "_MAX_LINKS", 3)
+    # Recorded newest-last but named so that alphabetical order is the exact reverse.
+    for name in ("unsloth/zz-GGUF", "unsloth/mm-GGUF", "unsloth/aa-GGUF"):
+        assert companion_assets.record_companion_link(name, BASE_REPO) is True
+    assert list(companion_assets.read_companion_links()) == [
+        "unsloth/zz-gguf",
+        "unsloth/mm-gguf",
+        "unsloth/aa-gguf",
+    ]
+    # A fourth evicts the oldest, which is the first recorded, not "aa".
+    assert companion_assets.record_companion_link("unsloth/nn-GGUF", BASE_REPO) is True
+    assert list(companion_assets.read_companion_links()) == [
+        "unsloth/mm-gguf",
+        "unsloth/aa-gguf",
+        "unsloth/nn-gguf",
+    ]
+
+
+def test_recording_a_second_base_refreshes_the_checkpoints_recency(monkeypatch):
+    """Recording is the only recency signal there is, so a checkpoint that just resolved must
+    move to the newest end rather than keep the position it was first written at."""
+    monkeypatch.setattr(companion_assets, "_MAX_LINKS", 2)
+    assert companion_assets.record_companion_link("unsloth/first-GGUF", BASE_REPO) is True
+    assert companion_assets.record_companion_link("unsloth/second-GGUF", BASE_REPO) is True
+    assert companion_assets.record_companion_link("unsloth/first-GGUF", "unsloth/other-base") is (
+        True
+    )
+    assert list(companion_assets.read_companion_links()) == [
+        "unsloth/second-gguf",
+        "unsloth/first-gguf",
+    ]
+    assert companion_assets.read_companion_links()["unsloth/first-gguf"] == [
+        BASE_REPO,
+        "unsloth/other-base",
+    ]
+    # "second" is the oldest now, so it is what a third checkpoint displaces.
+    assert companion_assets.record_companion_link("unsloth/third-GGUF", BASE_REPO) is True
+    assert list(companion_assets.read_companion_links()) == [
+        "unsloth/first-gguf",
+        "unsloth/third-gguf",
+    ]
+
+
+def test_freeable_companions_only_names_bases_free_up_space_can_offer(monkeypatch):
+    """The delete preview told the user to remove the asset with Free up space, but that list is
+    table-only by design (a mis-recorded link must never turn an unrelated repo into a delete
+    candidate), so a base reached only through a recorded link was never in it. Advertising an
+    action that does nothing is worse than not advertising it."""
+    link_only = "some-vendor/private-encoder"
+    companion_assets.record_companion_link(GGUF_REPO, link_only)
+    _install(
+        monkeypatch,
+        _gguf_repo(("Q2_K", Q2_K_BYTES)),
+        _repo(link_only, [("model_index.json", 460)]),
+    )
+    impact = asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO))
+    assert [c["repo_id"] for c in impact["freeable_companions"]] == []
+    # It is still PROTECTED, which is the half the guard owns.
+    assert companion_assets.is_companion_base(link_only) is True
+    offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    assert [c["repo_id"] for c in offered] == []

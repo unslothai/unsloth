@@ -158,6 +158,7 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
     )
     retained: list[dict] = []
     freeable: list[dict] = []
+    offerable = companion_assets.known_companion_base_ids()
     for base_key in sorted(own_bases):
         base_repos = by_id.get(base_key, [])
         if not base_repos:
@@ -166,7 +167,14 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
         display = str(getattr(base_repos[0], "repo_id", base_key))
         holders = sorted(required_after.get(base_key, set()))
         entry = {"repo_id": display, "size_bytes": base_bytes, "needed_by": holders}
-        (retained if holders else freeable).append(entry)
+        if holders:
+            retained.append(entry)
+        elif base_key in offerable:
+            freeable.append(entry)
+        # Else: a base only a recorded link names. It is unheld, but the orphan endpoint is
+        # table-only by design (a mis-recorded link must never turn an unrelated repo into a
+        # delete candidate), so advertising it here pointed the user at a Free up space list it
+        # will never appear in.
 
     return {
         "repo_id": repo_id,

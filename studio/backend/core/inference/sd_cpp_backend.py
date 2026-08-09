@@ -476,13 +476,6 @@ class SdCppDiffusionBackend:
             raise ValueError(f"Family '{fam.name}' has no native sd.cpp asset mapping.")
 
         base = resolve_base_repo(fam, base_repo)
-        # Same link the diffusers resolver records, so the delete guard protects a native pick's
-        # companions too. Best-effort bookkeeping; never fails a load.
-        try:
-            from hub.utils.companion_assets import record_companion_link
-            record_companion_link(repo_id, base)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("sd_cpp.companion_link_record_failed: %s", exc)
         # Offline-only here, and deliberately so. begin_load returns at once by contract -- the
         # route thread answers the UI with a status and the pull happens on the worker -- so it
         # cannot afford the range request's bound, let alone hold _lock across it and stall
@@ -492,6 +485,25 @@ class SdCppDiffusionBackend:
         inner_dim = self._flux2_inner_dim(
             repo_id, gguf_filename, fam, hf_token, allow_network = False
         )
+        # Same link the diffusers resolver records, so the delete guard protects a native pick's
+        # companions too -- and here that means the repos _asset_specs actually FETCHES. The
+        # native engine does not read the diffusers base: FLUX.2 takes its VAE from
+        # unsloth/FLUX.2-VAE and its encoders from another repo again, so recording only the base
+        # left every repo the pick really depends on outside the guard, and an unloaded model's
+        # encoder could be deleted while its GGUF stayed installed. Best-effort bookkeeping;
+        # never fails a load.
+        try:
+            from hub.utils.companion_assets import record_companion_link
+
+            for asset_repo in dict.fromkeys(
+                r
+                for r, _f, kind in self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
+                if kind != "diffusion_model"
+            ):
+                record_companion_link(repo_id, asset_repo)
+            record_companion_link(repo_id, base)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("sd_cpp.companion_link_record_failed: %s", exc)
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")

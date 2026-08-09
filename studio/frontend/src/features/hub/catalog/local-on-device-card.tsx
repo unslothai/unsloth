@@ -716,6 +716,9 @@ export function LocalOnDeviceCard({
         }}
         title="Delete cached model?"
         deleting={deleting}
+        // Same gate the model row menu applies: when an installed image model still needs these
+        // assets the summary says so, and leaving Delete enabled only bought the user a 400.
+        blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
         onConfirm={() => void runDelete()}
         description={
           <>

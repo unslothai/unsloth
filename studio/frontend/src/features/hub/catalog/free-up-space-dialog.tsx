@@ -35,6 +35,14 @@ import { useCallback, useEffect, useState } from "react";
  * dialog opens, every row is opt-in, and removal goes through the ordinary delete endpoint, so
  * the shared-asset guard applies to this path exactly as it does to a delete from a card.
  */
+/**
+ * One row per CACHE ROOT, so a repo cached twice appears twice and the repo id alone identifies
+ * neither. Keying selection on it made one checkbox toggle both rows and gave the two list items
+ * the same React key and the same checkbox id.
+ */
+const companionIdentity = (companion: OrphanCompanion) =>
+  `${companion.repo_id}\u0000${companion.cache_path ?? ""}`;
+
 export function FreeUpSpaceDialog({
   open,
   onOpenChange,
@@ -57,7 +65,7 @@ export function FreeUpSpaceDialog({
     try {
       const result = await fetchOrphanCompanions();
       setCompanions(result.companions);
-      setSelected(new Set(result.companions.map((c) => c.repo_id)));
+      setSelected(new Set(result.companions.map(companionIdentity)));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setCompanions([]);
@@ -70,7 +78,7 @@ export function FreeUpSpaceDialog({
     if (open) void refresh();
   }, [open, refresh]);
 
-  const selectedCompanions = companions.filter((c) => selected.has(c.repo_id));
+  const selectedCompanions = companions.filter((c) => selected.has(companionIdentity(c)));
   const selectedBytes = selectedCompanions.reduce(
     (sum, c) => sum + c.size_bytes,
     0,
@@ -133,25 +141,25 @@ export function FreeUpSpaceDialog({
           </p>
         ) : (
           <ul className="flex max-h-[260px] flex-col gap-1 overflow-y-auto py-1">
-            {companions.map((companion) => (
+            {companions.map((companion, index) => (
               <li
-                key={companion.repo_id}
+                key={companionIdentity(companion)}
                 className="flex items-center gap-3 rounded-[10px] px-2 py-2 hover:bg-muted/50"
               >
                 <Checkbox
-                  id={`orphan-${companion.repo_id}`}
-                  checked={selected.has(companion.repo_id)}
+                  id={`orphan-${index}`}
+                  checked={selected.has(companionIdentity(companion))}
                   onCheckedChange={(checked) =>
                     setSelected((prev) => {
                       const next = new Set(prev);
-                      if (checked) next.add(companion.repo_id);
-                      else next.delete(companion.repo_id);
+                      if (checked) next.add(companionIdentity(companion));
+                      else next.delete(companionIdentity(companion));
                       return next;
                     })
                   }
                 />
                 <label
-                  htmlFor={`orphan-${companion.repo_id}`}
+                  htmlFor={`orphan-${index}`}
                   className="min-w-0 flex-1 cursor-pointer truncate text-ui-13"
                 >
                   {companion.repo_id}
