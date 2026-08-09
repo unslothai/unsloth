@@ -16,50 +16,36 @@ export function settleWithin(
   });
 }
 
-/** Wait for a batch within a bound while preserving every failure observed before it expires. */
-export async function waitForSettledBatch(
-  work: readonly Promise<unknown>[],
+/** Report whether work settled within the bound, preserving a rejection that arrives in time. */
+export function settlesWithin(
+  work: Promise<unknown>,
   ms: number,
-): Promise<void> {
-  let failed = false;
-  let firstFailure: unknown;
-  const settled = Promise.all(
-    work.map((item) =>
-      item.then(
-        () => undefined,
-        (error: unknown) => {
-          if (!failed) {
-            failed = true;
-            firstFailure = error;
-          }
-        },
-      ),
-    ),
-  );
-  await settleWithin(settled, ms);
-  if (failed) {
-    throw firstFailure;
-  }
+): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(false), Math.max(ms, 0));
+    work.then(
+      () => {
+        clearTimeout(timer);
+        resolve(true);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
-/** If queued work misses its bound, start an independent fallback and observe it for one bound. */
+/** If queued work misses its bound, require an independent fallback to confirm within one bound. */
 export async function waitForSettledOrRunFallback(
   work: Promise<unknown>,
   fallback: () => Promise<unknown>,
   ms: number,
 ): Promise<void> {
-  let settled = false;
-  const observed = work.then(
-    () => {
-      settled = true;
-    },
-    (error: unknown) => {
-      settled = true;
-      throw error;
-    },
-  );
-  await waitForSettledBatch([observed], ms);
-  if (!settled) {
-    await waitForSettledBatch([fallback()], ms);
+  if (await settlesWithin(work, ms)) {
+    return;
+  }
+  if (!(await settlesWithin(fallback(), ms))) {
+    throw new Error("Timed out waiting for fallback work");
   }
 }

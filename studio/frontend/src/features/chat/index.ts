@@ -146,7 +146,10 @@ export {
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
-export { markChatThreadDeleted } from "./utils/chat-thread-tombstones";
+export {
+  markChatThreadDeleted,
+  removeChatThreadTombstones,
+} from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export { ArtifactCard } from "./artifacts/artifact-card";

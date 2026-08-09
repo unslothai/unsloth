@@ -5,26 +5,25 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  waitForSettledBatch,
+  settlesWithin,
   waitForSettledOrRunFallback,
 } from "../src/features/chat/utils/bounded-settlement.ts";
 
-test("an early failure survives a sibling that exceeds the batch deadline", async () => {
+test("reports work that confirms within the deadline", async () => {
+  assert.equal(await settlesWithin(Promise.resolve(), 5), true);
+});
+
+test("reports work that remains unconfirmed at the deadline", async () => {
+  const stalled = new Promise<void>(() => undefined);
+  assert.equal(await settlesWithin(stalled, 5), false);
+});
+
+test("preserves a rejection that arrives within the deadline", async () => {
   const failure = new Error("delete failed");
-  const stalled = new Promise<void>(() => undefined);
-
-  await assert.rejects(
-    waitForSettledBatch([Promise.reject(failure), stalled], 5),
-    failure,
-  );
+  await assert.rejects(settlesWithin(Promise.reject(failure), 5), failure);
 });
 
-test("a pending batch can time out without rejecting", async () => {
-  const stalled = new Promise<void>(() => undefined);
-  await waitForSettledBatch([Promise.resolve(), stalled], 5);
-});
-
-test("a stalled queued operation starts an independent fallback", async () => {
+test("accepts an independent fallback only after it confirms", async () => {
   const stalled = new Promise<void>(() => undefined);
   let fallbackCalls = 0;
 
@@ -38,4 +37,13 @@ test("a stalled queued operation starts an independent fallback", async () => {
   );
 
   assert.equal(fallbackCalls, 1);
+});
+
+test("rejects when the independent fallback also remains unconfirmed", async () => {
+  const stalled = new Promise<void>(() => undefined);
+
+  await assert.rejects(
+    waitForSettledOrRunFallback(stalled, () => stalled, 5),
+    /Timed out waiting for fallback work/,
+  );
 });

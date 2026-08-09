@@ -130,6 +130,7 @@ import {
   discardQueuedChatRunSettingsForThread,
   hasPreStreamRunReservation,
   localPromptQueueModelBoundary,
+  notifyChatHistoryUpdated,
   notifyPromptQueueRunFailed,
   planLocalPromptQueueStop,
   registerQueuedChatRunSettings,
@@ -141,6 +142,7 @@ import {
   composerDraftKey,
   markThreadIncognito,
   markChatThreadDeleted,
+  removeChatThreadTombstones,
   type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
   dictationFailed,
@@ -2602,12 +2604,16 @@ const Composer: FC<{
       ) {
         return false;
       }
+      const threadIdToDelete = initializedFreshThreadId;
       // Tombstone synchronously so a late initializer cannot leave an empty
       // record visible while backend cleanup completes.
-      markChatThreadDeleted(initializedFreshThreadId);
-      void deleteStoredChatThreads([initializedFreshThreadId]).catch(
-        () => undefined,
-      );
+      markChatThreadDeleted(threadIdToDelete);
+      void deleteStoredChatThreads([threadIdToDelete]).catch(() => {
+        if (!historyWasCleared) {
+          removeChatThreadTombstones([threadIdToDelete]);
+          notifyChatHistoryUpdated();
+        }
+      });
       if (!historyWasCleared && isTargetCurrentThread()) {
         void Promise.resolve(aui.threads().switchToNewThread()).catch(
           () => undefined,

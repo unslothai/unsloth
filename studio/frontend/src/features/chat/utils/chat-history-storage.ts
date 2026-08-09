@@ -878,8 +878,9 @@ export async function deleteStoredChatThreads(
   // chats instead of issuing one request per thread.
   const deletion = threadWriteQueue.enqueue(ids, () => deleteChatThreads(ids));
   // If a wedged predecessor keeps the ordered delete from starting, issue an independent delete
-  // after the bound. Observe that fallback for the same bound so prompt backend failures still
-  // reach the caller's rollback and toast before local records are removed.
+  // after the bound. The fallback must itself confirm before local deletion is reported as a
+  // success; otherwise the caller rolls back its optimistic tombstone while the queued cleanup
+  // remains tracked.
   await waitForSettledOrRunFallback(
     deletion,
     () => deleteChatThreads(ids),

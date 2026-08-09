@@ -654,6 +654,8 @@ export async function ensureThreadRecord({
   pairId,
   projectId,
   incognito,
+  modelId,
+  createdAt,
 }: {
   threadId: string;
   modelType: ModelType;
@@ -661,16 +663,21 @@ export async function ensureThreadRecord({
   projectId?: string | null;
   /** Snapshot from the send this row belongs to, so a retry cannot read a since-flipped toggle. */
   incognito?: boolean;
+  /** Snapshot from the send this row belongs to, so retries cannot adopt a later checkpoint. */
+  modelId?: string;
+  /** Snapshot from the send this row belongs to, so retries retain its original creation time. */
+  createdAt?: number;
 }): Promise<void> {
   if (isChatThreadDeleted(threadId)) {
     return;
   }
-  // Snapshot the toggle SYNCHRONOUSLY, before the await below. This runs in
-  // the same tick as the user's send, so it reliably captures the toggle's
-  // state at creation. Reading it after the await would let a toggle-off
-  // that lands mid-await (the list call is a real network round-trip) flip
-  // the decision and persist what should have been an incognito thread.
-  const incognitoAtInit = incognito ?? useChatRuntimeStore.getState().incognito;
+  // Snapshot mutable creation inputs synchronously, before the await below. This runs in the same
+  // tick as the user's send, so a toggle or checkpoint change during the point lookup cannot
+  // change the identity of the thread a retry persists.
+  const runtimeStateAtInit = useChatRuntimeStore.getState();
+  const incognitoAtInit = incognito ?? runtimeStateAtInit.incognito;
+  const modelIdAtInit = modelId ?? runtimeStateAtInit.params.checkpoint ?? "";
+  const createdAtInit = createdAt ?? Date.now();
   // Fresh assistant-ui threads are local ids. Temporary chats can skip the
   // history list entirely so a storage outage cannot block the first send.
   if (incognitoAtInit && isAssistantLocalThreadId(threadId)) {
@@ -690,16 +697,15 @@ export async function ensureThreadRecord({
     return;
   }
 
-  const currentModelId = useChatRuntimeStore.getState().params.checkpoint ?? "";
   const record: ThreadRecord = {
     id: threadId,
     title: "New Chat",
     modelType,
-    modelId: currentModelId,
+    modelId: modelIdAtInit,
     pairId,
     projectId: projectId ?? null,
     archived: false,
-    createdAt: Date.now(),
+    createdAt: createdAtInit,
   };
 
   try {
@@ -770,9 +776,12 @@ function createStudioDbAdapter(
 
     initialize(threadId: string) {
       // assistant-ui withholds the first message until this resolves, so the row write is tracked, not awaited.
-      // Captured here, not inside the creator: a retry must not re-read a toggle the user has
-      // flipped since, which would mark an already-initialized normal thread incognito.
-      const incognitoAtInit = useChatRuntimeStore.getState().incognito;
+      // Captured here, not inside the creator: a retry belongs to the send that initialized it,
+      // not to a later incognito or checkpoint selection.
+      const runtimeStateAtInit = useChatRuntimeStore.getState();
+      const incognitoAtInit = runtimeStateAtInit.incognito;
+      const modelIdAtInit = runtimeStateAtInit.params.checkpoint ?? "";
+      const createdAtInit = Date.now();
       trackStoredChatThreadRecord(threadId, () =>
         ensureThreadRecord({
           threadId,
@@ -780,6 +789,8 @@ function createStudioDbAdapter(
           pairId,
           projectId,
           incognito: incognitoAtInit,
+          modelId: modelIdAtInit,
+          createdAt: createdAtInit,
         }),
       );
       // A run already streaming on this thread filed its handles under "__default" because
