@@ -2647,9 +2647,7 @@ def test_deleting_a_big_sandbox_does_not_hold_up_other_chats(tmp_path, monkeypat
     monkeypatch.setattr(tools.shutil, "rmtree", slow_rmtree)
     outcome = []
     deleter = threading.Thread(
-        target = lambda: outcome.append(
-            tools.remove_session_sandbox(session, delete_files = True)
-        ),
+        target = lambda: outcome.append(tools.remove_session_sandbox(session, delete_files = True)),
     )
     try:
         deleter.start()
@@ -2737,8 +2735,10 @@ def test_a_delete_without_the_switch_says_what_it_kept(tmp_path, monkeypatch):
 
     import routes.chat_history as chat_history
 
-    removed, still_there = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
-        chat_history._remove_sandboxes([kept, empty], False)
+    removed, still_there = (
+        asyncio.get_event_loop_policy()
+        .new_event_loop()
+        .run_until_complete(chat_history._remove_sandboxes([kept, empty], False))
     )
     assert removed == 1, removed  # the empty one
     assert still_there == [kept], still_there
@@ -2755,7 +2755,7 @@ def test_every_delete_surface_can_still_reach_the_files():
 
     assert "deleteFiles: true" in hook
     assert "kept" in hook
-    body = hook[hook.index("export async function deleteChatItem"):]
+    body = hook[hook.index("export async function deleteChatItem") :]
     assert "toast(" in body, "nothing tells the user the files are still there"
 
 

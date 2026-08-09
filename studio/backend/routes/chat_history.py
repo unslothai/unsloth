@@ -791,9 +791,7 @@ async def clear_history(
     # same folders DELETE /threads does; otherwise every sandbox is stranded.
     # delete_files matches DELETE /threads: off by default, since the files are
     # the user's, but a caller clearing everything can ask for them too.
-    removed, kept = await _remove_sandboxes(
-        list(dict.fromkeys(thread_ids + cleared)), delete_files
-    )
+    removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 

@@ -10959,7 +10959,9 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
                 relative = os.path.relpath(path, workdir).replace(os.sep, "/")
                 stat = os.stat(path)
                 snapshot[relative] = (
-                    stat.st_mtime_ns, stat.st_size, _content_key(path, stat.st_size),
+                    stat.st_mtime_ns,
+                    stat.st_size,
+                    _content_key(path, stat.st_size),
                 )
             except OSError:
                 continue
