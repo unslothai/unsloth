@@ -653,7 +653,6 @@ async def delete_project(
         from starlette.concurrency import run_in_threadpool
 
         from storage.studio_db import delete_project_workspace
-
         await run_in_threadpool(delete_project_workspace, project)
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.

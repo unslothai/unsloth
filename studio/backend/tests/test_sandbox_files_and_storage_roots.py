@@ -3839,7 +3839,8 @@ def test_a_chat_cannot_claim_another_chats_directory(tmp_path, monkeypatch):
     (theirs / "private.csv").write_text("the attacker's own", encoding = "utf-8")
     # What a tool running in there can do.
     (theirs / tools._SANDBOX_MARKER).write_text(
-        tools._sandbox_name(victim), encoding = "utf-8",
+        tools._sandbox_name(victim),
+        encoding = "utf-8",
     )
 
     _forget_sandbox_state(tools)
@@ -3909,9 +3910,8 @@ def test_a_forked_chat_keeps_the_files_its_cards_point_at(tmp_path, monkeypatch)
         studio_db, "sandbox_is_referenced_elsewhere", lambda session_id: session_id == source
     )
 
-    removed, kept = (
-        asyncio.new_event_loop()
-        .run_until_complete(chat_history._remove_sandboxes([source], True))
+    removed, kept = asyncio.new_event_loop().run_until_complete(
+        chat_history._remove_sandboxes([source], True)
     )
 
     assert removed == 0, removed
