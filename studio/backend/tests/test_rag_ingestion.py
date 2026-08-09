@@ -4,6 +4,7 @@
 """Ingestion lifecycle tests: pending -> completed, SSE events, dedupe, delete."""
 
 import os
+import sqlite3
 import time
 
 import pytest
@@ -30,6 +31,57 @@ def _wait_completed(job_id, timeout = 30.0):
             return status
         time.sleep(0.05)
     raise AssertionError("ingestion did not finish in time")
+
+
+def test_initial_connection_failure_marks_ingestion_failed(rag_home, monkeypatch, tmp_path):
+    path = _write(tmp_path, "doc.txt", "alpha bravo")
+    scope = store.kb_scope("K1")
+    conn = rag_db.get_connection()
+    try:
+        document_id = store.create_document(
+            conn,
+            scope = scope,
+            filename = "doc.txt",
+            sha256 = "hash",
+            stored_path = path,
+            status = "pending",
+        )
+        job_id = ingestion._new_job(conn, document_id, scope)
+    finally:
+        conn.close()
+    original_get_connection = rag_db.get_connection
+    attempts = 0
+
+    def fail_once():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("database is busy")
+        return original_get_connection()
+
+    monkeypatch.setattr(rag_db, "get_connection", fail_once)
+    ingestion._run(job_id, document_id, scope, path, None)
+
+    assert ingestion.get_job_status(job_id)["status"] == "failed"
+
+
+def test_folder_wait_fails_persisted_job_without_live_worker(rag_home):
+    from core.rag import folder_sync
+
+    scope = store.kb_scope("K1")
+    conn = rag_db.get_connection()
+    try:
+        document_id = store.create_document(
+            conn, scope = scope, filename = "doc.txt", sha256 = "hash"
+        )
+        job_id = ingestion._new_job(conn, document_id, scope)
+    finally:
+        conn.close()
+
+    row = folder_sync._wait_ingestion(job_id)
+
+    assert row["status"] == "failed"
+    assert row["error"] == "Ingestion worker exited unexpectedly"
 
 
 def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp_path):

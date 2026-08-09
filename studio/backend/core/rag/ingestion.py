@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Per-job event queues, drained by job_events; ``None`` ends the stream.
 _jobs: dict[str, "queue.Queue"] = {}
+_workers: dict[str, threading.Thread] = {}
 _jobs_lock = threading.Lock()
 
 _EMBED_BATCH = 64  # bounds peak memory
@@ -174,8 +175,9 @@ def _run(
     caption: bool | None = None,
     replaces: tuple[str, str | None] | None = None,
 ) -> None:
-    conn = rag_db.get_connection()
+    conn = None
     try:
+        conn = rag_db.get_connection()
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
         is_pdf = stored_path.lower().endswith(".pdf")
@@ -255,13 +257,18 @@ def _run(
     except Exception as exc:  # noqa: BLE001 - report any failure to the client
         logger.exception("ingestion job %s failed", job_id)
         try:
+            if conn is None:
+                conn = rag_db.get_connection()
             store.set_document_status(conn, document_id, "failed", error = str(exc))
             _set_job(conn, job_id, status = "failed", stage = "error", error = str(exc))
         except Exception:  # noqa: BLE001
             logger.exception("failed to record ingestion failure for job %s", job_id)
         _emit(job_id, {"type": "error", "stage": "error", "error": str(exc)})
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
+        with _jobs_lock:
+            _workers.pop(job_id, None)
         _emit(job_id, None)
 
 
@@ -355,15 +362,64 @@ def start_ingestion(
 
     with _jobs_lock:
         _jobs[job_id] = queue.Queue()
-    threading.Thread(
+    worker = threading.Thread(
         target = _run,
         # effective_model (not the raw model_name) pins the embedder for the
         # whole job: a Settings change mid-ingestion must not switch tokenizer
         # or embedder between batches of one document.
         args = (job_id, document_id, scope, stored_path, effective_model, ocr, caption, replaces),
         daemon = True,
-    ).start()
+    )
+    with _jobs_lock:
+        _workers[job_id] = worker
+    try:
+        worker.start()
+    except Exception:
+        with _jobs_lock:
+            _workers.pop(job_id, None)
+        fail_stalled_job(job_id, "Ingestion worker could not start")
+        raise
     return document_id, job_id
+
+
+def job_worker_alive(job_id: str) -> bool:
+    """Return whether this process still has a live worker for a persisted job."""
+    with _jobs_lock:
+        worker = _workers.get(job_id)
+    return worker is not None and worker.is_alive()
+
+
+def fail_stalled_job(job_id: str, error: str) -> bool:
+    """Fail a nonterminal job only after its in-process worker has exited."""
+    if job_worker_alive(job_id):
+        return False
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT document_id, status FROM ingestion_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        if row is None or row["status"] in _TERMINAL_JOB_STATUSES:
+            conn.rollback()
+            return False
+        conn.execute(
+            "UPDATE documents SET status='failed', error=? "
+            "WHERE id=? AND status IN ('pending','running')",
+            (error, row["document_id"]),
+        )
+        conn.execute(
+            "UPDATE ingestion_jobs SET status='failed', stage='error', error=? WHERE id=?",
+            (error, job_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    _emit(job_id, {"type": "error", "stage": "error", "error": error})
+    _emit(job_id, None)
+    return True
 
 
 def _new_job(

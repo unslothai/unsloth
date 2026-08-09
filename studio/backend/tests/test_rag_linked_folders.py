@@ -1514,7 +1514,7 @@ def test_project_postcommit_file_cleanup_failure_cleans_retired_scope(monkeypatc
     monkeypatch.setattr(
         chat_history,
         "_restore_project_rag_sources",
-        lambda project_id, folders: restored.append(project_id),
+        lambda project_id: restored.append(project_id),
     )
     monkeypatch.setattr(
         chat_history,
@@ -1657,6 +1657,7 @@ def test_project_deletion_restores_scope_when_project_delete_fails(rag_home, mon
         auto_sync = False,
     )
     pending_job = folder_sync.request_sync(folder["id"])
+    folder_sync.retire_scope(store.project_scope("p1"))
     monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: project)
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
@@ -1947,6 +1948,87 @@ def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home
 
 
 @requires_sqlite_vec
+@pytest.mark.parametrize("scope_type", ["knowledge_base", "project"])
+def test_upload_rechecks_owner_after_saving_file(rag_home, monkeypatch, scope_type):
+    from routes import rag as rag_routes
+    from storage import studio_db
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    owner_id = "owner"
+    owner_exists = True
+    saved_path = ensure_dir(rag_uploads_root()) / f"missing-{scope_type}.txt"
+
+    def resolve_upload(*args, **kwargs):
+        nonlocal owner_exists
+        saved_path.write_text("saved", encoding = "utf-8")
+        owner_exists = False
+        return str(saved_path), saved_path.name
+
+    monkeypatch.setattr(rag_routes.rag_db, "rag_available", lambda: True)
+    monkeypatch.setattr(rag_routes.folder_sync, "scope_retired", lambda scope: False)
+    monkeypatch.setattr(rag_routes, "_resolve_document_upload", resolve_upload)
+    monkeypatch.setattr(
+        rag_routes.ingestion,
+        "start_ingestion",
+        lambda *args, **kwargs: pytest.fail("an ownerless upload must not ingest"),
+    )
+    if scope_type == "knowledge_base":
+        monkeypatch.setattr(
+            rag_routes.store,
+            "get_kb",
+            lambda conn, value: {"id": value} if owner_exists else None,
+        )
+        upload = rag_routes.upload_kb_document(owner_id, subject = "test")
+    else:
+        monkeypatch.setattr(
+            studio_db,
+            "get_chat_project",
+            lambda value: {"id": value} if owner_exists else None,
+        )
+        upload = rag_routes.upload_project_document(owner_id, subject = "test")
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(upload)
+
+    assert getattr(exc_info.value, "status_code", None) == 404
+    assert not saved_path.exists()
+
+
+@pytest.mark.parametrize("scope_type", ["knowledge_base", "project"])
+def test_linked_folder_rechecks_owner_after_resolving_lease(rag_home, monkeypatch, scope_type):
+    from fastapi import HTTPException
+    from routes import rag as rag_routes
+
+    owner_exists = True
+
+    def resolve_path(lease):
+        nonlocal owner_exists
+        owner_exists = False
+        return str(rag_home)
+
+    def require_owner(kind, owner_id):
+        if not owner_exists:
+            raise HTTPException(status_code = 404, detail = "Owner not found")
+
+    monkeypatch.setattr(rag_routes, "_resolve_linked_folder_path", resolve_path)
+    monkeypatch.setattr(rag_routes, "_require_scope_owner", require_owner)
+    monkeypatch.setattr(
+        rag_routes.folder_sync,
+        "create_folder_with_sync",
+        lambda **kwargs: pytest.fail("an ownerless folder must not be linked"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        rag_routes._create_linked_folder(
+            scope_type,
+            "owner",
+            rag_routes.LinkFolderRequest(nativePathLease = "lease"),
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+@requires_sqlite_vec
 def test_project_rag_cleanup_atomically_removes_retired_scope(rag_home):
     from routes import chat_history
 
@@ -2006,7 +2088,17 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
     assert {folder["id"] for folder in remaining} == {folder["id"] for folder in folders}
     assert {folder["status"] for folder in remaining} == {"retired"}
     assert folder_sync.scope_retired(store.kb_scope("knowledge")) is True
-    assert not os.path.exists(stored_path)
+    assert os.path.exists(stored_path)
+    conn = rag_db.get_connection()
+    try:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM documents WHERE scope=?", (store.kb_scope("knowledge"),)
+            ).fetchone()
+            is not None
+        )
+    finally:
+        conn.close()
     monkeypatch.setattr(folder_sync, "delete_retired_scope", original_cleanup)
 
     reconciled = folder_sync.reconcile_retired_scopes(lambda project_id: False)
@@ -2014,6 +2106,7 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
     assert reconciled == {"restored": [], "deleted": [store.kb_scope("knowledge")]}
     assert folder_sync.list_folders(store.kb_scope("knowledge")) == []
     assert folder_sync.scope_retired(store.kb_scope("knowledge")) is False
+    assert not os.path.exists(stored_path)
 
 
 @requires_sqlite_vec

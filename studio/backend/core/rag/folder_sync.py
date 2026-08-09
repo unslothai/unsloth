@@ -555,8 +555,12 @@ def retire_scope(scope: str) -> list[dict]:
             conn.close()
 
 
-def retire_and_delete_kb(kb_id: str) -> tuple[list[dict], list[str | None]] | None:
-    """Atomically retire a KB scope and delete its indexed database state."""
+def retire_and_delete_kb(kb_id: str) -> list[dict] | None:
+    """Atomically retire a KB scope and delete its owner row.
+
+    Document rows remain as the durable cleanup queue until
+    ``delete_retired_scope`` removes their stored files and database state.
+    """
     scope = store.kb_scope(kb_id)
     with _scope_lock(scope), ExitStack() as locks:
         conn = rag_db.get_connection()
@@ -578,13 +582,9 @@ def retire_and_delete_kb(kb_id: str) -> tuple[list[dict], list[str | None]] | No
                 for row in conn.execute("SELECT * FROM linked_folders WHERE scope=?", (scope,))
             ]
             _retire_scope_rows(conn, scope, folders)
-            stored_paths = [
-                row["stored_path"]
-                for row in conn.execute("SELECT stored_path FROM documents WHERE scope=?", (scope,))
-            ]
-            store.delete_kb(conn, kb_id, commit = False)
+            store.delete_kb(conn, kb_id, commit = False, delete_documents = False)
             conn.commit()
-            return folders, stored_paths
+            return folders
         except Exception:
             conn.rollback()
             raise
@@ -666,9 +666,7 @@ def restore_scope(scope: str, folders: list[dict] | None = None) -> None:
     _wake.set()
 
 
-def delete_retired_scope(
-    scope: str, *, additional_stored_paths: list[str | None] | None = None
-) -> bool:
+def delete_retired_scope(scope: str) -> bool:
     """Atomically purge an ownerless scope while preserving retry state on failure."""
     with scope_retirement_lock(scope):
         conn = rag_db.get_connection()
@@ -685,7 +683,6 @@ def delete_retired_scope(
                 "SELECT id, stored_path FROM documents WHERE scope=?", (scope,)
             ).fetchall()
             stored_paths = [document["stored_path"] for document in documents]
-            stored_paths.extend(additional_stored_paths or [])
             for stored_path in dict.fromkeys(stored_paths):
                 _remove_retired_snapshot(stored_path)
             for document in documents:
@@ -1018,6 +1015,7 @@ def _copy_exact(source, target, size: int) -> None:
 
 def _wait_ingestion(job_id: str) -> dict:
     while True:
+        _check_running()
         try:
             row = ingestion.get_job_status(job_id)
         except Exception:
@@ -1030,6 +1028,11 @@ def _wait_ingestion(job_id: str) -> dict:
             raise RuntimeError("Ingestion job disappeared")
         if row["status"] in _TERMINAL:
             return row
+        if not ingestion.job_worker_alive(job_id):
+            try:
+                ingestion.fail_stalled_job(job_id, "Ingestion worker exited unexpectedly")
+            except Exception:
+                logger.warning("failed to retire stalled ingestion job", exc_info = True)
         time.sleep(0.05)
 
 

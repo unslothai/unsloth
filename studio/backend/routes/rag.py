@@ -309,16 +309,43 @@ def _folder_view(row: dict) -> dict:
     }
 
 
+def _scope_for_owner(scope_type: str, scope_id: str) -> str:
+    return (
+        store.kb_scope(scope_id)
+        if scope_type == "knowledge_base"
+        else store.project_scope(scope_id)
+    )
+
+
+def _require_scope_owner(scope_type: str, scope_id: str) -> None:
+    if scope_type == "knowledge_base":
+        conn = _rag_connection()
+        try:
+            exists = store.get_kb(conn, scope_id) is not None
+        finally:
+            conn.close()
+        detail = "Knowledge base not found"
+    else:
+        from storage.studio_db import get_chat_project
+
+        exists = get_chat_project(scope_id) is not None
+        detail = "Project not found"
+    if not exists:
+        raise HTTPException(status_code = 404, detail = detail)
+
+
 def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderRequest) -> dict:
     path = _resolve_linked_folder_path(payload.native_path_lease)
     try:
-        folder, job_id = folder_sync.create_folder_with_sync(
-            scope_type = scope_type,
-            scope_id = scope_id,
-            path = path,
-            name = payload.name,
-            auto_sync = payload.auto_sync,
-        )
+        with folder_sync.scope_lock(_scope_for_owner(scope_type, scope_id)):
+            _require_scope_owner(scope_type, scope_id)
+            folder, job_id = folder_sync.create_folder_with_sync(
+                scope_type = scope_type,
+                scope_id = scope_id,
+                path = path,
+                name = payload.name,
+                auto_sync = payload.auto_sync,
+            )
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     job = folder_sync.get_job(job_id)
@@ -410,15 +437,10 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
         deleted = folder_sync.retire_and_delete_kb(kb_id)
     if deleted is None:
         raise HTTPException(status_code = 404, detail = "Knowledge base not found")
-    _folders, stored_paths = deleted
     try:
-        folder_sync.delete_retired_scope(
-            store.kb_scope(kb_id), additional_stored_paths = stored_paths
-        )
+        folder_sync.delete_retired_scope(store.kb_scope(kb_id))
     except Exception:
         logger.warning("failed to delete retired knowledge-base scope %s", kb_id, exc_info = True)
-    for stored_path in stored_paths:
-        _remove_stored_upload(stored_path)
     return {"ok": True}
 
 
@@ -448,12 +470,13 @@ async def upload_kb_document(
     stored_path, filename = _resolve_document_upload(file, native_path_lease)
     try:
         with folder_sync.scope_lock(scope):
+            _require_scope_owner("knowledge_base", kb_id)
             _raise_if_scope_retired(scope)
             with _rag_unavailable_as_503(stored_path):
                 document_id, job_id = ingestion.start_ingestion(
                     scope, kb_id, None, filename, stored_path, ocr = ocr, caption = caption
                 )
-    except HTTPException:
+    except Exception:
         _remove_stored_upload(stored_path)
         raise
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
@@ -477,12 +500,7 @@ def link_kb_folder(
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
-    conn = rag_db.get_connection()
-    try:
-        if store.get_kb(conn, kb_id) is None:
-            raise HTTPException(status_code = 404, detail = "Knowledge base not found")
-    finally:
-        conn.close()
+    _require_scope_owner("knowledge_base", kb_id)
     return _create_linked_folder("knowledge_base", kb_id, payload)
 
 
@@ -540,6 +558,7 @@ async def upload_project_document(
     stored_path, filename = _resolve_document_upload(file, native_path_lease)
     try:
         with folder_sync.scope_lock(scope):
+            _require_scope_owner("project", project_id)
             _raise_if_scope_retired(scope, "Project is being deleted")
             with _rag_unavailable_as_503(stored_path):
                 document_id, job_id = ingestion.start_ingestion(
@@ -552,7 +571,7 @@ async def upload_project_document(
                     ocr = ocr,
                     caption = caption,
                 )
-    except HTTPException:
+    except Exception:
         _remove_stored_upload(stored_path)
         raise
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
@@ -576,10 +595,7 @@ def link_project_folder(
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
-    from storage.studio_db import get_chat_project
-
-    if get_chat_project(project_id) is None:
-        raise HTTPException(status_code = 404, detail = "Project not found")
+    _require_scope_owner("project", project_id)
     return _create_linked_folder("project", project_id, payload)
 
 

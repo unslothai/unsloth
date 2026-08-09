@@ -556,10 +556,10 @@ def _retire_project_rag_sources(project_id: str) -> list[dict]:
     return folder_sync.retire_scope(rag_store.project_scope(project_id))
 
 
-def _restore_project_rag_sources(project_id: str, folders: list[dict]) -> None:
+def _restore_project_rag_sources(project_id: str) -> None:
     """Restore project RAG sources after the project database rolls back."""
     from core.rag import folder_sync, store as rag_store
-    folder_sync.restore_scope(rag_store.project_scope(project_id), folders)
+    folder_sync.restore_scope(rag_store.project_scope(project_id))
 
 
 def _delete_project_with_rag_retirement(
@@ -596,7 +596,7 @@ def _delete_project_with_rag_retirement(
                         exc_info = True,
                     )
                 if project_survived is True:
-                    _restore_project_rag_sources(project_id, folders)
+                    _restore_project_rag_sources(project_id)
                 elif project_survived is False:
                     try:
                         _delete_project_rag_sources(project_id, folders)

@@ -90,18 +90,20 @@ def delete_kb(
     kb_id: str,
     *,
     commit: bool = True,
+    delete_documents: bool = True,
 ) -> None:
-    """Delete a knowledge base and every document (+ chunks) under it."""
+    """Delete a knowledge base, optionally retaining documents for durable cleanup."""
     try:
         if commit:
             conn.execute("BEGIN IMMEDIATE")
         scope = kb_scope(kb_id)
-        doc_ids = [
-            r["id"]
-            for r in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall()
-        ]
-        for doc_id in doc_ids:
-            delete_document(conn, doc_id, commit = False)
+        if delete_documents:
+            doc_ids = [
+                r["id"]
+                for r in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall()
+            ]
+            for doc_id in doc_ids:
+                delete_document(conn, doc_id, commit = False)
         conn.execute("DELETE FROM knowledge_bases WHERE id=?", (kb_id,))
         if commit:
             conn.commit()
