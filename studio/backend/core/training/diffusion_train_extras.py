@@ -285,9 +285,7 @@ def source_revision(ref: Any) -> str:
             roots = [name]
             with os.scandir(name) as it:
                 roots += [
-                    e.path
-                    for e in it
-                    if e.is_dir() and e.name.startswith(_CACHE_SOURCE_SUBDIRS)
+                    e.path for e in it if e.is_dir() and e.name.startswith(_CACHE_SOURCE_SUBDIRS)
                 ]
             for root in roots:
                 with os.scandir(root) as it:
