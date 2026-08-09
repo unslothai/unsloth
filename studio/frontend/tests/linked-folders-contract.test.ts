@@ -41,6 +41,13 @@ const dataTab = readFileSync(
   new URL("../src/features/settings/tabs/data-tab.tsx", import.meta.url),
   "utf8",
 );
+const linkedFoldersHook = readFileSync(
+  new URL(
+    "../src/features/rag/components/use-linked-folders.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 test("linked folders have global/scoped listing and scoped creation routes", () => {
   assert.match(
@@ -64,6 +71,22 @@ test("unlink, sync, rebuild, and aggregate job routes stay explicit", () => {
   assert.match(
     ragApi,
     /\/linked-folder-jobs\/\$\{encodeURIComponent\(jobId\)\}\/events/,
+  );
+});
+
+test("unlink stops the active folder job stream before deleting", () => {
+  const abortAt = linkedFoldersHook.indexOf(
+    "controllers.current.get(activeJobId)?.abort()",
+  );
+  const deleteAt = linkedFoldersHook.indexOf(
+    "await deleteLinkedFolder(folderId, removeIndex)",
+  );
+  assert.ok(abortAt >= 0);
+  assert.ok(deleteAt > abortAt);
+  assert.match(linkedFoldersHook, /trackJob\(activeJob\)/);
+  assert.match(
+    linkedFoldersHook,
+    /controllers\.current\.get\(initial\.id\) === controller/,
   );
 });
 

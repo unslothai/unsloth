@@ -70,12 +70,19 @@ export function useLinkedFolders(
       const controller = new AbortController();
       controllers.current.set(initial.id, controller);
 
+      const releaseController = () => {
+        if (controllers.current.get(initial.id) === controller) {
+          controllers.current.delete(initial.id);
+        }
+      };
       const apply = (job: FolderSyncJob) => {
+        if (controller.signal.aborted) return;
         setJobs((current) => ({ ...current, [job.linkedFolderId]: job }));
       };
       const finish = (job: FolderSyncJob) => {
+        if (controller.signal.aborted) return;
         apply(job);
-        controllers.current.delete(job.id);
+        releaseController();
         notifySourcesChanged(job);
         if (job.status === "failed") {
           toast.error("Folder sync failed", {
@@ -91,6 +98,7 @@ export function useLinkedFolders(
             initial.id,
             controller.signal,
           )) {
+            if (controller.signal.aborted) return;
             latest = {
               ...latest,
               ...event,
@@ -123,7 +131,7 @@ export function useLinkedFolders(
             await new Promise((resolve) => setTimeout(resolve, 1500));
           }
         } catch {
-          controllers.current.delete(initial.id);
+          releaseController();
         }
       })();
     },
@@ -271,6 +279,15 @@ export function useLinkedFolders(
     async (folderId: string, removeIndex: boolean) => {
       const operationScopeKey = scopeKey;
       const previous = folders;
+      const activeJobId =
+        folders.find((folder) => folder.id === folderId)?.activeJobId ??
+        jobs[folderId]?.id;
+      const activeJob =
+        jobs[folderId]?.id === activeJobId ? jobs[folderId] : undefined;
+      if (activeJobId) {
+        controllers.current.get(activeJobId)?.abort();
+        controllers.current.delete(activeJobId);
+      }
       setFolders((current) =>
         current.filter((folder) => folder.id !== folderId),
       );
@@ -286,12 +303,20 @@ export function useLinkedFolders(
       } catch (error) {
         if (currentScopeKey.current !== operationScopeKey) return;
         setFolders(previous);
+        if (
+          activeJob &&
+          (activeJob.status === "pending" || activeJob.status === "running")
+        ) {
+          trackJob(activeJob);
+        } else {
+          void refresh({ quiet: true });
+        }
         toast.error("Could not unlink folder", {
           description: error instanceof Error ? error.message : String(error),
         });
       }
     },
-    [scopeKey, folders, onSourcesChanged],
+    [scopeKey, folders, jobs, trackJob, refresh, onSourcesChanged],
   );
 
   return {

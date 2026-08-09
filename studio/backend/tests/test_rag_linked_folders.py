@@ -70,6 +70,76 @@ def test_schema_is_idempotent_and_persists_folder_tables(rag_home):
 
 
 @requires_sqlite_vec
+def test_schema_migration_preserves_rebuild_intent_from_duplicate_active_jobs(rag_home):
+    _, folder = _folder(rag_home)
+    running_source = rag_home / "running-source"
+    running_source.mkdir()
+    running_folder = folder_sync.create_folder(
+        scope_type = "knowledge_base",
+        scope_id = "scope-2",
+        path = str(running_source),
+        name = "Running docs",
+    )
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("DROP INDEX idx_linked_folder_jobs_active")
+        conn.execute(
+            "INSERT INTO linked_folder_sync_jobs"
+            "(id, folder_id, kind, status, stage, created_at) "
+            "VALUES('000-plain', ?, 'sync', 'pending', 'queued', '2026-01-02')",
+            (folder["id"],),
+        )
+        conn.execute(
+            "INSERT INTO linked_folder_sync_jobs"
+            "(id, folder_id, kind, status, stage, created_at) "
+            "VALUES('zzz-rebuild', ?, 'rebuild', 'pending', 'queued', '2026-01-01')",
+            (folder["id"],),
+        )
+        conn.execute(
+            "INSERT INTO linked_folder_sync_jobs"
+            "(id, folder_id, kind, status, stage, created_at) "
+            "VALUES('running-sync', ?, 'sync', 'running', 'indexing', '2026-01-02')",
+            (running_folder["id"],),
+        )
+        conn.execute(
+            "INSERT INTO linked_folder_sync_jobs"
+            "(id, folder_id, kind, status, stage, created_at) "
+            "VALUES('queued-rebuild', ?, 'rebuild', 'pending', 'queued', '2026-01-01')",
+            (running_folder["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rag_db._schema_ready = False
+    migrated = rag_db.get_connection()
+    try:
+        active = migrated.execute(
+            "SELECT id, kind, rebuild_requested FROM linked_folder_sync_jobs "
+            "WHERE folder_id=? AND status IN ('pending','running')",
+            (folder["id"],),
+        ).fetchall()
+        retired = migrated.execute(
+            "SELECT status, error FROM linked_folder_sync_jobs WHERE id='000-plain'"
+        ).fetchone()
+        running = migrated.execute(
+            "SELECT id, kind, rebuild_requested FROM linked_folder_sync_jobs "
+            "WHERE folder_id=? AND status IN ('pending','running')",
+            (running_folder["id"],),
+        ).fetchall()
+        retired_rebuild = migrated.execute(
+            "SELECT status, error FROM linked_folder_sync_jobs WHERE id='queued-rebuild'"
+        ).fetchone()
+    finally:
+        migrated.close()
+
+    assert [tuple(row) for row in active] == [("zzz-rebuild", "rebuild", 0)]
+    assert tuple(retired) == ("failed", "Superseded duplicate job")
+    assert [tuple(row) for row in running] == [("running-sync", "sync", 1)]
+    assert tuple(retired_rebuild) == ("failed", "Superseded duplicate job")
+
+
+@requires_sqlite_vec
 def test_schema_migrates_legacy_linked_folder_root_identity(rag_home):
     source = rag_home / "legacy-source"
     source.mkdir()

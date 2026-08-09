@@ -266,14 +266,39 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             "ADD COLUMN rebuild_requested INTEGER NOT NULL DEFAULT 0"
         )
     # Retire duplicate active jobs from older schemas before enforcing atomic
-    # per-folder scheduling for manual and periodic requests.
-    conn.execute(
-        "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
-        "error='Superseded duplicate job', completed_at=COALESCE(completed_at, created_at) "
-        "WHERE status IN ('pending','running') AND id NOT IN ("
-        "SELECT MIN(id) FROM linked_folder_sync_jobs WHERE status IN ('pending','running') "
-        "GROUP BY folder_id)"
-    )
+    # per-folder scheduling. Keep a running job ahead of pending work, otherwise
+    # keep the oldest request, and merge every rebuild request into the survivor.
+    active_jobs = conn.execute(
+        "SELECT * FROM linked_folder_sync_jobs WHERE status IN ('pending','running') "
+        "ORDER BY folder_id, CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, id"
+    ).fetchall()
+    jobs_by_folder = {}
+    for job in active_jobs:
+        jobs_by_folder.setdefault(job["folder_id"], []).append(job)
+    for jobs in jobs_by_folder.values():
+        survivor = jobs[0]
+        rebuild_needed = any(
+            job["kind"] == "rebuild" or job["rebuild_requested"] for job in jobs
+        )
+        if rebuild_needed and survivor["kind"] != "rebuild":
+            if survivor["status"] == "pending":
+                conn.execute(
+                    "UPDATE linked_folder_sync_jobs SET kind='rebuild', rebuild_requested=0 "
+                    "WHERE id=?",
+                    (survivor["id"],),
+                )
+            else:
+                conn.execute(
+                    "UPDATE linked_folder_sync_jobs SET rebuild_requested=1 WHERE id=?",
+                    (survivor["id"],),
+                )
+        for duplicate in jobs[1:]:
+            conn.execute(
+                "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
+                "error='Superseded duplicate job', "
+                "completed_at=COALESCE(completed_at, created_at) WHERE id=?",
+                (duplicate["id"],),
+            )
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_linked_folder_jobs_active "
         "ON linked_folder_sync_jobs(folder_id) WHERE status IN ('pending','running')"
