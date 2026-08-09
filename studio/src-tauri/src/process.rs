@@ -787,7 +787,7 @@ pub(crate) fn clear_adopted_backend_if_current(
     let matches_adopted = matches!(
         proc.owned.as_ref(),
         Some(OwnedBackendHandle::Adopted { port: current_port, .. })
-            if port.map_or(true, |port| port == *current_port)
+            if port.is_none_or(|port| port == *current_port)
     );
     if !matches_adopted {
         return false;

@@ -200,18 +200,35 @@ def resolve_dense_quant_candidate(
     if scheme is None:
         return None
     prequant_available = False
+    prequant_cached = False
     # force_dense: the loader will SKIP the prequant shortcut (e.g. a LoRA bake), so size the candidate for the dense build.
     if not force_dense:
         try:
-            from .diffusion_prequant import usable_prequant_source
+            from .diffusion_prequant import prequant_checkpoint_cached, usable_prequant_source
 
             # usable_ (not resolve_): a local path override counts only when the loader will accept it (allowlisted AND present), else it rebuilds dense after eviction.
             src = usable_prequant_source(
                 fam, scheme, path_override = prequant_path, base_repo = base_repo
             )
             prequant_available = src is not None
+            if src is not None and getattr(src, "kind", None) == "path":
+                # A local override is the operator's own file on disk: it downloads nothing, so the
+                # space gate has no claim on it. prequant_checkpoint_cached only answers for hosted
+                # repos (_cached_in_root returns None for any other kind), so asking it here would
+                # report False and re-apply the gate to a file that costs no bytes, which is the
+                # opposite of what the retry assumes about local paths.
+                prequant_cached = True
+            elif src is not None:
+                # Pin the ACTIVE root, as the retry and the loader both do. Unpinned,
+                # cached_checkpoint_path searches only huggingface_hub's import-time constant, so
+                # after a cache-folder change the retry proves the checkpoint cached in the live
+                # root and this would still call it uncached and re-apply the gate. Imported from
+                # utils rather than diffusion.hub_cache_dir, which would be a circular import.
+                from utils.hf_cache_settings import active_hf_hub_cache
+                prequant_cached = prequant_checkpoint_cached(src, cache_dir = active_hf_hub_cache())
         except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
             prequant_available = False
+            prequant_cached = False
     estimate = estimate_dense_quant(
         fam, scheme, base_repo = base_repo, prequant_available = prequant_available
     )
@@ -225,9 +242,12 @@ def resolve_dense_quant_candidate(
             estimate.companions_mib,
             prequant_available,
         )
-    if estimate is not None:
-        # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly full disk; a cached re-download is a no-op, so
-        # this only trips on an already-critical disk. Size it by what lands on DISK: a prequant fetches the quantised checkpoint, else the base repo's.
+    # A cached prequant checkpoint downloads nothing, so the space gate has no claim on it. The
+    # gate used to run anyway, which discarded exactly the candidate the auto retry exists to find:
+    # that retry only ever proposes a rung whose checkpoint is already cached, so on a low-disk or
+    # moved-cache install every retry fell back to the GGUF despite a resident-fit local artifact.
+    if estimate is not None and not (estimate.prequant and prequant_cached):
+        # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly full disk. Size it by what lands on DISK: a prequant fetches the quantised checkpoint, else the base repo's.
         needed_mib = (
             estimate.steady_transformer_mib
             if estimate.prequant
@@ -247,22 +267,114 @@ def resolve_dense_quant_candidate(
     return estimate
 
 
+# ── strict precision (fail closed on a declined EXPLICIT request) ────────────
+# An `auto` precision is a delegation, so falling back down the ladder is the feature working. An
+# EXPLICIT scheme is a contract: silently loading the GGUF (or a dense bf16 DiT) instead produced a
+# perfectly good image at a precision nobody asked for, which is exactly what made a successful
+# render worthless as proof that the requested precision ran. Escape hatch for anyone who relied on
+# the old behaviour; unset (the default) fails closed.
+_PRECISION_FALLBACK_ENV = "UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK"
+
+
+def precision_fallback_allowed() -> bool:
+    """Whether a declined EXPLICIT precision request may fall back silently (opt-in)."""
+    value = str(os.environ.get(_PRECISION_FALLBACK_ENV, "")).strip().lower()
+    return value in ("1", "true", "yes", "on")
+
+
+def precision_refusal_message(
+    control: str,
+    requested: str,
+    reason: str,
+    *,
+    off_label: str,
+    auto_available: bool = True,
+) -> str:
+    """The client-facing refusal for a declined explicit precision: what was asked, why it could
+    not run, and the settings that always work. ``off_label`` names this backend's "run the
+    checkpoint as-is" option, which differs between the image and video loaders.
+
+    ``auto_available`` is False for controls with no auto mode. ``text_encoder_quant`` is one:
+    both request models restrict it to fp8 / fp8_dynamic / int8 / nvfp4, so a user who followed a
+    "Choose Auto" instruction there got a 422 from request validation instead of a working load."""
+    remedy = (
+        "Choose Auto to let the backend pick the fastest precision this host can run, "
+        f"or {off_label}."
+        if auto_available
+        else f"{off_label[:1].upper()}{off_label[1:]}."
+    )
+    return f"{control}='{requested}' could not be used: {reason}. {remedy}"
+
+
 # ── resolved-record (status surface) ─────────────────────────────────────────
-def build_resolved_record(
-    controls: dict[str, tuple[Optional[Any], Any, str]],
-) -> dict[str, dict[str, Any]]:
+# How the engaged value relates to what the caller asked for. Additive on the status payload: every
+# honored request and every auto decision reports "applied", so a client that ignores the field sees
+# exactly today's behaviour.
+RESOLVED_APPLIED = "applied"  # the ask was honored (or there was no ask)
+RESOLVED_FELL_BACK = "fell_back"  # an explicit ask was declined and something ELSE engaged
+RESOLVED_UNSUPPORTED = "unsupported"  # an explicit ask cannot run on this host / model at all
+
+# Requests that mean "do not engage this control", so an "off" engagement HONORS them.
+_RESOLVED_OFF_VALUES = frozenset({"", "none", "off", "false", "0"})
+
+# Controls whose REQUEST and ENGAGED value share one vocabulary, so a mismatch is derivable here
+# rather than trusted from the call site (a decline site that forgets to classify itself still
+# reports the truth). memory_mode is deliberately absent: it requests a MODE ("low_vram") and
+# engages an offload POLICY ("sequential"), so comparing the two would report every honored
+# request as a fallback. attention_backend is absent for the same reason ("cudnn" engages as
+# "_native_cudnn").
+_RESOLVED_COMPARABLE = frozenset({"transformer_quant", "text_encoder_quant"})
+
+
+def _resolved_norm(value: Any) -> str:
+    """A control value folded to its comparison key; every "off" spelling folds to ""."""
+    if value is None:
+        return ""
+    text = str(value).strip().lower().replace("-", "_")
+    return "" if text in _RESOLVED_OFF_VALUES else text
+
+
+def _resolved_values_match(explicit: Any, engaged: Any) -> bool:
+    """Whether ``engaged`` is what ``explicit`` asked for (cpu_offload compares as a boolean)."""
+    if isinstance(explicit, bool) or isinstance(engaged, bool):
+        return bool(explicit) == bool(engaged)
+    return _resolved_norm(explicit) == _resolved_norm(engaged)
+
+
+def build_resolved_record(controls: dict[str, tuple]) -> dict[str, dict[str, Any]]:
     """The per-control ``resolved`` record for status: engaged value + provenance.
 
-    ``controls`` maps a control name to ``(explicit, engaged, reason)``, where ``explicit`` is the
-    raw request (None / "" / "auto" = left to the backend). Rendered as an "Auto: X" badge."""
+    ``controls`` maps a control name to ``(explicit, engaged, reason)`` or
+    ``(explicit, engaged, reason, status)``, where ``explicit`` is the raw request
+    (None / "" / "auto" = left to the backend) and ``status`` is one of the ``RESOLVED_*``
+    constants (omit it to let this derive one).
+
+    Each entry carries BOTH sides of the story: ``requested`` (what the caller asked for, verbatim,
+    ``null`` when they left it to us) and ``value`` (what actually engaged), plus the ``status``
+    saying whether those agree. A successful load whose requested precision was declined therefore
+    stays visible instead of being erased into a bare ``source: "explicit"``, which rendered no
+    badge at all while the dropdown kept advertising the request."""
     record: dict[str, dict[str, Any]] = {}
-    for name, (explicit, engaged, reason) in controls.items():
+    for name, entry in controls.items():
+        explicit, engaged, reason = entry[0], entry[1], entry[2]
+        status = entry[3] if len(entry) > 3 else None
         left_to_backend = explicit is None or (
             isinstance(explicit, str) and explicit.strip().lower() in ("", "auto")
         )
+        if left_to_backend:
+            # The backend chose it, so there is nothing to decline: this is the "Auto: X" badge.
+            status = RESOLVED_APPLIED
+        elif status is None:
+            status = (
+                RESOLVED_FELL_BACK
+                if name in _RESOLVED_COMPARABLE and not _resolved_values_match(explicit, engaged)
+                else RESOLVED_APPLIED
+            )
         record[name] = {
             "value": engaged,
+            "requested": None if left_to_backend else explicit,
             "source": "auto" if left_to_backend else "explicit",
+            "status": status,
             "reason": reason,
         }
     return record
