@@ -325,7 +325,11 @@ def test_materialized_imatrix_is_not_exported_as_a_model(monkeypatch, tmp_path):
 
     class _Model:
         def save_pretrained_gguf(
-            self, model_save_path, tokenizer, quantization_method, imatrix_file = None
+            self,
+            model_save_path,
+            tokenizer,
+            quantization_method,
+            imatrix_file = None,
         ):
             # _materialize_imatrix copies into the model dir, renaming .gguf_file -> .gguf.
             _gguf(Path(model_save_path) / "imatrix_unsloth.gguf", b"IMATRIX")
