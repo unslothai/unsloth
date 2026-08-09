@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import sys
@@ -57,6 +58,23 @@ def _pinned_tag() -> Optional[str]:
     """The release tag to install: env override, else the pinned default; '' = latest."""
     val = os.environ.get("UNSLOTH_SD_CPP_TAG", DEFAULT_TAG).strip()
     return val or None
+
+
+# A mirror release built on top of an upstream one carries a "-u<short sha>" suffix naming the
+# fork commit (master-813-bfbef5b-u13b9d92 is upstream master-813-bfbef5b plus fork commit 13b9d92).
+_MIRROR_TAG_SUFFIX = re.compile(r"-u[0-9a-f]{7,}$")
+
+
+def upstream_tag_for(tag: Optional[str]) -> Optional[str]:
+    """The upstream release ``tag`` was built from: the same tag with the mirror's fork suffix
+    dropped, or ``tag`` unchanged when it carries none.
+
+    Without this, pinning a fork-only tag silently costs every host the mirror does not build
+    (Linux Vulkan/ROCm, Windows GPU) its pinned install: the exact string 404s upstream and the
+    fallback settles for upstream *latest*, which is any build published since."""
+    if not tag:
+        return tag
+    return _MIRROR_TAG_SUFFIX.sub("", tag) or tag
 
 
 # accelerator -> the token that must appear in a Linux/Windows asset name.
@@ -347,7 +365,10 @@ def _resolve_with_fallback(
     if tag:
         attempts.append((primary, tag, False))
         if allow_upstream:
-            attempts.append((UPSTREAM_FALLBACK_REPO, tag, False))
+            # The mirror's own tag does not exist upstream, so the pin has to be translated back
+            # to the upstream release it was built from -- otherwise this attempt always 404s and
+            # the pin degrades to upstream latest for every host the mirror does not build.
+            attempts.append((UPSTREAM_FALLBACK_REPO, upstream_tag_for(tag), False))
         attempts.append((primary, None, True))
         if allow_upstream:
             attempts.append((UPSTREAM_FALLBACK_REPO, None, True))

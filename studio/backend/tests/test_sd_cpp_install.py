@@ -19,6 +19,7 @@ if str(_STUDIO) not in sys.path:
 
 import hashlib  # noqa: E402
 import io  # noqa: E402
+import re  # noqa: E402
 import json  # noqa: E402
 import urllib.error  # noqa: E402
 import zipfile  # noqa: E402
@@ -37,6 +38,7 @@ from install_sd_cpp_prebuilt import (  # noqa: E402
     default_install_dir,
     install,
     resolve_release_asset,
+    upstream_tag_for,
 )
 
 # A real stable-diffusion.cpp latest-release asset list.
@@ -469,6 +471,58 @@ def test_mirror_linux_cuda_refuses_a_release_without_one():
     assert (
         resolve_release_asset(without, system = "Linux", machine = "x86_64", accelerator = "cuda") is None
     )
+
+
+# ── the pin translates to upstream ───────────────────────────────────────────
+
+
+def test_upstream_tag_drops_the_mirror_fork_suffix():
+    """A mirror release built on an upstream one is that tag plus "-u<fork sha>", and only the
+    base half exists upstream. The suffix has to come off before the fallback asks for it."""
+    assert upstream_tag_for("master-813-bfbef5b-u13b9d92") == "master-813-bfbef5b"
+    assert upstream_tag_for("master-813-bfbef5b-u0665242") == "master-813-bfbef5b"
+    # A plain upstream tag, and a tag whose trailing segment is not a fork sha, pass through.
+    assert upstream_tag_for("master-809-eb7f35c") == "master-809-eb7f35c"
+    assert upstream_tag_for("v1.2.3-ubuntu") == "v1.2.3-ubuntu"
+    assert upstream_tag_for(None) is None
+
+
+def test_shipped_pin_translates_to_a_plain_upstream_tag():
+    """Guards the pin itself: whatever DEFAULT_TAG becomes, the string handed upstream must not
+    still carry a fork suffix, or the fallback is asking for a release that cannot exist."""
+    assert re.search(r"-u[0-9a-f]{7,}$", upstream_tag_for(DEFAULT_TAG)) is None
+
+
+def test_upstream_fallback_asks_for_the_translated_pin_not_latest(monkeypatch):
+    """A Linux Vulkan host: the mirror has no such asset, so resolution falls to upstream. It must
+    ask upstream for the pin's upstream base tag and stop there -- reaching an unpinned upstream
+    "latest" is exactly the reproducibility loss the translation exists to prevent."""
+    monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
+    monkeypatch.setenv("UNSLOTH_SD_CPP_TAG", "master-813-bfbef5b-u13b9d92")
+    monkeypatch.setattr(sdmod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sdmod.platform, "machine", lambda: "x86_64")
+    seen = []
+
+    def fake_fetch(tag = None, *, repo = None, token = None, timeout = 30.0, allow_latest = True):
+        seen.append((repo, tag))
+        if repo == sdmod.UPSTREAM_FALLBACK_REPO and tag == "master-813-bfbef5b":
+            return {
+                "tag_name": tag,
+                "assets": [{"name": "sd-master-bfbef5b-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip"}],
+            }
+        # The mirror serves the pin but builds no Vulkan asset; every other request 404s.
+        if repo == sdmod.DEFAULT_REPO and tag == "master-813-bfbef5b-u13b9d92":
+            return {"tag_name": tag, "assets": [{"name": f"sd-{tag}-bin-Linux-Ubuntu-22.04-x86_64.zip"}]}
+        raise urllib.error.HTTPError(f"https://api/{repo}", 404, "not found", None, None)
+
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    repo, release, chosen = sdmod._resolve_with_fallback("vulkan", None)
+    assert repo == sdmod.UPSTREAM_FALLBACK_REPO
+    assert release["tag_name"] == "master-813-bfbef5b"
+    assert chosen.endswith("-vulkan.zip")
+    # The raw fork tag is never sent upstream, and no unpinned latest is ever requested.
+    assert (sdmod.UPSTREAM_FALLBACK_REPO, "master-813-bfbef5b-u13b9d92") not in seen
+    assert not any(tag is None for _repo_name, tag in seen)
 
 
 # ── mirror -> upstream fallback in install() ─────────────────────────────────
