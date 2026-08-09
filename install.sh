@@ -1874,7 +1874,9 @@ if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         # truncates it and aborts every later uv call (issue #6503). Hand uv a copy.
         case "$_OVERRIDES_FILE" in
             *[[:space:]]*)
-                _UV_OVERRIDE_TMPDIR=$(mktemp -d 2>/dev/null) || _UV_OVERRIDE_TMPDIR=""
+                _UV_OVERRIDE_TMP_ROOT=${TMPDIR:-/tmp}
+                case "$_UV_OVERRIDE_TMP_ROOT" in *[[:space:]]*) _UV_OVERRIDE_TMP_ROOT=/tmp ;; esac
+                _UV_OVERRIDE_TMPDIR=$(mktemp -d "$_UV_OVERRIDE_TMP_ROOT/unsloth_uv.XXXXXX" 2>/dev/null) || _UV_OVERRIDE_TMPDIR=""
                 case "$_UV_OVERRIDE_TMPDIR" in
                     "") ;;
                     *[[:space:]]*) rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true; _UV_OVERRIDE_TMPDIR="" ;;
@@ -4065,6 +4067,49 @@ esac
 # ── Install unsloth directly into the venv (no activation needed) ──
 tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
+
+# A piped/standalone install.sh has no sibling requirements tree. Bootstrap only
+# the Unsloth wheel so its canonical Darwin override becomes available before
+# the first with-dependencies resolution; this avoids backtracking mlx-vlm and
+# then repairing it in a later phase. No-torch has no such resolve; repository,
+# local, and caller-configured installs already have an override and skip this.
+_bootstrap_packaged_mlx_override() {
+    [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] || return 0
+    [ "$SKIP_TORCH" = false ] || return 0
+    [ -f "${_OVERRIDES_FILE:-}" ] && return 0
+    [ -n "${UV_OVERRIDE:-}" ] && return 0
+
+    substep "preparing Apple Silicon model support..."
+    run_install_cmd_retry "prepare Apple Silicon dependencies" \
+        uv pip install --python "$_VENV_PY" --no-deps \
+        --upgrade-package "$PACKAGE_NAME" -- "$PACKAGE_NAME"
+
+    _PACKAGED_MLX_OVERRIDES=$("$_VENV_PY" -I -c "
+import importlib.resources
+path = importlib.resources.files('studio') / 'backend' / 'requirements' / 'single-env' / 'overrides-darwin-arm64.txt'
+print(path if path.is_file() else '')
+" 2>/dev/null || true)
+    if [ ! -f "$_PACKAGED_MLX_OVERRIDES" ]; then
+        substep "[WARN] Latest Apple Silicon model support could not be enabled. Installation will continue, but some newer models may be unavailable." "$C_WARN"
+        return 0
+    fi
+
+    _MLX_OVERRIDE_TMP_ROOT=${TMPDIR:-/tmp}
+    case "$_MLX_OVERRIDE_TMP_ROOT" in *[[:space:]]*) _MLX_OVERRIDE_TMP_ROOT=/tmp ;; esac
+    _UV_OVERRIDE_TMPDIR=$(mktemp -d "$_MLX_OVERRIDE_TMP_ROOT/unsloth_uv.XXXXXX" 2>/dev/null) \
+        || _UV_OVERRIDE_TMPDIR=""
+    if [ -z "$_UV_OVERRIDE_TMPDIR" ] \
+       || ! cp "$_PACKAGED_MLX_OVERRIDES" "$_UV_OVERRIDE_TMPDIR/overrides-darwin-arm64.txt"; then
+        [ -n "$_UV_OVERRIDE_TMPDIR" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+        _UV_OVERRIDE_TMPDIR=""
+        substep "[WARN] Latest Apple Silicon model support could not be enabled. Installation will continue, but some newer models may be unavailable." "$C_WARN"
+        return 0
+    fi
+    _OVERRIDES_FILE="$_UV_OVERRIDE_TMPDIR/overrides-darwin-arm64.txt"
+    export UV_OVERRIDE="$_OVERRIDES_FILE"
+}
+
+_bootstrap_packaged_mlx_override
 
 # A released unsloth wheel can pin an older torch (unsloth 2026.7.2 declares
 # torch<2.11.0); a with-deps PyPI resolve then downgrades the whole trio,

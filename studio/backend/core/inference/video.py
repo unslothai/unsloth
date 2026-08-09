@@ -465,34 +465,6 @@ def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
     return (pipe,)
 
 
-def _te_prequant_saving_mib(
-    fam: VideoFamily,
-    *,
-    te_quant_mode: Optional[str],
-    target: Any,
-    encoder_gb: float,
-    mib_per_gb: float,
-    dtype_scale: float,
-) -> int:
-    """How much of the family table's dense text-encoder budget a hosted pre-cast fp8 encoder
-    gives back, in MiB; 0 when no pre-cast encoder resolves for this pick.
-
-    ``te_prequant_sources`` is pure (no IO) and is the SAME gate assembly uses, so this can never
-    claim a saving the load does not take. fp8 keeps the existing steady-state factor, the one the
-    transformer re-plan already sizes fp8 weights with."""
-    try:
-        from .diffusion_te_prequant import te_prequant_sources
-
-        if not te_prequant_sources(fam, te_quant_mode = te_quant_mode, target = target):
-            return 0
-        factor = _QUANT_STEADY_FACTOR.get("fp8")
-        if not factor:
-            return 0
-        return max(0, int(encoder_gb * (1.0 - factor) * mib_per_gb * dtype_scale))
-    except Exception:  # noqa: BLE001 — sizing aid only; fall back to the dense figure
-        return 0
-
-
 class VideoBackend:
     """One loaded video pipeline; loads swap it atomically (same model as images)."""
 
@@ -1329,117 +1301,114 @@ class VideoBackend:
         device_memory = settled_snapshot_device_memory(target)
         components = fam.bf16_components_gb
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
-        if kind == "pipeline":
-            model_dense_mib = (
-                int(sum(components) * mib_per_gb * dtype_scale) if components is not None else None
-            )
-            companion_mib = None
-        else:
+        # bf16_components_gb is (transformer, text_encoder, vae) at bf16. When this pick takes its
+        # encoder PRE-CAST from a hosted fp8 checkpoint, the bf16 entry over-states what is loaded
+        # by ~11 GB for ltx-2's Gemma3-12B, which drags every budget below with it. The VAE is
+        # never quantised (quantize_text_encoders touches text encoders only, and vae_force_fp32
+        # families widen it), so only components[1] is scaled.
+        from .diffusion_te_prequant import te_prequant_budget_scale
+
+        te_scale = te_prequant_budget_scale(fam, te_quant_mode = text_encoder_quant, target = target)
+        transformer_mib: Optional[int] = None
+        if kind != "pipeline":
             checkpoint_path = self._resolve_checkpoint_path(repo_id, gguf_filename, hf_token)
             size_mib = file_size_mib(str(checkpoint_path))
-            model_dense_mib = None
             if kind == "gguf":
                 transformer_mib = estimate_gguf_resident_mib(size_mib)
             else:
                 transformer_mib = estimate_safetensors_dense_mib(size_mib)
                 if transformer_mib is not None:
                     transformer_mib = int(transformer_mib * dtype_scale)
-            companion_mib = (
-                int((components[1] + components[2]) * mib_per_gb * dtype_scale)
-                if components is not None
-                else None
-            )
-            # Budget ALL weights: companions stay resident, so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM.
-            model_dense_mib = (
-                transformer_mib + (companion_mib or 0) if transformer_mib is not None else None
-            )
         runtime_mib = estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
             height = fam.resolution_presets[0][1],
             num_frames = fam.default_num_frames,
         )
-        plan = plan_diffusion_memory(
-            target = target,
-            device_memory = device_memory,
-            model_dense_mib = model_dense_mib,
-            runtime_headroom_mib = runtime_mib,
-            companion_dense_mib = companion_mib,
-            requested_mode = normalize_memory_mode(memory_mode),
-        )
-        # Parity with the image dense-quant path: the bf16-table plan can force offload a quantised DiT would not need, so re-plan with the scheme factor and keep resident if it fits.
-        bf16_plan = plan
-        quant_replanned = False
-        if (
-            kind == "pipeline"
-            and plan.offload_policy != "none"
-            and normalize_transformer_quant(transformer_quant) is not None
-            and dense_transformer_supported(target)
-            and components is not None
-        ):
-            scheme_preview = select_transformer_quant_scheme(
-                target, transformer_quant, family = fam.name
-            )
-            factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
-            if factor is not None:
-                quant_mib = int(
-                    (components[0] * factor + components[1] + components[2]) * mib_per_gb
-                )
-                replanned = plan_diffusion_memory(
-                    target = target,
-                    device_memory = device_memory,
-                    model_dense_mib = quant_mib,
-                    runtime_headroom_mib = runtime_mib,
-                    companion_dense_mib = None,
-                    requested_mode = normalize_memory_mode(memory_mode),
-                )
-                if replanned.offload_policy == "none":
-                    logger.info(
-                        "video.transformer_quant: %s fits resident (%d MiB steady); "
-                        "dropping the bf16 plan's '%s' offload",
-                        scheme_preview,
-                        quant_mib,
-                        plan.offload_policy,
-                    )
-                    plan = replanned
-                    quant_replanned = True
 
-        # A hosted pre-cast fp8 text encoder REPLACES the dense one during assembly below, so the
-        # dense table figure is not what ends up resident (LTX-2 budgets 24.4 GB for its encoder;
-        # the pre-cast artifact is ~13 GB). This only overlaps the refusal on an integrated-CUDA
-        # device, where te_quant_supported's "cuda" requirement and unified memory both hold, and
-        # there it would turn away a load that fits. Size the encoder the load will really use.
-        refusal_plan = plan
-        if components is not None:
-            saving_mib = _te_prequant_saving_mib(
-                fam,
-                te_quant_mode = text_encoder_quant,
-                target = target,
-                encoder_gb = components[1],
-                mib_per_gb = mib_per_gb,
-                dtype_scale = dtype_scale,
-            )
-            committed_dense = plan.estimates.get("model_dense_mib")
-            if saving_mib and committed_dense is not None:
-                refusal_plan = plan_diffusion_memory(
-                    target = target,
-                    device_memory = device_memory,
-                    model_dense_mib = max(1, int(committed_dense) - saving_mib),
-                    runtime_headroom_mib = runtime_mib,
-                    # The quant re-plan folds the companions into model_dense_mib already.
-                    companion_dense_mib = (
-                        None
-                        if quant_replanned or companion_mib is None
-                        else max(1, companion_mib - saving_mib)
-                    ),
-                    requested_mode = normalize_memory_mode(memory_mode),
+        def _plan_for_te_scale(scale: float, *, log: bool) -> tuple[Any, Any, bool]:
+            """``(plan, bf16_plan, quant_replanned)`` for a text-encoder budget of ``scale`` x
+            its bf16 size. Pure and cheap (``plan_diffusion_memory`` is arithmetic), so the
+            dense-encoder plan can be rebuilt below if the pre-cast injection does not land."""
+            text_encoder_gb = components[1] * scale if components is not None else 0.0
+            companions_gb = text_encoder_gb + components[2] if components is not None else 0.0
+            if log and scale != 1.0 and components is not None:
+                logger.info(
+                    "video.te_prequant_budget: budgeting the pre-cast %s text encoder at %.2f of "
+                    "bf16 (%.1f GB instead of %.1f GB)",
+                    text_encoder_quant,
+                    scale,
+                    text_encoder_gb,
+                    components[1],
                 )
+            if kind == "pipeline":
+                model_dense_mib = (
+                    int((components[0] + companions_gb) * mib_per_gb * dtype_scale)
+                    if components is not None
+                    else None
+                )
+                companion_mib = None
+            else:
+                companion_mib = (
+                    int(companions_gb * mib_per_gb * dtype_scale)
+                    if components is not None
+                    else None
+                )
+                # Budget ALL weights: companions stay resident, so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM.
+                model_dense_mib = (
+                    transformer_mib + (companion_mib or 0) if transformer_mib is not None else None
+                )
+            planned = plan_diffusion_memory(
+                target = target,
+                device_memory = device_memory,
+                model_dense_mib = model_dense_mib,
+                runtime_headroom_mib = runtime_mib,
+                companion_dense_mib = companion_mib,
+                requested_mode = normalize_memory_mode(memory_mode),
+            )
+            # Parity with the image dense-quant path: the bf16-table plan can force offload a quantised DiT would not need, so re-plan with the scheme factor and keep resident if it fits.
+            dense_plan = planned
+            replanned_for_quant = False
+            if (
+                kind == "pipeline"
+                and planned.offload_policy != "none"
+                and normalize_transformer_quant(transformer_quant) is not None
+                and dense_transformer_supported(target)
+                and components is not None
+            ):
+                scheme_preview = select_transformer_quant_scheme(
+                    target, transformer_quant, family = fam.name
+                )
+                factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
+                if factor is not None:
+                    quant_mib = int((components[0] * factor + companions_gb) * mib_per_gb)
+                    replanned = plan_diffusion_memory(
+                        target = target,
+                        device_memory = device_memory,
+                        model_dense_mib = quant_mib,
+                        runtime_headroom_mib = runtime_mib,
+                        companion_dense_mib = None,
+                        requested_mode = normalize_memory_mode(memory_mode),
+                    )
+                    if replanned.offload_policy == "none":
+                        if log:
+                            logger.info(
+                                "video.transformer_quant: %s fits resident (%d MiB steady); "
+                                "dropping the bf16 plan's '%s' offload",
+                                scheme_preview,
+                                quant_mib,
+                                planned.offload_policy,
+                            )
+                        planned = replanned
+                        replanned_for_quant = True
+            return planned, dense_plan, replanned_for_quant
+
+        plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = True)
+
         # On unified memory the plan's 'none' policy is a placement, not a fit: there is no
         # offload tier left to fall back to, so an oversized load is killed by the OS with no
         # torch OOM to catch. Refuse now, after the eviction above and after the quant re-plan
         # (CUDA-only, but check the plan we committed to), before any weight is materialised.
-        raise_on_unified_memory_shortfall(
-            refusal_plan, family = getattr(fam, "name", None), logger = logger
-        )
+        raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
@@ -1454,17 +1423,27 @@ class VideoBackend:
         # A hosted pre-cast fp8 text encoder skips the dense TE download (for LTX Gemma3-27B, ~50 GB). The cast re-applies idempotently.
         from .diffusion_te_prequant import te_prequant_pipe_kwargs
 
-        pipe_kwargs.update(
-            te_prequant_pipe_kwargs(
-                fam,
-                repo_id if kind == "pipeline" else base,
-                te_quant_mode = text_encoder_quant,
-                target = target,
-                dtype = dtype,
-                hf_token = hf_token,
-                logger = logger,
-            )
+        te_injected = te_prequant_pipe_kwargs(
+            fam,
+            repo_id if kind == "pipeline" else base,
+            te_quant_mode = text_encoder_quant,
+            target = target,
+            dtype = dtype,
+            hf_token = hf_token,
+            logger = logger,
         )
+        pipe_kwargs.update(te_injected)
+        # The fp8-sized budget is valid only once the pre-cast encoder is actually in hand. Injection is best-effort
+        # (an unreachable / corrupt / base-mismatched checkpoint falls back to the dense encoder), and a dense encoder
+        # under an fp8 budget under-states the resident requirement by ~11 GB for ltx-2, which is the direction that
+        # OOMs. Placement is applied post-assembly (apply_memory_plan below), so re-plan at bf16 here, exactly as the
+        # dense-quant fallback below restores bf16_plan.
+        if te_scale != 1.0 and not te_injected:
+            logger.warning(
+                "video.te_prequant_budget: no pre-cast encoder was injected; re-planning "
+                "memory at the dense bf16 text-encoder size"
+            )
+            plan, bf16_plan, quant_replanned = _plan_for_te_scale(1.0, log = False)
         # Injection is best-effort (a missing checkpoint falls back to the dense encoder), but the scoped pre-download already dropped those
         # shards and from_pretrained cannot re-fetch from a local snapshot dir, so top them up here. ltx23 never reaches this: it gets the hub id.
         missing_dense = [c for c in (_te_prequant_skipped or ()) if c not in pipe_kwargs]
