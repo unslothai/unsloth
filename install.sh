@@ -1647,8 +1647,8 @@ STUB_EOF
         # Touch so Finder indexes it
         touch "$_css_app"
 
-        # lsd registers the bundle on its own within seconds; this just makes it
-        # immediate so Launchpad is not briefly missing a fresh install.
+        # launchservicesd registers the bundle on its own within seconds; this
+        # just makes it immediate so Spotlight is not briefly missing a fresh install.
         _css_lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
         if [ -x "$_css_lsregister" ]; then
             "$_css_lsregister" -f "$_css_app" >/dev/null 2>&1 || true
