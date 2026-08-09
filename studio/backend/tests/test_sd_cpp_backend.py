@@ -469,6 +469,7 @@ def test_status_loaded_shape():
     assert st["engine"] == "sd_cpp"
     assert st["family"] == "z-image"
     assert st["device"] == "cpu"
+    assert st["gguf_variant"] is None
     # diffusers-only fields are present (route response parity) but null.
     for k in ("transformer_quant", "attention_backend", "transformer_cache", "text_encoder_quant"):
         assert st[k] is None
@@ -750,6 +751,7 @@ def _run_server_load(
     servers,
     fam_name = "z-image",
     device = "cpu",
+    gguf_filename = "z.gguf",
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -775,7 +777,7 @@ def _run_server_load(
     b._load_token = 1
     b._run_load(
         repo_id = "unsloth/Z-Image-Turbo-GGUF",
-        gguf_filename = "z.gguf",
+        gguf_filename = gguf_filename,
         base = fam.base_repo,
         fam = fam,
         hf_token = None,
@@ -791,6 +793,13 @@ def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
     assert servers[0].started is not None  # the model is loaded once, at spawn
     assert b._state is not None and b._state.mode == "server" and b._state.server is servers[0]
     assert b.status()["native_mode"] == "server"
+
+
+def test_server_status_reports_selected_gguf_quant(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, gguf_filename = "z-image-turbo-Q8_0.gguf")
+    assert b.status()["gguf_variant"] == "Q8_0"
 
 
 def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):
@@ -1262,3 +1271,32 @@ def test_the_delete_guard_names_the_repack_as_well_as_the_mirror(monkeypatch):
     protected = _with_mirrors(["unsloth/Z-Image-Turbo-ComfyUI"])
     assert "unsloth/Z-Image-Turbo-ComfyUI" in protected
     assert "Comfy-Org/z_image_turbo" in protected
+
+
+def test_generate_reports_the_build_the_recipe_persists():
+    # The route writes the recipe straight off these keys, so a key the native result omits is
+    # persisted as null. The engine has no dense quant and no memory planner (honest nulls), but
+    # the offload it ran under is real -- and every native image recorded it as "unknown".
+    b = _loaded_backend()
+    s = b._state
+    b._state = bk._SdState(
+        repo_id = s.repo_id,
+        base_repo = s.base_repo,
+        family = s.family,
+        device = "cuda",
+        files = s.files,
+        vae_format = s.vae_format,
+        sampling_method = s.sampling_method,
+        flow_shift = s.flow_shift,
+        mode = s.mode,
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        offload_flags = ("--vae-on-cpu", "--clip-on-cpu"),
+    )
+    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    assert out["model_kind"] == "gguf"
+    assert out["gguf_filename"] == "z-image-turbo-Q4_K_M.gguf"
+    assert out["offload_policy"] == "active"
+    # Same derivation status() uses, so the recipe and the Loaded build panel cannot disagree.
+    assert out["offload_policy"] == b.status()["offload_policy"]
+    assert out["transformer_quant"] is None and out["text_encoder_quant"] is None
+    assert out["memory_mode"] is None
