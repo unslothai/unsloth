@@ -3599,6 +3599,70 @@ def test_probe_failure_does_not_demote_to_a_lower_priority_candidate(tmp_path, m
     assert len(fetches) == 1  # and the probe was not retried per candidate
 
 
+def test_probe_failure_does_not_demote_to_an_older_release(tmp_path, monkeypatch):
+    # The per-release handler in install_prebuilt also swallows PrebuiltFallback and
+    # continues to an older plan, so a probe failure raised inside it would install an
+    # older llama.cpp over a transient 429. The probe does not depend on the release.
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+
+    def hashless_plan(release_tag: str, llama_tag: str):
+        choice = AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = release_tag,
+            name = f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz",
+            url = f"https://example.com/{llama_tag}.tar.gz",
+            source_label = "direct-upstream",
+            install_kind = "linux-cpu",
+            expected_sha256 = None,  # hashless plans always smoke-test
+        )
+        return INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+            requested_tag = "latest",
+            llama_tag = llama_tag,
+            release_tag = release_tag,
+            attempts = [choice],
+            approved_checksums = ApprovedReleaseChecksums(
+                repo = "unslothai/llama.cpp",
+                release_tag = release_tag,
+                upstream_tag = llama_tag,
+                source_commit = None,
+                artifacts = {},
+            ),
+        )
+
+    plans = [hashless_plan("release-2", "b9002"), hashless_plan("release-1", "b9001")]
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: _nvidia_linux_host())
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "resolve_simple_install_release_plans",
+        lambda llama_tag, host, published_repo, published_release_tag: ("latest", plans),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        # The real one wraps transport errors in PrebuiltFallback; mirror that.
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+                "validation model unavailable: HTTP Error 429: Too Many Requests"
+            )
+        ),
+    )
+    validated: list[str] = []
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_prebuilt_attempts",
+        lambda attempts, *args, **kwargs: validated.append(list(attempts)[0].name),
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    # One clean fallback to the source build, not a silent downgrade to release-1.
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+    assert validated == []
+
+
 def test_staged_validation_enabled_default_off(monkeypatch):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
     monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
