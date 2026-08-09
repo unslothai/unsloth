@@ -66,6 +66,7 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     raise_on_unified_memory_shortfall,
     settled_snapshot_device_memory,
+    unified_memory_shortfall_message,
 )
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -1330,7 +1331,16 @@ class VideoBackend:
             its bf16 size. Pure and cheap (``plan_diffusion_memory`` is arithmetic), so the
             dense-encoder plan can be rebuilt below if the pre-cast injection does not land."""
             text_encoder_gb = components[1] * scale if components is not None else 0.0
-            companions_gb = text_encoder_gb + components[2] if components is not None else 0.0
+            # dtype_scale doubles bf16 terms when the fp16 promotion lands fp32 on an accelerator.
+            # A vae_force_fp32 family is the one component it must NOT touch: its table term is
+            # already recorded at fp32 and assembly pins the VAE to fp32 either way, so scaling it
+            # counts those bytes twice (2.8 GB on Wan TI2V-5B) against a hard refusal.
+            vae_gb = components[2] if components is not None else 0.0
+            vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
+            scaled_te_gb = text_encoder_gb * dtype_scale
+            scaled_vae_gb = vae_gb * vae_scale
+            companions_gb = text_encoder_gb + vae_gb if components is not None else 0.0
+            scaled_companions_gb = scaled_te_gb + scaled_vae_gb if components is not None else 0.0
             if log and scale != 1.0 and components is not None:
                 logger.info(
                     "video.te_prequant_budget: budgeting the pre-cast %s text encoder at %.2f of "
@@ -1342,16 +1352,14 @@ class VideoBackend:
                 )
             if kind == "pipeline":
                 model_dense_mib = (
-                    int((components[0] + companions_gb) * mib_per_gb * dtype_scale)
+                    int((components[0] * dtype_scale + scaled_companions_gb) * mib_per_gb)
                     if components is not None
                     else None
                 )
                 companion_mib = None
             else:
                 companion_mib = (
-                    int(companions_gb * mib_per_gb * dtype_scale)
-                    if components is not None
-                    else None
+                    int(scaled_companions_gb * mib_per_gb) if components is not None else None
                 )
                 # Budget ALL weights: companions stay resident, so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM.
                 model_dense_mib = (
@@ -1368,9 +1376,15 @@ class VideoBackend:
             # Parity with the image dense-quant path: the bf16-table plan can force offload a quantised DiT would not need, so re-plan with the scheme factor and keep resident if it fits.
             dense_plan = planned
             replanned_for_quant = False
+            # Unified memory never reports an offload policy -- shuffling bytes inside one shared
+            # pool frees nothing, so the planner returns 'none' for ANY size -- and the refusal
+            # below reads this plan. Without this second trigger the bf16 table alone decides,
+            # and a quantised DiT that fits the pool (LTX-2's 37.8 GB at fp8 on a 96 GB shared
+            # device) is refused on a size it never occupies.
+            planned_shortfall = unified_memory_shortfall_message(planned) is not None
             if (
                 kind == "pipeline"
-                and planned.offload_policy != "none"
+                and (planned.offload_policy != "none" or planned_shortfall)
                 and normalize_transformer_quant(transformer_quant) is not None
                 and dense_transformer_supported(target)
                 and components is not None
@@ -1389,7 +1403,12 @@ class VideoBackend:
                         companion_dense_mib = None,
                         requested_mode = normalize_memory_mode(memory_mode),
                     )
-                    if replanned.offload_policy == "none":
+                    # On unified memory 'none' says nothing, so the quant plan has to clear the
+                    # shortfall itself before it can replace one that did not.
+                    if replanned.offload_policy == "none" and (
+                        not planned_shortfall
+                        or unified_memory_shortfall_message(replanned) is None
+                    ):
                         if log:
                             logger.info(
                                 "video.transformer_quant: %s fits resident (%d MiB steady); "
@@ -1407,7 +1426,7 @@ class VideoBackend:
         # On unified memory the plan's 'none' policy is a placement, not a fit: there is no
         # offload tier left to fall back to, so an oversized load is killed by the OS with no
         # torch OOM to catch. Refuse now, after the eviction above and after the quant re-plan
-        # (CUDA-only, but check the plan we committed to), before any weight is materialised.
+        # that the shortfall itself can now trigger, before any weight is materialised.
         raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
 
         # ── build the pipeline.

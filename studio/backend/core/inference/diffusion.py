@@ -43,6 +43,7 @@ from .diffusion_families import (
     DiffusionFamily,
     assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
+    _is_local_path,
     canonical_base,
     default_generation_params,
     detect_family_for_pick,
@@ -3584,9 +3585,13 @@ class DiffusionBackend:
         LOWERS the estimate -- a table that reads higher than the shards (a narrow fp8 base that
         upcasts) is already handled in the plan, and taking the max here would double-count it.
         Left alone entirely for single-file/GGUF kinds, whose on-disk size IS their resident size,
-        and on any target that is not sized in bf16."""
+        on any target that is not sized in bf16, and for a LOCAL directory: the table is keyed on
+        upstream repo ids, so a local checkpoint can only ever reach the coarse family entry, and
+        a family covering more than one size (a local FLUX.2-klein 9B against klein's 4B default)
+        would be lowered to a number less than half what it loads. On disk is the measured truth
+        there; only a hub id the table actually recognises earns the substitution."""
         try:
-            if kind != "pipeline":
+            if kind != "pipeline" or _is_local_path(base):
                 return plan
             import torch
 

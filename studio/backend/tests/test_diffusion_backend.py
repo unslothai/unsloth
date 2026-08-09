@@ -6881,3 +6881,55 @@ def test_discrete_vram_image_load_is_unaffected_by_the_refusal(fake_runtime, mon
         family_override = "z-image",
     )
     assert status["loaded"] is True
+
+
+# ── the resident-size substitution must not out-guess a measured local checkpoint ──
+
+
+def _plan_with_weights(mib):
+    from core.inference.diffusion_memory import DeviceMemory, MemoryPlan
+
+    return MemoryPlan(
+        requested_mode = "auto",
+        offload_policy = "none",
+        vae_tiling = False,
+        vae_slicing = False,
+        device_memory = DeviceMemory("mps", "mps", "unified_memory", 32_768, 65_536),
+        estimates = {"model_dense_mib": mib, "safe_device_budget_mib": 24_000},
+    )
+
+
+def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, monkeypatch):
+    """The table is keyed on UPSTREAM ids, so a local directory can only reach the coarse family
+    entry -- and a family with more than one size under it (a local FLUX.2-klein 9B against
+    klein's 4B default) would be re-sized to less than half what it loads, walking straight past
+    the refusal into the OS killer. On disk is the measured truth for a local path."""
+    import torch
+
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_families import detect_family
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    fam = detect_family("black-forest-labs/FLUX.2-klein-9B")
+    backend = DiffusionBackend()
+    measured = 34_000  # what a 9B pipeline's shards actually weigh
+
+    local = str(Path.cwd())
+    plan = _plan_with_weights(measured)
+    kept = backend._resident_sized_plan(plan, fam, local, target, "pipeline")
+    assert kept.estimates["model_dense_mib"] == measured
+
+    # A hub id the table does recognise still gets the substitution: that is the fp32-shard case
+    # (Z-Image, Lumina) this exists for, and it is what keeps a load that fits from being refused.
+    lowered = backend._resident_sized_plan(
+        plan, fam, "black-forest-labs/FLUX.2-klein-4B", target, "pipeline"
+    )
+    assert lowered.estimates["model_dense_mib"] < measured

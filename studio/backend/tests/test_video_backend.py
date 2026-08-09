@@ -2740,3 +2740,107 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
         (transformer_gb * _QUANT_STEADY_FACTOR["int8"] + text_encoder_gb * scale + vae_gb)
         * _MIB_PER_GB
     )
+
+
+# ── the refusal reads the plan the load will actually take ────────────────────
+# Two ways the hard unified-memory refusal added in PR #8213 can read a number the load never
+# occupies, both of which turn it from a guard into a false rejection.
+
+
+def _fp32_promoted_cuda_target(monkeypatch):
+    """A CUDA target whose fp16 promotes to fp32, i.e. dtype_scale == 2 in the video planner."""
+    import torch
+
+    import core.inference.video as video_mod
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+
+    target = DiffusionDeviceTarget(
+        device = "cuda",
+        dtype = torch.float16,
+        backend = "cuda",
+        vendor = "nvidia",
+        supports_model_cpu_offload = True,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = True,
+    )
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda: target)
+    return target
+
+
+def test_the_fp32_promotion_does_not_double_an_already_fp32_wan_vae(fake_runtime, monkeypatch):
+    # A device without bf16 promotes the whole plan by 2. Wan's VAE term is recorded at fp32
+    # ALREADY (the family comment says so) and assembly pins that VAE to fp32 whatever the
+    # promotion does, so doubling it counts 2.8 GB twice on TI2V-5B. Against a hard refusal that
+    # is a load rejected over bytes it never allocates.
+    from core.inference.video_families import detect_video_family
+
+    _fp32_promoted_cuda_target(monkeypatch)
+    transformer_gb, te_gb, vae_gb = detect_video_family(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    ).bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    # bf16 terms doubled, the fp32 VAE term left exactly where the table put it.
+    assert calls[0]["model_dense_mib"] == int(
+        ((transformer_gb + te_gb) * 2.0 + vae_gb) * _MIB_PER_GB
+    )
+
+
+def test_the_fp32_promotion_still_doubles_a_bf16_vae(fake_runtime, monkeypatch):
+    # LTX-2 does not force fp32, so its VAE term IS a bf16 one and must keep scaling with the rest.
+    from core.inference.video_families import detect_video_family
+
+    _fp32_promoted_cuda_target(monkeypatch)
+    components = detect_video_family("Lightricks/LTX-2").bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")
+    assert calls[0]["model_dense_mib"] == int(sum(components) * 2.0 * _MIB_PER_GB)
+
+
+def test_unified_memory_weighs_the_quantised_dit_before_refusing(fake_runtime, monkeypatch):
+    """An integrated CUDA device reports unified memory, and the planner returns 'none' there for
+    ANY size, so the quant re-plan's `offload_policy != none` trigger can never fire. The refusal
+    then judged LTX-2's 37.8 GB bf16 DiT on a device where the fp8 build fits, and rejected a load
+    that would have run."""
+    import core.inference.video as video_mod
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_memory import DeviceMemory
+    from core.inference.video_families import detect_video_family
+
+    import torch
+
+    target = DiffusionDeviceTarget(
+        device = "cuda",
+        dtype = torch.bfloat16,
+        backend = "cuda",
+        vendor = "nvidia",
+        supports_model_cpu_offload = True,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = True,
+    )
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda: target)
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda t: True)
+    monkeypatch.setattr(
+        video_mod, "select_transformer_quant_scheme", lambda t, q, family = None: "fp8"
+    )
+    total = 96 * 1024
+    monkeypatch.setattr(
+        video_mod,
+        "settled_snapshot_device_memory",
+        lambda t: DeviceMemory("cuda", "cuda", "unified_memory", int(total * 0.80), total),
+    )
+    components = detect_video_family("Lightricks/LTX-2").bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    # "auto", not a pinned scheme: the fake pipeline has no real DiT for the quantiser to touch,
+    # and what is under test is the plan the refusal reads, not whether the build engages.
+    status = VideoBackend().load_pipeline(
+        "Lightricks/LTX-2", model_kind = "pipeline", transformer_quant = "auto"
+    )
+    assert status["loaded"] is True
+    # The bf16 plan was tried first and the quant plan followed it, so the refusal saw the
+    # smaller of the two rather than a size the fp8 build never reaches.
+    assert calls[0]["model_dense_mib"] == int(sum(components) * _MIB_PER_GB)
+    assert calls[-1]["model_dense_mib"] < calls[0]["model_dense_mib"]
