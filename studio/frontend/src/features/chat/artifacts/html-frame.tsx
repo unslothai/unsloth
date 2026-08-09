@@ -21,6 +21,11 @@ const BLOCKED_URIS_TRACKED = 100;
 // the stored string and the host derived from it.
 const BLOCKED_URI_MAX_CHARS = 2048;
 
+// The only directives the network CSP leaves at 'none'. Kept in step by
+// test_the_grant_widens_everything_but_the_locked_directives, which fails if
+// the two policies stop differing exactly outside this set.
+const GRANT_CANNOT_FIX = new Set(["object-src", "base-uri", "form-action"]);
+
 type BlockedState = { code: string; uris: string[]; hosts: string[] };
 
 const NOTHING_BLOCKED: BlockedState = { code: "", uris: [], hosts: [] };
@@ -159,6 +164,11 @@ export function ArtifactHtmlFrame({
         if (typeof uri !== "string" || uri.length > BLOCKED_URI_MAX_CHARS) {
           return;
         }
+        // The permissive CSP keeps these three at 'none', so the grant cannot
+        // fix them. Prompting anyway talks the user into widening the policy
+        // for nothing, and the banner then hides itself because the grant is
+        // on, leaving a still-broken canvas and no way back to the prompt.
+        if (GRANT_CANNOT_FIX.has(event.data.effectiveDirective)) return;
         const host = blockedHost(uri);
         if (!host) return;
         setBlocked((current) => appendBlocked(current, code, uri, host));

@@ -224,6 +224,8 @@ test("no effect resets the grant, which would leave a stale render", () => {
   assert.ok(!resetInEffect, "the grant must not be reset from an effect");
 });
 
+const DIRECTIVE_FILTER =
+  /GRANT_CANNOT_FIX\.has\(event\.data\.effectiveDirective\)/;
 const URI_LENGTH_GUARD = /uri\.length > BLOCKED_URI_MAX_CHARS/;
 const URI_CAP = /\buris\.length >= BLOCKED_URIS_TRACKED/;
 const URI_DUPLICATE = /\buris\.includes\(uri\)/;
@@ -289,6 +291,32 @@ test("oversized blocked URIs are dropped before anything is stored", () => {
   };
   source.forEachChild(visit);
   assert.ok(bounded, "an oversized blockedURI is not rejected");
+});
+
+// object-src, base-uri and form-action stay at 'none' in the permissive policy,
+// so granting network cannot fix them. Prompting anyway walks the user into
+// widening the policy for nothing, and the banner then hides itself because the
+// grant is on. The backend counterpart asserts these are exactly the directives
+// the two policies agree on, so the set cannot drift.
+test("the grant is not offered for directives it cannot fix", () => {
+  assert.equal(
+    readConst("GRANT_CANNOT_FIX"),
+    'new Set(["object-src", "base-uri", "form-action"])',
+  );
+  const source = sourceFile(FRAME);
+  let filtered = false;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isIfStatement(node) &&
+      DIRECTIVE_FILTER.test(node.expression.getText()) &&
+      node.thenStatement.getText().includes("return")
+    ) {
+      filtered = true;
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.ok(filtered, "reports are not filtered by effective directive");
 });
 
 // The canvas picks the blocked URIs, so an uncapped list is memory growth and a

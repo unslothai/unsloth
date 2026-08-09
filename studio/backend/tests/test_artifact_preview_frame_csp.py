@@ -72,3 +72,43 @@ def test_blocked_reports_carry_the_load_they_came_from():
         shell.index("const reportBlocked"),
     )
     assert read < report
+
+
+def _directives(csp: str) -> dict:
+    out = {}
+    for part in csp.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        name, _, value = part.partition(" ")
+        out[name] = value.strip()
+    return out
+
+
+def test_the_shell_reports_which_directive_was_violated():
+    # Without it the banner cannot tell a blocked CDN script from an object-src
+    # violation, and offers a grant that provably cannot fix the latter.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert "effectiveDirective: event.effectiveDirective" in shell
+
+
+def test_the_grant_widens_everything_but_the_locked_directives():
+    # Pins GRANT_CANNOT_FIX in html-frame.tsx. If a directive is ever locked
+    # down in both policies, this fails and that set has to be updated, or the
+    # banner starts prompting for something the grant cannot fix.
+    strict = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_STRICT_CSP)
+    network = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_NETWORK_CSP)
+    unchanged = {
+        name for name, value in strict.items() if name in network and network[name] == value
+    }
+    # frame-ancestors and sandbox are not resource loads, so they never produce
+    # a blocked-resource report to filter.
+    assert unchanged == {
+        "object-src",
+        "base-uri",
+        "form-action",
+        "frame-ancestors",
+        "sandbox",
+    }
+    for locked in ("object-src", "base-uri", "form-action"):
+        assert network[locked] == "'none'"

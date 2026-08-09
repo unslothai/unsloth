@@ -2240,6 +2240,7 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           parent.postMessage({
             type: "unsloth:artifact-blocked",
             blockedURI: event.blockedURI || "",
+            effectiveDirective: event.effectiveDirective || "",
             v: loadVersion,
           }, "*");
         };
