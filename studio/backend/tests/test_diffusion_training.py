@@ -1365,6 +1365,54 @@ def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypat
     assert client._fake.started_with is None
 
 
+def test_route_start_refuses_ltx2_without_the_pipeline_before_freeing_gpu(client, monkeypatch):
+    # LTX2Pipeline landed in diffusers 0.39, and the packaging deliberately leaves an older
+    # diffusers installable on the Python 3.9 hosts this project still supports. Without the
+    # pipeline-class assert in the training preflight the family resolved as trainable, the start
+    # freed the resident GPU workloads, and only the spawned child failed. Losing a loaded model
+    # and THEN failing is the worst ordering available, so nothing may be torn down or reserved.
+    import sys
+    import types
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.37.0"))
+
+    r = client.post(
+        "/api/train/diffusion/start", json = {**_BODY, "base_model": "Lightricks/LTX-2"}
+    )
+    assert r.status_code == 400, r.text
+    assert "LTX2Pipeline" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []  # the slot was never even reserved
+    assert client._fake.started_with is None
+
+
+def test_route_start_refuses_a_component_repo_before_freeing_gpu(client, monkeypatch):
+    # unsloth/LTX-2-FP8 holds pre-cast component archives, not a pipeline: no model_index.json,
+    # no VAE. The name still carries the "ltx-2" token so the family detector claimed it, the
+    # unsloth/* trust gate passed it, and the gated-access probe ignores the model_index.json 404
+    # (a 404 is not an access problem) -- so the start evicted the resident models and only then
+    # failed inside from_pretrained.
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+
+    r = client.post(
+        "/api/train/diffusion/start", json = {**_BODY, "base_model": "unsloth/LTX-2-FP8"}
+    )
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "model_index.json" in detail  # says why it cannot be a base
+    assert "Lightricks/LTX-2" in detail  # and names what to train instead
+    assert freed == []
+    assert client._fake.calls == []
+    assert client._fake.started_with is None
+
+
 def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatch):
     # A DiT precision the host cannot run must 400 BEFORE the GPU residents are freed. The route imports the helper locally, so patch its home module.
     import routes.training as tr

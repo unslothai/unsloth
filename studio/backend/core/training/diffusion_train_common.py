@@ -122,6 +122,78 @@ def _refuse_untrainable_video_family(name: str) -> None:
     )
 
 
+def _component_only_repos() -> dict[str, tuple[str, str, str]]:
+    """Every repo the family registries list only as a COMPONENT source, keyed by lowercased
+    repo id -> (family name, component, that family's base repo).
+
+    A pre-cast text-encoder repo (``te_prequant_repos``, present in both the image and the video
+    registry) ships a single component archive: no ``model_index.json``, no VAE, no scheduler, no
+    pipeline. ``from_pretrained`` on one can only fail. Nothing in the NAME says so, which is the
+    whole problem: ``unsloth/LTX-2-FP8`` carries the ``ltx-2`` token, so the family detectors
+    claim it and the ``unsloth/*`` trust gate passes it. The registries' own tables are the only
+    authority on what a repo actually holds, so read them rather than special-casing repo ids.
+
+    A repo that is ALSO registered as a base somewhere (a full quantized pipeline mirror, a
+    deploy base, a train base) is a base and never appears here."""
+    from core.inference.diffusion_families import detect_family
+    from core.inference.video_families import detect_video_family
+
+    families = [detect_family("", override = n) for n in supported_family_names()]
+    families += [detect_video_family("", override = n) for n in supported_video_family_names()]
+    components: dict[str, tuple[str, str, str]] = {}
+    bases: set[str] = set()
+    for fam in families:
+        if fam is None:
+            continue
+        for attr in ("base_repo", "deploy_base_repo"):
+            repo = getattr(fam, attr, None)
+            if repo:
+                bases.add(str(repo).strip().lower())
+        bases.update(str(r).strip().lower() for r in getattr(fam, "train_base_repos", ()) if r)
+        # (scheme, repo) and (base, scheme, repo): both name a FULL pipeline mirror, so both are bases.
+        for table in ("prequant_repos", "prequant_variant_repos"):
+            bases.update(str(row[-1]).strip().lower() for row in getattr(fam, table, ()) if row)
+        for _scheme, component, repo in getattr(fam, "te_prequant_repos", ()):
+            components.setdefault(
+                str(repo).strip().lower(), (fam.name, str(component), str(fam.base_repo))
+            )
+    return {repo: hit for repo, hit in components.items() if repo not in bases}
+
+
+def _refuse_component_only_repo(base_model: str) -> None:
+    """Raise for a base model that is a family's component checkpoint rather than a model.
+
+    Runs from ``resolve_trainable_family``, so it fires in the ``/diffusion/start`` preflight
+    BEFORE the resident GPU workloads are freed. Without it the name match resolved a real
+    family, the trust gate passed the ``unsloth/*`` repo, the gated-access probe ignored the
+    resulting ``model_index.json`` 404 (a 404 is not an access problem), and the run evicted the
+    user's loaded model before failing inside ``from_pretrained`` in the child."""
+    hit = _component_only_repos().get(str(base_model or "").strip().lower())
+    if hit is None:
+        return
+    family, component, base_repo = hit
+    raise ValueError(
+        f"'{base_model}' is the pre-cast {component} checkpoint for the '{family}' family, not a "
+        f"full model: it ships no model_index.json and no pipeline, so it cannot be a training "
+        f"base. Train from '{base_repo}' instead."
+    )
+
+
+def _assert_video_pipeline_available(fam: Any) -> None:
+    """Refuse a video family whose pipeline class the installed diffusers does not carry.
+
+    ``pyproject`` deliberately keeps the diffusers floor conditional -- diffusers dropped Python
+    3.9 in 0.38 and this project still supports 3.9 -- so a supported install can legitimately
+    predate ``LTX2Pipeline``. The inference paths already assert this before a load; the training
+    preflight did not, so the family resolved as trainable, ``/diffusion/start`` freed the
+    resident GPU workloads, and only the spawned child discovered the pipeline was missing.
+    Losing a loaded model and THEN failing is the worst ordering available, so assert here, while
+    ``resolve_trainable_family`` still runs ahead of any teardown."""
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    assert_pipeline_class_available(fam.pipeline_class, fam.name)
+
+
 def _trainable_hint() -> str:
     """A user-facing hint listing the families Studio can train today. Always names SDXL
     explicitly so the message is actionable even as more families become trainable."""
@@ -157,6 +229,10 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
             f"'{base_model}' is a GGUF checkpoint/repo, which can't be a training base "
             f"(training needs the full diffusers model). {_trainable_hint()}"
         )
+    # A component checkpoint is not a base whatever family the name matches, so this precedes
+    # every family branch below (including an explicit model_family override, which names the
+    # family but says nothing about what the repo holds).
+    _refuse_component_only_repo(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
@@ -167,6 +243,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
             if vid is not None:
                 if vid.name not in TRAINABLE_VIDEO_FAMILIES:
                     _refuse_untrainable_video_family(vid.name)
+                _assert_video_pipeline_available(vid)
                 return vid.name
             known = ", ".join(supported_family_names() + supported_video_family_names())
             raise ValueError(f"Unknown model_family {model_family!r}. Known families: {known}.")
@@ -189,6 +266,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     if vid is not None:
         if vid.name not in TRAINABLE_VIDEO_FAMILIES:
             _refuse_untrainable_video_family(vid.name)
+        _assert_video_pipeline_available(vid)
         return vid.name
 
     condensed = re.sub(r"[^a-z0-9]+", "-", name)
@@ -1138,7 +1216,16 @@ def _publish_to_lora_catalog(lora_path: str, cfg: DiffusionLoraConfig) -> Option
     the Images LoRA picker (which scans only files directly under ``loras/diffusion``) finds
     it without the user moving files. Also writes a ``<alias>.json`` metadata sidecar so the
     picker can family-gate the adapter (family, base model, trigger prompt, ...). Returns the
-    published path, or None on any failure."""
+    published path, or None on any failure.
+
+    A VIDEO family publishes nothing. ``loras/diffusion`` is read by the Images LoRA picker
+    alone, and ``core/inference/video.py`` has no LoRA surface at all, so mirroring a video
+    adapter there would copy a large file into a catalog nothing can load and hand the UI a
+    deployment path Studio cannot honour. The run still reports ``lora_path`` (and ``ema_path``),
+    which is the adapter a caller loads directly. Giving video its own catalog and a load path
+    on the Video tab is a separate, larger piece of work."""
+    if detect_video_family("", override = cfg.resolved_family) is not None:
+        return None
     try:
         import shutil
 

@@ -13,6 +13,7 @@ the SDXL trainer. The training loop itself is exercised by the live GPU run."""
 
 from __future__ import annotations
 
+import sys
 import types
 
 import pytest
@@ -34,13 +35,16 @@ from core.training.diffusion_dit_trainer import (
 )
 from core.training.diffusion_train_common import (
     AUTO_FLOW_SHIFT_FAMILIES,
+    DEFAULT_LORA_FILENAME,
     DEFAULT_LORA_TARGETS,
     DiffusionLoraConfig,
     TRAINABLE_VIDEO_FAMILIES,
     _assert_trusted_base_model,
+    _component_only_repos,
     _DIT_TRAIN_FAMILIES,
     _family_vram_note,
     get_trainer,
+    _publish_to_lora_catalog,
     resolve_trainable_family,
     train_defaults,
 )
@@ -444,7 +448,7 @@ def test_free_text_encoders_drops_the_ltx2_conditioning_stack():
 # ── routing, defaults, validation ────────────────────────────────────────────
 @pytest.mark.parametrize(
     "base",
-    ["Lightricks/LTX-2", "lightricks/ltx-2", "/data/models/ltx-2", "unsloth/LTX-2-FP8"],
+    ["Lightricks/LTX-2", "lightricks/ltx-2", "/data/models/ltx-2"],
 )
 def test_ltx2_bases_route_to_the_ltx2_trainer(base):
     assert resolve_trainable_family(base) == "ltx-2"
@@ -556,3 +560,87 @@ def test_ltx2_rejects_fp16_before_loading():
             output_dir = "o",
             mixed_precision = "fp16",
         ).normalized()
+
+
+# ── deployment surface, environment + component-repo preflight ───────────────
+def _run_cfg(base_model: str, tmp_path) -> DiffusionLoraConfig:
+    return DiffusionLoraConfig(
+        base_model = base_model,
+        data_dir = str(tmp_path / "data"),
+        output_dir = str(tmp_path / "run"),
+        adapter_name = "myrun",
+    ).normalized()
+
+
+def test_a_video_run_publishes_no_adapter_into_the_image_lora_catalog(tmp_path, monkeypatch):
+    # loras/diffusion is scanned by the Images LoRA picker alone, and core/inference/video.py has
+    # no LoRA surface at all, so mirroring a video adapter there copies a large file into a
+    # catalog nothing can load and reports a catalog_path Studio cannot deploy.
+    from pathlib import Path
+
+    catalog = tmp_path / "loras" / "diffusion"
+    catalog.mkdir(parents = True)
+    monkeypatch.setattr("core.inference.diffusion_lora.loras_dir", lambda: catalog)
+    adapter = tmp_path / "run" / DEFAULT_LORA_FILENAME
+    adapter.parent.mkdir(parents = True, exist_ok = True)
+    adapter.write_bytes(b"adapter-bytes")
+
+    video = _run_cfg("Lightricks/LTX-2", tmp_path)
+    assert video.resolved_family == "ltx-2"
+    assert _publish_to_lora_catalog(str(adapter), video) is None
+    assert list(catalog.iterdir()) == []  # not even the metadata sidecar
+
+    # The image families are untouched: an SDXL run still mirrors + reports its catalog path.
+    image = _run_cfg("stabilityai/stable-diffusion-xl-base-1.0", tmp_path)
+    published = _publish_to_lora_catalog(str(adapter), image)
+    assert published is not None
+    assert Path(published).is_file() and Path(published).parent == catalog
+
+
+def test_ltx2_preflight_refuses_a_diffusers_without_the_pipeline(monkeypatch):
+    # LTX2Pipeline landed in diffusers 0.39, and pyproject deliberately keeps an older diffusers
+    # installable on the Python 3.9 hosts this project still supports (diffusers dropped 3.9 in
+    # 0.38). The inference paths assert this before a load; the training preflight has to as well,
+    # or the family resolves, /diffusion/start frees the resident GPU workloads, and only the
+    # child finds out. Same refusal whether the family is detected or named.
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.37.0"))
+    for base, family in (("Lightricks/LTX-2", None), ("/data/models/anything", "ltx-2")):
+        with pytest.raises(ValueError) as exc:
+            resolve_trainable_family(base, family)
+        message = str(exc.value)
+        assert "LTX2Pipeline" in message
+        assert "0.39" in message and "0.37.0" in message  # names the floor and what is installed
+
+    # A diffusers that HAS the pipeline resolves as before, so the gate is the class, not the stub.
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        types.SimpleNamespace(__version__ = "0.39.0", LTX2Pipeline = object()),
+    )
+    assert resolve_trainable_family("Lightricks/LTX-2") == "ltx-2"
+
+
+def test_a_component_repo_is_refused_as_a_training_base():
+    # unsloth/LTX-2-FP8 holds pre-cast component archives: no model_index.json, no VAE, no
+    # pipeline. It still carries the "ltx-2" token, so the family detector claimed it and the
+    # unsloth/* trust gate passed it, and the gated-access probe ignores the model_index.json 404
+    # because a 404 is not an access problem -- so the run evicted the resident models and only
+    # then failed inside LTX2Pipeline.from_pretrained.
+    catalogued = _component_only_repos()
+    assert catalogued["unsloth/ltx-2-fp8"] == ("ltx-2", "text_encoder", "Lightricks/LTX-2")
+    for base, family in (("unsloth/LTX-2-FP8", None), ("unsloth/LTX-2-FP8", "ltx-2")):
+        with pytest.raises(ValueError) as exc:
+            resolve_trainable_family(base, family)
+        message = str(exc.value)
+        assert "model_index.json" in message  # says WHY it cannot be a base
+        assert "Lightricks/LTX-2" in message  # and names what to train instead
+
+
+def test_the_component_rule_reads_the_registry_rather_than_a_repo_blocklist():
+    # The rule is "registered only as a component, never as a base". The image FP8 repos are
+    # listed in prequant_repos (a full-model mirror) as well as te_prequant_repos, so they are
+    # bases and must keep resolving exactly as before.
+    assert "unsloth/qwen-image-fp8" not in _component_only_repos()
+    assert resolve_trainable_family("unsloth/Qwen-Image-FP8") == "qwen-image"
+    # An official base is never a component, whichever registry it comes from.
+    assert "lightricks/ltx-2" not in _component_only_repos()
