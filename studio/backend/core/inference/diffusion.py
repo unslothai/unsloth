@@ -4491,6 +4491,20 @@ class DiffusionBackend:
                     compile_cache.save(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 — cache persistence is best-effort
                     pass
+                # Last word on cancellation, AFTER the post-denoise work: the event stays
+                # registered through the compile-cache save (a static compile writes a fresh
+                # artifact per shape, so that save is not instant) and the page still shows Stop
+                # for as long as progress reads active, so a Stop landing there was answered
+                # cancelled = true and then contradicted by the image the route persisted.
+                # Check and deregister under _lock, which is the lock cancel_generate takes, so the
+                # two cannot interleave: a cancel that saw this event registered ran strictly
+                # before the check, and one that arrives after finds nothing to set and answers
+                # false. The finally below repeats the clear for every other exit.
+                with self._lock:
+                    if cancel.is_set():
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                    if self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 object.__setattr__(state, "generation_count", state.generation_count + 1)
                 # Return the PIL images unencoded; the route embeds recipes and persists them. ``seeds`` records each image's own seed.
@@ -4541,6 +4555,24 @@ class DiffusionBackend:
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
         }
+
+    def cancel_generate(self) -> bool:
+        """Signal the in-flight generation to stop at its next step boundary.
+
+        The denoise loop already watches this event (``_on_step`` sets diffusers'
+        ``_interrupt``, and the per-chunk check discards a partial batch), but until now only
+        unload() and a superseding load could set it. Returns False when nothing is running,
+        which the route reports so the UI can settle its button back to Generate.
+
+        Best effort by construction: the sampler stops at the NEXT step callback, so a cancel
+        during the VAE decode or the encode that precedes step 0 lands when that finishes.
+        Same contract as the video backend."""
+        with self._lock:
+            cancel = self._active_generate_cancel
+            if cancel is None:
+                return False
+            cancel.set()
+            return True
 
     def unload(self) -> dict[str, Any]:
         with self._lock:

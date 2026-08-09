@@ -3248,13 +3248,14 @@ def test_hub_local_rows_are_tagged_with_their_task():
 
 
 def test_pipeline_class_guard_fires_before_any_download():
-    # The 0.39-only families used to die with a bare AttributeError deep in the load, after the checkpoint was fetched, on
+    # The newer families used to die with a bare AttributeError deep in the load, after the checkpoint was fetched, on
     # the older diffusers packaging still allows on Python 3.9. Validation refuses first, naming the version and the fix.
+    # 0.35.2 is the last release before ZImagePipeline existed, and it is still installable on 3.9.
     import pytest
 
     from core.inference.diffusion_families import assert_pipeline_class_available
 
-    stub = types.SimpleNamespace(__version__ = "0.37.0")
+    stub = types.SimpleNamespace(__version__ = "0.35.2")
     real = sys.modules.get("diffusers")
     sys.modules["diffusers"] = stub
     try:
@@ -3268,8 +3269,25 @@ def test_pipeline_class_guard_fires_before_any_download():
             del sys.modules["diffusers"]
     msg = str(excinfo.value)
     assert "z-image" in msg and "ZImagePipeline" in msg
-    assert "0.39" in msg and "0.37.0" in msg
-    assert "3.10" in msg  # names the Python floor that carries a new enough diffusers
+    # The release that family actually needs (0.36.0), not the blanket packaging floor, and what is installed.
+    assert "0.36.0" in msg and "0.35.2" in msg
+    # And NOT a Python upgrade: 0.36.0 still declares requires-python >= 3.8, so `pip install -U
+    # diffusers` alone fixes this on a 3.9 host. Sending it to 3.10 would be the wrong remedy.
+    assert "3.10" not in msg
+
+    # Krea 2 is the other side: its class only exists from 0.39.0, which needs 3.10 -- so the
+    # Python floor belongs in THAT message.
+    sys.modules["diffusers"] = stub
+    try:
+        with pytest.raises(ValueError) as excinfo:
+            assert_pipeline_class_available("Krea2Pipeline", "krea-2")
+    finally:
+        if real is not None:
+            sys.modules["diffusers"] = real
+        else:
+            del sys.modules["diffusers"]
+    krea = str(excinfo.value)
+    assert "0.39.0" in krea and "3.10" in krea
 
 
 def test_pipeline_class_guard_passes_every_shipped_family():
