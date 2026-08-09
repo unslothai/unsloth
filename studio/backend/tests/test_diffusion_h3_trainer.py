@@ -828,3 +828,54 @@ def test_the_real_h3_base_is_still_trainable():
 
     fam = detect_video_family("", override = "minimax-h3")
     assert resolve_trainable_family(fam.base_repo) == "minimax-h3"
+
+
+# ── the checkpoint contract the H3 loop does not implement ───────────────────
+
+
+def _h3_cfg(**kw):
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    return DiffusionLoraConfig(
+        base_model = "MiniMaxAI/MiniMax-H3",
+        data_dir = "/tmp/d",
+        output_dir = "/tmp/o",
+        instance_prompt = "p",
+        **kw,
+    )
+
+
+def test_resume_is_refused_rather_than_silently_starting_over():
+    """The dangerous half: run_h3_lora_training neither writes a resume bundle nor restores one,
+    so a caller handing one over got a FRESH optimization that then overwrote the outputs it was
+    meant to continue -- discovered only after an expensive run."""
+    with pytest.raises(ValueError, match = "resume_from_checkpoint is not supported"):
+        _h3_cfg(resume_from_checkpoint = "/tmp/o/checkpoint-100").normalized()
+
+
+def test_save_steps_is_refused_rather_than_silently_ignored():
+    """The quieter half: periodic saves were accepted and never happened, so a stopped run had
+    nothing to go back to."""
+    with pytest.raises(ValueError, match = "save_steps is not supported"):
+        _h3_cfg(save_steps = 50).normalized()
+
+
+def test_the_defaults_are_untouched():
+    """Neither knob set is the normal case and must stay valid, or the family becomes untrainable."""
+    cfg = _h3_cfg().normalized()
+    assert cfg.save_steps == 0
+    assert cfg.resume_from_checkpoint is None
+
+
+def test_an_image_family_keeps_its_checkpointing():
+    """The refusal is scoped to the loop that lacks the support, not to training at large."""
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    cfg = DiffusionLoraConfig(
+        base_model = "stabilityai/stable-diffusion-xl-base-1.0",
+        data_dir = "/tmp/d",
+        output_dir = "/tmp/o",
+        instance_prompt = "p",
+        save_steps = 50,
+    ).normalized()
+    assert cfg.save_steps == 50

@@ -984,6 +984,23 @@ class DiffusionLoraConfig:
             if self.resume_from_checkpoint is not None
             else ""
         ) or None
+        # The H3 loop does not checkpoint: it neither writes a resume bundle nor restores one.
+        # Accepting these two silently was the dangerous part -- a caller handing over a resume
+        # bundle got a FRESH optimization that then overwrote the outputs it was meant to
+        # continue, and one asking for periodic saves got none, both discovered only after an
+        # expensive run. Refuse in validation, where it costs nothing, until the loop supports it.
+        if resolved_family in CHECKPOINTLESS_FAMILIES:
+            if resume_from_checkpoint:
+                raise ValueError(
+                    f"resume_from_checkpoint is not supported for {resolved_family}: its trainer "
+                    f"writes no checkpoint bundle, so there is nothing to continue from and the "
+                    f"run would silently start over and overwrite its output. Start a fresh run."
+                )
+            if save_steps:
+                raise ValueError(
+                    f"save_steps is not supported for {resolved_family}: its trainer writes no "
+                    f"checkpoint bundle. Leave it at 0; the adapter is still saved at the end."
+                )
         try:
             ema_decay = float(self.ema_decay or 0.0)
         except (TypeError, ValueError) as exc:
@@ -1313,6 +1330,11 @@ def discover_image_caption_pairs(
         )
     return pairs
 
+
+# Families whose trainer has no checkpoint/resume support yet. The shared DiffusionLoraConfig
+# carries save_steps / resume_from_checkpoint for every family, so a loop that implements
+# neither has to say so rather than ignore them.
+CHECKPOINTLESS_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
 
 # Families whose dataset is captioned video CLIPS rather than stills. LTX-2 is deliberately not
 # here: it trains a style LoRA FROM still images, so it keeps the image discovery.
