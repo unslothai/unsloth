@@ -305,6 +305,28 @@ test("splits on the byte cap too, not only the part count", () => {
   assert.equal(chunks.flat().length, 300);
 });
 
+test("sends case-variant groups first, so their refusal lands before anything commits", () => {
+  const mb = 1024 * 1024;
+  const files = [
+    ...Array.from({ length: 499 }, (_, i) => sized(`img_${i}.png`, mb)),
+    sized("Cat.png", mb),
+    sized("cat.png", mb),
+  ];
+  const chunks = chunkDatasetUpload(files, 500 * mb);
+
+  // a case-insensitive dataset folder refuses the pair, so it must ride in the first request:
+  // refused there, nothing has been committed. Keeping it whole is what lets the backend
+  // compare both names at all.
+  assert.deepEqual(
+    chunks[0].slice(0, 2).map((f) => f.name),
+    ["Cat.png", "cat.png"],
+    "the case-variant group must lead the first chunk",
+  );
+  assert.ok(chunks.length > 1, "501 files must still split on the part cap");
+  assert.equal(chunks.flat().length, 501);
+  assert.equal(new Set(chunks.flat()).size, 501);
+});
+
 test("names a chunk no split can fit, so the slices before it are never committed", () => {
   const mb = 1024 * 1024;
   const files = [

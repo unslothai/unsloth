@@ -16,9 +16,9 @@ const METADATA_SCAN_BYTES = 1024 * 1024;
 export const DATASET_UPLOAD_CHUNK = 500;
 
 /** slice `files` so no request exceeds the part cap or `maxBytes`, keeping casefold-equal
- *  names together: the backend can only compare names inside one request, and splitting a
- *  group is exactly what lets the second request overwrite the first. Such a group ships
- *  whole even when it is over `maxBytes`; `oversizedChunk` catches that before any upload. */
+ *  names together and sending those groups first: the backend can only compare names inside
+ *  one request, and splitting a group is exactly what lets the second request overwrite the
+ *  first. Such a group ships whole even over `maxBytes`; `oversizedChunk` catches that. */
 export function chunkDatasetUpload(files: File[], maxBytes: number): File[][] {
   const groups = new Map<string, File[]>();
   for (const file of files) {
@@ -27,10 +27,14 @@ export function chunkDatasetUpload(files: File[], maxBytes: number): File[][] {
     if (group) group.push(file);
     else groups.set(key, [file]);
   }
+  // a group of more than one is a case-variant set, which the backend refuses outright on a
+  // case-insensitive dataset folder. Send those first so that refusal lands while there is
+  // still nothing committed, rather than behind slices that have already been written.
+  const all = [...groups.values()];
   const chunks: File[][] = [];
   let current: File[] = [];
   let bytes = 0;
-  for (const group of groups.values()) {
+  for (const group of [...all.filter((g) => g.length > 1), ...all.filter((g) => g.length === 1)]) {
     const groupBytes = group.reduce((sum, f) => sum + f.size, 0);
     const overCount = current.length + group.length > DATASET_UPLOAD_CHUNK;
     const overBytes = current.length > 0 && bytes + groupBytes > maxBytes;

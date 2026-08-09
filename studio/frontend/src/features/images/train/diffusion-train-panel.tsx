@@ -54,7 +54,6 @@ import type { TrainingSeriesPoint } from "@/features/training";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { cn } from "@/lib/utils";
 import {
-  DEFAULT_UPLOAD_LIMIT_BYTES,
   getCachedUploadLimitLabel,
   loadUploadLimitSettings,
 } from "@/features/settings/api/upload-limit";
@@ -785,8 +784,18 @@ export function DiffusionTrainPanel({
         const misKeyed = await metadataKeyedOnSubfolders(files);
         // the endpoint accumulates into the same folder, so a tree past the multipart part or
         // byte cap goes up in slices rather than being refused outright.
-        const limit = await loadUploadLimitSettings().catch(() => null);
-        const maxBytes = limit?.maxUploadSizeBytes ?? DEFAULT_UPLOAD_LIMIT_BYTES;
+        // the cap decides where the slices fall, so guessing it makes the refusal below either
+        // too strict or useless. A limit that cannot be read stops the upload.
+        let maxBytes: number;
+        try {
+          maxBytes = (await loadUploadLimitSettings()).maxUploadSizeBytes;
+        } catch (e) {
+          toast.error(
+            "Could not read the upload size limit, so nothing was uploaded: " +
+              `${e instanceof Error ? e.message : "the limit could not be read"}. Try again.`,
+          );
+          return;
+        }
         const chunks = chunkDatasetUpload(files, maxBytes);
         // a slice no split can fit under the cap 413s, so refuse before the first request:
         // otherwise the slices ahead of it are already committed.
