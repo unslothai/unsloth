@@ -1474,7 +1474,14 @@ export function AgentsTab() {
                         : t("settings.agents.noQuantizations")
                     }
                   >
-                    {selectedVariant}
+                    {/* The closed trigger is where the choice is READ, so it shows the label
+                        too; SelectValue renders this instead of the raw item text. The value
+                        bound to the Select is still the key. */}
+                    {ggufVariantDisplayLabel(
+                      variants.find((v) => v.quant === selectedVariant) ?? {
+                        quant: selectedVariant ?? "",
+                      },
+                    )}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent align="start" className="min-w-[16rem]">
