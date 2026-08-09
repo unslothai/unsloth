@@ -178,7 +178,11 @@ SLIM_BACKEND_MODULE_GLOBS = {
 # gcc-built and takes libgomp.so.1 from the host, as llama's own binaries do, and
 # Apple clang builds no OpenMP at all, so the globs simply match nothing there.
 SLIM_GGML_LIBRARY_GLOBS = (
-    "libggml*", "ggml*.dll", "libomp*.dll", "libomp*.so*", "libomp*.dylib",
+    "libggml*",
+    "ggml*.dll",
+    "libomp*.dll",
+    "libomp*.so*",
+    "libomp*.dylib",
 )
 SLIM_ROCM_LIBRARY_GLOBS = (
     "libamd*.so*",

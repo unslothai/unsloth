@@ -994,14 +994,17 @@ def test_link_ggml_runtime_wires_linux_libomp(tmp_path):
     # the loader fails with "libomp.so.5: cannot open shared object file".
     bin_dir = tmp_path / "llama_bin"
     bin_dir.mkdir()
-    for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cpu-armv8.0_1.so",
-                 "libomp.so.5"):
+    for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cpu-armv8.0_1.so", "libomp.so.5"):
         (bin_dir / name).write_bytes(b"x")
     (bin_dir / "libllama.so").write_bytes(b"x")  # never wired
     whisper_bin = tmp_path / "whisper_bin"
     linked = M.link_ggml_runtime(bin_dir, whisper_bin)
-    assert linked == ["libggml-base.so.0", "libggml-cpu-armv8.0_1.so",
-                      "libggml.so.0", "libomp.so.5"]
+    assert linked == [
+        "libggml-base.so.0",
+        "libggml-cpu-armv8.0_1.so",
+        "libggml.so.0",
+        "libomp.so.5",
+    ]
     assert (whisper_bin / "libomp.so.5").is_file()
     assert not (whisper_bin / "libllama.so").exists()
 
