@@ -277,9 +277,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         jobs_by_folder.setdefault(job["folder_id"], []).append(job)
     for jobs in jobs_by_folder.values():
         survivor = jobs[0]
-        rebuild_needed = any(
-            job["kind"] == "rebuild" or job["rebuild_requested"] for job in jobs
-        )
+        rebuild_needed = any(job["kind"] == "rebuild" or job["rebuild_requested"] for job in jobs)
         if rebuild_needed and survivor["kind"] != "rebuild":
             if survivor["status"] == "pending":
                 conn.execute(
