@@ -18,6 +18,32 @@ const BLOCKED_HOSTS_SHOWN = 3;
 // practice; it only saturates for a canvas manufacturing violations.
 const BLOCKED_URIS_TRACKED = 100;
 
+type BlockedState = { code: string; uris: string[]; hosts: string[] };
+
+const NOTHING_BLOCKED: BlockedState = { code: "", uris: [], hosts: [] };
+
+// Reports from before a swap belong to the old canvas, so start over rather
+// than appending to them. The cap is checked BEFORE the duplicate scan: past it
+// this is O(1) per message, so a canvas posting unique URIs cannot make the
+// parent rescan every stored string. Returning `current` unchanged is what lets
+// React bail out of the re-render as well as the allocation.
+function appendBlocked(
+  current: BlockedState,
+  code: string,
+  uri: string,
+  host: string,
+): BlockedState {
+  const mine = current.code === code ? current : { code, uris: [], hosts: [] };
+  if (mine.uris.length >= BLOCKED_URIS_TRACKED || mine.uris.includes(uri)) {
+    return mine === current ? current : mine;
+  }
+  return {
+    code,
+    uris: [...mine.uris, uri],
+    hosts: mine.hosts.includes(host) ? mine.hosts : [...mine.hosts, host],
+  };
+}
+
 function blockedHost(uri: string): string | null {
   try {
     return new URL(uri).host || null;
@@ -63,10 +89,16 @@ export function ArtifactHtmlFrame({
     (state) => state.allowArtifactNetworkAccess,
   );
   const [height, setHeight] = useState(HTML_FRAME_DEFAULT_HEIGHT);
-  const [blocked, setBlocked] = useState<{ uris: string[]; hosts: string[] }>({
+  // Carries the code it was reported for, so a canvas swapped in place cannot
+  // inherit the previous one's banner. Same reason the grant below stores code:
+  // the [src] effect that used to clear this runs a render too late, and the
+  // button in that stale render already closes over the new code.
+  const [blocked, setBlocked] = useState<BlockedState>({
+    code,
     uris: [],
     hosts: [],
   });
+  const blockedForCanvas = blocked.code === code ? blocked : NOTHING_BLOCKED;
   // Granted by the banner button alone, and only for the exact code on screen
   // when it was clicked. Nothing the canvas sends may set it, or a blocked page
   // could talk its way onto the network. Comparing against the current code here
@@ -89,7 +121,6 @@ export function ArtifactHtmlFrame({
   const pendingPostRef = useRef(false);
   useEffect(() => {
     pendingPostRef.current = true;
-    setBlocked({ uris: [], hosts: [] });
   }, [src]);
   const postArtifactHtml = useCallback(() => {
     if (!pendingPostRef.current) return;
@@ -110,20 +141,7 @@ export function ArtifactHtmlFrame({
         const uri = event.data.blockedURI;
         const host = blockedHost(uri);
         if (!host) return;
-        setBlocked((current) =>
-          // Both arms return `current` so React bails out of the re-render. The
-          // canvas is untrusted and picks these URIs, so without the cap it can
-          // grow this state and re-render the parent without bound.
-          current.uris.includes(uri) ||
-          current.uris.length >= BLOCKED_URIS_TRACKED
-            ? current
-            : {
-                uris: [...current.uris, uri],
-                hosts: current.hosts.includes(host)
-                  ? current.hosts
-                  : [...current.hosts, host],
-              },
-        );
+        setBlocked((current) => appendBlocked(current, code, uri, host));
         return;
       }
       if (typeof event.data?.chatArtifactHeight !== "number") return;
@@ -136,12 +154,18 @@ export function ArtifactHtmlFrame({
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [postArtifactHtml]);
+    // `code` is listed so the handler always closes over the canvas on screen,
+    // rather than relying on postArtifactHtml changing with it.
+  }, [postArtifactHtml, code]);
 
-  const showBlockedBanner = !networkAllowed && blocked.uris.length > 0;
-  const shownHosts = blocked.hosts.slice(0, BLOCKED_HOSTS_SHOWN).join(", ");
+  const showBlockedBanner = !networkAllowed && blockedForCanvas.uris.length > 0;
+  const shownHosts = blockedForCanvas.hosts
+    .slice(0, BLOCKED_HOSTS_SHOWN)
+    .join(", ");
   const blockedFrom =
-    blocked.hosts.length > BLOCKED_HOSTS_SHOWN ? `${shownHosts}…` : shownHosts;
+    blockedForCanvas.hosts.length > BLOCKED_HOSTS_SHOWN
+      ? `${shownHosts}…`
+      : shownHosts;
 
   return (
     <div className={cn("relative", fill ? "h-full" : undefined)}>
@@ -159,10 +183,10 @@ export function ArtifactHtmlFrame({
         <div className="absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-between gap-2 border-t bg-background/95 px-3 py-2 text-xs backdrop-blur">
           <span className="text-muted-foreground">
             {t(
-              blocked.uris.length === 1
+              blockedForCanvas.uris.length === 1
                 ? "settings.chat.artifacts.blockedBanner"
                 : "settings.chat.artifacts.blockedBannerPlural",
-              { count: blocked.uris.length, hosts: blockedFrom },
+              { count: blockedForCanvas.uris.length, hosts: blockedFrom },
             )}
           </span>
           <Button

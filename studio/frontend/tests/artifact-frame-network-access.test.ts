@@ -119,7 +119,45 @@ function readConst(name: string): string {
 test("the blocked banner is hidden once network access is on", () => {
   const condition = readConst("showBlockedBanner");
   assert.match(condition, /!networkAllowed/);
-  assert.match(condition, /blocked\.uris\.length > 0/);
+  assert.match(condition, /blockedForCanvas\.uris\.length > 0/);
+});
+
+// Reports from the canvas that was swapped out must not prompt for the one now
+// on screen: the banner's button grants network to the CURRENT code, so a stale
+// banner is a grant for a canvas that never reported anything blocked. Derived
+// during render, because the [src] effect that used to clear this ran a render
+// too late and the stale render is the one carrying the button.
+test("the blocked banner is tied to the canvas that reported it", () => {
+  assert.equal(
+    readConst("blockedForCanvas"),
+    "blocked.code === code ? blocked : NOTHING_BLOCKED",
+  );
+});
+
+// The old clear was `setBlocked({ uris: [], hosts: [] })` in the [src] effect,
+// a render too late. Every write must go through an updater that carries the
+// code forward, so no wholesale reset can reintroduce the stale-banner window.
+test("no write resets the blocked list wholesale", () => {
+  const source = sourceFile(FRAME);
+  const args: ts.Node[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText() === "setBlocked" &&
+      node.arguments[0]
+    ) {
+      args.push(node.arguments[0]);
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.ok(args.length > 0, "setBlocked is never called");
+  for (const argument of args) {
+    assert.ok(
+      ts.isArrowFunction(argument) || ts.isFunctionExpression(argument),
+      "setBlocked must take an updater, not a replacement object",
+    );
+  }
 });
 
 const GRANT_SETTER = /\bsetGranted\w*\(/;
@@ -186,33 +224,40 @@ test("no effect resets the grant, which would leave a stale render", () => {
   assert.ok(!resetInEffect, "the grant must not be reset from an effect");
 });
 
-const URI_CAP = /current\.uris\.length >= BLOCKED_URIS_TRACKED/;
-const BAILS_OUT = /\?\s*current/;
+const URI_CAP = /\buris\.length >= BLOCKED_URIS_TRACKED/;
+const URI_DUPLICATE = /\buris\.includes\(uri\)/;
+const BAILS_OUT = /\bcurrent\b/;
 
-/** The updater passed to the lone `setBlocked(...)` that appends a URI. */
+/** Body of the `appendBlocked` reducer the blocked-state updater delegates to. */
 function readBlockedAppendUpdater(): string {
   const source = sourceFile(FRAME);
   let text: string | undefined;
   const visit = (node: ts.Node): void => {
     if (
-      ts.isCallExpression(node) &&
-      node.expression.getText() === "setBlocked" &&
-      node.arguments[0]?.getText().includes("current.uris")
+      ts.isFunctionDeclaration(node) &&
+      node.name?.getText() === "appendBlocked" &&
+      node.body
     ) {
-      text = node.arguments[0].getText();
+      text = node.body.getText();
     }
     node.forEachChild(visit);
   };
   source.forEachChild(visit);
-  if (!text) throw new Error("no setBlocked updater appends to uris");
+  if (!text) throw new Error("appendBlocked not found in the frame");
   return text;
 }
 
 // The canvas picks the blocked URIs, so an uncapped list is memory growth and a
-// parent re-render per message, both driven from inside the sandbox. Returning
-// `current` past the cap is what makes React bail out of the re-render too.
+// parent re-render per message, both driven from inside the sandbox. The cap is
+// checked BEFORE the duplicate scan so that past the cap the work is O(1) too,
+// not a rescan of every stored string per message.
 test("blocked-resource state is capped against the untrusted canvas", () => {
   const updater = readBlockedAppendUpdater();
   assert.match(updater, URI_CAP);
+  assert.match(updater, URI_DUPLICATE);
+  assert.ok(
+    updater.search(URI_CAP) < updater.search(URI_DUPLICATE),
+    "the cap must be checked before the duplicate scan",
+  );
   assert.match(updater, BAILS_OUT);
 });
