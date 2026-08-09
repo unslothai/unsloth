@@ -4524,6 +4524,49 @@ def test_dense_quant_prefetch_declines_with_the_load(fake_runtime, monkeypatch):
     assert len(consulted) == 2
 
 
+def test_status_names_the_gguf_quant_that_actually_ran(fake_runtime, tmp_path):
+    # The reported bug: picking a GGUF at Q8_0 showed "BF16" in the loaded models row, because
+    # dtype is the pipeline COMPUTE dtype and reads bf16 for every CUDA load. gguf_variant is
+    # what distinguishes the file that was downloaded and opened.
+    backend = DiffusionBackend()
+    (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "z-image-turbo-Q8_0.gguf",
+        family_override = "z-image",
+    )
+    status = backend.status()
+    assert status["model_kind"] == "gguf"
+    assert status["transformer_quant"] is None  # the GGUF ran as-is
+    assert status["gguf_variant"] == "Q8_0"
+
+
+def test_status_reports_the_dense_build_when_it_replaced_the_gguf(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # A GGUF pick the dense fast path took over denoises with a torchao build of the BASE
+    # transformer, and the .gguf on disk is never opened. transformer_quant is what describes
+    # that build, so the row must prefer it over the picked file's quant.
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    _stub_dense_quant(monkeypatch, scheme = "fp8")
+    (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "z-image-turbo-Q8_0.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    assert status["transformer_quant"] == "fp8"
+    assert backend.status()["transformer_quant"] == "fp8"
+
+
+def test_status_carries_no_gguf_variant_when_nothing_is_loaded():
+    # The unloaded payload must declare every key the loaded one does, or the row keeps the
+    # previous model's quant after an eject.
+    assert DiffusionBackend().status()["gguf_variant"] is None
+
+
 def test_diffusion_status_response_carries_resolved():
     # The backend records per-control auto-policy provenance on state.resolved, so the response model must declare the field or Pydantic drops it.
     from models.inference import DiffusionStatusResponse
