@@ -391,27 +391,35 @@ async def delete_threads(
     # is gone. Clean it up rather than leaking one per chat.
     # In a worker: right after an upgrade this also runs the legacy move, and a
     # cross-filesystem copy on the event loop stops every other request.
-    removed = await _remove_sandboxes(payload.ids, payload.delete_files)
-    return {"status": "deleted", "sandboxes_removed": removed}
+    removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
+    return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 
-async def _remove_sandboxes(thread_ids, delete_files: bool) -> int:
-    """Drop each thread's sandbox off the event loop. Never raises."""
+async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
+    """Drop each thread's sandbox off the event loop. Never raises.
+
+    Returns how many went and which ids still have files. The chat is the only
+    way to those files, so a caller that never offered the choice can offer it
+    once it knows there was something to keep.
+    """
     from starlette.concurrency import run_in_threadpool
 
-    def _remove() -> int:
-        from core.inference.tools import remove_session_sandbox
-        return sum(
-            1
-            for thread_id in thread_ids
-            if remove_session_sandbox(thread_id, delete_files = delete_files)
-        )
+    def _remove() -> "tuple[int, list[str]]":
+        from core.inference.tools import remove_session_sandbox, session_sandbox_has_files
+
+        removed, kept = 0, []
+        for thread_id in thread_ids:
+            if remove_session_sandbox(thread_id, delete_files = delete_files):
+                removed += 1
+            elif session_sandbox_has_files(thread_id):
+                kept.append(thread_id)
+        return removed, kept
 
     try:
         return await run_in_threadpool(_remove)
     except Exception:
         logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
-        return 0
+        return 0, []
 
 
 @router.get("/attachments")
@@ -783,8 +791,10 @@ async def clear_history(
     # same folders DELETE /threads does; otherwise every sandbox is stranded.
     # delete_files matches DELETE /threads: off by default, since the files are
     # the user's, but a caller clearing everything can ask for them too.
-    removed = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
-    return {"status": "deleted", "sandboxes_removed": removed}
+    removed, kept = await _remove_sandboxes(
+        list(dict.fromkeys(thread_ids + cleared)), delete_files
+    )
+    return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 
 @router.get("/settings", response_model = ChatSettingsResponse)

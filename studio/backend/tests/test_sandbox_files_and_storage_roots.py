@@ -1012,7 +1012,8 @@ def test_clear_all_chats_can_take_the_files_too(tmp_path, monkeypatch):
     assert signature.parameters["delete_files"].default is False
 
     source = inspect.getsource(chat_history.clear_history)
-    assert "delete_files)" in source and "_remove_sandboxes(" in source
+    assert "_remove_sandboxes(" in source
+    assert "delete_files" in source.split("_remove_sandboxes(", 1)[1]
 
 
 def test_a_failed_legacy_move_is_retried(tmp_path, monkeypatch):
@@ -2579,6 +2580,183 @@ def test_a_large_file_is_streamed_rather_than_buffered():
     # The route takes the bearer as a query parameter, since the streaming path
     # sends no headers of its own.
     assert "token=" in view
+
+
+def test_a_same_size_overwrite_is_still_reported(tmp_path, monkeypatch):
+    """On a coarse-timestamp volume a rewrite of the same length inside one tick
+    matches on mtime and size, and the call reported no file at all."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_same111"))
+    report = workdir / "report.csv"
+    report.write_text("a,b\n1,2\n", encoding = "utf-8")
+
+    before = tools._snapshot_workdir_files(str(workdir))
+    report.write_text("a,b\n3,4\n", encoding = "utf-8")  # same length
+    os.utime(report, ns = (before["report.csv"][0], before["report.csv"][0]))
+
+    after = tools._snapshot_workdir_files(str(workdir))
+    assert after["report.csv"][:2] == before["report.csv"][:2], "the test lost its premise"
+    assert after["report.csv"] != before["report.csv"], "a same-size rewrite looked unchanged"
+
+    sentinel = tools._created_file_sentinels(str(workdir), before)
+    assert "report.csv" in (sentinel or ""), sentinel
+
+
+def test_a_file_too_big_to_read_is_still_snapshotted(tmp_path, monkeypatch):
+    """The digest is bounded: reading every artifact twice per call is not the
+    price for a case that needs a coarse clock and an exact length match."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_big1111"))
+    big = workdir / "model.bin"
+    big.write_bytes(b"0" * (tools._MAX_HASHED_SNAPSHOT_BYTES + 1))
+
+    entry = tools._snapshot_workdir_files(str(workdir))["model.bin"]
+    assert entry[1] == tools._MAX_HASHED_SNAPSHOT_BYTES + 1
+    assert entry[2] is None, "hashed a file past the cap"
+
+
+def test_deleting_a_big_sandbox_does_not_hold_up_other_chats(tmp_path, monkeypatch):
+    """Every tool start takes this lock, so an rmtree in here stops calls in
+    every unrelated chat for as long as it runs."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_big2222"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "data.csv").write_text("a,b\n", encoding = "utf-8")
+
+    started = threading.Event()
+    release = threading.Event()
+    real_rmtree = tools.shutil.rmtree
+
+    def slow_rmtree(path, **kwargs):
+        started.set()
+        release.wait(10)
+        return real_rmtree(path, **kwargs)
+
+    monkeypatch.setattr(tools.shutil, "rmtree", slow_rmtree)
+    outcome = []
+    deleter = threading.Thread(
+        target = lambda: outcome.append(
+            tools.remove_session_sandbox(session, delete_files = True)
+        ),
+    )
+    try:
+        deleter.start()
+        assert started.wait(5), "the delete never started"
+        # Observed while the tree is still going: this is the lock every tool
+        # start takes, so holding it here stops calls in every other chat.
+        assert tools._active_sessions_lock.acquire(timeout = 2), "held the tool lock"
+        tools._active_sessions_lock.release()
+        assert not workdir.exists(), "the name is still there"
+    finally:
+        release.set()
+        deleter.join(15)
+        monkeypatch.setattr(tools.shutil, "rmtree", real_rmtree)
+    assert outcome == [True], outcome
+    for _ in range(100):
+        leftovers = [n for n in os.listdir(tools.sandbox_root()) if tools._DETACHED_SUFFIX in n]
+        if not leftovers:
+            break
+        time.sleep(0.05)
+    assert leftovers == [], leftovers
+
+
+def test_an_interrupted_move_is_not_read_as_a_collision(tmp_path, monkeypatch):
+    """Across filesystems the copy fills the destination as it goes, so a run
+    killed part way leaves a partial directory with the source still there."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_part111"
+    legacy.mkdir(parents = True)
+    (legacy / "results.csv").write_text("a,b\n", encoding = "utf-8")
+    (legacy / "second.csv").write_text("c,d\n", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    root = Path(tools.sandbox_root())
+    root.mkdir(parents = True, exist_ok = True)
+
+    real_move = tools.shutil.move
+
+    def half_copied(source, target):
+        os.makedirs(target, exist_ok = True)
+        shutil.copy2(os.path.join(source, "results.csv"), os.path.join(target, "results.csv"))
+        raise OSError(5, "interrupted")
+
+    monkeypatch.setattr(tools.shutil, "move", half_copied)
+    tools._migrate_legacy_sandbox(str(root))
+    monkeypatch.setattr(tools.shutil, "move", real_move)
+
+    # Nothing at the session's name, so the next launch does not read the half
+    # copy as a session the new root already has.
+    assert not (root / "__LOCALID_part111").exists(), "left a partial copy at the real name"
+    assert [n for n in os.listdir(root) if tools._STAGING_SUFFIX in n] == []
+    assert (legacy / "second.csv").is_file(), "lost the source"
+
+    tools._legacy_sandbox_migrated = False
+    tools._migrate_legacy_sandbox(str(root))
+    assert (root / "__LOCALID_part111" / "second.csv").is_file(), "the retry never happened"
+
+
+def test_a_delete_without_the_switch_says_what_it_kept(tmp_path, monkeypatch):
+    """Surfaces other than the sidebar never offer the choice, and after the
+    delete the folder is unreachable, so the route reports it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    kept = "__LOCALID_keeps11"
+    empty = "__LOCALID_empty11"
+    workdir = Path(tools.get_sandbox_workdir(kept))
+    (workdir / "results.csv").write_text("a,b\n", encoding = "utf-8")
+    Path(tools.get_sandbox_workdir(empty))
+
+    assert tools.session_sandbox_has_files(kept) is True
+    assert tools.session_sandbox_has_files(empty) is False
+    assert tools.session_sandbox_has_files("__LOCALID_never11") is False
+
+    import asyncio
+
+    import routes.chat_history as chat_history
+
+    removed, still_there = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+        chat_history._remove_sandboxes([kept, empty], False)
+    )
+    assert removed == 1, removed  # the empty one
+    assert still_there == [kept], still_there
+    assert (workdir / "results.csv").is_file()
+
+
+def test_every_delete_surface_can_still_reach_the_files():
+    """The offer is made where every surface goes through, not only the one
+    dialog that has the switch."""
+    hook = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/features/chat/hooks/use-chat-sidebar-items.ts"
+    ).read_text(encoding = "utf-8")
+
+    assert "deleteFiles: true" in hook
+    assert "kept" in hook
+    body = hook[hook.index("export async function deleteChatItem"):]
+    assert "toast(" in body, "nothing tells the user the files are still there"
 
 
 if __name__ == "__main__":

@@ -7379,6 +7379,31 @@ _legacy_sandbox_lock = threading.Lock()
 _legacy_one_lock = threading.Lock()
 
 
+# Where a cross-filesystem move is assembled. Not a session name, so nothing
+# resolves to it while it is being filled.
+_STAGING_SUFFIX = ".arriving-"
+
+
+def _staged_move(source: str, target: str, name: str) -> None:
+    """Move one session in, so an interruption cannot look like a collision.
+
+    Across filesystems shutil.move copies as it goes, and a run killed part way
+    leaves a partial destination with the original still in place. The next
+    launch would read that as a session the new root already has and strand the
+    files. Filled under a name nothing resolves to, then renamed, which on one
+    filesystem is atomic.
+    """
+    staging = f"{target}{_STAGING_SUFFIX}{uuid.uuid4().hex[:8]}"
+    try:
+        shutil.move(source, staging)
+        os.rename(staging, target)
+    except OSError:
+        # Ours and half filled, so nothing else will ever look at it.
+        shutil.rmtree(staging, ignore_errors = True)
+        raise
+    _mark_sandbox(target, name)
+
+
 # Held for a single session's move. The whole-tree pass takes it per entry, so
 # a request that needs one folder never waits behind the rest.
 _legacy_one_lock = threading.Lock()
@@ -7399,8 +7424,7 @@ def _migrate_one_legacy_session(root: str, name: str) -> None:
             return  # a collision, left for the whole-tree pass to report
         try:
             os.makedirs(root, exist_ok = True)
-            shutil.move(source, target)
-            _mark_sandbox(target, name)
+            _staged_move(source, target, name)
         except OSError as error:
             logger.warning("Could not move sandbox %s: %s", name, error)
 
@@ -7471,8 +7495,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 with _legacy_one_lock:
                     if not os.path.isdir(source) or os.path.exists(target):
                         continue  # a request path moved it while we waited
-                    shutil.move(source, target)
-                    _mark_sandbox(target, name)
+                    _staged_move(source, target, name)
                 moved += 1
             except OSError as error:
                 # A file locked on Windows is retryable, so this run reports
@@ -7674,6 +7697,10 @@ def migrate_legacy_sandbox_in_background() -> "threading.Thread":
     return thread
 
 
+# A name no session resolves to, so a detached tree is inert until it is gone.
+_DETACHED_SUFFIX = ".deleting-"
+
+
 def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     """Drop a deleted chat's sandbox. True when something was removed.
 
@@ -7703,6 +7730,24 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
             queued[session_id] = delete_files or queued.get(session_id, False)
             return False
         return _remove_session_sandbox_locked(session_id, delete_files)
+
+
+def session_sandbox_has_files(session_id: str) -> bool:
+    """Whether this chat's sandbox still holds files of the user's.
+
+    For a delete that was not offered the choice: the chat was the only way to
+    those files, so the caller can offer it afterwards rather than leave a
+    folder nothing can reach.
+    """
+    if not session_id:
+        return False
+    try:
+        target = os.path.realpath(resolve_sandbox_workdir(session_id))
+        if not os.path.isdir(target) or not _sandbox_is_ours(target):
+            return False
+        return not _holds_no_user_files(target)
+    except OSError:
+        return False
 
 
 def _holds_no_user_files(target: str) -> bool:
@@ -7752,8 +7797,23 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     _workdirs.pop(session_id, None)
     try:
         if delete_files:
-            shutil.rmtree(target, ignore_errors = True)
-            return not os.path.isdir(target)
+            # Renamed while locked, deleted after: every tool start takes this
+            # lock, so an rmtree of a large tree in here stops calls in every
+            # other chat for as long as it runs.
+            detached = f"{target}{_DETACHED_SUFFIX}{uuid.uuid4().hex[:8]}"
+            try:
+                os.rename(target, detached)
+            except OSError:
+                shutil.rmtree(target, ignore_errors = True)
+                return not os.path.isdir(target)
+            threading.Thread(
+                target = shutil.rmtree,
+                args = (detached,),
+                kwargs = {"ignore_errors": True},
+                name = "sandbox-delete",
+                daemon = True,
+            ).start()
+            return True
         # Empty means no files of the user's: a tool that only ran mkdir, or
         # deleted what it wrote, leaves directories behind, and the chat record
         # is already gone by the time this runs.
@@ -10834,12 +10894,39 @@ def _servable_segment(name: str) -> bool:
 _INTERNAL_SANDBOX_FILES = frozenset({".unsloth_sandbox_remap.json", _SANDBOX_MARKER})
 
 
+# Above this a file is identified by mtime and size alone. Rewriting a large
+# artifact byte for byte inside one filesystem tick is not worth reading every
+# artifact twice per tool call.
+_MAX_HASHED_SNAPSHOT_BYTES = 4 * 1024 * 1024
+
+
+def _content_key(path: str, size: int) -> "str | None":
+    """A digest for a file small enough to read, else None.
+
+    On FAT/exFAT and some network volumes the timestamp granularity is a second
+    or two, so an overwrite with different content of the same length inside one
+    tick is invisible to mtime and size, and the call reported no file at all.
+    """
+    if size > _MAX_HASHED_SNAPSHOT_BYTES:
+        return None
+    try:
+        digest = hashlib.blake2b(digest_size = 16)
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     """relative path -> change key for every regular file, for the post-run diff.
 
     All files, not just images: a .csv the model wrote used to be invisible.
     Size rides along with mtime because FAT/exFAT and some network volumes have
-    coarse timestamps, where an overwrite inside one tick would look unchanged.
+    coarse timestamps, where an overwrite inside one tick would look unchanged,
+    and a digest rides along with both for files small enough to read, since a
+    same-length rewrite matches on all of it otherwise.
     """
     snapshot: "dict[str, tuple]" = {}
     if not workdir or not os.path.isdir(workdir):
@@ -10871,7 +10958,9 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
                     continue
                 relative = os.path.relpath(path, workdir).replace(os.sep, "/")
                 stat = os.stat(path)
-                snapshot[relative] = (stat.st_mtime_ns, stat.st_size)
+                snapshot[relative] = (
+                    stat.st_mtime_ns, stat.st_size, _content_key(path, stat.st_size),
+                )
             except OSError:
                 continue
             if len(snapshot) >= _MAX_SNAPSHOT_FILES:

@@ -803,18 +803,20 @@ export async function getForkCount(
   return data.count;
 }
 
+/** Thread ids whose sandbox still holds files, for a caller that never asked. */
 export async function deleteChatThreads(
   threadIds: string[],
   args: { deleteFiles?: boolean } = {},
-): Promise<void> {
-  if (threadIds.length === 0) return;
+): Promise<string[]> {
+  if (threadIds.length === 0) return [];
   const response = await authFetch("/api/chat/threads", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
   });
-  await parseJsonOrThrow<unknown>(response);
+  const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
   notifyChatHistoryUpdated();
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function listChatProjects(
