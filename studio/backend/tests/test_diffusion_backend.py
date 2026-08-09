@@ -7167,6 +7167,8 @@ def test_the_activation_guard_budgets_the_real_batch_on_windows(monkeypatch):
     assert dmod._activation_guard_batch([[object()]]) == 1
     # An empty job list is still a valid batch of one, never a zero passed to the estimator.
     assert dmod._activation_guard_batch([]) == 1
+
+
 # ── generate cancellation (issue #8187) ──────────────────────────────────────
 #
 # The denoise loop already honoured the per-generation cancel event, but only unload() and a
