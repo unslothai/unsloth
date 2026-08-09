@@ -215,9 +215,8 @@ export function describeDiffusionStatus(
       detail: joinDetail(
         status.family,
         isGguf ? "GGUF" : null,
-        // The checkpoint quant identifies a GGUF build. dtype is only its compute
-        // precision, and calling that BF16 made a Q8_0 pick look wrong. Through
-        // precisionLabel so a lowercase q8_0 filename still reads Q8_0.
+        // The checkpoint quant, not dtype: dtype is the compute precision, which called
+        // a Q8_0 pick BF16. Via precisionLabel so a lowercase q8_0 still reads Q8_0.
         precisionLabel(status.gguf_variant) ?? precisionLabel(status.dtype),
         status.device,
       ),
@@ -238,8 +237,8 @@ export function describeVideoStatus(
       detail: joinDetail(
         status.family,
         status.model_kind === "gguf" || status.gguf_variant ? "GGUF" : null,
-        // The checkpoint quant identifies a GGUF build; else the dense transformer's own
-        // precision when one engaged; else the pipeline dtype (only compute precision).
+        // Checkpoint quant, else the dense transformer's own precision when one
+        // engaged, else the pipeline dtype (compute precision, so it called Q4_K_M BF16).
         precisionLabel(status.gguf_variant) ??
           precisionLabel(status.transformer_quant) ??
           precisionLabel(status.dtype),

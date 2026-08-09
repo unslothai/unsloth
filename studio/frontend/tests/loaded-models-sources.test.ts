@@ -221,8 +221,7 @@ test("a GGUF video row names its selected quant instead of its compute dtype", (
 });
 
 test("a lowercase quant filename still reads as an upper-case quant", () => {
-  // Plenty of Hub repos ship z-image-turbo-q8_0.gguf; every other quant label in the
-  // UI is upper-cased, so the row must not be the one place that shows q8_0.
+  // Hub repos ship q8_0 filenames, and every other quant label in the UI is upper-cased.
   const [image] = describeDiffusionStatus({
     loaded: true,
     repo_id: "unsloth/Z-Image-Turbo-GGUF",
