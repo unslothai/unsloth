@@ -810,9 +810,11 @@ export function DiffusionTrainPanel({
         // one request is all-or-nothing on the backend, so only a split top-up needs the folder
         // checked as well: there a stem it already holds would 400 a later slice, mid-commit.
         if (chunks.length > 1) {
-          // whether the folder already exists decides whether it needs checking, so absent
-          // dataset info is not proof that it is new: fetch it, and stop rather than assume.
-          const known = info ?? (await refreshInfo());
+          // whether the folder already exists decides whether it needs checking, and the list
+          // held here is the one from mount, so neither its absence nor a name missing from it
+          // proves the folder is new. Only a fresh list can, and one more GET is nothing
+          // against a selection already going up in several requests.
+          const known = await refreshInfo();
           if (!known) {
             toast.error(
               "Could not read the dataset list, so nothing was uploaded. Try again.",
