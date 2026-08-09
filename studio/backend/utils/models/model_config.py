@@ -760,6 +760,13 @@ if backend_dir not in sys.path:
 """
         + _build_vision_check_inline_helpers()
         + r"""
+# Fresh interpreter, and AutoConfig.from_pretrained below may hit the Hub.
+try:
+    from utils.native_tls import activate_native_tls
+    activate_native_tls()
+except Exception:
+    pass
+
 try:
     from transformers import AutoConfig
 
