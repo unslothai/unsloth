@@ -5138,9 +5138,7 @@ def test_h3_records_the_guidance_that_actually_ran(monkeypatch):
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
 
-    result = backend.generate(
-        prompt = "a fox runs through snow", width = 960, height = 544, guidance = 7.5
-    )
+    result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544, guidance = 7.5)
 
     assert result["guidance"] == backend._state.family.default_guidance == 1.0
     # And that default is exactly what the engine was told to run.
