@@ -44,6 +44,51 @@ TE_PREQUANT_SCHEMES = ("fp8",)
 # Components the pipeline-assembly injection covers (text_encoder_4 is family-assembled separately, see diffusion_hidream.py).
 TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
+# Fraction of a bf16 text encoder a PRE-CAST fp8 checkpoint occupies, for memory budgeting.
+#
+# fp8 storage is one byte per parameter against bf16's two, so the floor is 0.5, but the cast
+# deliberately keeps modules dense: nn.Embedding tables, the norms in
+# DEFAULT_SKIP_MODULES_PATTERN, the encoder's own _keep_in_fp32_modules (T5's ``wo``) and an
+# lm_head tied to the input embedding. Measured from Hub file metadata over every published
+# artifact (2026-08-07), as hosted checkpoint bytes over the bf16-EQUIVALENT dense bytes of the
+# same component (an fp32-stored encoder is halved first, since the pipeline loads it bf16):
+#
+#   FLUX.2-dev       text_encoder    Mistral-24B    24,683,130,873 / 48,022,800,560 = 0.514
+#   HiDream-I1-Full  text_encoder_4  Llama-3.1-8B    8,555,963,320 / 16,060,556,376 = 0.533
+#   Qwen-Image       text_encoder    Qwen2.5-VL-7B   8,839,210,073 / 16,584,414,544 = 0.533
+#   LTX-2            text_encoder    Gemma3-12B     13,205,302,695 / 24,374,720,836 = 0.542
+#   Krea-2-Turbo     text_encoder    Qwen3-4B        4,831,262,424 /  8,875,715,136 = 0.544
+#   Z-Image-Turbo    text_encoder    Qwen3-4B        4,411,751,967 /  8,044,982,000 = 0.548
+#   Lumina-Image-2.0 text_encoder    Gemma2-2B       3,204,501,909 /  5,228,699,608 = 0.613
+#   FLUX.1-schnell   text_encoder_2  T5-XXL          5,900,818,800 /  9,524,648,584 = 0.620
+#
+# The small encoders sit highest: their embedding tables are a large share of the parameters and
+# stay dense. 0.65 is the observed maximum rounded up, so this OVER-states every measured
+# encoder rather than under-stating any. It is a memory budget, and an under-estimate is the
+# expensive direction: it lets an oversized load through to the OS killer.
+TE_PREQUANT_BUDGET_SCALE = 0.65
+
+
+def te_prequant_budget_scale(fam: Any, *, te_quant_mode: Optional[str], target: Any) -> float:
+    """Scale to apply to a family's bf16 text-encoder size when budgeting memory for this pick:
+    ``TE_PREQUANT_BUDGET_SCALE`` when the load takes its encoder PRE-CAST from a hosted fp8
+    checkpoint, else 1.0.
+
+    Keyed on ``te_prequant_sources`` -- the same pure resolver the download plan and the load
+    itself use, so a budget can never disagree with them about what gets loaded -- and NOT on
+    ``text_encoder_quant`` alone. That distinction is the conservative one: the runtime cast
+    (``quantize_text_encoders``) runs *after* pipeline assembly has already materialised the
+    dense encoder, so its steady state is fp8 but its peak is bf16, and the peak is what a
+    budget has to cover. Only the pre-cast path is fp8-sized end to end.
+
+    Best-effort like the rest of this module: anything unresolvable returns 1.0, i.e. today's
+    bf16 budget."""
+    try:
+        sources = te_prequant_sources(fam, te_quant_mode = te_quant_mode, target = target)
+    except Exception:  # noqa: BLE001 -- an unresolvable pre-cast just means the dense encoder
+        return 1.0
+    return TE_PREQUANT_BUDGET_SCALE if sources else 1.0
+
 # Bases whose text-encoder weights are VERIFIED byte-identical (every shard LFS sha256 compared on 2026-07-18), so one hosted artifact serves them all. The validator accepts a base_model_id from the same group; anything else keeps the strict refusal.
 _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
     # Qwen2.5-VL-7B text encoder: 4 shards, 16,584,414,544 bytes, identical sha256 set.

@@ -1160,9 +1160,23 @@ class VideoBackend:
         device_memory = snapshot_device_memory(target)
         components = fam.bf16_components_gb
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+        # bf16_components_gb is (transformer, text_encoder, vae) at bf16. When this pick takes its
+        # encoder PRE-CAST from a hosted fp8 checkpoint, the bf16 entry over-states what is loaded
+        # by ~11 GB for ltx-2's Gemma3-12B, which drags every budget below with it. The VAE is
+        # never quantised (quantize_text_encoders touches text encoders only, and vae_force_fp32
+        # families widen it), so only components[1] is scaled.
+        from .diffusion_te_prequant import te_prequant_budget_scale
+
+        te_scale = te_prequant_budget_scale(
+            fam, te_quant_mode = text_encoder_quant, target = target
+        )
+        text_encoder_gb = components[1] * te_scale if components is not None else 0.0
+        companions_gb = text_encoder_gb + components[2] if components is not None else 0.0
         if kind == "pipeline":
             model_dense_mib = (
-                int(sum(components) * mib_per_gb * dtype_scale) if components is not None else None
+                int((components[0] + companions_gb) * mib_per_gb * dtype_scale)
+                if components is not None
+                else None
             )
             companion_mib = None
         else:
@@ -1176,9 +1190,7 @@ class VideoBackend:
                 if transformer_mib is not None:
                     transformer_mib = int(transformer_mib * dtype_scale)
             companion_mib = (
-                int((components[1] + components[2]) * mib_per_gb * dtype_scale)
-                if components is not None
-                else None
+                int(companions_gb * mib_per_gb * dtype_scale) if components is not None else None
             )
             # Budget ALL weights: companions stay resident, so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM.
             model_dense_mib = (
@@ -1212,9 +1224,7 @@ class VideoBackend:
             )
             factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
             if factor is not None:
-                quant_mib = int(
-                    (components[0] * factor + components[1] + components[2]) * mib_per_gb
-                )
+                quant_mib = int((components[0] * factor + companions_gb) * mib_per_gb)
                 replanned = plan_diffusion_memory(
                     target = target,
                     device_memory = device_memory,
