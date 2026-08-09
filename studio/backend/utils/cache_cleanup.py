@@ -82,9 +82,14 @@ _OWNED_DELETE_RE = _re.compile(r"\Aunsloth_compiled_module_.+\.py\Z")
 
 
 def _is_dedicated_cache(path: Path) -> bool:
-    """True only for a directory Studio created for the cache and nothing else."""
+    """True only for a directory Studio created for the cache and nothing else.
+
+    A real file, not a link: exists() follows one, so a marker symlinked at any
+    existing path would license the rmtree below over somebody's own directory.
+    """
+    marker = path / CACHE_MARKER
     try:
-        return (path / CACHE_MARKER).exists()
+        return marker.is_file() and not marker.is_symlink()
     except OSError:
         return False
 

@@ -357,6 +357,27 @@ def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
                 )
 
 
+def _cancel_active_generations(thread_ids: list[str]) -> None:
+    """Stop any generation still running for these threads.
+
+    The sandbox goes with the thread, but a request that has not reached the
+    executor yet would dispatch its tool call afterwards, recreate the folder,
+    and write files no chat can reach. The in-flight guard only covers calls
+    already inside the executor. Best effort: this must never break a delete.
+    """
+    if not thread_ids:
+        return
+    try:
+        from state import active_generations
+    except Exception:  # noqa: BLE001 - never block a delete on this
+        return
+    for thread_id in thread_ids:
+        try:
+            active_generations.cancel_thread(thread_id)
+        except Exception:  # noqa: BLE001
+            continue
+
+
 @router.delete("/threads")
 async def delete_threads(
     payload: ChatDeleteRequest,
@@ -364,6 +385,7 @@ async def delete_threads(
     current_subject: str = Depends(get_current_subject),
 ):
     _cancel_active_research(request, payload.ids)
+    _cancel_active_generations(payload.ids)
     delete_chat_threads(payload.ids)
     # Keyed by thread id, so nothing can reference the folder once the thread
     # is gone. Clean it up rather than leaking one per chat.
@@ -752,6 +774,7 @@ async def clear_history(
 ):
     thread_ids = [thread["id"] for thread in list_chat_threads()]
     _cancel_active_research(request, thread_ids)
+    _cancel_active_generations(thread_ids)
     # The clear reports what it deleted, which is what gets cleaned up: a thread
     # added between the listing above and the delete is gone too, and its
     # sandbox would otherwise be stranded.

@@ -7215,7 +7215,12 @@ def _sandbox_name(session_id: str) -> str:
         return session_id
     # An id that already looks derived is derived too, or it would land on the
     # directory of whichever unusable id hashes to it.
-    return _DERIVED_PREFIX + hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+    # surrogatepass: an API client can send a lone surrogate in JSON, and a
+    # POSIX directory name decoded with surrogateescape carries them too, so a
+    # strict encode raises here and the call, the read, or a whole migration
+    # pass fails on one id.
+    encoded = session_id.encode("utf-8", "surrogatepass")
+    return _DERIVED_PREFIX + hashlib.sha256(encoded).hexdigest()[:16]
 
 
 def _mark_sandbox(workdir: str, session_id: str) -> None:
@@ -7374,6 +7379,47 @@ _legacy_sandbox_lock = threading.Lock()
 _legacy_one_lock = threading.Lock()
 
 
+# Held for a single session's move. The whole-tree pass takes it per entry, so
+# a request that needs one folder never waits behind the rest.
+_legacy_one_lock = threading.Lock()
+
+
+def _migrate_one_legacy_session(root: str, name: str) -> None:
+    """Bring one session up from the legacy root, without waiting for the rest."""
+    if _legacy_sandbox_migrated:
+        return
+    source = os.path.join(_legacy_sandbox_root(), name)
+    if os.path.islink(source) or not os.path.isdir(source):
+        return
+    with _legacy_one_lock:
+        if not os.path.isdir(source):
+            return  # the background pass got there first
+        target = os.path.join(root, name)
+        if os.path.exists(target) or not _contained_in_root(target, root):
+            return  # a collision, left for the whole-tree pass to report
+        try:
+            os.makedirs(root, exist_ok = True)
+            shutil.move(source, target)
+            _mark_sandbox(target, name)
+        except OSError as error:
+            logger.warning("Could not move sandbox %s: %s", name, error)
+
+
+_legacy_background: "threading.Thread | None" = None
+
+
+def _start_legacy_migration() -> "threading.Thread | None":
+    """Carry the rest of the tree up, one pass at a time, off this request."""
+    global _legacy_background
+    if _legacy_sandbox_migrated:
+        return None
+    with _legacy_one_lock:
+        if _legacy_background is not None and _legacy_background.is_alive():
+            return _legacy_background
+        _legacy_background = migrate_legacy_sandbox_in_background()
+        return _legacy_background
+
+
 def _migrate_legacy_sandbox(root: str) -> None:
     """Move sessions from ~/studio_sandbox into the studio home, once.
 
@@ -7410,6 +7456,11 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
         complete = True
         for name in os.listdir(legacy):
             source = os.path.join(legacy, name)
+            # A link is not a sandbox of ours: the move preserves it, and the
+            # marker would then be written inside whatever it points at, which
+            # is a directory outside both roots.
+            if os.path.islink(source) or not os.path.isdir(source):
+                continue
             # Through the resolver, so a name already taken by something in a
             # shared root lands at this session's own name instead of merging
             # into a directory that is not ours.
@@ -7417,8 +7468,11 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
             if os.path.exists(target) or not _contained_in_root(target, root):
                 continue
             try:
-                shutil.move(source, target)
-                _mark_sandbox(target, name)
+                with _legacy_one_lock:
+                    if not os.path.isdir(source) or os.path.exists(target):
+                        continue  # a request path moved it while we waited
+                    shutil.move(source, target)
+                    _mark_sandbox(target, name)
                 moved += 1
             except OSError as error:
                 # A file locked on Windows is retryable, so this run reports
@@ -7524,8 +7578,11 @@ def _get_workdir(session_id: str | None = None) -> str:
         sandbox_root_path = sandbox_root()
         root_existed = os.path.isdir(sandbox_root_path)
         # The folder may still be at the legacy root right after an upgrade.
-        # Once only, and off the request path when the app starts it there.
-        _migrate_legacy_sandbox(sandbox_root_path)
+        # Only this chat's, so a first tool call never waits on the whole tree:
+        # across filesystems that is a copy of every session.
+        if session_id:
+            _migrate_one_legacy_session(sandbox_root_path, _sandbox_name(session_id))
+        _start_legacy_migration()
         project_workdir = (
             _get_project_workdir(session_id)
             if session_id and _usable_session_id(session_id)

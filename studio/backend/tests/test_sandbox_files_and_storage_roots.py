@@ -678,7 +678,10 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
     tools._legacy_sandbox_migrated = False
     tools._migrate_legacy_sandbox(tools.sandbox_root())
     resolved = tools.resolve_sandbox_workdir("__LOCALID_evil")
-    assert Path(resolved).name != "__LOCALID_evil", resolved
+    # The link is left at the legacy root rather than carried across, so the
+    # name inside the sandbox root is a plain path with nothing behind it.
+    assert not (Path(tools.sandbox_root()) / "__LOCALID_evil").is_symlink()
+    assert (legacy / "__LOCALID_evil").is_symlink(), "moved a link into the root"
     assert not Path(resolved).is_symlink()
     assert not str(Path(resolved).resolve()).startswith(str(outside.resolve()))
     assert not (Path(resolved) / "secret.txt").exists()
@@ -2416,6 +2419,167 @@ def test_clearing_every_chat_reports_what_it_deleted(tmp_path, monkeypatch):
     route = inspect.getsource(chat_history.clear_history)
     assert "cleared = clear_chat_history()" in route
     assert "cleared" in route.split("_remove_sandboxes(", 1)[1].split(")", 1)[0]
+
+
+def test_a_symlinked_cache_marker_does_not_license_a_delete(tmp_path, monkeypatch):
+    """exists() follows a link, so a marker pointing at any existing path would
+    have the cleanup rmtree a directory of the user's own."""
+    from utils import cache_cleanup
+
+    theirs = tmp_path / "unsloth_compiled_cache"
+    theirs.mkdir()
+    (theirs / "notes.txt").write_text("years of notes", encoding = "utf-8")
+    (theirs / cache_cleanup.CACHE_MARKER).symlink_to(tmp_path / "anything")
+    (tmp_path / "anything").write_text("x", encoding = "utf-8")
+
+    assert cache_cleanup._is_dedicated_cache(theirs) is False
+
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(theirs))
+    monkeypatch.chdir(tmp_path)
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert (theirs / "notes.txt").is_file(), "deleted a directory it does not own"
+
+
+def test_a_real_cache_marker_still_counts(tmp_path):
+    """The other half: a directory Studio made is still cleaned out."""
+    from utils import cache_cleanup
+
+    ours = tmp_path / "unsloth_compiled_cache"
+    ours.mkdir()
+    (ours / cache_cleanup.CACHE_MARKER).touch()
+    assert cache_cleanup._is_dedicated_cache(ours) is True
+
+
+def test_an_id_with_a_lone_surrogate_still_gets_a_directory(tmp_path, monkeypatch):
+    """An API client can send one in JSON, and a POSIX name decoded with
+    surrogateescape carries them too; a strict encode raises instead."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    odd = "chat-\ud800-one"
+    name = tools._sandbox_name(odd)
+    assert name.startswith(tools._DERIVED_PREFIX)
+    # Distinct ids stay distinct: surrogatepass keeps the code point, where a
+    # replacing policy would fold every bad id onto one directory.
+    assert name != tools._sandbox_name("chat-\ud801-one")
+
+    workdir = Path(tools.get_sandbox_workdir(odd))
+    assert workdir.is_dir()
+    assert Path(tools.resolve_sandbox_workdir(odd)) == workdir
+
+
+def test_a_legacy_entry_that_is_a_symlink_is_left_alone(tmp_path, monkeypatch):
+    """move() keeps the link, and the marker would then be written inside
+    whatever it points at, which is outside both roots."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox"
+    legacy.mkdir(parents = True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "theirs.txt").write_text("mine", encoding = "utf-8")
+    (legacy / "__LOCALID_link111").symlink_to(outside, target_is_directory = True)
+    (legacy / "__LOCALID_real111").mkdir()
+    (legacy / "__LOCALID_real111" / "results.csv").write_text("a,b\n", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    root = Path(tools.sandbox_root())
+    tools._migrate_legacy_sandbox(str(root))
+
+    assert not (outside / tools._SANDBOX_MARKER).exists(), "wrote outside both roots"
+    assert (outside / "theirs.txt").is_file()
+    assert not (root / "__LOCALID_link111").exists()
+    # The rest of the pass still runs.
+    assert (root / "__LOCALID_real111" / "results.csv").is_file()
+
+
+def test_a_first_tool_call_does_not_wait_for_the_whole_legacy_tree(tmp_path, monkeypatch):
+    """Across filesystems the migration copies every session, which is minutes;
+    a call that only needs its own folder must not queue behind it."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox"
+    (legacy / "__LOCALID_mine111").mkdir(parents = True)
+    (legacy / "__LOCALID_mine111" / "results.csv").write_text("a,b\n", encoding = "utf-8")
+    (legacy / "__LOCALID_huge111").mkdir()
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    held = threading.Event()
+    monkeypatch.setattr(
+        tools, "migrate_legacy_sandbox_in_background",
+        lambda: threading.Thread(target = held.wait),
+    )
+
+    class _Blocked:
+        def __enter__(self):
+            assert held.wait(0), "the request path took the whole-tree lock"
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(tools, "_legacy_sandbox_lock", _Blocked())
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_mine111"))
+    held.set()
+
+    assert (workdir / "results.csv").is_file(), "this chat's own files were left behind"
+
+
+def test_deleting_a_chat_stops_a_generation_that_would_recreate_it(monkeypatch):
+    """A request that has not reached the executor yet would dispatch its tool
+    call after the delete and write files no chat can reach."""
+    import routes.chat_history as chat_history
+
+    cancelled = []
+    monkeypatch.setattr(chat_history, "delete_chat_threads", lambda ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
+
+    from state import active_generations
+
+    monkeypatch.setattr(
+        active_generations, "cancel_thread", lambda tid: cancelled.append(tid) or 1
+    )
+
+    chat_history._cancel_active_generations(["__LOCALID_gone111", "__LOCALID_gone222"])
+    assert cancelled == ["__LOCALID_gone111", "__LOCALID_gone222"]
+
+    import inspect
+
+    for route in (chat_history.delete_threads, chat_history.clear_history):
+        source = inspect.getsource(route)
+        assert "_cancel_active_generations" in source, route.__name__
+        assert source.index("_cancel_active_generations") < source.index("_remove_sandboxes")
+
+
+def test_a_large_file_is_streamed_rather_than_buffered():
+    """A tool can write a multi-gigabyte artifact, and a Blob plus the IPC copy
+    of it would be two more of it in the renderer."""
+    view = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/components/assistant-ui/sandbox-files-view.tsx"
+    ).read_text(encoding = "utf-8")
+
+    assert "downloadUrlStreaming" in view
+    assert "response.blob()" not in view
+    # The route takes the bearer as a query parameter, since the streaming path
+    # sends no headers of its own.
+    assert "token=" in view
 
 
 if __name__ == "__main__":

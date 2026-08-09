@@ -6,8 +6,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
-import { authFetch } from "@/features/auth";
-import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { getAuthToken } from "@/features/auth";
+import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 
 import { sandboxFilePath, type SandboxFile } from "./sandbox-files";
 
@@ -27,17 +27,20 @@ function SandboxFileRow({
 }) {
   const [busy, setBusy] = useState(false);
 
-  // The route needs a bearer token, so a bare <a href> would 401: fetch the
-  // bytes, then use the app's normal save path.
+  // Streamed to the chosen path rather than buffered: a tool can write a
+  // multi-gigabyte artifact, and a Blob plus the IPC copy of it would be two
+  // more of it in the renderer. The route takes the bearer as a query
+  // parameter, since nothing here sends headers.
   const save = useCallback(async () => {
     setBusy(true);
     try {
-      const response = await authFetch(sandboxFilePath(sessionId, file.name));
-      if (!response.ok) {
-        toast.error(`Could not open ${file.name}.`);
-        return;
-      }
-      await downloadFile(await response.blob(), file.name);
+      const token = getAuthToken();
+      const path = sandboxFilePath(sessionId, file.name);
+      const separator = path.includes("?") ? "&" : "?";
+      const url = token
+        ? `${path}${separator}token=${encodeURIComponent(token)}`
+        : path;
+      await downloadUrlStreaming(url, file.name);
     } catch (error) {
       if (!isDownloadCancelled(error)) {
         toast.error(`Could not save ${file.name}.`);
