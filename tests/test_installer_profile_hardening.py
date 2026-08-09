@@ -1340,6 +1340,42 @@ def test_the_probe_loads_only_the_callers_own_host_profile(monkeypatch):
     assert "_UNSLOTH_PS_HOST_PROFILE" not in studio_cmd._profile_probe_env()
 
 
+def test_the_probe_loads_the_all_users_profiles_in_startup_order():
+    """A machine-managed proxy lives in an all-users profile on a domain-joined box and the
+    user's own profile never mentions it, so sourcing only the current-user pair reported no
+    proxy on exactly the locked-down host that has one. Order is part of the fix: the user's
+    profile is entitled to override the machine's, which it only does if it runs last."""
+    from unsloth_cli.commands.studio import _PS_PROXY_PROBE as probe
+
+    assert "$PROFILE.AllUsersAllHosts" in probe
+    assert "Split-Path -Parent $PROFILE.AllUsersCurrentHost" in probe
+    assert (
+        probe.find("$PROFILE.AllUsersAllHosts")
+        < probe.find("$PROFILE.AllUsersCurrentHost")
+        < probe.find("$PROFILE.CurrentUserAllHosts")
+        < probe.find("$PROFILE.CurrentUserCurrentHost")
+    )
+    # Still the caller's own host, never a directory sweep, for the all-users pair too.
+    assert "Microsoft.*_profile.ps1" not in probe
+    assert probe.count("Join-Path (Split-Path -Parent") == 2
+
+
+def test_the_probe_clears_profile_defaults_before_it_serializes():
+    """The profile's $PSDefaultParameterValues aims at every cmdlet in the probe, including the
+    two that emit the record. ConvertTo-Json:AsArray = $true is a legitimate setting and it
+    turns the payload into a JSON array, which the reader rejects for not being a dictionary --
+    dropping the caller's proxy on the host that needed it. $out already holds copies."""
+    from unsloth_cli.commands.studio import _PS_PROXY_PROBE as probe
+
+    assert "$PSDefaultParameterValues = @{}" in probe
+    # After the table has been read, and before anything is written.
+    assert (
+        probe.find("$out = @{}")
+        < probe.find("$PSDefaultParameterValues = @{}")
+        < probe.find("ConvertTo-Json")
+    )
+
+
 def test_a_script_block_proxy_default_is_evaluated_not_dropped():
     """{ [uri]$env:CORP_PROXY } is PowerShell's supported form for a dynamic default and
     Invoke-WebRequest evaluates it per call, so the caller downloads fine while the handoff

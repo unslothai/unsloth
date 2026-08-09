@@ -2860,8 +2860,19 @@ _PS_PROXY_PROBE = (
     # $PSDefaultParameterValues, or exit before the record is written -- while still not being
     # the profile a VS Code caller keeps its defaults in. $PROFILE is fully populated under
     # -NoProfile (the paths are computed, not loaded), so this is exact rather than incidental.
-    "try { $__unslothProfiles = @($PROFILE.CurrentUserAllHosts); "
+    #
+    # In PowerShell's own startup order, all-users first: a machine-managed proxy lives in
+    # AllUsersAllHosts on a domain-joined box and the user profile never mentions it, so
+    # sourcing only the current-user pair reported no proxy on exactly the locked-down host
+    # that has one. Order matters as well as membership -- the user's profile is entitled to
+    # override the machine's, which it only does if it runs last.
     "$__unslothHostProfileName = $env:_UNSLOTH_PS_HOST_PROFILE; "
+    "try { $__unslothProfiles = @($PROFILE.AllUsersAllHosts); "
+    "if ($__unslothHostProfileName) { "
+    "$__unslothProfiles += (Join-Path (Split-Path -Parent $PROFILE.AllUsersCurrentHost) "
+    "$__unslothHostProfileName) } else { "
+    "$__unslothProfiles += $PROFILE.AllUsersCurrentHost }; "
+    "$__unslothProfiles += $PROFILE.CurrentUserAllHosts; "
     "if ($__unslothHostProfileName) { "
     "$__unslothProfiles += (Join-Path (Split-Path -Parent $PROFILE.CurrentUserCurrentHost) "
     "$__unslothHostProfileName) } else { "
@@ -2888,6 +2899,12 @@ _PS_PROXY_PROBE = (
     # ahead of the JSON, the parse threw, and the whole answer was discarded -- so on exactly
     # the locked-down host that needed the proxy, the -NoProfile child got none and every
     # download failed. The markers let the record be cut out of whatever else was said.
+    # $out holds copies, so the profile's own $PSDefaultParameterValues has said everything it
+    # is going to say and is now only a hazard: ConvertTo-Json:AsArray = $true is a legitimate
+    # setting that turns this record into a JSON array, which the reader rejects for not being
+    # a dictionary -- and the caller's proxy is then dropped on the host that needed it. Same
+    # for anything else the table aims at Write-Output or ConvertTo-Json.
+    "$PSDefaultParameterValues = @{}; "
     f"if ($out.Count -gt 0) {{ "
     f"Write-Output '{_PROXY_PROBE_BEGIN}'; $out | ConvertTo-Json -Compress; "
     f"Write-Output '{_PROXY_PROBE_END}' }}"
