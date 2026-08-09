@@ -16,9 +16,11 @@ import { usePlatformStore } from "@/config/env";
 import { revealCachedModel } from "@/features/chat";
 import {
   DeleteConfirmDialog,
+  DeleteImpactSummary,
   UpdateConfirmDialog,
   ggufVariantsMatch,
   subscribeJobListeners,
+  useDeleteImpact,
 } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -62,6 +64,9 @@ interface ModelRowMenuUpdate {
 interface ModelRowMenuDelete {
   title: string;
   description: ReactNode;
+  /** Repo (and quant) to preview the delete for, so the dialog can state what it actually
+   * reclaims and what shared assets it leaves behind. Omit to keep the plain wording. */
+  impact?: { repoId: string; variant?: string | null };
   successMessage: string;
   disabled?: boolean;
   onConfirm: () => Promise<void> | void;
@@ -104,6 +109,11 @@ export function ModelRowMenu({
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const deleteImpact = useDeleteImpact(
+    deleteOpen && Boolean(del?.impact),
+    del?.impact?.repoId ?? "",
+    del?.impact?.variant,
+  );
   const [updateOpen, setUpdateOpen] = useState(false);
 
   // Refresh the caller when this repo+variant's managed update completes
@@ -288,8 +298,14 @@ export function ModelRowMenu({
             setDeleteOpen(nextOpen);
           }}
           title={del.title}
-          description={del.description}
+          description={
+            <>
+              {del.description}
+              <DeleteImpactSummary impact={deleteImpact} />
+            </>
+          }
           deleting={deleting}
+          blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
           onConfirm={() => void handleDeleteConfirm()}
         />
       )}

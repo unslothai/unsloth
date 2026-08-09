@@ -117,6 +117,10 @@ export {
   DeleteConfirmDialog,
   UpdateConfirmDialog,
 } from "./catalog/download-card";
+export {
+  DeleteImpactSummary,
+  useDeleteImpact,
+} from "./catalog/delete-impact";
 export { HubOptionMenu, type HubOption } from "./catalog/hub-option-menu";
 export { DotTag } from "./catalog/dot-tag";
 export { TransportConflictDialog } from "./catalog/transport-conflict-dialog";
