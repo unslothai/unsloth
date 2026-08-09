@@ -3589,6 +3589,8 @@ def test_the_mps_allocator_cache_is_released_before_the_budget_is_read(monkeypat
 
     dm.settled_snapshot_device_memory(types.SimpleNamespace(device = "mps", backend = "mps"))
     assert calls == ["mps"], "the MPS allocator must be emptied before the reading is taken"
+
+
 def _fake_h3_vae():
     """A stand-in with the shapes that matter: an encoder half, a decoder with both
     autocast-eligible and float32-only parameters, and a post_quant_conv."""
