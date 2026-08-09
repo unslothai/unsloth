@@ -347,7 +347,14 @@ export async function generateDiffusionImage(
 /** Request a cancel. Best-effort: the diffusers sampler stops at the next step boundary (the native engine kills its sd-cli run outright) and the in-flight generate POST unwinds as a 409 with nothing persisted. `cancelled` is false when there was nothing to stop. */
 export async function cancelDiffusionGeneration(): Promise<{ cancelled: boolean }> {
   return parseJson(
-    await authFetch("/api/inference/images/generate/cancel", { method: "POST" }),
+    // No network retry. The endpoint always targets whichever generation is active NOW, so a
+    // retry firing up to 1.5s after a lost response can land on a run the user started in the
+    // meantime and stop that one instead. Not retryable, unlike the idempotent GETs.
+    await authFetch(
+      "/api/inference/images/generate/cancel",
+      { method: "POST" },
+      { retryNetworkErrors: false },
+    ),
   );
 }
 

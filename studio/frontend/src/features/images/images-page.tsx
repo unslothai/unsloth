@@ -2673,9 +2673,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         res.images.forEach((image) => void ensureSrc(image));
         setGenDone(i + 1);
       }
-      // A generation can change server-side status: Speed=Auto compiles on the 3rd LoRA-free run (supports_lora flips false),
-      // so without a refresh the LoRA picker stays enabled and the next LoRA run fails. Cheap status GET.
-      if (isMounted.current) void refreshStatus();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Image generation failed";
       // The user's own Stop comes back as the backend's cancelled sentinel (409). Not an error,
@@ -2698,6 +2695,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         genVisibilityListener.current = null;
       }
       cancelRequested.current = false;
+      // Refresh on EVERY exit, not just the successful one. A generation can change server-side
+      // status (Speed=Auto compiles on the 3rd LoRA-free run and supports_lora flips false), and a
+      // cancelled native run can leave no model at all: when the native cancel is not reflected
+      // within its grace window, sd-server is stopped outright and the backend reloads on the next
+      // generate, so a page that skipped this kept showing a model that is gone. Cheap status GET.
+      if (isMounted.current) void refreshStatus();
       setBusy(null);
       setGenDone(null);
       setGenStep(null);
