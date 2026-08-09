@@ -423,11 +423,10 @@ def test_a_transformers_stub_in_sys_modules_does_not_break_the_import(monkeypatc
 def test_check_also_runs_on_the_mlx_branch():
     """Apple Silicon never reaches `_gpu_init`.
 
-    `unsloth/__init__.py` splits on `_IS_MLX`; only the `else` arm imports
-    `_gpu_init`, and the MLX arm imports transformers itself. Registering the check
-    on one arm only leaves every MLX user with transformers' own wrong remedy, so
-    the call has to sit inside the `if _IS_MLX:` body, next to the torchao fixes
-    that are there for exactly this reason.
+    `unsloth/__init__.py` splits on `_IS_MLX` and only the `else` arm imports
+    `_gpu_init`, while the MLX arm imports transformers itself, so registering on one
+    arm leaves MLX users with transformers' own wrong remedy. The call belongs in the
+    `if _IS_MLX:` body, next to the torchao fixes that are there for the same reason.
     """
     import ast
     from pathlib import Path
