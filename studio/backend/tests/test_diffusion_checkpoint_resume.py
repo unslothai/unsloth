@@ -161,7 +161,6 @@ def _STREAMS() -> dict:
     """The two random.Random streams both trainers own. A bundle without them cannot restore the
     crop/flip and variant draws, and the preflight refuses it."""
     import random as _random
-
     return {"loop": _random.Random(0), "variant": _random.Random(1)}
 
 
@@ -1658,9 +1657,10 @@ def test_a_bundle_overwritten_by_this_run_is_discarded_with_it(run_dir):
     assert survivors == {"checkpoint-10", "checkpoint-15"}, survivors
     settled = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
     assert settled != replacement, "the discarded run's bundle is still sitting in the slot"
-    assert dc._bundle_identity(run_dir / "checkpoint-15") == dict(preexisting)[
-        run_dir / "checkpoint-15"
-    ]
+    assert (
+        dc._bundle_identity(run_dir / "checkpoint-15")
+        == dict(preexisting)[run_dir / "checkpoint-15"]
+    )
     # And nothing is left hidden in the directory afterwards.
     assert list(run_dir.glob(f"{dc._STAGING_PREFIX}*")) == []
 
@@ -2287,9 +2287,7 @@ def test_a_raised_target_survives_a_run_that_died_before_the_resumed_event(run_d
     assert "nothing left to train" in at_target["resume_blocked_reason"]
 
 
-def test_a_swap_aside_that_cannot_run_fails_the_save_and_keeps_the_old_bundle(
-    run_dir, monkeypatch
-):
+def test_a_swap_aside_that_cannot_run_fails_the_save_and_keeps_the_old_bundle(run_dir, monkeypatch):
     """Re-saving an OCCUPIED step has to move the old bundle out of the way first. When that
     rename cannot run at all -- Windows holding a file open, a cross-device oddity -- deleting
     the occupant to free the slot was the old way out, and a delete that then failed part-way
