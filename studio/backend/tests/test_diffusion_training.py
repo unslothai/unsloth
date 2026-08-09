@@ -1540,6 +1540,22 @@ def test_route_start_still_runs_when_the_install_does_have_the_pipeline(
     assert client._fake.started_with["base_model"] == "krea/Krea-2-Raw"
 
 
+def _clear_the_hardware_preflight(monkeypatch):
+    """Clear the host-capability gate, which answers BEFORE the diffusers guards below.
+
+    Those guards are what the two tests after this one are about, and the host gate runs first:
+    on a GPU-less runner it refuses with "needs a GPU", so the assertions read a message that has
+    nothing to do with them, and the tests passed only on a machine that happened to have a
+    bf16 GPU. Stubbing the preflight the route actually calls -- rather than faking torch, where
+    a present CUDA device then trips the bf16 probe -- makes them describe the host they run on,
+    the way test_route_start_refuses_a_dit_family_without_a_gpu_before_freeing pins the other
+    direction.
+    """
+    import core.training.diffusion_train_common as dtc
+
+    monkeypatch.setattr(dtc, "training_precision_preflight_error", lambda *a, **k: None)
+
+
 def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(client, monkeypatch):
     # diffusers' top level is lazy, so the guard's attribute probe is what actually imports the
     # pipeline's submodule, and a partially usable install raises RuntimeError("Failed to import
@@ -1559,6 +1575,7 @@ def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(clie
             raise RuntimeError(f"Failed to import diffusers.pipelines.{name.lower()}")
 
     freed = []
+    _clear_the_hardware_preflight(monkeypatch)
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
 
@@ -1589,6 +1606,7 @@ def test_route_start_refuses_training_when_diffusers_is_absent(client, monkeypat
         return real_import(name, *args, **kwargs)
 
     freed = []
+    _clear_the_hardware_preflight(monkeypatch)
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
     monkeypatch.setattr(builtins, "__import__", _no_diffusers)
