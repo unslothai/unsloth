@@ -467,8 +467,7 @@ def test_mirror_linux_cuda_refuses_a_release_without_one():
     had a GPU binary, keep the load on the GPU device, and run sd-cli wholly on the CPU."""
     without = [a for a in _MIRROR_ASSETS if "cuda" not in a]
     assert (
-        resolve_release_asset(without, system = "Linux", machine = "x86_64", accelerator = "cuda")
-        is None
+        resolve_release_asset(without, system = "Linux", machine = "x86_64", accelerator = "cuda") is None
     )
 
 
