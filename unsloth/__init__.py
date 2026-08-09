@@ -22,9 +22,8 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # explicit opt-in still wins; 5.x dropped both backends and ignores all of this.
 if "transformers" not in sys.modules:
     _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
-    # Overwrite rather than `setdefault`, which keeps `AUTO` - Transformers reads
-    # that as "enable if installed". An imported backend is one in use, though:
-    # opting it out would strand a working `from_tf = True` load.
+    # Overwrite, not `setdefault`: unset means `AUTO`, i.e. "enable if installed".
+    # An imported backend is in use though, so opting it out breaks a `from_tf` load.
     for _var, _modules, _opt_ins in (
         ("USE_TF", ("tensorflow",), ("USE_TF", "FORCE_TF_AVAILABLE")),
         ("USE_FLAX", ("flax", "jax"), ("USE_FLAX",)),
@@ -36,12 +35,11 @@ if "transformers" not in sys.modules:
         os.environ[_var] = "0"
     del _TRUE, _var, _modules, _opt_ins
 else:
-    # Transformers derives `_tf_available` / `_flax_available` from `find_spec`
-    # alone, so clearing the cached flags still keeps `image_transforms` from
-    # loading a broken backend. `"transformers" in sys.modules` does not mean it
-    # finished importing though - Python publishes the module before its body runs
-    # - so write the variables too: inert once read, decisive in that window, and
-    # unconditional because waiting on another thread's import here deadlocks.
+    # Transformers derives `_tf_available` / `_flax_available` from `find_spec` alone,
+    # so clearing the cached flags keeps `image_transforms` off a broken backend.
+    # `"transformers" in sys.modules` does not mean it finished importing (Python
+    # publishes the module before its body runs), so write the variables too: inert
+    # once read, decisive in that window, unconditional since waiting deadlocks.
     _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
     _import_utils = sys.modules.get("transformers.utils.import_utils")
     for _var, _flag, _const, _modules, _opt_ins, _cached in (
@@ -72,9 +70,8 @@ else:
             continue
         os.environ[_var] = "0"
         try:
-            # `import_utils` copies the environment into `USE_TF` / `USE_JAX` at
-            # its lines 102-104 and derives the flags at 264 / 355, so mid-body
-            # the environment is spent and the constant is the only lever.
+            # `import_utils` copies the env into `USE_TF` / `USE_JAX` (lines 102-104)
+            # and derives the flags at 264 / 355, so mid-body only the constant works.
             if hasattr(_import_utils, _const):
                 setattr(_import_utils, _const, "0")
             # Absent on 5.x, and a module proxy can refuse the write.
