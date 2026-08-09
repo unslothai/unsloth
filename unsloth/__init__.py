@@ -78,28 +78,35 @@ def _is_mlx_available():
 
 
 def _unsloth_version():
-    # unsloth's own version, for the MLX path. The GPU path gets this from
-    # _gpu_init -> models._utils, but that module imports torch, which the MLX
-    # path deliberately never reaches. Read the installed distribution instead
-    # (the string `pip show unsloth` prints), falling back to the literal in
-    # models/_utils.py that pyproject.toml builds the version from, for source
-    # checkouts that were never installed. Do NOT borrow unsloth_zoo.__version__:
-    # the zoo is a separate distribution pinned with `>=` and routinely trails.
+    # unsloth's own version, for the MLX path. The GPU path reads the literal in
+    # models/_utils.py via _gpu_init, but that module imports torch, which the MLX
+    # path deliberately never reaches — so read the same literal straight off disk.
+    # Reading the literal beside this file, rather than asking importlib.metadata
+    # first, is what keeps the two paths in agreement: metadata describes whichever
+    # unsloth was installed, which is a different tree whenever this checkout is
+    # imported via PYTHONPATH or an editable install that has since moved on.
+    # Distribution metadata is only the fallback, for installs shipped without the
+    # source literal. Do NOT borrow unsloth_zoo.__version__: the zoo is a separate
+    # distribution pinned with `>=` and routinely trails.
+    # Self-contained on purpose: no reliance on this module's globals, so the
+    # helper can be executed in isolation by tests.
+    import os as _os
+    import re as _re
+
+    _utils = _os.path.join(_os.path.dirname(__file__), "models", "_utils.py")
+    try:
+        with open(_utils, encoding = "utf-8") as _f:
+            _match = _re.search(r'^__version__\s*=\s*"([^"]+)"', _f.read(), _re.MULTILINE)
+    except OSError:
+        _match = None
+    if _match:
+        return _match.group(1)
     from importlib.metadata import PackageNotFoundError, version as _dist_version
 
     try:
         return _dist_version("unsloth")
     except PackageNotFoundError:
-        pass
-    import re
-
-    _utils = os.path.join(os.path.dirname(__file__), "models", "_utils.py")
-    try:
-        with open(_utils, encoding = "utf-8") as _f:
-            _match = re.search(r'^__version__\s*=\s*"([^"]+)"', _f.read(), re.MULTILINE)
-    except OSError:
-        _match = None
-    return _match.group(1) if _match else "0.0.0+unknown"
+        return "0.0.0+unknown"
 
 
 # Detect Apple Silicon + MLX before any torch/numpy imports

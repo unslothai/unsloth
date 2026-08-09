@@ -233,12 +233,17 @@ def _assigns_version(node):
     )
 
 
-def _resolve_mlx_version(zoo_version):
+def _resolve_mlx_version(zoo_version, package_init = None):
     """Run the MLX branch's ``__version__`` resolution with a spoofed zoo.
 
     Executes the real source statements (plus any module-level helper they
     call) in an isolated namespace whose ``unsloth_zoo.__version__`` is a
     sentinel, so borrowing the zoo's version is directly observable.
+
+    ``package_init`` re-points the executed helper at another package tree,
+    which is how the source-literal precedence test distinguishes "read the
+    literal next to me" from "ask importlib.metadata". The namespace carries
+    no module globals on purpose: the helper must be self-contained.
     """
     tree = ast.parse(UNSLOTH_INIT.read_text(encoding = "utf-8"))
 
@@ -257,7 +262,10 @@ def _resolve_mlx_version(zoo_version):
 
     fake_zoo = types.ModuleType("unsloth_zoo")
     fake_zoo.__version__ = zoo_version
-    namespace = {"__file__": str(UNSLOTH_INIT), "unsloth_zoo": fake_zoo}
+    namespace = {
+        "__file__": str(package_init or UNSLOTH_INIT),
+        "unsloth_zoo": fake_zoo,
+    }
     for node in helpers + version_stmts:
         exec(compile(ast.Module(body = [node], type_ignores = []), "<mlx-branch>", "exec"), namespace)
     return namespace["__version__"]
@@ -272,14 +280,6 @@ def _packaging_version_literal():
     raise AssertionError("__version__ literal not found in unsloth/models/_utils.py")
 
 
-def _installed_unsloth_version():
-    from importlib.metadata import PackageNotFoundError, version
-    try:
-        return version("unsloth")
-    except PackageNotFoundError:
-        return None
-
-
 def test_mlx_branch_reports_unsloth_version_not_zoo():
     """Apple Silicon must report unsloth's version, not whatever zoo resolved to."""
     resolved = _resolve_mlx_version(zoo_version = _ZOO_SENTINEL)
@@ -289,8 +289,31 @@ def test_mlx_branch_reports_unsloth_version_not_zoo():
         "unsloth-zoo is pinned '>=' and trails the core, so this misreports the "
         "installed unsloth (issue #8171)"
     )
-    expected = _installed_unsloth_version() or _packaging_version_literal()
+    expected = _packaging_version_literal()
     assert resolved == expected, f"MLX reported {resolved!r}, expected {expected!r}"
+
+
+def test_mlx_version_reads_the_source_beside_it_not_installed_metadata(tmp_path):
+    """The version must track the imported tree, so it agrees with the GPU path.
+
+    An editable install that has moved on, or this checkout on PYTHONPATH beside
+    another installed unsloth, both leave `importlib.metadata` describing a
+    different tree. Point the helper at a package whose literal is a sentinel:
+    reading distribution metadata returns the real version and fails here.
+    """
+    package = tmp_path / "unsloth"
+    (package / "models").mkdir(parents = True)
+    (package / "models" / "_utils.py").write_text('__version__ = "9999.1.2"\n', encoding = "utf-8")
+    init = package / "__init__.py"
+    init.write_text("", encoding = "utf-8")
+
+    resolved = _resolve_mlx_version(zoo_version = _ZOO_SENTINEL, package_init = init)
+
+    assert resolved == "9999.1.2", (
+        f"expected the literal beside the imported package, got {resolved!r}; "
+        "resolving through installed distribution metadata makes the MLX path "
+        "disagree with the GPU path, which reads models/_utils.py"
+    )
 
 
 def test_gpu_branch_still_sources_version_from_gpu_init():
@@ -298,6 +321,6 @@ def test_gpu_branch_still_sources_version_from_gpu_init():
     tree = ast.parse(UNSLOTH_INIT.read_text(encoding = "utf-8"))
 
     gpu_branch = ast.Module(body = _mlx_branch(tree).orelse, type_ignores = [])
-    assert "from ._gpu_init import __version__" in ast.unparse(
-        gpu_branch
-    ), "GPU path must keep resolving __version__ through _gpu_init -> models._utils"
+    assert "from ._gpu_init import __version__" in ast.unparse(gpu_branch), (
+        "GPU path must keep resolving __version__ through _gpu_init -> models._utils"
+    )
