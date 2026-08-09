@@ -493,6 +493,31 @@ class TestCheckConfigNeeds550:
 
         assert _check_config_needs_550(str(tmp_path)) is True
 
+    @pytest.mark.parametrize(
+        "cfg",
+        (
+            {"architectures": ["KimiK3ForConditionalGeneration"]},
+            {"model_type": "kimi_k3"},
+            {"architectures": ["LocateAnythingForConditionalGeneration"]},
+            {"model_type": "locateanything"},
+            {"architectures": ["DiffusionGemmaForBlockDiffusion"]},
+            {"model_type": "diffusion_gemma"},
+        ),
+        ids = (
+            "kimi-k3-architecture",
+            "kimi-k3-model-type",
+            "locate-anything-architecture",
+            "locate-anything-model-type",
+            "diffusion-gemma-architecture",
+            "diffusion-gemma-model-type",
+        ),
+    )
+    def test_mlx_vlm_v5_processor_config(self, tmp_path: Path, cfg: dict):
+        """mlx-vlm processors that require Transformers 5 should select 5.5."""
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_550(str(tmp_path)) is True
+
     def test_llama_architecture(self, tmp_path: Path):
         """config.json with LlamaForCausalLM should return False."""
         cfg = {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
@@ -937,6 +962,20 @@ class TestGetTransformersTier:
 
     def test_gemma4_alt_substring_returns_550(self):
         assert get_transformers_tier("unsloth/gemma4-E4B-it") == "550"
+
+    @pytest.mark.parametrize(
+        "model_id",
+        (
+            "moonshotai/Kimi-K3",
+            "mlx-community/KimiK3-4bit",
+            "nvidia/LocateAnything-3B",
+            "mlx-community/locate-anything-3b-4bit",
+            "mlx-community/diffusiongemma-26B-A4B-it-4bit",
+            "mlx-community/diffusion-gemma-26B-A4B-it-4bit",
+        ),
+    )
+    def test_mlx_vlm_v5_processor_name_returns_550(self, model_id: str):
+        assert get_transformers_tier(model_id) == "550"
 
     def test_gemma4_config_json_returns_550(self, tmp_path: Path):
         """Local checkpoint with Gemma4 architecture → 550."""
