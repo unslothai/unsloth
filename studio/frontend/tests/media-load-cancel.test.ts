@@ -86,7 +86,7 @@ for (const [page, path] of PAGES) {
   test(`the ${page} cancel routes through the backend unload`, () => {
     const handler = SOURCE.slice(
       SOURCE.indexOf("const handleCancelLoad = useCallback("),
-      SOURCE.indexOf("const handleCancelLoad = useCallback(") + 400,
+      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
     );
     assert.ok(handler.length > 0, "expected handleCancelLoad");
     assert.match(
@@ -209,9 +209,35 @@ for (const [page, path] of PAGES) {
       SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
     );
     assert.match(handler, /const wasLoading = busy === "loading";/);
-    assert.match(handler, /setBusy\("loading"\);/);
-    assert.match(handler, /loadToastId\.current = toast\(/);
-    assert.match(handler, /void pollLoadProgress\(\);/);
+    assert.match(handler, /restoreLoadTracking\(\);/);
+    const restore = SOURCE.slice(
+      SOURCE.indexOf("const restoreLoadTracking = useCallback("),
+      SOURCE.indexOf("}, [pollLoadProgress, cancelLoadFromToast]);"),
+    );
+    assert.match(restore, /setBusy\("loading"\);/);
+    assert.match(restore, /loadToastId\.current = toast\(/);
+    assert.match(restore, /void pollLoadProgress\(\);/);
+  });
+
+  test(`the ${page} cancel holds the page until a pending start settles`, () => {
+    // begin_load refuses a second load while one is registered, so a model picked between the
+    // cancel returning and the start request settling is rejected while the cancelled load keeps
+    // running. Staying busy for that window is what makes the compensating unload reachable.
+    const handler = SOURCE.slice(
+      SOURCE.indexOf("const handleCancelLoad = useCallback("),
+      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
+    );
+    assert.match(handler, /const pending = pendingStart\.current;/);
+    assert.match(handler, /setBusy\("unloading"\);/);
+    assert.match(handler, /await pending;/);
+  });
+
+  test(`the ${page} recovers when the compensating unload fails`, () => {
+    // That request is the only one that can still stop the load the first unload missed, so
+    // swallowing its failure leaves the load running with nothing tracking it.
+    const at = SOURCE.indexOf("if (startSeq !== cancelSeq.current)");
+    const raced = SOURCE.slice(at, at + 1400);
+    assert.match(raced, /restoreLoadTracking\(\);/);
   });
 
   test(`the ${page} cancel names the load, not the download`, () => {
