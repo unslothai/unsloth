@@ -7930,7 +7930,9 @@ def _queue_detached_delete(target: str) -> None:
         if _delete_worker is None or not _delete_worker.is_alive():
             try:
                 _delete_worker = threading.Thread(
-                    target = _drain_detached_deletes, name = "sandbox-delete", daemon = True,
+                    target = _drain_detached_deletes,
+                    name = "sandbox-delete",
+                    daemon = True,
                 )
                 _delete_worker.start()
             except RuntimeError:
@@ -11537,9 +11539,7 @@ def _created_file_sentinels(
     changed = sorted(
         name
         for name, key in after.items()
-        if name != exclude
-        and name not in scratch
-        and (name not in before or before[name] != key)
+        if name != exclude and name not in scratch and (name not in before or before[name] != key)
     )
     if not changed:
         return ""
@@ -11672,12 +11672,16 @@ def _python_exec(
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
             return ended + (
-                _created_file_sentinels(workdir, _before, _scratch_name, call_token) if session_id else ""
+                _created_file_sentinels(workdir, _before, _scratch_name, call_token)
+                if session_id
+                else ""
             )
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled." + (
-                _created_file_sentinels(workdir, _before, _scratch_name, call_token) if session_id else ""
+                _created_file_sentinels(workdir, _before, _scratch_name, call_token)
+                if session_id
+                else ""
             )
 
         result = output or ""
@@ -11804,7 +11808,9 @@ def _bash_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
-            return ended + (_created_file_sentinels(workdir, _before, None, call_token) if session_id else "")
+            return ended + (
+                _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
+            )
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled." + (

@@ -3414,9 +3414,7 @@ def test_a_delete_moves_only_its_own_session_up(tmp_path, monkeypatch):
     tools._legacy_sandbox_migrated = False
     monkeypatch.setattr(tools, "_start_legacy_migration", lambda: None)
     whole_tree = []
-    monkeypatch.setattr(
-        tools, "_migrate_legacy_sandbox", lambda root: whole_tree.append(root)
-    )
+    monkeypatch.setattr(tools, "_migrate_legacy_sandbox", lambda root: whole_tree.append(root))
 
     tools.remove_session_sandbox(session, delete_files = True)
 
@@ -3516,9 +3514,7 @@ def test_bulk_deletes_share_one_sweeper(tmp_path, monkeypatch):
 
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        if not any(
-            name.startswith(f"__LOCALID_bulk") for name in os.listdir(tools.sandbox_root())
-        ):
+        if not any(name.startswith(f"__LOCALID_bulk") for name in os.listdir(tools.sandbox_root())):
             break
         time.sleep(0.05)
 
