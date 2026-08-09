@@ -16,9 +16,12 @@ import {
   selectDatasetFiles,
 } from "../src/features/images/train/dataset-files.ts";
 
-/** a picked file of a given byte size, for the chunking tests. */
+/** a picked file of a given byte size. chunking reads only `size`, so the payload is stubbed:
+ *  materializing it made these cases allocate over a gigabyte between them. */
 function sized(name: string, bytes: number): File {
-  return new File([new Uint8Array(bytes)], name);
+  const file = new File([], name);
+  Object.defineProperty(file, "size", { value: bytes });
+  return file;
 }
 
 /** a picked file; `path` stands in for the webkitRelativePath a folder pick carries. */
