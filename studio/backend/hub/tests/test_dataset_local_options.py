@@ -697,3 +697,13 @@ def test_snapshot_options_stand_down_beside_a_malformed_dataset_info_list(tmp_pa
 
     # datasets calls .get on each entry, so a list of scalars raises.
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_ignore_a_dangling_link_beside_a_good_file(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _rows(snapshot, "train.jsonl")
+    (snapshot / "train-missing.jsonl").symlink_to("../../blobs/gone")
+
+    # resolve_pattern keeps a link only when its target is a file, so the loader
+    # never sees this one and the surviving split still loads.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}

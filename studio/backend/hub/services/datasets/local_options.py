@@ -416,6 +416,10 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
         for filename in filenames:
             if filename in _IGNORED_DATA_FILENAMES or filename.startswith("."):
                 continue
+            # resolve_pattern keeps a link only when its target is a file, so a dangling
+            # one is not a file datasets sees, let alone one that condemns its split.
+            if not (base / filename).is_file():
+                continue
             # Files with no builder of their own are kept: they cannot win the vote, but a
             # split holding nothing else is one datasets refuses to build.
             if len(found) >= _MAX_SNAPSHOT_DATA_FILES:
