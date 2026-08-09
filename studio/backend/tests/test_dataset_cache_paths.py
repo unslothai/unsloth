@@ -22,7 +22,7 @@ from hub.utils import (
 
 @pytest.fixture(autouse = True)
 def _known_cache_root(monkeypatch, tmp_path):
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "utils.paths.storage_roots.cache_root",
         lambda: tmp_path / "app-cache",
@@ -93,7 +93,7 @@ def test_dataset_snapshot_rejects_lookalike_outside_known_cache(monkeypatch, tmp
     allowed = tmp_path / "allowed"
     allowed.mkdir()
     repo_root, _ = _dataset_repo(tmp_path / "outside", "Org/Data")
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [allowed])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [allowed])
 
     assert dataset_cache.dataset_snapshot_from_cache_path(str(repo_root), "Org/Data") is None
 
@@ -602,7 +602,7 @@ def test_dataset_completion_isolated_and_purged_by_hub_cache(monkeypatch, tmp_pa
     (snapshot_a / "train.parquet").write_bytes(b"four")
     (snapshot_b / "train.parquet").write_bytes(b"five!")
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [cache_a, cache_b])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [cache_a, cache_b])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: types.SimpleNamespace(hub_cache = cache_a),
