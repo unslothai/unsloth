@@ -233,9 +233,9 @@ test("folder polling detects completed backend work without a visible active job
 test("settings probes RAG availability before mounting linked folders", () => {
   assert.equal(dataTab.match(/<LinkedFoldersManager/g)?.length, 1);
   assert.match(dataTab, /availabilityUnknown\(\)/);
-  assert.match(dataTab, /listKnowledgeBases\(\)\.catch/);
-  assert.match(
-    dataTab,
-    /!ragAvailabilityUnknown && !ragUnavailable \? \(/,
-  );
+  assert.match(dataTab, /await listKnowledgeBases\(\)/);
+  assert.match(dataTab, /window\.setTimeout/);
+  assert.match(dataTab, /Math\.min\(retryDelayMs \* 2, 30_000\)/);
+  assert.match(dataTab, /window\.clearTimeout\(retryTimer\)/);
+  assert.match(dataTab, /!ragAvailabilityUnknown && !ragUnavailable \? \(/);
 });

@@ -1370,7 +1370,7 @@ def test_start_auto_sync_launches_worker_after_transient_database_error(monkeypa
         folder_sync._thread_stop = original_thread_stop
 
 
-def test_worker_recovers_interrupted_project_retirements_before_scheduling(monkeypatch):
+def test_worker_reconciles_retired_scopes_before_scheduling(monkeypatch):
     stop = threading.Event()
     calls = []
 
@@ -1380,8 +1380,8 @@ def test_worker_recovers_interrupted_project_retirements_before_scheduling(monke
     monkeypatch.setattr(folder_sync, "_recover_startup_state", lambda: calls.append("jobs"))
     monkeypatch.setattr(
         folder_sync,
-        "recover_retired_project_scopes",
-        lambda callback: calls.append(("projects", callback is project_exists)),
+        "reconcile_retired_scopes",
+        lambda callback: calls.append(("scopes", callback is project_exists)),
     )
 
     def enqueue():
@@ -1395,7 +1395,7 @@ def test_worker_recovers_interrupted_project_retirements_before_scheduling(monke
     finally:
         del folder_sync._worker_state.stop_event
 
-    assert calls == ["jobs", ("projects", True), "periodic"]
+    assert calls == ["jobs", ("scopes", True), "periodic"]
 
 
 @requires_sqlite_vec
@@ -1495,7 +1495,7 @@ def test_project_rag_retirement_failure_prevents_project_deletion(monkeypatch):
     assert deleted == []
 
 
-def test_project_postcommit_file_cleanup_failure_keeps_scope_retired(monkeypatch):
+def test_project_postcommit_file_cleanup_failure_cleans_retired_scope(monkeypatch):
     from routes import chat_history
 
     project = {
@@ -1506,6 +1506,7 @@ def test_project_postcommit_file_cleanup_failure_keeps_scope_retired(monkeypatch
     }
     project_reads = iter((project, None))
     restored = []
+    cleaned = []
     monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: next(project_reads))
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
@@ -1514,6 +1515,11 @@ def test_project_postcommit_file_cleanup_failure_keeps_scope_retired(monkeypatch
         chat_history,
         "_restore_project_rag_sources",
         lambda project_id, folders: restored.append(project_id),
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "_delete_project_rag_sources",
+        lambda project_id, folders: cleaned.append((project_id, folders)),
     )
 
     def delete(*args, before_delete, **kwargs):
@@ -1530,6 +1536,49 @@ def test_project_postcommit_file_cleanup_failure_keeps_scope_retired(monkeypatch
         asyncio.run(chat_history.delete_project("p1", SimpleNamespace(), current_subject = "test"))
 
     assert restored == []
+    assert cleaned == [("p1", [])]
+
+
+def test_project_cleanup_preserves_original_error_when_commit_state_read_fails(monkeypatch):
+    from routes import chat_history
+
+    project = {
+        "id": "p1",
+        "name": "Project",
+        "createdAt": 1,
+        "updatedAt": 1,
+    }
+    project_reads = iter((project, sqlite3.OperationalError("database is busy")))
+
+    def get_project(project_id):
+        result = next(project_reads)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(chat_history, "get_chat_project", get_project)
+    monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
+    monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
+    monkeypatch.setattr(chat_history, "_retire_project_rag_sources", lambda project_id: [])
+    monkeypatch.setattr(
+        chat_history,
+        "_restore_project_rag_sources",
+        lambda *args: pytest.fail("uncertain commit state must remain retired"),
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "_delete_project_rag_sources",
+        lambda *args: pytest.fail("uncertain commit state must remain retired"),
+    )
+
+    def delete(*args, before_delete, **kwargs):
+        before_delete()
+        raise OSError("workspace cleanup failed")
+
+    monkeypatch.setattr(chat_history, "delete_chat_project", delete)
+
+    with pytest.raises(OSError, match = "workspace cleanup failed"):
+        asyncio.run(chat_history.delete_project("p1", SimpleNamespace(), current_subject = "test"))
 
 
 @requires_sqlite_vec
@@ -1656,17 +1705,85 @@ def test_startup_restores_project_scope_retired_before_project_delete_commit(rag
     pending_job = folder_sync.request_sync(folder["id"])
     folder_sync.retire_scope(store.project_scope(project["id"]))
 
-    restored_projects = folder_sync.recover_retired_project_scopes(
+    reconciled = folder_sync.reconcile_retired_scopes(
         lambda project_id: studio_db.get_chat_project(project_id) is not None
     )
 
-    assert restored_projects == [project["id"]]
+    assert reconciled == {
+        "restored": [store.project_scope(project["id"])],
+        "deleted": [],
+    }
     assert folder_sync.scope_retired(store.project_scope(project["id"])) is False
     restored = folder_sync.get_folder(folder["id"])
     assert restored["auto_sync"] == folder["auto_sync"]
     assert restored["status"] == folder["status"]
     assert restored["last_error"] == folder["last_error"]
     assert folder_sync.get_job(pending_job)["status"] == "pending"
+
+
+@requires_sqlite_vec
+def test_startup_deletes_retired_scope_for_deleted_project(rag_home, stub_embeddings):
+    scope = store.project_scope("deleted-project")
+    source = rag_home / "deleted-project"
+    source.mkdir()
+    (source / "notes.txt").write_text("managed snapshot", encoding = "utf-8")
+    folder = folder_sync.create_folder(
+        scope_type = "project", scope_id = "deleted-project", path = str(source)
+    )
+    assert _run(folder["id"])["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        document = conn.execute(
+            "SELECT id, stored_path FROM documents WHERE scope=?", (scope,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert document is not None
+    assert os.path.isfile(document["stored_path"])
+    folder_sync.retire_scope(scope)
+
+    reconciled = folder_sync.reconcile_retired_scopes(lambda project_id: False)
+
+    assert reconciled == {"restored": [], "deleted": [scope]}
+    assert folder_sync.get_folder(folder["id"]) is None
+    assert folder_sync.scope_retired(scope) is False
+    conn = rag_db.get_connection()
+    try:
+        assert conn.execute("SELECT 1 FROM documents WHERE scope=?", (scope,)).fetchone() is None
+    finally:
+        conn.close()
+    assert not os.path.exists(document["stored_path"])
+
+
+@requires_sqlite_vec
+def test_retired_scope_cleanup_keeps_retry_state_when_file_removal_fails(
+    rag_home, stub_embeddings, monkeypatch
+):
+    scope = store.project_scope("retry-project")
+    source = rag_home / "retry-project"
+    source.mkdir()
+    (source / "notes.txt").write_text("managed snapshot", encoding = "utf-8")
+    folder = folder_sync.create_folder(
+        scope_type = "project", scope_id = "retry-project", path = str(source)
+    )
+    assert _run(folder["id"])["status"] == "completed"
+    folder_sync.retire_scope(scope)
+    monkeypatch.setattr(
+        folder_sync,
+        "_remove_retired_snapshot",
+        lambda path: (_ for _ in ()).throw(OSError("snapshot is busy")),
+    )
+
+    with pytest.raises(OSError, match = "snapshot is busy"):
+        folder_sync.delete_retired_scope(scope)
+
+    assert folder_sync.scope_retired(scope) is True
+    assert folder_sync.get_folder(folder["id"])["status"] == "retired"
+    conn = rag_db.get_connection()
+    try:
+        assert conn.execute("SELECT 1 FROM documents WHERE scope=?", (scope,)).fetchone() is not None
+    finally:
+        conn.close()
 
 
 @requires_sqlite_vec
@@ -1831,9 +1948,7 @@ def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home
 
 
 @requires_sqlite_vec
-def test_project_rag_cleanup_retires_every_folder_before_best_effort_deletion(
-    rag_home, monkeypatch
-):
+def test_project_rag_cleanup_atomically_removes_retired_scope(rag_home):
     from routes import chat_history
 
     scope = store.project_scope("project")
@@ -1844,33 +1959,14 @@ def test_project_rag_cleanup_retires_every_folder_before_best_effort_deletion(
         folders.append(
             folder_sync.create_folder(scope_type = "project", scope_id = "project", path = str(source))
         )
-    failed_id = folders[0]["id"]
-    original_delete = folder_sync.delete_folder
-
-    def delete(folder_id, **kwargs):
-        if folder_id == failed_id:
-            raise sqlite3.OperationalError("database is busy")
-        return original_delete(folder_id, **kwargs)
-
-    monkeypatch.setattr(folder_sync, "delete_folder", delete)
     chat_history._delete_project_rag_sources("project")
 
-    remaining = folder_sync.list_folders(scope)
-    assert [folder["id"] for folder in remaining] == [failed_id]
-    assert remaining[0]["auto_sync"] == 0
-    assert remaining[0]["status"] == "retired"
-    with pytest.raises(KeyError):
-        folder_sync.request_sync(failed_id)
-    with pytest.raises(KeyError):
-        folder_sync.update_folder(failed_id, auto_sync = True)
-    replacement = rag_home / "replacement"
-    replacement.mkdir()
-    with pytest.raises(ValueError, match = "scope no longer exists"):
-        folder_sync.create_folder(scope_type = "project", scope_id = "project", path = str(replacement))
+    assert folder_sync.list_folders(scope) == []
+    assert folder_sync.scope_retired(scope) is False
 
 
 @requires_sqlite_vec
-def test_kb_deletion_retires_scope_before_best_effort_folder_cleanup(
+def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
     rag_home, stub_embeddings, monkeypatch
 ):
     from routes import rag as rag_routes
@@ -1899,27 +1995,28 @@ def test_kb_deletion_retires_scope_before_best_effort_folder_cleanup(
     finally:
         conn.close()
     assert os.path.isfile(stored_path)
-    failed_id = folders[0]["id"]
-    original_delete = folder_sync.delete_folder
-
-    def delete(folder_id, **kwargs):
-        if folder_id == failed_id:
-            raise sqlite3.OperationalError("database is busy")
-        return original_delete(folder_id, **kwargs)
-
-    monkeypatch.setattr(folder_sync, "delete_folder", delete)
+    original_cleanup = folder_sync.delete_retired_scope
+    monkeypatch.setattr(
+        folder_sync,
+        "delete_retired_scope",
+        lambda scope, **kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is busy")
+        ),
+    )
     assert rag_routes.delete_knowledge_base("knowledge", subject = "test") == {"ok": True}
 
     remaining = folder_sync.list_folders(store.kb_scope("knowledge"))
-    assert [folder["id"] for folder in remaining] == [failed_id]
-    assert remaining[0]["status"] == "retired"
+    assert {folder["id"] for folder in remaining} == {folder["id"] for folder in folders}
+    assert {folder["status"] for folder in remaining} == {"retired"}
+    assert folder_sync.scope_retired(store.kb_scope("knowledge")) is True
     assert not os.path.exists(stored_path)
-    replacement = rag_home / "kb-replacement"
-    replacement.mkdir()
-    with pytest.raises(ValueError, match = "scope no longer exists"):
-        folder_sync.create_folder(
-            scope_type = "knowledge_base", scope_id = "knowledge", path = str(replacement)
-        )
+    monkeypatch.setattr(folder_sync, "delete_retired_scope", original_cleanup)
+
+    reconciled = folder_sync.reconcile_retired_scopes(lambda project_id: False)
+
+    assert reconciled == {"restored": [], "deleted": [store.kb_scope("knowledge")]}
+    assert folder_sync.list_folders(store.kb_scope("knowledge")) == []
+    assert folder_sync.scope_retired(store.kb_scope("knowledge")) is False
 
 
 @requires_sqlite_vec

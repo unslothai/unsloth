@@ -410,12 +410,13 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
         deleted = folder_sync.retire_and_delete_kb(kb_id)
     if deleted is None:
         raise HTTPException(status_code = 404, detail = "Knowledge base not found")
-    folders, stored_paths = deleted
-    for folder in folders:
-        try:
-            folder_sync.delete_folder(folder["id"])
-        except Exception:
-            logger.warning("failed to delete retired linked folder %s", folder["id"], exc_info = True)
+    _folders, stored_paths = deleted
+    try:
+        folder_sync.delete_retired_scope(
+            store.kb_scope(kb_id), additional_stored_paths = stored_paths
+        )
+    except Exception:
+        logger.warning("failed to delete retired knowledge-base scope %s", kb_id, exc_info = True)
     for stored_path in stored_paths:
         _remove_stored_upload(stored_path)
     return {"ok": True}

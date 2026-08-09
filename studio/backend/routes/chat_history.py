@@ -585,45 +585,43 @@ def _delete_project_with_rag_retirement(
                 before_delete = retire_rag_scope,
             )
         except Exception:
-            if retired and get_chat_project(project_id) is not None:
-                _restore_project_rag_sources(project_id, folders)
+            if retired:
+                try:
+                    project_survived = get_chat_project(project_id) is not None
+                except Exception:  # noqa: BLE001 - startup reconciliation owns the handoff
+                    project_survived = None
+                    logger.warning(
+                        "could not determine whether project %s deletion committed",
+                        project_id,
+                        exc_info = True,
+                    )
+                if project_survived is True:
+                    _restore_project_rag_sources(project_id, folders)
+                elif project_survived is False:
+                    try:
+                        _delete_project_rag_sources(project_id, folders)
+                    except Exception:  # noqa: BLE001 - preserve the workspace cleanup error
+                        logger.warning(
+                            "failed to delete RAG sources for committed project %s",
+                            project_id,
+                            exc_info = True,
+                        )
             raise
         return project, folders
 
 
 def _delete_project_rag_sources(project_id: str, folders: list[dict] | None = None) -> None:
     """Synchronously remove retired project RAG state; callers run this in a worker thread."""
-    import os
-
     from storage import rag_db
 
     if not rag_db.rag_available():
         return
     from core.rag import folder_sync, store as rag_store
-    from utils.paths import rag_uploads_root
 
-    uploads = os.path.realpath(str(rag_uploads_root()))
     scope = rag_store.project_scope(project_id)
     if folders is None:
-        folders = folder_sync.retire_scope(scope)
-    for folder in folders:
-        try:
-            folder_sync.delete_folder(folder["id"])
-        except Exception:
-            # The registration remains durably disabled and a later cleanup can retry it.
-            logger.warning("failed to delete retired linked folder %s", folder["id"], exc_info = True)
-    conn = rag_db.get_connection()
-    try:
-        for doc in rag_store.list_documents(conn, scope):
-            full = rag_store.get_document(conn, doc["id"]) or {}
-            rag_store.delete_document(conn, doc["id"])
-            stored = full.get("stored_path")
-            if stored:
-                target = os.path.realpath(stored)
-                if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
-                    os.remove(target)
-    finally:
-        conn.close()
+        folder_sync.retire_scope(scope)
+    folder_sync.delete_retired_scope(scope)
 
 
 @router.delete("/projects/{project_id}", response_model = ChatProject)

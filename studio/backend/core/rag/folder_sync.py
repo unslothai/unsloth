@@ -384,6 +384,20 @@ def _remove_snapshot(path: str | None) -> None:
         logger.warning("failed to remove linked-folder snapshot", exc_info = True)
 
 
+def _remove_retired_snapshot(path: str | None) -> None:
+    """Remove a managed snapshot or raise so its retirement remains retryable."""
+    if not path:
+        return
+    root = os.path.realpath(str(rag_uploads_root()))
+    target = os.path.realpath(path)
+    if not _is_within(root, target):
+        return
+    try:
+        os.remove(target)
+    except FileNotFoundError:
+        pass
+
+
 def delete_folder(folder_id: str, *, remove_index: bool = True) -> bool:
     with _folder_lock(folder_id):
         conn = rag_db.get_connection()
@@ -652,29 +666,95 @@ def restore_scope(scope: str, folders: list[dict] | None = None) -> None:
     _wake.set()
 
 
-def recover_retired_project_scopes(project_exists) -> list[str]:
-    """Restore RAG scopes whose owning project survived an interrupted deletion."""
-    prefix = "project_"
+def delete_retired_scope(
+    scope: str, *, additional_stored_paths: list[str | None] | None = None
+) -> bool:
+    """Atomically purge an ownerless scope while preserving retry state on failure."""
+    with scope_retirement_lock(scope):
+        conn = rag_db.get_connection()
+        try:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
+                ).fetchone()
+                is None
+            ):
+                return False
+            conn.execute("BEGIN IMMEDIATE")
+            documents = conn.execute(
+                "SELECT id, stored_path FROM documents WHERE scope=?", (scope,)
+            ).fetchall()
+            stored_paths = [document["stored_path"] for document in documents]
+            stored_paths.extend(additional_stored_paths or [])
+            for stored_path in dict.fromkeys(stored_paths):
+                _remove_retired_snapshot(stored_path)
+            for document in documents:
+                store.delete_document(conn, document["id"], commit = False)
+            conn.execute(
+                "DELETE FROM linked_folder_files WHERE folder_id IN "
+                "(SELECT id FROM linked_folders WHERE scope=?)",
+                (scope,),
+            )
+            conn.execute(
+                "DELETE FROM linked_folder_sync_jobs WHERE folder_id IN "
+                "(SELECT id FROM linked_folders WHERE scope=?)",
+                (scope,),
+            )
+            conn.execute("DELETE FROM linked_folders WHERE scope=?", (scope,))
+            conn.execute("DELETE FROM linked_folder_retired_scopes WHERE scope=?", (scope,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    return True
+
+
+def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
+    """Restore live owners and purge deleted owners from durable retirement state."""
     conn = _retirement_connection()
     try:
         scopes = [
             row["scope"]
             for row in conn.execute("SELECT scope FROM linked_folder_retired_scopes")
-            if row["scope"].startswith(prefix)
         ]
     finally:
         conn.close()
-    restored = []
+    restored: list[str] = []
+    deleted: list[str] = []
     for scope in scopes:
-        project_id = scope[len(prefix) :]
-        if project_id:
-            with _scope_lock(scope):
-                if project_exists(project_id):
+        try:
+            owner_exists = False
+            if scope.startswith("project_"):
+                project_id = scope[len("project_") :]
+                if not project_id:
+                    continue
+                owner_exists = project_exists(project_id)
+            elif scope.startswith("kb_"):
+                kb_id = scope[len("kb_") :]
+                if not kb_id:
+                    continue
+                owner_conn = rag_db.get_connection()
+                try:
+                    owner_exists = store.get_kb(owner_conn, kb_id) is not None
+                finally:
+                    owner_conn.close()
+            else:
+                continue
+            if owner_exists:
+                with _scope_lock(scope):
                     restore_scope(scope)
-                    restored.append(project_id)
+                restored.append(scope)
+            elif delete_retired_scope(scope):
+                deleted.append(scope)
+        except Exception:
+            logger.warning("failed to reconcile retired RAG scope %s", scope, exc_info = True)
     if restored:
-        logger.info("restored %s interrupted project RAG retirement(s)", len(restored))
-    return restored
+        logger.info("restored %s interrupted RAG retirement(s)", len(restored))
+    if deleted:
+        logger.info("deleted %s retired RAG scope(s)", len(deleted))
+    return {"restored": restored, "deleted": deleted}
 
 
 def scope_retired(scope: str) -> bool:
@@ -1605,7 +1685,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                 try:
                     _recover_startup_state()
                     if project_exists is not None:
-                        recover_retired_project_scopes(project_exists)
+                        reconcile_retired_scopes(project_exists)
                     _enqueue_periodic()
                     break
                 except Exception:
@@ -1626,6 +1706,8 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                 _wake.clear()
                 if not stop_event.is_set():
                     try:
+                        if project_exists is not None:
+                            reconcile_retired_scopes(project_exists)
                         _enqueue_periodic()
                     except Exception:
                         logger.warning("linked-folder periodic scheduling failed", exc_info = True)

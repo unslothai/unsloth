@@ -144,9 +144,27 @@ export function DataTab() {
 
   useEffect(() => {
     if (!ragAvailabilityUnknown) return;
-    void listKnowledgeBases().catch(() => {
-      // Transient failures are not capability verdicts; a later mount can retry.
-    });
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    let retryDelayMs = 1_000;
+
+    const probeAvailability = async () => {
+      try {
+        await listKnowledgeBases();
+      } catch {
+        if (cancelled) return;
+        retryTimer = window.setTimeout(() => {
+          retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+          void probeAvailability();
+        }, retryDelayMs);
+      }
+    };
+
+    void probeAvailability();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
   }, [ragAvailabilityUnknown]);
 
   const confirmDeleteChats = useChatPreferencesStore(
