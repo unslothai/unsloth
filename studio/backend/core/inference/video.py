@@ -3686,8 +3686,7 @@ class VideoBackend:
                 try:
                     with _tree_reader(binary):
                         if binary and (
-                            binary_identity is None
-                            or _sd_cli_identity(binary) != binary_identity
+                            binary_identity is None or _sd_cli_identity(binary) != binary_identity
                         ):
                             # The engine is committed at load, so this cannot be re-resolved
                             # underneath a live generation the way the image path can. Say so
