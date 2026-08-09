@@ -305,15 +305,24 @@ def load_h3_quantized_text_encoder(
     dtype: Any,
     hf_token: Optional[str] = None,
     cache_dir: Optional[str] = None,
+    local_base: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[Any]:
     """The hosted quantized Qwen3-VL conditioner for ``scheme``, on CPU, ready to seed into the
     modular pipeline; None on any problem so the caller loads the released bfloat16 encoder.
 
     ``base`` supplies the component CONFIG only (``<base>/text_encoder/config.json``); every weight
-    comes from the hosted artifact, so the 62 GB dense encoder is never fetched. CPU on purpose:
-    ``enable_auto_cpu_offload`` owns placement for every component, and a pre-placed encoder would
-    only be moved again."""
+    comes from the hosted artifact, so the 62 GB dense encoder is never fetched. ``local_base`` is
+    the already-staged snapshot of ``base`` when there is one, and it is preferred: the scoped
+    pre-download keeps every component config precisely so the meta-init loaders can read them
+    locally, and reading the config back out of the snapshot cannot go to the network at all.
+    ``cache_dir`` pins the config resolution to the live cache root for the hub-id case, exactly as
+    the artifact download above and every other loader call in this backend do -- unset, it
+    resolves through huggingface_hub's import-time constant instead and can re-download into a root
+    Studio no longer reads (or fail outright on an offline host that has already staged it).
+
+    CPU on purpose: ``enable_auto_cpu_offload`` owns placement for every component, and a
+    pre-placed encoder would only be moved again."""
     try:
         filename = h3_te_quant_filename(scheme)
         if filename is None:
@@ -331,7 +340,10 @@ def load_h3_quantized_text_encoder(
         )
 
         config = transformers.AutoConfig.from_pretrained(
-            base, subfolder = "text_encoder", token = hf_token
+            local_base or base,
+            subfolder = "text_encoder",
+            token = hf_token,
+            cache_dir = cache_dir,
         )
         text_config = getattr(config, "text_config", config)
         released_layers = int(getattr(text_config, "num_hidden_layers", 0))

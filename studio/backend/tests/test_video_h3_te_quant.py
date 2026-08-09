@@ -41,8 +41,13 @@ from core.inference.video_minimax_h3_te import (
 torch = pytest.importorskip("torch", reason = "the ConvRot arithmetic tests need torch")
 
 
-def _fam(modular_workflow = "fl2va", name = "minimax-h3"):
-    return types.SimpleNamespace(name = name, modular_workflow = modular_workflow)
+H3_BASE = "MiniMaxAI/MiniMax-H3"
+
+
+def _fam(modular_workflow = "fl2va", name = "minimax-h3", base_repo = H3_BASE):
+    return types.SimpleNamespace(
+        name = name, modular_workflow = modular_workflow, base_repo = base_repo
+    )
 
 
 # ── the resolver ─────────────────────────────────────────────────────────────────
@@ -250,24 +255,38 @@ def test_resident_sizes_track_the_engaged_scheme_only():
 
 # ── the download plan ────────────────────────────────────────────────────────────
 def test_only_a_modular_family_drops_its_dense_encoder():
-    assert VideoBackend._h3_te_quant_scheme(_fam(), "int8") == "int8"
+    assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", H3_BASE) == "int8"
     # A conventional family casts its own dense encoder in place and still needs those shards.
-    assert VideoBackend._h3_te_quant_scheme(_fam(modular_workflow = None), "int8") is None
-    assert VideoBackend._h3_te_quant_scheme(_fam(), "fp8") is None
-    assert VideoBackend._h3_te_quant_scheme(_fam(), None) is None
+    assert VideoBackend._h3_te_quant_scheme(_fam(modular_workflow = None), "int8", H3_BASE) is None
+    assert VideoBackend._h3_te_quant_scheme(_fam(), "fp8", H3_BASE) is None
+    assert VideoBackend._h3_te_quant_scheme(_fam(), None, H3_BASE) is None
+
+
+def test_only_the_base_the_artifact_was_cut_from_gets_the_hosted_conditioner():
+    """A derivative can keep the Qwen3-VL architecture and change the conditioner weights. The
+    strict load cannot tell -- every name and shape still matches -- so gate on the base instead,
+    exactly as the pre-quantized denoiser does through its baked base_model_id."""
+    # A local snapshot of the same base still qualifies (same repo tail).
+    assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", "/models/MiniMax-H3") == "int8"
+    # A derivative, however it was selected (detection or family_override), keeps its own encoder.
+    for other in ("someone/MiniMax-H3-anime", "someone/MiniMax-H3-v2", "MiniMaxAI/MiniMax-H2"):
+        assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", other) is None
+    # And an unknown base is not a licence to substitute one either.
+    assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", None) is None
+    assert VideoBackend._h3_te_quant_scheme(_fam(base_repo = None), "int8", H3_BASE) is None
 
 
 def test_an_unsupported_request_never_breaks_the_plan():
     # The plan runs before validate_load_request has had the last word on some paths, and a raise
     # here would cost the whole download plan rather than one optimisation.
-    assert VideoBackend._h3_te_quant_scheme(_fam(), "not-a-scheme") is None
-    assert VideoBackend._h3_te_quant_scheme(object(), "int8") is None
+    assert VideoBackend._h3_te_quant_scheme(_fam(), "not-a-scheme", H3_BASE) is None
+    assert VideoBackend._h3_te_quant_scheme(object(), "int8", H3_BASE) is None
 
 
 def test_the_real_family_resolves_the_hosted_conditioner():
-    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    fam = detect_video_family(H3_BASE)
     assert fam is not None and fam.modular_workflow
-    assert VideoBackend._h3_te_quant_scheme(fam, "int8") == "int8"
+    assert VideoBackend._h3_te_quant_scheme(fam, "int8", H3_BASE) == "int8"
 
 
 def test_an_unresolvable_artifact_keeps_the_dense_shards():
@@ -304,6 +323,98 @@ def test_a_resolvable_artifact_is_staged_in_place_of_the_dense_shards():
     assert repo == H3_TE_QUANT_REPO
     # Exactly the one artifact, at its real size: the disk preflight is sized off this.
     assert files == [(wanted, 27_141_342_152)]
+
+
+def test_the_conditioner_repo_is_protected_while_the_load_is_in_flight(monkeypatch):
+    """The artifact comes from a THIRD repo. Without it in ``asset_repos`` the delete-cached guard
+    would let it go while the fetch (or the base pull that no longer carries a dense encoder) is
+    still running."""
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    backend._load_token = 7
+    backend._loading = video_mod._VideoLoadingState(repo_id = H3_BASE, base_repo = H3_BASE)
+
+    seen: dict[str, tuple[str, ...]] = {}
+    monkeypatch.setattr(backend, "_estimate_download_bytes", lambda *a, **k: 1)
+    monkeypatch.setattr(backend, "_fetch_te_prequant", lambda *a, **k: ())
+    monkeypatch.setattr(backend, "_predownload_base", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "load_pipeline", lambda **k: None)
+
+    def _fetch(scheme, _token, **_kwargs):
+        seen["scheme"] = scheme
+        seen["ids"] = backend.loading_repo_ids()
+        return ("text_encoder",)
+
+    monkeypatch.setattr(backend, "_fetch_h3_te_quant", _fetch)
+    backend._run_load(
+        repo_id = H3_BASE,
+        model_kind = "pipeline",
+        text_encoder_quant = "int8",
+        _load_token = 7,
+    )
+    assert seen["scheme"] == "int8"
+    assert H3_TE_QUANT_REPO in seen["ids"]
+
+
+def test_the_conditioner_repo_is_not_claimed_by_a_load_that_does_not_want_it(monkeypatch):
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    backend._load_token = 7
+    backend._loading = video_mod._VideoLoadingState(repo_id = H3_BASE, base_repo = H3_BASE)
+    monkeypatch.setattr(backend, "_estimate_download_bytes", lambda *a, **k: 1)
+    monkeypatch.setattr(backend, "_fetch_te_prequant", lambda *a, **k: ())
+    monkeypatch.setattr(backend, "_fetch_h3_te_quant", lambda *a, **k: ())
+    monkeypatch.setattr(backend, "_predownload_base", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "load_pipeline", lambda **k: None)
+    backend._run_load(repo_id = H3_BASE, model_kind = "pipeline", _load_token = 7)
+    assert backend._loading is None or H3_TE_QUANT_REPO not in backend.loading_repo_ids()
+
+
+def test_the_encoder_config_is_read_from_the_pinned_cache_not_the_default_one(monkeypatch):
+    """Studio runs on a configured cache root. An AutoConfig call that ignores it resolves against
+    huggingface_hub's import-time default, which re-downloads into a root Studio does not read and
+    simply fails on an offline host that has already staged the model."""
+    import sys
+
+    import core.inference.video_minimax_h3_te as te_mod
+
+    captured: dict[str, object] = {}
+
+    class _AutoConfig:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            captured["name"] = name
+            captured["kwargs"] = kwargs
+            # The load is best-effort by contract, so raising here returns None and exercises
+            # exactly the one call this test is about.
+            raise RuntimeError("only the call shape is under test")
+
+    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(AutoConfig = _AutoConfig))
+    monkeypatch.setitem(
+        sys.modules,
+        "utils.hf_xet_fallback",
+        types.SimpleNamespace(hf_hub_download_with_xet_fallback = lambda *a, **k: "/nope"),
+    )
+
+    assert (
+        te_mod.load_h3_quantized_text_encoder(
+            H3_BASE, "int8", dtype = None, cache_dir = "/tmp/studio-hub"
+        )
+        is None
+    )
+    assert captured["name"] == H3_BASE
+    assert captured["kwargs"]["cache_dir"] == "/tmp/studio-hub"
+    assert captured["kwargs"]["subfolder"] == "text_encoder"
+
+    # A staged snapshot is preferred over the hub id: its config.json is already on disk, so the
+    # resolution cannot go to the network at all.
+    captured.clear()
+    te_mod.load_h3_quantized_text_encoder(
+        H3_BASE, "int8", dtype = None, cache_dir = "/tmp/studio-hub", local_base = "/snap/h3"
+    )
+    assert captured["name"] == "/snap/h3"
 
 
 def test_the_dense_encoder_is_dropped_from_the_base_pull_but_its_config_is_kept():

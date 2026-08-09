@@ -944,7 +944,7 @@ class VideoBackend:
             )
             # And for MiniMax-H3's conditioner, whose hosted quantized artifact replaces the base
             # repo's 62 GB dense text_encoder/ shards outright.
-            h3_te_scheme = self._h3_te_quant_scheme(fam, kwargs.get("text_encoder_quant"))
+            h3_te_scheme = self._h3_te_quant_scheme(fam, kwargs.get("text_encoder_quant"), base)
             expected = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -958,6 +958,15 @@ class VideoBackend:
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
+                    # The conditioner artifact comes from a THIRD repo, neither repo_id nor
+                    # base_repo, so without this the delete-cached guard would let it be deleted
+                    # out from under the in-flight fetch (or out from under the assembly, while
+                    # the base snapshot that no longer carries a dense encoder is still coming
+                    # down). Same registration the native H3 path makes for its companions.
+                    if h3_te_scheme:
+                        self._loading.asset_repos = self._loading.asset_repos + (
+                            H3_TE_QUANT_REPO,
+                        )
                     self._loading.expected_bytes = expected
             # Checkpoint downloads outside the lock so an unload can preempt the multi-GB pull; companions pre-download the same way.
             checkpoint_local: Optional[Path] = None
@@ -1285,7 +1294,9 @@ class VideoBackend:
         )
 
     @staticmethod
-    def _h3_te_quant_scheme(fam: Any, text_encoder_quant: Optional[str]) -> Optional[str]:
+    def _h3_te_quant_scheme(
+        fam: Any, text_encoder_quant: Optional[str], base: Optional[str] = None
+    ) -> Optional[str]:
         """The hosted QUANTIZED conditioner scheme this pick would load, or None.
 
         The one resolver the plan, the byte estimate, the pre-fetch and the load itself all ask, so
@@ -1294,9 +1305,23 @@ class VideoBackend:
         mid-load pull of the same size.
 
         Only a modular-workflow family qualifies. Every other family casts its own dense encoder in
-        place and still needs those shards. Pure, never raises, never touches the network."""
+        place and still needs those shards.
+
+        And only against the base the artifact was cut from. A custom derivative can keep the
+        Qwen3-VL architecture and still carry different conditioner weights, and the strict load
+        cannot tell the difference -- every name and shape still matches -- so it would silently
+        condition on someone else's encoder. ``te_base_equivalent`` is the same test the pre-cast
+        encoder path uses: the same base, or one verified to ship byte-identical component weights.
+        Anything else keeps the pipeline's own dense encoder.
+
+        Pure, never raises, never touches the network."""
         try:
             if not getattr(fam, "modular_workflow", None):
+                return None
+            from .diffusion_te_prequant import te_base_equivalent
+
+            canonical = getattr(fam, "base_repo", None)
+            if not canonical or not base or not te_base_equivalent(canonical, base):
                 return None
             return h3_te_quant_scheme(normalize_te_quant(text_encoder_quant))
         except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense encoder
@@ -1700,7 +1725,7 @@ class VideoBackend:
                 total += add(dq_repo, dq_files)
             # And H3's quantized conditioner, which replaces the base repo's dense text_encoder/.
             h3_te_repo, h3_te_files = self._h3_te_quant_hub_files(
-                self._h3_te_quant_scheme(fam, text_encoder_quant), api
+                self._h3_te_quant_scheme(fam, text_encoder_quant, base), api
             )
             if h3_te_repo:
                 total += add(h3_te_repo, h3_te_files)
@@ -2780,12 +2805,23 @@ class VideoBackend:
         # avoid, and on this workflow it would also have to download the 62 GB dense component.
         text_encoder_quant_engaged: Optional[str] = None
         text_encoder_quant_reason = "released bfloat16 components"
-        te_scheme = h3_te_quant_scheme(text_encoder_quant)
+        # Base-gated, through the same resolver the plan and the pre-fetch use, so a derivative
+        # base that keeps its own conditioner can never be handed this one.
+        te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base)
         if text_encoder_quant is not None and te_scheme is None:
-            # A valid request this workflow has no hosted artifact for. Say so; do NOT erase it.
+            # A valid request this workflow has no hosted artifact for, or one it has but not for
+            # THIS base. Say which; do NOT erase the request.
             text_encoder_quant_reason = (
-                f"no hosted quantized {text_encoder_quant} conditioner for {fam.name}; "
-                f"loaded the released bfloat16 encoder instead"
+                (
+                    f"the hosted quantized {text_encoder_quant} conditioner is cut from "
+                    f"{fam.base_repo}, not {base}; loaded this pipeline's own bfloat16 encoder "
+                    f"instead"
+                )
+                if h3_te_quant_scheme(text_encoder_quant) is not None
+                else (
+                    f"no hosted quantized {text_encoder_quant} conditioner for {fam.name}; "
+                    f"loaded the released bfloat16 encoder instead"
+                )
             )
         elif te_scheme is not None:
             from .video_minimax_h3_te import load_h3_quantized_text_encoder
@@ -2796,6 +2832,10 @@ class VideoBackend:
                 hf_token = hf_token,
                 # Pin the live cache root, exactly as the denoiser fetch above does.
                 cache_dir = hub_cache_dir(),
+                # The scoped pre-download keeps every component config, so the staged snapshot
+                # already holds text_encoder/config.json: read it from there rather than sending
+                # the config resolution back to the hub.
+                local_base = _base_local_dir,
                 logger = logger,
             )
             if text_encoder is None:
