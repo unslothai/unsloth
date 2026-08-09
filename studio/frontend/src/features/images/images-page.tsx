@@ -2671,12 +2671,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         </div>
         {/* Create | Train page-mode switch, centered on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
         {/* px-11 makes the pair 277px, so it widens on the header's own width: the viewport also carries the resizable sidebar. */}
+        {/* mr: the tracks centre on the content box, so the header's uneven padding would sit the pill half of it right of the page centre. */}
         <PillTabs
           ariaLabel="Page mode"
           value={pageMode}
           onValueChange={(v) => setPageMode(v as "create" | "train")}
           fit={true}
-          className="pointer-events-auto h-[34px] justify-self-center [&>button]:h-[34px] [&>button]:px-3 @min-[560px]:[&>button]:px-11"
+          className="pointer-events-auto h-[34px] mr-[calc(var(--studio-media-header-left-inset,1.5rem)-0.5rem)] justify-self-center [&>button]:h-[34px] [&>button]:px-3 @min-[560px]:[&>button]:px-11"
           tabs={[
             {
               value: "create",
