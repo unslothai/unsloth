@@ -1453,6 +1453,7 @@ class SdCppDiffusionBackend:
                 "base_repo": None,
                 "device": None,
                 "dtype": None,
+                "gguf_variant": None,
                 "cpu_offload": False,
                 "offload_policy": None,
                 "vae_tiling": False,
@@ -1470,6 +1471,7 @@ class SdCppDiffusionBackend:
                 "workflows": [],
             }
         from core.inference import diffusion_lora
+        from hub.utils.gguf import extract_quant_token
 
         return {
             "loaded": True,
@@ -1478,6 +1480,9 @@ class SdCppDiffusionBackend:
             "base_repo": state.base_repo,
             "device": state.device,
             "dtype": "gguf",
+            "gguf_variant": extract_quant_token(state.gguf_filename)
+            if state.gguf_filename
+            else None,
             # Reflect the offload flags actually passed to sd-cli (empty on CPU -> "none").
             "cpu_offload": bool(state.offload_flags),
             "offload_policy": "active" if state.offload_flags else "none",

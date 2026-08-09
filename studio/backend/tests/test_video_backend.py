@@ -1383,6 +1383,37 @@ def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
     backend.unload()
 
 
+def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
+    fake_runtime, tmp_path
+):
+    filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf"
+    (tmp_path / filename).write_bytes(b"w")
+    backend = VideoBackend()
+
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = filename,
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+
+    assert status["gguf_variant"] == "Q4_K_M"
+    assert backend.unload()["gguf_variant"] is None
+    # A pipeline load has no checkpoint quant to name.
+    assert (
+        backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")[
+            "gguf_variant"
+        ]
+        is None
+    )
+    backend.unload()
+
+
+def test_video_status_response_carries_gguf_variant():
+    from models.inference import VideoStatusResponse
+    assert VideoStatusResponse(loaded = True, gguf_variant = "Q4_K_M").gguf_variant == "Q4_K_M"
+
+
 def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
     # The AUTO decision follows each generation's ACTUAL step count; an explicit "off" never toggles.
     backend = VideoBackend()
