@@ -261,3 +261,36 @@ def test_a_repo_is_never_recorded_as_its_own_companion(monkeypatch):
         c["repo_id"]
         for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
     ] == [BASE_REPO]
+
+
+def test_orphan_listing_never_offers_a_base_installed_as_a_full_pipeline(monkeypatch):
+    """Several curated bases run on their own. A companion fetch skips the denoiser folder and
+    a pipeline pick takes it, so the denoiser's presence says which one put it on disk."""
+    base = _base_repo()
+    base.revisions[0].files.append(
+        _file(
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+            7_000_000_000,
+            snapshot = base.revisions[0].snapshot_path,
+        )
+    )
+    _install(monkeypatch, base)
+    assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
+
+
+def test_recording_a_link_keeps_the_ones_already_there():
+    """Every write is a read-modify-write of one shared file, so a second checkpoint's link must
+    not erase the first: the erased one would look orphaned and be offered for removal."""
+    assert companion_assets.record_companion_link(GGUF_REPO, BASE_REPO) is True
+    assert (
+        companion_assets.record_companion_link(
+            "unsloth/FLUX.2-klein-9B-GGUF", "black-forest-labs/FLUX.2-klein-9B"
+        )
+        is True
+    )
+    links = companion_assets.read_companion_links()
+    assert links[GGUF_REPO.lower()] == [BASE_REPO]
+    assert links["unsloth/flux.2-klein-9b-gguf"] == ["black-forest-labs/FLUX.2-klein-9B"]
+    # Re-recording the same pair is a no-op rather than a duplicate.
+    assert companion_assets.record_companion_link(GGUF_REPO, BASE_REPO) is False
+    assert companion_assets.read_companion_links()[GGUF_REPO.lower()] == [BASE_REPO]

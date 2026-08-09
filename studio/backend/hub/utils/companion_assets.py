@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Iterable, Optional
@@ -48,6 +49,9 @@ _LINKS_FILENAME = "companion-assets.json"
 _LINKS_VERSION = 1
 # A runaway writer must not grow an unbounded state file; oldest links are dropped first.
 _MAX_LINKS = 512
+# Serialises the read-modify-write below. Losing a link to a lost update is the one direction
+# that matters: an unrecorded base can look orphaned and be offered for removal.
+_WRITE_LOCK = threading.Lock()
 
 
 def _links_path(*, create: bool = False) -> Optional[Path]:
@@ -128,12 +132,14 @@ def record_companion_link(checkpoint_repo_id: str, base_repo_id: str) -> bool:
         return False
     if Path(base).expanduser().exists():
         return False
-    links = read_companion_links()
-    existing = links.get(_normalise(checkpoint), [])
-    if any(_normalise(b) == _normalise(base) for b in existing):
-        return False
-    links[_normalise(checkpoint)] = [*existing, base]
-    return _write_companion_links(links)
+    with _WRITE_LOCK:
+        # Re-read inside the lock: a concurrent resolver's link must not be dropped by this write.
+        links = read_companion_links()
+        existing = links.get(_normalise(checkpoint), [])
+        if any(_normalise(b) == _normalise(base) for b in existing):
+            return False
+        links[_normalise(checkpoint)] = [*existing, base]
+        return _write_companion_links(links)
 
 
 def _family_bases(repo_id: str) -> set[str]:

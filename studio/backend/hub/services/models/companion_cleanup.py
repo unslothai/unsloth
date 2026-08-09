@@ -58,6 +58,18 @@ def _repo_blob_bytes(repo_info, *, only=None) -> int:
     return sum(unique.values())
 
 
+_DENOISER_DIRS = ("transformer/", "unet/")
+_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".ckpt", ".pt", ".pth", ".gguf")
+
+
+def _holds_denoiser(name: str) -> bool:
+    """A denoiser weight: a GGUF anywhere, or a shard under the pipeline's denoiser folder."""
+    lowered = name.lower()
+    if _is_gguf_filename(name):
+        return True
+    return lowered.startswith(_DENOISER_DIRS) and lowered.endswith(_WEIGHT_SUFFIXES)
+
+
 def _repos_by_id(cache_scans) -> dict[str, list]:
     out: dict[str, list] = {}
     for scan in cache_scans or ():
@@ -202,10 +214,13 @@ def _orphan_companions_blocking() -> dict:
         if required.get(base_key):
             continue
         repos = by_id[base_key]
-        # A repo that itself holds a runnable checkpoint is a model the user picked, not a
-        # leftover companion: never offer it. The base's own dense transformer lives under
-        # transformer/, so a GGUF here can only have come from a separate pick.
-        if any(_repo_blob_bytes(r, only = _is_gguf_filename) for r in repos):
+        # A repo that holds a runnable denoiser is a model the user installed, not a leftover.
+        # Several curated bases are perfectly good pipelines in their own right, so this is the
+        # difference between the two ways the same repo id reaches the cache: a companion fetch
+        # takes everything BUT the denoiser folder (``_base_file_downloaded`` skips
+        # ``transformer/``), while a pipeline pick takes it. Its presence is therefore the
+        # derived answer to "did the user ask for this repo, or did a GGUF drag it in".
+        if any(_repo_blob_bytes(r, only = _holds_denoiser) for r in repos):
             continue
         size = sum(_repo_blob_bytes(r) for r in repos)
         if size <= 0:
