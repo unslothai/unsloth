@@ -11398,9 +11398,7 @@ def _created_file_sentinels(
     changed = sorted(
         name
         for name, key in after.items()
-        if name != exclude
-        and name not in scratch
-        and (name not in before or before[name] != key)
+        if name != exclude and name not in scratch and (name not in before or before[name] != key)
     )
     if not changed:
         return ""
