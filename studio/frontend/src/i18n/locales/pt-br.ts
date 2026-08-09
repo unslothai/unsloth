@@ -1096,20 +1096,6 @@ export const ptBR = {
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
-      python: "Python",
-      accelerator: {
-        sectionTitle: "Kernels otimizados",
-        sectionDescription:
-          "Kernels de atenção e quantização mais rápidos. Cada um é compilado para uma única build do PyTorch, então uma divergência de versão não carrega nenhum e o Unsloth volta silenciosamente aos caminhos mais lentos.",
-        working: "Funcionando",
-        notLoading: "Não carrega",
-        notInstalled: "Não instalado",
-        notChecked: "Não verificado",
-        builtFor: "Compilado para {build}",
-        bannerTitle: "Kernels otimizados estão instalados, mas não carregam",
-        bannerBody:
-          "{packages} não consegue carregar aqui, portanto seus kernels otimizados estão indisponíveis. A lista acima mostra o que continua funcionando.",
-      },
       updates: "Atualização",
       help: "Ajuda",
       documentation: "Documentação",
