@@ -244,8 +244,12 @@ def slim_runtime_intact(binary: str) -> bool:
         )
     if intact and marker.get("backend") == "rocm":
         expected_runtime_dirs = set() if sys.platform == "win32" else {"hipblaslt", "rocblas"}
+        # Any wiring from version 2 on records linked_runtime_directories, so
+        # pin the floor, not one version, or an installer bump strands installs.
+        wiring_version = marker.get("runtime_wiring_version")
         intact = (
-            marker.get("runtime_wiring_version") == 2
+            isinstance(wiring_version, int)
+            and wiring_version >= 2
             and isinstance(runtime_dirs, list)
             and set(runtime_dirs) == expected_runtime_dirs
         )
