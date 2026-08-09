@@ -1083,6 +1083,11 @@ def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
         _load_token = 1,
     )
     assert b._state is not None and b._state.mode == "oneshot" and b._state.server is None
+    # The server it started and stopped must not stay published: _pending_server means "a native
+    # process is running out of the managed tree", which suppresses every later accelerator
+    # install, so a stale one would pin this process to the wrong build until a restart.
+    assert b._pending_server is None
+    assert bk._tree_in_use(b) is False
     # and it can still generate via the one-shot engine
     out = b.generate(prompt = "x", steps = 4, seed = 1)
     assert len(out["images"]) == 1 and len(fake.calls) == 1
