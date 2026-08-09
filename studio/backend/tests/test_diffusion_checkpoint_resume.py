@@ -2553,3 +2553,84 @@ def test_the_fencing_keeps_a_bundle_this_run_wrote_over_an_old_one(run_dir):
     assert (run_dir / "checkpoint-5" / dc.TRAINER_STATE_FILENAME).read_text(
         encoding = "utf-8"
     ) == mine
+
+
+def test_directory_resume_falls_back_past_a_bundle_that_fails_full_validation(run_dir):
+    """read_checkpoint is a header scan; the preflight's own checks (a real torch.load, the
+    required state) are stricter. Stopping at the newest bundle it accepted meant one unloadable
+    optimizer file left the run unresumable with the retained older copy intact beside it --
+    which is the whole point of keeping two."""
+    run = _Run(run_dir, save_total_limit = 0)
+    good, error = run.save(4)
+    assert error is None and good is not None
+    run.step_once(0.5)
+    newest, error = run.save(8)
+    assert error is None and newest is not None
+
+    # Structurally present, semantically gone: the manifest still lists the rng file and the
+    # header still parses, but the streams it must restore are missing.
+    state = Path(newest) / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(state.read_text(encoding = "utf-8"))
+    manifest["rng"].pop("streams")
+    state.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    path, step = dc.preflight_resume(str(run_dir), identity = run.identity, target_steps = 500)
+    assert Path(path).name == "checkpoint-4" and step == 4
+
+    # An EXPLICIT bundle has no alternatives, so its failure is still the answer.
+    with pytest.raises(dc.ResumeError, match = "random-number streams"):
+        dc.preflight_resume(newest, identity = run.identity, target_steps = 500)
+
+
+def test_a_replaced_source_bundle_is_not_offered_back(run_dir):
+    """A resumed run that dies before its first save falls back to the bundle it was validated
+    against. Identified by pathname alone, another run writing its own checkpoint-<N> over the
+    same slot was handed back under the failed run's lineage -- a different branch's adapter and
+    moments, with a matching identity so nothing else would catch it."""
+    seeded = _Run(run_dir, save_total_limit = 0)
+    source, error = seeded.save(10)
+    assert error is None and source is not None
+    original_created = json.loads(
+        (Path(source) / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
+    )["created_at"]
+
+    state = dc.describe_resume_state(
+        str(run_dir / "nonexistent"),
+        source_checkpoint = source,
+        source_created_at = original_created,
+    )
+    assert state["can_resume"] is True and state["checkpoint_step"] == 10
+
+    # Another run rewrites the same slot.
+    other = _Run(run_dir, seed = 9, save_total_limit = 0)
+    other.step_once(2.0)
+    other.save(10)
+    replaced = dc.describe_resume_state(
+        str(run_dir / "nonexistent"),
+        source_checkpoint = source,
+        source_created_at = original_created,
+    )
+    assert replaced["can_resume"] is False, replaced
+    # And with no recorded timestamp (a record from before this existed) the fallback still works.
+    legacy = dc.describe_resume_state(str(run_dir / "nonexistent"), source_checkpoint = source)
+    assert legacy["can_resume"] is True
+
+
+def test_a_dit_family_records_the_bf16_it_actually_runs_in(run_dir):
+    """The DiT trainer never reads mixed_precision: weight_dtype is bf16 on CUDA. Recording the
+    REQUEST put fp16 or "no" in the identity of a run that executed in bf16, and a later bf16
+    resume of it was rejected as a precision mismatch between two runs that ran identically."""
+    import dataclasses
+
+    import torch
+
+    base = _Run(run_dir)
+    for requested in ("fp16", "no", "bf16"):
+        cfg = dataclasses.replace(
+            base.cfg, resolved_family = "flux.1", mixed_precision = requested
+        )
+        expected = "bf16" if torch.cuda.is_available() else "no"
+        assert dc.identity_for_config(cfg).precision == expected, requested
+    # SDXL keeps its own resolution: the request is what that trainer honours.
+    sdxl = dataclasses.replace(base.cfg, resolved_family = "sdxl", mixed_precision = "fp16")
+    assert dc.identity_for_config(sdxl).precision == ("fp16" if torch.cuda.is_available() else "no")

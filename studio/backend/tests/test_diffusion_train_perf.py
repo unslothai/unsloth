@@ -508,3 +508,90 @@ def test_a_fresh_job_forgets_the_previous_no_save_stop():
     assert svc._discard_requested is True
     # start() clears it for the next job, so a discarded run cannot block the next one's resume.
     assert "_discard_requested = False" in inspect.getsource(DiffusionTrainingService.start)
+
+
+def test_a_discard_is_applied_to_a_terminal_error_too(tmp_path, monkeypatch):
+    """An exception on the current step is a terminal `error`, and the pump returns on that path
+    rather than through the dead-process branch -- so a stop-without-saving followed by a crash
+    left the periodic checkpoint resumable in history."""
+    import core.training.diffusion_checkpoint as dc
+
+    bundle = tmp_path / "checkpoint-40"
+    bundle.mkdir()
+    (bundle / "keep.bin").write_bytes(b"x")
+
+    class _Proc:
+        def is_alive(self) -> bool:
+            return True
+
+    class _OneEvent:
+        def __init__(self, ev):
+            self._events = [ev]
+
+        def get(self, timeout = None):
+            if self._events:
+                return self._events.pop(0)
+            raise RuntimeError("empty")
+
+    svc = DiffusionTrainingService()
+    proc = _Proc()
+    svc._proc = proc
+    svc._stop_queue = _StopQueue()
+    svc._apply_event({"type": "checkpoint_saved", "checkpoint_path": str(bundle), "step": 40})
+    assert svc.stop(save = False) is True
+    monkeypatch.setattr(svc, "_persist_run_record", lambda: None)
+
+    svc._pump_loop(_OneEvent({"type": "error", "message": "CUDA out of memory"}), proc)
+
+    state = svc.status()
+    assert state["status"] == "error"
+    assert "stopped without saving" in (state["resume_blocked_reason"] or "")
+    # And the bundles the run wrote are gone: they hold optimizer state and the UI offers no
+    # delete path once the run is marked discarded.
+    assert not bundle.exists()
+    assert dc is not None
+
+
+def test_a_killed_discard_removes_only_this_runs_bundles(tmp_path):
+    """The parent knows exactly which bundles it saw checkpoint_saved for, so an earlier run's
+    leftovers in the same directory are untouched."""
+
+    class _Dead:
+        def is_alive(self) -> bool:
+            return False
+
+    class _Empty:
+        def get(self, timeout = None):
+            raise RuntimeError("empty")
+
+        def get_nowait(self):
+            raise RuntimeError("empty")
+
+    earlier = tmp_path / "checkpoint-99"
+    earlier.mkdir()
+    mine = tmp_path / "checkpoint-40"
+    mine.mkdir()
+
+    svc = DiffusionTrainingService()
+    svc._proc = _AliveProc()
+    svc._stop_queue = _StopQueue()
+    svc._apply_event({"type": "checkpoint_saved", "checkpoint_path": str(mine), "step": 40})
+    assert svc.stop(save = False) is True
+    dead = _Dead()
+    svc._proc = dead
+    svc._pump_loop(_Empty(), dead)
+
+    assert not mine.exists(), "this run's bundle must go"
+    assert earlier.is_dir(), "an earlier run's bundle is not this run's to delete"
+
+
+def test_an_epoch_mode_target_does_not_fall_back_to_the_unused_step_count():
+    """num_epochs overrides train_steps, which then still carries the request model's default of
+    500. Using it for a run that died before its `resumed` event reported a 600-step checkpoint
+    as 600/500 and refused the resume."""
+    from core.training.diffusion_training_service import _resolved_total_steps
+
+    assert _resolved_total_steps({"total_steps": 1000}, {"num_epochs": 4, "train_steps": 500}) == 1000
+    assert _resolved_total_steps({}, {"num_epochs": 4, "train_steps": 500}) == 0
+    # Step mode is unchanged: the configured count is the target.
+    assert _resolved_total_steps({}, {"num_epochs": 0, "train_steps": 500}) == 500

@@ -1250,6 +1250,30 @@ def discard_preexisting_checkpoints(
     _retire_replaced_slots(root, restore = False)
 
 
+def discard_named_checkpoints(paths: "Iterable[Any]") -> None:
+    """Remove the exact bundles named, then hand any slot they displaced back.
+
+    The parent-side twin of ``clear_own_checkpoints``: a child that is killed after a
+    stop-without-saving never runs its own cleanup, and the parent knows only the paths it saw
+    ``checkpoint_saved`` for -- which is precisely the set this run wrote. Anything that predated
+    the run is untouched, and a bundle written OVER a predecessor gives its slot back.
+    """
+    roots: set[Path] = set()
+    for value in paths:
+        if not value:
+            continue
+        try:
+            path = Path(str(value)).expanduser()
+        except (TypeError, ValueError):
+            continue
+        if checkpoint_step(path) < 0:
+            continue  # not a bundle path; never delete something we cannot name
+        roots.add(path.parent)
+        shutil.rmtree(path, ignore_errors = True)
+    for root in roots:
+        _retire_replaced_slots(root, restore = True)
+
+
 def clear_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]") -> None:
     """Remove the bundles THIS run wrote, leaving the ones it found.
 
@@ -1444,6 +1468,25 @@ def latest_valid_checkpoint(
     return None
 
 
+def iter_valid_checkpoints(
+    output_dir: str | os.PathLike[str],
+) -> "list[tuple[Path, dict]]":
+    """Every structurally complete bundle under ``output_dir``, newest first.
+
+    ``latest_valid_checkpoint`` answers with the first one; the resume preflight needs the rest,
+    because its own checks (identity, required state, a real torch.load) are stricter than the
+    header scan. Stopping at the newest defeated the two-checkpoint retention policy: a bundle
+    whose optimizer file passes the header walk but fails to load left the run unresumable with
+    an intact older copy sitting beside it."""
+    _recover_orphaned_slots(Path(output_dir).expanduser())
+    found: list[tuple[Path, dict]] = []
+    for candidate in list_checkpoints(output_dir):
+        manifest = read_checkpoint(candidate)
+        if manifest is not None:
+            found.append((candidate, manifest))
+    return found
+
+
 # Run statuses that can never be continued, with the reason shown in the UI.
 _UNRESUMABLE_STATUS = {
     "completed": "This run finished its full step count, so there is nothing left to train.",
@@ -1451,14 +1494,22 @@ _UNRESUMABLE_STATUS = {
 }
 
 
-def _source_checkpoint_bundle(source_checkpoint) -> Optional[tuple[Path, dict[str, Any]]]:
-    """The bundle a run RESUMED FROM, when it is still readable on disk.
+def _source_checkpoint_bundle(
+    source_checkpoint, source_created_at: Optional[float] = None
+) -> Optional[tuple[Path, dict[str, Any]]]:
+    """The bundle a run RESUMED FROM, when it is still readable on disk AND still the same one.
 
     A resume that ends before writing a bundle of its own -- an OOM on the first restored step
     is the usual way -- has nothing under its own output dir, and if that dir is a new one it
     may not even exist. The source it was validated against is still there and still correct to
     continue from, so it is read directly rather than by widening the started_at fence, which
     exists to keep an unrelated earlier run's bundles out.
+
+    ``source_created_at`` is the manifest timestamp recorded when this run actually resumed.
+    A pathname is not an identity: another run can write its own ``checkpoint-<N>`` over the
+    same slot, and with a matching training identity the route would accept it -- silently
+    continuing a different branch's adapter and moments under this run's lineage. Absent (an
+    older record), the check is skipped rather than refusing an otherwise valid fallback.
     """
     if not source_checkpoint:
         return None
@@ -1467,7 +1518,17 @@ def _source_checkpoint_bundle(source_checkpoint) -> Optional[tuple[Path, dict[st
         manifest = read_checkpoint(candidate) if candidate.is_dir() else None
     except OSError:
         return None
-    return (candidate, manifest) if manifest is not None else None
+    if manifest is None:
+        return None
+    if source_created_at:
+        try:
+            written = float(manifest.get("created_at") or 0.0)
+        except (TypeError, ValueError):
+            written = 0.0
+        # Not the bundle this run resumed: something replaced the slot after the fact.
+        if not written or abs(written - float(source_created_at)) > 1e-6:
+            return None
+    return (candidate, manifest)
 
 
 def describe_resume_state(
@@ -1477,6 +1538,7 @@ def describe_resume_state(
     started_at: Optional[float] = None,
     ended_at: Optional[float] = None,
     source_checkpoint: Optional[str] = None,
+    source_created_at: Optional[float] = None,
     total_steps: Optional[int] = None,
 ) -> dict[str, Any]:
     """What the UI needs to offer (or explain the absence of) a Resume action for a run.
@@ -1503,7 +1565,7 @@ def describe_resume_state(
             # A resume into a NEW output dir that died before its first save never created it,
             # and the bundle it was validated against is still sitting in the source dir. The
             # fallback below is exactly for that, so it has to be reachable from here.
-            recovered = _source_checkpoint_bundle(source_checkpoint)
+            recovered = _source_checkpoint_bundle(source_checkpoint, source_created_at)
             if recovered is None:
                 return {
                     **blank,
@@ -1519,7 +1581,7 @@ def describe_resume_state(
             # the fence above excludes it and the run reads as unresumable when retrying is the
             # obvious thing to do. Read it directly rather than widening the fence, which exists
             # to stop an unrelated earlier run's bundles being offered.
-            found = _source_checkpoint_bundle(source_checkpoint)
+            found = _source_checkpoint_bundle(source_checkpoint, source_created_at)
     except OSError:
         return blank
     if found is None:
@@ -1749,24 +1811,43 @@ def preflight_resume(
     # explicit bundle it is simply rejected, with the real checkpoint sitting inside it. So the
     # explicit branch is taken only when the path IS a valid bundle.
     explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
-    found: Optional[tuple[Path, dict]] = None
+    candidates: list[tuple[Path, dict]]
     if explicit is not None:
-        found = (root, explicit)
+        candidates = [(root, explicit)]
     else:
-        found = latest_valid_checkpoint(root)
-        if found is None and checkpoint_step(root) >= 0:
+        candidates = iter_valid_checkpoints(root)
+        if not candidates and checkpoint_step(root) >= 0:
             # Named like a bundle, is not one, and holds no bundles either: the original
             # message is the accurate one.
             raise ResumeError(
                 f"'{root.name}' is not a complete training checkpoint (it is missing files, "
                 "or was left behind by an interrupted save)."
             )
-    if found is None:
+    if not candidates:
         raise ResumeError(
             "No complete training checkpoint was found for this run, so there is nothing to "
             "resume from. Start a new run instead."
         )
-    path, manifest = found
+    # Newest first, and a failure here is not the end of the search when a DIRECTORY was given:
+    # the header scan that produced this list is deliberately cheap, so the newest bundle can
+    # fail torch.load or turn out to be missing required state while the retained older one is
+    # perfectly good. Stopping at the first failure made the retention policy pointless. An
+    # EXPLICIT bundle has no alternatives, so its first failure is still the answer.
+    first_error: Optional[ResumeError] = None
+    for path, manifest in candidates:
+        try:
+            return _validated_resume(path, manifest, identity, target_steps)
+        except ResumeError as exc:
+            if first_error is None:
+                first_error = exc
+    assert first_error is not None
+    raise first_error
+
+
+def _validated_resume(
+    path: Path, manifest: dict[str, Any], identity: CheckpointIdentity, target_steps: int
+) -> tuple[str, int]:
+    """The full per-bundle gate: identity, required state, and a real load of every file."""
     saved = CheckpointIdentity.from_dict(manifest.get("identity"))
     if saved is None:
         raise ResumeError(

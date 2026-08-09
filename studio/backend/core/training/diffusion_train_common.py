@@ -336,6 +336,12 @@ def effective_mixed_precision(cfg: Any) -> str:
     import torch  # noqa: PLC0415 -- keep the import list light for the training subprocess
 
     requested = str(getattr(cfg, "mixed_precision", "") or "")
+    if str(getattr(cfg, "resolved_family", "") or "").strip().lower() in _DIT_TRAIN_FAMILIES:
+        # The DiT trainer does not read mixed_precision at all: weight_dtype is bf16 on CUDA and
+        # fp32 otherwise. Recording the REQUEST for those families put "fp16" or "no" in the
+        # identity of a run that executed in bf16, and a later bf16 resume of it was then
+        # rejected as a precision mismatch between two runs that ran identically.
+        return "bf16" if torch.cuda.is_available() else "no"
     if not torch.cuda.is_available():
         return "no"
     if requested == "bf16" and not native_bf16_supported():
@@ -1448,6 +1454,10 @@ def restore_resume_state(
         checkpoint_path = str(path),
         step = step,
         total_steps = cfg.train_steps,
+        # Which bundle THIS is, not just where it sat. Another run can write its own
+        # checkpoint-<N> over the same slot, and the pathname alone would then offer that
+        # replacement back as this run's lineage.
+        source_created_at = ckpt.manifest.get("created_at"),
     )
     return ckpt
 

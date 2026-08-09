@@ -105,6 +105,7 @@ def _resume_fields(
     total_steps: Optional[int] = None,
     write_error: Optional[str] = None,
     source_checkpoint: Optional[str] = None,
+    source_created_at: Optional[float] = None,
 ) -> dict[str, Any]:
     """``can_resume`` / ``checkpoint_step`` / ``resume_blocked_reason`` for a run, read from
     the checkpoints that are actually on disk.
@@ -126,6 +127,7 @@ def _resume_fields(
             ended_at = ended_at,
             total_steps = total_steps,
             source_checkpoint = source_checkpoint,
+            source_created_at = source_created_at,
         )
     except Exception:  # noqa: BLE001 -- history must never break on a checkpoint scan
         state = {}
@@ -178,6 +180,9 @@ def _refresh_resume_state(rec: dict) -> dict:
             source_checkpoint = (
                 config.get("resume_from_checkpoint") if isinstance(config, dict) else None
             ),
+            # And WHICH bundle that was, so a slot another run has since rewritten is not
+            # offered back as this run's own lineage.
+            source_created_at = rec.get("resumed_source_created_at"),
         )
     )
     return rec
@@ -252,6 +257,10 @@ def _idle_state() -> dict[str, Any]:
         "checkpoint_step": None,
         "resume_blocked_reason": None,
         "resumed_from_step": None,
+        # The manifest timestamp of the bundle this run resumed FROM. A pathname is not an
+        # identity: another run can write over the same checkpoint-<N> slot, and the fallback
+        # would then offer that replacement back under this run's lineage.
+        "resumed_source_created_at": None,
         "started_at": None,
         "updated_at": None,
         # Bounded, paired history arrays for the live loss chart (see _append_metric).
@@ -310,6 +319,23 @@ def _append_metric(
     gns.append(fgn)
 
 
+def _resolved_total_steps(state: dict[str, Any], cfg: dict[str, Any]) -> int:
+    """The step target this run was actually going to reach.
+
+    ``train_steps`` is only meaningful when the run was NOT configured by epochs: the request
+    model defaults it to 500 and ``num_epochs`` overrides it, so falling back to it in epoch
+    mode invents a target the run never had -- a 600-step checkpoint of a run resolved to 1000
+    then reads as 600/500 and the resume is refused. Zero is honest there, and the checkpoint
+    manifest's own target (written with the resolved count) answers instead.
+    """
+    live = int(state.get("total_steps") or 0)
+    if live:
+        return live
+    if int(cfg.get("num_epochs") or 0) > 0:
+        return 0
+    return int(cfg.get("train_steps") or 0)
+
+
 class DiffusionTrainingService:
     """One diffusion LoRA training job at a time, spawned as a subprocess."""
 
@@ -331,6 +357,9 @@ class DiffusionTrainingService:
         # request never emits one -- and the unexpected-exit path then recorded a resumable
         # error run, re-offering Resume from the very checkpoint the user asked to discard.
         self._discard_requested = False
+        # Bundle paths THIS job reported writing, so a discard the child could not carry out
+        # itself removes exactly those and nothing that predated the run.
+        self._own_checkpoints: list[str] = []
         # GPU load admissions in flight (a load between its training guard and its arbiter registration). Same two-sided rule as the dataset mutations.
         self._gpu_admissions = 0
         self._proc: Any = None
@@ -467,6 +496,7 @@ class DiffusionTrainingService:
 
             job_id = uuid.uuid4().hex
             self._discard_requested = False
+            self._own_checkpoints = []
             event_queue = self._ctx.Queue()
             self._stop_queue = self._ctx.Queue()
             self._proc = self._ctx.Process(
@@ -561,21 +591,49 @@ class DiffusionTrainingService:
                                 message = "Training process exited unexpectedly.",
                                 updated_at = time.time(),
                             )
-                        if self._discard_requested:
-                            # The user asked to throw this run away and the child died before
-                            # it could say so. Whatever periodic bundle it had written is not
-                            # something to offer back.
-                            self._state["resume_blocked_reason"] = (
-                                "This run was stopped without saving, so it was discarded."
-                            )
+                        discarding = self._discard_requested
+                    if discarding:
+                        self._apply_discard_intent()
                     _ = drained
                     self._persist_run_record()
                     return
                 continue
             self._apply_event(ev, proc = proc)
             if ev.get("type") in _TERMINAL:
+                # An exception raised on the current step is a terminal `error`, and the pump
+                # returns here rather than through the dead-process branch -- so the discard the
+                # user asked for has to be applied on this path too.
+                with self._lock:
+                    discarding = self._discard_requested and self._proc is proc
+                if discarding:
+                    self._apply_discard_intent()
                 self._persist_run_record()
                 return
+
+    def _apply_discard_intent(self) -> None:
+        """Carry out a stop-without-saving the child could not report itself.
+
+        The trainer does this on its own completion path; a child that OOMs, is killed, or dies
+        on the current step never gets there. Blocking the resume is the visible half -- the
+        bundles are the other one, and they hold optimizer and scheduler state, are sizeable,
+        and have no delete path in the UI once the run is marked discarded.
+        """
+        with self._lock:
+            own = list(self._own_checkpoints)
+            self._state["resume_blocked_reason"] = (
+                "This run was stopped without saving, so it was discarded."
+            )
+            self._state["checkpoint_path"] = None
+            self._state["checkpoint_step"] = None
+            self._own_checkpoints = []
+        if not own:
+            return
+        try:
+            from core.training.diffusion_checkpoint import discard_named_checkpoints
+
+            discard_named_checkpoints(own)
+        except Exception:  # noqa: BLE001 -- cleanup must never break the terminal transition
+            pass
 
     def _persist_run_record(self) -> None:
         """Best-effort JSON record of the finished run (summary + scrubbed config + the
@@ -618,6 +676,7 @@ class DiffusionTrainingService:
                 "output_dir": str(adapter) if adapter else None,
                 "resumed_from_job_id": cfg.get("resumed_from_job_id") or None,
                 "resumed_from_step": s.get("resumed_from_step"),
+                "resumed_source_created_at": s.get("resumed_source_created_at"),
                 "checkpoint_write_error": s.get("resume_blocked_reason") or None,
                 **_resume_fields(
                     str(adapter) if adapter else None,
@@ -629,8 +688,16 @@ class DiffusionTrainingService:
                     # calculation back to the checkpoint manifest's older target, which then
                     # reported "nothing left to train" for a run whose whole point was a
                     # raised target.
-                    total_steps = int(s.get("total_steps") or cfg.get("train_steps") or 0),
+                    #
+                    # NOT in epoch mode, though: num_epochs overrides train_steps, which then
+                    # still carries the Pydantic default of 500. A run resolved to 1000 that
+                    # died before its "resumed" event would report a 600-step checkpoint as
+                    # 600/500 and refuse the resume. Zero there is honest, and the manifest's
+                    # own target (written with the resolved count) is the right answer.
+                    total_steps = _resolved_total_steps(s, cfg),
                     write_error = s.get("resume_blocked_reason"),
+                    source_checkpoint = cfg.get("resume_from_checkpoint"),
+                    source_created_at = s.get("resumed_source_created_at"),
                 ),
                 "config": cfg,
                 "metric_history": {
@@ -689,6 +756,7 @@ class DiffusionTrainingService:
                 # checkpoint_step (which tracks this run's own newest bundle).
                 s.update(
                     resumed_from_step = ev.get("step"),
+                    resumed_source_created_at = ev.get("source_created_at"),
                     message = f"Resuming from step {ev.get('step')}...",
                 )
                 # Seed the LIVE counters from the same event. They are what the UI renders and
@@ -708,6 +776,9 @@ class DiffusionTrainingService:
                     checkpoint_step = ev.get("step"),
                     resume_blocked_reason = None,
                 )
+                written = ev.get("checkpoint_path")
+                if written and written not in self._own_checkpoints:
+                    self._own_checkpoints.append(str(written))
             elif etype == "checkpoint_failed":
                 # Sticky: whatever older bundle is on disk predates the work this run did, so
                 # resuming from it would silently lose steps. Mirrors the MLX resume_blocked flag.
