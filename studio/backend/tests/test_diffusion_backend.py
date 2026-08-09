@@ -2813,6 +2813,7 @@ def test_load_refines_component_placement_after_text_encoder_quantization(
     fake_runtime, tmp_path, monkeypatch
 ):
     from core.inference import diffusion as dmod
+    from core.inference.diffusion_precision import TEQuantOutcome
 
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
@@ -2821,7 +2822,10 @@ def test_load_refines_component_placement_after_text_encoder_quantization(
 
     def _quantize(*args, **kwargs):
         seen["quantized"] = True
-        return None
+        # The real pass reports what it did and the loader reads `.mode` off that report, so a
+        # bare None here is a shape the production function can no longer return. A None mode
+        # keeps this stub's meaning: the encoders were left dense.
+        return TEQuantOutcome(None)
 
     def _refine(pipe, plan):
         assert seen["quantized"] is True
