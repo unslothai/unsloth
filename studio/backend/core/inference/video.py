@@ -1208,7 +1208,9 @@ class VideoBackend:
                 companion_mib = None
             else:
                 companion_mib = (
-                    int(companions_gb * mib_per_gb * dtype_scale) if components is not None else None
+                    int(companions_gb * mib_per_gb * dtype_scale)
+                    if components is not None
+                    else None
                 )
                 # Budget ALL weights: companions stay resident, so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM.
                 model_dense_mib = (
