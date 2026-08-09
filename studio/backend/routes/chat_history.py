@@ -8,6 +8,7 @@ Handlers are sync defs so Starlette runs studio.db's blocking sqlite in its thre
 instead of on the event loop, where it would stall every other request.
 """
 
+import sqlite3
 from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -273,14 +274,23 @@ def list_threads(
     return ChatThreadListResponse(threads = [ChatThread(**t) for t in threads])
 
 
+def _missing_project_error(project_id: Optional[str]) -> HTTPException:
+    """The row references a project that is gone, whether the check or the write noticed it."""
+    return HTTPException(status_code = 404, detail = f"Project {project_id} not found")
+
+
 @router.post("/threads", response_model = ChatThread)
 def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
     if payload.projectId and get_chat_project(payload.projectId) is None:
-        raise HTTPException(
-            status_code = 404,
-            detail = f"Project {payload.projectId} not found",
-        )
-    return ChatThread(**upsert_chat_thread(payload.model_dump()))
+        raise _missing_project_error(payload.projectId)
+    try:
+        return ChatThread(**upsert_chat_thread(payload.model_dump()))
+    except sqlite3.IntegrityError as exc:
+        # The project can be deleted between the check above and this insert, and the foreign key
+        # then fails. Report the same 404 rather than surfacing a 500.
+        if not payload.projectId:
+            raise
+        raise _missing_project_error(payload.projectId) from exc
 
 
 @router.get("/threads/{thread_id}", response_model = ChatThread)
@@ -304,10 +314,7 @@ def patch_thread(
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
     if patch.get("projectId") and get_chat_project(patch["projectId"]) is None:
-        raise HTTPException(
-            status_code = 404,
-            detail = f"Project {patch['projectId']} not found",
-        )
+        raise _missing_project_error(patch["projectId"])
     try:
         thread = update_chat_thread(
             thread_id,
@@ -315,6 +322,11 @@ def patch_thread(
             expected_title = expected_title,
             expected_opening_message_id = expected_opening_message_id,
         )
+    except sqlite3.IntegrityError as exc:
+        # Same race as save_thread: the project can go away before this write lands.
+        if not patch.get("projectId"):
+            raise
+        raise _missing_project_error(patch["projectId"]) from exc
     except ChatThreadPreconditionFailed:
         raise HTTPException(
             status_code = 409,

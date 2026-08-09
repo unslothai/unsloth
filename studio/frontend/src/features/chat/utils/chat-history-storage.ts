@@ -576,8 +576,9 @@ export async function ensureStoredChatThread(
   if (isChatThreadDeleted(threadId)) return undefined;
   // Wait for an in-flight write without adopting its failure: rethrowing here
   // would skip the retryFailedThreadRecord branch below for exactly the callers
-  // already waiting when the write rejected.
-  await awaitStoredChatThreadRecord(threadId).catch(() => undefined);
+  // already waiting when the write rejected. Bounded, because the history append reaches this
+  // through saveStoredChatMessage and the clear boundary waits on that append with no deadline.
+  await awaitStoredChatThreadRecordBounded(threadId);
   const legacyThread = fallback ?? (await db.threads.get(threadId));
   let backendThread: ThreadRecord | null;
   try {
@@ -624,12 +625,14 @@ export function awaitStoredChatThreadRecordBounded(
   );
 }
 
+/** Ids whose row write is still unsettled, captured before a delete is issued. */
+function captureLateThreadRecords(ids: string[]): string[] {
+  return ids.filter((id) => pendingThreadRecordByThreadId.has(id));
+}
+
 /** Delete again once a write that outran the bounded wait commits, so the row cannot come back. */
 function deleteLateThreadRecords(ids: string[]): void {
   for (const id of ids) {
-    if (!pendingThreadRecordByThreadId.has(id)) {
-      continue;
-    }
     // Drains until the tracked entry stops changing, so a creator chained on after this point is
     // covered too. A local tombstone only hides the row here; the backend keeps serving it to
     // every other client until this lands.
@@ -758,8 +761,9 @@ export async function listStoredChatThreads(
   });
   if (backendThreads) {
     await importLegacyChatsIfNeeded().catch(() => undefined);
-    // A point import can have committed its row while its bump is still pending.
-    if (pendingLegacyThreadImports.size > 0) {
+    // A point import can have committed its row while its bump is still pending, and another can
+    // start while this waits, so drain until none remain rather than snapshotting once.
+    while (pendingLegacyThreadImports.size > 0) {
       await Promise.allSettled([...pendingLegacyThreadImports]);
     }
     // Re-read only when the import created threads the read above could not see.
@@ -932,8 +936,11 @@ export async function deleteStoredChatThreads(
   // A row write already in flight would land after the delete and resurrect the
   // thread. Bounded: a wedged request must not leave the user unable to delete.
   await Promise.all(ids.map((id) => awaitStoredChatThreadRecordBounded(id)));
+  // Captured before the delete: the tracker drops a write that settles while the DELETE is in
+  // flight, and a check afterwards would find nothing left to follow up on.
+  const lateIds = captureLateThreadRecords(ids);
   await deleteChatThreads(ids);
-  deleteLateThreadRecords(ids);
+  deleteLateThreadRecords(lateIds);
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();
@@ -987,11 +994,14 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     deletedThreadIds: [],
     failedThreadIds: [],
   };
+  // Captured before the clear: a write that settles while the request is in flight is dropped
+  // from the tracker, and checking afterwards would find nothing to follow up on.
+  const lateIds = captureLateThreadRecords(lateThreadIds);
   try {
     // Defer the history refresh until Dexie clear and tombstones finalize,
     // so listeners never observe the composite clear mid-flight.
     await clearBackendChats({ notify: false });
-    deleteLateThreadRecords(lateThreadIds);
+    deleteLateThreadRecords(lateIds);
     result.backend = "cleared";
   } catch (error) {
     result.backend = "failed";
