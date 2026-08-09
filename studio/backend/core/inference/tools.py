@@ -7124,7 +7124,6 @@ _active_sessions_lock = threading.Lock()
 def _mark_busy(session_id: str, busy: bool) -> None:
     """Note in the ledger that this process is running in that sandbox."""
     import time
-
     _record_workdir(
         session_id,
         f"{os.getpid()}:{time.time():.0f}" if busy else None,

@@ -616,6 +616,7 @@ async def lifespan(app: FastAPI):
             sweep_detached_sandboxes,
             sweep_pending_deletes,
         )
+
         sweep_detached_sandboxes()
         sweep_pending_deletes()
         migrate_legacy_sandbox_in_background()
