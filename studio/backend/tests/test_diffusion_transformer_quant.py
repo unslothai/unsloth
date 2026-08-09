@@ -836,7 +836,11 @@ def test_the_attention_trim_families_exclude_their_small_m_text_streams():
     from core.inference.diffusion_transformer_quant import _INT8_EXCLUDE_NAME_TOKENS
 
     assert exclude_tokens_for_scheme("fp8", "hunyuanvideo-1.5") == ()
-    assert exclude_tokens_for_scheme(TQ_INT8, "ltx-2") == _INT8_EXCLUDE_NAME_TOKENS
+    # flux.1 stands in for the unrelated family here. ltx-2 no longer can: it is audiovisual, and
+    # a video-only run feeds a one-token audio stream that hits the same M floor, so it now carries
+    # its own audio exclusions.
+    assert exclude_tokens_for_scheme(TQ_INT8, "flux.1") == _INT8_EXCLUDE_NAME_TOKENS
+    assert exclude_tokens_for_scheme(TQ_INT8, None) == _INT8_EXCLUDE_NAME_TOKENS
 
 
 def test_the_training_deny_is_a_superset_of_the_inference_deny():

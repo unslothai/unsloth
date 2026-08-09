@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import types
+from dataclasses import replace
 
 import pytest
 
@@ -2441,6 +2442,323 @@ def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, mon
         assert status["loaded"] is True, mode
         assert calls == [], mode
         assert "hunyuan_attn_trim" not in status["speed_optims"], mode
+
+
+# ── a failed video must say what it was rendering (#8225) ────────────────────────
+
+
+def _failing_pipe_call(exc):
+    # The explicit signature matters: generate() inspects it, and a bare **kwargs would advertise
+    # no callback_on_step_end and route the call down the scheduler-wrapping path instead.
+    def _boom(
+        self,
+        *,
+        prompt = None,
+        negative_prompt = None,
+        num_inference_steps = None,
+        guidance_scale = None,
+        width = None,
+        height = None,
+        num_frames = None,
+        frame_rate = None,
+        generator = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        raise exc
+
+    return _boom
+
+
+def _capture_generate_failures(monkeypatch):
+    """Collect the ``video.generate_failed_request`` lines.
+
+    The module logger is structlog, which caplog does not see, so wrap it and pass everything
+    else straight through to the real one."""
+    import core.inference.video as video_mod
+
+    lines: list = []
+    real = video_mod.logger
+
+    class _Recorder:
+        def error(self, fmt, *a, **k):
+            message = fmt % a if a else fmt
+            if "generate_failed_request" in message:
+                lines.append(message)
+            return real.error(fmt, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    monkeypatch.setattr(video_mod, "logger", _Recorder())
+    return lines
+
+
+def test_a_failed_generation_logs_the_resolved_request(fake_runtime, tmp_path, monkeypatch):
+    # The reported bug: the entire server-side record of the OOM in #8225 was the exception string,
+    # so the resolution and frame count behind a 66.54 GiB allocation had to be recovered by
+    # dividing it by the head count. Log the request that produced it.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: False)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a sloth surfing", width = 1000, height = 700, num_frames = 120)
+
+    assert len(records) == 1
+    line = records[0]
+    # The SNAPPED shape, which is what actually ran, not the caller's raw request.
+    assert "width=992" in line and "height=672" in line and "frames=113" in line
+    assert "steps=" in line and "seed=" in line and "family=ltx-2" in line
+    assert "device=" in line and "offload=" in line
+
+
+def test_a_rejected_request_is_not_recorded_as_a_server_failure(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # _run_generate maps every ValueError from the pipeline to client input feedback and gives it
+    # no video.generate_failed record, so the request-shape log must not turn the same rejection
+    # into an ERROR entry: a user asking for a shape the pipeline refuses is not a server failure.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(ValueError("`height` and `width` have to be divisible by 32")),
+    )
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(ValueError):
+        backend.generate(prompt = "a sloth surfing", width = 1000, height = 700, num_frames = 120)
+
+    assert records == []
+
+
+def test_the_failure_log_carries_no_prompt_text(fake_runtime, tmp_path, monkeypatch):
+    # A length distinguishes an empty prompt from a long one, which is all a bug report needs; the
+    # server log is not the place for user content.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe), "__call__", _failing_pipe_call(RuntimeError("kaboom"))
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: False)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a secret about oranges", negative_prompt = "blurry")
+
+    line = records[0]
+    assert "oranges" not in line and "blurry" not in line
+    assert "prompt_chars=22" in line and "negative_prompt_chars=6" in line
+
+
+def test_an_oom_on_a_math_only_device_names_the_quadratic_cost(fake_runtime, tmp_path, monkeypatch):
+    # The whole point of #8225: the model was not too big, the score matrix was. When the device
+    # has no fused kernel, an OOM should arrive with that diagnosis attached.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    assert len(records) == 2
+    assert "score matrix" in records[1] and "SQUARE" in records[1]
+
+
+def test_a_non_oom_failure_does_not_blame_attention(fake_runtime, tmp_path, monkeypatch):
+    # Math-only is a real condition, but it did not cause a scheduler bug. Only allocator failures
+    # get the diagnosis, or it becomes noise on every unrelated crash.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("scheduler produced NaN sigmas")),
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    assert len(records) == 1
+    assert "score matrix" not in records[0]
+
+
+def test_a_cancel_is_not_logged_as_a_failure(fake_runtime, tmp_path, monkeypatch):
+    # Cancels unwind through the same handler. A user pressing stop is an outcome, not a bug
+    # report, and logging it would bury the real ones.
+    from core.inference.video_families import VIDEO_CANCELLED_MSG
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    records = _capture_generate_failures(monkeypatch)
+    cancel = threading.Event()
+    cancel.set()
+
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend.generate(prompt = "a clip", cancel_event = cancel)
+
+    assert records == []
+
+
+def test_a_failure_before_the_request_resolves_logs_nothing(fake_runtime, tmp_path, monkeypatch):
+    # There is nothing truthful to report until the shape is snapped, and a half-bound record
+    # would be worse than none.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    records = _capture_generate_failures(monkeypatch)
+
+    def _broken(fam, w, h):
+        raise RuntimeError("resolution table is broken")
+
+    monkeypatch.setattr(video_mod, "snap_video_size", _broken)
+
+    with pytest.raises(RuntimeError, match = "resolution table"):
+        backend.generate(prompt = "a clip")
+
+    assert records == []
+
+
+def test_a_broken_diagnostic_never_replaces_the_real_failure(fake_runtime, tmp_path, monkeypatch):
+    # If the probe or the formatting raises, the caller must still see the original exception.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+
+    def _boom(target):
+        raise RuntimeError("the probe itself is broken")
+
+    monkeypatch.setattr(video_mod, "sdpa_math_only", _boom)
+
+    with pytest.raises(RuntimeError, match = "66.54 GiB"):
+        backend.generate(prompt = "a clip")
+
+
+@pytest.mark.parametrize(
+    "exc, expected",
+    [
+        (RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB."), True),
+        (RuntimeError("HIP out of memory"), True),
+        (RuntimeError("Tried to allocate 2.00 GiB"), True),
+        (RuntimeError("scheduler produced NaN sigmas"), False),
+        (ValueError("bad prompt"), False),
+    ],
+)
+def test_out_of_memory_is_recognised_by_text_not_only_by_class(exc, expected):
+    # torch raises torch.OutOfMemoryError on CUDA but a plain RuntimeError on some backends, so
+    # an isinstance check alone would miss exactly the reports this is for.
+    import core.inference.video as video_mod
+    assert video_mod._is_out_of_memory(exc) is expected
+
+
+def test_the_oom_diagnosis_is_skipped_when_an_external_backend_ran(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """AITER / xFormers replace torch's own dispatch, so probing native SDPA answers about code the
+    generation never executed. On a ROCm card with AITER engaged that turned every OOM into a
+    confident false statement that attention ran on the quadratic math backend."""
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    backend._state = replace(backend._state, attention_backend = "aiter")
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("HIP out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    probed: list = []
+
+    def _never(target):
+        probed.append(target)
+        return True
+
+    monkeypatch.setattr(video_mod, "sdpa_math_only", _never)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    assert probed == [], "an engaged external backend must not be diagnosed as native SDPA"
+    assert not any(video_mod.SDPA_MATH_ONLY_MESSAGE in line for line in records)
+    # The request record itself is still logged; only the diagnosis is withheld.
+    assert any("family=ltx-2" in line for line in records)
+
+
+def test_the_oom_probe_uses_the_dtype_the_run_actually_used(fake_runtime, tmp_path, monkeypatch):
+    """Video families promote a resolved fp16 to fp32, and the fused SDPA kernels are
+    half-precision only. A dtypeless probe target defaults to fp16, so it would answer for a
+    precision the run never used."""
+    import torch
+
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    backend._state = replace(backend._state, dtype = "float32", attention_backend = None)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    seen: list = []
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: seen.append(target) or True)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    # The run's dtype reaches the record, which is what the probe target is built from.
+    assert any("dtype=float32" in line for line in records)
+    assert len(seen) == 1
+
+
+def test_the_probe_target_resolves_the_recorded_dtype():
+    """The other half: that recorded string becomes the real torch dtype the probe asks about."""
+    import torch
+
+    import core.inference.video as video_mod
+
+    assert video_mod._probe_target({"device": "cuda", "dtype": "float32"}).dtype is torch.float32
+    assert video_mod._probe_target({"device": "cuda", "dtype": "bfloat16"}).dtype is torch.bfloat16
+    # No recorded dtype keeps the probe's own half-precision default.
+    assert video_mod._probe_target({"device": "cuda"}).dtype is None
+    # A junk value, or a torch attribute that is not a dtype, can never become a bogus dtype.
+    assert video_mod._probe_target({"device": "cuda", "dtype": "nonsense"}).dtype is None
+    assert video_mod._probe_target({"device": "cuda", "dtype": "nn"}).dtype is None
 
 
 # ── text-encoder budgeting ───────────────────────────────────────────────────

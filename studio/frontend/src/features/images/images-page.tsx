@@ -109,6 +109,7 @@ import {
   type GalleryImage,
   type LoraSpecInput,
   GenerateResponseLostError,
+  cancelDiffusionGeneration,
   deleteGalleryImage,
   fetchGalleryObjectUrl,
   generateDiffusionImage,
@@ -122,6 +123,10 @@ import {
   loadDiffusionModel,
   unloadDiffusionModel,
 } from "./api";
+import {
+  shouldContinueGenerating,
+  shouldReportGenerateError,
+} from "./lib/generation-stop";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -1307,6 +1312,27 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const visibleIds = useRef<Set<string>>(new Set());
   // False once the page truly unmounts. Tab switches keep it mounted, so a batch keeps generating off-tab.
   const isMounted = useRef(true);
+  // Set by Stop for the duration of one handleGenerate call. The backend cancel only reaches the
+  // denoise that is running RIGHT NOW, so a multi-run request (count > 1) would start its next run
+  // straight after; this breaks the loop as well. Cleared when the run settles.
+  const cancelRequested = useRef(false);
+  // True only once the backend has answered {cancelled: true}, i.e. it really stopped a running
+  // denoise. Anything else -- a POST that never landed, or a {cancelled: false} because the run
+  // was already past its last cancellation check -- means the run was NOT stopped, so an error it
+  // raises afterwards is a real failure and not the user's own Stop coming back.
+  const cancelAcked = useRef(false);
+  // Bumped once per handleGenerate call, so a cancel can tell its own run from a later one.
+  const runToken = useRef(0);
+  // The run token owning the Stop currently on the wire, or null. Without it each extra click
+  // posts again, and a late duplicate can land after the run settled and stop whichever
+  // generation is running by then. Held as a token rather than a flag because the clear is
+  // asynchronous: a slow cancel from the PREVIOUS run must neither swallow this run's Stop nor,
+  // when it finally settles, release this run's guard.
+  const cancelInFlight = useRef<number | null>(null);
+  // Aborts the Stop still on the wire, if any. A pending cancel outlives its run when it is
+  // waiting on a 401 refresh-and-replay, and the replay would then target whatever is generating
+  // by the time it lands. Dropping it as the next run starts is what keeps that from happening.
+  const cancelAbort = useRef<AbortController | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
@@ -2558,6 +2584,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
+    // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
+    cancelRequested.current = false;
+    cancelAcked.current = false;
+    // Per-run, like the two above. A cancel POST still outstanding from the PREVIOUS run (a 401
+    // refresh-and-replay is the slow case) would otherwise leave the guard set and swallow this
+    // run's own Stop entirely.
+    cancelInFlight.current = null;
+    // Any Stop still pending belongs to the run that just ended, so it must not reach the server
+    // now that a new one is starting.
+    cancelAbort.current?.abort();
+    cancelAbort.current = null;
+    runToken.current += 1;
     // Poll the backend's per-step progress across the whole run so the bar tracks live denoising steps. A named poll body
     // (guarded against overlap) also serves the visibilitychange listener, so a throttled tab catches up when visible.
     let pollInFlight = false;
@@ -2590,8 +2628,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
       for (let i = 0; i < runs; i++) {
-        // The page truly unmounted mid-run: stop issuing more GPU generations. A plain tab switch keeps it mounted.
-        if (!isMounted.current) break;
+        // Stop issuing more GPU generations once the page truly unmounted (a plain tab switch
+        // keeps it mounted), or once Stop was pressed: the backend cancel only reaches the denoise
+        // in flight, so the remaining runs of a count > 1 request would otherwise start anyway.
+        if (
+          !shouldContinueGenerating({
+            mounted: isMounted.current,
+            stopRequested: cancelRequested.current,
+          })
+        )
+          break;
         let res: DiffusionGenerateResponse;
         try {
           res = await generateDiffusionImage({
@@ -2652,11 +2698,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         res.images.forEach((image) => void ensureSrc(image));
         setGenDone(i + 1);
       }
-      // A generation can change server-side status: Speed=Auto compiles on the 3rd LoRA-free run (supports_lora flips false),
-      // so without a refresh the LoRA picker stays enabled and the next LoRA run fails. Cheap status GET.
-      if (isMounted.current) void refreshStatus();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Image generation failed");
+      const msg = err instanceof Error ? err.message : "Image generation failed";
+      // The user's own Stop comes back as the backend's cancelled sentinel (409). Not an error,
+      // so do not toast it. Same treatment the video page gives its Cancel.
+      // Only a Stop the backend confirmed it acted on explains an error away. If the POST never
+      // landed, or the backend answered {cancelled: false} because the run was already past its
+      // last cancellation check while the route was still persisting, the generation was not
+      // stopped, so whatever it raised is a real failure rather than "the user stopped it".
+      if (
+        shouldReportGenerateError({
+          message: msg,
+          stopRequested: cancelRequested.current && cancelAcked.current,
+        })
+      )
+        toast.error(msg);
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
@@ -2664,11 +2720,51 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         document.removeEventListener("visibilitychange", genVisibilityListener.current);
         genVisibilityListener.current = null;
       }
+      cancelRequested.current = false;
+      // Refresh on EVERY exit, not just the successful one, and AWAIT it before Generate comes
+      // back. A generation can change server-side status (Speed=Auto compiles on the 3rd LoRA-free
+      // run and supports_lora flips false), and a cancelled native run can leave no model at all:
+      // when the native cancel is not reflected within its grace window, sd-server is stopped
+      // outright. Re-enabling Generate first would offer a button that 409s against a backend with
+      // nothing loaded. Cheap status GET, so the wait is not felt.
+      if (isMounted.current) await refreshStatus();
       setBusy(null);
       setGenDone(null);
       setGenStep(null);
     }
   }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus]);
+
+  // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
+  // races the run that is already finishing, then ask the backend to break out of the sampler.
+  const handleCancelGenerate = useCallback(async () => {
+    cancelRequested.current = true;
+    // One Stop on the wire at a time. The button stays enabled so the click still latches, but a
+    // second POST would target whatever is active when IT arrives, which after the stopped run
+    // settles can be a generation the user started since.
+    const token = runToken.current;
+    if (cancelInFlight.current === token) return;
+    cancelInFlight.current = token;
+    const abort = new AbortController();
+    cancelAbort.current = abort;
+    try {
+      const { cancelled } = await cancelDiffusionGeneration(abort.signal);
+      cancelAcked.current = Boolean(cancelled);
+    } catch {
+      // An abort means the next run dropped this one on purpose; it belongs to a generation that
+      // is already over, so there is nothing to report. Otherwise the request never landed, the
+      // denoise in flight keeps running, and the click cannot be treated as handled: say so, and
+      // stop it explaining away an error the run raises later.
+      if (!abort.signal.aborted) {
+        cancelAcked.current = false;
+        toast.error("Could not reach the server to stop this generation; it is still running");
+      }
+    } finally {
+      // Only if they are still ours: a slow cancel from an earlier run must not release the guard
+      // a later run set, or a duplicate click gets through and can land on a generation after it.
+      if (cancelInFlight.current === token) cancelInFlight.current = null;
+      if (cancelAbort.current === abort) cancelAbort.current = null;
+    }
+  }, []);
 
   // Publish what the loaded model can do, so the sidebar submenu dims the rest. null while
   // nothing is loaded, which leaves every workflow open to set up first.
@@ -2812,19 +2908,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the settings column below. Load progress shows in a toast. */}
-      <div
-        className={cn(
-          "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pr-2 pt-[var(--studio-chat-header-padding-top,11px)] md:grid md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]",
-          isMobile && "pl-12",
-        )}
-      >
+      {/* grid at every width, not an overlay below md: the absolute mode switch painted over the model selector and the Video link. */}
+      {/* @container, not md:/xl:, because the header is the viewport minus a sidebar the user can drag between 260px and 480px. */}
+      <div className="@container pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         <div
           className={cn(
             "pointer-events-none flex min-w-0 items-center",
-            !isMobile &&
-              (!pinned && isTauri
+            isMobile
+              ? "pl-12"
+              : !pinned && isTauri
                 ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-                : "pl-[var(--studio-media-header-left-inset,1.5rem)]"),
+                : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
           )}
         >
           <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2">
@@ -2857,38 +2951,40 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             )}
           </div>
         </div>
-        {/* Create | Train page-mode switch: desktop grid keeps this centered while the side controls shrink in their columns. */}
-        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center md:static">
-          <PillTabs
-            ariaLabel="Page mode"
-            value={pageMode}
-            onValueChange={(v) => setPageMode(v as "create" | "train")}
-            fit={true}
-            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-11 md:[&>button]:px-3 xl:[&>button]:px-11"
-            tabs={[
-              {
-                value: "create",
-                label: "Create",
-                icon: (
-                  <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
-                ),
-              },
-              {
-                value: "train",
-                label: "Train",
-                icon: (
-                  <HugeiconsIcon
-                    icon={TestTubeOutlineIcon}
-                    className="size-3.5"
-                  />
-                ),
-              },
-            ]}
-          />
-        </div>
-        <div className="pointer-events-auto flex items-center gap-2 md:justify-self-end">
+        {/* Create | Train page-mode switch, centred on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
+        {/* No padding on the grid, so the equal side tracks centre the pill on the header itself; px-11 makes the pair 277px, so it waits for the room. */}
+        <PillTabs
+          ariaLabel="Page mode"
+          value={pageMode}
+          onValueChange={(v) => setPageMode(v as "create" | "train")}
+          fit={true}
+          className="pointer-events-auto h-[34px] justify-self-center [&>button]:h-[34px] [&>button]:px-3 @min-[560px]:[&>button]:px-11"
+          tabs={[
+            {
+              value: "create",
+              label: "Create",
+              icon: (
+                <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
+              ),
+            },
+            {
+              value: "train",
+              label: "Train",
+              icon: (
+                <HugeiconsIcon
+                  icon={TestTubeOutlineIcon}
+                  className="size-3.5"
+                />
+              ),
+            },
+          ]}
+        />
+        {/* pr-2 rides the wrapper, not the grid: on the grid it would shift the centred pill by half of it. */}
+        <div className="pointer-events-none flex min-w-0 items-center justify-end pr-2">
           {/* Video is a separate page, so it sits out here rather than in the mode strip. */}
-          <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
+          <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+            <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
+          </div>
         </div>
       </div>
       {/* Train mode: the full-page training workspace. Unmounted in Create mode so its polling stops; Create's own state is untouched. */}
@@ -3466,16 +3562,28 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           </div>
           {/* Floats over the settings so it needs no bar of its own. */}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-8">
-            <Button
-              className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-              onClick={handleGenerate}
-              disabled={busy !== null || !status?.loaded}
-            >
-              {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
-              {busy === "generating" && genDone != null && count > 1
-                ? `Generating ${genDone}/${count}…`
-                : "Generate"}
-            </Button>
+            {busy === "generating" ? (
+              /* Replaces Generate while a run is in flight, mirroring the video page. Every workflow
+                 (Create, Transform, Inpaint, Extend, Upscale, Reference, Edit) funnels through the
+                 same handler, so one control stops all of them. */
+              <Button
+                // Opaque hover: this one floats over the settings too.
+                className="pointer-events-auto h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                variant="outline"
+                onClick={handleCancelGenerate}
+              >
+                <Spinner className="mr-2 size-4" />
+                {genDone != null && count > 1 ? `Stop (${genDone}/${count})` : "Stop"}
+              </Button>
+            ) : (
+              <Button
+                className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                onClick={handleGenerate}
+                disabled={busy !== null || !status?.loaded}
+              >
+                Generate
+              </Button>
+            )}
           </div>
         </div>
 

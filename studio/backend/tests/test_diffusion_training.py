@@ -1335,6 +1335,9 @@ def test_keepwarm_tracks_image_video_generation_paths():
     assert not _is_inference_path("/api/inference/images/generate-progress")
     assert not _is_inference_path("/api/inference/video/generate-progress")
     assert not _is_inference_path("/api/inference/video/generate/cancel")
+    # The images cancel route STOPS a generation, so tracking it as an inference request would
+    # keep the model pinned past the run it just cancelled. endswith matching already excludes it.
+    assert not _is_inference_path("/api/inference/images/generate/cancel")
 
 
 def test_import_example_partial_failure_leaves_no_partial_dataset(
@@ -1703,6 +1706,50 @@ def test_a_dummy_pipeline_export_is_not_treated_as_importable():
     # _backends is diffusers' full requirement list, not a list of failed probes, so the message
     # must not declare a working torch missing or prescribe reinstalling it.
     assert "missing: torch" not in msg and "pip install -U torch" not in msg
+
+
+def test_route_start_refuses_ltx2_without_the_pipeline_before_freeing_gpu(client, monkeypatch):
+    # The video half of the same gate: LTX2Pipeline is a diffusers 0.37 export, and the packaging
+    # deliberately leaves an older diffusers installable on the Python 3.9 hosts this project still
+    # supports. Without the pipeline-class assert in the training preflight the family resolved as
+    # trainable, the start freed the resident GPU workloads, and only the spawned child failed.
+    # LTX-2 lives in the VIDEO registry, so it reaches the gate by a different branch of
+    # resolve_trainable_family than any image family above.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.36.0"))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "Lightricks/LTX-2"})
+    assert r.status_code == 400, r.text
+    assert "LTX2Pipeline" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []  # the slot was never even reserved
+    assert client._fake.started_with is None
+
+
+def test_route_start_refuses_a_component_repo_before_freeing_gpu(client, monkeypatch):
+    # unsloth/LTX-2-FP8 holds pre-cast component archives, not a pipeline: no model_index.json,
+    # no VAE. The name still carries the "ltx-2" token so the family detector claimed it, the
+    # unsloth/* trust gate passed it, and the gated-access probe ignores the model_index.json 404
+    # (a 404 is not an access problem) -- so the start evicted the resident models and only then
+    # failed inside from_pretrained.
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "unsloth/LTX-2-FP8"})
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "model_index.json" in detail  # says why it cannot be a base
+    assert "Lightricks/LTX-2" in detail  # and names what to train instead
+    assert freed == []
+    assert client._fake.calls == []
+    assert client._fake.started_with is None
 
 
 def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatch):
