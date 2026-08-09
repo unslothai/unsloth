@@ -26,6 +26,23 @@ def _read(rel: str) -> str:
     return path.read_text(encoding = "utf-8")
 
 
+def _split_args(captured: str) -> list[str]:
+    """Split on top-level commas only, so `loadSpecFor(wanted, CATALOG)` survives."""
+    args, depth, current = [], 0, ""
+    for char in captured:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        if char == "," and depth == 0:
+            args.append(current)
+            current = ""
+        else:
+            current += char
+    args.append(current)
+    return args
+
+
 def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
@@ -107,7 +124,13 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert "onDismiss:" in auto_load
     # Terminal success uses a fresh finite toast after manual progress dismissal.
     assert "showAutoLoadSuccess" in auto_load
-    assert "description: undefined" in auto_load
+    # No description on the ordinary path. It stopped being the literal
+    # `description: undefined` when the CPU-fallback branch was added, so pin the
+    # branch and its undefined arm rather than one spelling of the old constant.
+    success_toast = auto_load.split("const showAutoLoadSuccess", 1)[1]
+    success_toast = success_toast.split("};", 1)[0]
+    assert "description: cpuFallbackReason" in success_toast
+    assert ": undefined," in success_toast
     assert "icon: undefined" in auto_load
     assert "duration: 5000" in auto_load
     assert "duration: 30000" not in auto_load
@@ -1065,11 +1088,19 @@ def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
         ("features/video/video-page.tsx", "VIDEO_CATALOG"),
     ):
         src = _read(rel)
-        call = re.search(
-            r"diffusionRoutePick\(\s*wanted,\s*routeSearch\.quant,\s*(.*?),?\s*\);", src, re.S
-        )
-        assert call, f"{rel}: the routed pick passes no spec"
-        assert f"loadSpecFor(wanted, {catalog})" in call.group(1), rel
+        # The middle argument, the routed filename, has been respelled more than once;
+        # only the third is load-bearing, so do not pin the second.
+        call = re.search(r"diffusionRoutePick\(\s*wanted,\s*(.*?),?\s*\);", src, re.S)
+        assert call, f"{rel}: the routed pick does not go through diffusionRoutePick"
+        # By position, not by presence: `diffusionRoutePick(wanted, routedFilename ??
+        # loadSpecFor(wanted, IMAGE_CATALOG)?.filename)` type-checks, passes the spec's
+        # filename as the quant, drops the spec, and would pass a substring check while
+        # curated single-file artifacts load as GGUF.
+        args = _split_args(call.group(1))
+        assert len(args) >= 2, f"{rel}: the routed pick passes no spec argument"
+        assert (
+            f"loadSpecFor(wanted, {catalog})" in args[1]
+        ), f"{rel}: the routed pick passes no catalog spec"
 
 
 def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
@@ -1079,7 +1110,7 @@ def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
     src = _read("features/images/images-page.tsx")
     assert "bakedLorasOnLoad.current = bakeLoras.length > 0;" in src
     guard = re.search(
-        r"if \(!loraCapable \|\| checkedBuildForBake\.current === residentBuildKey\) return;.*?\n  \}, \[",
+        r"if \(\s*!loraCapable \|\| checkedBuildForBake\.current === residentBuildKey\s*\)\s*return;.*?\n  \}, \[",
         src,
         re.S,
     )
@@ -1091,15 +1122,19 @@ def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
 
 
 def test_diffusion_pages_never_drop_a_gguf_pick_silently():
-    """The fallback branch splits a local path; a repo pick reaching it has no
-    filename. It must say so instead of returning with no request and no toast."""
+    """The fallback branch splits a local path, so a repo pick reaching it has no
+    filename. It used to error; it now resolves the repo's own .gguf. Either way the
+    branch must act: returning with no request and no toast drops the pick."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         branch = re.search(
-            r'if \(!filename\.toLowerCase\(\)\.endsWith\("\.gguf"\)\) \{.*?\}', src, re.S
+            r'if \(!filename\.toLowerCase\(\)\.endsWith\("\.gguf"\)\) \{.*?\n        \}', src, re.S
         )
         assert branch, f"{rel}: gguf extension guard not found"
-        assert "toast.error(" in branch.group(0), f"{rel}: guard returns silently"
+        body = branch.group(0)
+        assert (
+            "toast.error(" in body or "loadGgufRepoPick(" in body
+        ), f"{rel}: guard returns silently"
 
 
 def test_diffusion_pages_stage_downloads_through_the_manager():
@@ -1163,12 +1198,19 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         assert "if (!active)" in ready.group(0), f"{rel}: a hidden page still takes the GPU"
         # Deferred, not dropped: something has to fire the held pick when the page returns.
         assert "stagedLoadDeferred" in ready.group(0), f"{rel}: the pick is discarded"
+        # The deps array grew when the load body moved into runStagedLoad, so match the
+        # effect by its guard and check the deps separately. Keying the boundary on
+        # `[active` instead lets a reordered array run the match on into the next hook,
+        # where loadOrStage's own handleLoadRef call satisfies the loader assertion below
+        # for a flush that loads nothing.
         flush = re.search(
-            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[active,? ?\w*\]\);",
+            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;(.*?)\n  \}, \[([^\]]*)\]\);",
             src,
             re.S,
         )
         assert flush, f"{rel}: nothing flushes the deferred load when the page is shown"
+        deps = [dep.strip() for dep in flush.group(2).split(",")]
+        assert "active" in deps, f"{rel}: the flush does not re-run when the page is shown"
         assert "runStagedLoad(pending);" in flush.group(0), f"{rel}: deferred load never runs"
 
 
@@ -1220,7 +1262,7 @@ def test_a_dying_staged_download_only_rolls_back_its_own_pick():
         assert cancelled, f"{rel}: staged-download onCancelled not found"
         region = cancelled.group(0)
         assert re.search(
-            r"if \(quantRevert\.current && quantRevert\.current === stagedQuantRevert\.current\)",
+            r"if \(\s*quantRevert\.current &&\s*quantRevert\.current === stagedQuantRevert\.current\s*\)",
             region,
         ), f"{rel}: a dead job can roll back a newer pick's quant label"
         # Cleared either way, or a later job inherits this one's owner and reverts on its behalf.
@@ -1260,7 +1302,9 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         assert seq < text.index(
             'if (source !== "hub")'
         ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
-        guards = re.findall(r"if \(pick !== pickSeq\.current\) return (\w+);", text)
+        guards = re.findall(
+            r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return (\w+);", text
+        )
         assert guards, f"{rel}: a superseded plan is not dropped"
         assert (
             set(guards) == {"true"}
@@ -1268,7 +1312,9 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         # The fallback load after a rejected plan is guarded too.
         tail = text[text.rindex("} catch {") :]
         assert re.search(
-            r"if \(pick !== pickSeq\.current\) return true;\n\s*return handleLoadRef", tail
+            r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return true;.*?return handleLoadRef",
+            tail,
+            re.S,
         ), f"{rel}: a plan that rejected after a newer pick still reaches the fallback load"
 
 
@@ -1305,7 +1351,7 @@ def test_every_pick_replaces_the_rollback_it_leaves_behind():
     its own. Every branch that moves the selection registers its own entry."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
-        select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S)
+        select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n  \);", src, re.S)
         assert select, f"{rel}: handleModelSelect not found"
         body = select.group(1)
         # One installed entry per branch that moves the label. Counting is what catches the
@@ -1337,7 +1383,7 @@ def test_every_pick_route_invalidates_the_staged_intent():
             "stagedQuantRevert.current = null;",
         ):
             assert cleared in body, f"{rel}: beginPick does not release {cleared}"
-        select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S)
+        select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n  \);", src, re.S)
         assert select, f"{rel}: handleModelSelect not found"
         pick = select.group(1)
         assert "beginPick();" in pick, f"{rel}: a pick can run without invalidating the last one"
@@ -1366,7 +1412,7 @@ def test_a_rejected_pick_hands_the_resident_state_back():
         assert "revertPick(quantRevert.current)" in body, f"{rel}: the label is not handed back"
         assert "quantRevert.current = null" in body, f"{rel}: the entry is never consumed"
 
-        select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S)
+        select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n  \);", src, re.S)
         assert select, f"{rel}: handleModelSelect not found"
         pick = select.group(1)
         # Each toast.error that ends the pick must restore before returning.
@@ -3377,7 +3423,9 @@ def test_a_refused_load_after_staging_rolls_the_pick_back():
         # One implementation, reached from both deferred paths, so neither can drift.
         assert src.count("if (pending) runStagedLoad(pending);") == 2, page
         # Exactly one direct call left, the one inside the helper itself.
-        assert src.count("void handleLoadRef.current(pending.") == 1, page
+        assert len(
+            re.findall(r"void handleLoadRef\s*\.current\(\s*pending\.", src)
+        ) == 1, page
 
 
 def test_each_quant_row_reads_its_own_dependency_key():

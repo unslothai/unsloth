@@ -73,8 +73,27 @@ import { ChevronDown } from "lucide-react";
 import { NegativePromptField } from "@/components/negative-prompt-field";
 import { cn } from "@/lib/utils";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
+import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
+import {
+  PRECISION_REFUSAL_TITLE,
+  denseTextEncoderBuildLabel,
+  denseTransformerBuildLabel,
+  isNativeEngineStatus,
+  formatResolvedValue,
+  isPrecisionRefusal,
+  memoryRecipeValue,
+  resolvedBadge,
+  resolvedSeedKey,
+  resolvedSelectValue,
+} from "@/lib/resolved-precision";
+import {
+  routedGgufFilename,
+  routedGgufLabel,
+} from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 
 import {
   type ControlNetSpecInput,
@@ -551,18 +570,9 @@ function Field({
   );
 }
 
-// The engaged value of a resolved Advanced control, formatted for its "Auto: X" badge.
-function formatResolvedValue(key: string, value: string | boolean | null): string {
-  if (key === "cpu_offload") return value ? "On" : "Off";
-  if (value === null || value === "") return "Off";
-  if (typeof value === "boolean") return value ? "On" : "Off";
-  if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
-  // Deferred speed auto: the dense pipe stays exact/eager and compiles on the 3rd image (the tooltip carries the full reason).
-  if (value === "deferred") return "On from 3rd image";
-  return value.toUpperCase();
-}
-
-// The "Auto: X" badge for one Advanced control, rendered only when source === "auto"; the reason is a hover tooltip.
+// The badge for one Advanced control. "Auto: X" when the backend decided it; "FP8 -> OFF" in a
+// warning tone when an EXPLICIT request was declined -- that case used to render nothing at all
+// while the dropdown kept showing the request, so a Q4_K_M GGUF could advertise FP8 it never ran.
 function ResolvedBadge({
   status,
   controlKey,
@@ -570,18 +580,25 @@ function ResolvedBadge({
   status: DiffusionStatus | null;
   controlKey: string;
 }) {
-  const resolved = status?.resolved?.[controlKey];
-  if (!resolved || resolved.source !== "auto") return null;
+  const info = resolvedBadge(controlKey, status?.resolved?.[controlKey]);
+  if (!info) return null;
   const badge = (
-    <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-muted-foreground">
-      Auto: {formatResolvedValue(controlKey, resolved.value)}
+    <span
+      className={cn(
+        "shrink-0 rounded-sm px-1 py-px text-ui-9 font-medium uppercase tracking-wider",
+        info.tone === "warn"
+          ? "bg-destructive/15 text-destructive"
+          : "bg-muted text-muted-foreground",
+      )}
+    >
+      {info.label}
     </span>
   );
-  if (!resolved.reason) return badge;
+  if (!info.tooltip) return badge;
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{badge}</TooltipTrigger>
-      <TooltipContent>{resolved.reason}</TooltipContent>
+      <TooltipContent>{info.tooltip}</TooltipContent>
     </Tooltip>
   );
 }
@@ -1024,6 +1041,24 @@ function RecipePopover({
           {image.transformer_quant ? (
             <RecipeRow label="Quant" value={image.transformer_quant} />
           ) : null}
+          {/* The ENGAGED text-encoder precision and memory placement: the encoder is often the
+              largest resident component and its cast changes the conditioning, and the memory mode
+              decides whether the torchao encoder modes could run at all. */}
+          {image.text_encoder_quant ? (
+            <RecipeRow label="TE quant" value={image.text_encoder_quant} />
+          ) : null}
+          {/* Either field is placement information. The native engine reports no memory_mode at
+              all (it has no torchao path to choose one for) while still recording an active
+              offload, so gating on memory_mode hid the offload on exactly the configuration
+              this row was extended for. Absent memory_mode stays absent: substituting "auto"
+              there would claim the memory planner picked a mode on a path that never ran it. */}
+          {image.memory_mode ||
+          (image.offload_policy && image.offload_policy !== "none") ? (
+            <RecipeRow
+              label="Memory"
+              value={memoryRecipeValue(image.memory_mode, image.offload_policy)}
+            />
+          ) : null}
           {image.baked_loras?.length ? (
             <RecipeRow label="Baked" value={image.baked_loras.join(", ")} wrap />
           ) : null}
@@ -1041,6 +1076,98 @@ function RecipePopover({
       </PopoverContent>
     </Popover>
   );
+}
+
+// One "what actually ran" line in the loaded-build summary below.
+function BuildRow({ label, value, badge }: { label: string; value: string; badge?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground">
+        {label}
+        {badge}
+      </span>
+      <span className="min-w-0 truncate text-foreground">{value}</span>
+    </div>
+  );
+}
+
+/**
+ * What the LOADED model is actually running, read from status (never from the request): the
+ * transformer and text-encoder precision, the memory mode with its resolved offload behaviour, and
+ * the attention backend. The Advanced selects above say what was ASKED for; this says what
+ * happened, and any control whose request was declined carries its reason in the badge tooltip.
+ * Without it a successful load said nothing at all about the precision it ran at.
+ */
+function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
+  if (!status?.loaded) return null;
+  const offload = status.offload_policy ?? "none";
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-border/60 px-2.5 py-2 text-ui-11">
+      <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
+        Loaded build
+        <InfoHint>
+          What the loaded model is actually running, reported by the backend. A control whose
+          requested value could not be used shows it next to that control, with the reason.
+        </InfoHint>
+      </div>
+      <BuildRow
+        label="Transformer"
+        value={
+          status.transformer_quant
+            ? formatResolvedValue("transformer_quant", status.transformer_quant)
+            // No dense quant ran, so the row reports what the checkpoint itself carries.
+            : denseTransformerBuildLabel(status)
+        }
+        badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
+      />
+      <BuildRow
+        label="Text encoder"
+        value={
+          status.text_encoder_quant
+            ? formatResolvedValue("text_encoder_quant", status.text_encoder_quant)
+            // No runtime TE quant engaged, which on the native engine is not the same as bf16.
+            : denseTextEncoderBuildLabel(status)
+        }
+        badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
+      />
+      <BuildRow
+        label="Memory"
+        value={
+          offload === "none"
+            ? `${status.memory_mode ?? "auto"} · resident`
+            : `${status.memory_mode ?? "auto"} · ${offload} offload`
+        }
+      />
+      <BuildRow
+        label="Attention"
+        value={
+          status.attention_backend
+            ? formatResolvedValue("attention_backend", status.attention_backend)
+            : // The sd.cpp engine reports no backend because it has none of ours: its attention
+              // is chosen by native flags, not by the diffusers/PyTorch dispatcher, so calling it
+              // "Native SDPA" is wrong on the default CPU image path.
+              isNativeEngineStatus(status)
+              ? "sd.cpp built-in"
+              : "Native SDPA"
+        }
+      />
+    </div>
+  );
+}
+
+/**
+ * Report a failed load. A refused precision is a long actionable sentence ("Choose Auto ... or
+ * Off ..."), so it becomes a toast description under a short title rather than one unreadable
+ * line. Nothing is left half-loaded either way: the backend refuses before it starts the load, or
+ * has already torn the partial build down by the time it reports the error.
+ */
+function reportLoadFailure(message: string | null | undefined, fallback: string): void {
+  const text = (message || "").trim();
+  if (text && isPrecisionRefusal(text)) {
+    toast.error(PRECISION_REFUSAL_TITLE, { description: text });
+    return;
+  }
+  toast.error(text || fallback);
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
@@ -1211,11 +1338,32 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
   // A trained adapter awaiting deployment: applied once the base is loaded and LoRA-capable for its family.
   const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
+  // Which pick owns the page: resolving and staging are requests that do not set `busy`, so a pick can land on an awaiting
+  // one. Lazy state, not a ref: a ref cannot be written during render.
+  const [pickGuard] = useState(createPickGuard);
 
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
     loadToastId.current = null;
   }, []);
+
+  // Client-side state that only means anything while a model is resident: the
+  // in-flight replacement load's tracking, and the Reapply target. Shared with
+  // the indicator eject, which frees the runtime without going through the
+  // page's own Unload.
+  const dropResidentState = useCallback(() => {
+    // Cancel, not release: a resolving pick or a staged download would load
+    // back what was just ejected. In here rather than only in handleUnload, so
+    // an eject driven from the loaded models card is covered by it too.
+    pickGuard.cancel();
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+    dismissLoadToast();
+    lastLoadSig.current = null;
+    // Leaving this set would let Reapply reload the model that was just freed.
+    lastLoad.current = null;
+    setCanReapply(false);
+  }, [dismissLoadToast, pickGuard]);
 
   // Mirror to the module cache so a tab switch re-renders instantly.
   useEffect(() => {
@@ -1541,13 +1689,26 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setPortrait((p) => !p);
   };
 
+  // A status read started before an eject can answer after the one that
+  // followed it, and this page has no periodic poll to correct it: the controls
+  // would go on offering to generate against a runtime that is already free.
+  // So every read takes a ticket and only the newest may write.
+  const statusTicket = useRef(0);
+  const setStatusIfNewest = useCallback(
+    (ticket: number, next: DiffusionStatus) => {
+      if (ticket === statusTicket.current) setStatus(next);
+    },
+    [],
+  );
+
   const refreshStatus = useCallback(async () => {
+    const ticket = ++statusTicket.current;
     try {
-      setStatus(await getDiffusionStatus());
+      setStatusIfNewest(ticket, await getDiffusionStatus());
     } catch {
       // Status is best-effort; a failed poll shouldn't surface an error toast.
     }
-  }, []);
+  }, [setStatusIfNewest]);
 
   // Track mount so a long generate run stops issuing GPU work only on a true unmount; the page stays mounted across tab
   // switches, so a batch keeps generating off-tab. The mount-time refresh and cleanup live in the load-resume effect below.
@@ -1566,6 +1727,28 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     })();
   }, [active, refreshStatus]);
 
+  // Ejected from the loaded models indicator, which does not run handleUnload:
+  // without this the controls keep offering to generate on a freed runtime, and
+  // Reapply still points at the model that was just ejected. The runtime is
+  // already free, so this is handleUnload without the unload call.
+  useEffect(
+    () =>
+      subscribeModelEjected("image", () => {
+        dropResidentState();
+        // That eject cancelled the replacement load, and its progress poll is
+        // the only thing that clears `busy` -- which dropResidentState has just
+        // stopped. Leaving it set locks the page: the picker ignores every
+        // choice while busy, and Unload is not offered once the status read
+        // comes back empty, so only an app reload recovered. Narrowed to
+        // "loading" so a generation in flight is left alone, as handleUnload's
+        // own finally does.
+        setBusy((prev) => (prev === "loading" ? null : prev));
+        setQuant(null);
+        void refreshStatus();
+      }),
+    [refreshStatus, dropResidentState],
+  );
+
   // Collapse the body-ported popovers when leaving the tab: the open flag stays set, so returning would pop them back open.
   useEffect(() => {
     if (active) return;
@@ -1579,7 +1762,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const p = await getDiffusionLoadProgress();
       if (p.phase === "ready") {
         dismissLoadToast();
-        setStatus(await getDiffusionStatus());
+        setStatusIfNewest(++statusTicket.current, await getDiffusionStatus());
         toast.success("Model loaded");
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
@@ -1590,7 +1773,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       if (p.phase === "error") {
         dismissLoadToast();
-        toast.error(p.error || "Failed to load model");
+        reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         // A load that failed AFTER starting leaves the previous pipeline loaded, so roll the optimistic quant label back.
         if (quantRevert.current) {
@@ -1741,6 +1924,38 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
+  // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
+  // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,
+  // which is the input-side half of P1-2: the Precision dropdown must never go on advertising a
+  // scheme the loaded model is not running. Keyed on the LOAD-TIME half of the resolved record, so
+  // a user edit made after the load survives until the next load replaces it -- the backend
+  // rewrites the speed/attention/cache entries at GENERATION time, and serializing the whole record
+  // made the 3rd image of a session throw away a Precision the user had picked but not yet loaded.
+  const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
+  useEffect(() => {
+    const record = status?.loaded ? status.resolved : null;
+    if (!record) return;
+    const quant = resolvedSelectValue(record.transformer_quant, (v) =>
+      // The engaged value spells "no quant" as "off"; the select's option for it is "none".
+      (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
+        (o) => o === v || (o === "none" && v === "off"),
+      ) ?? null,
+    );
+    if (quant) setTransformerQuant(quant);
+    const memory = resolvedSelectValue(record.memory_mode, (v) =>
+      (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
+    );
+    if (memory) setMemoryMode(memory);
+    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+      // The engaged value uses the dispatcher's own name; map it back to the option.
+      (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
+        (o) => o === v || `_native_${o}` === v,
+      ) ?? null,
+    );
+    if (attention) setAttentionBackend(attention);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
+  }, [resolvedKey]);
+
   // The adapter list a load of *repoId* would BAKE into the build, shared by the load and the download plan: a torchao int8/fp8 transformer
   // takes adapters only before quantize_ + compile. Only a reload of the SAME target bakes, and it reads lastLoad.current, so call it first.
   const bakedLorasFor = useCallback(
@@ -1821,7 +2036,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           hf_token: hfApiToken(getHfToken()),
           cpu_offload: advanced.cpu_offload,
           speed_mode: advanced.speed_mode,
-          transformer_quant: advanced.transformer_quant,
+          // GGUF picks only: the dense fast path replaces a GGUF transformer, every other kind runs
+          // the precision its checkpoint carries. The Precision control is hidden for those kinds,
+          // but the state persists across picks, so a stale scheme would reach a load that can only
+          // decline it -- and the backend now refuses a request it cannot honor.
+          transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
           attention_backend: advanced.attention_backend,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
@@ -1832,7 +2051,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         setCanReapply(prevLastLoad != null);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        toast.error(err instanceof Error ? err.message : "Failed to start load");
+        reportLoadFailure(err instanceof Error ? err.message : "", "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return false;
@@ -1857,6 +2076,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // The Advanced values the plan was built from. Staging does not set `busy`, so the user can change precision or LoRAs while
     // the download runs; without this the completed load would use the new values against the old file set.
     advanced: LoadAdvanced;
+    // The pick that staged it: a download outlives its pick, so it must not evict a newer one when it lands.
+    token: number;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
@@ -1871,6 +2092,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // never loaded. `owned` is read BEFORE the call, so a newer pick's label is left alone.
   const runStagedLoad = useCallback(
     (pending: NonNullable<typeof pendingStagedLoad.current>) => {
+      if (pendingStagedLoad.current === pending) pendingStagedLoad.current = null;
+      if (!pickGuard.isLatest(pending.token)) return;
       const owned = stagedQuantRevert.current;
       void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced).then((started) => {
         if (started) return;
@@ -1881,9 +2104,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (stagedQuantRevert.current === owned) stagedQuantRevert.current = null;
       });
     },
-    [revertPick],
+    [pickGuard, revertPick],
   );
-
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
@@ -1892,7 +2114,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         return;
       }
       const pending = pendingStagedLoad.current;
-      pendingStagedLoad.current = null;
       if (pending) runStagedLoad(pending);
     },
     onCancelled: () => {
@@ -1916,7 +2137,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (!active || !stagedLoadDeferred.current) return;
     stagedLoadDeferred.current = false;
     const pending = pendingStagedLoad.current;
-    pendingStagedLoad.current = null;
     if (pending) runStagedLoad(pending);
   }, [active, runStagedLoad]);
 
@@ -1938,7 +2158,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         hf_token: hfApiToken(getHfToken()),
         cpu_offload: advanced.cpu_offload,
         speed_mode: advanced.speed_mode,
-        transformer_quant: advanced.transformer_quant,
+        // Non-GGUF loads ignore this control; the plan must describe the same request as handleLoad.
+        transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
         memory_mode: advanced.memory_mode,
         // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the dense build path. Omitting it
         // planned a quantized file set and staged too little. Same list handleLoad bakes.
@@ -1952,6 +2173,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       repoId: string,
       opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
       source: ModelSelectorChangeMeta["source"] = "hub",
+      token?: number,
     ): Promise<boolean> => {
       // Staging never sets `busy`, so a second pick passes handleModelSelect's guard while this
       // plan is still in flight. Plans then resolve in response order, not pick order: without
@@ -1964,17 +2186,28 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
       stagedQuantRevert.current = null;
+      const owns = () => token === undefined || pickGuard.holds(token);
+      if (!owns()) return true;
       if (source !== "hub") return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = currentLoadAdvanced(repoId);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
       const ownRevert = quantRevert.current;
+      // Read inside the try, acted on outside it: refusing from in there would fall through to the
+      // load if the refusal itself threw, which is the one outcome that must not happen.
+      let incompatible: string | null = null;
       try {
         const plan = await requestDownloadPlan(repoId, opts, advanced);
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
-        if (pick !== pickSeq.current) return true;
-        if (plan.entries.length > 0) {
-          pendingStagedLoad.current = { repoId, opts, advanced };
+        if (pick !== pickSeq.current || !owns()) return true;
+        incompatible = plan.incompatible_reason ?? null;
+        if (!incompatible && plan.entries.length > 0) {
+          pendingStagedLoad.current = {
+            repoId,
+            opts,
+            advanced,
+            token: token ?? pickGuard.claim(),
+          };
           stagedQuantRevert.current = ownRevert;
           stage(
             plan.entries.map((e) => ({
@@ -2004,7 +2237,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
-      if (pick !== pickSeq.current) return true;
+      if (pick !== pickSeq.current || !owns()) return true;
+      if (incompatible) {
+        toast.error(incompatible);
+        return false;
+      }
       return handleLoadRef.current(repoId, opts);
     },
     [stage, currentLoadAdvanced, requestDownloadPlan],
@@ -2026,13 +2263,64 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           plan.checkpoint_bytes ?? meta.expectedBytes ?? 0,
       };
     },
-    [currentLoadAdvanced, requestDownloadPlan],
+    [currentLoadAdvanced, requestDownloadPlan, pickGuard, stage],
   );
+
+  // A GGUF pick can arrive with only a repo id (a pinned row, a curated artifact, a local GGUF directory). The backend
+  // rejects a gguf load with no filename and a pipeline load of a GGUF repo, so name the file from the listing first.
+  const loadGgufRepoPick = useCallback(
+    async (
+      repoId: string,
+      quantHint: string | null,
+      source: ModelSelectorChangeMeta["source"] = "hub",
+      localPath?: string | null,
+    ): Promise<boolean> => {
+      // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
+      const token = pickGuard.claim();
+      const isCurrent = () => isMounted.current && pickGuard.holds(token);
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+      return runGgufRepoPick({
+        isCurrent,
+        resolve: () =>
+          resolveDiffusionGgufFilename(repoId, {
+            quant: quantHint,
+            localPath,
+            hfToken: hfApiToken(getHfToken()),
+          }),
+        // Still ambiguous (several quants, or the listing failed): only the expander can say which.
+        onAmbiguous: () =>
+          toast.error("Pick a quantization for this model to load it"),
+        // Optimistic label, reverted if the load never starts, like the curated GGUF branch below.
+        onResolved: (filename) => {
+          quantRevert.current = revert;
+          setQuant(quantHint ?? filename);
+          const d = defaultsFor(repoId);
+          setSteps(d.steps);
+          setGuidance(d.guidance);
+        },
+        onNotStarted: () => {
+          if (quantRevert.current === revert) {
+            revertPick(revert);
+            quantRevert.current = null;
+          }
+        },
+        load: (filename) =>
+          loadOrStage(repoId, { kind: "gguf", filename }, source, token),
+      });
+    },
+    [guidance, loadOrStage, pickGuard, quant, revertPick, steps],
+  );
+
+  // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
+  useEffect(() => {
+    if (!active) pickGuard.release();
+  }, [active, pickGuard]);
 
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params.
   const routeSearch = useSearch({ strict: false }) as {
     model?: string;
     quant?: string;
+    ggufQuant?: string;
   };
   const navigateSelf = useNavigate();
   const handledRouteModel = useRef<string | null>(null);
@@ -2047,18 +2335,48 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       handledRouteModel.current = null;
       return;
     }
-    const key = `${wanted}|${routeSearch.quant ?? ""}`;
+    // `quant` is used verbatim as a filename; a label there (a hand-built link, an older producer) is resolved instead.
+    // The two fields, not the object: `routeSearch` is rebuilt every render, so it would churn the deps.
+    const routed = { quant: routeSearch.quant, ggufQuant: routeSearch.ggufQuant };
+    const routedFilename = routedGgufFilename(routed);
+    const routedLabel = routedGgufLabel(routed);
+    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
+    const token = pickGuard.claim();
     void navigateSelf({ to: "/images", search: {}, replace: true });
+    // A label means a GGUF repo whatever the catalog says, and is not loadable, so resolve it instead of routing it as a
+    // filename.
+    if (routedLabel) {
+      // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
+      void Promise.resolve().then(() =>
+        loadGgufRepoPick(wanted, routedLabel, "hub"),
+      );
+      return;
+    }
     // Same catalog lookup a direct pick makes: the chat picker can only forward a GGUF filename.
     const pick = diffusionRoutePick(
       wanted,
-      routeSearch.quant,
+      routedFilename ?? undefined,
       loadSpecFor(wanted, IMAGE_CATALOG),
     );
-    void loadOrStage(pick.repoId, pick.opts, "hub");
-  }, [active, routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
+    // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.
+    if (pick.opts.kind === "gguf" && !pick.opts.filename) {
+      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
+      return;
+    }
+    void loadOrStage(pick.repoId, pick.opts, "hub", token);
+  }, [
+    active,
+    routeSearch.model,
+    routeSearch.quant,
+    routeSearch.ggufQuant,
+    loadOrStage,
+    loadGgufRepoPick,
+    navigateSelf,
+    pickGuard,
+  ]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
@@ -2093,6 +2411,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load with a 409.
       if (busy !== null) return;
       beginPick();
+      // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any branch: staging never
+      // sets `busy`, so any pick can land on an awaiting one.
+      const token = pickGuard.claim();
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -2108,14 +2429,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const d = defaultsFor(id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.source).then(
-          (started) => {
-            if (!started) {
+        void loadOrStage(
+          id,
+          { kind: spec.kind, filename: spec.filename },
+          meta.source,
+          token,
+        ).then((started) => {
+            if (!started && pickGuard.holds(token)) {
               revertPick(revert);
               quantRevert.current = null;
             }
-          },
-        );
+          });
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but revert if the load fails to START
@@ -2131,8 +2455,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           id,
           { kind: "gguf", filename: meta.ggufFilename },
           meta.source,
+          token,
         ).then((started) => {
-          if (!started) {
+          // `quantRevert` is one slot, so only the pick that set the label may take it back.
+          if (!started && pickGuard.holds(token)) {
             revertPick(revert);
             quantRevert.current = null;
           }
@@ -2146,9 +2472,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
         if (!filename.toLowerCase().endsWith(".gguf")) {
-          // A repo pick that reached here has no filename to load, and a quant label cannot be mapped back to one.
-          toast.error("Pick a quantization for this model to load it");
-          abandonPick();
+          // A repo id or local directory, not a file. The listing names its .gguf and the label picks between siblings; a
+          // local pick passes its directory so the listing reads that path, not a hub repo.
+          void loadGgufRepoPick(
+            id,
+            meta.ggufVariant ?? null,
+            meta.source,
+            meta.source === "local" ? id : null,
+          );
           return;
         }
         // A direct pick carries no curated variant label; surface the filename so the selector stops advertising the old quant.
@@ -2188,6 +2519,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         });
         return;
       }
+      // A GGUF repo with no filename: these used to fall through to the pipeline branch below, which the backend rejects
+      // for a single-file GGUF repo.
+      if (spec?.kind === "gguf" || meta.ggufVariant) {
+        // An artifact that names its file short-circuits the listing; otherwise the label is the hint.
+        void loadGgufRepoPick(
+          id,
+          spec?.filename ?? meta.ggufVariant ?? null,
+          meta.source,
+          meta.source === "local" ? id : null,
+        );
+        return;
+      }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos or on-device paths.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
         toast.error("Only unsloth or on-device image models can be loaded here");
@@ -2201,14 +2544,26 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void loadOrStage(id, { kind: "pipeline" }, meta.source).then((started) => {
-        if (!started) {
+      void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
+        if (!started && pickGuard.holds(token)) {
           revertPick(revert);
           quantRevert.current = null;
         }
       });
     },
-    [busy, handleLoad, loadOrStage, quant, steps, guidance, revertPick, beginPick, abandonPick],
+    [
+      abandonPick,
+      beginPick,
+      busy,
+      guidance,
+      handleLoad,
+      loadGgufRepoPick,
+      loadOrStage,
+      pickGuard,
+      quant,
+      revertPick,
+      steps,
+    ],
   );
 
   // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base, and queue the adapter for the LoRA discovery effect.
@@ -2225,6 +2580,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.error("Could not resolve the trained adapter's name.");
         return;
       }
+      // The deploy owns the page now: a resolving pick or a staged download would load over the base it is about to.
+      pickGuard.cancel();
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
@@ -2236,21 +2593,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (!started) pendingDeploy.current = null;
       });
     },
-    [busy, handleLoad, setPageMode],
+    [busy, handleLoad, pickGuard, setPageMode],
   );
 
   const handleUnload = useCallback(async () => {
     // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too, or the toast leaks forever.
-    if (pollTimer.current) clearTimeout(pollTimer.current);
-    pollTimer.current = null;
-    dismissLoadToast();
-    lastLoadSig.current = null;
-    // Drop the Reapply target with the model: the ejected pick is no longer resident, so leaving it set would let Reapply reload the ejected model.
-    lastLoad.current = null;
-    setCanReapply(false);
+    dropResidentState();
     setBusy("unloading");
     try {
-      setStatus(await unloadDiffusionModel());
+      setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
       setQuant(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to unload model");
@@ -2258,7 +2609,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     } finally {
       setBusy(null);
     }
-  }, [refreshStatus, dismissLoadToast]);
+  }, [refreshStatus, dropResidentState]);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
@@ -2592,6 +2943,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
+      <LoadedBuildSummary status={status} />
       {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a user-initiated load; GGUF/single_file residents hide the button. */}
       {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
         <Tooltip>

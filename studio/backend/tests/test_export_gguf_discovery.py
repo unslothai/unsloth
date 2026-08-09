@@ -13,6 +13,7 @@ Reuses the harness in test_export_absolute_paths.py.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -286,10 +287,7 @@ def test_modelfile_is_relocated_not_deleted(monkeypatch, tmp_path):
 
 
 def test_stale_gguf_alone_does_not_fake_a_successful_export(monkeypatch, tmp_path):
-    """Documents current behaviour: the listing is directory-based, so a leftover
-    GGUF in the destination does count as success. Asserted so a future change is
-    deliberate.
-    """
+    """A leftover destination artifact must not hide a conversion with no output."""
 
     class _Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
@@ -300,8 +298,10 @@ def test_stale_gguf_alone_does_not_fake_a_successful_export(monkeypatch, tmp_pat
     save_dir.mkdir(parents = True, exist_ok = True)
     _gguf(save_dir / "OldRun.Q4_K_M.gguf")
 
-    success, _message, _p = backend.export_gguf(str(save_dir), "q5_k_m")
-    assert success is True
+    success, message, output_path = backend.export_gguf(str(save_dir), "q5_k_m")
+    assert success is False
+    assert "produced no files" in message
+    assert output_path is None
 
 
 def test_cleanup_failure_does_not_lose_reported_files(monkeypatch, tmp_path):
@@ -319,3 +319,108 @@ def test_cleanup_failure_does_not_lose_reported_files(monkeypatch, tmp_path):
     success, message, _p = backend.export_gguf(str(save_dir), "q5_k_m")
     assert success is True, message
     assert (save_dir / "MyModel.Q5_K_M.gguf").is_file()
+
+
+def test_materialized_imatrix_is_not_exported_as_a_model(monkeypatch, tmp_path):
+    """unsloth copies a *.gguf_file imatrix next to the model as *.gguf; it is not an output."""
+
+    class _Model:
+        def save_pretrained_gguf(
+            self,
+            model_save_path,
+            tokenizer,
+            quantization_method,
+            imatrix_file = None,
+        ):
+            # _materialize_imatrix copies into the model dir, renaming .gguf_file -> .gguf.
+            _gguf(Path(model_save_path) / "imatrix_unsloth.gguf", b"IMATRIX")
+            quant = _gguf(Path(f"{model_save_path}_gguf") / "MyModel.Q5_K_M.gguf")
+            return {"gguf_files": [str(quant)]}
+
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
+
+    success, message, _p = backend.export_gguf(str(save_dir), "q5_k_m", imatrix_file = True)
+
+    assert success is True, message
+    assert (save_dir / "MyModel.Q5_K_M.gguf").is_file()
+    assert not (save_dir / "imatrix_unsloth.gguf").exists()
+
+
+def test_materialized_imatrix_does_not_block_temp_root_cleanup(monkeypatch, tmp_path):
+    """The imatrix is not an unrelocated output, so it must not retain the merged checkpoint."""
+
+    class _Model:
+        def save_pretrained_gguf(
+            self,
+            model_save_path,
+            tokenizer,
+            quantization_method,
+            imatrix_file = None,
+        ):
+            merged = Path(model_save_path)
+            merged.mkdir(parents = True, exist_ok = True)
+            (merged / "model.safetensors").write_bytes(b"a very large merged checkpoint")
+            _gguf(merged / "imatrix_unsloth.gguf", b"IMATRIX")
+            quant = _gguf(Path(f"{model_save_path}_gguf") / "MyModel.Q5_K_M.gguf")
+            return {"gguf_files": [str(quant)]}
+
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
+
+    success, message, _p = backend.export_gguf(str(save_dir), "q5_k_m", imatrix_file = True)
+
+    assert success is True, message
+    assert (save_dir / "MyModel.Q5_K_M.gguf").is_file()
+    assert list(save_dir.glob("_tmp_model_*")) == []
+
+
+def test_imatrix_named_like_the_output_does_not_suppress_the_real_gguf(monkeypatch, tmp_path):
+    """An imatrix whose derived name collides with the quant must not drop the quant too."""
+    imatrix_src = _gguf(tmp_path / "MyModel.Q5_K_M.gguf_file", b"IMATRIX")
+
+    class _Model:
+        def save_pretrained_gguf(
+            self,
+            model_save_path,
+            tokenizer,
+            quantization_method,
+            imatrix_file = None,
+        ):
+            _gguf(Path(model_save_path) / "MyModel.Q5_K_M.gguf", b"IMATRIX")
+            quant = _gguf(Path(f"{model_save_path}_gguf") / "MyModel.Q5_K_M.gguf")
+            return {"gguf_files": [str(quant)]}
+
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
+
+    success, message, _p = backend.export_gguf(
+        str(save_dir), "q5_k_m", imatrix_file = str(imatrix_src)
+    )
+
+    assert success is True, message
+    assert (save_dir / "MyModel.Q5_K_M.gguf").read_bytes() == b"GGUF"
+    assert list(save_dir.glob("_tmp_model_*")) == []
+
+
+def test_modelfile_relocation_failure_does_not_fail_the_export(monkeypatch, tmp_path):
+    """The Modelfile is optional, so a locked destination must not sink placed GGUFs."""
+
+    class _Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            out = Path(f"{model_save_path}_gguf")
+            _gguf(out / "MyModel.Q5_K_M.gguf")
+            (out / "Modelfile").write_text("FROM MyModel.Q5_K_M.gguf", encoding = "utf-8")
+
+    export_mod, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
+    real_move = export_mod.shutil.move
+
+    def _move(src, dst, *args, **kwargs):
+        if os.path.basename(str(dst)) == "Modelfile":
+            raise PermissionError("destination Modelfile is locked")
+        return real_move(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(export_mod.shutil, "move", _move)
+
+    success, message, _p = backend.export_gguf(str(save_dir), "q5_k_m")
+
+    assert success is True, message
+    assert (save_dir / "MyModel.Q5_K_M.gguf").is_file()
+    assert not (save_dir / "Modelfile").exists()

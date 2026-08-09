@@ -1331,6 +1331,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        rocm_gfx = None,
     ):
         call_log.append((llama_tag, initial_fallback_used))
         if llama_tag == "b9002":
@@ -2385,9 +2386,12 @@ def test_install_prebuilt_does_not_skip_unhealthy_existing_install(
             [plan],
         ),
     )
+    # Trip on the first real step past the skip check. The probe download used to
+    # stand in for it, but it is fetched lazily now and an approved bundle never
+    # reads it, so that tripwire would sit unarmed while the flow ran on.
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "download_validation_model",
+        "validate_prebuilt_attempts",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unhealthy install must continue into normal install flow")
         ),
@@ -2536,6 +2540,7 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        rocm_gfx = None,
     ):
         call_log.append(llama_tag)
         raise PrebuiltFallback("validation failed for latest release")
@@ -2685,6 +2690,7 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
         quantized_path,
         force_cpu = False,
         llama_backend = None,
+        rocm_gfx = None,
     ):
         attempted_names.append(choice.name)
         if choice.name == first_choice.name:
@@ -2813,6 +2819,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        rocm_gfx = None,
     ):
         attempted.append((llama_tag, release_tag, attempts[0].source_label))
         if llama_tag == "b9002":
@@ -3322,7 +3329,13 @@ def _nvidia_linux_host():
     )
 
 
-def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
+def _run_validate_prebuilt_choice(
+    monkeypatch,
+    tmp_path,
+    *,
+    expected_sha256,
+    probe = None,
+):
     """Run validate_prebuilt_choice with heavy steps stubbed; return the quantize/server smoke-test call counts."""
     calls = {"quantize": 0, "server": 0}
     server_path = tmp_path / "install" / "build" / "bin" / "llama-server"
@@ -3370,7 +3383,7 @@ def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
         _nvidia_linux_host(),
         tmp_path / "install",
         tmp_path / "work",
-        tmp_path / "stories260K.gguf",
+        probe if probe is not None else tmp_path / "stories260K.gguf",
         requested_tag = "b9998",
         llama_tag = "b9998",
         release_tag = "b9998",
@@ -3403,6 +3416,251 @@ def test_validate_prebuilt_choice_approved_validation_runs_when_flag_enabled(tmp
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", True)
     calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
     assert calls == {"quantize": 1, "server": 1}
+
+
+def test_validate_prebuilt_choice_never_fetches_probe_for_approved_bundle(tmp_path, monkeypatch):
+    # The probe is only read by the smoke test, so an approved bundle with the flag off
+    # must not fetch it at all: a huggingface.co outage or 429 used to raise
+    # PrebuiltFallback here and force a source build over a file nothing opens.
+    def refuse() -> Path:
+        raise AssertionError("probe model must not be fetched when the smoke test is skipped")
+
+    calls = _run_validate_prebuilt_choice(
+        monkeypatch, tmp_path, expected_sha256 = "ab" * 32, probe = refuse
+    )
+    assert calls == {"quantize": 0, "server": 0}
+
+
+def test_validate_prebuilt_choice_fetches_probe_once_when_validating(tmp_path, monkeypatch):
+    # A hashless build validates, so the probe is fetched -- once for both smoke steps.
+    fetches = []
+    probe_path = tmp_path / "stories260K.gguf"
+
+    def fetch() -> Path:
+        fetches.append(1)
+        return probe_path
+
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = None, probe = fetch)
+    assert calls == {"quantize": 1, "server": 1}
+    assert len(fetches) == 1
+
+
+def test_lazy_validation_model_downloads_once_on_first_use(tmp_path, monkeypatch):
+    downloads = []
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        lambda path, cache_path = None: downloads.append((path, cache_path)),
+    )
+    probe_path = tmp_path / "stories260K.gguf"
+    ensure = INSTALL_LLAMA_PREBUILT.lazy_validation_model(probe_path, tmp_path / "cache.gguf")
+
+    assert downloads == []  # constructing the thunk touches the network never
+    assert ensure() == probe_path
+    assert ensure() == probe_path
+    assert len(downloads) == 1  # and repeat use is served from the first fetch
+
+
+def test_probe_rate_limit_no_longer_forces_a_source_build(tmp_path, monkeypatch):
+    # End to end over install_prebuilt: the probe download used to run before the
+    # release loop, so a huggingface.co 429 raised PrebuiltFallback and cost a
+    # multi-minute source build over a file an approved bundle never opens.
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "llama-b9001-bin-ubuntu-x64.tar.gz",
+        url = "https://example.com/llama-b9001-bin-ubuntu-x64.tar.gz",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+        expected_sha256 = "a" * 64,
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            choice.name: ApprovedArtifactHash(
+                asset_name = choice.name,
+                sha256 = choice.expected_sha256,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-prebuilt",
+            ),
+        },
+    )
+    plan = INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        attempts = [choice],
+        approved_checksums = checksums,
+    )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "resolve_simple_install_release_plans",
+        lambda llama_tag, host, published_repo, published_release_tag: ("latest", [plan]),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            urllib.error.HTTPError(
+                INSTALL_LLAMA_PREBUILT.TEST_MODEL_URL, 429, "Too Many Requests", None, None
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_prebuilt_attempts",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("reached the install flow")),
+    )
+
+    # Reaching validate_prebuilt_attempts is the point: the rate limit no longer
+    # short-circuits into SystemExit(EXIT_FALLBACK) before the release loop runs.
+    with pytest.raises(AssertionError, match = "reached the install flow"):
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+
+def test_probe_failure_does_not_demote_to_a_lower_priority_candidate(tmp_path, monkeypatch):
+    # validate_prebuilt_attempts catches Exception per candidate, so a probe download
+    # failing inside that try would read as a bad bundle and quietly install the CPU
+    # asset over the healthy GPU one -- re-downloading each time, since the thunk
+    # memoises success but not failure. Hashless attempts always validate, so the
+    # probe has to be resolved before the loop.
+    fetches = []
+
+    def refuse() -> Path:
+        fetches.append(1)
+        raise INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+            "validation model unavailable: HTTP Error 429: Too Many Requests"
+        )
+
+    attempted: list[str] = []
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_prebuilt_choice",
+        lambda attempt, *args, **kwargs: attempted.append(attempt.name),
+    )
+
+    def hashless(name: str, install_kind: str) -> AssetChoice:
+        return AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = "release-1",
+            name = name,
+            url = f"https://example.com/{name}",
+            source_label = "direct-upstream",
+            install_kind = install_kind,
+            expected_sha256 = None,  # hashless: the smoke test is its only integrity gate
+        )
+
+    with pytest.raises(INSTALL_LLAMA_PREBUILT.PrebuiltFallback, match = "429"):
+        INSTALL_LLAMA_PREBUILT.validate_prebuilt_attempts(
+            [
+                hashless("llama-b9001-bin-win-cuda-x64.zip", "windows-cuda"),
+                hashless("llama-b9001-bin-win-cpu-x64.zip", "windows-cpu"),
+            ],
+            _nvidia_linux_host(),
+            tmp_path / "install",
+            tmp_path / "work",
+            refuse,
+            requested_tag = "b9001",
+            llama_tag = "b9001",
+            release_tag = "release-1",
+            approved_checksums = ApprovedReleaseChecksums(
+                repo = "unslothai/llama.cpp",
+                release_tag = "release-1",
+                upstream_tag = "b9001",
+                source_commit = None,
+                artifacts = {},
+            ),
+        )
+
+    assert attempted == []  # the CPU asset was never reached
+    assert len(fetches) == 1  # and the probe was not retried per candidate
+
+
+def test_probe_failure_does_not_demote_to_an_older_release(tmp_path, monkeypatch):
+    # The per-release handler in install_prebuilt also swallows PrebuiltFallback and
+    # continues to an older plan, so a probe failure raised inside it would install an
+    # older llama.cpp over a transient 429. The probe does not depend on the release.
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+
+    def hashless_plan(release_tag: str, llama_tag: str):
+        choice = AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = release_tag,
+            name = f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz",
+            url = f"https://example.com/{llama_tag}.tar.gz",
+            source_label = "direct-upstream",
+            install_kind = "linux-cpu",
+            expected_sha256 = None,  # hashless plans always smoke-test
+        )
+        return INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+            requested_tag = "latest",
+            llama_tag = llama_tag,
+            release_tag = release_tag,
+            attempts = [choice],
+            approved_checksums = ApprovedReleaseChecksums(
+                repo = "unslothai/llama.cpp",
+                release_tag = release_tag,
+                upstream_tag = llama_tag,
+                source_commit = None,
+                artifacts = {},
+            ),
+        )
+
+    plans = [hashless_plan("release-2", "b9002"), hashless_plan("release-1", "b9001")]
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: _nvidia_linux_host())
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "resolve_simple_install_release_plans",
+        lambda llama_tag, host, published_repo, published_release_tag: ("latest", plans),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        # The real one wraps transport errors in PrebuiltFallback; mirror that.
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+                "validation model unavailable: HTTP Error 429: Too Many Requests"
+            )
+        ),
+    )
+    validated: list[str] = []
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_prebuilt_attempts",
+        lambda attempts, *args, **kwargs: validated.append(list(attempts)[0].name),
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    # One clean fallback to the source build, not a silent downgrade to release-1.
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+    assert validated == []
 
 
 def test_staged_validation_enabled_default_off(monkeypatch):
@@ -4208,3 +4466,50 @@ def test_marker_sync_never_fails_setup_when_the_write_cannot_land(tmp_path, monk
     INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
 
     assert any("WARNING" in line and "force_cpu" in line for line in logged), logged
+
+
+# The stubs above stand in for these two, so a keyword added to either reaches
+# them as a TypeError raised inside whatever assertion happened to be running.
+# `rocm_gfx` did exactly that to four tests at once. Named here so the next one
+# fails once, in this test, saying which parameter moved.
+_VALIDATOR_KEYWORD_ONLY = {
+    "validate_prebuilt_attempts": (
+        "requested_tag",
+        "llama_tag",
+        "release_tag",
+        "approved_checksums",
+        "initial_fallback_used",
+        "existing_install_dir",
+        "force_cpu",
+        "llama_backend",
+        "rocm_gfx",
+    ),
+    "validate_prebuilt_choice": (
+        "requested_tag",
+        "llama_tag",
+        "release_tag",
+        "approved_checksums",
+        "prebuilt_fallback_used",
+        "quantized_path",
+        "force_cpu",
+        "llama_backend",
+        "rocm_gfx",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_VALIDATOR_KEYWORD_ONLY))
+def test_the_validator_stubs_still_model_the_real_signature(name):
+    """A stub that has fallen behind its real function is not a stub."""
+    import inspect
+
+    real = getattr(INSTALL_LLAMA_PREBUILT, name)
+    actual = tuple(
+        parameter_name
+        for parameter_name, parameter in inspect.signature(real).parameters.items()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    )
+    assert actual == _VALIDATOR_KEYWORD_ONLY[name], (
+        f"{name} keyword-only parameters are now {actual}; update the "
+        f"fake_validate stubs in this file, then this list"
+    )

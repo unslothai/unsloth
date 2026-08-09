@@ -3557,6 +3557,18 @@ def _monitor_anthropic_response(
     return response
 
 
+def _standard_models_still_held() -> list[str]:
+    """Unsloth models the registry still holds, whoever is active.
+
+    A GGUF load unloads only the ACTIVE Unsloth model, so a Transformers model
+    cached behind it keeps its weights while llama.cpp answers. Reported so the
+    memory is visible, and releasable, rather than stranded.
+    """
+    backend = _peek_inference_backend()
+    models = getattr(backend, "models", None) if backend is not None else None
+    return [name for name in models if isinstance(name, str)] if isinstance(models, dict) else []
+
+
 def _peek_inference_backend() -> Any:
     """The orchestrator if one already exists, else None. Never constructs one.
 
@@ -6138,25 +6150,16 @@ def _guard_chat_load_against_training(
         requested_gpu_ids, vulkan_gpu_memory, tensor_parallel = guard_tensor_parallel
     )
 
-    # Size with the count that will actually launch, or a load that fits gets a
-    # 409: diffusion never receives --parallel, load_model clamps to 1 on an
-    # llama-server without --kv-unified, and it clamps MTP to 1 as well. An
-    # unclassified GGUF keeps the ask.
+    # Size with the count that will actually launch, or a load that fits gets a 409.
+    # An unclassified GGUF keeps the ask.
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
-            n_parallel = 1
-        # MTP is deliberately NOT clamped here even though the launch clamps it to one
-        # slot. _estimate_gguf_required_gb counts the drafter file and the main KV, but
-        # not the draft KV, the duplicated target context MLA keeps, or the draft compute
-        # reserve, all of which load_model does budget. Sizing for one slot would drop
-        # the slot KV without replacing it with those, and a guard that under-sizes
-        # evicts the training run it exists to protect: the spare slots stand in for
-        # what is not modelled.
+            n_parallel = 1  # allow-slot-clamp: diffusion never receives --parallel
         else:
             try:
                 caps = LlamaCppBackend.probe_server_capabilities()
                 if caps.get("found") and not caps.get("supports_kv_unified"):
-                    n_parallel = 1
+                    n_parallel = 1  # allow-slot-clamp: mirrors the load_model clamp
             except Exception as e:
                 logger.warning("Could not probe llama-server slots for chat-load guard: %s", e)
 
@@ -8632,7 +8635,11 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 ),
                 gguf_variant = llama_backend.hf_variant,
                 loading = [],
-                loaded = [_display_model_id] if _display_model_id else [],
+                # Plus anything the Unsloth registry still holds: the GGUF load
+                # only unloaded the ACTIVE one, so a model cached behind it is
+                # still in VRAM and was invisible to every client reading this.
+                loaded = ([_display_model_id] if _display_model_id else [])
+                + [name for name in _standard_models_still_held() if name != _display_model_id],
                 inference = _inference_cfg,
                 **_runtime_fields,
                 requested_context_length = llama_backend.requested_n_ctx,
@@ -20042,6 +20049,18 @@ def _diffusion_training_admission():
         yield
 
 
+def _training_is_active() -> bool:
+    """The non-raising half of the load guard, for callers that must not take the GPU."""
+    from core.training import get_training_backend
+
+    try:
+        if get_training_backend().is_training_active():
+            return True
+    except Exception as e:  # noqa: BLE001 -- an unreadable LLM backend is not evidence of idle
+        logger.warning("Could not check training state: %s", e)
+    return _diffusion_training_active()
+
+
 def _guard_diffusion_load_against_training() -> None:
     """Refuse loading an image model while a training run is active. Unlike chat,
     a diffusion pipeline's VRAM can't be cheaply estimated before the load, so the
@@ -20109,6 +20128,34 @@ async def diffusion_download_plan(
         if fam is not None and predict_engine(fam, model_kind = kind) == ENGINE_SD_CPP:
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
+        # BEFORE the plan is handed back and staged. The load route refuses a precision this
+        # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
+        # unsupported host paid for the GGUF and its companions -- or tens of GB of video
+        # weights -- and then got the predictable 409. Both checks are network-free.
+        # Not while a trainer holds the GPU. An UNCACHED scheme sends
+        # assert_precision_available into a quantise-and-matmul smoke probe, which initialises
+        # CUDA and allocates in the Studio process -- the very thing the load route's training
+        # guard exists to prevent, and the plan runs BEFORE that guard has had a say. Staging
+        # files during training is legitimate and needs no GPU, so the plan is answered without
+        # the precision check; /images/load still refuses the same pick afterwards.
+        if fam is not None and not await asyncio.to_thread(_training_is_active):
+            if planner is backend:
+                await asyncio.to_thread(
+                    backend.assert_precision_available,
+                    fam,
+                    model_kind = kind,
+                    transformer_quant = request.transformer_quant,
+                    text_encoder_quant = request.text_encoder_quant,
+                    # The memory request settles the offload policy for balanced/low_vram before
+                    # anything is measured, and an offloaded transformer skips the dense quant.
+                    memory_mode = getattr(request, "memory_mode", None),
+                    cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                )
+            else:
+                _assert_native_precision_unset(
+                    transformer_quant = request.transformer_quant,
+                    text_encoder_quant = request.text_encoder_quant,
+                )
         plan = await asyncio.to_thread(
             planner.download_plan,
             request.model_path,
@@ -20130,6 +20177,47 @@ async def diffusion_download_plan(
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+    except RuntimeError as exc:
+        # Same status the load route gives the same refusal, so the UI can reuse one handler:
+        # the precision gate above raises RuntimeError, and a 500 here would read as a server
+        # fault rather than the deliberate "this host cannot honour that pick" answer.
+        raise HTTPException(status_code = 409, detail = redact_native_paths(str(exc)))
+
+
+def _assert_native_precision_unset(
+    *, transformer_quant: Optional[str] = None, text_encoder_quant: Optional[str] = None
+) -> None:
+    """Refuse an EXPLICIT precision on the native sd.cpp engine, which cannot honour one.
+
+    It accepts both knobs for interface parity with the diffusers backend and ignores them, so
+    without this an explicit FP8 loads happily, quantises nothing, and reports null -- the silent
+    mismatch the resolved-precision work exists to remove. `auto` and `none` pass through: they
+    delegate the choice, and nothing is being promised.
+
+    Raises RuntimeError, which the route maps to 409 alongside the diffusers refusals."""
+    from core.inference.diffusion_auto_policy import precision_fallback_allowed
+    from core.inference.diffusion_precision import normalize_te_quant
+    from core.inference.diffusion_transformer_quant import TQ_AUTO, normalize_transformer_quant
+
+    if precision_fallback_allowed():
+        return
+    pinned = normalize_transformer_quant(transformer_quant)
+    te_mode = normalize_te_quant(text_encoder_quant)
+    asked = []
+    if pinned is not None and pinned != TQ_AUTO:
+        asked.append(f"transformer_quant={pinned!r}")
+    if te_mode is not None and te_mode != TQ_AUTO:
+        asked.append(f"text_encoder_quant={te_mode!r}")
+    if not asked:
+        return
+    raise RuntimeError(
+        # "could not be used", the same wording the diffusers refusals use: the frontend
+        # classifies a precision refusal by that phrase and rendered this one as a generic
+        # one-line error instead of under the actionable title.
+        f"{' and '.join(asked)} could not be used: this pick runs on the native engine, which "
+        "loads a GGUF checkpoint as it is and has no torchao quantisation path. Leave the "
+        "precision on 'auto', or pick a model that loads through diffusers."
+    )
 
 
 @studio_router.post("/images/load", response_model = DiffusionStatusResponse)
@@ -20151,6 +20239,7 @@ async def load_diffusion_model(
         select_and_activate_engine,
     )
     from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -20200,6 +20289,33 @@ async def load_diffusion_model(
             pending_name = predict_engine(fam, model_kind = kind) if fam is not None else None
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
+        # Same bar, same reason, for an EXPLICIT precision this host can never honor. begin_load
+        # makes the identical network-free check, but it runs inside acquire_for -- which evicts
+        # chat under the arbiter lock BEFORE the register callback -- and after selection, which
+        # unloads the resident model on an engine switch. So a refusal raised there arrives having
+        # already destroyed the two things the 409 exists to preserve. `auto` is never refused, so
+        # a caller that left the precision to the backend cannot reach this.
+        if fam is not None and pending_name == ENGINE_DIFFUSERS:
+            await asyncio.to_thread(
+                backend.assert_precision_available,
+                fam,
+                model_kind = kind,
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+                memory_mode = getattr(request, "memory_mode", None),
+                cpu_offload = bool(getattr(request, "cpu_offload", False)),
+            )
+        elif fam is not None and pending_name == ENGINE_SD_CPP:
+            # The native engine accepts both knobs for interface parity and ignores them. It was
+            # excluded from the gate above so as not to refuse loads that work today, but the
+            # loads it "works" for are precisely the silent mismatch this whole change exists to
+            # remove: an explicit FP8 succeeds, quantises nothing, and reports null. Refusing is
+            # also what the diffusers path already does on the same CPU-only host, so leaving the
+            # two engines disagreeing was the worse of the options.
+            _assert_native_precision_unset(
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+            )
         preflighted = None
         if pending_name is not None and (needs_gpu or pending_name != active_engine_name()):
             preflighted = engine_for(pending_name)
@@ -20216,6 +20332,28 @@ async def load_diffusion_model(
         # on the CPU path too when a preflight was owed there, since the switch is what is at stake.
         if (needs_gpu or preflighted is not None) and engine is not preflighted:
             await asyncio.to_thread(_preflight, engine)
+        # And the precision gate, against the engine that was actually activated. When
+        # predict_engine RAISED, pending_name stayed None and both arms above were skipped, so
+        # a selection that then landed on sd.cpp accepted an explicit FP8, quantised nothing
+        # and reported null -- the exact silent mismatch this change exists to remove. Re-run
+        # only when the prediction was inconclusive or wrong; a correct one already paid it.
+        activated = active_engine_name()
+        if fam is not None and activated != pending_name:
+            if activated == ENGINE_SD_CPP:
+                _assert_native_precision_unset(
+                    transformer_quant = request.transformer_quant,
+                    text_encoder_quant = request.text_encoder_quant,
+                )
+            elif activated == ENGINE_DIFFUSERS:
+                await asyncio.to_thread(
+                    backend.assert_precision_available,
+                    fam,
+                    model_kind = kind,
+                    transformer_quant = request.transformer_quant,
+                    text_encoder_quant = request.text_encoder_quant,
+                    memory_mode = getattr(request, "memory_mode", None),
+                    cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                )
 
         def _start_engine_load():
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
@@ -20398,6 +20536,12 @@ async def generate_diffusion_image(
                         "model_kind": result.get("model_kind"),
                         "gguf_filename": result.get("gguf_filename"),
                         "transformer_quant": result.get("transformer_quant"),
+                        # The other half of the build's precision: the text encoder is often the
+                        # largest resident component and its quant changes the conditioning, and
+                        # the memory mode decides whether the torchao TE modes could run at all.
+                        "text_encoder_quant": result.get("text_encoder_quant"),
+                        "memory_mode": result.get("memory_mode"),
+                        "offload_policy": result.get("offload_policy"),
                         "baked_loras": list(result.get("baked_loras") or []),
                         # The adapters APPLIED to this generation. A baked-but-disabled adapter is recorded above as part of the build instead.
                         "loras": [f"{l.id}:{l.weight:g}" for l in request.loras or []],
@@ -20735,6 +20879,13 @@ async def openai_image_generations(
         # The batch shares one base seed, so restoring a batch_index>0 sibling needs the original batch_size.
         "batch_size": body.n,
         "model": result.get("repo_id"),
+        # The BUILD, exactly as /images/generate records it. This route is a supported way to
+        # produce an image, and without these the gallery entry cannot say which GGUF quant or
+        # which dense precision made the pixels -- the whole point of recording them.
+        "model_kind": result.get("model_kind"),
+        "gguf_filename": result.get("gguf_filename"),
+        "transformer_quant": result.get("transformer_quant"),
+        "baked_loras": list(result.get("baked_loras") or []),
         "created_at": float(created),
     }
     # The diffusers batch shares one seed; the native batch uses a distinct seed per image, so record each image's own seed.

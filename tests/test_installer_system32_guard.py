@@ -35,7 +35,8 @@ def test_install_ps1_leaves_system_directory_before_installing():
     guard_idx = src.index("$InSystemDir = Test-UnderSystemRoot $CurrentDir")
     for marker in (
         'step "winget" "available"',
-        "uv venv $VenvDir --python",
+        # No "uv " prefix: the installer invokes the resolved $script:UvExe, not the bare token.
+        "venv $VenvDir --python",
         'step "setup" "running unsloth studio setup..."',
     ):
         assert guard_idx < src.index(marker), (
@@ -162,6 +163,8 @@ _PS_STUBS = (
     'function step { param($Label, $Value, $Color) Write-Host "STEP:$Label|$Value" }\n'
     'function substep { param($Message, $Color) Write-Host "SUBSTEP:$Message" }\n'
     'function Exit-InstallFailure { param($Message, $Code = 1) Write-Host "FAILED:$Message"; exit 42 }\n'
+    # install.ps1 prints through its UTF-8 stdout sink; the harness only needs the text.
+    "function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Write-Host $Message }\n"
     "$InSystemDir = $true\n"
 )
 

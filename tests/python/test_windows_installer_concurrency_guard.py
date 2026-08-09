@@ -188,6 +188,10 @@ def test_installer_decision_stops_active_process_and_allows_idle(tmp_path: Path,
     script = f"""
 $ErrorActionPreference = "Stop"
 {_process_helpers(source)}
+# The block names the blocking processes through install.ps1's UTF-8 stdout sink
+# before it hands off to Exit-InstallFailure. Unstubbed that is a command-not-found
+# terminating error under "Stop", so the active case never reaches RESULT:blocked.
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) Write-Host $Message }}
 function Exit-InstallFailure {{
     param([string]$Message)
     return "blocked"
@@ -776,7 +780,8 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     )
     assert "if ($StudioRedirectMode -eq 'legacy')" not in source
     assert "& $UnslothExe studio -p 8888" not in source
-    assert "--clear" not in source[source.index("uv venv $VenvDir") :][:200]
+    # Anchored past the command token: uv is invoked as the resolved $script:UvExe.
+    assert "--clear" not in source[source.index("venv $VenvDir") :][:200]
 
 
 def test_tauri_runtime_uses_the_same_gate_before_backend_spawn():

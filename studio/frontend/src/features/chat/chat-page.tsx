@@ -71,6 +71,7 @@ import {
 } from "@/features/native-intents";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -1930,6 +1931,9 @@ export function ChatPage({
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
+  const residentCheckpoint = useChatRuntimeStore(
+    (state) => state.residentCheckpoint,
+  );
   const ggufContextLength = useChatRuntimeStore(
     (state) => state.ggufContextLength,
   );
@@ -3326,6 +3330,16 @@ export function ChatPage({
                 loraModels={loraModels}
                 externalModels={externalModels}
                 value={inferenceParams.checkpoint}
+                // Resident, not merely picked: an image or video load evicts
+                // the chat model and leaves this selection behind, so the tick
+                // stayed on a model the backend had already released.
+                loaded={chatModelLoaded({
+                  checkpoint: inferenceParams.checkpoint,
+                  isExternalModel: isExternalModelId(
+                    inferenceParams.checkpoint,
+                  ),
+                  residentCheckpoint,
+                })}
                 activeGgufVariant={activeGgufVariant}
                 activeModelConfig={activeModelConfig}
                 activeGgufContextLength={ggufContextLength}

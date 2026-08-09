@@ -6,12 +6,13 @@
 import { Spinner } from "@/components/ui/spinner";
 import { authFetch } from "@/features/auth";
 import {
-  preferFullToolOutput,
+  preferSanitizedFullToolOutput,
   useChatRuntimeStore,
   useToolAwaitingApproval,
   useToolOutputFor,
   useToolPaneScope,
 } from "@/features/chat";
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { CodeIcon } from "lucide-react";
@@ -148,10 +149,8 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     output = result.text;
     images = result.images;
     sessionId = result.sessionId;
-  } else if (typeof result === "string") {
-    output = result;
-  } else if (result) {
-    output = JSON.stringify(result, null, 2);
+  } else if (result != null) {
+    output = stringifyToolResult(result);
   } else {
     output = "";
   }
@@ -164,7 +163,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     paneScope,
     toolCallId,
   );
-  const displayOutput = preferFullToolOutput(fullOutput, output);
+  const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
 
   // The gate only opens once the call parsed, so a pending approval means the script is
   // written even while the args status still reads as streaming.

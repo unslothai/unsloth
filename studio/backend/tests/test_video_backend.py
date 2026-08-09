@@ -818,6 +818,10 @@ def test_ltx23_load_forwards_the_precast_encoder(fake_runtime, tmp_path, monkeyp
     # The wiring half of the same bug: the 2.3 branch does not use pipe_kwargs, so the loader must pass the pre-cast encoder across explicitly.
     from core.inference import diffusion_te_prequant, video_ltx2
 
+    # The CPU stub cannot cast the encoder, which the strict default now refuses; this test is
+    # about the WIRING, so keep the legacy silent-fallback behaviour for it.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+
     precast = object()
     monkeypatch.setattr(
         diffusion_te_prequant, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": precast}
@@ -1344,6 +1348,17 @@ def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
     assert status["speed_mode"] == "off"
     backend.unload()
 
+    # ...and the RECORD still says the user asked for nothing. The suppression rewrites the
+    # internal value to "off" before the resolved record is built, and reporting that as the
+    # request makes the record claim an explicit pin: the Auto badge disappears and the Precision
+    # select reseeds to none, so after the user changes Speed and reloads, quantisation stays
+    # pinned off for no reason they can see.
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["requested"] is None, (
+        f"the record reports {resolved['requested']!r} as the user's request; nothing was asked for"
+    )
+    assert resolved["source"] == "auto"
+
     # Control: with speed NOT off the auto precision promotion still engages, so the suppression above is specific to speed=off.
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     assert calls == [True]
@@ -1367,6 +1382,37 @@ def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
     assert status2["transformer_cache"] is None
     assert status2["resolved"]["transformer_cache"]["source"] == "auto"
     backend.unload()
+
+
+def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
+    fake_runtime, tmp_path
+):
+    filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf"
+    (tmp_path / filename).write_bytes(b"w")
+    backend = VideoBackend()
+
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = filename,
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+
+    assert status["gguf_variant"] == "Q4_K_M"
+    assert backend.unload()["gguf_variant"] is None
+    # A pipeline load has no checkpoint quant to name.
+    assert (
+        backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")[
+            "gguf_variant"
+        ]
+        is None
+    )
+    backend.unload()
+
+
+def test_video_status_response_carries_gguf_variant():
+    from models.inference import VideoStatusResponse
+    assert VideoStatusResponse(loaded = True, gguf_variant = "Q4_K_M").gguf_variant == "Q4_K_M"
 
 
 def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
@@ -1522,9 +1568,12 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
 
 
 def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
-    # Offload hooks move modules with Module.to(), which torchao tensors reject, so any offload policy must SKIP quant: the load succeeds dense and the record explains why.
+    # Offload hooks move modules with Module.to(), which torchao tensors reject, so any offload
+    # policy must SKIP quant. With the legacy escape hatch set the load still succeeds dense and the
+    # record explains why; the strict default refuses instead (see the test below).
     import core.inference.video as video_mod
 
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     quantised = []
 
@@ -1564,7 +1613,80 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     assert status["offload_policy"] == "model"
     assert quantised == []
     assert status["transformer_quant"] is None
-    assert "offload moves the DiT" in status["resolved"]["transformer_quant"]["reason"]
+    resolved = status["resolved"]["transformer_quant"]
+    assert "moves the DiT" in resolved["reason"]
+    # BOTH sides of the story survive: the ask, the outcome, and that they disagree.
+    assert resolved["requested"] == "int8"
+    assert resolved["value"] == "off"
+    assert resolved["status"] == "fell_back"
+
+
+def test_explicit_dense_quant_refuses_under_offload(fake_runtime, monkeypatch):
+    # Strict default (no escape hatch): an explicit int8 the offload plan cannot honor stops the
+    # load, rather than denoising at bf16 while the Precision dropdown still reads INT8.
+    import dataclasses
+
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        video_mod,
+        "quantize_transformer",
+        lambda view, target, *, mode, family, logger = None: pytest.fail("must not quantise"),
+    )
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
+    )
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            model_kind = "pipeline",
+            transformer_quant = "int8",
+        )
+    assert "transformer_quant='int8' could not be used" in str(excinfo.value)
+    assert "resident memory mode" in str(excinfo.value)
+    assert backend.status()["loaded"] is False
+
+
+def test_the_video_refusal_also_names_a_broken_torchao_rather_than_the_gpu(
+    fake_runtime, monkeypatch
+):
+    # The image twin's finding, shared through explain_unusable_scheme: a torchao that cannot
+    # import looks exactly like a GPU without the kernels to the selector, and a refusal that
+    # blames the GPU sends the user after hardware for what a reinstall fixes.
+    import core.inference.diffusion_transformer_quant as tq
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_mod, "select_transformer_quant_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", ("ImportError: no torchao kernels",))
+    with pytest.raises(RuntimeError) as excinfo:
+        video_mod.assert_video_precision_available(
+            types.SimpleNamespace(name = "ltx-2"),
+            model_kind = "pipeline",
+            transformer_quant = "nvfp4",
+        )
+    message = str(excinfo.value)
+    assert "transformer_quant='nvfp4' could not be used" in message
+    assert "no torchao kernels" in message and "not a limit of the GPU" in message
+
+
+def test_begin_load_refuses_dense_quant_on_a_non_pipeline_video_kind(fake_runtime, monkeypatch):
+    # The DiT quant only exists on the full-pipeline path, so an explicit scheme on a GGUF pick was
+    # accepted and then ignored outright. Refused before the load starts (the route's 409).
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.begin_load(
+            "unsloth/LTX-2.3-GGUF",
+            gguf_filename = "ltx-2.3-Q4_K_M.gguf",
+            model_kind = "gguf",
+            transformer_quant = "fp8",
+        )
+    assert "full-pipeline loads only" in str(excinfo.value)
 
 
 def test_wan_a14b_partial_quant_fails_the_load(fake_runtime, monkeypatch):
@@ -1925,7 +2047,10 @@ def test_download_plan_omits_cached_video_files_but_keeps_the_footprint(monkeypa
     )
 
     staged = {f for e in plan["entries"] for f in e["files"]}
-    assert "ltx-2.3-22b-distilled.gguf" not in staged, "a cached checkpoint must not restage"
+    assert "ltx-2.3-22b-distilled.gguf" in staged, "the scoped claim stays stable as the repo warms"
+    assert not any(
+        e["checkpoint"] for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF"
+    )
     assert staged, "its uncached companions still have to be fetched"
     assert plan["checkpoint_bytes"] > 0
     assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
@@ -2043,8 +2168,13 @@ def test_download_plan_restages_a_video_base_split_across_cache_roots(monkeypatc
         family_override = "ltx-2",
     )
 
-    staged = {f for e in plan["entries"] for f in e["files"]}
-    assert staged == elsewhere, "the other-root subset has to be staged into the active root"
+    entry = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF")
+    expected_scope = {s.rfilename for s in _LTX23_REPO_SIBLINGS} - {
+        "vae/ltx-2.3-22b-dev_video_vae.safetensors"
+    }
+    assert set(entry["files"]) == expected_scope
+    sizes = {s.rfilename: s.size for s in _LTX23_REPO_SIBLINGS}
+    assert entry["bytes"] == sum(sizes[name] for name in elsewhere)
 
 
 def test_download_plan_keeps_a_video_base_that_lives_wholly_in_the_other_root(monkeypatch):
@@ -2080,8 +2210,9 @@ def test_download_plan_keeps_a_video_base_that_lives_wholly_in_the_other_root(mo
 
 def test_a_companion_only_entry_is_not_labelled_the_checkpoint(monkeypatch):
     # The 2.3 checkpoint and its extras share one repo. With the GGUF already cached and the
-    # extras missing, the entry carries companion files only, so labelling it the model file
-    # misdescribes what the panel is downloading.
+    # extras missing, the stable download scope still names the checkpoint for job adoption,
+    # but only the companion files contribute bytes. Labelling that work as the model file
+    # would misdescribe what the panel is downloading.
     _plan_api(
         monkeypatch,
         {
@@ -2098,7 +2229,8 @@ def test_a_companion_only_entry_is_not_labelled_the_checkpoint(monkeypatch):
     )
 
     entry = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF")
-    assert "ltx-2.3-22b-distilled.gguf" not in entry["files"]
+    assert "ltx-2.3-22b-distilled.gguf" in entry["files"]
+    assert entry["bytes"] == 2_400_000_000 + 200_000_000 + 900_000_000
     assert entry["checkpoint"] is False, "companion files only, so not the model file"
 
 
@@ -2458,9 +2590,9 @@ def test_unload_fences_a_generation_queued_behind_its_barrier(fake_runtime, tmp_
 
     queued = _run_teardown_race(backend, backend.unload)
 
-    assert (
-        "out" not in queued
-    ), "a generation queued behind the unload barrier ran against a pipeline being torn down"
+    assert "out" not in queued, (
+        "a generation queued behind the unload barrier ran against a pipeline being torn down"
+    )
     assert queued.get("error") in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG), queued
     assert backend._state is None
     assert backend._teardown_waiters == 0  # the fence drained
@@ -2473,9 +2605,9 @@ def test_superseding_load_fences_a_generation_queued_behind_its_barrier(fake_run
 
     queued = _run_teardown_race(backend, lambda: _load_gguf(backend, tmp_path))
 
-    assert (
-        "out" not in queued
-    ), "a generation queued behind the load barrier ran against a pipeline being torn down"
+    assert "out" not in queued, (
+        "a generation queued behind the load barrier ran against a pipeline being torn down"
+    )
     assert queued.get("error") in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG), queued
     assert backend._teardown_waiters == 0  # the fence drained
 

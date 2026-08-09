@@ -9,6 +9,8 @@ import {
 } from "@assistant-ui/react";
 import { FileTextIcon, LibraryBigIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
+
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo, useEffect, useMemo, useState } from "react";
 import { Badge } from "./badge";
 import {
@@ -76,6 +78,8 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const query = (args as { query?: string })?.query ?? "";
   const isRunning = status?.type === "running";
+
+  const resultText = result == null ? "" : stringifyToolResult(result);
   const citations = useMemo(() => parseCitations(result), [result]);
   // Citations render in RagSourcesGroup; this block keeps a one-line summary.
   const docCount = useMemo(
@@ -122,11 +126,9 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
             {citations.length === 1 ? "" : "s"} from {docCount} document
             {docCount === 1 ? "" : "s"}. See Document Sources below.
           </div>
-        ) : result ? (
+        ) : resultText ? (
           <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-            {typeof result === "string"
-              ? result
-              : JSON.stringify(result, null, 2)}
+            {resultText}
           </pre>
         ) : (
           <div className="text-sm text-muted-foreground">No matching passages.</div>
