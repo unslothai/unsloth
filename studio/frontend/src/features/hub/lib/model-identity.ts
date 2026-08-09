@@ -128,6 +128,30 @@ export function publicModelId(identifier: string): string {
   return name.replace(GGUF_SUFFIX_RE, "") || trimmed;
 }
 
+/** `org/name`, including Hub repos named `org/name.gguf`. A file reference carries a
+* repo id plus a filename, so two or more slashes. */
+function isHubRepoId(identifier: string): boolean {
+  if (identifier.split("/").length - 1 !== 1) {
+    return false;
+  }
+  return !looksLikeModelPath(identifier.replace(GGUF_SUFFIX_RE, ""));
+}
+
+/**
+* The short label for a model id with no catalog entry to take a name from. Mirrors
+* ``display_model_name`` in core/inference/model_ids.py: the public id's trailing
+* segment, so a repo id and the HF cache snapshot it loads from read alike. Splitting
+* the raw id leaks the host layout on Windows, where ``C:\\Users\\...`` holds no ``/``.
+*/
+export function modelDisplayName(identifier: string): string {
+  const trimmed = identifier.trim();
+  if (isHubRepoId(trimmed)) {
+    return trimmed.slice(trimmed.indexOf("/") + 1);
+  }
+  const clean = publicModelId(trimmed);
+  return clean.slice(clean.lastIndexOf("/") + 1) || clean;
+}
+
 /**
 * Whether the model the backend reports as loaded is one of *candidates*.
 *

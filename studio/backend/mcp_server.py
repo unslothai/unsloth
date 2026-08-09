@@ -144,10 +144,15 @@ def create_studio_mcp() -> FastMCP:
         return _dump(await start(request, current_subject = "mcp", via_api_key = False))
 
     @mcp.tool
-    async def stop_training(save: bool = True) -> dict[str, Any]:
-        """Ask the active training process to stop at its next safe checkpoint."""
+    async def stop_training(expected_job_id: str, save: bool = True) -> dict[str, Any]:
+        """Stop the identified training job at its next safe checkpoint."""
         from routes.training import TrainingStopRequest, stop_training as stop
-        return _dump(await stop(TrainingStopRequest(save = save), current_subject = "mcp"))
+        return _dump(
+            await stop(
+                TrainingStopRequest(save = save, expected_job_id = expected_job_id),
+                current_subject = "mcp",
+            )
+        )
 
     @mcp.tool
     async def list_training_runs(limit: int = 50, offset: int = 0) -> dict[str, Any]:

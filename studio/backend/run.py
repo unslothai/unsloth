@@ -125,6 +125,7 @@ backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
+# First, so these vars land before anything below can size an OpenMP/BLAS pool. Imports stdlib only.
 from utils.cpu_threads import configure_cpu_threads
 
 try:
@@ -133,12 +134,23 @@ except ValueError as exc:
     configured = os.environ.get("UNSLOTH_CPU_THREADS")
     raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}") from None
 
+# Windows ROCm ships no distributed backend, so torchao and the CUDA-only xformers both die on import,
+# taking diffusers/transformers with them. A stub only seeds a name nothing has imported yet, so both
+# must precede the first import below. No-op on other runtimes.
+from core._torchao_stub import (
+    install_torchao_windows_rocm_stub,
+    install_xformers_windows_rocm_stub,
+)
+
+install_xformers_windows_rocm_stub()
+install_torchao_windows_rocm_stub()
+
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before imports
 # that trigger attrs -> rich -> structlog -> platform crash.
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
-from loggers import get_logger
+from loggers import get_logger, install_uvicorn_duplicate_exception_filter
 from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
@@ -2018,6 +2030,10 @@ def run_server(
     # Resolve once; shared by the log rewrite and banner.
     display_host = _display_host_for_bind(host)
     _install_uvicorn_startup_log_rewrite(host, display_host)
+    # LoggingMiddleware already logs every unhandled request exception with its full
+    # traceback as a structured event; without this uvicorn prints the same traceback
+    # again on stderr and the desktop shell copies it into tauri.log line by line.
+    install_uvicorn_duplicate_exception_filter()
 
     logger.info(
         "run_server pre-uvicorn setup completed in %.1fms",

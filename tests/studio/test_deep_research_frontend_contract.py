@@ -21,7 +21,8 @@ def test_research_api_is_isolated_and_cursor_based() -> None:
     assert "runs.at(-1) ?? null" in api
     assert "getResearchThreadState" in api
     assert "/events?after=${Math.max(0, after)}" in api
-    assert 'headers: { accept: "text/event-stream" }' in api
+    # POST, not GET: proxies that buffer a streamed GET leave the activity panel empty.
+    assert 'method: "POST", headers: { accept: "text/event-stream" }' in api
     assert "export async function* followResearchRun" in api
     assert "Math.min(8_000, 500 * 2 ** (failures - 1))" in api
     assert "for await (const event of streamResearchEvents" in api
@@ -32,6 +33,9 @@ def test_research_api_is_isolated_and_cursor_based() -> None:
     assert "isPermanentResearchError(error)" in api
     assert 'yield { run, source: "snapshot" }' in api
     assert "event.id <= pending.event.id" in store
+    # The store owns the stream, so nothing else can stall ingestion by not reading.
+    assert "ensureResearchRunFollowed(run.id, run);" in store
+    assert "export async function* watchResearchRun" in store
     for action in ("cancel", "retry"):
         assert f'mutate(id, "{action}")' in api
     assert 'mutate(id, "approve", { planRevision, planHash })' in api
@@ -50,16 +54,17 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "unstable_assistantMessageId," in adapter
     assert "if (!unstable_assistantMessageId)" in adapter
     assert "assistantMessageId: unstable_assistantMessageId" in adapter
-    assert "followResearchRun(createdRun.id" in adapter
+    # the adapter reads store state and never owns the stream, so a stalled reader cannot freeze it.
+    assert "watchResearchRun(createdRun.id" in adapter
+    assert "followResearchRun" not in adapter
     assert "inferenceRequest" in adapter
     assert "Number.isFinite(params.temperature)" in adapter
     assert "Number.isFinite(params.topP)" in adapter
     assert "Number.isFinite(params.maxTokens)" in adapter
     assert "Math.min(8192, Math.floor(params.maxTokens))" in adapter
-    assert 'update.event?.event === "report.updated"' in adapter
-    assert 'update.event?.event === "reasoning.updated"' in adapter
-    assert "The activity store coalesces these high-frequency events" in adapter
     assert '{ type: "text" as const, text: report }' in adapter
+    # yields are deduped by status, or every streamed delta drives an autosave the server rejects.
+    assert "run.status === yieldedStatus" in adapter
     # runSignal, not abortSignal: each run gets its own controller, forwarded from the thread
     # signal, so one chat's Stop cannot abort a sibling streaming in the background.
     assert "if (runSignal.aborted) return" in adapter

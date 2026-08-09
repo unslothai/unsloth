@@ -3,8 +3,14 @@
 
 """HTTP API for the RAG engine: KB CRUD, uploads, SSE ingestion, search.
 
-Single-tenant: the subject gates access, not data. Without sqlite-vec the router
-mounts but every endpoint returns 503.
+Single-tenant: the subject gates access, not data.
+
+Without a working sqlite-vec the router still mounts, and one contract covers every
+endpoint. The KB list is polled, so it answers 200 with an empty list carrying an
+availability marker, which is what lets a client tell an empty store from a machine
+where RAG cannot run. Every other endpoint answers 503 stating the same reason.
+Nothing logs a traceback for it: the condition is fixed for the session and rag_db
+warns about it exactly once.
 """
 
 from __future__ import annotations
@@ -16,8 +22,11 @@ import logging
 import os
 import re
 import secrets
+import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
+from typing import Iterator
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -33,12 +42,56 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+_UNAVAILABLE_DETAIL = "RAG is unavailable: the sqlite-vec extension could not be loaded."
+
+
 def _require_rag() -> None:
-    if not rag_db.RAG_AVAILABLE:
-        raise HTTPException(
-            status_code = 503,
-            detail = "RAG is unavailable: the sqlite-vec extension could not be loaded.",
-        )
+    """Gate an endpoint on RAG being runnable here.
+
+    Covers both halves of unavailable: sqlite-vec never imported, and it imported but
+    its native library will not load. 503 with a stated reason rather than the 500 plus
+    traceback a raising connection would produce, and rag_db's warn-once keeps the log
+    quiet however often this fires.
+    """
+    if not rag_db.rag_available():
+        raise HTTPException(status_code = 503, detail = _UNAVAILABLE_DETAIL)
+
+
+@contextmanager
+def _rag_unavailable_as_503(cleanup_path: str | None = None) -> Iterator[None]:
+    """Report RagExtensionUnavailable as the same 503, wherever it is raised.
+
+    _require_rag() has normally answered for the session already; this closes the window
+    where the very first request is the one that discovers the missing library, and it
+    reaches the connections ingestion opens for itself. ``cleanup_path`` removes an
+    upload that was saved before the failure, so nothing is orphaned in the uploads
+    root. Real database errors are left alone.
+    """
+    try:
+        yield
+    except rag_db.RagExtensionUnavailable as exc:
+        _remove_stored_upload(cleanup_path)
+        raise HTTPException(status_code = 503, detail = _UNAVAILABLE_DETAIL) from exc
+
+
+def _rag_connection() -> sqlite3.Connection:
+    """rag_db.get_connection() with the unavailable case reported as 503."""
+    with _rag_unavailable_as_503():
+        return rag_db.get_connection()
+
+
+def _availability(available: bool) -> dict:
+    """Availability marker carried by the KB list, the one response that degrades
+    rather than erroring.
+
+    Additive: a client that only reads the list is unaffected, one that reads this can
+    say "RAG cannot run here" instead of showing an empty page that looks ready to use
+    and offering a Create that can only 503.
+    """
+    return {
+        "ragAvailable": available,
+        "ragUnavailableReason": None if available else _UNAVAILABLE_DETAIL,
+    }
 
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -194,8 +247,18 @@ class SearchRequest(BaseModel):
 
 @router.get("/knowledge-bases")
 def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
-    _require_rag()
-    conn = rag_db.get_connection()
+    try:
+        conn = rag_db.get_connection()
+    except rag_db.RagExtensionUnavailable:
+        # RAG_AVAILABLE only covers the import; the native library can still fail to
+        # load per connection (a missing vec0 binary in the venv). The UI polls this
+        # list, so 500ing here costs a traceback every few seconds for a condition that
+        # never changes within a session. rag_db has warned once; an empty list is what
+        # a machine without RAG has anyway. The marker is what keeps that honest: it is
+        # the difference between "no knowledge bases yet" and "RAG cannot run here", and
+        # without it the empty page looks ready to use. Only the unavailable case
+        # degrades: a locked or corrupt database still raises.
+        return {"knowledgeBases": [], **_availability(False)}
     try:
         kbs = store.list_kbs(conn)
         out = []
@@ -210,7 +273,7 @@ def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
                     "documentCount": len(docs),
                 }
             )
-        return {"knowledgeBases": out}
+        return {"knowledgeBases": out, **_availability(True)}
     finally:
         conn.close()
 
@@ -220,7 +283,7 @@ def create_knowledge_base(
     payload: CreateKbRequest, subject: str = Depends(get_current_subject)
 ) -> dict:
     _require_rag()
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         kb_id = store.create_kb(
             conn,
@@ -240,7 +303,7 @@ def update_knowledge_base(
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         if store.get_kb(conn, kb_id) is None:
             raise HTTPException(status_code = 404, detail = "Knowledge base not found")
@@ -263,7 +326,7 @@ def update_knowledge_base(
 @router.delete("/knowledge-bases/{kb_id}")
 def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         if store.get_kb(conn, kb_id) is None:
             raise HTTPException(status_code = 404, detail = "Knowledge base not found")
@@ -283,23 +346,24 @@ async def upload_kb_document(
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         if store.get_kb(conn, kb_id) is None:
             raise HTTPException(status_code = 404, detail = "Knowledge base not found")
     finally:
         conn.close()
     stored_path, filename = _resolve_document_upload(file, native_path_lease)
-    document_id, job_id = ingestion.start_ingestion(
-        store.kb_scope(kb_id), kb_id, None, filename, stored_path, ocr = ocr, caption = caption
-    )
+    with _rag_unavailable_as_503(stored_path):
+        document_id, job_id = ingestion.start_ingestion(
+            store.kb_scope(kb_id), kb_id, None, filename, stored_path, ocr = ocr, caption = caption
+        )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
 
 @router.get("/knowledge-bases/{kb_id}/documents")
 def list_kb_documents(kb_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         docs = store.list_documents(conn, store.kb_scope(kb_id))
         return {"documents": [_doc_view(d) for d in docs]}
@@ -318,22 +382,23 @@ async def upload_thread_document(
 ) -> dict:
     _require_rag()
     stored_path, filename = _resolve_document_upload(file, native_path_lease)
-    document_id, job_id = ingestion.start_ingestion(
-        store.thread_scope(thread_id),
-        None,
-        thread_id,
-        filename,
-        stored_path,
-        ocr = ocr,
-        caption = caption,
-    )
+    with _rag_unavailable_as_503(stored_path):
+        document_id, job_id = ingestion.start_ingestion(
+            store.thread_scope(thread_id),
+            None,
+            thread_id,
+            filename,
+            stored_path,
+            ocr = ocr,
+            caption = caption,
+        )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
 
 @router.get("/threads/{thread_id}/documents")
 def list_thread_documents(thread_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         docs = store.list_documents(conn, store.thread_scope(thread_id))
         return {"documents": [_doc_view(d) for d in docs]}
@@ -356,23 +421,24 @@ async def upload_project_document(
     if get_chat_project(project_id) is None:
         raise HTTPException(status_code = 404, detail = "Project not found")
     stored_path, filename = _resolve_document_upload(file, native_path_lease)
-    document_id, job_id = ingestion.start_ingestion(
-        store.project_scope(project_id),
-        None,
-        None,
-        filename,
-        stored_path,
-        project_id = project_id,
-        ocr = ocr,
-        caption = caption,
-    )
+    with _rag_unavailable_as_503(stored_path):
+        document_id, job_id = ingestion.start_ingestion(
+            store.project_scope(project_id),
+            None,
+            None,
+            filename,
+            stored_path,
+            project_id = project_id,
+            ocr = ocr,
+            caption = caption,
+        )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
 
 @router.get("/projects/{project_id}/documents")
 def list_project_documents(project_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         docs = store.list_documents(conn, store.project_scope(project_id))
         return {"documents": [_doc_view(d) for d in docs]}
@@ -385,7 +451,7 @@ def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> 
     """Every uploaded file across chats, projects, and knowledge bases (settings
     Data tab)."""
     _require_rag()
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         docs = store.list_all_documents(conn)
         kb_names = {kb["id"]: kb["name"] for kb in store.list_kbs(conn)}
@@ -416,7 +482,7 @@ def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> 
 @router.delete("/documents/{document_id}")
 def delete_document(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         doc = store.get_document(conn, document_id)
         if doc is None:
@@ -431,7 +497,8 @@ def delete_document(document_id: str, subject: str = Depends(get_current_subject
 @router.get("/jobs/{job_id}")
 def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    row = ingestion.get_job_status(job_id)
+    with _rag_unavailable_as_503():
+        row = ingestion.get_job_status(job_id)
     if row is None:
         raise HTTPException(status_code = 404, detail = "Job not found")
     return {
@@ -479,7 +546,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
             raise HTTPException(status_code = 400, detail = "Provide kb_id, project_id, or thread_id")
         scope = scopes[0] if len(scopes) == 1 else scopes
 
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         if payload.mode == "lexical":
             hits = retrieval.retrieve_lexical(conn, scope, payload.query, payload.top_k)
@@ -560,7 +627,7 @@ def preview_target(
 ) -> dict:
     """Resolve a citation to filename, page, and highlight regions."""
     _require_rag()
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         doc = store.get_document(conn, document_id)
         if doc is None:
@@ -596,7 +663,7 @@ def preview_target(
 def document_file_url(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
     """Mint a short-lived signed URL for the source file."""
     _require_rag()
-    conn = rag_db.get_connection()
+    conn = _rag_connection()
     try:
         doc = store.get_document(conn, document_id)
         if doc is None or not doc.get("stored_path"):
@@ -611,11 +678,13 @@ def document_file_url(document_id: str, subject: str = Depends(get_current_subje
 def document_file_signed(document_id: str, token: str = Query(...)) -> FileResponse:
     """Serve the source file gated by the HMAC token (no bearer) so pdf.js range
     requests work."""
-    _require_rag()
+    # Token first: this is the one endpoint with no bearer, and _require_rag() now opens
+    # a connection on its first call, which is not work an unverified token should buy.
     signed_id = _verify_document_token(token)
     if signed_id != document_id:
         raise HTTPException(status_code = 401, detail = "Invalid or expired token")
-    conn = rag_db.get_connection()
+    _require_rag()
+    conn = _rag_connection()
     try:
         doc = store.get_document(conn, document_id)
     finally:

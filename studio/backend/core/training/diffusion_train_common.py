@@ -25,12 +25,21 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core._torchao_stub import (
+    install_torchao_windows_rocm_stub,
+    install_xformers_windows_rocm_stub,
+    is_stubbed,
+)
 from core.inference.diffusion_families import (
     detect_family,
     detect_family_for_pick,
     supported_family_names,
     trainable_family_names,
 )
+
+# The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry over. Both import this module first.
+install_xformers_windows_rocm_stub()
+install_torchao_windows_rocm_stub()
 
 # Default LoRA target modules: the attention projections common to the SDXL U-Net and the DiTs (the diffusers/kohya convention). A family may override this.
 DEFAULT_LORA_TARGETS: tuple[str, ...] = ("to_k", "to_q", "to_v", "to_out.0")
@@ -397,12 +406,12 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
 def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
     """Reason the requested DiT precision cannot run on this host, else None -- checked by the
     start route BEFORE evicting resident GPU workloads (the trainer's own checks fire only in the
-    child, after eviction). Four gates, all mirroring _resolve_base_precision so a doomed run is
-    rejected before teardown: the bf16-GPU requirement (bf16_unsupported_reason); a host with no
-    accelerator at all (dit_accelerator_missing_reason, which covers nf4 too); the dense
-    precisions (bf16/int8/fp8/mxfp8) requiring a CUDA GPU; an explicit int8 needing a FUNCTIONAL
-    torchao (its _int8_quantize_base has no fallback); and an explicit mxfp8 needing a Blackwell
-    (sm100+) GPU (its MX GEMM has no kernel below sm100). Never raises."""
+    child, after eviction). Every gate mirrors one in _resolve_base_precision, so a doomed run is
+    rejected before teardown: the bf16-GPU requirement (bf16_unsupported_reason); no accelerator at
+    all (dit_accelerator_missing_reason, which covers nf4 too); the dense precisions
+    (bf16/int8/fp8/mxfp8) needing CUDA; explicit int8 needing a FUNCTIONAL torchao (its
+    _int8_quantize_base has no fallback); explicit fp8/mxfp8 against the Windows-ROCm torchao stub;
+    explicit mxfp8 needing Blackwell (sm100+). Add a gate there, add it here. Never raises."""
     reason = bf16_unsupported_reason(resolved_family)
     if reason:
         return reason
@@ -428,6 +437,12 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
             return (
                 "base_precision='int8' needs a functional torchao install; this host's torchao is "
                 "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
+            )
+        # Mirrors the child's fp8/mxfp8 stub guard so a doomed run is refused before eviction. Not has_functional_torchao(): that probes int8's symbols.
+        if mode in ("fp8", "mxfp8") and is_stubbed("torchao"):
+            return (
+                f"base_precision={mode!r} is not available on this host: torchao is the "
+                "non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
             )
         # mxfp8 needs Blackwell (sm100+): its MX GEMM raises at the first training step, AFTER a full dense load. Re-check here so a stale client fails fast before eviction.
         if mode == "mxfp8":

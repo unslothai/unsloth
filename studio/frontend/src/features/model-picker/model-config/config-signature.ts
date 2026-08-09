@@ -55,6 +55,8 @@ export function loadedConfigSignature(
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.nParallel ?? "",
+    config.nBatch ?? "",
+    config.nUbatch ?? "",
     config.tensorParallel ? "1" : "0",
     config.chatTemplateOverride == null
       ? ""

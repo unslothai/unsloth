@@ -98,3 +98,57 @@ test("a working Recents row clears the kebab on hover", async () => {
     assert.ok(pad >= kebabInset, `${pad}px focus padding, needs ${kebabInset}px`);
   }
 });
+
+// That same column now carries a second meaning: a row whose capability has not been measured
+// yet. On a Mac the platform store seeds chatOnly from the user agent, so Train and Video used
+// to paint disabled (opacity-50, inert) from first load and only recover once /api/health
+// answered -- indistinguishable from a measured "your machine cannot do this".
+test("a pending row spins instead of blacking out", async () => {
+  const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
+
+  const pending = resolveNavRowState({
+    disabled: true,
+    tooltip: "Training needs an NVIDIA or AMD GPU.",
+    pending: true,
+  });
+  assert.equal(pending.disabled, false, "the guessed gray-out still renders");
+  assert.equal(pending.spinner, true, "nothing tells the user the check is still running");
+  assert.equal(
+    pending.tooltip,
+    undefined,
+    "a reason for a verdict nobody has reached yet is shown on hover",
+  );
+});
+
+test("a measured row is left exactly as it was", async () => {
+  const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
+
+  const measured = resolveNavRowState({
+    disabled: true,
+    tooltip: "Training needs MLX. Run `unsloth studio update` to enable Train.",
+    spinner: false,
+  });
+  assert.equal(measured.disabled, true, "a real chat-only host was let into Train");
+  assert.equal(measured.tooltip, "Training needs MLX. Run `unsloth studio update` to enable Train.");
+  assert.equal(measured.spinner, false);
+
+  // The pre-existing use of the column (a run in progress) is untouched.
+  const working = resolveNavRowState({ spinner: true });
+  assert.equal(working.spinner, true);
+  assert.equal(working.disabled, undefined);
+});
+
+// Two render sites take these props: the inline rows and the More flyout. A row moved into
+// More by Settings -> Appearance must not go back to rendering the guess.
+test("both nav render sites resolve pending the same way", async () => {
+  const source = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  const resolves = source.match(/const rowState = resolveNavRowState\(row\);/g) ?? [];
+  assert.equal(resolves.length, 2, `expected both render sites to resolve, got ${resolves.length}`);
+  // And neither passes the raw fields past it.
+  for (const raw of ["disabled={row.disabled}", "tooltip={row.tooltip}", "spinner={row.spinner}"]) {
+    assert.ok(!source.includes(raw), `a render site still passes ${raw} unresolved`);
+  }
+});

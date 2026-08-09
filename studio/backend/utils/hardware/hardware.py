@@ -262,6 +262,36 @@ def _has_usable_mlx_stack() -> bool:
         return _has_mlx()
 
 
+def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
+    """True when this settled verdict is one the MLX self-heal is about to overturn.
+
+    Detection gets its answer before utils.mlx_repair gets its turn, so an Apple Silicon
+    host whose MLX stack is missing or unreadable settles chat-only first and flips only
+    once the background reinstall lands. Published as final, that greys Train and Video
+    behind a "run `unsloth studio update`" tooltip the repair makes wrong a minute later,
+    and the rows then enable themselves on the frontend's recovery poll -- the reported
+    "greyed out, then they come out". Callers report it as still-detecting instead.
+
+    The "mlx_unavailable" check is also what lets mlx_repair_in_flight() be cheap: that
+    reason means this pass has just measured the stack as unusable, so the self-heal only
+    has to report whether it has finished, not re-probe whether it is needed.
+
+    Takes the verdict as arguments rather than reading the globals, so a caller that
+    already holds a consistent snapshot does not re-read them mid-pass."""
+    if not chat_only or reason != "mlx_unavailable":
+        return False
+    if not is_apple_silicon():
+        return False
+    try:
+        from utils.mlx_repair import mlx_repair_in_flight
+        return mlx_repair_in_flight()
+    except Exception as exc:
+        # A self-heal we cannot even ask about is one that cannot be relied on, so let the
+        # verdict settle rather than hold Train and Video spinning for the whole session.
+        logger.debug("MLX repair progress check failed, treating the verdict as final: %s", exc)
+        return False
+
+
 def _print_cuda_device_list(is_rocm: bool) -> None:
     """List every visible CUDA/ROCm GPU with its index at startup.
 
@@ -598,6 +628,58 @@ def export_capability() -> dict:
         "export_supported": False,
         "export_unsupported_reason": reason,
         "export_unsupported_message": message,
+    }
+
+
+def video_capability() -> dict:
+    """Whether video generation can run here, with a torch-aware reason when it cannot.
+
+    Video runs through the diffusers pipelines in core/inference/video.py, which have no Apple
+    path: no MLX backend, and the families ship no MPS-tested route, so macOS is reported as
+    unsupported rather than left to fail at load. Supported iff ``get_device() in {CUDA, XPU}``.
+    Safe to call without torch.
+
+    Returns {video_supported, video_unsupported_reason, video_unsupported_message}.
+    """
+    if get_device() in (DeviceType.CUDA, DeviceType.XPU):
+        return {
+            "video_supported": True,
+            "video_unsupported_reason": None,
+            "video_unsupported_message": None,
+        }
+    # Detection failure first, as in export_capability: the branches below all describe a
+    # measured host, so a broken probe would tell a GPU box to go buy a GPU.
+    if CHAT_ONLY_REASON == "detection_failed":
+        reason = "detection_failed"
+        message = (
+            "Hardware detection failed on this host, so video generation is disabled. The server "
+            "log records the underlying error; restart Unsloth Studio to retry detection."
+        )
+    elif platform.system() == "Darwin" or get_device() == DeviceType.MLX:
+        # Every Mac, not just Apple Silicon. An Intel Mac detects as plain CPU, so an
+        # is_apple_silicon() test drops it into the branches below and tells the user to
+        # install PyTorch or add a GPU. Neither enables video here: the pipelines have no
+        # supported macOS path at all, so the honest answer is the same on both Macs.
+        # The MLX arm covers an Apple host whose platform probe somehow disagrees.
+        reason = "macos_unsupported"
+        message = "Video generation on macOS is coming soon."
+    elif not _has_torch():
+        reason = "pytorch_not_installed"
+        message = (
+            "PyTorch is not installed. Video generation requires PyTorch with an NVIDIA, AMD or "
+            "Intel GPU. Install PyTorch to enable video generation."
+        )
+    else:
+        reason = "no_accelerator"
+        message = (
+            "Video generation requires an NVIDIA, AMD or Intel GPU. No supported accelerator was "
+            "found on this host. (PyTorch is installed, but the video pipelines cannot run on CPU "
+            "only.)"
+        )
+    return {
+        "video_supported": False,
+        "video_unsupported_reason": reason,
+        "video_unsupported_message": message,
     }
 
 
@@ -2216,6 +2298,11 @@ def _get_hf_safetensors_total_params(
     model_name: str, hf_token: Optional[str] = None
 ) -> Optional[int]:
     try:
+        from utils.utils import hf_env_offline
+
+        if hf_env_offline():
+            return None
+
         from huggingface_hub import model_info as hf_model_info
 
         info = hf_model_info(model_name, token = hf_token)

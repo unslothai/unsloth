@@ -1884,6 +1884,54 @@ class TestVenvDirFileIntegrity:
         )
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
+    def test_shared_non_runtime_rows_are_ignored(self, tmp_path: Path):
+        """A top-level test/ tree is shared, so one wheel's uninstall deletes
+        another's files. Nothing imports it: the stdlib shadows `test`, and
+        `tests`/`scripts` ship no __init__.py."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = ["test/conftest.py,sha256=deadbeef,20650"],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_shared_non_runtime_rows_are_ignored_for_our_own_wheels_too(self, tmp_path: Path):
+        """Unreliable ownership is a property of the path, not of the claimant.
+        unsloth_zoo <= 2026.8.5 shipped a top-level tests/ into the same squatted
+        namespace, so exempting only third parties left it reported forever."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            pkg = "unsloth_zoo",
+            record_extra = ["tests/conftest.py,sha256=deadbeef,11429"],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("unsloth_zoo==5.3.0",))
+
+    def test_our_own_runtime_tree_is_still_checked(self, tmp_path: Path):
+        """Only the shared roots are exempt. A tests/ tree inside our package is
+        ours alone, so damage there still forces the wipe-and-reinstall."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            pkg = "unsloth_zoo",
+            files = {"unsloth_zoo/__init__.py": "x" * 40, "unsloth_zoo/tests/h.py": "y" * 10},
+        )
+        (venv_dir / "unsloth_zoo" / "tests" / "h.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("unsloth_zoo==5.3.0",))
+
+    def test_an_installer_rewritten_file_keeps_its_existence_check(self, tmp_path: Path):
+        """setup.ps1 runs npm install in the installed tree, so the lockfile's
+        recorded size drifts. npm never deletes it, so only the size is dropped."""
+        rel = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = [f"{rel},sha256=deadbeef,28473"],
+        )
+        lock = venv_dir / rel
+        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock.write_text("x" * 27225)  # shrunk by npm, not damage
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+        lock.unlink()  # gone entirely, which npm never does
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
     def test_in_target_script_rows_are_ignored(self, tmp_path: Path):
         """uv records bin/hf, which does resolve -- but pip --upgrade rmtree's a
         colliding directory in the target, so a later install into the same

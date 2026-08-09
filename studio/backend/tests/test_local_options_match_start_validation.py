@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What the picker offers has to be what /training/start accepts.
-
-``local_options.py`` starts the cached-dataset subset and split options the picker shows,
-and ``TrainingStartRequest`` decides what a start request may carry. They were written with
-different grammars, which fails in both directions:
-
-- ``_SPLIT_RE`` was ``\\w+(?:\\.\\w+)*``, so it dropped the hyphen. A real split name like
-  ``train-clean`` (LibriSpeech) never reached the picker, and an offline user had to type it
-  by hand into a field that would have accepted it.
-- ``\\w`` is Unicode-aware in Python, so ``tréin`` was offered and then rejected by the
-  ASCII-only split validator. ``_CONFIG_RE`` excluded only filesystem-hostile characters, so
-  a config name with a space was offered and then rejected by the subset validator.
-
-Both directions are silent: one hides a usable option, the other turns a click into a 422.
-"""
-
-import re
+"""Cached dataset options must remain valid training request selections."""
 
 import pytest
 
@@ -51,14 +35,34 @@ def _offered_split(value: str):
 
 
 # (value, offered_by, accepted_by)
-_SPLITS = ["train", "validation", "test", "train-clean", "train.clean", "train[:10%]"]
-_CONFIGS = ["default", "cfg-1", "en.simple", "wikitext-103-raw-v1", "v1..v2"]
-_REJECTED = ["tréin", "my config", "träin", "tr..in"]
+_SPLITS = ["train", "validation", "test", "train.clean", "tréin"]
+_CONFIGS = [
+    "default",
+    "cfg-1",
+    "en.simple",
+    "config with spaces",
+    "cönfig",
+    "v1..v2",
+]
+_REJECTED = ["train-clean", "train name", "tr..in"]
+_SPLIT_INSTRUCTIONS = [
+    "train[:10%]",
+    "train[1_000:2_000]",
+    "test[:-5%](pct1_dropremainder) + train[40%:60%](pct1_dropremainder)",
+]
+_INVALID_SPLIT_INSTRUCTIONS = [
+    "train-clean",
+    "train[10%",
+    "train[101%:]",
+    "train[101:20%]",
+    "train[-101:20%]",
+    "train[10:20](closest)",
+    "test[:-5%] + train[40%:60%](pct1_dropremainder)",
+]
 
 
 @pytest.mark.parametrize("value", _SPLITS)
 def test_a_split_the_backend_accepts_is_offered(value):
-    """The hiding direction: a start request would take it, so the picker must show it."""
     assert _split_accepted(value), f"fixture wrong: {value!r} is not accepted by the backend"
     assert _offered_split(value) == value, (
         f"{value!r} is a valid split for /training/start but the picker filters it out, "
@@ -72,9 +76,18 @@ def test_a_subset_the_backend_accepts_is_offered(value):
     assert _valid_option(value, _CONFIG_RE) == value
 
 
+@pytest.mark.parametrize("value", _SPLIT_INSTRUCTIONS)
+def test_backend_accepts_supported_split_instructions(value):
+    assert _split_accepted(value)
+
+
+@pytest.mark.parametrize("value", _INVALID_SPLIT_INSTRUCTIONS)
+def test_backend_rejects_invalid_split_instructions(value):
+    assert not _split_accepted(value)
+
+
 @pytest.mark.parametrize("value", _REJECTED)
 def test_nothing_the_backend_rejects_is_offered(value):
-    """The 422 direction: offering it turns a click into a rejected start."""
     offered_split = _offered_split(value)
     assert offered_split is None or _split_accepted(offered_split), (
         f"{value!r} is offered as split {offered_split!r} but /training/start rejects it, so "
@@ -87,8 +100,7 @@ def test_nothing_the_backend_rejects_is_offered(value):
 
 
 def test_the_two_grammars_agree_over_a_generated_alphabet():
-    """Neither side may drift: every string built from the union charset agrees."""
-    alphabet = "abZ09_-.[]:%+ é/\\"
+    alphabet = "abZ09_-.[]:%+ é/\\\u200b\ud800"
     mismatches = []
     for a in alphabet:
         for b in ("", "x", ".x"):

@@ -24,3 +24,51 @@ test("the backend sidebar nav defaults match the frontend", async () => {
   // Order matters too: the backend appends its missing ids in this order.
   assert.deepEqual(backend, DEFAULT_CUSTOMIZATION.sidebarNav);
 });
+
+// The two capability-gated rows. They are the ones that can render disabled without the user
+// having done anything, so they are also the ones a rename would silently un-gate: navRows is
+// keyed by SidebarNavItemId, so a dropped `pending` there just stops spinning, it does not
+// fail to compile.
+test("Train and Video are still the capability-gated rows", async () => {
+  const source = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  const rows = /const navRows: Record<SidebarNavItemId, NavRowDef> = \{([\s\S]*?)\n  \};/.exec(
+    source,
+  );
+  assert.ok(rows, "could not find navRows in app-sidebar.tsx");
+  // Split on the top-level row keys so each row's body can be checked on its own.
+  const bodies = new Map<string, string>();
+  const keys = [...rows[1].matchAll(/^    ([a-z]+): \{$/gm)];
+  keys.forEach((key, i) => {
+    const start = key.index + key[0].length;
+    const end = i + 1 < keys.length ? keys[i + 1].index : rows[1].length;
+    bodies.set(key[1], rows[1].slice(start, end));
+  });
+  // Every id the backend knows about has a row, or the personalization round-trip renders a gap.
+  const backend = await readFile(
+    new URL("../../backend/routes/settings.py", import.meta.url),
+    "utf8",
+  );
+  const block = /SIDEBAR_NAV_ITEM_DEFAULTS = \{([\s\S]*?)^\}/m.exec(backend);
+  assert.ok(block, "could not find SIDEBAR_NAV_ITEM_DEFAULTS in settings.py");
+  for (const [, id] of block[1].matchAll(/"([a-z]+)":/g)) {
+    assert.ok(bodies.has(id), `the backend ships a "${id}" row the sidebar does not define`);
+  }
+
+  for (const id of ["train", "video"]) {
+    const body = bodies.get(id);
+    assert.ok(body, `no ${id} row`);
+    assert.match(
+      body,
+      /pending: capabilitiesUnknown,/,
+      `the ${id} row renders its disabled state before the verdict is measured`,
+    );
+    assert.match(
+      body,
+      /disabled: chatOnlyMeasured,/,
+      `the ${id} row disables on the browser-platform guess`,
+    );
+  }
+});

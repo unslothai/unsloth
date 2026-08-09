@@ -35,6 +35,46 @@ export function formatFastApiDetail(detail: unknown): string | null {
   return parts.length > 0 ? parts.join("; ") : null;
 }
 
+// Cap recursion for malformed responses.
+const MAX_ERROR_BODY_DEPTH = 4;
+
+function formatErrorBody(body: unknown, depth: number): string | null {
+  if (!body || typeof body !== "object") return null;
+
+  const payload = body as {
+    detail?: unknown;
+    message?: unknown;
+    error?: unknown;
+  };
+  const formatted = formatFastApiDetail(payload.detail);
+  if (formatted) return formatted;
+  // The same route may return a flat envelope or nest it inside `detail`.
+  if (
+    depth < MAX_ERROR_BODY_DEPTH &&
+    payload.detail &&
+    typeof payload.detail === "object" &&
+    !Array.isArray(payload.detail)
+  ) {
+    const nested = formatErrorBody(payload.detail, depth + 1);
+    if (nested) return nested;
+  }
+  if (typeof payload.message === "string" && payload.message) {
+    return payload.message;
+  }
+  if (payload.error && typeof payload.error === "object") {
+    const message = (payload.error as { message?: unknown }).message;
+    if (typeof message === "string" && message) {
+      return message;
+    }
+  }
+  return null;
+}
+
+/** Render FastAPI and OpenAI-compatible error bodies into a message. */
+export function formatApiErrorBody(body: unknown): string | null {
+  return formatErrorBody(body, 0);
+}
+
 /**
  * Convert a (likely non-ok) Response into the best human-readable error
  * message. Used by *-api.ts wrappers so toasts read `field: msg` instead
@@ -45,15 +85,8 @@ export async function readFastApiError(
   fallbackPrefix: string = "Request failed",
 ): Promise<string> {
   try {
-    const payload = (await response.json()) as {
-      detail?: unknown;
-      message?: string;
-    };
-    const formatted = formatFastApiDetail(payload.detail);
+    const formatted = formatApiErrorBody(await response.json());
     if (formatted) return formatted;
-    if (typeof payload.message === "string" && payload.message) {
-      return payload.message;
-    }
   } catch {
     // fall through
   }

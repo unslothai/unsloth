@@ -23,6 +23,7 @@ const validConfig = {
   datasetSource: "huggingface" as const,
   dataset: "org/dataset",
   datasetSplit: "train",
+  manualDatasetOptionsValid: true,
   uploadedFile: null,
   s3Config: null,
   modelType: "text" as const,
@@ -94,6 +95,41 @@ test("training validation requires an explicit split for local cached datasets",
       datasetKnownCached: true,
       datasetStreaming: true,
       datasetSplit: null,
+    }),
+    { ok: true, errorKey: null },
+  );
+});
+
+test("training validation blocks an invalid uncommitted manual dataset option", () => {
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      manualDatasetOptionsValid: false,
+    }),
+    {
+      ok: false,
+      errorKey: "studio.dataset.selectors.manualInvalid",
+    },
+  );
+});
+
+test("training validation rejects committed split instructions in streaming mode", () => {
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      datasetStreaming: true,
+      datasetSplit: "train + validation",
+    }),
+    {
+      ok: false,
+      errorKey: "studio.dataset.selectors.manualInvalid",
+    },
+  );
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      datasetStreaming: true,
+      datasetSplit: "train",
     }),
     { ok: true, errorKey: null },
   );

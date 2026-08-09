@@ -22,6 +22,7 @@ export {
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
+  unloadModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -60,6 +61,8 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
+
+  preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
   useToolOutputFor,
@@ -122,6 +125,8 @@ export {
   useChatModelRuntime,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
+export { chatModelLoaded } from "./lib/chat-model-loaded";
+export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
   customProviderDisplayName,
   isCustomProviderType,
@@ -164,6 +169,10 @@ export {
   readComposerDraft,
   writeComposerDraft,
 } from "./utils/composer-draft";
+export {
+  CONVERSATION_MARKDOWN_FORMAT,
+  CONVERSATION_MARKDOWN_LABEL,
+} from "./utils/conversation-markdown";
 export {
   EXPORT_FORMATS_LIST,
   buildFineTuneJsonl,

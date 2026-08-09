@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
@@ -10,7 +11,7 @@ import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import type {
   MessageRecord,
   ModelType,
@@ -84,14 +85,7 @@ function notifyChatProjectsUpdated(): void {
 }
 
 function parseErrorText(status: number, body: unknown): string {
-  if (body && typeof body === "object") {
-    const detail = (body as { detail?: unknown }).detail;
-    const formatted = formatFastApiDetail(detail);
-    if (formatted) return formatted;
-    const message = (body as { message?: unknown }).message;
-    if (typeof message === "string" && message) return message;
-  }
-  return `Request failed (${status})`;
+  return formatApiErrorBody(body) ?? `Request failed (${status})`;
 }
 
 /**
@@ -146,8 +140,10 @@ export async function listLoras(
   return parseJsonOrThrow<ListLorasResponse>(response);
 }
 
-export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
-  const response = await authFetch("/api/inference/status");
+export async function getInferenceStatus(
+  signal?: AbortSignal,
+): Promise<InferenceStatusResponse> {
+  const response = await authFetch("/api/inference/status", { signal });
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
@@ -199,17 +195,22 @@ export async function loadModel(
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
     });
-  const response = await authFetch("/api/inference/load", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...payload,
-      hf_token: preparedToken.token,
-      native_path_lease: payload.nativePathLease ?? null,
-      nativePathLease: undefined,
-    }),
+  // Announced after the token prompt, so a cancelled load never shows a row.
+  // The indicator otherwise had nothing to show until its next 5s poll, while
+  // the toast reported the load immediately.
+  return withModelLoadNotice("chat", payload.model_path ?? null, async () => {
+    const response = await authFetch("/api/inference/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        hf_token: preparedToken.token,
+        native_path_lease: payload.nativePathLease ?? null,
+        nativePathLease: undefined,
+      }),
+    });
+    return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
   });
-  return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
 }
 
 export async function countChatInputTokens(payload: {
@@ -262,6 +263,9 @@ export async function validateModel(
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
+      // batch sizes scale the same estimate; omitted when blank so they never read as set
+      ...(payload.n_batch != null ? { n_batch: payload.n_batch } : {}),
+      ...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {}),
       // The estimate charges a drafter whose size differs by kind (a DSpark
       // sidecar is ~11 GB), so omitting the mode makes this preflight disagree
       // with /load in both directions.
@@ -504,6 +508,9 @@ export interface CachedModelRepo {
   repo_id: string;
   load_id?: string | null;
   size_bytes: number;
+  /** Weights format; "adapter" is a LoRA with no base weights of its own.
+   * Optional for older-backend compatibility. */
+  model_format?: string | null;
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
@@ -725,16 +732,31 @@ export async function saveChatThread(
   return savedThread;
 }
 
+export interface UpdateChatThreadOptions {
+  /** Apply only while the row still holds this title, else 409. */
+  expectedTitle?: string;
+  /** And only while this is still the thread's opening user message. */
+  expectedOpeningMessageId?: string;
+}
+
 export async function updateChatThread(
   threadId: string,
   patch: Partial<ThreadRecord>,
+  options: UpdateChatThreadOptions = {},
 ): Promise<ThreadRecord> {
+  const body: Record<string, unknown> = { ...patch };
+  if (options.expectedTitle !== undefined) {
+    body.expectedTitle = options.expectedTitle;
+  }
+  if (options.expectedOpeningMessageId !== undefined) {
+    body.expectedOpeningMessageId = options.expectedOpeningMessageId;
+  }
   const response = await authFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
+      body: JSON.stringify(body),
     },
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);

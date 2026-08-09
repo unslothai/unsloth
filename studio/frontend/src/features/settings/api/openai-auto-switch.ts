@@ -33,6 +33,10 @@ type ApiOpenAIAutoSwitchSettings = {
 
 let cachedSettings: OpenAIAutoSwitchSettings | null = null;
 let inFlightSettings: Promise<OpenAIAutoSwitchSettings> | null = null;
+// The generation inFlightSettings was issued at. A caller arriving after an
+// invalidation must not adopt a request issued before it: that reply describes
+// the pre-write world, and the hub poll puts it straight into idleUnloadArmed.
+let inFlightGeneration = -1;
 
 function fromApi(
   settings: ApiOpenAIAutoSwitchSettings,
@@ -57,21 +61,63 @@ async function fetchOpenAIAutoSwitchSettings(): Promise<OpenAIAutoSwitchSettings
   return fromApi(await res.json());
 }
 
-function cacheSettings(settings: OpenAIAutoSwitchSettings) {
-  cachedSettings = settings;
+// Bumped on every invalidation. A response that was already in flight when the
+// cache was cleared must not refill it, or the pre-toggle value would be served
+// indefinitely.
+let cacheGeneration = 0;
+
+function cacheSettings(settings: OpenAIAutoSwitchSettings, generation: number) {
+  if (generation === cacheGeneration) {
+    cachedSettings = settings;
+  }
   return settings;
 }
 
-export async function loadOpenAIAutoSwitchSettings() {
-  if (cachedSettings) {
-    return cachedSettings;
-  }
-  inFlightSettings ??= fetchOpenAIAutoSwitchSettings()
-    .then(cacheSettings)
-    .finally(() => {
+/**
+ * Drop the cached response. `idleUnloadActive` depends on the Model Memory
+ * residency setting, which is saved through a different endpoint, so that
+ * endpoint invalidates this cache rather than letting it go stale.
+ */
+export function invalidateOpenAIAutoSwitchSettings() {
+  cachedSettings = null;
+  cacheGeneration += 1;
+}
+
+// An invalidation racing a read is rare, so a couple of retries always
+// converges. The bound only exists so a write storm cannot spin here.
+const MAX_REREADS = 3;
+
+function startRead(generation: number) {
+  // cacheGeneration only increases, so a later read always claims the slot under
+  // a different generation and this clear cannot drop its request.
+  const read = fetchOpenAIAutoSwitchSettings().finally(() => {
+    if (inFlightGeneration === generation) {
       inFlightSettings = null;
-    });
-  return inFlightSettings;
+    }
+  });
+  inFlightSettings = read;
+  inFlightGeneration = generation;
+  return read;
+}
+
+export async function loadOpenAIAutoSwitchSettings() {
+  let settings: OpenAIAutoSwitchSettings | null = null;
+  for (let attempt = 0; attempt < MAX_REREADS; attempt += 1) {
+    if (cachedSettings) {
+      return cachedSettings;
+    }
+    const generation = cacheGeneration;
+    settings = await (inFlightSettings && inFlightGeneration === generation
+      ? inFlightSettings
+      : startRead(generation));
+    if (generation === cacheGeneration) {
+      return cacheSettings(settings, generation);
+    }
+    // The request was already in flight when the cache was dropped, so this
+    // response predates the write. Callers put it straight into idleUnloadArmed,
+    // so refetch against the new generation rather than returning it.
+  }
+  return settings as OpenAIAutoSwitchSettings;
 }
 
 export async function updateOpenAIAutoSwitchSettings(
@@ -80,6 +126,10 @@ export async function updateOpenAIAutoSwitchSettings(
   autoUnloadKeepKv?: boolean,
   autoDownloadModel?: boolean,
 ): Promise<OpenAIAutoSwitchSettings> {
+  // Read BEFORE the request: idleUnloadActive depends on the Model Memory
+  // setting, so a residency write landing mid-flight makes this response stale
+  // even though it is our own write's reply.
+  const generation = cacheGeneration;
   const res = await authFetch("/api/settings/openai-auto-switch", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -108,5 +158,12 @@ export async function updateOpenAIAutoSwitchSettings(
       ),
     );
   }
-  return cacheSettings(fromApi(await res.json()));
+  const settings = fromApi(await res.json());
+  if (generation !== cacheGeneration) {
+    // A Model Memory write committed while this PUT was in flight, so this
+    // reply predates it. Caching it would pin a stale idleUnloadActive, which
+    // the Hub reads to decide whether an eviction was a real unload.
+    return loadOpenAIAutoSwitchSettings();
+  }
+  return cacheSettings(settings, generation);
 }

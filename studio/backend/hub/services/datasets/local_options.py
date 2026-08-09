@@ -22,6 +22,10 @@ from hub.utils.dataset_cache import (
     resolved_dataset_snapshot_file,
 )
 from hub.utils.paths import is_valid_repo_id
+from utils.hf_dataset_options import (
+    HF_DATASET_SPLIT_NAME_PATTERN,
+    has_unsafe_hf_dataset_option_characters,
+)
 
 
 _MAX_METADATA_BYTES = 2 * 1024 * 1024
@@ -29,11 +33,8 @@ _MAX_PROCESSED_METADATA_FILES = 256
 _MAX_PROCESSED_WALK_DEPTH = 4
 _MAX_OPTIONS = 2048
 _MAX_OPTION_LENGTH = 128
-# The picker starts these, so they have to be the grammar TrainingStartRequest accepts:
-# anything looser is offered and then 422s, anything tighter hides a usable option.
-# _check_subset and _check_split_name in models/training.py are the authority.
-_CONFIG_RE = re.compile(r"[A-Za-z0-9._\-]+")
-_SPLIT_RE = re.compile(r"[A-Za-z0-9_\-\[\]:%.+ ]+")
+_CONFIG_RE = re.compile(r"[^<>:/\\|?*\x00-\x1f\x7f]+")
+_SPLIT_RE = HF_DATASET_SPLIT_NAME_PATTERN
 
 
 def _valid_option(
@@ -47,12 +48,10 @@ def _valid_option(
     normalized = value.strip()
     if not normalized or len(normalized) > _MAX_OPTION_LENGTH:
         return None
-    if "\x00" in normalized or "/" in normalized or "\\" in normalized:
+    if has_unsafe_hf_dataset_option_characters(normalized):
         return None
-    # _check_split_name rejects ".." anywhere, _check_subset does not, so a config named
-    # v1..v2 is startable and hiding it would be the same bug in the other direction.
-    # Neither charset admits a separator, so the bare "." and ".." names are the only
-    # traversal shapes left to refuse.
+    if "/" in normalized or "\\" in normalized:
+        return None
     if normalized in {".", ".."} or (reject_dotdot and ".." in normalized):
         return None
     if pattern.fullmatch(normalized) is None:

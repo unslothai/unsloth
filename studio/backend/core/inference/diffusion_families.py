@@ -761,15 +761,22 @@ def assert_pipeline_class_available(pipeline_class: str, family_name: str) -> No
     500 with the message lost."""
     try:
         import diffusers
-    except ImportError:
+        present = hasattr(diffusers, pipeline_class)
+    except Exception:  # noqa: BLE001 -- see below: this check must never raise anything but its own ValueError
         # Not this check's business: it answers "is the installed diffusers new enough for this family", and with
-        # nothing installed there is no version to judge. Refusing would also break the native sd.cpp engine, which
+        # nothing importable there is no version to judge. Refusing would also break the native sd.cpp engine, which
         # serves GGUF picks on a CPU or Apple host without diffusers. A pick that really needs it fails later, in
         # the loader. The one thing that must not happen is a raise: ModuleNotFoundError is not the ValueError the
         # routes map to 400, so it escapes /images/download-plan as a bare 500 with the message lost.
+        #
+        # The attribute probe is inside the try for the same reason. diffusers' top level is a lazy module, so
+        # ``hasattr`` is what actually imports the pipeline's submodule, and when that submodule's own dependencies
+        # are unsatisfiable it raises RuntimeError ("Failed to import diffusers.pipelines...") -- which hasattr does
+        # NOT swallow, since it only absorbs AttributeError. A partially usable diffusers install therefore escaped
+        # this guard exactly the way a missing one used to.
         return
 
-    if hasattr(diffusers, pipeline_class):
+    if present:
         return
     raise ValueError(
         f"'{family_name}' needs diffusers >= 0.39.0 ({pipeline_class}); this environment has "

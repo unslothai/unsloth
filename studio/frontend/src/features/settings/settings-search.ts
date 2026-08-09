@@ -76,6 +76,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.liveMonitor.vram",
     "settings.resources.liveMonitor.disk",
     "settings.resources.gpu.title",
+    "settings.resources.modelMemory.title",
+    "settings.resources.modelMemory.keepResident",
+    "settings.resources.modelMemory.noRamReserve",
     "settings.resources.storage.title",
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.futureDownloads",
@@ -165,7 +168,12 @@ export function createSettingsSearchIndex(
   }
   return {
     ...SETTINGS_SEARCH_INDEX,
-    general: [...SETTINGS_SEARCH_INDEX.general, "settings.about.updates"],
+    general: [
+      ...SETTINGS_SEARCH_INDEX.general,
+      "settings.about.updates",
+      "settings.general.startup.sectionTitle",
+      "settings.general.startup.launchAtLogin",
+    ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
     ),
@@ -182,4 +190,12 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  // mlock, vram, ulimit and pin are in none of these labels, so search
+  // missed the rows the feature is named after.
+  "settings.resources.modelMemory.title":
+    "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.resources.modelMemory.keepResident":
+    "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.resources.modelMemory.noRamReserve":
+    "settings.resources.modelMemory.modelMemoryKeywords",
 };

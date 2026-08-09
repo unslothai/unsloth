@@ -17,6 +17,8 @@ from core.inference.chat_template_helpers import (
     markup_for_tokenizer,
     neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
+    strip_open_reasoning_prefill,
+    trailing_assistant_text,
 )
 from utils.models.model_config import is_audio_input_type
 from loggers import get_logger
@@ -106,8 +108,15 @@ def _render_registered_vlm_prompt(
     messages,
     num_images,
     num_audios = 0,
+    continue_final_message = False,
 ):
-    """Render through mlx-vlm when it declares a formatter for this model."""
+    """Render through mlx-vlm when it declares a formatter for this model.
+
+    With *continue_final_message* the trailing assistant turn is dropped from the render
+    and appended as text, resuming the partial rather than opening a fresh turn. That text
+    comes from the SWEPT messages: a raw partial could close the turn or open another
+    role instead of resuming (#7066).
+    """
     from mlx_vlm import prompt_utils
 
     config, model_type = _mlx_vlm_model_config(model)
@@ -116,17 +125,20 @@ def _render_registered_vlm_prompt(
     if model_type not in getattr(prompt_utils, "MODEL_CONFIG", {}):
         return None
 
-    # Recovery path: renders the caller's original list, not the neutralized copy (#7066).
+    # Recovery path: sweeps the caller's original list rather than reusing a copy (#7066).
+    swept = neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor))
+    partial = trailing_assistant_text(swept) if continue_final_message else None
     rendered = prompt_utils.apply_chat_template(
         processor,
         config,
-        neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor)),
+        swept[:-1] if partial else swept,
         add_generation_prompt = True,
         num_images = num_images,
         num_audios = num_audios,
     )
     if isinstance(rendered, str) and rendered.strip():
-        return rendered
+        # A prefilled open "<think>" would resume the answer inside the reasoning block.
+        return f"{strip_open_reasoning_prefill(rendered)}{partial}" if partial else rendered
     raise RuntimeError("mlx-vlm's registered renderer returned an empty prompt.")
 
 
@@ -1387,6 +1399,7 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        continue_final_message = False,
         presence_penalty = 0.0,
         _adapter_state = None,
     ) -> Generator[str, None, None]:
@@ -1432,6 +1445,7 @@ class MLXInferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
                 _adapter_state = _adapter_state,
             )
@@ -1449,6 +1463,7 @@ class MLXInferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
                 _adapter_state = _adapter_state,
             )
@@ -1469,6 +1484,7 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        continue_final_message = False,
         presence_penalty = 0.0,
         _adapter_state = None,
     ):
@@ -1488,6 +1504,7 @@ class MLXInferenceBackend:
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
         )
         if prompt is None:
             raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
@@ -1508,6 +1525,7 @@ class MLXInferenceBackend:
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
             hf_token = model_info.get("hf_token"),
             return_metadata = True,
         )
@@ -1650,6 +1668,7 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        continue_final_message = False,
         presence_penalty = 0.0,
         _adapter_state = None,
     ):
@@ -1690,6 +1709,7 @@ class MLXInferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
             )
         except Exception as exc:
             if images is None or has_tool_history:
@@ -1721,6 +1741,7 @@ class MLXInferenceBackend:
                     self._model,
                     messages,
                     len(images),
+                    continue_final_message = continue_final_message,
                 )
             except Exception as recovery_error:
                 if prompt_error is not None:

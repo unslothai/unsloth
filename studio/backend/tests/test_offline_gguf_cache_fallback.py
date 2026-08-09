@@ -769,6 +769,21 @@ class TestListGgufVariantsOffline:
         assert len(variants) == 1
         assert variants[0].quant == "UD-Q4_K_XL"
 
+    @pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+    def test_offline_cache_miss_does_not_call_api(
+        self, hf_cache, clean_offline_env, monkeypatch, offline_variable
+    ):
+        monkeypatch.setenv(offline_variable, "yes")
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("API must not be called on an offline cache miss")
+
+        with patch("huggingface_hub.model_info", boom):
+            variants, has_vision = list_gguf_variants("unsloth/not-cached")
+
+        assert variants == []
+        assert has_vision is False
+
     def test_api_exception_falls_back_to_cache(self, hf_cache, clean_offline_env):
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
 
@@ -858,6 +873,18 @@ class TestDetectGgufModelRemoteOffline:
 
         with patch("huggingface_hub.model_info", boom):
             assert detect_gguf_model_remote("unsloth/a") == "a-Q4_K_M.gguf"
+
+    @pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+    def test_offline_cache_miss_does_not_call_api(
+        self, hf_cache, clean_offline_env, monkeypatch, offline_variable
+    ):
+        monkeypatch.setenv(offline_variable, "on")
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("API must not be called on an offline cache miss")
+
+        with patch("huggingface_hub.model_info", boom):
+            assert detect_gguf_model_remote("unsloth/not-cached") is None
 
     def test_api_3x_failure_then_cache(self, hf_cache, clean_offline_env):
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})

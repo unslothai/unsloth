@@ -45,6 +45,7 @@ import time
 from pathlib import Path
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.native_tls import inline_gate_source, vendor_dir
 from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
@@ -1405,9 +1406,18 @@ _PROBE_TIER_ORDER = ("530", "550", "510")
 _PROBE_TIMEOUT_SECS = 60
 
 # config.json-only parse in a sidecar: built-in parser, no repo code, no weights, exit 0 = parses.
-_PROBE_CONFIG_SCRIPT = r"""
+_PROBE_CONFIG_SCRIPT = (
+    r"""
 import sys, os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# This -c child cannot import backend modules, and AutoConfig.from_pretrained
+# below may download from the Hub, so it carries the gate as generated source.
+# repr() the path: a Windows backslash or a space must survive into the source.
+_TRUSTSTORE_VENDOR = """
+    + repr(vendor_dir())
+    + "\n"
+    + inline_gate_source()
+    + r"""
 target_dir, model_name = sys.argv[1], sys.argv[2]
 if target_dir:  # empty = probe the ambient (default 4.57.x) transformers, no sidecar prepend
     sys.path.insert(0, target_dir)
@@ -1421,6 +1431,7 @@ except Exception as exc:
     sys.stderr.buffer.write((type(exc).__name__ + ": " + str(exc)).encode("utf-8", "replace"))
     sys.exit(1)
 """
+)
 
 # stderr fragments meaning "couldn't fetch/auth", NOT "needs a newer parser".
 _PROBE_TRANSIENT_MARKERS = (
@@ -1982,6 +1993,26 @@ def _sidecar_scan(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
     return _sidecar_scan_impl(venv_dir, limit)
 
 
+# Mirrored from unsloth_cli/_studio_deps.py, not imported, for the reason given in
+# _sidecar_scan_impl below: the backend never imports the CLI package. Keep in sync.
+_SHARED_NON_RUNTIME_ROOTS = frozenset(
+    (
+        "test",
+        "tests",
+        "doc",
+        "docs",
+        "example",
+        "examples",
+        "benchmark",
+        "benchmarks",
+        "sample",
+        "samples",
+        "scripts",
+    )
+)
+_INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
+
+
 def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
     """RECORD entries under *venv_dir* that are gone, or shorter than pip recorded.
 
@@ -2075,17 +2106,25 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
                 or (parts and parts[0] in ("bin", "Scripts"))
             ):
                 continue
+            target = root / rel
+            key = os.path.normcase(str(target))
+            # Before the filter: a dropped row still owns the path it claims.
+            owners[key] = owners.get(key, 0) + 1
+            # Top-level dirs several wheels write into, so one uninstall deletes
+            # another's files. Unreliable ownership is a property of the path, so
+            # this covers what we ship too; see _shared_non_runtime in _studio_deps.
+            if len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS:
+                continue
             # The size field is optional and real wheels do leave it blank. Keep the row with an
             # unknown size: existence is still checkable, and dropping it hides a deletion.
             recorded: int | None = None
-            if len(row) >= 3 and row[2]:
+            # An installer rewrites these in place, so the recorded size drifts;
+            # the file disappearing is still damage.
+            if len(row) >= 3 and row[2] and parts[-1] not in _INSTALLER_REWRITTEN_NAMES:
                 try:
                     recorded = int(row[2])
                 except ValueError:
                     recorded = None
-            target = root / rel
-            key = os.path.normcase(str(target))
-            owners[key] = owners.get(key, 0) + 1
             entries.append((name, rel, recorded, target, key))
 
     found: list[str] = []

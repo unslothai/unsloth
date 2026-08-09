@@ -43,18 +43,24 @@ on:
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
   # Manual trigger for pre-warming model caches on main, or re-running
   # against an arbitrary branch without pushing a no-op commit.
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -96,15 +102,15 @@ jobs:
       # previous phase's port would be a nasty way to find out.
       HF_HOME: ${{ github.workspace }}/hf-cache
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -160,7 +166,7 @@ jobs:
       # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for unsloth/gemma-3-270m-it-GGUF
         id: cache-hf
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         timeout-minutes: 15
         with:
@@ -195,7 +201,7 @@ jobs:
         # on main at all. That is the thrash loop: PR misses -> downloads ->
         # saves its own copy -> evicts main's -> next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome != 'skipped' && hashFiles('hf-cache/**/*.gguf') != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         timeout-minutes: 15
         with:
           path: hf-cache
@@ -214,16 +220,7 @@ jobs:
       - name: Wait for /api/health
         timeout-minutes: 5
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
-              jq -e '.status == "healthy"' /tmp/health.json
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Unsloth did not become healthy in 180s"
-          tail -200 logs/studio.log
-          exit 1
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Password rotation (old must fail, new must work)
         timeout-minutes: 3
@@ -429,7 +426,7 @@ jobs:
       - name: Restore GGUF model file
         id: cache-gguf-tools
         if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         timeout-minutes: 15
         with:
@@ -453,7 +450,7 @@ jobs:
       # Save partial caches on cancel; next run resumes via content hash.
       - name: Save GGUF model file
         if: always() && github.ref == 'refs/heads/main' && steps.download-gguf-tools.outcome != 'skipped' && hashFiles('gguf-cache-tools/**/*.gguf') != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         timeout-minutes: 15
         with:
           path: gguf-cache-tools
@@ -840,7 +837,7 @@ jobs:
       - name: Restore GGUF + mmproj files
         id: cache-gguf-vision
         if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         timeout-minutes: 20
         with:
@@ -888,7 +885,7 @@ jobs:
 
       - name: Save GGUF + mmproj files
         if: always() && github.ref == 'refs/heads/main' && steps.download-gguf-vision.outcome != 'skipped' && hashFiles('gguf-cache-vision/**/*.gguf') != '' && hashFiles(format('gguf-cache-vision/{0}', 'mmproj-F16.gguf')) != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         timeout-minutes: 20
         with:
           path: gguf-cache-vision

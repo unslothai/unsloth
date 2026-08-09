@@ -307,6 +307,9 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
     let mut cmd = Command::new(bin);
     cmd.args(args).stdout(Stdio::null()).stderr(Stdio::null());
 
+    #[cfg(target_os = "linux")]
+    crate::process::scrub_appimage_python_env_tokio(&mut cmd);
+
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // probe subprocesses must follow the same isolation as process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
@@ -318,7 +321,9 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let Ok(mut child) = cmd.spawn() else {
+    let Ok(mut child) = crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    }) else {
         info!(
             "Managed preflight probe {:?} failed to spawn in {}ms",
             args,
@@ -351,6 +356,9 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
+    #[cfg(target_os = "linux")]
+    crate::process::scrub_appimage_python_env_tokio(&mut cmd);
+
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // probe subprocesses must follow the same isolation as process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
@@ -362,16 +370,16 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let Ok(mut child) = cmd.spawn() else {
+    let Ok(mut child) = crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    }) else {
         info!(
             "Managed desktop-capabilities probe failed to spawn in {}ms",
             started.elapsed().as_millis()
         );
         return None;
     };
-    let Some(mut stdout) = child.stdout.take() else {
-        return None;
-    };
+    let mut stdout = child.stdout.take()?;
 
     match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
         Ok(Ok(status)) if status.success() => {}

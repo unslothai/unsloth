@@ -31,8 +31,9 @@ def _source_path(relative_path: str) -> Path:
 
 ADAPTER = _source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
 TEMP = WORKDIR / "temp" / "chat_autoload_failure_gate"
-DEFAULT_MODEL = "unsloth/Qwen3.5-4B-MTP-GGUF"
+DEFAULT_MODEL = "unsloth/gemma-4-E2B-it-GGUF"
 GEMMA_REPO = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
+LOCAL_GGUF_PATH = "/home/john-doe/models/qwen3-1.7b-instruct-q4_k_m.gguf"
 
 # Stubs for everything autoLoadSmallestModel imports; each scenario supplies the cache inventory
 # and how /validate and /load answer per model_path.
@@ -49,10 +50,24 @@ type ChatModelSummary = Record<string, unknown>;
 export type Scenario = {
   ggufRepos: any[];
   modelRepos: any[];
+  localModels: any[];
+  chatOnly: boolean;
+  deviceType: string;
+  /** Click the toast's Cancel while requestStart is still in its preflights. */
+  cancelDuringStart: boolean;
+  /** Cancellation request fails and the transfer keeps running. */
+  cancelFails: boolean;
+  /** "decline" or "anonymous" from the expired-token dialog. */
+  tokenDecision: string | null;
+  /** false = the backend platform probe has not landed yet. */
+  platformFetched: boolean;
   variants: Record<string, any>;
   lastLoaded: any;
   validate: (payload: any) => any;
   load: (payload: any) => any;
+  /** How the Hub download manager answers the default-model request:
+   *  "complete" (default), "cancelled", "failed", "busy", or "conflict". */
+  download: (request: any) => string;
 };
 
 export const EVENTS: any[] = [];
@@ -61,6 +76,11 @@ export function setScenario(scenario: Scenario) {
   SCENARIO = scenario;
   EVENTS.length = 0;
   STORE = makeStore();
+  DOWNLOAD_LISTENERS = [];
+  DOWNLOAD_STATE = { jobs: {} };
+  DOWNLOAD_SUBS = [];
+  CANCELLED_KEYS = new Set();
+  CANCEL_TOAST_ACTION = null;
 }
 
 const GPU_LAYERS_AUTO = -1;
@@ -133,6 +153,9 @@ function mlxRuntimeStateFrom(resp: any) {
   };
 }
 async function prepareHfTokenForUse(token: any) {
+  EVENTS.push({ kind: "prepareHfToken" });
+  if (SCENARIO.tokenDecision === "decline") return { proceed: false, token };
+  if (SCENARIO.tokenDecision === "anonymous") return { proceed: true, token: null };
   return { proceed: true, token };
 }
 async function fetchGgufStagedMetadata(_req: any) {
@@ -179,7 +202,13 @@ const toast: any = Object.assign(
   (_msg: string, _opts?: any) => "toast-id",
   {
     message: (msg: string, opts?: any) => {
-      EVENTS.push({ kind: "toast.message", msg, description: opts?.description });
+      EVENTS.push({
+        kind: "toast.message",
+        msg,
+        description: opts?.description,
+        hasCancel: Boolean(opts?.action),
+      });
+      if (opts?.action?.onClick) CANCEL_TOAST_ACTION = opts.action.onClick;
       return "toast-id";
     },
     success: (msg: string) => EVENTS.push({ kind: "toast.success", msg }),
@@ -195,7 +224,9 @@ function resolveSpeculativeSettingsForLoad() {
   return { speculativeType: null, specDraftNMax: 0 };
 }
 function readLastLocalModelLoad() { return SCENARIO.lastLoaded; }
-function recordLastLocalModelLoad(_x: any) {}
+function recordLastLocalModelLoad(x: any) {
+  EVENTS.push({ kind: "recordLastLocal", id: x.id, modelKind: x.kind });
+}
 function resolveInitialConfig(_id: string, _variant: any) {
   return { config: {
     customContextLength: null, maxSeqLength: null, gpuMemoryMode: null,
@@ -217,9 +248,147 @@ function loadedGpuMemoryFields(_x: any) { return {}; }
 function resolveLoadedSpeculativeSettings(_x: any) { return {}; }
 function isMultimodalResponse(_x: any) { return false; }
 
-async function listCachedGguf() { return SCENARIO.ggufRepos as any; }
-async function listCachedModels() { return SCENARIO.modelRepos as any; }
-async function listGgufVariants(repoId: string, _b?: any, _c?: any) {
+async function listCachedGguf(signal?: any) {
+  EVENTS.push({ kind: "listCachedGguf", hasSignal: Boolean(signal) });
+  if (SCENARIO.ggufRepos === "throw") throw new Error("cached gguf listing failed");
+  return SCENARIO.ggufRepos as any;
+}
+async function listCachedModels(_token?: any, signal?: any) {
+  EVENTS.push({ kind: "listCachedModels", hasSignal: Boolean(signal) });
+  if (SCENARIO.modelRepos === "throw") throw new Error("cached model listing failed");
+  return SCENARIO.modelRepos as any;
+}
+// The unified on-device inventory (models dir, LM Studio, custom scan folders).
+// Before #7374 was fixed the cascade never asked for it, so a downloaded local
+// model was invisible and Send fetched an unrelated default instead.
+async function listLocalModels() {
+  if (SCENARIO.localModels === "throw") throw new Error("local inventory failed");
+  return { models: (SCENARIO.localModels ?? []) as any[] };
+}
+function isHiddenModelId(..._a: any[]) { return false; }
+// A chat-only install (Mac / AMD / CPU) runs GGUF, plus MLX on a Mac; the
+// picker hides every other local format there, so a background pick must too.
+const usePlatformStore = {
+  getState: () => ({
+    deviceType: SCENARIO.deviceType ?? "linux",
+    // Server-reported unless a scenario says the probe has not landed.
+    fetched: SCENARIO.platformFetched !== false,
+    isChatOnly: () => SCENARIO.chatOnly === true,
+  }),
+};
+function isMlxId(value: string) {
+  return typeof value === "string" && value.toLowerCase().includes("mlx");
+}
+
+// --- Hub download manager -------------------------------------------------
+// The default-model fetch is a managed job now, so the harness models its
+// surface: a start request, terminal listeners, and a cancel.
+const DOWNLOAD_KIND = { MODEL: "model", DATASET: "dataset" } as const;
+function jobKeyOf(kind: string, repoId: string, variant: string | null) {
+  return variant ? `${kind}:${repoId}#${variant}` : `${kind}:${repoId}`;
+}
+function selectActiveJob(state: any, kind: string, repoId: string, variant?: any) {
+  const job = state.jobs[jobKeyOf(kind, repoId, variant ?? null)];
+  return job && job.state !== "cancelled" ? job : null;
+}
+let DOWNLOAD_STATE: any = { jobs: {} };
+let DOWNLOAD_SUBS: any[] = [];
+let CANCELLED_KEYS = new Set<string>();
+let CANCEL_TOAST_ACTION: any = null;
+function notifyDownloadStore() {
+  for (const listener of [...DOWNLOAD_SUBS]) listener(DOWNLOAD_STATE);
+}
+const useDownloadManagerStore = {
+  getState: () => DOWNLOAD_STATE,
+  subscribe: (listener: any) => {
+    DOWNLOAD_SUBS.push(listener);
+    return () => {
+      DOWNLOAD_SUBS = DOWNLOAD_SUBS.filter((entry) => entry !== listener);
+    };
+  },
+};
+let DOWNLOAD_LISTENERS: any[] = [];
+function subscribeJobListeners(_kind: string, _repoId: string, handlers: any) {
+  DOWNLOAD_LISTENERS.push(handlers);
+  return () => {
+    DOWNLOAD_LISTENERS = DOWNLOAD_LISTENERS.filter((entry) => entry !== handlers);
+  };
+}
+const downloadManager = {
+  requestStart: async (request: any) => {
+    EVENTS.push({
+      kind: "download.start",
+      repoId: request.repoId,
+      variant: request.variant,
+    });
+    const behaviour = SCENARIO.download ? SCENARIO.download(request) : "complete";
+    if (behaviour === "busy" || behaviour === "conflict" || behaviour === "error") {
+      return behaviour;
+    }
+    // The real requestStart runs transport preflights before any job exists.
+    // A scenario can click the toast's Cancel inside that window.
+    if (SCENARIO.cancelDuringStart) CANCEL_TOAST_ACTION?.();
+    const key = jobKeyOf(request.kind, request.repoId, request.variant);
+    DOWNLOAD_STATE = {
+      jobs: {
+        ...DOWNLOAD_STATE.jobs,
+        [key]: {
+          key,
+          variant: request.variant,
+          state: "running",
+          downloadedBytes: 0,
+          expectedBytes: request.expectedBytes,
+        },
+      },
+    };
+    notifyDownloadStore();
+    // Terminal events land on a later turn, as the real poll loop's do.
+    queueMicrotask(() => {
+      if (CANCELLED_KEYS.has(key)) return;
+      for (const handlers of [...DOWNLOAD_LISTENERS]) {
+        if (behaviour === "complete") {
+          handlers.onComplete?.(request.variant, request.expectedBytes);
+        } else if (behaviour === "cancelled") {
+          handlers.onCancelled?.(request.variant);
+        } else {
+          handlers.onError?.(request.variant);
+        }
+      }
+    });
+    return "started";
+  },
+  cancel: async (key: string) => {
+    EVENTS.push({ kind: "download.cancel", key });
+    const job = DOWNLOAD_STATE.jobs[key];
+    // The real cancelJob can fail its request, probe the transfer as still
+    // running, and restore the job. Nothing is cancelled in that case.
+    if (SCENARIO.cancelFails) {
+      if (job) {
+        DOWNLOAD_STATE = {
+          jobs: { ...DOWNLOAD_STATE.jobs, [key]: { ...job, state: "running" } },
+        };
+        notifyDownloadStore();
+      }
+      return;
+    }
+    CANCELLED_KEYS.add(key);
+    if (job) {
+      DOWNLOAD_STATE = {
+        jobs: { ...DOWNLOAD_STATE.jobs, [key]: { ...job, state: "cancelled" } },
+      };
+      notifyDownloadStore();
+    }
+    for (const handlers of [...DOWNLOAD_LISTENERS]) {
+      handlers.onCancelled?.(job?.variant ?? null);
+    }
+  },
+};
+async function listGgufVariants(repoId: string, _b?: any, options?: any) {
+  EVENTS.push({
+    kind: "listGgufVariants",
+    repoId,
+    hasSignal: Boolean(options?.signal),
+  });
   const entry = SCENARIO.variants[repoId];
   if (entry === "throw") throw new Error("variant listing failed");
   return entry ?? { variants: [] };
@@ -235,6 +404,8 @@ async function loadModel(payload: any) {
     kind: "loadModel",
     model_path: payload.model_path,
     gguf_variant: payload.gguf_variant ?? null,
+    // GGUF sources send 0; a Transformers source sends the safetensors length.
+    max_seq_length: payload.max_seq_length,
     rejected: result instanceof Error,
   });
   if (result instanceof Error) throw result;
@@ -271,13 +442,33 @@ SCENARIO_HELPERS = """
       is_gguf: true,
       context_length: 32768,
     });
+    // A backend-indexed local GGUF: exactly the row the old cascade could not
+    // see, so Send downloaded a model the user already had a substitute for.
+    const LOCAL_GGUF = {
+      id: "/home/john-doe/models/qwen3-1.7b-instruct-q4_k_m.gguf",
+      load_id: "/home/john-doe/models/qwen3-1.7b-instruct-q4_k_m.gguf",
+      path: "/home/john-doe/models/qwen3-1.7b-instruct-q4_k_m.gguf",
+      display_name: "qwen3-1.7b-instruct-q4_k_m",
+      source: "models_dir",
+      model_format: "gguf",
+      size_bytes: 1_100_000_000,
+      capabilities: { can_chat: true, requires_variant: false },
+    };
     const scenario = (over) => ({
       ggufRepos: [],
       modelRepos: [],
+      localModels: [],
+      chatOnly: false,
+      deviceType: "linux",
+      cancelDuringStart: false,
+      cancelFails: false,
+      tokenDecision: null,
+      platformFetched: true,
       variants: {},
       lastLoaded: null,
       validate: VALIDATE_OK,
       load: LOADED,
+      download: () => "complete",
       ...over,
     });
 """
@@ -396,7 +587,11 @@ def _run(scenario_expr: str) -> dict:
         + textwrap.dedent(
             f"""
         setScenario({scenario_expr});
-        const result = await autoLoadSmallestModel();
+        // The real send path always supplies one, so the signal plumbing is
+        // exercised by every scenario.
+        const result = await autoLoadSmallestModel({{
+          abortSignal: new AbortController().signal,
+        }});
         console.log(JSON.stringify({{ result, events: EVENTS }}));
         """
         )
@@ -407,6 +602,9 @@ def _run(scenario_expr: str) -> dict:
         cwd = str(run_dir),
         capture_output = True,
         text = True,
+        # Explicit: text alone decodes with the Windows ANSI code page, which
+        # mangles the non-ASCII toast copy node emits as UTF-8.
+        encoding = "utf-8",
         timeout = 60,
         env = dict(os.environ, NODE_NO_WARNINGS = "1"),
     )
@@ -421,6 +619,10 @@ def _loaded_paths(out: dict) -> list[str]:
 
 def _toasts(out: dict, kind: str) -> list[dict]:
     return [event for event in out["events"] if event["kind"] == kind]
+
+
+def _downloads_started(out: dict) -> list[str]:
+    return [event["repoId"] for event in out["events"] if event["kind"] == "download.start"]
 
 
 def test_failed_cached_load_does_not_download_the_default_model():
@@ -438,6 +640,7 @@ def test_failed_cached_load_does_not_download_the_default_model():
     assert not any(
         "Downloading a small model" in event["msg"] for event in _toasts(out, "toast.message")
     )
+    assert _downloads_started(out) == []
 
 
 def test_failed_cached_load_surfaces_the_backend_reason():
@@ -472,7 +675,7 @@ def test_empty_device_still_downloads_the_default_model():
     assert out["result"]["loaded"] is True
     assert _toasts(out, "toast.error") == []
     assert [event["msg"] for event in _toasts(out, "toast.success")] == [
-        "Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)"
+        "Loaded Gemma 4 E2B (UD-Q4_K_XL)"
     ]
 
 
@@ -624,3 +827,617 @@ def test_a_rejected_validation_still_lets_a_later_cached_model_load():
     assert _loaded_paths(out) == ["r2"]
     assert out["result"]["loaded"] is True
     assert _toasts(out, "toast.error") == []
+
+
+# --- #7374: a model already on disk must be found before anything is fetched ---
+
+
+def test_an_indexed_local_gguf_loads_instead_of_downloading_the_default():
+    """The reported bug. The user has a GGUF in their models dir, but the cascade
+    only read the two managed-cache lists, so Send fetched a model instead."""
+    out = _run("scenario({ localModels: [LOCAL_GGUF] })")
+
+    assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+    assert _downloads_started(out) == []
+    assert out["result"]["loaded"] is True
+
+
+def test_a_local_model_wins_over_the_default_even_when_the_cache_is_empty():
+    """An empty managed cache is not an empty device."""
+    out = _run("scenario({ ggufRepos: [], modelRepos: [], localModels: [LOCAL_GGUF] })")
+
+    assert DEFAULT_MODEL not in _loaded_paths(out)
+    assert _downloads_started(out) == []
+
+
+def test_the_smallest_on_device_model_wins_across_inventories():
+    """Cached and local rows compete in one size-ordered cascade, not one list
+    then the other."""
+    out = _run(
+        "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
+        " localModels: [LOCAL_GGUF] })"
+    )
+
+    # LOCAL_GGUF is 1.1 GB, GEMMA is 15.8 GB.
+    assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+
+
+@pytest.mark.parametrize(
+    "inventory",
+    ["ggufRepos", "modelRepos", "localModels"],
+)
+def test_an_inventory_failure_never_reads_as_an_empty_device(inventory):
+    """Both cached lookups used to be wrapped in `.catch(() => [])`, so one flaky
+    request looked exactly like "this user has no models" and started a download."""
+    out = _run(f"scenario({{ {inventory}: 'throw' }})")
+
+    assert _downloads_started(out) == []
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+
+
+@pytest.mark.parametrize("broken", ["ggufRepos", "modelRepos", "localModels"])
+def test_one_broken_inventory_still_loads_a_model_another_one_found(broken):
+    """A failure is one unknown source, not a verdict on the other two.
+    Promise.all rejected the batch, discarding lists that had already arrived,
+    so a broken local scan left a loadable model unused."""
+    # Put the model in a source that is not the one being broken.
+    holder = "localModels" if broken != "localModels" else "ggufRepos"
+    rows = "[LOCAL_GGUF]" if holder == "localModels" else "[GEMMA]"
+    extra = "" if holder == "localModels" else ", variants: { [GEMMA.repo_id]: GEMMA_VARIANTS }"
+    out = _run(f"scenario({{ {broken}: 'throw', {holder}: {rows}{extra} }})")
+
+    assert out["result"]["loaded"] is True
+    # Still fails closed on the part it cannot see: no default is fetched.
+    assert _downloads_started(out) == []
+    assert DEFAULT_MODEL not in _loaded_paths(out)
+
+
+def test_a_local_row_the_picker_would_hide_is_never_auto_loaded():
+    """A background pick must be something the user could have picked themselves."""
+    hidden = (
+        "{ ...LOCAL_GGUF, capabilities: { can_chat: false } },"
+        " { ...LOCAL_GGUF, id: 'p', load_id: 'p', path: 'p', partial: true },"
+        " { ...LOCAL_GGUF, id: 'a', load_id: 'a', path: 'a', model_format: 'adapter' },"
+        " { ...LOCAL_GGUF, id: 'c', load_id: 'c', path: 'c', model_format: 'checkpoint' },"
+        " { ...LOCAL_GGUF, id: 'o', load_id: 'o', path: 'o', source: 'ollama' }"
+    )
+    out = _run(f"scenario({{ localModels: [{hidden}] }})")
+
+    # Nothing loadable on device, so the default download is the correct answer.
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+    assert _downloads_started(out) == [DEFAULT_MODEL]
+
+
+def test_the_remembered_local_model_is_tried_before_a_smaller_one():
+    """Re-picking the model the user actually ran beats re-picking the smallest."""
+    out = _run(
+        "scenario({ localModels: [LOCAL_GGUF,"
+        " { ...LOCAL_GGUF, id: 'tiny', load_id: 'tiny', path: 'tiny', size_bytes: 1 }],"
+        " lastLoaded: { id: LOCAL_GGUF.load_id, kind: 'gguf', ggufVariant: null } })"
+    )
+
+    assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+
+
+# --- the default download is a managed, cancellable job ---
+
+
+def test_the_default_model_is_fetched_through_the_download_manager():
+    """Not inline inside /api/inference/load: the manager owns the transfer, so
+    it gets a panel entry, progress, and a Cancel that stops it."""
+    out = _run("scenario({})")
+
+    assert _downloads_started(out) == [DEFAULT_MODEL]
+    # The bytes land before the load is attempted.
+    kinds = [event["kind"] for event in out["events"]]
+    assert kinds.index("download.start") < kinds.index("loadModel")
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_cancelling_the_first_download_loads_nothing_and_says_what_to_do():
+    out = _run("scenario({ download: () => 'cancelled' })")
+
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+    [notice] = [
+        event for event in _toasts(out, "toast.message") if "download stopped" in event["msg"]
+    ]
+    assert "Pick one from the top bar" in notice["description"]
+
+
+def test_a_failed_first_download_never_reaches_the_load():
+    """A dead transfer must not be handed to /load as if the file were there."""
+    for behaviour in ("failed", "error", "busy", "conflict"):
+        out = _run(f"scenario({{ download: () => '{behaviour}' }})")
+        assert _loaded_paths(out) == [], behaviour
+        assert out["result"]["loaded"] is False, behaviour
+
+
+def test_the_first_download_toast_explains_rather_than_alarms():
+    """The old copy read as a warning about the user's machine and named a raw
+    repo id and quant."""
+    out = _run("scenario({})")
+
+    messages = [event["msg"] for event in _toasts(out, "toast.message")]
+    descriptions = [event["description"] or "" for event in _toasts(out, "toast.message")]
+    assert any("Getting Gemma 4 E2B ready" in msg for msg in messages)
+    assert any(
+        "Unsloth couldn\u2019t find an existing model. Unsloth is now getting "
+        "Gemma 4 E2B ready for use. You can stop the download or manage models "
+        "later in the 'Model hub'" == text
+        for text in descriptions
+    )
+    assert not any("No downloaded models found" in text for text in descriptions)
+
+
+def test_a_chat_only_install_never_auto_loads_a_format_it_cannot_run():
+    """On chat-only builds the picker shows GGUF (and MLX on a Mac) only, so a
+    background pick must not spend an attempt on a safetensors row."""
+    safetensors = (
+        "{ ...LOCAL_GGUF, id: 'st', load_id: 'st', path: '/models/st',"
+        " model_format: 'safetensors' }"
+    )
+    out = _run(f"scenario({{ chatOnly: true, localModels: [{safetensors}] }})")
+    assert "st" not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+    # The same row is fair game on a full install.
+    out = _run(f"scenario({{ chatOnly: false, localModels: [{safetensors}] }})")
+    assert _loaded_paths(out) == ["st"]
+
+
+def test_a_mac_chat_only_install_still_auto_loads_a_local_mlx_model():
+    mlx = (
+        "{ ...LOCAL_GGUF, id: 'org/Qwen3-4B-mlx-4bit', load_id: '/models/mlx',"
+        " path: '/models/mlx', model_format: 'safetensors' }"
+    )
+    out = _run(f"scenario({{ chatOnly: true, deviceType: 'mac', localModels: [{mlx}] }})")
+    assert _loaded_paths(out) == ["/models/mlx"]
+
+
+# --- review fixes on the on-device cascade ---
+
+
+def test_an_image_generation_row_is_never_auto_loaded_for_chat():
+    """Diffusion rows carry an image/video task while can_chat stays true on
+    file format alone. The picker routes them to the Images page on click; a
+    background load has no routing step, so it has to skip them."""
+    for task in ("text-to-image", "text-to-video", "image-diffusion-unsupported"):
+        rows = (
+            f"{{ ...LOCAL_GGUF, id: 'img', load_id: 'img', path: 'img', task: '{task}',"
+            " size_bytes: 1 }, LOCAL_GGUF"
+        )
+        out = _run(f"scenario({{ localModels: [{rows}] }})")
+        # 'img' is the smaller row, so only the task gate can keep it out.
+        assert _loaded_paths(out) == [LOCAL_GGUF_PATH], task
+
+
+def test_a_chat_row_with_no_task_tag_still_auto_loads():
+    """Control for the gate above: the backend leaves task null for chat LLMs."""
+    out = _run("scenario({ localModels: [{ ...LOCAL_GGUF, task: null }] })")
+    assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+
+
+def test_a_failed_quant_falls_through_to_the_next_one_in_the_same_repo():
+    """One corrupt quant must not cost a repo that holds a valid one."""
+    variants = (
+        "{ variants: ["
+        "{ quant: 'Q2_K', filename: 'm-Q2_K.gguf', downloaded: true, size_bytes: 100 },"
+        "{ quant: 'Q4_K_M', filename: 'm-Q4_K_M.gguf', downloaded: true, size_bytes: 200 }"
+        "] }"
+    )
+    out = _run(
+        f"scenario({{ ggufRepos: [GEMMA], variants: {{ [GEMMA.repo_id]: {variants} }},"
+        " load: (p) => p.gguf_variant === 'Q2_K' ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert [event["gguf_variant"] for event in out["events"] if event["kind"] == "loadModel"] == [
+        "Q2_K",
+        "Q4_K_M",
+    ]
+    assert out["result"]["loaded"] is True
+    assert _downloads_started(out) == []
+
+
+def test_the_variant_retry_still_respects_the_attempt_cap():
+    """Guard on the loop above: a repo of broken quants must not spin."""
+    variants = (
+        "{ variants: [1,2,3,4,5,6].map((i) => ({ quant: `Q${i}`,"
+        " filename: `m-Q${i}.gguf`, downloaded: true, size_bytes: i })) }"
+    )
+    out = _run(
+        f"scenario({{ ggufRepos: [GEMMA], variants: {{ [GEMMA.repo_id]: {variants} }},"
+        " load: () => new Error(OOM) })"
+    )
+
+    assert len(_loaded_paths(out)) == 3
+    assert _downloads_started(out) == []
+
+
+def test_cached_inventory_lookups_carry_the_run_abort_signal():
+    """Both are raw fetches with no timeout of their own, so a stall would hold
+    the model-loading lease open after the user stops the send."""
+    out = _run("scenario({})")
+    for kind in ("listCachedGguf", "listCachedModels"):
+        [call] = [event for event in out["events"] if event["kind"] == kind]
+        assert call["hasSignal"] is True, kind
+
+
+def test_cancel_during_the_download_preflight_still_stops_it():
+    """requestStart runs transport preflights before the job exists and cancel
+    no-ops on a missing key, so the first Cancel click was swallowed."""
+    out = _run("scenario({ cancelDuringStart: true })")
+
+    assert [event["kind"] for event in out["events"]].count("download.cancel") >= 1
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+
+
+def test_the_download_toast_carries_a_cancel_action():
+    out = _run("scenario({})")
+    assert any(
+        event.get("hasCancel") and "Getting Gemma 4 E2B ready" in event["msg"]
+        for event in _toasts(out, "toast.message")
+    )
+
+
+def test_remembered_posix_paths_match_case_sensitively():
+    """Two local models on Linux can differ only by path casing; folding them
+    marks both as the remembered one and can auto-load the wrong model."""
+    rows = (
+        "{ ...LOCAL_GGUF, id: '/models/Foo.gguf', load_id: '/models/Foo.gguf',"
+        " path: '/models/Foo.gguf', size_bytes: 200 },"
+        " { ...LOCAL_GGUF, id: '/models/foo.gguf', load_id: '/models/foo.gguf',"
+        " path: '/models/foo.gguf', size_bytes: 100 }"
+    )
+    out = _run(
+        f"scenario({{ localModels: [{rows}],"
+        " lastLoaded: { id: '/models/Foo.gguf', kind: 'gguf', ggufVariant: null } })"
+    )
+
+    # Lowercasing would rank both as remembered and let the smaller one win.
+    assert _loaded_paths(out) == ["/models/Foo.gguf"]
+
+
+def test_a_mixed_cached_repo_is_attempted_once_not_twice():
+    """A repo holding both GGUF and safetensors appears in both cached lists,
+    but the backend resolves one load target to one model, so keeping both rows
+    spends a second attempt on the same files."""
+    out = _run(
+        "scenario({ ggufRepos: [GEMMA],"
+        " modelRepos: [{ repo_id: GEMMA.repo_id, load_id: GEMMA.load_id, size_bytes: 15800000000 }],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
+        " load: () => new Error(OOM) })"
+    )
+
+    assert _loaded_paths(out) == [GEMMA_REPO]
+    # The GGUF row is the one the backend will actually resolve, so it survives.
+    assert [event["gguf_variant"] for event in out["events"] if event["kind"] == "loadModel"] == [
+        "UD-Q4_K_XL"
+    ]
+
+
+def test_a_mixed_cached_repo_still_loads_through_its_gguf_row():
+    """Control: deduping must not drop the repo altogether."""
+    out = _run(
+        "scenario({ ggufRepos: [GEMMA],"
+        " modelRepos: [{ repo_id: GEMMA.repo_id, load_id: GEMMA.load_id, size_bytes: 1 }],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
+    )
+    assert _loaded_paths(out) == [GEMMA_REPO]
+    assert out["result"]["loaded"] is True
+
+
+def test_distinct_repos_are_not_collapsed_by_the_dedupe():
+    """Guard on the key: only a shared load target may collapse."""
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " load: () => new Error(OOM) })"
+    )
+    assert _loaded_paths(out) == ["r1", "r2"]
+
+
+def test_variant_scans_carry_the_run_abort_signal():
+    """Bounded by their own timeout, but a stopped send should not wait it out."""
+    out = _run("scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })")
+    scans = [event for event in out["events"] if event["kind"] == "listGgufVariants"]
+    assert scans, "no variant scan ran"
+    assert all(scan["hasSignal"] for scan in scans)
+
+
+def test_a_failed_path_does_not_mark_a_case_distinct_sibling_as_tried():
+    """On Linux /models/Foo.gguf and /models/foo.gguf are two models, so folding
+    the tried-candidate key let one failure suppress the other."""
+    rows = (
+        "{ ...LOCAL_GGUF, id: '/models/Foo.gguf', load_id: '/models/Foo.gguf',"
+        " path: '/models/Foo.gguf', size_bytes: 1 },"
+        " { ...LOCAL_GGUF, id: '/models/foo.gguf', load_id: '/models/foo.gguf',"
+        " path: '/models/foo.gguf', size_bytes: 2 }"
+    )
+    out = _run(
+        f"scenario({{ localModels: [{rows}],"
+        " load: (p) => p.model_path === '/models/Foo.gguf' ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert _loaded_paths(out) == ["/models/Foo.gguf", "/models/foo.gguf"]
+    assert out["result"]["loaded"] is True
+    assert _downloads_started(out) == []
+
+
+def test_the_default_variant_lookup_carries_the_run_abort_signal():
+    """Bounded by its own 30s timeout, but a stopped send should not hold the
+    model-loading lease waiting it out before the download even starts."""
+    out = _run("scenario({})")
+    [lookup] = [
+        event
+        for event in out["events"]
+        if event["kind"] == "listGgufVariants" and event["repoId"] == DEFAULT_MODEL
+    ]
+    assert lookup["hasSignal"] is True
+
+
+def test_a_download_that_survives_a_failed_cancel_is_not_loaded():
+    """cancelJob can fail and the transfer keep running, but the user asked for
+    it to stop, so the bytes that arrive anyway must not reach a load."""
+    out = _run("scenario({ cancelDuringStart: true, cancelFails: true })")
+
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+
+
+def test_a_failed_cancel_does_not_latch_the_toast_action_off():
+    """The retry latch must clear once the request settles, or every later
+    Cancel click is swallowed."""
+    src = (WORKDIR / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text(
+        encoding = "utf-8"
+    )
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    # In flight only, cleared when the request settles.
+    assert 'if (cancelInFlight || active.state === "cancelling") return true;' in helper
+    assert "cancelInFlight = false;\n    });" in helper
+    # The subscription fires the deferred attempt once; retries come from clicks.
+    assert "if (!cancelEverIssued) issueCancel();" in helper
+
+
+def test_an_expired_token_is_prepared_before_the_managed_start():
+    """startJob sends the stored token raw, with none of the recovery
+    validateModel and loadModel get, so an expired one would fail the download
+    of a public repo the lookup just read anonymously."""
+    out = _run("scenario({})")
+    kinds = [event["kind"] for event in out["events"]]
+    assert "prepareHfToken" in kinds
+    assert kinds.index("prepareHfToken") < kinds.index("download.start")
+
+
+def test_declining_the_token_dialog_starts_no_download():
+    out = _run("scenario({ tokenDecision: 'decline' })")
+    assert _downloads_started(out) == []
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+
+
+def test_the_token_is_not_prepared_when_the_default_is_already_on_disk():
+    """Nothing to download means nothing to prompt about."""
+    downloaded = (
+        "{ variants: [{ quant: 'UD-Q4_K_XL', filename: 'm-UD-Q4_K_XL.gguf',"
+        " downloaded: true, size_bytes: 100 }] }"
+    )
+    out = _run(f"scenario({{ variants: {{ 'unsloth/gemma-4-E2B-it-GGUF': {downloaded} }} }})")
+    kinds = [event["kind"] for event in out["events"]]
+    assert "prepareHfToken" not in kinds
+    assert _downloads_started(out) == []
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_a_cached_image_repo_is_never_auto_loaded_for_chat():
+    """Cached diffusion repos report can_chat true on file format alone, and
+    carry their Images/Video task on the row."""
+    for task in ("text-to-image", "text-to-video", "image-diffusion-unsupported"):
+        out = _run(
+            f"scenario({{ ggufRepos: [{{ ...GEMMA, repo_id: 'img', load_id: 'img',"
+            f" size_bytes: 1, task: '{task}' }}, GEMMA],"
+            " variants: { img: GEMMA_VARIANTS, [GEMMA.repo_id]: GEMMA_VARIANTS } })"
+        )
+        assert _loaded_paths(out) == [GEMMA_REPO], task
+
+
+def test_a_cached_text_generation_repo_still_auto_loads():
+    """Chat GGUFs are tagged text-generation, not null, so the gate must be a
+    list of image/video tasks rather than "has a task"."""
+    out = _run(
+        "scenario({ ggufRepos: [{ ...GEMMA, task: 'text-generation' }],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
+    )
+    assert _loaded_paths(out) == [GEMMA_REPO]
+
+
+def test_a_provisional_mac_platform_does_not_hide_a_remote_backends_models():
+    """Before the probe lands chatOnly is a browser guess: a Mac browser on a
+    remote Linux Studio would hide every local safetensors model."""
+    safetensors = (
+        "{ ...LOCAL_GGUF, id: 'st', load_id: 'st', path: '/models/st',"
+        " model_format: 'safetensors' }"
+    )
+    out = _run(
+        f"scenario({{ chatOnly: true, deviceType: 'mac', platformFetched: false,"
+        f" localModels: [{safetensors}] }})"
+    )
+
+    assert _loaded_paths(out) == ["st"]
+    assert _downloads_started(out) == []
+
+
+def test_a_server_reported_chat_only_platform_still_gates():
+    """Control: once the backend has answered, the gate applies."""
+    safetensors = (
+        "{ ...LOCAL_GGUF, id: 'st', load_id: 'st', path: '/models/st',"
+        " model_format: 'safetensors' }"
+    )
+    out = _run(
+        f"scenario({{ chatOnly: true, platformFetched: true, localModels: [{safetensors}] }})"
+    )
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_the_default_is_validated_before_its_download_starts():
+    """Active training or the GPU placement guard can refuse the default, and
+    learning that after several gigabytes costs a long wait for nothing."""
+    out = _run(
+        "scenario({ validate: () => ({ requires_trust_remote_code: false,"
+        " requires_security_review: false, requires_transformers_upgrade: true }) })"
+    )
+
+    assert _downloads_started(out) == []
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+
+
+def test_a_cleared_default_still_downloads_and_loads():
+    """Control: the preflight must not block the normal path."""
+    out = _run("scenario({})")
+    kinds = [event["kind"] for event in out["events"]]
+    assert kinds.index("download.start") < kinds.index("loadModel")
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_a_chat_only_backend_skips_cached_non_gguf_rows():
+    """The picker hides cached non-GGUF rows outright in chat-only mode, so the
+    cascade must not auto-select a format the UI calls unrunnable."""
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert "org/st" not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_a_full_install_still_uses_cached_non_gguf_rows():
+    """Control for the gate above."""
+    out = _run(
+        "scenario({ chatOnly: false,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert _loaded_paths(out) == ["org/st"]
+
+
+def test_a_provisional_platform_does_not_hide_cached_non_gguf_rows():
+    """Before the probe lands the chatOnly flag is a browser guess."""
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: false,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert _loaded_paths(out) == ["org/st"]
+
+
+def test_a_cached_adapter_repo_is_never_auto_loaded():
+    """A cached LoRA has no weights of its own: /load fetches the base from the
+    Hub when it is not cached, which is why the local twin is dropped too.
+    Adapters are tiny, so the size order puts one first."""
+    out = _run(
+        "scenario({ modelRepos: [{ repo_id: 'org/lora', load_id: 'org/lora',"
+        " size_bytes: 40000000, model_format: 'adapter',"
+        " capabilities: { can_chat: true } }] })"
+    )
+
+    assert "org/lora" not in _loaded_paths(out)
+    # Nothing loadable on device, so the default download is the correct answer.
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_a_cached_safetensors_repo_is_still_auto_loaded():
+    """Control for the gate above: only the adapter format is dropped."""
+    out = _run(
+        "scenario({ modelRepos: [{ repo_id: 'org/base', load_id: 'org/base',"
+        " size_bytes: 40000000, model_format: 'safetensors',"
+        " capabilities: { can_chat: true } }] })"
+    )
+
+    assert _loaded_paths(out) == ["org/base"]
+    assert _downloads_started(out) == []
+
+
+@pytest.mark.parametrize("broken", ["ggufRepos", "modelRepos"])
+def test_an_hf_cache_row_is_used_when_the_cached_lookup_fails(broken):
+    """/api/hub/local also reports hf_cache rows, which autoload normally skips
+    as duplicates. When a cached list fails they are the only evidence left, and
+    dropping them ended the send with no model at all, since the gap also blocks
+    the default."""
+    row = "{ ...LOCAL_GGUF, source: 'hf_cache' }"
+    out = _run(f"scenario({{ {broken}: 'throw', localModels: [{row}] }})")
+
+    assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+    assert _downloads_started(out) == []
+
+
+def test_an_hf_cache_row_stays_excluded_when_both_lookups_answer():
+    """Control: with the cached lists healthy the row is a duplicate of what they
+    already report, so autoload keeps skipping it."""
+    row = "{ ...LOCAL_GGUF, source: 'hf_cache' }"
+    out = _run(f"scenario({{ localModels: [{row}] }})")
+
+    assert LOCAL_GGUF_PATH not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_an_admitted_hf_cache_row_is_not_attempted_twice():
+    """The surviving cached list may name the same model as the admitted
+    hf_cache row, so the load-target dedupe has to collapse them or the pair
+    spends two of the three attempts on one model."""
+    row = (
+        "{ ...LOCAL_GGUF, source: 'hf_cache', load_id: 'org/dup', path: 'org/dup', id: 'org/dup' }"
+    )
+    out = _run(
+        "scenario({ ggufRepos: 'throw',"
+        " modelRepos: [{ repo_id: 'org/dup', load_id: 'org/dup', size_bytes: 1 }],"
+        f" localModels: [{row}] }})"
+    )
+
+    assert _loaded_paths(out).count("org/dup") == 1
+    assert _downloads_started(out) == []
+
+
+def test_a_safetensors_twin_survives_a_gguf_row_with_no_loadable_quant():
+    """Dedupe keeps the GGUF row because the backend probes GGUF first, but when
+    that repo resolves no quant -- every variant big-endian, say -- the twin was
+    already discarded and a full inventory fell through to the default."""
+    out = _run(
+        "scenario({ ggufRepos: [{ ...GEMMA, repo_id: 'org/both', load_id: 'org/both' }],"
+        " variants: { 'org/both': [{ quant: 'Q4_K_M',"
+        " filename: 'gemma-4-26B-A4B-it-BE.Q4_K_M.gguf', downloaded: true,"
+        " size_bytes: 900000000 }] },"
+        " modelRepos: [{ repo_id: 'org/both', load_id: 'org/both', size_bytes: 2000000000 }] })"
+    )
+
+    assert _loaded_paths(out) == ["org/both"]
+    assert _downloads_started(out) == []
+
+
+def test_a_legacy_gguf_row_without_model_format_loads_as_gguf():
+    """model_format is optional, so an older backend omits it on a direct .gguf
+    row. The source builder did not fall back to the suffix, so the row became a
+    Transformers source: /load got the safetensors context length instead of 0
+    and the remembered kind was wrong."""
+    row = "{ ...LOCAL_GGUF, model_format: undefined }"
+    out = _run(f"scenario({{ localModels: [{row}] }})")
+
+    assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+    remembered = [e for e in out["events"] if e["kind"] == "recordLastLocal"]
+    assert remembered and remembered[0]["modelKind"] == "gguf", remembered
+
+
+@pytest.mark.parametrize("fmt", ["'unknown'", "undefined"])
+def test_an_unclassified_local_row_is_never_auto_loaded(fmt):
+    """The gate was a denylist, so a row the backend could not classify passed
+    it: "unknown" is what the backend sends when it cannot tell, and an older one
+    omits the field. Either way the row may be the pickle checkpoint the
+    exclusions exist to keep out, and a directory gives no suffix to tell them
+    apart, so this fails closed."""
+    row = f"{{ ...LOCAL_GGUF, id: 'x', load_id: '/models/x', path: '/models/x', model_format: {fmt} }}"
+    out = _run(f"scenario({{ localModels: [{row}] }})")
+
+    assert "/models/x" not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]

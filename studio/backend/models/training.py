@@ -11,12 +11,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from typing import Any, Optional, List, Dict, Literal, Union
 
 from hub.schemas.inventory import ModelFormat
+from utils.hf_dataset_options import (
+    MAX_HF_DATASET_OPTION_LENGTH,
+    valid_hf_dataset_config_name,
+    valid_hf_dataset_split_name,
+    valid_hf_dataset_split_instruction,
+)
 from utils.training_runs import normalize_project_name
 
 
 # ASCII integer, optional single sign. Rejects "++512" and Unicode digits that pass str.isdigit().
 _INT_RE = re.compile(r"[+-]?[0-9]+")
 _HF_DATASET_ID_SEGMENT_RE = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?")
+TRAINING_REQUEST_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
 
 
 _MAX_BATCH_SIZE = 4096
@@ -106,7 +113,7 @@ class TrainingStartRequest(BaseModel):
         None,
         min_length = 1,
         max_length = 128,
-        pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        pattern = TRAINING_REQUEST_ID_PATTERN,
         description = "Opaque client-generated identifier used to reconcile an ambiguous start response",
     )
     training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = Field(
@@ -235,10 +242,13 @@ class TrainingStartRequest(BaseModel):
     def _check_subset(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        if len(v) > 128:
-            raise ValueError("subset is too long (max 128 chars)")
-        if not re.fullmatch(r"[A-Za-z0-9._\-]*", v):
-            raise ValueError("subset may only contain letters, digits, '_', '-', '.'")
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > MAX_HF_DATASET_OPTION_LENGTH:
+            raise ValueError(f"subset is too long (max {MAX_HF_DATASET_OPTION_LENGTH} chars)")
+        if not valid_hf_dataset_config_name(v):
+            raise ValueError("subset contains invalid characters")
         return v
 
     @field_validator(
@@ -265,14 +275,14 @@ class TrainingStartRequest(BaseModel):
     @field_validator("train_split", "eval_split")
     @classmethod
     def _check_split_name(cls, v: Optional[str]) -> Optional[str]:
-        # Split names feed HF slice syntax, so allow that charset but cap length and block traversal / NUL.
         if v is None:
             return v
-        if len(v) > 128:
-            raise ValueError("split name is too long (max 128 chars)")
-        if "\x00" in v or ".." in v or "/" in v or "\\" in v:
-            raise ValueError("split name contains invalid characters")
-        if not re.fullmatch(r"[A-Za-z0-9_\-\[\]:%.+ ]*", v):
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > MAX_HF_DATASET_OPTION_LENGTH:
+            raise ValueError(f"split name is too long (max {MAX_HF_DATASET_OPTION_LENGTH} chars)")
+        if not valid_hf_dataset_split_instruction(v):
             raise ValueError("split name contains invalid characters")
         return v
 
@@ -579,11 +589,10 @@ class TrainingStartRequest(BaseModel):
                 ("train_split", self.train_split),
                 ("eval_split", self.eval_split),
             ):
-                if split_val is not None and "[" in split_val:
+                if split_val is not None and not valid_hf_dataset_split_name(split_val):
                     raise ValueError(
-                        f"dataset_streaming does not support HF slice syntax in {field_name} "
-                        f"(got {split_val!r}); streaming load_dataset raises 'Bad split' on "
-                        "bracket expressions. Use a plain split name (e.g. 'train', 'validation')."
+                        f"dataset_streaming requires a plain split name in {field_name} "
+                        f"(got {split_val!r}); use a name such as 'train' or 'validation'."
                     )
         return self
 

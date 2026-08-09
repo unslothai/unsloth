@@ -19,6 +19,7 @@ export {
   shouldShowTrainingArtifactsDeleted,
 } from "./lib/run-display";
 export {
+  getTrainingMethodLabel,
   isRawTextDatasetFormat,
   isTrainingLoraVariantSupportedOnDevice,
   isTrainingMethodSupportedOnDevice,

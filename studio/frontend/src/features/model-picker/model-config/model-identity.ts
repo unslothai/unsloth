@@ -12,6 +12,7 @@ export {
   isNativeFileLabel,
   isOllamaLinkPath,
   isStandaloneGgufPath,
+  modelDisplayName,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   publicModelId,

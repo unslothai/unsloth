@@ -636,7 +636,10 @@ def test_the_drop_precedes_everything_the_projector_feeds():
     gate_at = src.index("_pv_mmproj_unpinnable = bool(")
     assert gate_at < src.index('cmd.extend(["--mmproj", launch_mmproj_path])')
     assert gate_at < src.index("self._mmproj_vram_bytes(launch_mmproj_path)")
-    assert gate_at < src.index("read_mmproj_audio_capability(launch_mmproj_path)")
+    # The probe reads launch_mmproj_path, or the env projector only if the gate dropped
+    # nothing, so both the gate and that choice precede it.
+    assert gate_at < src.index("_audio_probe = launch_mmproj_path or (")
+    assert gate_at < src.index("read_mmproj_audio_capability(_audio_probe)")
     # ...and the session flag the frontend reads follows the same variable.
     assert "self._is_vision = effective_is_vision" in src
 
@@ -689,9 +692,6 @@ def _drafter_gate(
         "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
         "_child_spec_env": llama_cpp._child_spec_env,
         "strip_shadowing_flags": llama_cpp.strip_shadowing_flags,
-        # The slot restore rides in this block; 0 = nothing clamped, so it stays out of
-        # the way of the drafter cases these helpers cover.
-        "_pv_extras_clamped_slots": 0,
         "n_parallel": 1,
         "cmd": ["--parallel", "1"],
         "logger": log,
@@ -874,21 +874,6 @@ def test_a_managed_spec_block_clears_the_inherited_spec_env():
     assert "_pv_draft_unpinnable" in gate
 
 
-def test_the_drafter_drop_hands_back_the_slots_it_no_longer_needs():
-    """The extras-MTP clamp cuts a multi-slot request to one. If the drop then strips
-    that very spec group the server is not speculating at all, and would serve one chat
-    at a time forever: the dedupe records the original ask, so no Apply restores it."""
-    src = _load_model_source()
-    clamp_at = src.index("_pv_extras_clamped_slots = n_parallel")
-    restore_at = src.index("n_parallel = _pv_extras_clamped_slots")
-    assert clamp_at < restore_at
-    # Restored before the spec flags are rebuilt, so the backstop can re-clamp if
-    # Unsloth's own resolution turns out to be MTP.
-    assert restore_at < src.index("spec_flags = self._build_speculative_flags(")
-    # And it only fires once the stripped extras really are non-MTP.
-    assert "not _extra_args_requests_mtp(" in src[restore_at - 400 : restore_at]
-
-
 def test_the_training_guard_sizes_the_cpu_pin_not_the_raw_request():
     """load_model rewrites a GGUF placement to CPU here, so a guard sizing the raw Auto
     request could refuse a chat load for VRAM it never takes."""
@@ -1033,15 +1018,14 @@ def test_a_load_with_no_separate_drafter_is_unaffected():
 
 def test_mtp_detection_reads_every_accumulated_type():
     """llama.cpp inserts each --spec-type rather than replacing, and applies the env
-    first, so MTP is on if ANY source names it. Reading only the last left the slot clamp
-    off for a launch that really does run MTP."""
+    first, so MTP is on if ANY source names it. The VRAM budget rides on reading them all."""
     f = llama_cpp._extra_args_requests_mtp
     env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
     assert f(["--spec-type", "ngram-mod"], env) is True
     assert f(["--spec-type", "draft-mtp", "--spec-type", "ngram-mod"], {}) is True
     assert f(["--spec_type=draft-mtp"], {}) is True
     assert f([], env) is True
-    # Negatives: nothing names MTP, so nothing clamps.
+    # Negatives: nothing names MTP.
     assert f(None, {}) is False
     assert f(["--spec-type", "ngram-mod"], {}) is False
     assert f(["--spec-default"], {}) is False
@@ -1183,16 +1167,15 @@ def test_the_split_mode_override_outlives_the_pass_through_extras():
     assert pin_at > extras_at, "the split-mode override is emitted before the user extras"
 
 
-# ── the MTP slot clamp must follow the flags that actually launch ─────
+# ── MTP detection must read the flags that actually launch ────────────
 
 
-def test_the_clamp_judges_the_env_the_child_will_actually_get():
+def test_the_mtp_read_judges_the_env_the_child_will_actually_get():
     """An inherited draft-mtp does launch MTP, but the launch scrubs it whenever Unsloth
-    owns the spec block, so the slots must survive rather than clamp for a server that
-    will not run MTP. The env counts only when the extras own --spec-type, the one case
-    it reaches the child."""
+    owns the spec block, so reading os.environ would describe a server that will not run MTP.
+    The env counts only when the extras own --spec-type, the one case it reaches the child."""
     env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
-    # Managed block: scrubbed, so nothing to clamp for.
+    # Managed block: scrubbed, so the env says nothing about this launch.
     assert llama_cpp._child_spec_env([]) == {}
     assert llama_cpp._extra_args_requests_mtp([], llama_cpp._child_spec_env([])) is False
     # Extras own the spec type: their flags and the env accumulate and both launch.
@@ -1206,11 +1189,8 @@ def test_the_clamp_judges_the_env_the_child_will_actually_get():
 
 
 def test_the_training_guard_does_not_shrink_itself_for_mtp():
-    """The launch clamps MTP to one slot, but the guard's estimate counts only the drafter
-    file and the main KV: not the draft KV, the duplicated target context under MLA, or
-    the draft compute reserve. Sizing for one slot would drop the slot KV without adding
-    those back, and a guard that under-sizes evicts the training run it protects; the
-    unclamped slots stand in for the difference."""
+    """MTP launches at the slots it asked for, and a guard that under-sizes evicts the
+    training run it protects."""
     route_src = inspect.getsource(_routes())
     assert "_extra_args_requests_mtp(llama_extra_args" not in route_src
     # The diffusion and kv-unified clamps stay: neither drops a modelled term.
@@ -1218,17 +1198,7 @@ def test_the_training_guard_does_not_shrink_itself_for_mtp():
     assert 'caps.get("supports_kv_unified")' in route_src
 
 
-def test_the_backstop_defers_to_a_user_owned_spec_type():
-    """_build_speculative_flags emits nothing when the user owns --spec-type, and judging
-    that empty list would fall through to the env and clamp anyway."""
-    env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
-    assert llama_cpp._extra_args_requests_mtp([], env) is True  # why the guard is needed
-    assert llama_cpp._extra_args_set_spec_type(["--spec-type", "ngram-mod"]) is True
-    src = _load_model_source()
-    assert "not _extra_args_set_spec_type(extra_args)" in src
-
-
-# ── ...and give the slots back when MTP never launches ────────────────
+# ── ...and drop the spec group the startup retry cannot keep ──────────
 
 
 def _if_block(predicate, tree = None):
@@ -1246,71 +1216,8 @@ def _names(node) -> set:
     return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
 
 
-def _is_mtp_clamp(test) -> bool:
-    return "spec_flags" in _names(test) and "n_parallel" in _names(test)
-
-
-def _is_slot_restore(test) -> bool:
-    return "_mtp_clamped_slots" in _names(test)
-
-
 def _is_retry_spec_strip(test) -> bool:
     return "_launch_spec_env" in _names(test)
-
-
-def _run_clamp_then_fallback(
-    *,
-    n_parallel,
-    extra_args,
-    spec_flags,
-    cmd,
-    asked_for = None,
-):
-    """Run the real clamp block, rebuild fallback_cmd the way the MTP retry does, then run
-    the real restore block. Returns the two argvs and the slot count
-    _commit_effective_parallel_slots would receive."""
-    scope = {
-        "n_parallel": n_parallel,
-        "extra_args": extra_args,
-        "spec_flags": spec_flags,
-        "cmd": list(cmd),
-        "_mtp_clamped_slots": 0,
-        "model_identifier": "owner/repo",
-        "logger": llama_cpp.logger,
-        "_extra_args_set_spec_type": llama_cpp._extra_args_set_spec_type,
-        "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
-        "_child_spec_env": llama_cpp._child_spec_env,
-        # The pre-fit ask, which the restore must NOT reach for.
-        "_pending_load_kwargs": {"n_parallel": n_parallel if asked_for is None else asked_for},
-    }
-    exec(ast.unparse(_if_block(_is_mtp_clamp)), scope)
-    clamped = list(scope["cmd"])
-    # The retry swaps the spec slice for --spec-default; it sits at this argv's tail.
-    spec_at = len(clamped) - len(spec_flags)
-    scope["fallback_cmd"] = clamped[:spec_at] + ["--spec-default"]
-    exec(ast.unparse(_if_block(_is_slot_restore)), scope)
-    return clamped, scope["fallback_cmd"], scope["n_parallel"]
-
-
-def _cmd(slots: int, spec_flags: list) -> list:
-    return ["llama-server", "-m", "/m.gguf", "--parallel", str(slots), "--kv-unified", *spec_flags]
-
-
-def test_the_mtp_fallback_gets_the_requested_slots_back():
-    """MTP aborts at startup and the retry drops speculative decoding entirely, so that
-    server must not inherit the single slot MTP needed. The KV fit was sized for the full
-    count."""
-    spec = ["--spec-type", "draft-mtp"]
-    clamped, fallback, slots = _run_clamp_then_fallback(
-        n_parallel = 4,
-        extra_args = ["--top-k", "40"],
-        spec_flags = spec,
-        cmd = _cmd(4, spec),
-    )
-    assert clamped[clamped.index("--parallel") + 1] == "1"  # MTP itself still gets one
-    assert fallback[fallback.index("--parallel") + 1] == "4"
-    # _commit_effective_parallel_slots reads this, and /status echoes it.
-    assert slots == 4
 
 
 def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
@@ -1340,36 +1247,6 @@ def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
     ) == ["--top-k", "40"]
 
 
-def test_the_retry_only_hands_back_slots_no_gpu_had_to_admit():
-    """The extras clamp cuts n_parallel to 1 before the GPU slot fit, whose gate needs >1,
-    so on a GPU box that count is never admitted and restoring it would size buffers
-    nothing approved. Off GPU there is nothing to budget, so the slots come back."""
-
-    def _restored(detected_gpus):
-        scope = {
-            "cmd": ["llama-server", "--parallel", "1", "--spec-type", "draft-mtp"],
-            "_spec_start": 3,
-            "spec_flags": [],
-            "_fb_tail": ["--spec-type", "draft-mtp"],
-            "extra_args": ["--spec-type", "draft-mtp"],
-            "_launch_spec_env": {},
-            "env": {},
-            "n_parallel": 1,
-            "_pv_extras_clamped_slots": 4,
-            "_mtp_clamped_slots": 0,
-            "_detected_gpus": detected_gpus,
-            "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
-            "strip_shadowing_flags": llama_cpp.strip_shadowing_flags,
-            "_SPEC_ENV_VARS": llama_cpp._SPEC_ENV_VARS,
-            "logger": llama_cpp.logger,
-        }
-        exec(ast.unparse(_if_block(_is_retry_spec_strip)), scope)
-        return scope["_mtp_clamped_slots"]
-
-    assert _restored([]) == 4, "a CPU launch must get its slots back"
-    assert _restored([(0, 8 << 30)]) == 0, "a GPU launch must not restore unbudgeted slots"
-
-
 def test_the_startup_fallback_records_the_extras_it_actually_launched():
     """The success path stores extra_args as the launched list, but the fallback launched
     without the spec group. Leaving the MTP list there means the next Apply that omits
@@ -1384,114 +1261,6 @@ def test_the_startup_fallback_records_the_extras_it_actually_launched():
     assert "list(extra_args or [])" in kept
     # Only on a healthy retry: a failed one must not rewrite what was asked for.
     assert src.index("_mtp_active_for_launched_server = False", 0, swap_at) < swap_at
-
-
-def test_the_extras_own_clamp_comes_back_from_the_startup_retry_too():
-    """Extras owning --spec-type park the displaced slots in _pv_extras_clamped_slots and
-    leave _mtp_clamped_slots at 0. The retry strips that MTP for real now, so a restore
-    reading only _mtp_clamped_slots would leave --parallel 1 forever: _requested_n_parallel
-    still holds the original ask, so every later identical load dedupes onto it."""
-    scope = {
-        "cmd": ["llama-server", "--parallel", "1", "--spec-type", "draft-mtp"],
-        "_spec_start": 3,
-        "spec_flags": [],
-        "_fb_tail": ["--spec-type", "draft-mtp"],
-        "extra_args": ["--spec-type", "draft-mtp"],
-        "_launch_spec_env": {},
-        "env": {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"},
-        "n_parallel": 1,
-        # What the extras clamp displaced, and what the Unsloth-resolved clamp holds.
-        "_pv_extras_clamped_slots": 4,
-        "_mtp_clamped_slots": 0,
-        "_detected_gpus": [],  # CPU launch: nothing had to budget the slots
-        "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
-        "strip_shadowing_flags": llama_cpp.strip_shadowing_flags,
-        "_SPEC_ENV_VARS": llama_cpp._SPEC_ENV_VARS,
-        "logger": llama_cpp.logger,
-    }
-    exec(ast.unparse(_if_block(_is_retry_spec_strip)), scope)
-    assert scope["env"] == {}, "the child kept the spec env the retry dropped"
-    scope["fallback_cmd"] = ["llama-server", "--parallel", "1", "--spec-default"]
-    exec(ast.unparse(_if_block(_is_slot_restore)), scope)
-    assert scope["fallback_cmd"][scope["fallback_cmd"].index("--parallel") + 1] == "4"
-    assert scope["n_parallel"] == 4
-
-
-def test_the_fallback_gets_back_what_the_fit_sized_not_what_the_user_asked():
-    """_slots_that_fit_on_gpu can already have cut the count before the clamp, so restoring
-    the raw ask would launch a server the VRAM budget never covered."""
-    spec = ["--spec-type", "draft-mtp"]
-    _, fallback, slots = _run_clamp_then_fallback(
-        n_parallel = 4,
-        extra_args = None,
-        spec_flags = spec,
-        cmd = _cmd(4, spec),
-        asked_for = 8,
-    )
-    assert fallback[fallback.index("--parallel") + 1] == "4"
-    assert slots == 4
-
-
-def test_a_single_slot_mtp_load_stays_single_slot_on_the_fallback():
-    """The negative that matters most: nothing was clamped, so nothing is owed."""
-    spec = ["--spec-type", "draft-mtp"]
-    clamped, fallback, slots = _run_clamp_then_fallback(
-        n_parallel = 1,
-        extra_args = None,
-        spec_flags = spec,
-        cmd = _cmd(1, spec),
-    )
-    assert clamped[clamped.index("--parallel") + 1] == "1"
-    assert fallback[fallback.index("--parallel") + 1] == "1"
-    assert slots == 1
-
-
-def test_a_user_owned_spec_type_is_not_handed_slots_it_never_asked_to_lose():
-    """The pre-flight clamp already reduced this load before the KV fit, so the fit is
-    sized for one slot and the backstop never records a debt."""
-    clamped, fallback, slots = _run_clamp_then_fallback(
-        n_parallel = 1,
-        extra_args = ["--spec-type", "draft-mtp"],
-        spec_flags = [],
-        cmd = _cmd(1, []),
-    )
-    assert clamped[clamped.index("--parallel") + 1] == "1"
-    assert fallback[fallback.index("--parallel") + 1] == "1"
-    assert slots == 1
-
-
-def test_a_non_mtp_resolution_keeps_its_slots_end_to_end():
-    """No clamp, so the restore must not touch a count that was already correct."""
-    spec = ["--spec-default"]
-    clamped, fallback, slots = _run_clamp_then_fallback(
-        n_parallel = 4,
-        extra_args = None,
-        spec_flags = spec,
-        cmd = _cmd(4, spec),
-    )
-    assert clamped[clamped.index("--parallel") + 1] == "4"
-    assert fallback[fallback.index("--parallel") + 1] == "4"
-    assert slots == 4
-
-
-def test_the_restore_is_scoped_to_the_retry_that_actually_drops_mtp():
-    """A successful MTP launch, and the FA-off retry that keeps MTP, both stay at one
-    slot: the restore belongs to the --spec-default retry alone."""
-    tree = _load_model_tree()
-    restore = _if_block(_is_slot_restore, tree)
-    owners = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and any(restore in ast.walk(stmt) for stmt in node.body)
-        and "_spec_requested_mtp" in _names(node.test)
-    ]
-    assert len(owners) == 1, "the slot restore left the MTP-fallback branch"
-    assert "healthy" in _names(owners[0].test), "the restore must only run on a failed MTP start"
-    # ...and after the retry argv exists, or it would rewrite nothing.
-    src = _load_model_source()
-    assert src.index("fallback_cmd = cmd[:_spec_start]") < src.index("_mtp_clamped_slots > 1")
-    assert src.index("_mtp_clamped_slots > 1") < src.index("_spawn_and_wait(fallback_cmd")
 
 
 # ── a suppressed drafter must not churn the server it left healthy ───
