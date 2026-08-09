@@ -16,7 +16,7 @@ import threading
 import time
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import core.inference.gpu_arbiter as gpu_arbiter
@@ -311,8 +311,11 @@ def test_load_threads_options_through_to_backend(client):
     assert kwargs.get("transformer_cache_threshold") == 0.1
 
 
-def test_load_threads_transformer_quant_and_guidance_2(client):
+def test_load_threads_transformer_quant_and_guidance_2(client, monkeypatch):
     # The load-time transformer_quant field reaches the backend, and the per-generation guidance_2 reaches generate() (dual-DiT MoE).
+    # The dense DiT quant is pipeline-only, so a GGUF pick with an explicit scheme is refused by the
+    # route's precision gate before it gets here; stub the gate out, since this is about threading.
+    monkeypatch.setattr(video_module, "assert_video_precision_available", lambda fam, **kw: None)
     resp = client.post(
         "/api/inference/video/load",
         json = {
@@ -342,8 +345,13 @@ def test_load_rejects_bad_transformer_quant_422(client):
     assert resp.status_code == 422
 
 
-def test_load_threads_text_encoder_quant(client):
+def test_load_threads_text_encoder_quant(client, monkeypatch):
     # The load-time text_encoder_quant field reaches the backend (the video path also quantises the dense companion encoder).
+    #
+    # Under the precision escape hatch, because whether an fp8 encoder is available is a
+    # property of the HOST: on a CPU-only runner the gate refuses this pick with a 409 and the
+    # forwarding this test is about never happens. The hatch is the product's own bypass.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     resp = client.post(
         "/api/inference/video/load",
         json = {
@@ -657,6 +665,22 @@ def test_status_passthrough(client, monkeypatch):
     resolved = {
         "speed_mode": {"value": "eager", "source": "auto", "reason": "GGUF default"},
         "transformer_cache": {"value": None, "source": "auto", "reason": "few-step model"},
+        # A declined explicit precision has to survive the boundary here too (the Linux half of
+        # P1-2: the label kept reading BF16 while telemetry confirmed NVFP4).
+        "transformer_quant": {
+            "value": "off",
+            "requested": "nvfp4",
+            "source": "explicit",
+            "status": "unsupported",
+            "reason": "this GPU has no NVFP4 cores",
+        },
+        "text_encoder_quant": {
+            "value": "fp8",
+            "requested": "int8",
+            "source": "explicit",
+            "status": "fell_back",
+            "reason": "int8 has no measured keep-bf16 schedule for this family",
+        },
     }
     monkeypatch.setattr(
         backend,
@@ -672,13 +696,130 @@ def test_status_passthrough(client, monkeypatch):
     )
     body = client.get("/api/inference/video/status").json()
     assert body["loaded"] is True and body["family"] == "ltx-2"
-    assert body["resolved"] == resolved
+    assert body["resolved"]["transformer_quant"] == resolved["transformer_quant"]
+    assert body["resolved"]["text_encoder_quant"] == resolved["text_encoder_quant"]
+    # Entries from an older backend (no requested/status) still parse, defaulted to "applied".
+    assert body["resolved"]["speed_mode"]["requested"] is None
+    assert body["resolved"]["speed_mode"]["status"] == "applied"
     assert body["defaults"]["frame_step"] == 8
 
 
 def test_status_resolved_defaults_to_null(client):
     body = client.get("/api/inference/video/status").json()
     assert body["resolved"] is None and body["defaults"] is None
+
+
+def _load_fake_video(client):
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    assert resp.status_code == 200
+
+
+def test_saved_clip_records_the_engaged_build(client, monkeypatch):
+    # A saved MP4 has to name the BUILD it came off, like a saved PNG already does: without it a
+    # clip rendered at bf16 is indistinguishable from one rendered at the precision that was asked
+    # for. Every value here is the ENGAGED state, never the load request.
+    backend = video_module.get_video_backend()
+    real_generate = backend.generate
+
+    def _generate(**kwargs):
+        return {
+            **real_generate(**kwargs),
+            "model_kind": "gguf",
+            "gguf_filename": "ltx-2.3-Q4_K_M.gguf",
+            "transformer_quant": None,
+            "text_encoder_quant": "fp8",
+            "memory_mode": "low_vram",
+            "offload_policy": "sequential",
+        }
+
+    monkeypatch.setattr(backend, "generate", _generate)
+    _load_fake_video(client)
+    video = _generate_and_wait(client, {"prompt": "a sloth", "seed": 3})
+    assert video["model_kind"] == "gguf"
+    assert video["gguf_filename"] == "ltx-2.3-Q4_K_M.gguf"
+    assert video["transformer_quant"] is None
+    assert video["text_encoder_quant"] == "fp8"
+    assert video["memory_mode"] == "low_vram"
+    assert video["offload_policy"] == "sequential"
+    # ...and it round-trips through the on-disk sidecar, not just the in-memory record.
+    listed = client.get("/api/inference/video/gallery").json()["videos"]
+    assert listed[0]["text_encoder_quant"] == "fp8"
+    assert listed[0]["gguf_filename"] == "ltx-2.3-Q4_K_M.gguf"
+
+
+def test_sidecars_without_the_build_fields_still_list(client):
+    # The new keys are NOT in video_gallery._REQUIRED_META, so a clip written before they existed
+    # lists with them null instead of being skipped as a foreign sidecar.
+    _load_fake_video(client)
+    video = _generate_and_wait(client, {"prompt": "a sloth"})
+    assert video["model_kind"] is None and video["transformer_quant"] is None
+    listed = client.get("/api/inference/video/gallery").json()["videos"]
+    assert len(listed) == 1 and listed[0]["text_encoder_quant"] is None
+
+
+def test_load_refuses_an_unusable_explicit_precision_with_409(client, monkeypatch):
+    # begin_load refuses an EXPLICIT precision this host cannot honor; the route answers 409 with
+    # the reason instead of accepting the load and denoising at some other precision.
+    from core.inference.diffusion_auto_policy import precision_refusal_message
+
+    backend = video_module.get_video_backend()
+    refusal = precision_refusal_message(
+        "transformer_quant",
+        "nvfp4",
+        "'nvfp4' is not usable for family 'ltx-2' on this GPU",
+        off_label = "Off to run the DiT at bf16",
+    )
+
+    def _refuse(model_path, **kwargs):
+        raise RuntimeError(refusal)
+
+    monkeypatch.setattr(backend, "begin_load", _refuse)
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "Lightricks/LTX-2.3", "transformer_quant": "nvfp4"},
+    )
+    assert resp.status_code == 409
+    assert "transformer_quant='nvfp4' could not be used" in resp.json()["detail"]
+    assert client.get("/api/inference/video/status").json()["loaded"] is False
+
+
+def test_precision_refusal_precedes_eviction(client, monkeypatch):
+    # The refusal belongs to validate_load_request, which the route calls BEFORE the GPU handoff:
+    # acquire_for evicts chat under the arbiter lock before it runs begin_load, so a refusal made
+    # there arrives after the eviction the 409 exists to prevent.
+    from core.inference.diffusion_auto_policy import precision_refusal_message
+
+    backend = video_module.get_video_backend()
+    evicted = []
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append("chat"))
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    refusal = precision_refusal_message(
+        "transformer_quant",
+        "nvfp4",
+        "'nvfp4' is not usable for family 'ltx-2' on this GPU",
+        off_label = "Off to run the DiT at bf16",
+    )
+
+    def _refuse(fam, **kwargs):
+        raise RuntimeError(refusal)
+
+    monkeypatch.setattr(video_module, "assert_video_precision_available", _refuse)
+    monkeypatch.setattr(
+        backend,
+        "begin_load",
+        lambda *a, **k: pytest.fail("begin_load ran after an impossible precision"),
+    )
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "Lightricks/LTX-2.3", "transformer_quant": "nvfp4"},
+    )
+    assert resp.status_code == 409
+    assert "transformer_quant='nvfp4' could not be used" in resp.json()["detail"]
+    assert evicted == []
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
 def test_unload_releases_arbiter(client, monkeypatch):
@@ -787,6 +928,9 @@ def test_delete_guard_protects_the_loaded_video_companion_base(monkeypatch):
 
 def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
     # The plan drives the staged download, so it must use the encoder policy the load will run with: an fp8 request takes a hosted pre-cast encoder, and staging the dense one pulls ~49 GB of Gemma3.
+    # Same host-independence as the load twin: the plan now makes the precision check too, so
+    # without the escape hatch a GPU-less runner answers 409 and forwards nothing.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     backend = video_module.get_video_backend()
     seen: dict = {}
 
@@ -811,6 +955,42 @@ def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
     assert resp.status_code == 200
     assert seen["text_encoder_quant"] == "fp8"
     assert seen["hf_token"] == "hf_secret"
+
+
+def test_the_video_plan_refuses_an_impossible_precision_before_anything_is_staged(
+    client, monkeypatch
+):
+    # The video weights are the tens-of-GB case: /video/load refuses a precision this host cannot
+    # honour, but the UI plans and stages first, so the refusal used to arrive after the download.
+    import core.inference.video as video_core
+
+    backend = video_module.get_video_backend()
+
+    def _refuse(fam, **kwargs):
+        raise RuntimeError(
+            "text_encoder_quant='fp8' could not be used: this device cannot cast the encoder."
+        )
+
+    monkeypatch.setattr(video_core, "assert_video_precision_available", _refuse)
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda *a, **k: pytest.fail("the plan was built for a precision that cannot be honoured"),
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "text_encoder_quant": "fp8",
+        },
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert "could not be used" in resp.json()["detail"]
 
 
 def test_video_load_guard_still_checks_diffusion_when_the_llm_probe_raises(client, monkeypatch):
@@ -919,3 +1099,71 @@ def test_signed_video_link_rejects_tampering_and_other_ids(client):
 
 def test_signed_url_mint_is_bearer_gated_and_404s_for_an_unknown_clip(client):
     assert client.get("/api/inference/video/gallery/does-not-exist/signed-url").status_code == 404
+
+
+def test_the_training_guard_runs_before_the_precision_probe(client, monkeypatch):
+    # The precision gate's support check quantises a real Linear on the GPU and synchronises, so
+    # running it first initialises a CUDA context and allocates next to the training subprocess
+    # for a load that is about to be refused anyway -- and an OOM there under that contention is
+    # not a verdict on the scheme. The image route already guards first; this one now does too.
+    import routes.video as video_routes
+
+    def _refuse_training() -> None:
+        raise HTTPException(status_code = 409, detail = "Training is running.")
+
+    monkeypatch.setattr(video_routes, "_guard_video_load_against_training", _refuse_training)
+    monkeypatch.setattr(
+        video_module,
+        "assert_video_precision_available",
+        lambda fam, **kw: pytest.fail("the precision probe ran while training was active"),
+    )
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "Lightricks/LTX-2.3", "transformer_quant": "nvfp4"},
+    )
+    assert resp.status_code == 409 and resp.json()["detail"] == "Training is running."
+
+
+@pytest.mark.parametrize("memory", ["balanced", "low_vram"])
+def test_the_video_precision_gate_sees_the_memory_request(monkeypatch, memory):
+    """balanced and low_vram settle the offload policy before anything is measured, and an
+    offloaded DiT skips the torchao build -- so load_pipeline's strict refusal arrived after
+    acquire_for and the teardown had already evicted the resident model."""
+    import types
+
+    monkeypatch.setattr(video_module, "precision_fallback_allowed", lambda: False)
+    monkeypatch.setattr(
+        video_module,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(device = "cuda", dtype = "bfloat16"),
+    )
+    monkeypatch.setattr(video_module, "dense_transformer_supported", lambda target: True)
+    with pytest.raises(RuntimeError) as excinfo:
+        video_module.assert_video_precision_available(
+            types.SimpleNamespace(name = "wan2.2"),
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            memory_mode = memory,
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+    assert "offload" in str(excinfo.value)
+
+
+def test_the_video_gate_leaves_a_measured_memory_mode_alone(monkeypatch):
+    """fast and auto are decided from the measured footprint, so this gate cannot judge them."""
+    import types
+
+    monkeypatch.setattr(video_module, "precision_fallback_allowed", lambda: False)
+    monkeypatch.setattr(
+        video_module,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(device = "cuda", dtype = "bfloat16"),
+    )
+    monkeypatch.setattr(video_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
+    video_module.assert_video_precision_available(
+        types.SimpleNamespace(name = "wan2.2"),
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        memory_mode = "fast",
+    )

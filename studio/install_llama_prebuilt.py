@@ -42,7 +42,7 @@ except ImportError:
     FileLock = None
     FileLockTimeout = None
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Union
 
 # Shared component-agnostic machinery lives in prebuilt_core (same directory);
 # put studio/ on sys.path so it resolves whether this file is run as a script
@@ -4471,6 +4471,35 @@ def download_validation_model(path: Path, cache_path: Path | None = None) -> Non
         raise PrebuiltFallback(f"validation model unavailable: {exc}") from exc
 
 
+# A probe model supplied either directly or as a thunk fetched on first use.
+ValidationModelProvider = Union[Path, Callable[[], Path]]
+
+
+def lazy_validation_model(path: Path, cache_path: Path | None = None) -> Callable[[], Path]:
+    """Fetch the tiny GGUF probe on first use, at most once.
+
+    An approved bundle proves its integrity by sha256 and so skips the staged smoke
+    test, leaving the probe unread on the default install path. Fetching it up front
+    still made huggingface.co a hard gate: a 429 there raised PrebuiltFallback and
+    forced a multi-minute source build over a file nothing went on to open.
+    """
+    fetched = False
+
+    def ensure() -> Path:
+        nonlocal fetched
+        if not fetched:
+            download_validation_model(path, cache_path)
+            fetched = True
+        return path
+
+    return ensure
+
+
+def resolve_validation_model(probe: ValidationModelProvider) -> Path:
+    """Materialize a probe model that may have been supplied lazily."""
+    return probe() if callable(probe) else probe
+
+
 def free_local_port() -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
@@ -6292,7 +6321,7 @@ def validate_prebuilt_choice(
     host: HostInfo,
     install_dir: Path,
     work_dir: Path,
-    probe_path: Path,
+    probe: ValidationModelProvider,
     *,
     requested_tag: str,
     llama_tag: str,
@@ -6360,6 +6389,8 @@ def validate_prebuilt_choice(
     # disabled for now. The check and the source-build fallback it triggers are
     # kept intact; flip the flag / env to restore it (#5854).
     if choice.expected_sha256 is None or staged_validation_enabled():
+        # Only branch that reads the probe, so this is where a lazy one is fetched.
+        probe_path = resolve_validation_model(probe)
         validate_quantize(
             quantize_path,
             probe_path,
@@ -6428,7 +6459,7 @@ def validate_prebuilt_attempts(
     host: HostInfo,
     install_dir: Path,
     work_dir: Path,
-    probe_path: Path,
+    probe: ValidationModelProvider,
     *,
     requested_tag: str,
     llama_tag: str,
@@ -6443,6 +6474,14 @@ def validate_prebuilt_attempts(
     attempt_list = list(attempts)
     if not attempt_list:
         raise PrebuiltFallback("no prebuilt bundle attempts were available")
+
+    # Resolve the probe up front when any attempt will validate. The per-candidate
+    # handler below catches Exception, so a probe download failing inside it would
+    # read as a bad bundle and demote a healthy GPU pick to CPU -- and, since the
+    # thunk memoises success but not failure, re-download once per attempt. Plans
+    # that skip validation never call the thunk, so they stay lazy.
+    if staged_validation_enabled() or any(a.expected_sha256 is None for a in attempt_list):
+        probe = resolve_validation_model(probe)
 
     tried_fallback = initial_fallback_used
     for index, attempt in enumerate(attempt_list):
@@ -6492,7 +6531,7 @@ def validate_prebuilt_attempts(
                 host,
                 staging_dir,
                 work_dir,
-                probe_path,
+                probe,
                 requested_tag = requested_tag,
                 llama_tag = llama_tag,
                 release_tag = release_tag,
@@ -7103,8 +7142,22 @@ def install_prebuilt(
                     sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                     return
             with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
-                probe_path = work_dir / "stories260K.gguf"
-                download_validation_model(probe_path, validation_model_cache_path(install_dir))
+                probe = lazy_validation_model(
+                    work_dir / "stories260K.gguf",
+                    validation_model_cache_path(install_dir),
+                )
+                # Same reason as the per-candidate guard in validate_prebuilt_attempts,
+                # one level up: the per-release handler below also swallows
+                # PrebuiltFallback and moves to an older plan, so a probe failure raised
+                # inside it would install an older llama.cpp over a transient 429. The
+                # probe is independent of which release was picked, so resolve it once
+                # here when any plan will smoke-test.
+                if staged_validation_enabled() or any(
+                    attempt.expected_sha256 is None
+                    for release_plan in release_plans
+                    for attempt in release_plan.attempts
+                ):
+                    probe = resolve_validation_model(probe)
                 release_count = len(release_plans)
                 for release_index, plan in enumerate(release_plans):
                     choice = plan.attempts[0]
@@ -7142,7 +7195,7 @@ def install_prebuilt(
                             host,
                             install_dir,
                             work_dir,
-                            probe_path,
+                            probe,
                             requested_tag = requested_tag,
                             llama_tag = plan.llama_tag,
                             release_tag = plan.release_tag,
