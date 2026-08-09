@@ -2275,12 +2275,12 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
-            } catch (error) {
-              toast.error("Could not attach dropped audio", {
-                description:
-                  error instanceof Error ? error.message : String(error),
-              });
+            } catch {
+              // Chat-wide, not per file (no audio model, over the size limit, or
+              // a clip already attached). Every one of those adapter paths
+              // toasted, and the rest would fail alike: stop quietly.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              return;
             }
           }
         }
