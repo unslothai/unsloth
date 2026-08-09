@@ -166,16 +166,21 @@ def _variant_main_shard_present(
         entries = list(snapshot_dir.rglob("*"))
     except OSError:
         return None
+    # An entry we could not stat may BE the main shard -- a transient network-filesystem hiccup
+    # or a Windows ACL denial on one file is not evidence the variant is gone. A positive match
+    # elsewhere still settles it; otherwise the reading stays unknown.
+    unreadable = False
     for path in entries:
         try:
             if not path.is_file():
                 continue
         except OSError:
+            unreadable = True
             continue
         relative = path.relative_to(snapshot_dir).as_posix()
         if variant_file_matcher(relative, companions = False):
             return True
-    return False
+    return None if unreadable else False
 
 
 def _materialized_bytes(snapshot_dir: Path, variant_file_matcher: "VariantFileMatcher") -> int:

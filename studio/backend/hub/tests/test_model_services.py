@@ -6479,3 +6479,37 @@ def test_one_unknown_cache_keeps_absence_unknown(monkeypatch, tmp_path):
     )
 
     assert result["target_present"] is None, result
+
+
+def test_a_file_that_cannot_be_stated_keeps_presence_unknown(monkeypatch, tmp_path):
+    """rglob succeeding does not mean every entry can be read. A transient network-filesystem
+    error or a Windows ACL denial on ONE file was silently skipped, and the scan then reported
+    the variant absent -- though the skipped entry may have been its main shard, and idle
+    hydration retires a persisted download on exactly that verdict."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)  # a sibling keeps the dir alive
+    denied = snap / "model-Q4_K_M.gguf"
+    denied.write_bytes(b"x" * 100)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry)
+    real_is_file = Path.is_file
+
+    def _deny(self):
+        if self.name == "model-Q4_K_M.gguf":
+            raise PermissionError("denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", _deny)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is None, result
