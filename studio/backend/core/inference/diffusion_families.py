@@ -770,16 +770,14 @@ def family_prequant_repo(
     return None
 
 
-# The packaging floor for any class not listed below (``pyproject``'s conditional
-# ``diffusers>=0.39.0``), and the release where diffusers' own requires-python went ">= 3.10.0",
-# which makes 0.36.0 the newest a supported Python 3.9 host can resolve.
-_DIFFUSERS_FLOOR = "0.39.0"
+# The release where diffusers' own requires-python went ">= 3.10.0", which makes 0.36.0 the newest
+# a supported Python 3.9 host can resolve.
 _DIFFUSERS_DROPPED_PY39 = "0.37.0"
 
 # First diffusers release exporting each pipeline class, read off ``src/diffusers/__init__.py`` at
-# the upstream tags and cross-checked against each release's requires-python on PyPI. Only classes
-# newer than the 0.35 baseline need an entry; anything unlisted falls back to the floor, which is
-# what the message claimed for every family before. This exists so the remedy is true: telling a
+# the upstream tags and cross-checked against each release's requires-python on PyPI. An unlisted
+# class gets a version-free "a newer diffusers" instead of a number, since the ones left out are
+# older than any release in play. This exists so the remedy is true: telling a
 # 3.9 host that Z-Image needs Python >= 3.10 sends it to upgrade the interpreter when
 # ``pip install -U diffusers`` (0.36.0 there) would have been enough.
 _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
@@ -796,6 +794,15 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "Flux2KleinInpaintPipeline": "0.38.0",
     "Ideogram4Pipeline": "0.39.0",
     "Krea2Pipeline": "0.39.0",
+    # Older than the 0.35 baseline, but listed anyway: the packaging leaves an UNCONSTRAINED
+    # diffusers installable below 3.10, so an already-present ancient one satisfies the pin, and
+    # quoting the 0.39 floor at a family that has existed since 0.30 is the same wrong remedy.
+    "QwenImagePipeline": "0.35.0",
+    "QwenImageImg2ImgPipeline": "0.35.0",
+    "QwenImageInpaintPipeline": "0.35.0",
+    "FluxPipeline": "0.30.0",
+    "FluxImg2ImgPipeline": "0.30.0",
+    "FluxInpaintPipeline": "0.30.0",
 }
 
 
@@ -810,9 +817,17 @@ def _version_tuple(v: str) -> tuple[int, ...]:
     return tuple(out)
 
 
-def pipeline_class_requirement(pipeline_class: str) -> tuple[str, bool]:
-    """``(minimum diffusers version, whether that minimum also needs Python >= 3.10)``."""
-    minimum = _PIPELINE_MIN_DIFFUSERS.get(pipeline_class, _DIFFUSERS_FLOOR)
+def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool]:
+    """``(minimum diffusers version, whether that minimum also needs Python >= 3.10)``.
+
+    ``None`` for a class with no entry. That is deliberately not the packaging floor: an unlisted
+    class is one old enough that no release in play lacks it (StableDiffusionXLPipeline goes back
+    past 0.29), so naming 0.39 would send a supported Python 3.9 host to upgrade its interpreter
+    for a class every diffusers it can install already has. Without an entry the refusal says
+    "a newer diffusers" and stops there, which is true whatever the class."""
+    minimum = _PIPELINE_MIN_DIFFUSERS.get(pipeline_class)
+    if minimum is None:
+        return None, False
     return minimum, _version_tuple(minimum) >= _version_tuple(_DIFFUSERS_DROPPED_PY39)
 
 
@@ -820,6 +835,11 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
     """The refusal text: what is missing, what is installed, and a remedy this interpreter can
     actually carry out."""
     minimum, needs_py310 = pipeline_class_requirement(pipeline_class)
+    if minimum is None:
+        return (
+            f"'{family_name}' needs a newer diffusers ({pipeline_class}); this environment has "
+            f"diffusers {installed}. Upgrade with: pip install -U diffusers."
+        )
     remedy = f"Upgrade with: pip install -U 'diffusers>={minimum}'."
     if needs_py310:
         remedy += (
@@ -830,6 +850,20 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
         f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}); this environment has "
         f"diffusers {installed}. {remedy}"
     )
+
+
+def _missing_backends(cls: object) -> tuple[str, ...]:
+    """The backends diffusers says ``cls`` needs, when ``cls`` is one of its placeholders.
+
+    With a required backend absent (torch, transformers, ...), diffusers still EXPORTS every
+    pipeline name, as a ``DummyObject``-metaclassed stand-in from ``diffusers.utils.dummy_*``
+    whose ``from_pretrained`` raises ``ImportError`` on the first call. ``hasattr`` therefore
+    answers True for a class that cannot be used, which is exactly the "importable" answer the
+    strict gate must not accept. Empty tuple for a real class."""
+    if not str(getattr(cls, "__module__", "")).startswith("diffusers.utils.dummy"):
+        return ()
+    backends = getattr(cls, "_backends", None) or ()
+    return tuple(str(b) for b in backends)
 
 
 def assert_pipeline_class_available(
@@ -866,6 +900,7 @@ def assert_pipeline_class_available(
     try:
         import diffusers
         present = hasattr(diffusers, pipeline_class)
+        dummy_backends = _missing_backends(getattr(diffusers, pipeline_class, None))
     except Exception as exc:  # noqa: BLE001 -- see below: this check must never raise anything but its own ValueError
         # Not this check's business under the default: it answers "is the installed diffusers new enough for this
         # family", and with nothing importable there is no version to judge. Refusing would also break the native
@@ -885,6 +920,18 @@ def assert_pipeline_class_available(
                 f"cannot import: {exc}. Install or repair it with: pip install -U diffusers."
             ) from None
         return
+
+    if present and dummy_backends:
+        # A placeholder, not the pipeline. Under the default this is left alone like every other
+        # unusable install; strict refuses, because the trainer child imports the same placeholder
+        # and its from_pretrained raises only after the GPU residents are gone.
+        if not strict:
+            return
+        raise ValueError(
+            f"'{family_name}' needs diffusers ({pipeline_class}), but this diffusers exports it as "
+            f"a placeholder because these backends are missing: {', '.join(dummy_backends)}. "
+            f"Install them (pip install -U {' '.join(dummy_backends)}) and try again."
+        )
 
     if present:
         return

@@ -1623,8 +1623,12 @@ def test_inference_keeps_absorbing_an_unimportable_diffusers(monkeypatch):
         ("Flux2KleinPipeline", "0.37.0", True),
         ("LTX2Pipeline", "0.37.0", True),
         ("Krea2Pipeline", "0.39.0", True),
-        # Anything at or below the 0.35 baseline is unlisted and falls back to the packaging floor.
-        ("StableDiffusionXLPipeline", "0.39.0", True),
+        # Older than the 0.35 baseline but still listed: the packaging leaves an UNCONSTRAINED
+        # diffusers installable below Python 3.10, so an ancient one already present satisfies the
+        # pin, and quoting the 0.39 floor at a family that has shipped since 0.30 is the same wrong
+        # remedy this fixes.
+        ("QwenImagePipeline", "0.35.0", False),
+        ("FluxPipeline", "0.30.0", False),
     ],
 )
 def test_the_refusal_names_the_release_that_family_actually_needs(
@@ -1640,10 +1644,62 @@ def test_the_refusal_names_the_release_that_family_actually_needs(
     )
 
     assert pipeline_class_requirement(pipeline_class) == (minimum, needs_py310)
-    message = _too_old_message(pipeline_class, "some-family", "0.35.2")
+    message = _too_old_message(pipeline_class, "some-family", "0.29.0")
     assert f"diffusers >= {minimum}" in message
-    assert "0.35.2" in message  # what is actually installed
+    assert "0.29.0" in message  # what is actually installed
     assert ("Python >= 3.10" in message) is needs_py310
+
+
+def test_an_unlisted_pipeline_names_no_version_it_cannot_stand_behind():
+    # StableDiffusionXLPipeline has shipped since before 0.29, so there is no release in play that
+    # lacks it. Falling back to the 0.39 packaging floor would tell a supported Python 3.9 host to
+    # upgrade its interpreter for a class every diffusers it can install already has, so an
+    # unlisted class gets no version and no Python claim at all.
+    from core.inference.diffusion_families import (
+        _too_old_message,
+        pipeline_class_requirement,
+    )
+
+    assert pipeline_class_requirement("StableDiffusionXLPipeline") == (None, False)
+    message = _too_old_message("StableDiffusionXLPipeline", "sdxl", "0.29.0")
+    assert "a newer diffusers" in message and "0.29.0" in message
+    assert "0.39" not in message and "3.10" not in message
+
+
+def test_a_dummy_pipeline_export_is_not_treated_as_importable():
+    # With a required backend absent, diffusers still exports every pipeline NAME as a
+    # DummyObject-metaclassed placeholder whose from_pretrained raises ImportError on first call.
+    # hasattr answers True for it, so the strict gate has to look past the name or the trainer
+    # child hits that ImportError after the GPU residents are gone.
+    import sys
+    import types
+
+    import pytest
+
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    dummy = types.new_class("Krea2Pipeline")
+    dummy.__module__ = "diffusers.utils.dummy_torch_and_transformers_objects"
+    dummy._backends = ["torch", "transformers"]
+
+    stub = types.ModuleType("diffusers")
+    stub.__version__ = "0.39.0"
+    stub.Krea2Pipeline = dummy
+    real = sys.modules.get("diffusers")
+    sys.modules["diffusers"] = stub
+    try:
+        # The default is unchanged: inference has always left an unusable install to the loader.
+        assert assert_pipeline_class_available("Krea2Pipeline", "krea-2") is None
+        with pytest.raises(ValueError) as excinfo:
+            assert_pipeline_class_available("Krea2Pipeline", "krea-2", strict = True)
+    finally:
+        if real is not None:
+            sys.modules["diffusers"] = real
+        else:
+            del sys.modules["diffusers"]
+    msg = str(excinfo.value)
+    assert "placeholder" in msg
+    assert "torch" in msg and "transformers" in msg  # names what to install
 
 
 def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatch):
