@@ -1552,7 +1552,6 @@ def _clear_the_hardware_preflight(monkeypatch):
     direction.
     """
     import core.training.diffusion_train_common as dtc
-
     monkeypatch.setattr(dtc, "training_precision_preflight_error", lambda *a, **k: None)
 
 
