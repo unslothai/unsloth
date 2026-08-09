@@ -2385,9 +2385,7 @@ def test_every_completion_reports_whether_the_run_was_discarded(module):
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "_emit"
-        and any(
-            isinstance(arg, ast.Constant) and arg.value == "complete" for arg in node.args
-        )
+        and any(isinstance(arg, ast.Constant) and arg.value == "complete" for arg in node.args)
     ]
     assert completions, f"{module} must emit a completion"
     for call in completions:
