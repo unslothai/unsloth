@@ -207,9 +207,24 @@ class _FakeApi:
         return object()
 
 
+def _hub_error(cls, message):
+    """Build a hub exception without calling its ``__init__``.
+
+    ``HfHubHTTPError.__init__`` takes ``response`` as an optional positional on
+    huggingface_hub 0.x and as a *required* keyword-only httpx Response on 1.x,
+    and RepositoryNotFoundError inherits it. Bypassing ``__init__`` keeps these
+    fixtures working on both, which the repo supports.
+    """
+    error = cls.__new__(cls)
+    Exception.__init__(error, message)
+    return error
+
+
 def test_missing_repo_is_reported_missing():
     """A repo the Hub says does not exist is a registry error."""
-    api = _FakeApi(RepositoryNotFoundError("404 Client Error. Repository Not Found"))
+    api = _FakeApi(
+        _hub_error(RepositoryNotFoundError, "404 Client Error. Repository Not Found")
+    )
     assert _model_is_missing(api, "unsloth/does-not-exist")
 
 
@@ -218,16 +233,17 @@ def test_present_repo_is_not_reported_missing():
 
 
 @pytest.mark.parametrize(
-    "error",
+    "make_error",
     [
-        HfHubHTTPError("429 Client Error: Too Many Requests"),
-        ConnectionError("Failed to establish a new connection"),
-        TimeoutError("read timed out"),
+        lambda: _hub_error(HfHubHTTPError, "429 Client Error: Too Many Requests"),
+        lambda: ConnectionError("Failed to establish a new connection"),
+        lambda: TimeoutError("read timed out"),
     ],
     ids = ["rate_limited", "connection_refused", "timeout"],
 )
-def test_unreachable_hub_skips_instead_of_reporting_missing(monkeypatch, error):
+def test_unreachable_hub_skips_instead_of_reporting_missing(monkeypatch, make_error):
     """A hub outage must not be reported as every registered model missing."""
+    error = make_error()
     with pytest.raises(HubUnavailable):
         _model_is_missing(_FakeApi(error), "unsloth/Qwen2.5-7B")
 
