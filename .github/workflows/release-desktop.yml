@@ -2072,7 +2072,7 @@ jobs:
               sys.exit(f'desktop-latest latest.json URL mismatch: expected {expected_url}, got {actual_url}')
           PY
 
-  # ── Advisory multi-engine scan of the bundles just published ──
+  # ── Advisory multi-engine scan of the bundles just uploaded ──
   # Defender (build job) is one vendor and gates only Windows. VirusTotal
   # aggregates ~70 engines across all four bundles, which is how a false
   # positive from some other vendor gets noticed here rather than in a user bug
@@ -2086,11 +2086,14 @@ jobs:
   # job it was ~9 minutes of the ~9.5 the job took, delaying every release by its
   # full length while being unable to block one.
   virustotal-scan:
-    name: VirusTotal post-publish scan
+    # Not "post-publish": `inputs.draft` defaults to true and the release is
+    # created with `--draft` on that input, so the ordinary run has uploaded the
+    # assets to a draft. The name has to read true for both dispatches.
+    name: VirusTotal release asset scan
     needs: [publish-release]
     runs-on: ubuntu-latest
     # A missing secret, a VirusTotal outage or quota exhaustion must not fail
-    # the release that already published.
+    # the release whose assets are already uploaded.
     continue-on-error: true
     timeout-minutes: 30
     steps:
@@ -2137,7 +2140,10 @@ jobs:
           if [ -f "$summary" ]; then
             cat "$summary" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo '### VirusTotal post-publish scan' >> "$GITHUB_STEP_SUMMARY"
+            # Must stay byte-identical to SUMMARY_HEADING in
+            # scripts/virustotal_scan.py, or a run that produced no summary shows
+            # a second, unrelated section. A test ties the two together.
+            echo '### VirusTotal release asset scan' >> "$GITHUB_STEP_SUMMARY"
             echo '' >> "$GITHUB_STEP_SUMMARY"
             echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
           fi
