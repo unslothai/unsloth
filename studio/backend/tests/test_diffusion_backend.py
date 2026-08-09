@@ -2679,6 +2679,16 @@ def test_load_reports_memory_plan_fields_on_cpu(fake_runtime, tmp_path):
     assert pipe.moved_to == "cpu" and pipe.vae_tiled and pipe.vae_sliced
 
 
+@pytest.fixture
+def allow_precision_fallback(monkeypatch):
+    """Restore the pre-P1-2 behaviour where a DECLINED explicit precision silently loaded the GGUF.
+
+    The tests below are about which PLANNING path ran, not about the precision contract, and the
+    strict default now stops the load before their assertions can look at it. The refusal itself
+    is covered by test_explicit_transformer_quant_refuses_instead_of_loading_the_gguf."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+
+
 def _force_cuda_target(backend, monkeypatch):
     """Drive the loader down the CUDA (offload-capable) path under the stub."""
     torch = sys.modules["torch"]
@@ -2724,7 +2734,9 @@ def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(
     assert status["offload_policy"] == "model" and status["cpu_offload"] is True
 
 
-def test_load_speed_mode_gguf_auto_defaults_and_explicit(fake_runtime, tmp_path):
+def test_load_speed_mode_gguf_auto_defaults_and_explicit(
+    fake_runtime, tmp_path, allow_precision_fallback
+):
     # No speed_mode on a GGUF model resolves to auto `default`; compile is CUDA-only, so nothing engages on this CPU stub.
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
@@ -2748,8 +2760,13 @@ def test_load_speed_mode_gguf_auto_defaults_and_explicit(fake_runtime, tmp_path)
         family_override = "z-image",
         text_encoder_quant = "nvfp4",
     )
-    # Under the CPU stub nvfp4 is unsupported, so it engages nothing.
+    # Under the CPU stub nvfp4 is unsupported, so it engages nothing (the legacy escape hatch is
+    # set; the strict default refuses the load -- see
+    # test_explicit_text_encoder_quant_refuses_when_nothing_engaged).
     assert status3["text_encoder_quant"] is None
+    resolved_te = status3["resolved"]["text_encoder_quant"]
+    assert resolved_te["requested"] == "nvfp4" and resolved_te["value"] == "off"
+    assert resolved_te["status"] == "unsupported"
 
 
 def test_load_fast_mode_stays_resident_on_cuda(fake_runtime, tmp_path, monkeypatch):
@@ -2956,7 +2973,7 @@ def test_transformer_quant_prequant_load_fails_falls_back_to_dense(
 
 
 def test_prequant_failure_never_pulls_unprefetched_dense_shards(
-    fake_runtime, tmp_path, monkeypatch
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # The prefetch skips the base repo's transformer/ shards whenever a prequant checkpoint is expected, so a failed prequant fetch
     # would send from_pretrained after them inside the load lock, after eviction, unpreemptable, past a 100% progress report.
@@ -3020,7 +3037,282 @@ def test_run_load_flags_the_transformer_prefetched_from_the_staged_file_list(mon
     assert seen == [expected for _files, expected in cases]
 
 
-def test_transformer_quant_falls_back_to_gguf_on_failure(fake_runtime, tmp_path, monkeypatch):
+# ── P1-2: the reported precision must be the precision that ran ───────────────
+
+
+def _stub_declining_dense_quant(backend, monkeypatch):
+    """Reach the dense fast path, then have the quantiser decline (the NVIDIA scenario: FP8 asked
+    for, transformer FP8 disabled at runtime, the Q4_K_M GGUF loaded instead)."""
+    from core.inference import diffusion as dmod
+
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
+
+    @classmethod
+    def _from_pretrained(cls, base, **kwargs):
+        return object()
+
+    monkeypatch.setattr(_FakeTransformer, "from_pretrained", _from_pretrained, raising = False)
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda pipe, target, **kw: None)
+
+
+def test_declined_explicit_precision_reports_the_ask_and_the_outcome(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    # The headline of P1-2: FP8 requested on a Q4_K_M GGUF, transformer FP8 declined. With the
+    # legacy escape hatch the GGUF still loads, and status has to carry BOTH sides -- the ask, the
+    # engaged value, and that they disagree -- so a rendered image cannot be read as proof of FP8.
+    backend = DiffusionBackend()
+    _stub_declining_dense_quant(backend, monkeypatch)
+    (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    # Runtime telemetry: fp8 is NOT engaged.
+    assert status["transformer_quant"] is None
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["requested"] == "fp8"
+    assert resolved["value"] == "off"
+    assert resolved["source"] == "explicit"
+    assert resolved["status"] == "fell_back"
+    assert "build failed" in resolved["reason"]
+
+
+def test_auto_precision_still_falls_back_silently(fake_runtime, tmp_path, monkeypatch):
+    # `auto` delegates the choice, so a decline is the ladder working as designed: no refusal, and
+    # the record stays a plain "Auto: OFF" with nothing requested. This must NOT change.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: False)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    assert status["loaded"] is True
+    assert status["transformer_quant"] is None
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["source"] == "auto"
+    assert resolved["requested"] is None
+    assert resolved["status"] == "applied"
+    assert resolved["value"] == "off"
+
+
+def test_explicit_transformer_quant_refuses_instead_of_loading_the_gguf(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Same decline, strict default: the load stops with an actionable reason rather than producing
+    # images at a precision nobody asked for. Nothing is left half-loaded (_unload_locked ran).
+    backend = DiffusionBackend()
+    _stub_declining_dense_quant(backend, monkeypatch)
+    (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+            family_override = "z-image",
+            transformer_quant = "fp8",
+        )
+    message = str(excinfo.value)
+    assert "transformer_quant='fp8' could not be used" in message
+    assert "build failed" in message
+    # Actionable: it names the two settings that always work.
+    assert "Auto" in message and "Off" in message
+    assert backend.status()["loaded"] is False
+    assert backend._state is None
+
+
+def test_explicit_off_is_honored_not_reported_as_a_fallback(fake_runtime, tmp_path, monkeypatch):
+    # "Off" asks NOT to quantise, which the GGUF build satisfies: an explicit request that was met.
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = DiffusionBackend().load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "none",
+    )
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["source"] == "explicit" and resolved["requested"] == "none"
+    assert resolved["value"] == "off" and resolved["status"] == "applied"
+
+
+def test_begin_load_refuses_an_explicit_precision_this_host_cannot_run(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The host-level impossibilities are caught BEFORE the background load starts, so the route can
+    # answer 409 instead of evicting a working model and failing several GB later. The stub target
+    # is CPU, so no dense torchao path exists.
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.begin_load(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            model_kind = "gguf",
+            transformer_quant = "fp8",
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+    assert "CUDA GPU in bf16" in str(excinfo.value)
+    # Nothing was started: no in-flight load to poll and no model evicted.
+    assert backend.load_progress()["phase"] is None
+
+
+def test_a_refusal_caused_by_a_broken_torchao_says_so_instead_of_blaming_the_gpu(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Measured on a B200 whose torchao could not import (`cannot import name 'ScalingType' from
+    # torch.nn.functional`, a torch/torchao skew): every explicit scheme was refused as "'fp8' is
+    # not usable for family '...' on this GPU". That is false, and it is now the whole message the
+    # user gets, since an explicit scheme fails closed instead of quietly running the GGUF. A skew
+    # is fixed by a pip install; a GPU limit is not, so the two must not read the same.
+    from core.inference import diffusion as dmod
+    import core.inference.diffusion_transformer_quant as tq
+
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    # The device clears the dense-path bar; the SCHEME still comes back None, which is the exact
+    # shape of a host whose torchao cannot load its kernels.
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(
+        tq, "_TORCHAO_UNAVAILABLE", ("ImportError: cannot import name 'ScalingType'",)
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.begin_load(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            model_kind = "gguf",
+            transformer_quant = "fp8",
+        )
+    message = str(excinfo.value)
+    assert "transformer_quant='fp8' could not be used" in message
+    assert "cannot import name 'ScalingType'" in message
+    assert "not a limit of the GPU" in message
+    assert "is not usable for family" not in message
+
+
+def test_begin_load_refuses_an_explicit_text_encoder_quant_this_host_cannot_run(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The text encoder is the other half of "the requested precision": the CPU stub cannot cast it,
+    # and that used to return None with no log line at all.
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match = "text_encoder_quant='fp8' could not be used"):
+        DiffusionBackend().begin_load(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            model_kind = "gguf",
+            text_encoder_quant = "fp8",
+        )
+
+
+def test_explicit_text_encoder_quant_refuses_when_nothing_engaged(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # An encoder mode that cast NOTHING leaves a dense bf16 encoder the caller did not ask for, so
+    # the load stops rather than generating at a precision the request did not describe. Reaches
+    # load_pipeline directly, past the begin_load preflight, so the deep path is covered too.
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError) as excinfo:
+        DiffusionBackend().load_pipeline(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            text_encoder_quant = "nvfp4",
+        )
+    assert "text_encoder_quant='nvfp4' could not be used" in str(excinfo.value)
+
+
+def test_explicit_text_encoder_quant_refuses_a_partial_cast(fake_runtime, tmp_path, monkeypatch):
+    # One encoder took the cast and its sibling did not, so the mode DID engage -- and the old
+    # check, which only looked for "nothing engaged", let the load through and recorded the
+    # requested mode as the engaged precision while conditioning ran off a mixture of a quantised
+    # and a dense bf16 tower. That is the one lie this whole change exists to stop.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_precision import TEQuantOutcome
+
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    monkeypatch.setattr(
+        dmod,
+        "quantize_text_encoders",
+        lambda *a, **k: TEQuantOutcome(
+            "fp8",
+            "'fp8' engaged on text_encoder but text_encoder_2 stayed dense",
+            "fell_back",
+            True,
+        ),
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        DiffusionBackend().load_pipeline(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            text_encoder_quant = "fp8",
+        )
+    message = str(excinfo.value)
+    assert "text_encoder_quant='fp8' could not be used" in message
+    assert "text_encoder_2" in message
+    # And the remedy names something the request model accepts: text_encoder_quant has no "auto".
+    assert "Auto" not in message
+
+
+def test_text_encoder_int8_downgrade_is_reported_not_refused(fake_runtime, tmp_path, monkeypatch):
+    # int8 without a measured keep-bf16 schedule becomes fp8. The encoder IS quantised, just not
+    # the way asked, so this WARNS through the resolved record instead of stopping the load.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_precision import TEQuantOutcome
+
+    monkeypatch.setattr(
+        dmod,
+        "quantize_text_encoders",
+        lambda pipe, target, **kw: TEQuantOutcome(
+            "fp8", "int8 has no measured keep-bf16 schedule for family 'z-image'", "fell_back"
+        ),
+    )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = DiffusionBackend().load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        text_encoder_quant = "int8",
+    )
+    assert status["loaded"] is True
+    assert status["text_encoder_quant"] == "fp8"
+    resolved = status["resolved"]["text_encoder_quant"]
+    assert resolved["requested"] == "int8"
+    assert resolved["value"] == "fp8"
+    assert resolved["status"] == "fell_back"
+    assert "keep-bf16 schedule" in resolved["reason"]
+
+
+def test_begin_load_never_refuses_auto(fake_runtime, tmp_path, monkeypatch):
+    # The same CPU host with `auto` must sail through: delegating the choice is not a contract.
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    started = backend.begin_load(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        model_kind = "gguf",
+        transformer_quant = "auto",
+    )
+    assert started["loaded"] is False  # returns immediately; the load runs on a thread
+
+
+def test_transformer_quant_falls_back_to_gguf_on_failure(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
     # A dense/quant failure (here quantize returns None) must fall back to the GGUF build, not error.
     from core.inference import diffusion as dmod
 
@@ -3046,7 +3338,9 @@ def test_transformer_quant_falls_back_to_gguf_on_failure(fake_runtime, tmp_path,
     assert _FakeTransformer.last["path"]  # GGUF from_single_file used
 
 
-def test_transformer_quant_skipped_when_plan_offloads(fake_runtime, tmp_path, monkeypatch):
+def test_transformer_quant_skipped_when_plan_offloads(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
     # The dense bf16 transformer only fits resident, so when the plan would offload (low_vram) the fast path is skipped.
     from core.inference import diffusion as dmod
 
@@ -3073,7 +3367,7 @@ def test_transformer_quant_skipped_when_plan_offloads(fake_runtime, tmp_path, mo
 
 
 def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
-    fake_runtime, tmp_path, monkeypatch
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # The GGUF fits resident but the dense bf16 transformer does not: skip the fast path up front and load GGUF resident, not evicted then offloaded.
     from core.inference import diffusion as dmod
@@ -3124,7 +3418,7 @@ def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
 
 
 def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
-    fake_runtime, tmp_path, monkeypatch
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # With a prequant checkpoint a dense misfit must NOT decline the fast path, but the dense re-check still gates the in-loader fallback.
     from core.inference import diffusion as dmod
@@ -3180,7 +3474,7 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
 
 
 def test_dense_quant_replan_retries_once_on_transient_free_undercount(
-    fake_runtime, tmp_path, monkeypatch
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # A transient foreign allocation makes an empty card look full and the replan declines resident, but the candidate fits total capacity, so the loader retries once on a fresh settled snapshot.
     import dataclasses
@@ -3248,7 +3542,9 @@ def test_dense_quant_replan_retries_once_on_transient_free_undercount(
     assert attempted == [False]  # fast path attempted; prequant-sized plan forbids dense fallback
 
 
-def test_dense_quant_replan_no_retry_when_capacity_truly_short(fake_runtime, tmp_path, monkeypatch):
+def test_dense_quant_replan_no_retry_when_capacity_truly_short(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
     # When the candidate does NOT fit total capacity, the decline is real: no retry.
     import dataclasses
 
@@ -3363,7 +3659,9 @@ def test_declined_dense_with_baked_loras_fails_instead_of_silent_drop(
         )
 
 
-def test_declined_dense_without_loras_still_falls_back_to_gguf(fake_runtime, tmp_path, monkeypatch):
+def test_declined_dense_without_loras_still_falls_back_to_gguf(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
     # The plain decline (no adapters requested) keeps the silent GGUF fallback: weight-0 adapters count as "none".
     backend = DiffusionBackend()
     _decline_dense_quant(backend, monkeypatch, tmp_path)
@@ -3591,7 +3889,9 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
     assert calls == {"base": "unsloth/Krea-2-Turbo", "transformer": marker, "device": "cuda:0"}
 
 
-def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_path, monkeypatch):
+def test_dense_quant_unusable_prequant_path_runs_dense_refit(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
     # A request prequant path the loader refuses resolves to no usable source, so the dense-fit re-check must run and decline up front instead of OOMing after eviction.
     from core.inference import diffusion as dmod
 
@@ -3641,7 +3941,7 @@ def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_p
 
 
 def test_transformer_quant_unsupported_scheme_skips_dense_download(
-    fake_runtime, tmp_path, monkeypatch
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # An explicit unsupported scheme must fail BEFORE materialising the multi-GB dense transformer, then fall back to GGUF.
     from core.inference import diffusion as dmod
@@ -3916,7 +4216,7 @@ def test_a_weighted_lora_is_still_treated_as_a_bake(fake_runtime, tmp_path, monk
 
 
 def test_an_explicit_quant_request_still_downloads_the_hosted_prequant(
-    fake_runtime, tmp_path, monkeypatch
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
     # Only the AUTO-derived case is restricted: asking for fp8 asks for the artifact serving it.
     _stub_hosted_prequant(monkeypatch, cached = False)
@@ -4108,9 +4408,36 @@ def test_diffusion_status_response_carries_resolved():
     rec = {"transformer_quant": {"value": "fp8", "source": "auto", "reason": "blackwell"}}
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
     # The typed field coerces the record into DiffusionResolvedControl objects; the serialized form must round-trip.
-    assert resp.model_dump()["resolved"] == rec
+    # requested/status are additive with defaults, so a record from an older backend still parses.
+    assert resp.model_dump()["resolved"] == {
+        "transformer_quant": {
+            "value": "fp8",
+            "requested": None,
+            "source": "auto",
+            "status": "applied",
+            "reason": "blackwell",
+        }
+    }
     # Absent by default (nothing resolved / native engine).
     assert DiffusionStatusResponse(loaded = False).resolved is None
+
+
+def test_diffusion_status_response_carries_requested_precision():
+    # The point of P1-2: a DECLINED explicit precision must survive the API boundary, so the UI can
+    # say "you asked for fp8, the GGUF ran" instead of rendering the request as if it engaged.
+    from models.inference import DiffusionStatusResponse
+
+    rec = {
+        "transformer_quant": {
+            "value": "off",
+            "requested": "fp8",
+            "source": "explicit",
+            "status": "fell_back",
+            "reason": "the dense bf16 transformer does not fit resident",
+        }
+    }
+    resp = DiffusionStatusResponse(loaded = True, resolved = rec)
+    assert resp.model_dump()["resolved"] == rec
 
 
 def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):
@@ -4571,7 +4898,7 @@ def test_dense_transformer_bytes_read_the_other_root_and_treat_the_snapshot_as_a
 
 @pytest.mark.parametrize("staged", [False, True])
 def test_dense_fit_check_runs_for_a_base_the_live_cache_root_does_not_hold(
-    fake_runtime, tmp_path, monkeypatch, staged
+    fake_runtime, tmp_path, monkeypatch, staged, allow_precision_fallback
 ):
     # End of the same hole, at the load: with no usable prequant the loader materialises the dense
     # bf16 transformer, so the fit re-check has to run, and it only runs when the size lookup finds

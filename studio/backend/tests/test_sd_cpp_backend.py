@@ -1262,3 +1262,32 @@ def test_the_delete_guard_names_the_repack_as_well_as_the_mirror(monkeypatch):
     protected = _with_mirrors(["unsloth/Z-Image-Turbo-ComfyUI"])
     assert "unsloth/Z-Image-Turbo-ComfyUI" in protected
     assert "Comfy-Org/z_image_turbo" in protected
+
+
+def test_generate_reports_the_build_the_recipe_persists():
+    # The route writes the recipe straight off these keys, so a key the native result omits is
+    # persisted as null. The engine has no dense quant and no memory planner (honest nulls), but
+    # the offload it ran under is real -- and every native image recorded it as "unknown".
+    b = _loaded_backend()
+    s = b._state
+    b._state = bk._SdState(
+        repo_id = s.repo_id,
+        base_repo = s.base_repo,
+        family = s.family,
+        device = "cuda",
+        files = s.files,
+        vae_format = s.vae_format,
+        sampling_method = s.sampling_method,
+        flow_shift = s.flow_shift,
+        mode = s.mode,
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        offload_flags = ("--vae-on-cpu", "--clip-on-cpu"),
+    )
+    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    assert out["model_kind"] == "gguf"
+    assert out["gguf_filename"] == "z-image-turbo-Q4_K_M.gguf"
+    assert out["offload_policy"] == "active"
+    # Same derivation status() uses, so the recipe and the Loaded build panel cannot disagree.
+    assert out["offload_policy"] == b.status()["offload_policy"]
+    assert out["transformer_quant"] is None and out["text_encoder_quant"] is None
+    assert out["memory_mode"] is None

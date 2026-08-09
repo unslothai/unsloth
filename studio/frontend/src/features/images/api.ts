@@ -5,11 +5,16 @@ import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-// One Advanced control's resolved value + provenance, for the "Auto: X" badges. `value` is the engaged value (null when off),
-// `source` is "auto" (this backend decided) or "explicit" (the caller set it); `reason` is the tooltip why.
+// One Advanced control's resolved value + provenance, for the Advanced-panel badges. `value` is the engaged value (null when
+// off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto" (this backend decided) or
+// "explicit" (the caller set it), `status` says whether the ask survived, and `reason` is the tooltip why.
 export interface DiffusionResolvedControl {
   value: string | boolean | null;
+  // Absent on backends predating the requested/actual split.
+  requested?: string | boolean | null;
   source: "auto" | "explicit";
+  // "applied" (honored, or nothing was asked) | "fell_back" | "unsupported". Absent on older backends.
+  status?: "applied" | "fell_back" | "unsupported";
   reason: string;
 }
 
@@ -23,6 +28,23 @@ export interface DiffusionStatus {
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Gates GGUF-only controls. Null when not loaded.
   model_kind?: string | null;
   cpu_offload: boolean;
+  // The ENGAGED runtime build. The backend has always sent these; declaring them is what lets the UI
+  // report what actually ran instead of echoing the load request back at the user.
+  // Transformer quant engaged on the dense fast path ("int8" | "fp8" | ...), null = the GGUF ran as-is.
+  transformer_quant?: string | null;
+  // Text-encoder quant engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4"), null = dense bf16.
+  text_encoder_quant?: string | null;
+  // Memory mode the load ran under: "auto" | "fast" | "balanced" | "low_vram".
+  memory_mode?: string | null;
+  // Offload policy actually engaged: "none" | "group" | "model" | "sequential".
+  offload_policy?: string | null;
+  speed_mode?: string | null;
+  // Speed optimisations actually engaged.
+  speed_optims?: string[];
+  // Attention backend engaged via the diffusers dispatcher (e.g. "_native_cudnn"), null = default SDPA.
+  attention_backend?: string | null;
+  transformer_cache?: string | null;
+  vae_tiling?: boolean;
   // Image workflows the loaded family supports (drives tab gating). Absent when nothing is loaded or on the native engine.
   workflows?: string[];
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
@@ -62,6 +84,9 @@ export interface DiffusionLoadRequest {
   // Advanced (load-time) tuning. All optional; omit for the backend's auto defaults.
   speed_mode?: "off" | "eager" | "default" | "max";
   transformer_quant?: "auto" | "none" | "off" | "int8" | "fp8" | "nvfp4" | "mxfp8";
+  // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host
+  // cannot run it, rather than loading dense and reporting nothing.
+  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
   attention_backend?:
     | "auto"
     | "native"
@@ -161,6 +186,10 @@ export interface GalleryImage {
   model_kind?: string | null;
   gguf_filename?: string | null;
   transformer_quant?: string | null;
+  // The rest of the precision picture, all ENGAGED values. Absent on records written before this existed.
+  text_encoder_quant?: string | null;
+  memory_mode?: string | null;
+  offload_policy?: string | null;
   baked_loras?: string[];
   loras?: string[];
   controlnet?: string | null;
