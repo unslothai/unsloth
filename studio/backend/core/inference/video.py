@@ -1343,9 +1343,7 @@ class VideoBackend:
             spec = pipe.get_component_spec("text_encoder")
         except Exception:  # noqa: BLE001 -- no spec, no substitution
             return None
-        source = getattr(spec, "pretrained_model_name_or_path", None) or getattr(
-            spec, "repo", None
-        )
+        source = getattr(spec, "pretrained_model_name_or_path", None) or getattr(spec, "repo", None)
         # A list means several sources for one component; nothing here can vouch for that.
         return source if isinstance(source, str) and source else None
 
@@ -2842,10 +2840,7 @@ class VideoBackend:
         te_index_declined = False
         if te_scheme is not None:
             from .diffusion_te_prequant import te_base_equivalent
-
-            if te_index_source is None or not te_base_equivalent(
-                fam.base_repo, te_index_source
-            ):
+            if te_index_source is None or not te_base_equivalent(fam.base_repo, te_index_source):
                 te_scheme = None
                 te_index_declined = True
         if text_encoder_quant is not None and te_scheme is None:
