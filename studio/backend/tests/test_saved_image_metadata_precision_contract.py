@@ -265,6 +265,10 @@ def test_a_declined_quant_request_is_not_reported_as_engaged(
 ):
     """The user asked for fp8; the host has no dense source, so the GGUF loaded as-is.
     The recipe must say "GGUF, no quant", not "fp8"."""
+    # A declined explicit precision now refuses the load outright unless the fallback is opted
+    # into. This contract is about what the recipe records for a build that DID fall back, so it
+    # has to ask for that build, the same way the routes and backend suites do.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: False)
     status = _load(backend, tmp_path, monkeypatch, stub_runtime, transformer_quant = "fp8")
 
@@ -274,7 +278,9 @@ def test_a_declined_quant_request_is_not_reported_as_engaged(
     # request was explicit, the engaged value is "off".
     resolved = status["resolved"]["transformer_quant"]
     assert resolved["value"] == "off" and resolved["source"] == "explicit"
-    assert "GGUF transformer loaded" in resolved["reason"]
+    # The reason now names why the request was declined rather than what loaded in its place,
+    # which is the half a user can act on. The substantive contract is the pair above.
+    assert "dense torchao quant" in resolved["reason"]
 
     result = _generate(backend)
     assert result["transformer_quant"] is None, (
@@ -350,6 +356,11 @@ class _EngagedBackend:
         return detect_family(model_path, kwargs.get("family_override"))
 
     def preflight_base_access(self, model_path, fam, **kwargs):
+        return None
+
+    def assert_precision_available(self, fam, **kwargs) -> None:
+        # The route's pre-eviction refusal for a precision this host can never honor. This
+        # backend exists to ENGAGE one, so it has nothing to refuse.
         return None
 
     def begin_load(self, model_path, **kwargs):
