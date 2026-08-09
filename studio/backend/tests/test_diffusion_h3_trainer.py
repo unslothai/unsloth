@@ -1097,3 +1097,69 @@ def test_h3_is_advertised_as_trainable_with_the_precisions_it_has():
     if "ltx-2" in infos:
         assert infos["ltx-2"]["supports_compile"] is True
         assert "fp8" in infos["ltx-2"]["precision_modes"]
+
+
+def test_an_over_long_clip_says_that_only_its_opening_trains(tmp_path, monkeypatch):
+    """The window is the clip's FIRST num_frames and the latents are cached once for the run, so
+    a longer source trains only its opening while its caption describes the whole scene. That is
+    the dataset contract, but it was silent, which is how the mismatch went unnoticed."""
+    import numpy as np
+
+    from core.training import diffusion_h3_clips as clips
+
+    notes: list = []
+
+    class _Frame:
+        def to_image(self):
+            from PIL import Image
+
+            return Image.new("RGB", (64, 64))
+
+    class _Stream:
+        average_rate = clips.H3_FPS
+        guessed_rate = clips.H3_FPS
+        duration = 10 * clips.H3_FPS
+        time_base = 1 / clips.H3_FPS
+
+    class _Container:
+        streams = types.SimpleNamespace(video = [_Stream()], audio = [object()])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def decode(self, video = 0):
+            return [_Frame() for _ in range(10 * clips.H3_FPS)]
+
+    monkeypatch.setattr(clips, "av", types.SimpleNamespace(open = lambda p: _Container()),
+                        raising = False)
+    monkeypatch.setitem(
+        sys.modules, "av", types.SimpleNamespace(open = lambda p: _Container())
+    )
+    monkeypatch.setattr(
+        clips, "_decode_clip_audio",
+        lambda path, target, av, np_: np.zeros((clips.H3_AUDIO_CHANNELS, target), "float32"),
+    )
+
+    clips.decode_clip(
+        tmp_path / "a.mp4",
+        num_frames = clips.H3_FRAMES_PER_CHUNK,
+        width = 64,
+        height = 64,
+        on_note = notes.append,
+    )
+    assert notes and "trains its first" in notes[0]
+
+    # A clip already at the training duration says nothing.
+    notes.clear()
+    _Stream.duration = clips.H3_FRAMES_PER_CHUNK
+    clips.decode_clip(
+        tmp_path / "a.mp4",
+        num_frames = clips.H3_FRAMES_PER_CHUNK,
+        width = 64,
+        height = 64,
+        on_note = notes.append,
+    )
+    assert notes == []

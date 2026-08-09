@@ -544,7 +544,16 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     latent_h, latent_w = height // H3_SPATIAL_COMPRESSION, width // H3_SPATIAL_COMPRESSION
     cache: list[tuple[Any, Any, Any]] = []
     for i, path in enumerate(clip_paths):
-        frames, waveform = decode_clip(path, num_frames = num_frames, width = width, height = height)
+        frames, waveform = decode_clip(
+            path,
+            num_frames = num_frames,
+            width = width,
+            height = height,
+            # The window is the clip's opening and the latents are cached once for the run, so
+            # a longer source trains only its first seconds while its caption describes the
+            # whole thing. Reported rather than left silent.
+            on_note = lambda message: _emit(on_event, "warning", message = message),
+        )
         video_a, video_b = _encode_video_stats(pipe.vae, frames, device)
         audio = _encode_audio_latents(pipe.audio_vae, waveform, device)
         if audio.shape[-1] != num_audio_latents:

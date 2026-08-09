@@ -21,7 +21,7 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # ── the model's grid ─────────────────────────────────────────────────────────
 #
@@ -251,7 +251,12 @@ def discover_clip_caption_pairs(
 
 
 def decode_clip(
-    path: str | os.PathLike[str], *, num_frames: int, width: int, height: int
+    path: str | os.PathLike[str],
+    *,
+    num_frames: int,
+    width: int,
+    height: int,
+    on_note: Optional[Callable[[str], None]] = None,
 ) -> tuple[Any, Any]:
     """Decode one training clip to ``(frames, waveform)``.
 
@@ -260,6 +265,12 @@ def decode_clip(
     reference-video decoder makes, so a clip reaches the model on the model's clock however it
     was authored. Each frame is cover-cropped to the canvas aspect ratio and then resized, so
     nothing is letterboxed and nothing is stretched.
+
+    The window is the FIRST ``num_frames`` of the source, and the latents are cached once for
+    the run, so a longer clip trains only its opening and its caption is paired with that. That
+    is the dataset contract -- pre-trim to the training duration -- but it used to be silent,
+    which is how a caption describing a whole scene ended up on its first second. ``on_note``
+    is called once per over-long clip with the numbers, so the run reports it.
 
     ``waveform`` is a float32 array of shape ``(2, h3_audio_sample_count(num_frames))`` at
     32 kHz. A mono source is duplicated to both channels; a clip with **no** audio track is
@@ -281,6 +292,16 @@ def decode_clip(
             )
         stream = container.streams.video[0]
         source_fps = float(stream.average_rate or stream.guessed_rate or H3_FPS) or float(H3_FPS)
+        # Container duration, in seconds, for the over-long note below. Best effort: an unknown
+        # duration simply means no note, never a failed decode.
+        source_duration_s = 0.0
+        try:
+            if stream.duration is not None and stream.time_base is not None:
+                source_duration_s = float(stream.duration * stream.time_base)
+            elif getattr(container, "duration", None):
+                source_duration_s = float(container.duration) / 1_000_000.0
+        except Exception:  # noqa: BLE001 -- a note is not worth failing a decode over
+            source_duration_s = 0.0
 
         frames: list[Any] = []
         next_target = 0
@@ -301,6 +322,12 @@ def decode_clip(
         raise ValueError(
             f"{Path(path).name} decoded to {len(frames)} frames at {H3_FPS} fps, but a training "
             f"clip needs {num_frames} ({num_frames / H3_FPS:.2f}s). Use longer clips."
+        )
+    if on_note is not None and source_duration_s > (num_frames / H3_FPS) * 1.05:
+        on_note(
+            f"{Path(path).name} is {source_duration_s:.1f}s; MiniMax-H3 trains its first "
+            f"{num_frames / H3_FPS:.2f}s and its caption is paired with that. Trim the clip to "
+            f"the part the caption describes."
         )
 
     waveform = _decode_clip_audio(path, target_samples, av, np)
