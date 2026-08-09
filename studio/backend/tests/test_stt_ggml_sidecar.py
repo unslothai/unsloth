@@ -255,6 +255,35 @@ def test_slim_guard_rejects_missing_rocm_catalog(tmp_path):
     assert ggml_module.slim_runtime_intact(binary) is False
 
 
+def test_slim_guard_accepts_newer_rocm_wiring_version(tmp_path):
+    # The guard pins a floor, not one version: an installer bump must not strand
+    # ROCm installs as unavailable when every wired library is present.
+    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    binary = _slim_install(
+        tmp_path,
+        linked_libraries = names,
+        backend = "rocm",
+        linked_runtime_directories = ["hipblaslt", "rocblas"],
+        runtime_wiring_version = 3,
+    )
+    (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
+    assert ggml_module.slim_runtime_intact(binary) is True
+
+
+def test_slim_guard_rejects_pre_catalog_rocm_wiring_version(tmp_path):
+    # Version 1 predates linked_runtime_directories, so it stays rejected.
+    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    binary = _slim_install(
+        tmp_path,
+        linked_libraries = names,
+        backend = "rocm",
+        linked_runtime_directories = ["hipblaslt", "rocblas"],
+        runtime_wiring_version = 1,
+    )
+    (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
+    assert ggml_module.slim_runtime_intact(binary) is False
+
+
 def test_slim_guard_accepts_windows_rocm_dll_overlay(monkeypatch, tmp_path):
     monkeypatch.setattr(ggml_module.sys, "platform", "win32")
     names = ["ggml.dll", "ggml-base.dll", "ggml-hip.dll", "amdhip64.dll"]
