@@ -2736,6 +2736,8 @@ def test_the_probe_target_resolves_the_recorded_dtype():
     # A junk value, or a torch attribute that is not a dtype, can never become a bogus dtype.
     assert video_mod._probe_target({"device": "cuda", "dtype": "nonsense"}).dtype is None
     assert video_mod._probe_target({"device": "cuda", "dtype": "nn"}).dtype is None
+
+
 # ── text-encoder budgeting ───────────────────────────────────────────────────
 # The plan sizes companions from the family's bf16 (transformer, text_encoder, vae) table. A pick
 # that takes its encoder PRE-CAST from a hosted fp8 checkpoint loads roughly half that encoder, and
