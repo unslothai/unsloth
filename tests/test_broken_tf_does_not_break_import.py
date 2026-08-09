@@ -163,9 +163,14 @@ def _guard_block():
 def test_the_backends_are_opted_out_of_before_transformers_loads():
     block = _guard_block()
     assert block is not None, "the opt-out block is gone"
-    body = ast.unparse(block)
-    for name in ("USE_TF", "USE_FLAX"):
-        assert f'"{name}", "0"' in body or f"'{name}', '0'" in body, name
+    # Asserted by running the block, not by looking for a literal in its
+    # source. The literal check passed only while the code happened to spell
+    # the pair inline, and went red the moment the same behaviour was written
+    # as a loop -- it was tracking the spelling, not the guarantee.
+    environ = {}
+    _exec_guard({}, environ)
+    assert environ.get("USE_TF") == "0"
+    assert environ.get("USE_FLAX") == "0"
     # The guard has to sit above every `transformers` import in this file, or a
     # module that already read the variables makes it a no-op.
     first_import = min(
@@ -179,11 +184,51 @@ def test_the_backends_are_opted_out_of_before_transformers_loads():
     assert block.lineno < first_import
 
 
-def test_an_explicit_choice_is_never_overwritten():
-    """`setdefault`, not assignment: someone who wants TF in-process keeps it."""
-    body = ast.unparse(_guard_block())
-    assert "os.environ.setdefault" in body
-    assert "os.environ[" not in body, "an assignment would override the user"
+@pytest.mark.parametrize("value", ["1", "true", "YES", "On"])
+def test_an_explicit_choice_is_never_overwritten(value):
+    """Someone who wants TF in-process keeps it, in any spelling Transformers
+    accepts as true. Stated as behaviour rather than as "the code says
+    setdefault": `setdefault` was one way to get this, and not a correct one,
+    because it also preserved `AUTO`."""
+    environ = {"USE_TF": value, "USE_FLAX": value}
+    _exec_guard({}, environ)
+    assert environ["USE_TF"] == value
+    assert environ["USE_FLAX"] == value
+
+
+@pytest.mark.parametrize("value", ["AUTO", "auto", "Auto"])
+def test_auto_is_overwritten_because_transformers_reads_it_as_enabled(value):
+    """`AUTO` is what an unset variable means to Transformers, and it enables
+    the backend if it is installed -- the exact state this guard exists to
+    prevent. `setdefault` kept it, so a launcher that mirrored Transformers'
+    own defaults into the environment silently disabled the guard.
+
+    Confirmed against a real Transformers with a broken TensorFlow on the
+    path: `USE_TF=AUTO` plus `setdefault` leaves `_tf_available` True.
+    """
+    environ = {"USE_TF": value, "USE_FLAX": value}
+    _exec_guard({}, environ)
+    assert environ["USE_TF"] == "0"
+    assert environ["USE_FLAX"] == "0"
+
+
+def test_force_tf_available_alone_counts_as_an_opt_in():
+    """`FORCE_TF_AVAILABLE=1` is the spelling that asks for TensorFlow without
+    also asking Transformers to disable PyTorch, so it is the one a real user
+    reaches for. Writing `USE_TF=0` over it would contradict them."""
+    environ = {"FORCE_TF_AVAILABLE": "1"}
+    _exec_guard({}, environ)
+    assert environ.get("USE_TF") != "0", environ
+
+
+def test_a_value_that_means_off_is_normalised_rather_than_preserved():
+    """Anything Transformers does not read as true already means off, so
+    rewriting it to "0" changes no behaviour. Pinned so the overwrite is not
+    mistaken for a regression against the opt-in rule above."""
+    environ = {"USE_TF": "0", "USE_FLAX": "false"}
+    _exec_guard({}, environ)
+    assert environ["USE_TF"] == "0"
+    assert environ["USE_FLAX"] == "0"
 
 
 @pytest.mark.parametrize("value", ["0", "1"])

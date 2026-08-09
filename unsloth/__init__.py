@@ -20,17 +20,34 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # (`processing_utils` -> `image_transforms`, on Unsloth's own import path), so a
 # broken optional backend breaks Unsloth, which uses neither: on Colab an install
 # cell that moves protobuf leaves the first `from unsloth import ...` raising
-# `cannot import name 'runtime_version'`. `setdefault`, so an explicit USE_TF=1
-# still wins. Transformers reads these once at import, so this has to land first.
+# `cannot import name 'runtime_version'`. An explicit USE_TF=1 still wins.
+# Transformers reads these once at import, so this has to land first.
 # 5.x dropped both backends and ignores all of this.
 if "transformers" not in sys.modules:
-    # Same hands-off rule as the branch below: a backend that is already imported
-    # is one in use, so opting it out would strand a working `from_tf = True`
-    # load in a process that never set the variable itself.
-    if "tensorflow" not in sys.modules:
-        os.environ.setdefault("USE_TF", "0")
-    if not any(_m in sys.modules for _m in ("flax", "jax")):
-        os.environ.setdefault("USE_FLAX", "0")
+    _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
+    # Overwrite unless the value is a real opt-in, rather than `setdefault`.
+    # `setdefault` keeps whatever is there, and "whatever is there" includes
+    # `AUTO` -- which Transformers reads as "enable if installed", the exact
+    # state this guard exists to prevent. A launcher that mirrors Transformers'
+    # own defaults into the environment therefore disabled the guard silently:
+    # verified with a broken TensorFlow on the path, `USE_TF=AUTO` plus today's
+    # `setdefault` leaves `_tf_available` True. Anything that is not an opt-in
+    # already means "off" to Transformers, so writing "0" over it changes no
+    # behaviour beyond closing that hole.
+    #
+    # Same hands-off rule as the branch below: a backend that is already
+    # imported is one in use, so opting it out would strand a working
+    # `from_tf = True` load in a process that never set the variable itself.
+    for _var, _modules, _opt_ins in (
+        ("USE_TF", ("tensorflow",), ("USE_TF", "FORCE_TF_AVAILABLE")),
+        ("USE_FLAX", ("flax", "jax"), ("USE_FLAX",)),
+    ):
+        if any(_m in sys.modules for _m in _modules):
+            continue
+        if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins):
+            continue
+        os.environ[_var] = "0"
+    del _TRUE, _var, _modules, _opt_ins
 else:
     # Too late for the variables, but not for the answer they feed: Transformers
     # decided `_tf_available` / `_flax_available` from `find_spec` alone, without
