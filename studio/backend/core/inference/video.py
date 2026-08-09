@@ -2255,6 +2255,7 @@ class VideoBackend:
                     trimmed["decoder_freed"] / 1_000_000_000,
                 )
         offload_policy = "none"
+        denoiser_pinned = False
         if device != "cpu":
             manager.enable_auto_cpu_offload(
                 # Measured H3 activations need substantially more than the
@@ -2265,13 +2266,29 @@ class VideoBackend:
                 memory_reserve_margin = "40GB",
             )
             offload_policy = "model"
+            if transformer_quant_engaged:
+                # enable_auto_cpu_offload just parked every component on the CPU and will move
+                # each one back inside its own pre_forward. A torchao pre-quantized denoiser does
+                # not survive that mid-block move (see pin_prequantized_module), so place it now
+                # and take it out of the rotation. Nothing else changes: the encoder and the VAEs
+                # keep their hooks and still offload around it.
+                from .diffusion_prequant import pin_prequantized_module
+
+                denoiser_pinned = pin_prequantized_module(
+                    manager, getattr(pipe, "transformer", None), device, logger = logger
+                )
 
         resolved = build_resolved_record(
             {
                 "memory_mode": (
                     memory_mode,
                     offload_policy,
-                    "MiniMax-H3 ComponentsManager auto CPU offload",
+                    "MiniMax-H3 ComponentsManager auto CPU offload"
+                    + (
+                        "; the pre-quantized denoiser stays resident"
+                        if denoiser_pinned
+                        else ""
+                    ),
                 ),
                 "speed_mode": (None, "off", "modular pipeline uses its native execution path"),
                 "attention_backend": (None, "native", "Diffusers model default"),

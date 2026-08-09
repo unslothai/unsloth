@@ -642,6 +642,56 @@ def _same_base_model(a: str, b: str) -> bool:
     return a == b or _tail(a) == _tail(b)
 
 
+def pin_prequantized_module(
+    manager: Any, module: Any, device: Any, *, logger: Any = None
+) -> bool:
+    """Keep a pre-quantized module resident on ``device``, out of a ComponentsManager's rotation.
+
+    ``ComponentsManager.enable_auto_cpu_offload`` parks every component on the CPU and moves each
+    one onto the accelerator inside its own ``pre_forward``, i.e. from within the block that is
+    already executing. A torchao-quantized module does not survive that move: the device change
+    reaches ``return_and_correct_aliasing``, which tries to alias a CPU storage to an accelerator
+    tensor and raises ``Attempted to set the storage of a tensor on device "cuda:0" to a storage
+    on different device "cpu"``, and MiniMax-H3's denoise loop dies on its first step. Moving the
+    same module at load time, outside any executing block, works -- so the fix is to place it once
+    here and take it out of the rotation rather than to move it per forward.
+
+    That is also what a pre-quantized denoiser is for: the hosted H3 checkpoint is ~20 GB against
+    66.3 GB dense, so keeping it resident is the saving being spent. The other components keep
+    their hooks, and the strategy sizes its decisions from live free memory, so the encoder and
+    the VAEs still offload around it.
+
+    Returns True when the module was pinned. Best-effort on the hook surgery: if the manager does
+    not look the way this expects, the module is still placed on ``device`` and False is returned,
+    which is the behaviour before pinning existed.
+    """
+    hooks = list(getattr(manager, "model_hooks", None) or ())
+    target = next((hook for hook in hooks if getattr(hook, "model", None) is module), None)
+    pinned = False
+    if target is not None:
+        try:
+            # Drop the accelerate hook so no pre_forward/offload ever moves this module again ...
+            target.remove()
+            # ... and unlist it, so another component's pre_forward cannot pick it as the thing to
+            # evict (which would move it to the CPU with no hook left to bring it back).
+            for hook in hooks:
+                others = getattr(getattr(hook, "hook", None), "other_hooks", None)
+                if others:
+                    hook.hook.other_hooks = [item for item in others if item is not target]
+            manager.model_hooks = [hook for hook in hooks if hook is not target]
+            pinned = True
+        except Exception as exc:  # noqa: BLE001 -- placement below still has to happen
+            _warn(logger, "pin:hook", exc)
+    module.to(device)
+    if logger is not None:
+        logger.info(
+            "diffusion.prequant: pre-quantized denoiser pinned on %s (offload rotation: %s)",
+            device,
+            "removed" if pinned else "unchanged",
+        )
+    return pinned
+
+
 def _has_meta_tensors(module: Any) -> bool:
     """True if any parameter or buffer is still on the meta device after loading."""
     from itertools import chain

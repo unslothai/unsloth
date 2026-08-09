@@ -3593,6 +3593,92 @@ def test_h3_modular_load_restricts_the_components_not_the_blocks(monkeypatch, tm
     assert status["defaults"]["canvas_short_edge"] == 768
 
 
+def test_h3_modular_load_pins_a_hosted_prequant_denoiser_out_of_the_offload_rotation(monkeypatch):
+    """A pre-quantized denoiser must be placed at LOAD time, not per forward.
+
+    ComponentsManager moves each component onto the accelerator inside its own pre_forward, and a
+    torchao-quantized module does not survive that mid-block move: the denoise loop died on step 1
+    with "Attempted to set the storage of a tensor on device cuda:0 to a storage on different
+    device cpu". So the loader has to pin it once the seeding actually engaged, and leave the
+    released bfloat16 path exactly as it was.
+    """
+    import types
+
+
+    from core.inference.video import VideoBackend
+
+    calls: dict = {}
+
+    class _FakeModularPipeline:
+        @classmethod
+        def from_pretrained(cls, repo, **kwargs):
+            return cls()
+
+        def load_components(self, **kwargs):
+            pass
+
+        def update_components(self, **kwargs):
+            self.transformer = kwargs.get("transformer")
+
+        def to(self, device):
+            return self
+
+    manager = types.SimpleNamespace(enable_auto_cpu_offload = lambda **kwargs: None)
+    diffusers = types.SimpleNamespace(
+        ComponentsManager = lambda: manager,
+        ModularPipeline = _FakeModularPipeline,
+        MiniMaxH3Transformer3DModel = object,
+    )
+    torch = types.SimpleNamespace(bfloat16 = "bf16")
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+
+    seeded = object()
+    import core.inference.diffusion_prequant as prequant_module
+
+    monkeypatch.setattr(
+        prequant_module,
+        "load_prequantized_transformer",
+        lambda *args, **kwargs: seeded,
+    )
+    monkeypatch.setattr(
+        prequant_module,
+        "pin_prequantized_module",
+        lambda mgr, module, device, **kwargs: calls.setdefault(
+            "pinned", {"manager": mgr, "module": module, "device": device}
+        )
+        is not None,
+    )
+
+    def load(scheme):
+        calls.clear()
+        return VideoBackend()._load_h3_modular_pipeline(
+            diffusers = diffusers,
+            torch = torch,
+            fam = fam,
+            repo_id = "MiniMaxAI/MiniMax-H3",
+            base = fam.base_repo,
+            kind = "pipeline",
+            dtype = torch.bfloat16,
+            device = "cuda",
+            hf_token = None,
+            memory_mode = None,
+            transformer_quant = scheme,
+            _load_token = None,
+            _base_local_dir = None,
+        )
+
+    status = load("fp8")
+    assert status["transformer_quant"] == "fp8"
+    assert calls["pinned"]["module"] is seeded
+    assert calls["pinned"]["manager"] is manager
+    assert calls["pinned"]["device"] == "cuda"
+
+    # No hosted checkpoint engaged -> released bfloat16 components, which the manager moves fine.
+    status = load(None)
+    assert status["transformer_quant"] is None
+    assert "pinned" not in calls
+
+
 def test_h3_native_progress_reads_only_the_denoise_bar(monkeypatch):
     # Replay real log shapes to isolate the denoise progress bar.
     calls: list = []

@@ -233,3 +233,81 @@ def test_a_non_modular_video_family_is_unaffected():
         # Reaching the diffusers probe already proves the modular refusal did not fire.
         return
     assert fam.name == "ltx-2.3"
+
+
+# ── keeping the pre-quantized denoiser out of the offload rotation ───────────────
+#
+# ComponentsManager.enable_auto_cpu_offload parks every component on the CPU and moves each one
+# onto the accelerator inside its own pre_forward, i.e. from within the block already executing.
+# A torchao pre-quantized denoiser does not survive that mid-block move: the device change reaches
+# return_and_correct_aliasing, which tries to alias a CPU storage to an accelerator tensor and
+# raises "Attempted to set the storage of a tensor on device cuda:0 to a storage on different
+# device cpu", killing MiniMax-H3's denoise loop on its first step. Placing it once at load time
+# and unhooking it is the fix, so both halves are asserted: hook removed AND module placed.
+
+
+class _FakeInnerHook:
+    def __init__(self) -> None:
+        self.other_hooks: list = []
+
+
+class _FakeUserHook:
+    def __init__(self, model) -> None:
+        self.model = model
+        self.hook = _FakeInnerHook()
+        self.removed = False
+
+    def remove(self) -> None:
+        self.removed = True
+
+
+class _FakeModule:
+    def __init__(self) -> None:
+        self.moved_to: list = []
+
+    def to(self, device):
+        self.moved_to.append(device)
+        return self
+
+
+class _FakeOffloadManager:
+    def __init__(self, models) -> None:
+        self.model_hooks = [_FakeUserHook(model) for model in models]
+        for hook in self.model_hooks:
+            hook.hook.other_hooks = [other for other in self.model_hooks if other is not hook]
+
+
+def test_pinning_unhooks_the_denoiser_and_places_it():
+    from core.inference.diffusion_prequant import pin_prequantized_module
+
+    transformer, encoder, vae = _FakeModule(), _FakeModule(), _FakeModule()
+    manager = _FakeOffloadManager([transformer, encoder, vae])
+    denoiser_hook = manager.model_hooks[0]
+
+    assert pin_prequantized_module(manager, transformer, "cuda") is True
+
+    # The hook is gone, so nothing moves the denoiser per forward ...
+    assert denoiser_hook.removed is True
+    assert denoiser_hook not in manager.model_hooks
+    assert [hook.model for hook in manager.model_hooks] == [encoder, vae]
+    # ... and no surviving component can pick it as the thing to evict, which would strand it on
+    # the CPU with no hook left to bring it back.
+    for hook in manager.model_hooks:
+        assert denoiser_hook not in hook.hook.other_hooks
+    # It is placed exactly once, here, outside any executing block.
+    assert transformer.moved_to == ["cuda"]
+    # The components that CAN be moved safely keep their hooks and their rotation.
+    assert encoder.moved_to == [] and vae.moved_to == []
+
+
+def test_pinning_still_places_the_module_when_the_manager_is_unrecognisable():
+    """Best-effort on the hook surgery: an unmanaged module must still end up on the device."""
+    from core.inference.diffusion_prequant import pin_prequantized_module
+
+    transformer = _FakeModule()
+    manager = _FakeOffloadManager([_FakeModule()])
+    before = list(manager.model_hooks)
+
+    assert pin_prequantized_module(manager, transformer, "cuda") is False
+    assert transformer.moved_to == ["cuda"]
+    assert manager.model_hooks == before
