@@ -165,3 +165,111 @@ test("one box in a list matches passing it on its own", () => {
   const frame = corner(300);
   assert.deepEqual(stackGeometry([frame], W, H), stackGeometry(frame, W, H));
 });
+
+// The two composer layouts, which are what this gate exists for. Boxes taken
+// from a 1280x830 window: the docked one has to be dodged, or the card covers
+// Send, which below a 1584px viewport it does. The welcome one must not be,
+// because it sits high on the page and lifting over it stranded the banners in
+// the middle of the screen with the corner underneath them empty.
+const CHAT_W = 1280;
+const CHAT_H = 830;
+
+test("a docked composer is dodged, so the card cannot cover Send", () => {
+  const docked = { left: 412, top: 664, right: 1148, bottom: 814 };
+  const inset = stackBottomInset(docked, CHAT_W, CHAT_H);
+  assert.ok(inset > 16, "it reaches the stack's strip, so the stack lifts");
+  assert.ok(
+    inset >= CHAT_H - docked.top,
+    "and lifts clear of it, not part way",
+  );
+  // Still the bottom of the screen, which is the point: above the composer,
+  // not adrift in the middle.
+  assert.ok(inset < CHAT_H / 2);
+});
+
+test("the welcome composer is left alone, and the stack stays in the corner", () => {
+  const welcome = { left: 412, top: 435, right: 1148, bottom: 660 };
+  assert.equal(stackBottomInset(welcome, CHAT_W, CHAT_H), 16);
+});
+
+// Same rule, applied to the other publisher: a monitor dragged up the screen
+// leaves the corner free, so the stack belongs in it.
+test("a monitor away from the corner no longer lifts the stack", () => {
+  const middle = { left: 996, top: 300, right: 1264, bottom: 560 };
+  const geometry = stackGeometry(middle, CHAT_W, CHAT_H);
+  assert.equal(geometry.bottom, 16);
+  // It is still in the column, so the stack is capped short of it instead.
+  assert.ok(geometry.maxHeight < CHAT_H - 16 - 16);
+  assert.ok(geometry.maxHeight <= CHAT_H - 16 - middle.bottom);
+});
+
+// The capped branch used to be reachable with a floor that did not fit: a box
+// ending just above the old cutoff was left uncapped-in-practice, and the
+// stack's guaranteed MIN_STACK_ROOM put its top back over the box by up to
+// 24px. The cutoff is derived from the cap now, so the two cannot disagree.
+test("a capped stack always fits under the box it is capped by", () => {
+  for (let bottom = 100; bottom <= CHAT_H - 16; bottom += 1) {
+    const frame = {
+      left: 996,
+      top: Math.max(0, bottom - 260),
+      right: 1264,
+      bottom,
+    };
+    const geometry = stackGeometry(frame, CHAT_W, CHAT_H);
+    // Lifted boxes sit under the stack by design; only the capped ones apply.
+    if (geometry.bottom !== 16) continue;
+    const stackTop = CHAT_H - geometry.bottom - geometry.maxHeight;
+    assert.ok(
+      stackTop >= bottom,
+      `a box ending at ${bottom} left the stack top at ${stackTop}`,
+    );
+  }
+});
+
+// Reachability has to be asked at the inset actually in force. Folding each box
+// against the default one, a monitor with room at the corner kept the capped
+// branch after the composer had already lifted the stack into it, and the cap
+// came out negative. Browsers drop an invalid max-height, so the cap vanished
+// exactly where it was needed.
+test("a box the shared lift moves the stack into is lifted over too", () => {
+  const composer = { left: 412, top: 664, right: 1148, bottom: 814 };
+  const monitor = { left: 996, top: 400, right: 1264, bottom: 660 };
+  assert.equal(
+    stackGeometry(monitor, CHAT_W, CHAT_H).bottom,
+    16,
+    "on its own the monitor leaves the corner free",
+  );
+  const both = stackGeometry([monitor, composer], CHAT_W, CHAT_H);
+  assert.ok(both.maxHeight > 0, "a negative cap is dropped by the browser");
+  assert.ok(
+    CHAT_H - both.bottom <= monitor.top,
+    "the stack has to clear the monitor, not just the composer",
+  );
+});
+
+// The same, swept: no arrangement may leave the stack overlapping a box, and no
+// cap may come out at zero or below.
+test("no pairing produces an overlap or an unusable cap", () => {
+  const composer = { left: 412, top: 664, right: 1148, bottom: 814 };
+  for (let bottom = 60; bottom <= CHAT_H - 16; bottom += 2) {
+    for (const height of [80, 180, 280, 400]) {
+      const box = {
+        left: 996,
+        top: Math.max(0, bottom - height),
+        right: 1264,
+        bottom,
+      };
+      for (const boxes of [[box], [box, composer]]) {
+        const geometry = stackGeometry(boxes, CHAT_W, CHAT_H);
+        const label = `bottom=${bottom} height=${height} n=${boxes.length}`;
+        assert.ok(geometry.maxHeight > 0, `non-positive cap for ${label}`);
+        const stackTop = CHAT_H - geometry.bottom - geometry.maxHeight;
+        for (const each of boxes) {
+          const clearsAbove = CHAT_H - geometry.bottom <= each.top;
+          const clearsBelow = stackTop >= each.bottom;
+          assert.ok(clearsAbove || clearsBelow, `overlap for ${label}`);
+        }
+      }
+    }
+  }
+});

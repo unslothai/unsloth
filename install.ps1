@@ -3597,6 +3597,20 @@ exit 0
         return "${scheme}://${host_}"
     }
 
+    # Append a path to a URL that may carry ?query / #fragment auth. A private mirror is
+    # allowed to be "https://mirror/whl?token=abc", and a naive "$base/$leaf" put the leaf
+    # INSIDE the token value, leaving the path still /whl -- so the tokenized mirror this
+    # exists to honour was the one case that could not resolve a wheel.
+    function Join-UrlPath {
+        param([string]$Base, [string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Base)) { return $Path }
+        $cut = $Base.IndexOfAny([char[]]('?', '#'))
+        if ($cut -lt 0) { return "$($Base.TrimEnd('/'))/$Path" }
+        $head = $Base.Substring(0, $cut).TrimEnd('/')
+        $tail = $Base.Substring($cut)
+        return "$head/$Path$tail"
+    }
+
     # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
     # torch.__version__ -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu,
     # matching setup.ps1's stale-venv parse.
@@ -3656,6 +3670,138 @@ exit 0
         $torchVer = $probe.Output.Trim()
         if (-not $torchVer) { return $null }
         return ConvertTo-TorchFlavorTag $torchVer
+    }
+
+    # Full installed torch version in $PythonExe's venv ("2.10.0+cu130"), or $null. Separate
+    # from Get-InstalledTorchTag because the xFormers pin below needs the RELEASE as well as
+    # the flavor: xFormers publishes one wheel per exact torch patch (2.9.0 -> 0.0.33.post1,
+    # 2.9.1 -> 0.0.33.post2, 2.10.0 -> 0.0.34), not per minor.
+    function Get-InstalledTorchVersion {
+        param([string]$PythonExe)
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
+        $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.__version__)'
+        if (-not $probe.Ok) { return $null }
+        $torchVer = $probe.Output.Trim()
+        if (-not $torchVer) { return $null }
+        return $torchVer
+    }
+
+    # ── xFormers must match the torch BUILD, not just the torch version ──
+    # xformers/_C.pyd is linked against one exact (torch, CUDA) pair. Loaded beside any
+    # other pair torch.ops.load_library raises, and xformers/_cpp_lib.py turns that into a
+    # log warning rather than an error -- so the import "succeeds" and memory-efficient
+    # attention, SwiGLU and the sparse ops are all silently gone. PyPI publishes only the
+    # CUDA-12.8 flavour, which is why a cu130 install that lets pip resolve xformers ends up
+    # reporting "xFormers was built for PyTorch 2.10.0+cu128 (you have 2.10.0+cu130)".
+    #
+    # Resolve from the same index the torch install used, so UNSLOTH_TORCH_INDEX_URL /
+    # UNSLOTH_TORCH_INDEX_FAMILY / UNSLOTH_PYTORCH_MIRROR keep working unchanged. Every row
+    # below was HEAD-verified live on download.pytorch.org and its xformers/cpp_lib.json read
+    # back, e.g. cu130/xformers-0.0.34 reports {"torch": "2.10.0+cu130"}. Keep in step with
+    # _XFORMERS_WHEEL_VERSIONS in studio/backend/utils/wheel_utils.py and the matrix in
+    # tests/python/test_windows_xformers_wheel_match.py.
+    #
+    # Deliberately NOT a floor-and-let-pip-pick: the cu130 index also serves
+    # xformers-0.0.35, whose extension is built for torch 2.10.0 while its metadata only
+    # asks for torch>=2.10, so a resolver is free to pair it with a torch it cannot load.
+    #
+    # torch 2.7.0 (xFormers 0.0.30) is deliberately absent: it predates the stable-ABI
+    # switch, publishes one wheel per interpreter and stops at cp312, and this installer
+    # defaults to Python 3.13 -- so the row would resolve to a wheel that does not exist.
+    $script:XformersWheelVersions = @{
+        "2.7.1"  = @{ "cu126" = "0.0.31.post1"; "cu128" = "0.0.31.post1" }
+        "2.8.0"  = @{ "cu126" = "0.0.32.post2"; "cu128" = "0.0.32.post2"; "cu129" = "0.0.32.post2" }
+        "2.9.0"  = @{ "cu126" = "0.0.33.post1"; "cu128" = "0.0.33.post1"; "cu130" = "0.0.33.post1" }
+        "2.9.1"  = @{ "cu126" = "0.0.33.post2"; "cu128" = "0.0.33.post2"; "cu130" = "0.0.33.post2" }
+        "2.10.0" = @{ "cu126" = "0.0.34";       "cu128" = "0.0.34";       "cu130" = "0.0.34" }
+        # Stable-ABI era: 0.0.35 targets torch 2.10+ and upstream guarantees it works on
+        # any later release, so one row per torch covers 2.11 onward with the same wheel.
+        "2.11.0" = @{ "cu126" = "0.0.35";       "cu128" = "0.0.35";       "cu130" = "0.0.35" }
+        "2.12.0" = @{ "cu126" = "0.0.35";       "cu128" = "0.0.35";       "cu130" = "0.0.35" }
+        "2.13.0" = @{ "cu126" = "0.0.35";       "cu128" = "0.0.35";       "cu130" = "0.0.35" }
+    }
+
+    # The stable-ABI era in one place: every torch STRICTLY ABOVE the floor resolves to this
+    # wheel, which is compiled against the floor release and works on any later one by
+    # upstream's own guarantee. The exact rows above still win.
+    #
+    # An exact-key table alone refuses the PATCH releases -- 2.10.1, 2.11.1, 2.12.1 are all
+    # supported builds, and none of them can be listed here, because they are published
+    # after this script ships. Each one silently left the machine with no xFormers.
+    $script:XformersStableAbiFloor = "2.10.0"
+    $script:XformersStableAbiVersion = "0.0.35"
+    $script:XformersStableAbiFamilies = @("cu126", "cu128", "cu130")
+
+    # "2.12.1" -> [version]2.12.1, or $null for a dev/rc/nightly string, which names no
+    # released torch and must not be swept into the era comparison.
+    function ConvertTo-TorchReleaseVersion {
+        param([string]$Release)
+        if (-not $Release -or -not [regex]::IsMatch($Release, '^\d+(\.\d+)*$')) { return $null }
+        try { return [version]$Release } catch { return $null }
+    }
+
+    # xFormers version built for exactly ($TorchVersion, $CudaTag), or $null when that pair
+    # has no published wheel -- in which case we install nothing rather than a mismatch.
+    function Get-XformersWheelVersion {
+        param([string]$TorchVersion, [string]$CudaTag)
+        if (-not $TorchVersion -or -not $CudaTag) { return $null }
+        # "2.10.0+cu130" -> "2.10.0"; a dev/rc suffix has no wheel and must miss the table.
+        $release = ($TorchVersion -split '\+', 2)[0].Trim()
+        if ($script:XformersWheelVersions.ContainsKey($release)) {
+            $byFamily = $script:XformersWheelVersions[$release]
+            if ($byFamily.ContainsKey($CudaTag)) { return $byFamily[$CudaTag] }
+            return $null
+        }
+        # Not listed: above the stable-ABI floor the answer is known without a row.
+        $parsed = ConvertTo-TorchReleaseVersion $release
+        if ($null -eq $parsed) { return $null }
+        if ($parsed -gt [version]$script:XformersStableAbiFloor -and $script:XformersStableAbiFamilies -contains $CudaTag) {
+            return $script:XformersStableAbiVersion
+        }
+        return $null
+    }
+
+    # The torch build the SELECTED wheel records in its cpp_lib.json, which is what
+    # Get-InstalledXformersBuild reads back. For an exact-era wheel that is the resident
+    # torch; for the stable-ABI wheel it is the floor release it was compiled against, so
+    # comparing against the resident torch marked a perfectly good 0.0.35 as mismatched and
+    # force-reinstalled it on every run.
+    function Get-XformersExpectedTorchBuild {
+        param([string]$Version, [string]$TorchVersion, [string]$CudaTag)
+        if ($Version -eq $script:XformersStableAbiVersion) {
+            return "$($script:XformersStableAbiFloor)+$CudaTag"
+        }
+        return $TorchVersion
+    }
+
+    # The interpreter tag in the wheel FILENAME: 0.0.31..0.0.34 ship one cp39-abi3 wheel,
+    # 0.0.35 switched to py39-none (a packaging change -- the extension never bound the
+    # CPython ABI). Unknown releases return $null so a direct URL is never guessed.
+    # Mirrors _XFORMERS_FILENAME_PYTHON_TAGS in studio/backend/utils/wheel_utils.py.
+    function Get-XformersFilenamePythonTag {
+        param([string]$Version)
+        $parsed = ConvertTo-TorchReleaseVersion (($Version -split '[^0-9.]', 2)[0].TrimEnd('.'))
+        if ($null -eq $parsed) { return $null }
+        if ($parsed -ge [version]"0.0.31" -and $parsed -le [version]"0.0.34") { return "cp39-abi3" }
+        if ($parsed -eq [version]"0.0.35") { return "py39-none" }
+        return $null
+    }
+
+    # What the RESIDENT xformers actually is: "<version> <torch-it-was-built-for>", e.g.
+    # "0.0.34 2.10.0+cu128", or $null when xformers is absent or carries no build metadata.
+    # BOTH halves are needed. The version alone cannot tell cu126 from cu128 from cu130 --
+    # all three publish the same version string -- and the build tag alone cannot tell
+    # 0.0.34 from 0.0.35, which report the same torch. Read from disk rather than
+    # "import xformers" so a mismatched .pyd cannot log its own warning into the probe.
+    function Get-InstalledXformersBuild {
+        param([string]$PythonExe)
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
+        $code = 'import importlib.metadata as m,importlib.util,json,os;s=importlib.util.find_spec(''xformers'');l=(list(s.submodule_search_locations) if s and s.submodule_search_locations else []);p=(os.path.join(l[0],''cpp_lib.json'') if l else '''');t=(json.load(open(p))[''version''][''torch''] if p and os.path.isfile(p) else '''');v=m.version(''xformers'') if l else '''';print((v + '' '' + t) if (v and t) else '''')'
+        $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code $code
+        if (-not $probe.Ok) { return $null }
+        $build = $probe.Output.Trim()
+        if (-not $build) { return $null }
+        return $build
     }
 
     # Post-install XPU runtime check. A +xpu wheel installing is not proof the GPU is usable: on
@@ -4131,6 +4277,114 @@ exit 0
                 Write-StudioLine "  [WARN] PyTorch is CPU-only but a $expectedTorchTag GPU build was expected for this machine." -ForegroundColor Yellow
                 Write-StudioLine "  [WARN] Training and GPU inference will run on CPU until this is fixed." -ForegroundColor Yellow
                 Write-StudioLine "  [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU." -ForegroundColor Yellow
+            }
+        }
+    }
+
+    # ── Pin xFormers to the wheel built for the torch that is actually installed ──
+    # See $script:XformersWheelVersions above for why a version floor is not enough.
+    # Runs AFTER the flavor repair so it reads the final torch, and keys off THAT torch
+    # rather than off $TorchIndexUrl, which the repair does not always reconcile (it is
+    # skipped when the expected tag is 'cpu' or unrecognised, so a migrated venv can hold
+    # a +cu128 torch while the index leaf says /cpu, and /cpu serves no usable xFormers).
+    # xFormers is an optional accelerator, so every failure here warns and the install
+    # continues on torch SDPA; and when no wheel matches we install NOTHING, because
+    # installing a mismatched one is the bug being fixed. UNSLOTH_SKIP_XFORMERS=1 opts out.
+    if (-not $SkipTorch -and $env:UNSLOTH_SKIP_XFORMERS -ne "1") {
+        $_xfTorchVersion = Get-InstalledTorchVersion -PythonExe $VenvPython
+        $_xfCudaTag = ConvertTo-TorchFlavorTag $_xfTorchVersion
+        # cu<digits> only: cpu / rocm / xpu torch has no xFormers wheel on any index.
+        # IsMatch, not -match, so this does not clobber $Matches for the enclosing scope.
+        if ($_xfTorchVersion -and [regex]::IsMatch([string]$_xfCudaTag, '^cu\d+$')) {
+            $_xfVersion = Get-XformersWheelVersion -TorchVersion $_xfTorchVersion -CudaTag $_xfCudaTag
+            if (-not $_xfVersion) {
+                # "not in the table", which also covers families we have no row for (cu118,
+                # cu124) as well as torch releases upstream never built against.
+                substep "no matching xFormers wheel for torch $_xfTorchVersion -- skipping it (attention falls back to torch SDPA)."
+            } elseif ((Get-InstalledXformersBuild -PythonExe $VenvPython) -eq "$_xfVersion $(Get-XformersExpectedTorchBuild -Version $_xfVersion -TorchVersion $_xfTorchVersion -CudaTag $_xfCudaTag)") {
+                substep "xFormers $_xfVersion already matches torch $_xfTorchVersion."
+            } else {
+                # How to fetch it, in two cases.
+                #
+                # An EXPLICIT index pin is authoritative and stays whole. Its final component
+                # is not required to be the CUDA family: a documented full-URL override can be
+                # an authenticated PEP 503 mirror, and comparing its leaf threw exactly that
+                # index away -- the one that had just supplied the resident CUDA torch --
+                # leaving an air-gapped host unable to reach any wheel at all.
+                #
+                # Otherwise install the DIRECT wheel URL rather than resolving a version off
+                # an index. --default-index does not make an index exclusive (uv's --index /
+                # UV_INDEX are used "in addition to" it), and cu126 / cu128 / cu130 publish
+                # the SAME version string, so a machine with UV_INDEX set -- PyPI's CUDA-12.8
+                # build, say -- could satisfy a pinned 0.0.35 from the wrong family and
+                # recreate the silent extension failure this whole step exists to prevent.
+                # A URL cannot be resolved anywhere else. UNSLOTH_PYTORCH_MIRROR is still
+                # honoured, as it is everywhere else in this script.
+                $_xfIndexUrl = $null
+                $_xfWheelUrl = $null
+                $_xfPyTag = Get-XformersFilenamePythonTag $_xfVersion
+                $_xfWheelName = if ($_xfPyTag) { "xformers-$_xfVersion-$_xfPyTag-win_amd64.whl" } else { $null }
+                # A FULL-URL override only. UNSLOTH_TORCH_INDEX_FAMILY also sets
+                # $TorchIndexPinned, and routing that through the index reintroduced the very
+                # hole above: cu126 / cu128 / cu130 share a version string, so a machine-level
+                # UV_INDEX could satisfy the pin with the wrong family. A family pin names a
+                # leaf we can build a direct URL from, so it takes the URL path.
+                if ($TorchIndexUrl -and -not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
+                    # Even here, prefer a URL. When the override already names a CUDA leaf
+                    # (.../cu130, the documented shape) the wheel can be addressed under it
+                    # directly, which no UV_INDEX can substitute for. Only an override whose
+                    # leaf is not a family -- a bare PEP 503 mirror root -- has to be resolved,
+                    # and that one gets the machine-level indexes cleared below.
+                    $_xfOverrideLeaf = Get-TorchIndexLeafName $TorchIndexUrl
+                    if ($_xfWheelName -and [regex]::IsMatch($_xfOverrideLeaf, '^cu\d+$')) {
+                        $_xfWheelUrl = Join-UrlPath $TorchIndexUrl $_xfWheelName
+                    } else {
+                        $_xfIndexUrl = $TorchIndexUrl
+                    }
+                } else {
+                    $_xfBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR } else { "https://download.pytorch.org/whl" }
+                    if ($_xfWheelName) {
+                        $_xfWheelUrl = Join-UrlPath $_xfBase "$_xfCudaTag/$_xfWheelName"
+                    } else {
+                        # Unknown filename shape: fall back to the index rather than guessing
+                        # a URL that 404s.
+                        $_xfIndexUrl = Join-UrlPath $_xfBase $_xfCudaTag
+                    }
+                }
+                $_xfSource = if ($_xfWheelUrl) { $_xfWheelUrl } else { $_xfIndexUrl }
+                substep "installing xFormers $_xfVersion for torch $_xfTorchVersion ($(Remove-IndexUrlCredentials $_xfSource))..."
+                # --no-deps: the wheel declares torch==<exact release>, and acting on that can
+                #   pull a PyPI (CUDA 12.8) torch over the CUDA build just installed.
+                # --reinstall-package: cu126 / cu128 / cu130 all publish the SAME xformers
+                #   version string, so a wrong-CUDA wheel is invisible to a version check and
+                #   would otherwise be left in place on an upgrade of a broken install.
+                # Go through $script:UvExe when something has resolved one, so this call
+                # cannot be captured by a profile alias named uv. That variable is not set
+                # on this branch; Get-Variable rather than a bare read so the lookup is
+                # also safe under a profile's Set-StrictMode.
+                $_xfUv = Get-Variable -Name 'UvExe' -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+                if (-not $_xfUv) { $_xfUv = 'uv' }
+                $_xfExit = if ($_xfWheelUrl) {
+                    Invoke-InstallCommandRetry -Label "install xFormers" { & $_xfUv pip install --python $VenvPython --no-deps --reinstall-package xformers $_xfWheelUrl }
+                } else {
+                    # --default-index does not make an index exclusive: uv reads UV_INDEX and
+                    # UV_EXTRA_INDEX_URL "in addition to" it, and every CUDA family publishes the
+                    # SAME xformers version, so a machine-level index could satisfy the pin from
+                    # the wrong one. Cleared for this call only, and restored after.
+                    $_xfSavedIndex = $env:UV_INDEX
+                    $_xfSavedExtra = $env:UV_EXTRA_INDEX_URL
+                    try {
+                        $env:UV_INDEX = $null
+                        $env:UV_EXTRA_INDEX_URL = $null
+                        Invoke-InstallCommandRetry -Label "install xFormers" { & $_xfUv pip install --python $VenvPython --no-deps --reinstall-package xformers "xformers==$_xfVersion" --default-index $_xfIndexUrl }
+                    } finally {
+                        $env:UV_INDEX = $_xfSavedIndex
+                        $env:UV_EXTRA_INDEX_URL = $_xfSavedExtra
+                    }
+                }
+                if ($_xfExit -ne 0) {
+                    substep "[WARN] could not install xFormers $_xfVersion (exit $_xfExit); attention falls back to torch SDPA." "Yellow"
+                }
             }
         }
     }

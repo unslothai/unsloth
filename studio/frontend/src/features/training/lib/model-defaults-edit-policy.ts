@@ -7,6 +7,7 @@ export const MODEL_DEFAULT_STATE_KEYS = [
   "epochs",
   "contextLength",
   "learningRate",
+  "embeddingLearningRate",
   "optimizerType",
   "lrSchedulerType",
   "loraRank",
