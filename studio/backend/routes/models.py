@@ -299,10 +299,15 @@ def _has_non_gguf_weights(path: Path) -> bool:
 
 
 def _local_pipeline_index(d: Path) -> bool:
-    """True when *d* is a diffusers PIPELINE root (top-level ``model_index.json``, weights in
-    component subdirs), which ``_is_model_directory`` (root config + loose weights) rejects."""
+    """True when *d* is a diffusers PIPELINE root (a top-level index, weights in component
+    subdirs), which ``_is_model_directory`` (root config + loose weights) rejects.
+
+    Either index counts. A Modular Diffusers pipeline carries ``modular_model_index.json`` and no
+    ``model_index.json``, and the video loader accepts exactly that pair, so recognising only the
+    conventional one hid a valid local root from the picker and let the publisher walk descend
+    into it and offer its components as separate, unusable models."""
     try:
-        return (d / "model_index.json").is_file()
+        return (d / "model_index.json").is_file() or (d / "modular_model_index.json").is_file()
     except OSError:
         return False
 

@@ -6475,6 +6475,27 @@ def test_the_pipeline_test_is_safe_on_a_path_that_is_not_a_readable_directory(tm
     assert local_inventory._is_diffusers_pipeline_dir(odd) is False
 
 
+def test_a_modular_pipeline_root_is_recognised(tmp_path):
+    """A Modular Diffusers pipeline carries ``modular_model_index.json`` and NO
+    ``model_index.json``, which is exactly the pair the video loader accepts. Recognising only
+    the conventional index hid such a root from the Images/Video picker and let the publisher
+    walk descend into it and offer ``transformer`` / ``vae`` as separate, unusable models."""
+    root = tmp_path / "modular"
+    root.mkdir()
+    (root / "modular_model_index.json").write_text("{}")
+    (root / "transformer").mkdir()
+    assert local_inventory._is_diffusers_pipeline_dir(root) is True
+
+    conventional = tmp_path / "conventional"
+    conventional.mkdir()
+    (conventional / "model_index.json").write_text("{}")
+    assert local_inventory._is_diffusers_pipeline_dir(conventional) is True
+
+    neither = tmp_path / "neither"
+    neither.mkdir()
+    assert local_inventory._is_diffusers_pipeline_dir(neither) is False
+
+
 def test_gguf_progress_unknown_hashes_calls_a_sibling_only_dir_absent(monkeypatch, tmp_path):
     """A repo dir kept alive by a sibling quant is not evidence that THIS one is here.
 
