@@ -2525,8 +2525,11 @@ def test_a_precast_text_encoder_is_sized_before_the_unified_refusal(monkeypatch)
     fam = type("F", (), {"name": "ltx-2", "bf16_components_gb": (37.8, 24.4, 5.5)})()
     mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
     kwargs = dict(
-        te_quant_mode = "fp8", target = None, encoder_gb = 24.4,
-        mib_per_gb = mib_per_gb, dtype_scale = 1.0,
+        te_quant_mode = "fp8",
+        target = None,
+        encoder_gb = 24.4,
+        mib_per_gb = mib_per_gb,
+        dtype_scale = 1.0,
     )
 
     # No pre-cast encoder resolves: no saving, so the dense figure stands.
