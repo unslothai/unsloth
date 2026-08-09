@@ -1001,6 +1001,25 @@ def test_a_mostly_silent_soundtrack_is_refused_rather_than_padded(tmp_path):
         clips._decode_clip_audio(tmp_path / "a.mp4", target, fake_av(target // 10), np)
 
 
+def test_the_knobs_h3_cannot_honour_are_refused_or_normalised():
+    """Same rule as the other pins this trainer already applies (cfg_dropout,
+    weighting_scheme, batch size): a setting the loop does not implement must not be accepted
+    and then silently dropped. Refused where the value is an explicit non-default, normalised
+    where the SCHEMA DEFAULT is the one the loop disagrees with -- refusing there would 422
+    every untouched request."""
+    from core.training import diffusion_h3_trainer as h3
+
+    src = Path(h3.__file__).read_text()
+    # bf16 is the hard requirement, so "no" and "fp16" both go. The loop hard-codes the bf16
+    # weight dtype and autocast, so anything else was recorded and then not run.
+    assert 'if cfg.mixed_precision != "bf16":' in src
+    # Explicit non-defaults, refused.
+    assert 'compile_transformer", "auto") or "auto").strip().lower() == "on"' in src
+    assert 'cond_cache_dir", "") or "").strip():' in src
+    # Wrong defaults, normalised.
+    assert "cfg = replace(cfg, center_crop = True, random_flip = False, snr_gamma = None)" in src
+
+
 def test_the_augmentation_knobs_record_what_h3_actually_does():
     """Every frame goes through the same centre cover-crop and nothing is flipped, but the
     schema defaults say the opposite (center_crop=False, random_flip=True), so an untouched
@@ -1011,7 +1030,7 @@ def test_the_augmentation_knobs_record_what_h3_actually_does():
     from core.training import diffusion_h3_trainer as h3
 
     src = Path(h3.__file__).read_text()
-    assert "cfg = replace(cfg, center_crop = True, random_flip = False)" in src
+    assert "center_crop = True, random_flip = False" in src
     # And the two fields really are settable on the config the trainer normalises.
     cfg = _replace(_h3_cfg(), center_crop = True, random_flip = False)
     assert cfg.center_crop is True and cfg.random_flip is False

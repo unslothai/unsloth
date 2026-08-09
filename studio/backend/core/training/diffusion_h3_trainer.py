@@ -439,11 +439,12 @@ def run_h3_lora_training(
     cfg = config.normalized()
     if cfg.resolved_family != "minimax-h3":
         raise ValueError(f"This trainer is for minimax-h3, not {cfg.resolved_family!r}.")
-    if cfg.mixed_precision == "fp16":
+    if cfg.mixed_precision != "bf16":
         raise ValueError(
             "MiniMax-H3 LoRA training requires bf16: its checkpoint keeps the patch "
             "projections, the timestep MLP and the output heads in fp32 and fp16 overflows "
-            "them. Set mixed precision to bf16."
+            "them. The loop hard-codes the bf16 weight dtype and autocast either way, so any "
+            "other setting would be recorded and then not run. Set mixed precision to bf16."
         )
     if cfg.resolution % H3_CANVAS_MULTIPLE:
         raise ValueError(
@@ -472,14 +473,36 @@ def run_h3_lora_training(
             "row layout is set by the clip's own geometry and its caption's length. Use "
             "gradient_accumulation_steps to raise the effective batch."
         )
+    # torch.compile is never invoked here (the packed layout changes shape with every clip's
+    # caption length, so each step would recompile), and the run already reports compiled=False.
+    # "auto" means "the trainer decides", which it does; an explicit "on" is a policy that would
+    # be accepted and then ignored.
+    if str(getattr(cfg, "compile_transformer", "auto") or "auto").strip().lower() == "on":
+        raise ValueError(
+            "MiniMax-H3 does not compile: its packed sequence changes length with every clip's "
+            "caption, so torch.compile would re-trace each step. Use compile_transformer "
+            "'off' or 'auto'."
+        )
+    # No conditioning cache exists on this path: the conditioner is loaded and every caption and
+    # latent recomputed each run. Accepting the directory would promise a saving that never
+    # happens, so an explicit one is refused rather than silently unused.
+    if str(getattr(cfg, "cond_cache_dir", "") or "").strip():
+        raise ValueError(
+            "MiniMax-H3 has no persistent conditioning cache yet: each run loads the "
+            "conditioner and recomputes its captions and latents, so cond_cache_dir would be "
+            "recorded and never read. Leave it unset."
+        )
     # The two image-LoRA augmentation knobs are fixed for a clip dataset, not honoured: every
     # frame goes through the same centre cover-crop (_cover_resize), and nothing is flipped --
     # a per-frame flip would tear a clip, and a per-clip one has nowhere to live, since the
-    # cached tensors carry no variant axis. Both SCHEMA defaults disagree with that
-    # (center_crop=False, random_flip=True), so the config is normalised here rather than
-    # refused: refusing would 422 every default request, and leaving it would have the run
-    # record describe augmentation that did not happen.
-    cfg = replace(cfg, center_crop = True, random_flip = False)
+    # cached tensors carry no variant axis. snr_gamma is the same shape of mismatch on the loss
+    # side: the step is a plain unweighted MSE and the field defaults to 5.0, so every default
+    # request recorded min-SNR weighting that never ran (weighting_scheme, its sibling, is
+    # refused above because it has no default to break). All three SCHEMA defaults disagree with
+    # what the loop does, so they are normalised here rather than refused: refusing would 422
+    # every default request, and leaving them would have the run record describe a recipe that
+    # did not happen.
+    cfg = replace(cfg, center_crop = True, random_flip = False, snr_gamma = None)
 
     import torch
 
