@@ -25,7 +25,7 @@ from typing import Callable, Optional
 import structlog
 
 from utils.child_stdio import utf8_child_env
-from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid, terminate_pid
 
 logger = structlog.get_logger(__name__)
 
@@ -325,9 +325,16 @@ def stream_installer(
     adopt_pid(proc.pid)
     timed_out = threading.Event()
 
+    announced: set[int] = set()
+
     def _kill_on_timeout() -> None:
         timed_out.set()
         proc.kill()
+        # This process keeps running after the error, so no startup sweep is
+        # coming: a validation server left here holds the GPU and the staged
+        # files through the retry that follows.
+        for child_pid in list(announced):
+            terminate_pid(child_pid)
 
     watchdog = threading.Timer(timeout_seconds, _kill_on_timeout)
     watchdog.daemon = True
@@ -344,7 +351,12 @@ def stream_installer(
                 # Recorded while it runs and dropped when the installer says it
                 # stopped; one it never got to report stays for the sweep.
                 started, child_pid = child.group(1) == "started", int(child.group(2))
-                (adopt_pid if started else forget_pid)(child_pid)
+                if started:
+                    adopt_pid(child_pid)
+                    announced.add(child_pid)
+                else:
+                    forget_pid(child_pid)
+                    announced.discard(child_pid)
                 continue
             m = PROGRESS_LINE_RE.search(line)
             if m is None:

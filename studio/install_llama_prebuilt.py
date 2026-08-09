@@ -5340,10 +5340,11 @@ def validate_server(
                         + ("\n" + response_body if response_body else "")
                     )
         finally:
-            if process is not None and process.poll() is None:
-                _terminate_validation_server(process)
             if process is not None:
-                _announce_child("stopped", process.pid)
+                # Only once nothing is left in its group: announcing the stop
+                # drops the record, which is the only handle on a survivor.
+                if _terminate_validation_server(process):
+                    _announce_child("stopped", process.pid)
             try:
                 log_path.unlink(missing_ok = True)
             except Exception:
@@ -5362,34 +5363,68 @@ def _announce_child(state: str, pid: int) -> None:
     print(f"UNSLOTH_INSTALLER_CHILD {state} {pid}", flush = True)
 
 
-def _terminate_validation_server(process: "subprocess.Popen") -> None:
-    """Stop the validation server and anything it started.
+def _group_is_running(pgid: "int | None") -> bool:
+    """Whether anything is left in that process group."""
+    if pgid is None or os.name != "posix" or not hasattr(os, "killpg"):
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _wait_for_group(pgid: "int | None", grace: float) -> None:
+    """Give a signalled group its moment to go."""
+    deadline = time.time() + grace
+    while _group_is_running(pgid) and time.time() < deadline:
+        time.sleep(0.05)
+
+
+def _terminate_validation_server(process: "subprocess.Popen", grace: float = 5.0) -> bool:
+    """Stop the validation server and anything it started. True when it is gone.
 
     It leads its own group, so signalling the leader alone would leave a child
-    of its own behind.
+    of its own behind, and a child that ignores SIGTERM outlives the leader's
+    exit. False means something is still in that group, and the caller keeps
+    the pid announced so a later sweep can still reach it.
     """
-    signalled = False
-    if os.name == "posix" and hasattr(os, "killpg"):
+    pgid = None
+    if os.name == "posix" and hasattr(os, "getpgid"):
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-            signalled = True
+            pgid = os.getpgid(process.pid)
         except OSError:
-            pass
-    if not signalled:
+            # Already reaped, so its own pid is the group id: it was started in
+            # a session of its own, and the kernel holds that number for as long
+            # as any member of the group is still there.
+            pgid = process.pid
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except OSError:
+            process.terminate()
+    else:
         process.terminate()
     try:
-        process.wait(timeout = 5)
-        return
+        process.wait(timeout = grace)
     except subprocess.TimeoutExpired:
         pass
-    if os.name == "posix" and hasattr(os, "killpg"):
+    # The leader exiting is not the answer: a member that ignored the SIGTERM
+    # is still holding the GPU and the staged files.
+    _wait_for_group(pgid, grace)
+    if pgid is not None and _group_is_running(pgid):
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            os.killpg(pgid, signal.SIGKILL)
         except OSError:
-            process.kill()
-    else:
+            pass
+        _wait_for_group(pgid, grace)
+    elif pgid is None and process.poll() is None:
         process.kill()
-    process.wait(timeout = 5)
+    try:
+        process.wait(timeout = grace)
+    except subprocess.TimeoutExpired:
+        pass
+    return not _group_is_running(pgid) and process.poll() is not None
 
 
 def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_dir: Path) -> str:

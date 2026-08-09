@@ -902,6 +902,24 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
     return survivors
 
 
+def terminate_pid(pid: "Optional[int]", timeout: float = 5.0) -> None:
+    """Stop one tracked child now, tree and all, and drop its record.
+
+    For an owner that has to give up on a child before its own shutdown, and
+    cannot leave it for a sweep that will not run while this process lives.
+    """
+    if not pid:
+        return
+    try:
+        if _is_windows():
+            _windows_terminate_tree(pid)
+        else:
+            _posix_terminate(pid, timeout)
+    except Exception:  # noqa: BLE001 - best effort, like the rest of this
+        pass
+    forget_pid(pid)  # keeps the record if its group is still up
+
+
 def reap_recorded_children(timeout: float = 5.0) -> "list[int]":
     """Kill children recorded by a previous Studio that is no longer running.
 

@@ -7314,6 +7314,11 @@ class LlamaCppBackend:
             adopt_pid(self._process.pid)
         except Exception as e:
             logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
+        # Kept from here on: a shim that has already exited (a failed health
+        # check, a crash before the next reload) answers no getpgid, and this
+        # backend keeps running, so no startup sweep would reach its visual
+        # server either.
+        self._diffusion_pgid = self._leading_process_group(self._process.pid)
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
         )
@@ -13422,7 +13427,9 @@ class LlamaCppBackend:
         # answering. The diffusion shim leads its own group so the startup sweep
         # can reach its visual server; this is what takes that group down on an
         # ordinary stop, which is the only path the desktop shutdown waits for.
-        _pgid = self._leading_process_group(getattr(self._process, "pid", None))
+        _pgid = self._leading_process_group(
+            getattr(self._process, "pid", None)
+        ) or getattr(self, "_diffusion_pgid", None)
         try:
             if terminable:
                 self._process.terminate()
@@ -13444,6 +13451,7 @@ class LlamaCppBackend:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
             self._kill_process_group(_pgid)
+            self._diffusion_pgid = None
             # getattr: teardown must tolerate a partially-built backend (failed
             # __init__ or a __new__-built instance), as with _llama_log_fh below.
             if getattr(self, "_stats_logger", None) is not None:

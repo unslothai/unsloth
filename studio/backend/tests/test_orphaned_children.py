@@ -22,6 +22,28 @@ import pytest
 IS_WINDOWS = sys.platform == "win32"
 
 
+def _load_installer_module():
+    """install_llama_prebuilt.py, imported from the repo without installing it."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[2] / "install_llama_prebuilt.py"
+    name = "install_llama_prebuilt_under_test"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    # Registered before exec: its dataclasses resolve annotations through
+    # sys.modules, and a module that is not in there fails to build them.
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        del sys.modules[name]
+        raise
+    return module
+
+
+
 def _alive(pid: int) -> bool:
     if IS_WINDOWS:
         out = subprocess.run(
@@ -1939,6 +1961,115 @@ def test_a_failed_tree_kill_keeps_the_pid_in_the_shutdown_record(monkeypatch):
     with lifetime._record_lock:
         lifetime._tracked_pids.clear()
         lifetime._tracked_pgids.clear()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "posix process groups")
+def test_the_installer_waits_for_its_validation_group_not_the_leader(tmp_path):
+    """A child that ignores SIGTERM outlives the leader's exit, and announcing
+    the stop is what drops the only record of it."""
+    installer = _load_installer_module()
+
+    script = tmp_path / "leader.py"
+    script.write_text(
+        "import signal, subprocess, sys, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "child = subprocess.Popen([sys.executable, '-c',"
+        " 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+        " time.sleep(30)'])\n"
+        "print(child.pid, flush = True)\n"
+        "time.sleep(30)\n",
+        encoding = "utf-8",
+    )
+    proc = subprocess.Popen(
+        [sys.executable, str(script)], stdout = subprocess.PIPE, text = True,
+        start_new_session = True,
+    )
+    try:
+        grandchild = int(proc.stdout.readline().strip())
+        assert _alive(grandchild)
+
+        gone = installer._terminate_validation_server(proc)
+        assert gone is True, "reported a stop with the group still up"
+        time.sleep(0.3)
+        assert not _alive(grandchild), "the leader went and its child stayed"
+    finally:
+        for pid in (proc.pid, locals().get("grandchild")):
+            if pid:
+                _kill(pid)
+        if proc.poll() is None:
+            proc.wait(timeout = 5)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "posix process groups")
+def test_a_validation_group_that_will_not_die_is_not_announced_as_stopped(monkeypatch):
+    """False keeps the pid recorded, which is the whole point of announcing it."""
+    installer = _load_installer_module()
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session = True,
+    )
+    try:
+        # Signals go nowhere: what an unkillable member looks like from here.
+        monkeypatch.setattr(installer.os, "killpg", lambda pgid, sig: None)
+        assert installer._terminate_validation_server(proc, grace = 0.2) is False
+    finally:
+        monkeypatch.undo()
+        proc.kill()
+        proc.wait(timeout = 5)
+
+
+def test_an_installer_timeout_takes_its_announced_children_with_it(monkeypatch):
+    """This process keeps running after the error, so no startup sweep is coming
+    before the retry."""
+    from utils.prebuilt import update_flow
+
+    terminated = []
+    monkeypatch.setattr(update_flow, "adopt_pid", lambda pid: None)
+    monkeypatch.setattr(update_flow, "forget_pid", lambda pid: None)
+    monkeypatch.setattr(update_flow, "terminate_pid", lambda pid: terminated.append(pid))
+
+    class FakeProc:
+        pid = 4321
+
+        def __init__(self):
+            self.killed = False
+            self.stdout = self._lines()
+
+        def _lines(self):
+            yield "UNSLOTH_INSTALLER_CHILD started 9931\n"
+            while not self.killed:
+                time.sleep(0.05)
+
+        def wait(self):
+            return -9
+
+        def poll(self):
+            return -9
+
+        def kill(self):
+            self.killed = True
+
+    monkeypatch.setattr(update_flow.subprocess, "Popen", lambda *a, **k: FakeProc())
+    with pytest.raises(RuntimeError, match = "timed out"):
+        update_flow.stream_installer(
+            ["x"], {}, timeout_seconds = 1, job = {}, job_lock = threading.Lock(),
+        )
+
+    assert terminated == [9931], terminated
+
+
+def test_a_diffusion_group_is_reachable_after_its_leader_has_gone():
+    """getpgid stops answering once the shim exits, and this backend keeps
+    running, so no startup sweep would reach its visual server."""
+    source = (
+        Path(__file__).resolve().parents[1] / "core" / "inference" / "llama_cpp.py"
+    ).read_text(encoding = "utf-8")
+
+    assert "self._diffusion_pgid = self._leading_process_group(self._process.pid)" in source
+    kill = source[source.index("def _kill_process(self):"):]
+    kill = kill[: kill.index("def ", 10)]
+    assert 'getattr(self, "_diffusion_pgid", None)' in kill, "only asks a leader that may be gone"
+    assert "self._diffusion_pgid = None" in kill, "kept a group id past its kill"
 
 
 if __name__ == "__main__":
