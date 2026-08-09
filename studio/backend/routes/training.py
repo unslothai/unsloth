@@ -2854,7 +2854,8 @@ async def start_diffusion_training(
         # Preflight the dataset: a missing/empty/uncaptionable data_dir otherwise fails inside the trainer AFTER eviction. Same discovery the trainer runs, so the two cannot disagree.
         try:
             pairs = await asyncio.to_thread(
-                _dtc.discover_image_caption_pairs,
+                _dtc.discover_training_pairs,
+                normalized_cfg.resolved_family,
                 config["data_dir"],
                 instance_prompt = config.get("instance_prompt") or None,
                 caption_column = config.get("caption_column") or "text",

@@ -1293,6 +1293,45 @@ def discover_image_caption_pairs(
     return pairs
 
 
+# Families whose dataset is captioned video CLIPS rather than stills. LTX-2 is deliberately not
+# here: it trains a style LoRA FROM still images, so it keeps the image discovery.
+CLIP_TRAINED_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
+
+
+def discover_training_pairs(
+    resolved_family: str,
+    data_dir: str | os.PathLike[str],
+    *,
+    instance_prompt: Optional[str] = None,
+    caption_column: str = "text",
+    verify_images: bool = False,
+) -> list[tuple[str, str]]:
+    """The ``(path, caption)`` pairs for ``resolved_family``, from whichever discovery its
+    trainer runs.
+
+    The /diffusion/start preflight exists so a bad dataset 400s BEFORE the resident GPU models
+    are freed, which only holds while it runs the SAME discovery as the trainer. It ran the
+    image one unconditionally, so a MiniMax-H3 dataset -- captioned clips, which is the only
+    thing its trainer accepts -- was rejected at the route with "No captioned images found" and
+    the advertised H3 trainer could not be reached through /diffusion/start at all.
+
+    ``verify_images`` is image-only: the clip discovery has no cheap header probe to match it
+    (a container has to be opened to be judged), so it is ignored for a clip family rather than
+    quietly implying a check that did not happen."""
+    if str(resolved_family or "").strip().lower() in CLIP_TRAINED_FAMILIES:
+        from core.training.diffusion_h3_clips import discover_clip_caption_pairs
+
+        return discover_clip_caption_pairs(
+            data_dir, instance_prompt = instance_prompt, caption_column = caption_column
+        )
+    return discover_image_caption_pairs(
+        data_dir,
+        instance_prompt = instance_prompt,
+        caption_column = caption_column,
+        verify_images = verify_images,
+    )
+
+
 def _emit(on_event: Optional[EventCb], type_: str, **kw: Any) -> None:
     if on_event is not None:
         on_event({"type": type_, "ts": time.time(), **kw})

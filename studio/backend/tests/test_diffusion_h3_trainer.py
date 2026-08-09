@@ -242,6 +242,51 @@ def test_discover_clip_pairs_is_sorted_and_stable(tmp_path):
     assert [Path(p).name for p, _ in pairs] == ["a.mp4", "b.mp4", "c.mp4"]
 
 
+# ── the preflight has to run the trainer's own discovery ─────────────────────
+
+
+def test_discover_training_pairs_routes_h3_to_the_clip_discovery(tmp_path):
+    """The gap this closes: /diffusion/start preflights the dataset BEFORE freeing the resident
+    GPU models, and it ran the IMAGE discovery unconditionally. An H3 dataset is captioned clips
+    -- the only thing its trainer accepts -- so a perfectly valid one was rejected at the route
+    with "No captioned images found" and the advertised H3 trainer could not be reached at all.
+    """
+    from core.training.diffusion_train_common import discover_training_pairs
+
+    _clip(tmp_path, "a.mp4")
+    (tmp_path / "a.txt").write_text("a rabbit in a meadow")
+    pairs = discover_training_pairs("minimax-h3", tmp_path, verify_images = True)
+    assert [Path(p).name for p, _ in pairs] == ["a.mp4"]
+    assert pairs[0][1] == "a rabbit in a meadow"
+
+
+def test_discover_training_pairs_leaves_an_image_family_on_the_image_discovery(tmp_path):
+    """The other half: nothing about an existing image family moves, verify_images included."""
+    from PIL import Image
+
+    from core.training.diffusion_train_common import discover_training_pairs
+
+    Image.new("RGB", (8, 8)).save(tmp_path / "a.png")
+    _clip(tmp_path, "b.mp4")  # present, and must be ignored for an image family
+    pairs = discover_training_pairs(
+        "sdxl", tmp_path, instance_prompt = "p", verify_images = True
+    )
+    assert [Path(p).name for p, _ in pairs] == ["a.png"]
+
+
+def test_the_clip_families_are_exactly_the_ones_whose_trainer_takes_clips():
+    """LTX-2 trains a style LoRA FROM STILLS, so it must keep the image discovery even though it
+    is a video family -- the split is by what the TRAINER reads, not by output modality."""
+    from core.training.diffusion_train_common import (
+        CLIP_TRAINED_FAMILIES,
+        TRAINABLE_VIDEO_FAMILIES,
+    )
+
+    assert CLIP_TRAINED_FAMILIES == {"minimax-h3"}
+    assert CLIP_TRAINED_FAMILIES <= TRAINABLE_VIDEO_FAMILIES
+    assert "ltx-2" not in CLIP_TRAINED_FAMILIES
+
+
 # ── the two coupled schedules ────────────────────────────────────────────────
 def test_the_two_shifts_come_from_the_released_scheduler_configs():
     from core.training.diffusion_h3_trainer import _H3_AUDIO_SHIFT, _H3_VIDEO_SHIFT
