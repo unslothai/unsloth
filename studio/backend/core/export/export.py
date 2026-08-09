@@ -3,7 +3,6 @@
 
 """Export backend - exports models in various formats."""
 
-import glob
 import json
 import structlog
 import tempfile
@@ -1137,7 +1136,7 @@ class ExportBackend:
                 )
                 if not final_ggufs:
                     # Reporting success over an empty directory is what hid #7897.
-                    shutil.rmtree(model_tmp_to_cleanup, ignore_errors = True)
+                    # The owned temp root is already gone: the finally above drops it.
                     return (
                         False,
                         f"GGUF conversion reported success but wrote no .gguf file to "
