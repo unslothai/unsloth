@@ -55,6 +55,7 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { cn } from "@/lib/utils";
 import {
   DEFAULT_UPLOAD_LIMIT_BYTES,
+  getCachedUploadLimitLabel,
   loadUploadLimitSettings,
 } from "@/features/settings/api/upload-limit";
 import { isTauri } from "@/lib/api-base";
@@ -83,6 +84,7 @@ import {
   chunkDatasetUpload,
   filesFromDataTransfer,
   metadataKeyedOnSubfolders,
+  oversizedChunk,
   selectDatasetFiles,
 } from "./dataset-files";
 import { DatasetShowcase } from "./dataset-showcase";
@@ -782,10 +784,18 @@ export function DiffusionTrainPanel({
         // the endpoint accumulates into the same folder, so a tree past the multipart part or
         // byte cap goes up in slices rather than being refused outright.
         const limit = await loadUploadLimitSettings().catch(() => null);
-        const chunks = chunkDatasetUpload(
-          files,
-          limit?.maxUploadSizeBytes ?? DEFAULT_UPLOAD_LIMIT_BYTES,
-        );
+        const maxBytes = limit?.maxUploadSizeBytes ?? DEFAULT_UPLOAD_LIMIT_BYTES;
+        const chunks = chunkDatasetUpload(files, maxBytes);
+        // a slice no split can fit under the cap 413s, so refuse before the first request:
+        // otherwise the slices ahead of it are already committed.
+        const over = oversizedChunk(chunks, maxBytes);
+        if (over) {
+          toast.error(
+            `"${over}" is over the ${getCachedUploadLimitLabel()} upload limit, so nothing was ` +
+              "uploaded. Raise the limit in Settings, or leave that file out.",
+          );
+          return;
+        }
         let res = await uploadDiffusionDataset(name, chunks[0]);
         let sent = res.uploaded;
         let stopped: string | null = null;

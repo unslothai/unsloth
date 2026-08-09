@@ -16,9 +16,9 @@ const METADATA_SCAN_BYTES = 1024 * 1024;
 export const DATASET_UPLOAD_CHUNK = 500;
 
 /** slice `files` so no request exceeds the part cap or `maxBytes`, keeping casefold-equal
- *  names together: a repeat upload replaces a same-name destination, and the backend can only
- *  compare names inside one request. A single group over `maxBytes` still ships whole, since
- *  splitting it is exactly what lets the second request overwrite the first. */
+ *  names together: the backend can only compare names inside one request, and splitting a
+ *  group is exactly what lets the second request overwrite the first. Such a group ships
+ *  whole even when it is over `maxBytes`; `oversizedChunk` catches that before any upload. */
 export function chunkDatasetUpload(files: File[], maxBytes: number): File[][] {
   const groups = new Map<string, File[]>();
   for (const file of files) {
@@ -46,10 +46,18 @@ export function chunkDatasetUpload(files: File[], maxBytes: number): File[][] {
   return chunks;
 }
 
-/** the first metadata file whose captions are keyed on a subfolder path, or null.
+/** the destination name in the first chunk no split can fit under `maxBytes`, or null.
  *
- *  a folder pick flattens the tree to basenames, so rows keyed "images/001.png" stop matching
- *  and every caption in the file silently resolves to none. */
+ *  uploads accumulate, so a chunk the endpoint 413s leaves every chunk before it on disk. */
+export function oversizedChunk(chunks: File[][], maxBytes: number): string | null {
+  for (const chunk of chunks) {
+    if (chunk.reduce((sum, f) => sum + f.size, 0) > maxBytes) return destinationName(chunk[0]);
+  }
+  return null;
+}
+
+/** the first metadata file whose captions are keyed on a subfolder path, or null. a folder pick
+ *  flattens the tree, so rows keyed "images/001.png" silently resolve to no caption at all. */
 export async function metadataKeyedOnSubfolders(files: File[]): Promise<string | null> {
   for (const file of files) {
     if (!file.name.toLowerCase().endsWith(".jsonl")) continue;
@@ -104,8 +112,7 @@ function isHidden(name: string): boolean {
 // a dataset folder holds a .thumbs cache whose jpegs would re-upload as training images.
 function inHiddenPath(file: File): boolean {
   const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath;
-  // no relative path means the file was named in a dialog, so it was chosen deliberately;
-  // otherwise segment 0 is the picked folder, whose own dot is likewise the user's choice.
+  // a name typed into a dialog, and segment 0 (the picked folder itself), are the user's choice.
   return relative ? relative.split("/").slice(1).some(isHidden) : false;
 }
 
@@ -154,9 +161,9 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
       continue;
     }
     const isImage = DATASET_IMAGE_EXTS.includes(ext);
-    // two images sharing a stem resolve to one <stem>.txt caption, which the backend refuses;
-    // _shares_sidecar clashes when the stems match exactly, or when the full names differ once
-    // casefolded, so only a pure extension-case pair of one stem spelling is exempt.
+    // two images sharing a stem resolve to one <stem>.txt caption, which the backend refuses.
+    // _shares_sidecar clashes on an exact stem match or a differing casefolded name, so only an
+    // extension-case pair of one stem spelling is exempt.
     const stem = isImage ? dest.slice(0, dest.length - ext.length) : null;
     if (stem !== null) {
       const key = stem.toLowerCase();

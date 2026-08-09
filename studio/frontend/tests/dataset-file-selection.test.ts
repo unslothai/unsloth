@@ -11,6 +11,7 @@ import {
   chunkDatasetUpload,
   filesFromDataTransfer,
   metadataKeyedOnSubfolders,
+  oversizedChunk,
   selectDatasetFiles,
 } from "../src/features/images/train/dataset-files.ts";
 
@@ -298,6 +299,23 @@ test("splits on the byte cap too, not only the part count", () => {
     assert.ok(chunk.reduce((n, f) => n + f.size, 0) <= 500 * mb);
   }
   assert.equal(chunks.flat().length, 300);
+});
+
+test("names a chunk no split can fit, so the slices before it are never committed", () => {
+  const mb = 1024 * 1024;
+  const files = [
+    ...Array.from({ length: 20 }, (_, i) => sized(`img_${i}.png`, 2 * mb)),
+    sized("huge.png", 600 * mb),
+  ];
+  const chunks = chunkDatasetUpload(files, 500 * mb);
+
+  assert.deepEqual(
+    chunks.map((c) => c.length),
+    [20, 1],
+    "the oversized file must sit in a slice the endpoint would 413",
+  );
+  assert.equal(oversizedChunk(chunks, 500 * mb), "huge.png");
+  assert.equal(oversizedChunk(chunks.slice(0, 1), 500 * mb), null);
 });
 
 test("flags metadata keyed on a subfolder, which flattening would silently unmatch", async () => {
