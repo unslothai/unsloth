@@ -202,6 +202,37 @@ def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
     return removed, failures
 
 
+def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
+    """The variant keys in *target_repo* that *variant* names, lowercased.
+
+    Its own key, always. Plus the unambiguous bare-quant alias the download side already admits
+    (``gguf_plan.plan_for_variant``): a repo filing its sole Q4_K_M under a shared container
+    (``weights/model-Q4_K_M.gguf``) qualifies that key, because the key is a pure function of the
+    path and cannot know the directory disambiguates nothing, so every stored pin and every
+    explicit ``repo:Q4_K_M`` names it by quant alone. Admitting the alias for the download and not
+    for the delete answered "not found" and left the weights on disk.
+
+    Only when it is unambiguous, exactly as the download side decides it: a repo that really does
+    hold several checkpoints at one quant gets no fallback, because there the bare name genuinely
+    does not name one of them and deleting the wrong one is unrecoverable.
+    """
+    wanted = (variant or "").strip().lower()
+    if not wanted or "/" in wanted:
+        return {wanted}
+    keys = {
+        gguf_variant_key(name).lower()
+        for _snap, _blob, name in _repo_file_matches(target_repo, _is_main_gguf_filename)
+    }
+    if wanted in keys:
+        return {wanted}
+    aliased = {
+        key
+        for key in keys
+        if "/" in key and extract_quant_label(key.rsplit("/", 1)[-1]).lower() == wanted
+    }
+    return aliased if len(aliased) == 1 else {wanted}
+
+
 def _delete_gguf_variant_from_repos(
     repo_id: str,
     variant: str,
@@ -219,10 +250,11 @@ def _delete_gguf_variant_from_repos(
 
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
+        wanted_keys = _variant_keys_to_delete(target_repo, variant)
         matched = _repo_file_matches(
             target_repo,
-            lambda name: _is_main_gguf_filename(name)
-            and gguf_variant_key(name).lower() == variant.lower(),
+            lambda name, keys = wanted_keys: _is_main_gguf_filename(name)
+            and gguf_variant_key(name).lower() in keys,
         )
 
         for snap, _blob, name in matched:

@@ -686,3 +686,92 @@ def test_a_local_load_keeps_the_qualified_identity_it_was_asked_for(tmp_path):
     # A bare request still records the bare identity it asked for.
     bare = ModelConfig.from_identifier(str(snapshot), gguf_variant = "Q6_K")
     assert bare is not None and bare.gguf_variant == "Q6_K"
+
+
+def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
+    """An HF cache repo: snapshot symlinks pointing at blobs, as the deletion scan reads it."""
+    from types import SimpleNamespace
+
+    repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
+    snap = repo_dir / "snapshots" / "rev1"
+    blobs = repo_dir / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    files = []
+    for index, name in enumerate(names):
+        blob = blobs / f"sha{index}"
+        blob.write_bytes(b"x" * 64)
+        link = snap / name
+        link.parent.mkdir(parents = True, exist_ok = True)
+        link.symlink_to(blob)
+        files.append(
+            SimpleNamespace(
+                file_name = Path(name).name,
+                file_path = str(link),
+                blob_path = str(blob),
+                size_on_disk = 64,
+            )
+        )
+    return SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_dir,
+        revisions = [SimpleNamespace(files = files, snapshot_path = str(snap))],
+    ), snap
+
+
+def test_deleting_a_container_variant_accepts_the_bare_quant_the_download_admits(tmp_path):
+    """A repo filing its sole Q4_K_M under a shared container qualifies that key, so every stored
+    pin and every explicit ``repo:Q4_K_M`` names it by quant alone -- which ``plan_for_variant``
+    admits for the download. Matching only the qualified key on delete answered "not found" and
+    left the weights on disk."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+    from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
+
+    repo, snap = _cache_repo(tmp_path, "org/Model-GGUF", ["weights/model-Q4_K_M.gguf"])
+    # The download side already resolves the bare name here; keep the two in step.
+    plans = build_gguf_variant_plans([_Sibling("weights/model-Q4_K_M.gguf", 64)])
+    assert set(plans) == {"weights/model-q4_k_m"}
+    assert plan_for_variant(plans, "Q4_K_M") is not None
+
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+    assert not (snap / "weights" / "model-Q4_K_M.gguf").is_symlink()
+
+
+def test_an_ambiguous_bare_quant_deletes_nothing(tmp_path):
+    """Two checkpoints at one quant: the bare name genuinely does not name one of them, and
+    deleting the wrong one is unrecoverable. Same rule ``plan_for_variant`` applies."""
+    from fastapi import HTTPException
+
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "org/Model-GGUF",
+        ["distilled/model-Q4_K_M.gguf", "distilled-1.1/model-Q4_K_M.gguf"],
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+    assert excinfo.value.status_code == 404
+    assert (snap / "distilled" / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "distilled-1.1" / "model-Q4_K_M.gguf").is_symlink()
+
+    # The qualified key still deletes exactly its own checkpoint.
+    _delete_gguf_variant_from_repos(
+        "org/Model-GGUF", "distilled/model-Q4_K_M", [repo], None, root = tmp_path
+    )
+    assert not (snap / "distilled" / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "distilled-1.1" / "model-Q4_K_M.gguf").is_symlink()
+
+
+def test_a_bare_quant_that_is_its_own_key_still_deletes_only_itself(tmp_path):
+    """The overwhelmingly common shape: the root file's key IS the bare quant, so the alias
+    fallback must not fire and must not reach a qualified sibling."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path, "org/Model-GGUF", ["model-Q4_K_M.gguf", "distilled/model-Q4_K_M.gguf"]
+    )
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "distilled" / "model-Q4_K_M.gguf").is_symlink()
