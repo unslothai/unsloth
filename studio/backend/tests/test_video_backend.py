@@ -3758,6 +3758,50 @@ def test_h3_omitted_size_takes_the_canvas_from_the_keyframe(monkeypatch):
     assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
 
 
+def test_h3_native_clip_records_the_build_it_came_off(monkeypatch):
+    """A native GGUF clip must carry the same build record as the diffusers twin.
+
+    _run_generate copies model_kind / gguf_filename / transformer_quant / text_encoder_quant /
+    memory_mode / offload_policy out of the result into the saved sidecar, so if the native return
+    dict omits them every native clip saves a blank recipe and the gallery shows nothing.
+    """
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    import dataclasses
+
+    backend._state = dataclasses.replace(
+        backend._state,
+        transformer_quant = "fp8",
+        text_encoder_quant = "int8",
+        memory_mode = "low",
+        offload_policy = "model",
+    )
+
+    result = backend.generate(prompt = "p", width = 960, height = 544)
+
+    assert result["model_kind"] == "gguf"
+    assert result["gguf_filename"] == "minimax_h3_fl2va-Q4_K_M.gguf"
+    assert result["transformer_quant"] == "fp8"
+    assert result["text_encoder_quant"] == "int8"
+    assert result["memory_mode"] == "low"
+    assert result["offload_policy"] == "model"
+
+
+def test_a_cfg_free_family_records_the_guidance_it_actually_ran(monkeypatch):
+    """H3 has no CFG, so a requested guidance must not reach the recipe.
+
+    The native path pins cfg_scale to 1.0 and the diffusers path passes no guidance kwarg at all,
+    so recording the caller's number would label the clip with a scale that never ran.
+    """
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(prompt = "p", width = 960, height = 544, guidance = 7.0)
+
+    assert result["guidance"] == 1.0
+    assert calls[-1]["params"].cfg_scale == 1.0
+
+
 def test_keyframes_are_refused_by_a_family_that_has_none(fake_runtime, tmp_path):
     # Silently dropping the image would render a text-only clip with nothing to do with it.
     backend = VideoBackend()

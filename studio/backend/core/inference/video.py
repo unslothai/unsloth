@@ -3085,6 +3085,11 @@ class VideoBackend:
                 )
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
+                if not fam.supports_cfg:
+                    # A CFG-free family never reads this number: diffusers gets no guidance kwarg
+                    # and the native path pins cfg_scale to 1.0. Clamp it here so the recipe cannot
+                    # record a guidance that did not run.
+                    guidance = float(fam.default_guidance)
                 shift, audio_shift = self._resolve_flow_shifts(
                     fam, state.engine, flow_shift, audio_flow_shift
                 )
@@ -3704,6 +3709,15 @@ class VideoBackend:
                     "flow_shift": flow_shift,
                     # sd.cpp pins the audio schedule, so the recipe records what it actually ran.
                     "audio_flow_shift": state.family.default_audio_flow_shift,
+                    # The BUILD this clip came off, read from the ENGAGED state and never from the
+                    # request, exactly as the diffusers path records it. Without these six the
+                    # sidecar of every native GGUF clip saves a blank recipe.
+                    "model_kind": state.kind,
+                    "gguf_filename": state.gguf_filename,
+                    "transformer_quant": state.transformer_quant,
+                    "text_encoder_quant": state.text_encoder_quant,
+                    "memory_mode": state.memory_mode,
+                    "offload_policy": state.offload_policy,
                 }
             finally:
                 output_path.unlink(missing_ok = True)
