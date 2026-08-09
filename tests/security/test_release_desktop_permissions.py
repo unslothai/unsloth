@@ -1,6 +1,5 @@
 """Permission-boundary checks for the desktop release workflow."""
 
-import re
 from pathlib import Path
 
 import yaml
@@ -28,6 +27,16 @@ def test_only_publish_job_can_write_repository_contents():
 
 
 def test_build_matrix_hands_off_assets_without_release_credentials():
+    """The build matrix signs bundles; only publish-release may release them.
+
+    The handoff is one-way and credential-free: the matrix uploads artifacts and
+    holds no release token, and publish-release downloads them. Since #8193 the
+    ordering is no longer expressed as `needs: build` (publish-release starts
+    alongside the matrix to queue for its runner in parallel) but by the "Wait
+    for the build matrix" step, which must be at least as strict. Both halves
+    are asserted below, so removing the wait does not silently reintroduce
+    publishing a partial release.
+    """
     jobs = _workflow()["jobs"]
     build = jobs["build"]
     publish = jobs["publish-release"]
@@ -46,34 +55,34 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert any(
         step.get("uses", "").startswith("actions/upload-artifact@") for step in build["steps"]
     )
-    download = next(
-        (
-            index
-            for index, step in enumerate(publish["steps"])
-            if step.get("uses", "").startswith("actions/download-artifact@")
-        ),
-        None,
+    assert any(
+        step.get("uses", "").startswith("actions/download-artifact@") for step in publish["steps"]
     )
-    assert download is not None, [step.get("name") for step in publish["steps"]]
+    # publish-release deliberately does not `needs: build`, so the wait step is
+    # the whole of the gate. It must cover every matrix leg by name, refuse to
+    # publish on a leg that did not succeed, and refuse to publish a leg whose
+    # job record never appeared, rather than defaulting to "finished".
+    assert publish["needs"] == ["prepare-version"]
+    wait = next(step for step in publish["steps"] if step.get("name") == "Wait for the build matrix")
+    wait_run = wait["run"]
 
-    # The publish job starts alongside the build matrix rather than through
-    # `needs: build`, so the hand-off is a wait step that has to clear before
-    # the assets are downloaded. Either shape keeps the ordering guarantee.
-    if "build" not in (publish.get("needs") or []):
-        wait = next(
-            (
-                index
-                for index, step in enumerate(publish["steps"])
-                if "GITHUB_RUN_ID" in step.get("run", "")
-            ),
-            None,
-        )
-        assert wait is not None, "publish-release neither needs build nor waits for it"
-        assert wait < download, [step.get("name") for step in publish["steps"]]
+    matrix_legs = {
+        f"Build {entry['label']}" for entry in build["strategy"]["matrix"]["include"]
+    }
+    assert len(matrix_legs) == len(tauri_steps)
+    for leg in matrix_legs:
+        assert f"'{leg}'" in wait_run, leg
 
-    # The guard moved into a validation step that runs ahead of the VirusTotal
-    # scan; creating a missing release is deferred to a separate step so a
-    # non-draft release is never published empty for the length of the scan.
+    assert "refusing to publish, these build jobs did not succeed" in wait_run
+    assert "refusing to publish without confirming they ran" in wait_run
+    # Every one of those refusals has to be terminal.
+    assert wait_run.count("exit 1") >= 3
+
+    names = [step.get("name") for step in publish["steps"]]
+    assert names.index("Wait for the build matrix") < names.index("Create versioned release")
+
+    # Creating a missing release is a separate step gated on validation, so a
+    # non-draft release is never reserved before its assets are ready to upload.
     release_step = next(
         step for step in publish["steps"] if step.get("name") == "Validate versioned release state"
     )
@@ -87,26 +96,36 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert create_step["if"] == "steps.versioned_release_state.outputs.create == 'true'"
 
 
-def test_the_wait_step_polls_every_build_matrix_leg_by_its_real_name():
-    # The wait step matches jobs by name. Renaming a matrix label, or adding a
-    # leg, would otherwise leave it waiting on a job that never reports, or
-    # publishing while a leg is still building.
-    jobs = _workflow()["jobs"]
-    build = jobs["build"]
-    if "build" in (jobs["publish-release"].get("needs") or []):
-        return
+def test_post_publish_scan_job_holds_no_release_credentials():
+    """#8194 added a job that handles release bundles; it must not be able to release.
 
-    wait = next(
-        step for step in jobs["publish-release"]["steps"] if "GITHUB_RUN_ID" in step.get("run", "")
-    )
-    # Leg names carry their own parentheses, so take the LEGS line, not to `)`.
-    legs = re.findall(r"'([^']+)'", wait["run"].split("LEGS=(", 1)[1].split("\n", 1)[0])
-    template = build["name"]
-    expected = [
-        template.replace("${{ matrix.label }}", entry["label"])
-        for entry in build["strategy"]["matrix"]["include"]
-    ]
-    assert sorted(legs) == sorted(expected), (legs, expected)
+    virustotal-scan downloads the published assets and uploads them to a third
+    party. It declares no `permissions` block, so it inherits the workflow's
+    `contents: read`, and it carries no repository token of any kind: the only
+    secret it sees is the VirusTotal key.
+    """
+    scan = _workflow()["jobs"]["virustotal-scan"]
+
+    assert "permissions" not in scan
+    assert "GITHUB_TOKEN" not in scan.get("env", {})
+    assert "GH_TOKEN" not in scan.get("env", {})
+
+    for step in scan["steps"]:
+        env = step.get("env", {})
+        assert "GITHUB_TOKEN" not in env, step.get("name")
+        assert "GH_TOKEN" not in env, step.get("name")
+        if step.get("uses", "").startswith("actions/checkout@"):
+            assert step["with"]["persist-credentials"] is False
+        # No `gh` calls: the job has no token to make them with.
+        assert "gh release" not in (step.get("run") or "")
+
+    secrets = {
+        value
+        for step in scan["steps"]
+        for value in step.get("env", {}).values()
+        if isinstance(value, str) and "secrets." in value
+    }
+    assert secrets == {"${{ secrets.VIRUS_TOTAL_API_TOKEN }}"}
 
 
 def test_versioned_release_hides_updater_signature_assets():
