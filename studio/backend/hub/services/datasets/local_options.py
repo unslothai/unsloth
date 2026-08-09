@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import bz2
+import codecs
 import gzip
 import json
 import lzma
 import os
 import re
+import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Optional
 
@@ -95,6 +97,10 @@ _REQUIRED_FEATURE_ARGS = {
     "array5d": ("shape", "dtype"),
 }
 _ARRAY_RANKS = {"array2d": 2, "array3d": 3, "array4d": 4, "array5d": 5}
+# What a recorded split may carry. SplitInfo takes these and nothing else.
+_SPLIT_INFO_FIELDS = frozenset(
+    {"name", "num_bytes", "num_examples", "shard_lengths", "dataset_name"}
+)
 # datasets' own version grammar. Anything else raises when it builds the cache directory.
 _VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 # Ordered, because datasets resolves a split's keyword patterns in this order and samples
@@ -209,7 +215,7 @@ _BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
         "header": (int, list, frozenset({"infer"})),
         "names": list,
         "column_names": list,
-        "index_col": (int, str, list),
+        "index_col": (int, str, list, bool),
         "usecols": list,
         "prefix": str,
         "mangle_dupe_cols": bool,
@@ -359,7 +365,12 @@ def _normalized_dir(value: str) -> Optional[str]:
 
 def _known_dtype(dtype: str) -> bool:
     """A dtype datasets can turn into a Value, or one of its feature classes by name."""
-    if dtype in _VALUE_DTYPES or dtype.replace("_", "").lower() in _PARAMETERLESS_FEATURES:
+    return _known_value_dtype(dtype) or dtype.replace("_", "").lower() in _PARAMETERLESS_FEATURES
+
+
+def _known_value_dtype(dtype: str) -> bool:
+    """An Arrow value alias, which is all a Value or an ArrayXD can be built from."""
+    if dtype in _VALUE_DTYPES:
         return True
     decimal = _DECIMAL_RE.fullmatch(dtype)
     if decimal is not None:
@@ -396,7 +407,7 @@ def _valid_array(spec: dict[str, Any], rank: int) -> bool:
     sizes = shape[1:] if shape[0] is None else shape
     if not all(isinstance(size, int) and not isinstance(size, bool) and size > 0 for size in sizes):
         return False
-    return isinstance(spec.get("dtype"), str) and _known_dtype(spec["dtype"])
+    return isinstance(spec.get("dtype"), str) and _known_value_dtype(spec["dtype"])
 
 
 def _valid_class_label(spec: dict[str, Any]) -> bool:
@@ -447,7 +458,8 @@ def _valid_feature_node(node: Any, depth: int = 0) -> bool:
         return False
     keys = [key for key in node if key != "name"]
     if not keys:
-        return True
+        # Nothing to reconstruct from, so Features raises rather than defaulting.
+        return False
     role = keys[0]
     if role == "dtype":
         return _valid_feature_node(node["dtype"], depth + 1)
@@ -464,7 +476,12 @@ def _valid_feature_node(node: Any, depth: int = 0) -> bool:
     if not all(key in node[role] for key in _REQUIRED_FEATURE_ARGS.get(name, ())):
         return False
     if name == "value":
-        return isinstance(node[role]["dtype"], str) and _known_dtype(node[role]["dtype"])
+        return isinstance(node[role]["dtype"], str) and _known_value_dtype(node[role]["dtype"])
+    if name == "translation":
+        languages = node[role]["languages"]
+        return isinstance(languages, list) and all(
+            isinstance(language, str) for language in languages
+        )
     rank = _ARRAY_RANKS.get(name)
     return rank is None or _valid_array(node[role], rank)
 
@@ -624,6 +641,11 @@ def _add_dataset_info_options(options: set[tuple[str, str]], payload: Any) -> No
         _add_info_options(options, info, fallback_config = config)
 
 
+def _valid_split_info(child: Any) -> bool:
+    """SplitDict expands each recorded split into SplitInfo, so an unknown key raises."""
+    return isinstance(child, dict) and set(child) <= _SPLIT_INFO_FIELDS
+
+
 def _valid_info_version(version: Any) -> bool:
     """datasets parses this field into a Version, which only reads a mapping or an x.y.z
     string, so anything else raises before a config could be built."""
@@ -636,10 +658,31 @@ def _valid_info_version(version: Any) -> bool:
 
 
 def _valid_info_features(features: Any) -> bool:
-    """dataset_info carries the same feature list a config does, parsed the same way."""
+    """dataset_info carries the same feature list a card does, or the json form the legacy
+    file writes, which datasets reconstructs field by field."""
     if isinstance(features, list):
         return _valid_features(features)
-    return all(isinstance(child, dict) for child in features.values())
+    return all(_valid_json_feature(child) for child in features.values())
+
+
+def _valid_json_feature(node: Any, depth: int = 0) -> bool:
+    """One node of the json feature form, where _type names the class outright."""
+    if depth > _MAX_FEATURE_DEPTH:
+        return False
+    if isinstance(node, list):
+        return all(_valid_json_feature(item, depth + 1) for item in node)
+    if not isinstance(node, dict):
+        return False
+    kind = node.get("_type")
+    if kind == "Value":
+        return isinstance(node.get("dtype"), str) and _known_value_dtype(node["dtype"])
+    if kind is not None and kind.replace("_", "").lower() not in _FEATURE_TYPE_NAMES:
+        return False
+    return all(
+        _valid_json_feature(child, depth + 1)
+        for key, child in node.items()
+        if key in {"feature", "features"} or (kind is None and isinstance(child, dict))
+    )
 
 
 def _valid_dataset_info(payload: Any) -> bool:
@@ -657,11 +700,15 @@ def _valid_dataset_info(payload: Any) -> bool:
     return all(
         isinstance(entry, dict)
         and _valid_info_version(entry.get("version"))
+        and all(
+            entry.get(name) is None or isinstance(entry[name], dict)
+            for name in ("post_processed", "supervised_keys")
+        )
         and isinstance(field(entry, "features"), (list, dict))
         and isinstance(field(entry, "splits"), (list, dict))
         # datasets walks each child with .get or .pop, so a scalar in there raises too.
         and _valid_info_features(field(entry, "features"))
-        and all(isinstance(child, dict) for child in children(field(entry, "splits")))
+        and all(_valid_split_info(child) for child in children(field(entry, "splits")))
         for entry in entries
     )
 
@@ -1110,11 +1157,24 @@ def _split_module(files: Iterable[_DataFile]) -> Optional[str]:
     return _EXTENSION_MODULES[best[1]]
 
 
+def _empty_archive(path: Path) -> bool:
+    """Whether a zip holds nothing the builder could read. Only the central directory is
+    read, which names every member and its size without unpacking any of them."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return not any(member.file_size for member in archive.infolist())
+    except (OSError, zipfile.BadZipFile):
+        return True
+
+
 def _empty_file(path: Path, name: str) -> bool:
     """Whether the builder would read no bytes out of this file. A compressed one is opened
     for a single byte, since its container size says nothing about its payload. The name is
     the one the snapshot uses, since the cache resolves it to a suffixless blob."""
-    opener = _DECOMPRESSORS.get(PurePosixPath(name).suffix.lower())
+    suffix = PurePosixPath(name).suffix.lower()
+    if suffix == ".zip":
+        return _empty_archive(path)
+    opener = _DECOMPRESSORS.get(suffix)
     if opener is None:
         try:
             return path.stat().st_size == 0
@@ -1424,6 +1484,18 @@ def _valid_parameter(rule: Any, value: Any) -> bool:
     return bool(types) and isinstance(value, types)
 
 
+def _known_codec(value: Any) -> bool:
+    """encoding_errors is not checked: datasets 4.3 loads happily with an unknown handler,
+    since nothing decodes badly enough to reach it."""
+    if not isinstance(value, str):
+        return True
+    try:
+        codecs.lookup(value)
+    except LookupError:
+        return False
+    return True
+
+
 def _in_parameter_range(key: str, value: Any) -> bool:
     minimum = _PARAMETER_MINIMUMS.get(key)
     return minimum is None or not isinstance(value, int) or value >= minimum
@@ -1440,7 +1512,11 @@ def _misparameterised_configs(collapsed: dict[str, dict[str, Any]], module: str)
         for name, item in collapsed.items()
         if any(
             key in rules
-            and not (_valid_parameter(rules[key], value) and _in_parameter_range(key, value))
+            and not (
+                _valid_parameter(rules[key], value)
+                and _in_parameter_range(key, value)
+                and (key != "encoding" or _known_codec(value))
+            )
             for key, value in item.items()
         )
     }
@@ -1670,7 +1746,10 @@ def _counted_split(item: Any) -> bool:
     if not isinstance(item, dict):
         return False
     count = item.get("num_examples")
-    return isinstance(count, (int, float)) and not isinstance(count, str) and count > 0
+    if not isinstance(count, (int, float)) or count <= 0:
+        return False
+    # A built split has whole rows, so a fractional count can never match.
+    return float(count).is_integer()
 
 
 def _info_split_sets(
@@ -1820,14 +1899,23 @@ def _snapshot_card_options(
         )
         # One builder serves every config, so a config declaring another format is dead:
         # it either fails to generate or silently misreads its own files.
+        deterministic = (
+            _misversioned_configs(collapsed)
+            | _misparameterised_configs(collapsed, required)
+            | _emptied_configs(info)
+        )
         if declared_files.exhausted:
-            return options
+            # Nothing further resolves, but what the loader settles without a scan still holds.
+            return {
+                entry
+                for entry in options
+                if entry[0] not in deterministic
+                and entry not in _empty_declared_options(collapsed, required, declared_files, snapshot)
+            }
         dead = (
             unresolvable
-            | _misversioned_configs(collapsed)
-            | _misparameterised_configs(collapsed, required)
+            | deterministic
             | _mismatched_configs(collapsed, required, declared_files)
-            | _emptied_configs(info)
         )
         options = {
             entry

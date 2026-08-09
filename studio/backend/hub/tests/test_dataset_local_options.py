@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import bz2
 import gzip
+import io
 import json
 import lzma
 import os
+import zipfile
 
 import pytest
 
@@ -2874,3 +2876,149 @@ def test_snapshot_options_reject_every_config_when_a_wildcard_data_dir_misses(tm
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_an_array_dtype_that_is_a_feature_class(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+                    "    dtype:\n      array2_d:\n        shape: [2, 2]\n        dtype: image\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"x":[[1,2],[3,4]]}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_json_shaped_feature_of_an_unknown_dtype(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text('{"x":1}\n', encoding = "utf-8")
+    (snapshot / "dataset_infos.json").write_text(
+        json.dumps({"default": {"features": {"x": {"dtype": "nope", "_type": "Value"}},
+                                "splits": {"train": {"name": "train", "num_examples": 1}}}}),
+        encoding = "utf-8",
+    )
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_fractional_row_count(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info:\n  splits:\n  - name: train\n    num_examples: 1.5\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_an_unknown_text_codec(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  encoding: definitely-not-a-codec\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_an_unknown_encoding_error_handler(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  encoding_errors: nope-handler\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # Nothing decodes badly enough to reach the handler, so the split still loads.
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_feature_field_with_no_type(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_translation_languages_that_are_not_a_list(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: t\n"
+                    "    dtype:\n      translation:\n        languages: 7\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"t":1}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_a_version_mapping_with_an_ignored_key(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info:\n  version:\n    version_str: 1.0.0\n    bogus: true\n"
+                    "  splits:\n  - name: train\n    num_examples: 1\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # Version.from_dict keeps only its own fields, so the extra one is dropped.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_zip_it_cannot_read(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl.zip").write_bytes(b"not a zip at all")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_a_zip_holding_members(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("train.jsonl", '{"text":"row"}\n')
+    (snapshot / "train.jsonl.zip").write_bytes(buffer.getvalue())
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_zip_whose_members_are_empty(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("train.jsonl", "")
+    (snapshot / "train.jsonl.zip").write_bytes(buffer.getvalue())
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("field", ["post_processed: 7", "supervised_keys: 7"])
+def test_snapshot_options_reject_an_auxiliary_dataset_info_field(tmp_path, field):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"dataset_info:\n  {field}\n  splits:\n  - name: train\n    num_examples: 1\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_recorded_split_with_an_unknown_key(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info:\n  splits:\n  - name: train\n    num_examples: 1\n    bogus: true\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_deterministic_checks_after_the_glob_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_options, "_MAX_RESOLUTION_WORK", 0)
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: wide\n  data_files: '*.jsonl'\n"
+                    "- config_name: bad\n  data_files: train.jsonl\n  version: nope\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # The glob stops resolving, but the version is settled without any of that.
+    assert ("bad", "train") not in local_options._snapshot_options(snapshot)
+
+
+def test_snapshot_options_accept_a_csv_index_col_of_false(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  index_col: false\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
