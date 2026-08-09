@@ -809,27 +809,38 @@ export function DiffusionTrainPanel({
         }
         // one request is all-or-nothing on the backend, so only a split top-up needs the folder
         // checked as well: there a stem it already holds would 400 a later slice, mid-commit.
-        if (chunks.length > 1 && (info?.datasets ?? []).some((d) => d.name === name)) {
-          // no listing, no guarantee: skipping the check would upload the slices it exists to
-          // hold back, so a failure here stops the upload rather than proceeding blind.
-          let held: Awaited<ReturnType<typeof listDiffusionDatasetImages>>;
-          try {
-            held = await listDiffusionDatasetImages(name);
-          } catch (e) {
+        if (chunks.length > 1) {
+          // whether the folder already exists decides whether it needs checking, so absent
+          // dataset info is not proof that it is new: fetch it, and stop rather than assume.
+          const known = info ?? (await refreshInfo());
+          if (!known) {
             toast.error(
-              `Could not read what "${name}" already holds, so nothing was uploaded: ` +
-                `${e instanceof Error ? e.message : "the dataset could not be listed"}. Try again.`,
+              "Could not read the dataset list, so nothing was uploaded. Try again.",
             );
             return;
           }
-          const clash = existingStemClash(files, held.images.map((i) => i.filename));
-          if (clash) {
-            toast.error(
-              `"${clash.second}" and "${clash.first}", already in "${name}", differ only by ` +
-                "extension, so they would share one caption file. Nothing was uploaded; rename " +
-                "it and try again.",
-            );
-            return;
+          if (known.datasets.some((d) => d.name === name)) {
+            // no listing, no guarantee: skipping the check would upload the slices it exists to
+            // hold back, so a failure here stops the upload rather than proceeding blind.
+            let held: Awaited<ReturnType<typeof listDiffusionDatasetImages>>;
+            try {
+              held = await listDiffusionDatasetImages(name);
+            } catch (e) {
+              toast.error(
+                `Could not read what "${name}" already holds, so nothing was uploaded: ` +
+                  `${e instanceof Error ? e.message : "the dataset could not be listed"}. Try again.`,
+              );
+              return;
+            }
+            const clash = existingStemClash(files, held.images.map((i) => i.filename));
+            if (clash) {
+              toast.error(
+                `"${clash.second}" and "${clash.first}", already in "${name}", differ only by ` +
+                  "extension, so they would share one caption file. Nothing was uploaded; " +
+                  "rename it and try again.",
+              );
+              return;
+            }
           }
         }
         let res = await uploadDiffusionDataset(name, chunks[0]);
@@ -885,7 +896,7 @@ export function DiffusionTrainPanel({
         setUploading(false);
       }
     },
-    [info?.datasets, refreshInfo],
+    [info, refreshInfo],
   );
 
   const pickFolder = useCallback((name: string) => {
