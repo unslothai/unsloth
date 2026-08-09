@@ -502,6 +502,105 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+// Compile in both Windows profiles so dependency skew fails in CI, even though
+// the guard is installed only in release builds.
+#[cfg(windows)]
+#[cfg_attr(debug_assertions, allow(dead_code))]
+fn setup_windows_browser_guards(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Controller, ICoreWebView2_11, COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND,
+        COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE,
+    };
+    use webview2_com::{AcceleratorKeyPressedEventHandler, ContextMenuRequestedEventHandler};
+    use windows_core::Interface;
+    use windows_core::BOOL;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyState, VK_CONTROL, VK_F5, VK_MENU, VK_R, VK_SHIFT,
+    };
+
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
+    })?;
+    window.with_webview(|webview| unsafe {
+        // Keep the standard menus and non-refresh accelerators that the WebView2
+        // settings would disable together. Tauri does not expose those settings.
+        // The explicit type makes dependency version mismatches fail here.
+        let controller: ICoreWebView2Controller = webview.controller();
+        let accelerator_handler =
+            AcceleratorKeyPressedEventHandler::create(Box::new(move |_, event_args| {
+                let Some(event_args) = event_args else {
+                    return Ok(());
+                };
+                let mut virtual_key = 0;
+                event_args.VirtualKey(&mut virtual_key)?;
+                let control_down = GetKeyState(i32::from(VK_CONTROL)) < 0;
+                // AltGr reports as Ctrl+Alt, so never treat it as Ctrl+R.
+                let alt_down = GetKeyState(i32::from(VK_MENU)) < 0;
+                // Preserve Ctrl+Shift+R as recovery from a broken renderer.
+                let shift_down = GetKeyState(i32::from(VK_SHIFT)) < 0;
+                if virtual_key == u32::from(VK_F5)
+                    || (virtual_key == u32::from(VK_R) && control_down && !alt_down && !shift_down)
+                {
+                    event_args.SetHandled(true)?;
+                }
+                Ok(())
+            }));
+        let mut accelerator_token = 0;
+        if let Err(error) =
+            controller.add_AcceleratorKeyPressed(&accelerator_handler, &mut accelerator_token)
+        {
+            warn!("Could not block Windows refresh shortcuts: {error}");
+        }
+
+        let core_webview = match controller.CoreWebView2() {
+            Ok(core_webview) => core_webview,
+            Err(error) => {
+                warn!("Could not access the Windows WebView: {error}");
+                return;
+            }
+        };
+        let core_webview11 = match core_webview.cast::<ICoreWebView2_11>() {
+            Ok(core_webview11) => core_webview11,
+            Err(error) => {
+                warn!("Could not customize the Windows context menu: {error}");
+                return;
+            }
+        };
+        let context_menu_handler =
+            ContextMenuRequestedEventHandler::create(Box::new(move |_, event_args| {
+                let Some(event_args) = event_args else {
+                    return Ok(());
+                };
+                let target = event_args.ContextMenuTarget()?;
+                let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND::default();
+                let mut is_editable = BOOL::default();
+                let mut has_link_uri = BOOL::default();
+                let mut has_selection = BOOL::default();
+                target.Kind(&mut kind)?;
+                target.IsEditable(&mut is_editable)?;
+                target.HasLinkUri(&mut has_link_uri)?;
+                target.HasSelection(&mut has_selection)?;
+                // Suppress only bare-page browser commands. Keep media, selection,
+                // editable, and link menus; links are page targets with a link URI.
+                let is_bare_page = kind == COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE
+                    && !is_editable.as_bool()
+                    && !has_link_uri.as_bool()
+                    && !has_selection.as_bool();
+                if is_bare_page {
+                    event_args.SetHandled(true)?;
+                }
+                Ok(())
+            }));
+        let mut context_menu_token = 0;
+        if let Err(error) =
+            core_webview11.add_ContextMenuRequested(&context_menu_handler, &mut context_menu_token)
+        {
+            warn!("Could not filter the Windows context menu: {error}");
+        }
+    })?;
+    Ok(())
+}
+
 /// A Tauri quit never fires beforeunload, so the frontend mirrors quit protection here.
 pub type TrainingActivityState = std::sync::Arc<std::sync::Mutex<bool>>;
 
@@ -1216,6 +1315,8 @@ fn main() {
             }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
+            #[cfg(all(windows, not(debug_assertions)))]
+            setup_windows_browser_guards(app)?;
             setup_tray(app)?;
             #[cfg(unix)]
             setup_unix_termination_signals(app)?;
