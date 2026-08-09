@@ -1902,3 +1902,51 @@ def test_fast_and_auto_memory_do_not_refuse_a_precision(client, monkeypatch):
         assert resp.status_code != 409, resp.text
     # And the gate was told about the memory request either way, so the decision is its to make.
     assert seen and all("memory_mode" in kwargs for kwargs in seen)
+
+
+@pytest.mark.parametrize("mode", ["int8", "fp8_dynamic", "nvfp4"])
+def test_an_offloading_memory_request_refuses_a_torchao_text_encoder(monkeypatch, mode):
+    """The encoder side of the same fence. quantize_text_encoders reports the torchao modes
+    unsupported once offload is active -- the hooks move modules with Module.to(), which those
+    tensor subclasses do not survive -- so the strict refusal landed after the resident image
+    pipeline had already been unloaded."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+    )
+    # Support is not what is under test here, and it reads the live device.
+    monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            # A family WITH an int8 schedule, so the int8 case is not downgraded to fp8 first.
+            types.SimpleNamespace(name = "qwen-image"),
+            model_kind = "gguf",
+            text_encoder_quant = mode,
+            memory_mode = "low_vram",
+        )
+    assert "text_encoder_quant" in str(excinfo.value)
+    assert "offload" in str(excinfo.value)
+
+
+def test_layerwise_fp8_survives_an_offloading_memory_request(monkeypatch):
+    """fp8 is a dtype cast, not a torchao tensor subclass, so offload does not rule it out and
+    refusing it would reject a load the runtime runs."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+    )
+    monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "qwen-image"),
+        model_kind = "gguf",
+        text_encoder_quant = "fp8",
+        memory_mode = "low_vram",
+    )

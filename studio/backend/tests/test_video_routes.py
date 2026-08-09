@@ -1122,3 +1122,50 @@ def test_the_training_guard_runs_before_the_precision_probe(client, monkeypatch)
         json = {"model_path": "Lightricks/LTX-2.3", "transformer_quant": "nvfp4"},
     )
     assert resp.status_code == 409 and resp.json()["detail"] == "Training is running."
+
+
+@pytest.mark.parametrize("memory", ["balanced", "low_vram"])
+def test_the_video_precision_gate_sees_the_memory_request(monkeypatch, memory):
+    """balanced and low_vram settle the offload policy before anything is measured, and an
+    offloaded DiT skips the torchao build -- so load_pipeline's strict refusal arrived after
+    acquire_for and the teardown had already evicted the resident model."""
+    import types
+
+    monkeypatch.setattr(video_module, "precision_fallback_allowed", lambda: False)
+    monkeypatch.setattr(
+        video_module,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(device = "cuda", dtype = "bfloat16"),
+    )
+    monkeypatch.setattr(video_module, "dense_transformer_supported", lambda target: True)
+    with pytest.raises(RuntimeError) as excinfo:
+        video_module.assert_video_precision_available(
+            types.SimpleNamespace(name = "wan2.2"),
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            memory_mode = memory,
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+    assert "offload" in str(excinfo.value)
+
+
+def test_the_video_gate_leaves_a_measured_memory_mode_alone(monkeypatch):
+    """fast and auto are decided from the measured footprint, so this gate cannot judge them."""
+    import types
+
+    monkeypatch.setattr(video_module, "precision_fallback_allowed", lambda: False)
+    monkeypatch.setattr(
+        video_module,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(device = "cuda", dtype = "bfloat16"),
+    )
+    monkeypatch.setattr(video_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        video_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8"
+    )
+    video_module.assert_video_precision_available(
+        types.SimpleNamespace(name = "wan2.2"),
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        memory_mode = "fast",
+    )

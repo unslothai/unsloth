@@ -88,6 +88,16 @@ def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[s
     return normalized
 
 
+def te_quant_needs_resident_weights(mode: Optional[str]) -> bool:
+    """Whether ``mode`` is a torchao text-encoder cast, which CPU offload rules out.
+
+    Offload hooks move modules with ``Module.to()``, which torchao's tensor subclasses do not
+    survive, so ``quantize_text_encoders`` reports those modes unsupported once offload is
+    active. Plain layerwise fp8 is a dtype cast and is unaffected.
+    """
+    return mode in _TE_TORCHAO_MODES
+
+
 def te_quant_supported(target: Any, mode: str) -> bool:
     """Whether ``mode`` is usable for ``target``: a CUDA bf16 device plus the tensor-core class
     each backend needs -- fp8 dtype (fp8), fp8 GEMM sm_89+ (fp8_dynamic), int8 sm_80+ (int8),

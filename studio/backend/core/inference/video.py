@@ -92,10 +92,12 @@ from .diffusion_transformer_quant import (
     quantize_transformer,
     select_transformer_quant_scheme,
 )
+from .diffusion import _memory_request_forces_offload
 from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
     quantize_text_encoders,
+    te_quant_needs_resident_weights,
     te_quant_supported,
 )
 from .video_families import (
@@ -157,6 +159,7 @@ def assert_video_precision_available(
     model_kind: str,
     transformer_quant: Optional[str] = None,
     text_encoder_quant: Optional[str] = None,
+    memory_mode: Optional[str] = None,
 ) -> None:
     """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -185,6 +188,15 @@ def assert_video_precision_available(
             )
         elif not dense_transformer_supported(target):
             reason = "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
+        elif _memory_request_forces_offload(memory_mode, False):
+            # balanced and low_vram name their offload policy without measuring anything, and
+            # offload hooks move modules with Module.to(), which torchao tensors do not survive.
+            # load_pipeline therefore skips the dense build and the strict refusal landed after
+            # acquire_for and the teardown had already evicted the resident model.
+            reason = (
+                f"'{normalize_memory_mode(memory_mode)}' memory places the DiT under CPU "
+                "offload, and torchao quantised tensors cannot be moved by the offload hooks"
+            )
         elif (
             select_transformer_quant_scheme(
                 target,
@@ -211,13 +223,27 @@ def assert_video_precision_available(
     # rejected loads the runtime would run and report as fell_back -- Windows ROCm,
     # where the torchao stub kills int8 while fp8 still works.
     te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
+    te_reason = None
     if te_effective is not None and not te_quant_supported(target, te_effective):
+        te_reason = (
+            "this device does not have the tensor cores that backend needs (a CUDA GPU in "
+            "bf16, plus fp8 / int8 / NVFP4 support depending on the mode)"
+        )
+    elif te_quant_needs_resident_weights(te_effective) and _memory_request_forces_offload(
+        memory_mode, False
+    ):
+        # Same fence on the encoder: the loader reports those modes unsupported once offload is
+        # active, and by then the resident model is gone. Layerwise fp8 is a dtype cast.
+        te_reason = (
+            f"'{normalize_memory_mode(memory_mode)}' memory places the text encoder under CPU "
+            "offload, and torchao quantised tensors cannot be moved by the offload hooks"
+        )
+    if te_reason is not None:
         raise RuntimeError(
             precision_refusal_message(
                 "text_encoder_quant",
                 te_mode,
-                "this device does not have the tensor cores that backend needs (a CUDA GPU in "
-                "bf16, plus fp8 / int8 / NVFP4 support depending on the mode)",
+                te_reason,
                 off_label = "leave it unset to keep the dense bf16 encoder",
                 auto_available = False,
             )

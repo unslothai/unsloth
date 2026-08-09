@@ -116,6 +116,7 @@ from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
     quantize_text_encoders,
+    te_quant_needs_resident_weights,
     te_quant_supported,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
@@ -993,13 +994,30 @@ class DiffusionBackend:
         # rejected loads the runtime would run and report as fell_back -- Windows ROCm,
         # where the torchao stub kills int8 while fp8 still works.
         te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
+        te_reason = None
         if te_effective is not None and not te_quant_supported(target, te_effective):
+            te_reason = (
+                "this device does not have the tensor cores that backend needs (a CUDA GPU in "
+                "bf16, plus fp8 / int8 / NVFP4 support depending on the mode)"
+            )
+        elif te_quant_needs_resident_weights(te_effective) and _memory_request_forces_offload(
+            memory_mode, cpu_offload
+        ):
+            # Same fence as the dense transformer above, on the encoder: offload hooks move
+            # modules with Module.to(), torchao tensors do not survive it, and the loader reports
+            # those modes unsupported once offload is active -- after the resident pipeline is
+            # already gone. Layerwise fp8 is a dtype cast and is unaffected.
+            requested_memory = normalize_memory_mode(memory_mode) or "cpu_offload"
+            te_reason = (
+                f"'{requested_memory}' memory places the text encoder under CPU offload, and "
+                "torchao quantised tensors cannot be moved by the offload hooks"
+            )
+        if te_reason is not None:
             raise RuntimeError(
                 precision_refusal_message(
                     "text_encoder_quant",
                     te_mode,
-                    "this device does not have the tensor cores that backend needs (a CUDA GPU "
-                    "in bf16, plus fp8 / int8 / NVFP4 support depending on the mode)",
+                    te_reason,
                     off_label = "leave it unset to keep the dense bf16 encoder",
                     auto_available = False,
                 )

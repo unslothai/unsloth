@@ -129,6 +129,7 @@ async def video_download_plan(
                 model_kind = kind,
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
+                memory_mode = request.memory_mode,
             )
         plan = await asyncio.to_thread(
             backend.download_plan,
@@ -201,6 +202,9 @@ async def load_video_model(
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
+            # The memory request settles the offload policy for balanced/low_vram before
+            # anything is measured, and an offloaded DiT or encoder skips the torchao build.
+            memory_mode = request.memory_mode,
         )
         # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
