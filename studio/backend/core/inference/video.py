@@ -55,7 +55,11 @@ from .diffusion_cache import (
     maybe_toggle_step_cache,
     normalize_transformer_cache,
 )
-from .diffusion_device import force_float32_rope, resolve_diffusion_device_target
+from .diffusion_device import (
+    force_float32_rope,
+    install_decoder_sync,
+    resolve_diffusion_device_target,
+)
 from .diffusion_memory import (
     apply_memory_plan,
     estimate_gguf_resident_mib,
@@ -1489,6 +1493,8 @@ class VideoBackend:
                     vae_tiling = True
                 except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                     logger.warning("video.vae_tiling_failed: %s", exc)
+            # Wan's decode also grows within a single tile, which tiling alone cannot bound.
+            install_decoder_sync(pipe, target, logger = logger)
 
             resolved = build_resolved_record(
                 {

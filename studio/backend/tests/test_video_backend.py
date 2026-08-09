@@ -14,6 +14,7 @@ import types
 
 import pytest
 
+from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.video import (
     VideoBackend,
     _detect_load_family,
@@ -157,9 +158,18 @@ class _FakeWanDiT:
         yield
 
 
+class _FakeWanDecoder:
+    def __init__(self) -> None:
+        self.hooks: list = []
+
+    def register_forward_hook(self, hook):
+        self.hooks.append(hook)
+
+
 class _FakeWanVae:
     def __init__(self) -> None:
         self.tiled = False
+        self.decoder = _FakeWanDecoder()
 
     def enable_tiling(self) -> None:
         self.tiled = True
@@ -1307,6 +1317,42 @@ def test_load_wan_ti2v_5b_pipeline(fake_runtime):
     assert status["defaults"]["frame_step"] == 4
     assert status["transformer_quant"] is None
     assert _FakeWanPipelineSingle.last["repo"] == "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    # Nothing to sync on this CPU-resolved target; the hook must not cost non-MPS loads a thing.
+    assert backend._state.pipe.vae.decoder.hooks == []
+
+
+@pytest.mark.parametrize("device,hooked", [("mps", 1), ("cuda", 0)])
+def test_load_installs_the_pressure_gated_decoder_sync_on_mps(
+    fake_runtime, monkeypatch, device, hooked
+):
+    # Tiling alone does not bound a Wan decode on MPS: intermediates accumulate within a single
+    # tile until the OS kills the process. The load must arm the sync.
+    torch = sys.modules["torch"]
+    monkeypatch.setattr(
+        torch,
+        device,
+        types.SimpleNamespace(
+            synchronize = lambda: None,
+            recommended_max_memory = lambda: 64 * 1024**3,
+            driver_allocated_memory = lambda: 0,
+        ),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        "core.inference.video.resolve_diffusion_device_target",
+        lambda: DiffusionDeviceTarget(
+            device = device,
+            dtype = torch.bfloat16,
+            backend = device,
+            vendor = None,
+            supports_model_cpu_offload = False,
+            supports_default_torch_compile = False,
+            supports_pinned_transfer = False,
+        ),
+    )
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert len(backend._state.pipe.vae.decoder.hooks) == hooked
 
 
 def test_video_dense_speed_defaults_to_compile_profile(fake_runtime):

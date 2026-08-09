@@ -437,3 +437,126 @@ def test_the_video_loader_demotes_rope():
         "either gone or behind a guard -- and a guard here can only be wrong, since the helper "
         "already no-ops wherever float64 works"
     )
+
+
+# ── Pressure-gated decoder sync ───────────────────────────────────────
+
+
+def _target(device: str) -> dd.DiffusionDeviceTarget:
+    return dd.DiffusionDeviceTarget(
+        device = device,
+        dtype = FP32,
+        backend = device,
+        vendor = None,
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+
+
+class _FakeDecoder:
+    """A VAE decoder module, following nn.Module: a hook returning non-None replaces the output."""
+
+    def __init__(self) -> None:
+        self.hooks: list = []
+
+    def register_forward_hook(self, hook):
+        self.hooks.append(hook)
+
+    def decode(self, calls: int) -> list:
+        outputs = []
+        for index in range(calls):
+            out = f"out{index}"
+            for hook in self.hooks:
+                replacement = hook(self, (), out)
+                if replacement is not None:
+                    out = replacement
+            outputs.append(out)
+        return outputs
+
+
+def _pipe_with(decoder) -> types.SimpleNamespace:
+    return types.SimpleNamespace(vae = types.SimpleNamespace(decoder = decoder))
+
+
+def _mps_torch(used = 0, recommended = 100) -> types.ModuleType:
+    """torch whose mps backend counts synchronize() calls over a settable memory reading."""
+    torch = types.ModuleType("torch")
+    torch.syncs = 0
+    torch.used = used
+
+    def _bump():
+        torch.syncs += 1
+
+    torch.mps = types.SimpleNamespace(
+        synchronize = _bump,
+        recommended_max_memory = lambda: recommended,
+        driver_allocated_memory = lambda: torch.used,
+    )
+    return torch
+
+
+@pytest.mark.parametrize("device", ["cuda", "xpu", "cpu"])
+def test_decoder_sync_is_metal_only(monkeypatch, device):
+    monkeypatch.setitem(sys.modules, "torch", _mps_torch())
+    decoder = _FakeDecoder()
+    assert dd.install_decoder_sync(_pipe_with(decoder), _target(device)) is False
+    assert decoder.hooks == []
+
+
+def test_decoder_sync_idle_while_memory_is_plentiful(monkeypatch):
+    # The whole point of the gate: a decode that fits pays nothing at all.
+    torch = _mps_torch(recommended = 100, used = 10)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
+    decoder.decode(5)
+    assert torch.syncs == 0
+
+
+def test_decoder_sync_runs_once_per_decoder_call_above_the_threshold(monkeypatch):
+    torch = _mps_torch(recommended = 100, used = 10)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
+    decoder.decode(2)
+    assert torch.syncs == 0
+    # The growth this bounds is per decoder call, so every call above the threshold syncs.
+    torch.used = 100 * dd.DECODE_SYNC_FRACTION
+    decoder.decode(3)
+    assert torch.syncs == 3
+    # ...and it stands down again once the allocator has given the memory back.
+    torch.used = 10
+    decoder.decode(4)
+    assert torch.syncs == 3
+
+
+def test_decoder_sync_threshold_scales_with_the_device(monkeypatch):
+    # Pins the policy AND that the budget is a fraction of this device's working set rather than a
+    # fixed byte count -- a decode is only "running out" relative to the machine it runs on.
+    torch = _mps_torch(recommended = 200, used = 169)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
+    decoder.decode(1)
+    assert torch.syncs == 0
+    torch.used = 170
+    decoder.decode(1)
+    assert torch.syncs == 1
+    assert dd.DECODE_SYNC_FRACTION == 0.85
+
+
+def test_decoder_sync_preserves_the_decoder_output(monkeypatch):
+    # An nn.Module forward hook that returns non-None REPLACES the output; this one must not.
+    torch = _mps_torch(recommended = 100, used = 100)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
+    assert decoder.decode(2) == ["out0", "out1"]
+    assert torch.syncs == 2
+
+
+@pytest.mark.parametrize("pipe", [types.SimpleNamespace(), _pipe_with(None), _pipe_with(object())])
+def test_decoder_sync_no_op_without_a_hookable_decoder(monkeypatch, pipe):
+    monkeypatch.setitem(sys.modules, "torch", _mps_torch())
+    assert dd.install_decoder_sync(pipe, _target("mps")) is False

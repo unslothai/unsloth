@@ -79,6 +79,46 @@ def force_float32_rope(
     return changed
 
 
+# Fraction of the device's recommended working set above which a decode starts synchronising.
+DECODE_SYNC_FRACTION = 0.85
+
+
+def install_decoder_sync(
+    pipe: Any,
+    target: DiffusionDeviceTarget,
+    *,
+    logger: Any = None,
+) -> bool:
+    """Cap the memory a video VAE decode holds on Metal, by synchronising once it is running out.
+
+    Wan's VAE decodes one latent frame per call in a loop that never forces a commit, and Metal
+    cannot reuse a buffer until the work holding it completes, so intermediates accumulate until the
+    OS kills the process. Neither tiling (the growth is within one tile) nor torch's adaptive commit
+    (a low watermark far below the observed peak changed nothing) bounds it.
+
+    Fires per decoder call -- per frame on Wan, per tile on the VAEs that decode a whole tensor at
+    once -- and only above the threshold, so a decode with room to spare pays only the memory read.
+    Synchronising waits on work already enqueued, so what it costs is the pipelining, not the decode.
+    """
+    if target.device != "mps":
+        return False
+    decoder = getattr(getattr(pipe, "vae", None), "decoder", None)
+    if not callable(getattr(decoder, "register_forward_hook", None)):
+        return False
+    import torch
+
+    budget = torch.mps.recommended_max_memory() * DECODE_SYNC_FRACTION
+
+    def _sync(_module, _args, _output) -> None:
+        if torch.mps.driver_allocated_memory() >= budget:
+            torch.mps.synchronize()
+
+    decoder.register_forward_hook(_sync)
+    if logger is not None:
+        logger.info("video.decoder_sync: decode synchronises above %.1f GiB", budget / 1024**3)
+    return True
+
+
 def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
     """True if ``studio_device`` equals ``DeviceType.<name>`` (when that member exists)."""
     member = getattr(device_type, name, None)
