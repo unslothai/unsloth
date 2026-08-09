@@ -1075,14 +1075,11 @@ def torchvision_compatibility_check():
 
 
 def _unsatisfied_transformers_requirements():
-    """Return [(name, specifier, installed_version), ...] for the base (no-extras)
-    requirements transformers itself declares that the environment does not satisfy.
-    ``installed_version`` is None when the package is absent altogether.
-
-    The requirement set is read from the installed distribution's own metadata, so
-    it is always whatever the installed transformers actually asks for - a git-main
-    checkout, 4.57.x or 5.x alike - and never a hardcoded table that would rot.
-    Returns [] on anything unexpected; this must never raise.
+    """Base (no-extras) requirements the environment does not satisfy, as
+    [(name, specifier, installed_version), ...]; installed_version is None when the
+    package is absent. Read from the installed distribution's own metadata, so it is
+    whatever that transformers asks for - git main, 4.57.x or 5.x - rather than a
+    table that would rot. Never raises; returns [] on anything unexpected.
     """
     try:
         from importlib.metadata import requires as _dist_requires
@@ -1105,10 +1102,8 @@ def _unsatisfied_transformers_requirements():
         except Exception:
             continue  # Unparseable requirement line - ignore it, never guess.
 
-        # Environment markers: evaluate with extra = "" so optional-extra
-        # requirements (extra == "torch", extra == "ja", ...) and inapplicable
-        # python_version / sys_platform gates are skipped. Otherwise we would
-        # warn about packages the user is correct not to have.
+        # extra = "" drops optional-extra requirements and inapplicable
+        # python_version / sys_platform gates - packages the user is right not to have.
         if requirement.marker is not None:
             try:
                 if not requirement.marker.evaluate({"extra": ""}):
@@ -1119,12 +1114,10 @@ def _unsatisfied_transformers_requirements():
         try:
             installed = importlib_version(requirement.name)
         except PackageNotFoundError:
-            # Absent entirely, which `--no-deps` causes just as readily as a stale
-            # version. transformers checks its base requirements during its own root
-            # import and raises `PackageNotFoundError: The 'safetensors>=0.4.3'
-            # distribution was not found ...` carrying the very hint this warning
-            # exists to correct, so an absent one belongs in the list. Floor or no
-            # floor: a base requirement is not optional to transformers.
+            # Absent, which `--no-deps` causes as readily as a stale version.
+            # transformers checks its base requirements at its own root import and
+            # raises PackageNotFoundError carrying the same misleading hint, so an
+            # absent one belongs here - floor or no floor, it is not optional.
             unsatisfied.append((requirement.name, str(requirement.specifier), None))
             continue
         except Exception:
@@ -1155,26 +1148,13 @@ def _unsatisfied_transformers_requirements():
 def check_transformers_dependency_versions():
     """Warn when transformers' own declared dependency floors are unmet.
 
-    Notebooks that need a bleeding-edge model install transformers from git with
-    `--no-deps` on purpose, so pip cannot re-resolve torch:
-
-        pip install --no-deps git+https://github.com/huggingface/transformers.git
-
-    `--no-deps` also means pip never enforces what that transformers actually
-    requires; it prints a WARNING and the install "succeeds". The failure lands
-    later, at import:
-
-        safetensors>=0.8.0 is required for a normal functioning of this module,
-        but found safetensors==0.7.0.
-        Try: `pip install transformers -U` or `pip install -e '.[dev]'` ...
-
-    That remedy is wrong for this situation: the user is deliberately on
-    transformers main, so `pip install transformers -U` either downgrades them off
-    the model support they installed main for, or loops. What they need is to
-    upgrade the dependency. This check runs before transformers is imported and
-    says so, naming the dependency.
-
-    Warns rather than raises - see the note at the call site in _gpu_init.py.
+    A notebook needing a bleeding-edge model installs transformers from git with
+    `--no-deps` on purpose, so pip cannot re-resolve torch - and so pip never
+    enforces what that transformers requires either. The install "succeeds" and the
+    failure lands at import, advising `pip install transformers -U`. That remedy is
+    wrong here: the user is deliberately on main, so upgrading undoes the install
+    they wanted, or loops. The dependency is what needs upgrading. This runs first
+    and says so, naming it. Warns rather than raises; see the _gpu_init.py call.
     """
     if os.environ.get("UNSLOTH_SKIP_TRANSFORMERS_DEPENDENCY_CHECK", "0").lower() in (
         "1",

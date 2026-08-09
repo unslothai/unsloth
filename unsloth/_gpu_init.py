@@ -81,11 +81,9 @@ fix_torchao_torch_symbol_skew()
 # The above fixes THIS process only; vLLM's model-architecture inspector
 # is a subprocess that imports torchao itself and hits the same ImportError.
 propagate_torchao_fix_to_subprocesses()
-# Warn, do not raise: by the time transformers is imported the mismatch is
-# already fatal and transformers prints its own (misleading) remedy. A warning
-# landing just before that message adds the correct one without taking a
-# metadata-derived floor - which may be advisory for a given code path - and
-# turning it into a hard import failure.
+# Warn, do not raise: this only adds the correct remedy just before transformers
+# prints its misleading one, without turning a metadata-derived floor into a hard
+# import failure of our own.
 check_transformers_dependency_versions()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()

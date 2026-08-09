@@ -3,12 +3,10 @@
 
 """``check_transformers_dependency_versions`` in ``unsloth/import_fixes.py``.
 
-Notebooks that need a bleeding-edge model install transformers from git with
-``--no-deps`` on purpose, so pip never enforces what that transformers requires.
-The break lands later at import, and transformers' own remedy
-(``pip install transformers -U``) is the wrong one for someone who is
-deliberately on main. These tests drive the real functions and pin: the
-requirement set is read from the installed distribution's metadata, only genuine
+A ``--no-deps`` install of transformers from git main leaves pip enforcing nothing,
+so the break lands at import with the wrong remedy (``pip install transformers -U``)
+for someone deliberately on main. These tests drive the real functions and pin: the
+requirement set comes from the installed distribution's metadata, only genuine
 violations are reported, the remedy names the DEPENDENCY, and nothing raises.
 
 Runs under the GPU-free ``tests/conftest.py``.
@@ -238,13 +236,11 @@ def test_applicable_environment_marker_is_still_checked(monkeypatch, caplog):
 # ------------------------------------------------------------ absent package
 
 def test_an_absent_base_requirement_is_reported_like_a_stale_one(monkeypatch, caplog):
-    """`--no-deps` leaves a dependency missing at least as often as it leaves it old.
+    """`--no-deps` leaves a dependency missing as often as it leaves it old.
 
-    transformers checks its base requirements during its own root import and raises
-    `PackageNotFoundError: The 'safetensors>=0.8.0' distribution was not found and is
-    required by this application. Try: pip install transformers -U ...` - the same
-    misleading remedy this check exists to correct. Skipping the absent case left the
-    user with only that message, which is the one outcome the feature has to prevent.
+    transformers checks its base requirements at its own root import and raises
+    PackageNotFoundError carrying the same misleading `pip install transformers -U`
+    hint, so skipping the absent case left the user with only that message.
     """
     _install_env(
         monkeypatch,
@@ -278,8 +274,8 @@ def test_an_absent_extras_only_package_is_not_reported(monkeypatch, caplog):
 
 
 def test_unreadable_metadata_is_still_silent(monkeypatch, caplog):
-    """Only a real PackageNotFoundError counts as absent. Any other metadata error
-    means we cannot tell, and guessing would warn about a working install."""
+    """Only PackageNotFoundError counts as absent; any other metadata error means we
+    cannot tell, and guessing would warn about a working install."""
     _install_env(monkeypatch, ["safetensors>=0.8.0"], {"transformers": "5.15.0.dev0"})
 
     def broken_version(name):
