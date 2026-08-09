@@ -8058,3 +8058,67 @@ def test_an_offload_memory_request_is_not_reported_as_unstaged_shards(
         )
         reason = str(status.get("resolved", {}).get("transformer_quant", {}).get("reason") or "")
         assert marker not in reason, request
+
+
+def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """The unsupported-device checks above the decline run for an EXPLICIT scheme only, so on
+    CPU/MPS, non-bf16 CUDA or a stubbed torchao an AUTO request reached the unstaged-shards branch
+    and the badge told the user the base transformer/ shards were not staged. True and irrelevant:
+    caching them cannot enable a quant this host cannot run. The load itself is unchanged -- the
+    dense re-plan is already gated on dense_transformer_supported -- so what this pins is the
+    reason, on the commonest path there is (every Mac and CPU GGUF load)."""
+    from core.inference import diffusion as dmod
+
+    _stub_hosted_prequant(monkeypatch, cached = True)
+    _stub_dense_candidate(monkeypatch, prequant = False)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: False)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        _transformer_prefetched = False,
+    )
+
+    assert status["loaded"] is True
+    assert status["transformer_quant"] is None
+    reason = ((status.get("resolved") or {}).get("transformer_quant") or {}).get("reason") or ""
+    assert "shards are not staged" not in reason, reason
+
+    # A scheme the device rules out (torchao stub, family deny list) is the same case.
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: None
+    )
+    backend2 = DiffusionBackend()
+    _force_cuda_target(backend2, monkeypatch)
+    status2 = backend2.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        _transformer_prefetched = False,
+    )
+    reason2 = ((status2.get("resolved") or {}).get("transformer_quant") or {}).get("reason") or ""
+    assert "shards are not staged" not in reason2, reason2
+
+    # ... and a host that CAN run it still gets the accurate unstaged-shards decline.
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    _stub_hosted_prequant(monkeypatch, cached = False)
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
+    backend3 = DiffusionBackend()
+    _force_cuda_target(backend3, monkeypatch)
+    status3 = backend3.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        _transformer_prefetched = False,
+    )
+    reason3 = ((status3.get("resolved") or {}).get("transformer_quant") or {}).get("reason") or ""
+    assert "shards are not staged" in reason3, reason3

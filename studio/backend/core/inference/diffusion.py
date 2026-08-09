@@ -2751,8 +2751,21 @@ class DiffusionBackend:
                     # winning while only an int8 checkpoint is published is exactly what the retry
                     # below exists for, and declining here would skip past it to the GGUF for a
                     # checkpoint that costs nothing. That retry only ever returns a CACHED rung.
+                    # ... and only on a host where staging those shards could have enabled the
+                    # quant at all. The unsupported-device checks above run for an EXPLICIT
+                    # scheme only, so on CPU/MPS, non-bf16 CUDA, a stubbed torchao, or a family
+                    # this GPU rules out, an AUTO request reached here and was told its shards
+                    # were not staged -- which is true and irrelevant, since caching them changes
+                    # nothing. The outcome is the GGUF either way (the re-plan below is gated on
+                    # dense_transformer_supported), so this is only about not printing a wrong
+                    # reason on the badge for every Mac and CPU load.
                     elif (
                         not _transformer_prefetched
+                        and dense_transformer_supported(target)
+                        and select_transformer_quant_scheme(
+                            target, transformer_quant, family = getattr(fam, "name", None)
+                        )
+                        is not None
                         and not _dense_candidate_is_prequant(
                             fam,
                             target,
