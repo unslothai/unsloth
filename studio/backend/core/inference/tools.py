@@ -7295,6 +7295,11 @@ def _name_suffix(session_id: str) -> str:
 _assign_lock = threading.Lock()
 
 
+# Directories this run created and claimed. Not a record of ownership beyond
+# this process: it is what lets a marker a tool removed be written again.
+_claimed_here: "set[str]" = set()
+
+
 def _claim_sandbox(workdir: str, session_id: str) -> bool:
     """Write the marker if nobody has, and report whether this id owns it.
 
@@ -7313,6 +7318,7 @@ def _claim_sandbox(workdir: str, session_id: str) -> bool:
         os.write(fd, name.encode("utf-8"))
     finally:
         os.close(fd)
+    _claimed_here.add(workdir)
     return True
 
 
@@ -7348,6 +7354,27 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
         return workdir
 
 
+def _marked_sandbox_in(root: str, session_id: str) -> "str | None":
+    """A directory in *root* whose marker names this chat, if there is one.
+
+    A fresh fallback has a name nothing can recompute, so this is what finds it
+    again on a later launch, on a read and on a delete. Bounded: a root the
+    user pointed us at can hold a lot of their own folders.
+    """
+    name = _sandbox_name(session_id)
+    try:
+        entries = sorted(os.listdir(root))[:_MAX_SNAPSHOT_DIRS]
+    except OSError:
+        return None
+    for entry in entries:
+        candidate = os.path.join(root, entry)
+        if os.path.islink(candidate) or not os.path.isdir(candidate):
+            continue
+        if _marker_owner(candidate) == name:
+            return candidate
+    return None
+
+
 def _free_fallback_dir(root: str, session_id: str) -> "str | None":
     """A name in *root* this chat may take, or None when they are all spoken for.
 
@@ -7355,6 +7382,11 @@ def _free_fallback_dir(root: str, session_id: str) -> "str | None":
     then a fresh one rather than running inside anything already there.
     """
     name = _sandbox_name(session_id)
+    # One we already made and marked wins: its name cannot be recomputed, so a
+    # fresh one every launch would scatter this chat's files.
+    ours = _marked_sandbox_in(root, session_id)
+    if ours:
+        return ours
     candidate = os.path.join(root, f"{name}-{_name_suffix(session_id)}")
     if _free_for(candidate, name):
         return candidate
@@ -7651,6 +7683,19 @@ def _get_workdir(session_id: str | None = None) -> str:
         # renamed and replaced with a link to another chat's directory since,
         # and containment alone accepts that.
         root_now = sandbox_root()
+        # Tool code runs in this directory and can delete the marker in it. For
+        # one this run claimed, the marker is written again rather than the
+        # directory being read as somebody else's, which would strand the files
+        # already in it and start the chat somewhere new.
+        if (
+            session_id
+            and cached in _claimed_here
+            and not os.path.islink(cached)
+            and _contained_in_root(cached, root_now)
+            and os.path.isdir(cached)
+            and _marker_owner(cached) is None
+        ):
+            _mark_sandbox(cached, session_id)
         if (
             os.path.islink(cached)
             or not _contained_in_root(cached, root_now)
@@ -7665,8 +7710,16 @@ def _get_workdir(session_id: str | None = None) -> str:
         # Only this chat's, so a first tool call never waits on the whole tree:
         # across filesystems that is a copy of every session.
         if session_id:
-            _migrate_one_legacy_session(sandbox_root_path, _sandbox_name(session_id))
+            # A chat from before the upgrade whose id already starts with the
+            # derived prefix kept its folder under the literal id, so that name
+            # is tried too. Only a usable one: an id the filesystem cannot hold
+            # never named a directory, and joining it could leave the root.
+            derived = _sandbox_name(session_id)
+            if derived != session_id and _usable_session_id(session_id):
+                _migrate_one_legacy_session(sandbox_root_path, session_id)
+            _migrate_one_legacy_session(sandbox_root_path, derived)
         _start_legacy_migration()
+        _start_detached_sweep()
         project_workdir = (
             _get_project_workdir(session_id)
             if session_id and _usable_session_id(session_id)
@@ -7758,6 +7811,48 @@ def migrate_legacy_sandbox_in_background() -> "threading.Thread":
 
 # A name no session resolves to, so a detached tree is inert until it is gone.
 _DETACHED_SUFFIX = ".deleting-"
+# The exact shape the rename produces. A substring test would also have matched
+# a backup of the user's own named report.deleting-old.
+_DETACHED_RE = re.compile(r"\A.+\.deleting-[0-9a-f]{8}\Z")
+
+
+def sweep_detached_sandboxes(root: "str | None" = None) -> None:
+    """Finish deletes a previous run was killed part way through.
+
+    The rename is what puts the tree out of reach, so a kill between it and the
+    rmtree leaves a full copy of the files nothing resolves to. Only ours: the
+    marker travels with the tree, so a folder of the user's that happens to
+    carry the name is left alone.
+    """
+    base = os.path.realpath(root or sandbox_root())
+    try:
+        names = [name for name in os.listdir(base) if _DETACHED_RE.match(name)]
+    except OSError:
+        return
+    for name in names:
+        target = os.path.join(base, name)
+        if os.path.islink(target) or not os.path.isdir(target):
+            continue
+        if _marker_owner(target) is None:
+            continue
+        shutil.rmtree(target, ignore_errors = True)
+
+
+_swept_detached = False
+
+
+def _start_detached_sweep() -> "threading.Thread | None":
+    """Run the sweep once per process, off the call that noticed."""
+    global _swept_detached
+    with _legacy_one_lock:
+        if _swept_detached:
+            return None
+        _swept_detached = True
+    thread = threading.Thread(
+        target = sweep_detached_sandboxes, name = "sandbox-sweep", daemon = True,
+    )
+    thread.start()
+    return thread
 
 
 def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
@@ -7832,6 +7927,10 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     entry = os.path.join(root, _sandbox_name(session_id))
     if not os.path.islink(entry):
         entry = _session_dir(root, session_id)
+        # Neither computed name is ours, so this chat may be in a fallback with
+        # a name nothing can recompute.
+        if not _owned_by_session(entry, session_id):
+            entry = _marked_sandbox_in(root, session_id) or entry
     # The entry itself, not what it resolves to: a symlink to a sibling passes
     # the check below and would take that chat's files. Drop the link, but only
     # at our own root: in a shared one it is the user's entry, not a sandbox.

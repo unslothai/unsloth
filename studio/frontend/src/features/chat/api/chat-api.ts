@@ -983,17 +983,19 @@ export async function countBackendChats(): Promise<number> {
   return data.count;
 }
 
+/** Thread ids whose sandbox still holds files, passed through from the route. */
 export async function clearBackendChats(
   options: { notify?: boolean; deleteFiles?: boolean } = {},
-): Promise<void> {
+): Promise<string[]> {
   const response = await authFetch(
     `/api/chat${options.deleteFiles ? "?delete_files=true" : ""}`,
     { method: "DELETE" },
   );
-  await parseJsonOrThrow<unknown>(response);
+  const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
   if (options.notify !== false) {
     notifyChatHistoryUpdated();
   }
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function buildBackendChatExport(): Promise<{

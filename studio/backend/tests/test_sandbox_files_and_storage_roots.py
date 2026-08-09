@@ -2719,15 +2719,18 @@ def test_a_delete_without_the_switch_says_what_it_kept(tmp_path, monkeypatch):
 def test_every_delete_surface_can_still_reach_the_files():
     """The offer is made where every surface goes through, not only the one
     dialog that has the switch."""
-    hook = (
-        Path(__file__).resolve().parents[2]
-        / "frontend/src/features/chat/hooks/use-chat-sidebar-items.ts"
-    ).read_text(encoding = "utf-8")
+    src = Path(__file__).resolve().parents[2] / "frontend/src"
+    hook = (src / "features/chat/hooks/use-chat-sidebar-items.ts").read_text(
+        encoding = "utf-8",
+    )
+    offer = (src / "features/chat/utils/offer-kept-sandbox-files.ts").read_text(
+        encoding = "utf-8",
+    )
 
-    assert "deleteFiles: true" in hook
-    assert "kept" in hook
     body = hook[hook.index("export async function deleteChatItem") :]
-    assert "toast(" in body, "nothing tells the user the files are still there"
+    assert "offerToDeleteKeptSandboxes(kept)" in body
+    assert "toast(" in offer, "nothing tells the user the files are still there"
+    assert "deleteFiles: true" in offer
 
 
 def test_a_fallback_name_already_in_a_shared_root_is_not_taken(tmp_path, monkeypatch):
@@ -2872,6 +2875,151 @@ def test_a_native_download_gets_an_absolute_url():
     assert "apiUrl(" in view
     body = view[view.index("const save = useCallback") :]
     assert body.index("apiUrl(") < body.index("downloadUrlStreaming(")
+
+
+def _forget_sandbox_state(tools):
+    """Everything a fresh process would not remember."""
+    tools._workdirs.clear()
+    getattr(tools, "_claimed_here", set()).clear()
+
+
+def _shared_root(tmp_path, monkeypatch):
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+    return root
+
+
+def test_a_fallback_with_a_random_name_is_found_again(tmp_path, monkeypatch):
+    """Nothing can recompute that name, so without the marker the chat gets a
+    new folder every launch and a delete never reaches the old ones."""
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "__LOCALID_rand111"
+    name = tools._sandbox_name(session)
+    for taken in (root / name, root / f"{name}-{tools._name_suffix(session)}"):
+        taken.mkdir()
+
+    first = Path(tools.get_sandbox_workdir(session))
+    (first / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    assert tools._marker_owner(str(first)) == name
+
+    # A later launch: nothing cached, and the name is not derivable.
+    _forget_sandbox_state(tools)
+    assert Path(tools.get_sandbox_workdir(session)) == first
+    assert Path(tools.resolve_sandbox_workdir(session)) == first
+
+    assert tools.remove_session_sandbox(session, delete_files = True) is True
+    assert not first.exists(), "the delete could not reach the fallback"
+
+
+def test_a_marker_a_tool_deleted_is_written_again(tmp_path, monkeypatch):
+    """Tool code runs in this directory. Reading the missing marker as somebody
+    else's strands the files already written and restarts the chat elsewhere."""
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "__LOCALID_clob111"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "plot.png").write_bytes(b"x")
+    (workdir / tools._SANDBOX_MARKER).unlink()
+
+    again = Path(tools.get_sandbox_workdir(session))
+    assert again == workdir, "the chat walked away from its own files"
+    assert tools._marker_owner(str(workdir)) == tools._sandbox_name(session)
+    assert (again / "plot.png").is_file()
+
+    # A directory this run never claimed is still left alone.
+    theirs = root / "not-ours"
+    theirs.mkdir()
+    tools._workdirs[("__LOCALID_other11", None)] = str(theirs)
+    assert Path(tools.get_sandbox_workdir("__LOCALID_other11")) != theirs
+    assert not (theirs / tools._SANDBOX_MARKER).exists()
+
+
+def test_an_interrupted_delete_is_finished_on_the_next_launch(tmp_path, monkeypatch):
+    """The rename is what puts the tree out of reach, so a kill before the
+    rmtree leaves a full copy of the files nothing resolves to."""
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tombstone = root / f"__LOCALID_gone111{tools._DETACHED_SUFFIX}0123abcd"
+    tombstone.mkdir()
+    (tombstone / "secret.csv").write_text("rows", encoding = "utf-8")
+    (tombstone / tools._SANDBOX_MARKER).write_text(
+        "__LOCALID_gone111", encoding = "utf-8",
+    )
+    # The user's own, named similarly and never marked.
+    theirs = root / "report.deleting-old"
+    theirs.mkdir()
+    (theirs / "keep.txt").write_text("mine", encoding = "utf-8")
+
+    tools.sweep_detached_sandboxes(str(root))
+
+    assert not tombstone.exists(), "an interrupted delete left the files behind"
+    assert (theirs / "keep.txt").is_file(), "swept a folder it does not own"
+
+
+def test_a_legacy_chat_named_like_a_derived_id_is_migrated(tmp_path, monkeypatch):
+    """Its folder is under the literal id, but the name is now hashed, so
+    looking only at the hash leaves those files at the old root."""
+    fake_home = tmp_path / "userprofile"
+    session = tools_derived_id = "_id-0123456789abcdef"
+    legacy = fake_home / "studio_sandbox" / session
+    legacy.mkdir(parents = True)
+    (legacy / "old.csv").write_text("a,b\n", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    assert tools_derived_id.startswith(tools._DERIVED_PREFIX)
+    _forget_sandbox_state(tools)
+    tools._legacy_sandbox_migrated = False
+
+    landed = Path(tools.get_sandbox_workdir(session))
+    assert (landed / "old.csv").is_file(), f"files stranded at the legacy root: {landed}"
+
+
+def test_clearing_every_chat_reports_the_files_it_kept():
+    """Without the switch the folders survive the clear, and afterwards there
+    is no card left to reach them from."""
+    src = Path(__file__).resolve().parents[2] / "frontend/src"
+
+    api = (src / "features/chat/api/chat-api.ts").read_text(encoding = "utf-8")
+    clear = api[api.index("export async function clearBackendChats"):]
+    clear = clear[:clear.index("\nexport ")]
+    assert "Promise<string[]>" in clear
+    assert "sandboxes_kept" in clear
+
+    storage = (src / "features/chat/utils/chat-history-storage.ts").read_text(
+        encoding = "utf-8",
+    )
+    assert "sandboxesKept" in storage
+    assert "result.sandboxesKept = await clearBackendChats" in storage
+
+    tab = (src / "features/settings/tabs/data-tab.tsx").read_text(encoding = "utf-8")
+    assert "offerToDeleteKeptSandboxes(result.sandboxesKept)" in tab
+
+    offer = (src / "features/chat/utils/offer-kept-sandbox-files.ts").read_text(
+        encoding = "utf-8",
+    )
+    assert "deleteFiles: true" in offer
+    # And the per-chat surfaces go through the same offer.
+    hook = (src / "features/chat/hooks/use-chat-sidebar-items.ts").read_text(
+        encoding = "utf-8",
+    )
+    assert "offerToDeleteKeptSandboxes(kept)" in hook
 
 
 if __name__ == "__main__":

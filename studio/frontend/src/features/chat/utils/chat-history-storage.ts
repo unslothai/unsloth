@@ -761,6 +761,8 @@ export interface ClearStoredChatsResult {
   legacy: "cleared" | "failed" | "skipped";
   deletedThreadIds: string[];
   failedThreadIds: string[];
+  /** Ids whose sandbox still holds files, so the offer can be made once. */
+  sandboxesKept: string[];
 }
 
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
@@ -786,11 +788,12 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     legacy: "skipped",
     deletedThreadIds: [],
     failedThreadIds: [],
+    sandboxesKept: [],
   };
   try {
     // Defer the history refresh until Dexie clear and tombstones finalize,
     // so listeners never observe the composite clear mid-flight.
-    await clearBackendChats({ notify: false });
+    result.sandboxesKept = await clearBackendChats({ notify: false });
     result.backend = "cleared";
   } catch (error) {
     result.backend = "failed";

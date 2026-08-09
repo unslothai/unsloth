@@ -17,6 +17,7 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import { clearComposerDraft } from "../utils/composer-draft";
+import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { stopChatThread } from "../utils/stop-chat-thread";
 import {
   markChatThreadsDeleted,
@@ -24,7 +25,6 @@ import {
 } from "../utils/chat-thread-tombstones";
 import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
 import { repairLegacyChatTitles } from "../utils/repair-legacy-chat-titles";
-import { toast } from "sonner";
 
 export interface SidebarItem {
   type: "single" | "compare";
@@ -325,19 +325,7 @@ export async function deleteChatItem(
     // Only the surfaces with the switch can ask up front. From the others the
     // chat is gone and its folder is unreachable, so the offer is made here
     // rather than leaving one behind per deleted chat.
-    if (kept.length > 0 && !args.deleteFiles) {
-      toast("Files from this chat were kept.", {
-        description: "Its sandbox folder is no longer reachable from Studio.",
-        action: {
-          label: "Delete files",
-          onClick: () => {
-            void deleteStoredChatThreads(kept, { deleteFiles: true }).catch(() => {
-              toast.error("Could not delete the files.");
-            });
-          },
-        },
-      });
-    }
+    if (!args.deleteFiles) offerToDeleteKeptSandboxes(kept);
   } catch (error) {
     removeChatThreadTombstones(threadIds);
     notifyChatHistoryUpdated();
