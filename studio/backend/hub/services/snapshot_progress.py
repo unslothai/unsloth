@@ -375,7 +375,11 @@ def compute_snapshot_progress(
         if blobs_dir.is_dir():
             try:
                 blob_entries = list(blobs_dir.iterdir())
-            except OSError:
+            except OSError as exc:
+                # An unreadable blobs dir is not an empty one. Swallowing it produced a
+                # measured zero -- target_present false, cache_measured true -- and hydration
+                # retires a job whose cache was never actually read.
+                scan_errors.append(exc)
                 blob_entries = []
             for f in blob_entries:
                 # Skip a blob that vanished mid-poll rather than zeroing the reading.
@@ -431,9 +435,11 @@ def compute_snapshot_progress(
         # its own and nothing counted. Anything less certain stays None.
         target_present: Optional[bool] = None
         if variant is not None and not variant_file_set_unknown:
-            target_present = bool(
-                completed_bytes or in_progress_bytes or entry_manifest.get() is not None
-            )
+            # BYTES, not a manifest. The state-dir manifest describes what the target should
+            # contain; it survives a deletion made outside the app, and with a sibling quant
+            # keeping the repo dir alive it made a variant with nothing left on disk read as
+            # present -- the phantom job this field exists to retire.
+            target_present = bool(completed_bytes or in_progress_bytes)
         elif variant is not None:
             # An unresolvable file set does not have to mean unknown. The byte reading above
             # already walked the snapshot dir, whose entries are named per file, so it can
@@ -443,10 +449,8 @@ def compute_snapshot_progress(
             # which then blocks a fresh download of the deleted quant until the idle grace runs
             # out -- the same trap as above, on the metadata-unavailable path.
             scanned = _variant_main_shard_present(snapshot_dir.get(), variant_file_matcher)
-            if scanned is True or entry_manifest.get() is not None:
-                target_present = True
-            elif scanned is False:
-                target_present = False
+            if scanned is not None:
+                target_present = scanned
         readings.append(
             (
                 completed_bytes,
@@ -485,8 +489,14 @@ def compute_snapshot_progress(
     # bytes. A sibling-only repo dir and a cache that still holds this variant's manifest both
     # read as zero bytes, so root order alone could pick the False and retire a job whose target
     # another scanned cache proves is there. A positive reading anywhere wins.
-    if any(reading[4] is True for reading in readings):
+    presence = [reading[4] for reading in readings]
+    if any(verdict is True for verdict in presence):
         target_present = True
+    elif any(verdict is None for verdict in presence):
+        # And absence needs EVERY scanned cache to say so. One unknown reading -- a cache with
+        # no readable snapshot to identify the variant from, whose shared blobs dir may still
+        # hold an unattributable partial -- is not evidence the target is gone.
+        target_present = None
     downloaded_bytes = completed_bytes + in_progress_bytes
     # A reading taken while some root could not be listed is only ever a LOWER bound. The
     # active root raising EACCES/EIO while a remembered cache still holds the repo dir (with a

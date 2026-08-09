@@ -6285,6 +6285,9 @@ def test_gguf_progress_target_presence_is_aggregated_across_caches(monkeypatch, 
     holder = tmp_path / "b" / "models--Org--Model-GGUF"
     (holder / "snapshots" / "rev0").mkdir(parents = True)
     (holder / "blobs").mkdir(parents = True)
+    # The variant's own file, named but empty: zero bytes keeps the tie with the sibling-only
+    # reading, and the name is what proves the target is in this cache.
+    (holder / "snapshots" / "rev0" / "model-Q4_K_M.gguf").write_bytes(b"")
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     assert download_manifest.write_manifest(
         "model",
@@ -6365,3 +6368,114 @@ def test_a_running_job_does_not_borrow_another_caches_manifest(monkeypatch, tmp_
         )
         is None
     )
+
+
+def test_an_unreadable_blobs_dir_is_not_evidence_of_absence(monkeypatch, tmp_path):
+    """EACCES on blobs/ is not an empty blobs/. Swallowing it produced a MEASURED zero -- bytes
+    0, target_present false, cache_measured true -- and idle hydration retires a persisted job
+    on exactly that shape, though the cache was never actually read."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    (entry / "snapshots" / "rev0").mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry)
+    real_iterdir = Path.iterdir
+
+    def _deny(self):
+        if self.name == "blobs":
+            raise PermissionError("denied")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _deny)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 130,
+        )
+    )
+
+    assert result["target_present"] is None, result
+    assert result.get("cache_measured") is not True, result
+
+
+def test_a_manifest_alone_is_not_evidence_the_variant_is_on_disk(monkeypatch, tmp_path):
+    """The state-dir manifest says what the target SHOULD contain. It survives a deletion made
+    outside the app, so with a sibling quant keeping the repo dir alive it made a variant with
+    nothing left on disk read as present -- the phantom job this field exists to retire."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    (entry / "snapshots" / "rev0").mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (entry / "snapshots" / "rev0" / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100, sha256 = "aa")],
+        "http",
+        hub_cache = entry.parent,
+    )
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_blob_hashes", lambda *_a, **_kw: frozenset({"aa"})
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["completed_bytes"] == 0
+    assert result["target_present"] is False, result
+
+
+def test_one_unknown_cache_keeps_absence_unknown(monkeypatch, tmp_path):
+    """Absence needs EVERY scanned cache to say so. A sibling-only dir reporting false could win
+    the zero-byte tie over a cache with no readable snapshot to identify the variant from --
+    whose shared blobs dir may still hold an unattributable partial -- and the job was retired
+    on the strength of the one reading that could not see it."""
+    sibling = tmp_path / "a" / "models--Org--Model-GGUF"
+    (sibling / "snapshots" / "rev0").mkdir(parents = True)
+    (sibling / "blobs").mkdir(parents = True)
+    (sibling / "snapshots" / "rev0" / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    unknown = tmp_path / "b" / "models--Org--Model-GGUF"
+    (unknown / "blobs").mkdir(parents = True)  # no snapshot dir at all: nothing to identify
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, sibling, state = "idle")
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [sibling, unknown],
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is None, result
