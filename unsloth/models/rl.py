@@ -1022,6 +1022,57 @@ def _trl_prepares_late_evals(trainer_cls):
     return False
 
 
+def _pin_pristine_sft_loss_type(config_cls):
+    """Pin `loss_type` to `nll` on TRL's own `SFTConfig`, not just on ours.
+
+    Patching rebinds `trl.SFTConfig` to the generated subclass, so a caller who
+    ran `from trl import SFTConfig` before importing Unsloth keeps the pristine
+    class and would still get TRL >= 1.7.0's `chunked_nll` (that ordering is
+    supported and covered by the padding-free tests). TRL declares the field as
+    `None` and resolves it in `__post_init__`, so seeding `nll` there is enough;
+    an explicit `loss_type = ` still wins, and `use_liger_kernel = True` already
+    resolved to `nll`. Only the unresolved `None` default is touched, which also
+    makes this a no-op on TRL < 1.7.0 and on a second call.
+    """
+    field = getattr(config_cls, "__dataclass_fields__", {}).get("loss_type")
+    if field is None or field.default is not None:
+        return False
+    init = config_cls.__dict__.get("__init__")
+    if init is None:
+        return False
+    try:
+        parameters = inspect.signature(init).parameters
+    except (TypeError, ValueError):
+        return False
+    positional = [
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        and parameter.default is not inspect.Parameter.empty
+    ]
+    defaults = init.__defaults__ or ()
+    keyword_defaults = init.__kwdefaults__ or {}
+    if "loss_type" in positional and len(defaults) == len(positional):
+        index = positional.index("loss_type")
+        if defaults[index] is not None:
+            return False
+        new_defaults = list(defaults)
+        new_defaults[index] = "nll"
+        init.__defaults__ = tuple(new_defaults)
+    elif "loss_type" in keyword_defaults:
+        if keyword_defaults["loss_type"] is not None:
+            return False
+        keyword_defaults["loss_type"] = "nll"
+    else:
+        return False
+    field.default = "nll"
+    # The class attribute is the other copy of the default: dataclasses seeds it
+    # at class creation and a later subclass reads the field, so leave the two
+    # agreeing rather than half-patched.
+    setattr(config_cls, "loss_type", "nll")
+    return True
+
+
 def _wrap_sft_evaluate_cap(trainer_cls):
     """Cap a pre-tokenized split handed to `evaluate()`/`predict()` later on.
 
@@ -2915,6 +2966,23 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
 
+    # TRL >= 1.7.0 defaults SFT to loss_type="chunked_nll" (trl#5846), which patches
+    # the lm_head and calls the backbone directly. Two problems:
+    #   1. It bypasses the model forward, so unsloth_fused_ce_loss never runs. Ours
+    #      chunks too and peaks 1.7-3.7GB lower on gemma-3-4b at 141-8192 tokens.
+    #   2. It divides by num_items_in_batch ignoring model_accepts_loss_kwargs, so
+    #      on models setting that flag False (gemma3, qwen-vl, paligemma, glm4v)
+    #      training_step divides by grad-accum again: loss and grads scaled 1/GA.
+    # Explicit loss_type= still wins. Keep scoped to sft_trainer: loss_type is an
+    # unrelated field in DPO/KTO/GRPO and the global dict above is applied to all.
+    if trainer_file == "sft_trainer":
+        replacements = {"loss_type": "nll"}
+        for k, v in replacements.items():
+            x = f"{k}( = [^,\n]{{1,}})?,\n"
+            y = f"'{v}'" if type(v) is str else f"{v}"
+            y = f"{k} = {y},\n"
+            arguments = re.sub(x, y, arguments)
+
     # Warn on too large or too small learning rate
     if "learning_rate" in call_args:
         learning_rate_check = (
@@ -3418,6 +3486,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         pass
 
     if trainer_file == "sft_trainer":
+        try:
+            for _config_base in getattr(created_module, f"Unsloth{RLConfig_name}").__mro__[1:]:
+                if not _config_base.__name__.startswith("Unsloth"):
+                    _pin_pristine_sft_loss_type(_config_base)
+                    break
+        except Exception as e:
+            logger.info(f"Unsloth: Could not pin the {RLConfig_name} loss_type: {e}")
         try:
             _wrap_sft_evaluate_cap(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:

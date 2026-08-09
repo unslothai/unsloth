@@ -204,6 +204,61 @@ def _trainable_hint() -> str:
     )
 
 
+def _assert_family_pipeline_available(fam: Any) -> None:
+    """Refuse a family whose pipeline class the installed diffusers does not carry.
+
+    ``pyproject`` deliberately leaves the diffusers floor conditional -- diffusers dropped Python
+    3.9 in 0.37 and this project still supports 3.9 (``requires-python >= 3.9``), so the pin reads
+    ``diffusers>=0.39.0 ; python_version >= '3.10'`` and an unconstrained ``diffusers`` below that.
+    A supported install can therefore legitimately predate a family's pipeline class:
+    ``Krea2Pipeline`` arrived in 0.39.0 and ``Flux2KleinPipeline`` in 0.37.0, while the newest
+    diffusers a 3.9 host can resolve is 0.36.0, and an already-present older one satisfies the
+    unconstrained pin outright (``ZImagePipeline`` and ``Flux2Pipeline`` only arrived in 0.36.0).
+
+    The inference paths already assert this before a load (``diffusion.py`` and ``video.py``); the
+    training preflight did not, so the family resolved as trainable, ``/diffusion/start`` reserved
+    the training slot and freed the resident GPU workloads, and only the spawned child discovered
+    the pipeline was missing when it ran its own ``from diffusers import <Pipeline>``. Losing a
+    loaded model and THEN failing is the worst ordering available, so assert here, while
+    ``resolve_trainable_family`` still runs ahead of every teardown.
+
+    Not strict: an unimportable diffusers is left to ``training_pipeline_import_error`` below.
+    ``resolve_trainable_family`` runs from ``normalized()``, which is pure config validation and is
+    called in plenty of places that never train, so making it depend on a working diffusers import
+    would refuse configs over an unrelated environment problem.
+
+    Family-agnostic on purpose: it reads ``fam.pipeline_class`` off whatever spec it is handed, so
+    the image registry and the separate video registry share one gate rather than one each."""
+    from core.inference.diffusion_families import assert_pipeline_class_available
+    assert_pipeline_class_available(fam.pipeline_class, fam.name)
+
+
+def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
+    """The reason this host cannot import ``resolved_family``'s pipeline class, or None.
+
+    The strict half of the gate above, and it belongs to the ROUTE rather than to config
+    validation. ``assert_pipeline_class_available`` deliberately absorbs an unimportable diffusers
+    for inference -- the native sd.cpp engine serves GGUF picks on a CPU or Apple host that has
+    none. Training has no such fallback: its child is an ``mp.get_context("spawn")`` process in the
+    SAME interpreter, so a diffusers that cannot be imported here cannot be imported there either.
+    Staying silent bought nothing but the ordering this whole preflight exists to prevent: the slot
+    reserved, the resident GPU models freed, and only then the child failing on its own
+    ``from diffusers import <Pipeline>``.
+
+    Returns the message instead of raising, matching ``training_precision_preflight_error``, so the
+    route maps it to its own 400."""
+    from core.inference.diffusion_families import assert_pipeline_class_available, detect_family
+
+    fam = detect_family("", override = str(resolved_family or "").strip().lower())
+    if fam is None:
+        return None
+    try:
+        assert_pipeline_class_available(fam.pipeline_class, fam.name, strict = True)
+    except ValueError as e:
+        return str(e)
+    return None
+
+
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
     """Resolve the trainer family for a base model, or raise ValueError with a clear reason.
 
@@ -215,8 +270,13 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
       family (e.g. a DiT family before its trainer ships) is rejected;
     - a name that resolves to no registry family but matches a known non-trainable
       architecture (SD3 / PixArt / ...) is rejected;
+    - a resolved family whose pipeline class the installed diffusers lacks is rejected
+      (``_assert_family_pipeline_available``), so an environment too old for the pick fails
+      here rather than in the child, after the GPU residents are gone;
     - an unclassifiable custom name/path falls through to the SDXL trainer (backwards
       compatible: a genuinely wrong pick still fails cleanly later in from_pretrained).
+      No pipeline assert on that path: there is no family spec to read a class off, and the
+      family it lands on is SDXL, whose pipeline predates every diffusers in play.
     """
     name = str(base_model or "").strip().lower()
     # GGUF weights (a ``.gguf`` file or ``*-GGUF`` repo) are inference-only: training needs the full diffusers pipeline.
@@ -251,6 +311,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
             raise ValueError(f"Unknown model_family {model_family!r}. Known families: {known}.")
         if not fam.trainable:
             raise ValueError(f"'{fam.name}' models can't be trained yet. {_trainable_hint()}")
+        _assert_family_pipeline_available(fam)
         return fam.name
 
     fam = detect_family_for_pick(base_model)
@@ -260,6 +321,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
                 f"'{base_model}' looks like a {fam.name} model, which isn't trainable yet. "
                 f"{_trainable_hint()}"
             )
+        _assert_family_pipeline_available(fam)
         return fam.name
 
     # Only once the image registry has declined the name: a video checkpoint. Checked here
