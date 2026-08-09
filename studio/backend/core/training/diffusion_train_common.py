@@ -803,8 +803,13 @@ def family_train_infos() -> list[dict[str, Any]]:
         # A video family carries no train_base_repos/deploy_base_repo: its own base repo is the
         # one training base, and a video LoRA has no image catalog to deploy into.
         repos = list(getattr(fam, "train_base_repos", ()) or ()) or [fam.base_repo]
-        # base_precision applies to the DiT trainer only; SDXL keeps its mixed_precision lever. compile applies everywhere.
-        is_dit = name in _DIT_TRAIN_FAMILIES
+        # base_precision applies to every flow-matching trainer, not only the shared DiT one:
+        # MiniMax-H3 has its own trainer but the same base_precision lever and the same bf16-on-
+        # CUDA requirement. Reading _DIT_TRAIN_FAMILIES here reported precision_modes = [] for it,
+        # which the Train panel reads as "this GPU cannot train this family" and disables Start
+        # with "Not supported on this GPU" -- the trainer was unreachable from Studio on every
+        # host. SDXL keeps its mixed_precision lever and is in neither set.
+        is_dit = name in _FLOW_TRAIN_FAMILIES
         # On a non-bf16 CUDA GPU the start preflight rejects EVERY DiT family, so advertise no precision, else /info offers an
         # nf4 DiT option that always 400s. Otherwise drop any scheme this family's DiT corrupts, plus any the TRAINING bar
         # holds back even though inference passes (fp8 on Qwen-Image: rendering is validated, a training run is not).
@@ -813,6 +818,11 @@ def family_train_infos() -> list[dict[str, Any]]:
             if is_dit
             else None
         )
+        # compile is the one DiT-only lever that does NOT follow the precision one. MiniMax-H3
+        # refuses compile_transformer="on" -- its packed sequence changes length with every
+        # caption, so each step would re-trace -- so advertising the control would offer a
+        # selection that always 400s.
+        supports_compile = bool(not dit_block) and name in _DIT_TRAIN_FAMILIES
         if not is_dit or dit_block:
             fam_modes: list[str] = []
         else:
@@ -833,8 +843,9 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "note": "" if dit_block else spec.get("note", ""),
                 "precision_modes": fam_modes,
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
-                # compile is offered everywhere (SDXL regional U-Net + DiT), except a DiT family the GPU cannot train in bf16.
-                "supports_compile": bool(not dit_block),
+                # compile is offered for SDXL's regional U-Net and the shared DiT trainer, except
+                # a family the GPU cannot train in bf16, and except a trainer that cannot compile.
+                "supports_compile": supports_compile or name == "sdxl",
                 # Krea trains on Raw but previews adapters on Turbo; None elsewhere (and never for a video family).
                 "deploy_base": getattr(fam, "deploy_base_repo", None),
             }

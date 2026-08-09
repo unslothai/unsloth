@@ -1034,3 +1034,30 @@ def test_the_augmentation_knobs_record_what_h3_actually_does():
     # And the two fields really are settable on the config the trainer normalises.
     cfg = _replace(_h3_cfg(), center_crop = True, random_flip = False)
     assert cfg.center_crop is True and cfg.random_flip is False
+
+
+def test_h3_is_advertised_as_trainable_with_the_precisions_it_has():
+    """The Train panel reads an EMPTY precision_modes on a non-SDXL family as "this GPU cannot
+    train this family" and disables Start with "Not supported on this GPU". MiniMax-H3 was only
+    in _FLOW_TRAIN_FAMILIES, while the info builder keyed the precision branch on
+    _DIT_TRAIN_FAMILIES, so it reported [] on every host and the trainer this PR adds was
+    unreachable from Studio. fp8/mxfp8 stay out: the trainer refuses both outright."""
+    from core.training.diffusion_train_common import family_train_infos, train_precision_modes
+
+    host_modes, _ = train_precision_modes()
+    infos = {i["name"]: i for i in family_train_infos()}
+    h3 = infos.get("minimax-h3")
+    if h3 is None:
+        pytest.skip("this diffusers has no MiniMax-H3 pipeline class")
+
+    assert h3["precision_modes"], "an empty list disables Start in the Train panel"
+    assert "fp8" not in h3["precision_modes"] and "mxfp8" not in h3["precision_modes"]
+    # Everything the host offers except the two the trainer refuses.
+    assert set(h3["precision_modes"]) == {m for m in host_modes if m not in ("fp8", "mxfp8")}
+    # compile is the one DiT lever that must NOT follow: "on" is refused by the trainer.
+    assert h3["supports_compile"] is False
+    # And nothing else moved: SDXL keeps its own lever, the DiT families keep theirs.
+    assert infos["sdxl"]["supports_compile"] is True
+    if "ltx-2" in infos:
+        assert infos["ltx-2"]["supports_compile"] is True
+        assert "fp8" in infos["ltx-2"]["precision_modes"]
