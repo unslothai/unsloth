@@ -3048,3 +3048,90 @@ def test_snapshot_options_accept_a_csv_index_col_of_false(tmp_path):
     (snapshot / "d" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_class_label_whose_names_are_null(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+                    "    dtype:\n      class_label:\n        names: null\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_json_class_label_without_names(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text('{"l":0}\n', encoding = "utf-8")
+    (snapshot / "dataset_infos.json").write_text(
+        json.dumps({"default": {"features": {"l": {"_type": "ClassLabel", "names": None}},
+                                "splits": {"train": {"name": "train", "num_examples": 1}}}}),
+        encoding = "utf-8",
+    )
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("header", ["- x", "- -1"])
+def test_snapshot_options_reject_a_csv_header_list_of_non_rows(tmp_path, header):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  header:\n  {header}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_accept_a_csv_header_list_of_rows(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  header:\n  - 0\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+@pytest.mark.parametrize("dtype", ["bool8", "json_", "uuid"])
+def test_snapshot_options_accept_the_remaining_value_aliases(tmp_path, dtype):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n    dtype: {dtype}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"x":true}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_raw_lzma_stream(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl.lzma").write_bytes(
+        lzma.compress(b'{"text":"row"}\n', format = lzma.FORMAT_ALONE)
+    )
+
+    # datasets has no lzma-alone rule, so it hands the compressed bytes to the parser.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_an_xz_stream_named_lzma(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.jsonl.lzma").write_bytes(
+        lzma.compress(b'{"text":"row"}\n', format = lzma.FORMAT_XZ)
+    )
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_keep_a_csv_config_beside_a_tsv_one(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: tab\n  data_files: a/train.tsv\n"
+                    "- config_name: comma\n  data_files: b/train.csv\n")
+    for name in ("a", "b"):
+        (snapshot / name).mkdir()
+    (snapshot / "a" / "train.tsv").write_text("text\trow\nx\ty\n", encoding = "utf-8")
+    (snapshot / "b" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    # Both extensions are the csv builder, so the tsv config's separator does not make
+    # the csv one unreadable. tsv itself stays unoffered, being outside TRAINING_DATA_EXTS.
+    assert local_options._snapshot_options(snapshot) == {("comma", "train")}

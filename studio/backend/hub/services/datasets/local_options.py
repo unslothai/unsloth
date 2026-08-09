@@ -51,19 +51,25 @@ _MAX_RESOLUTION_WORK = 10_000_000
 _COMPRESSION_EXTENSIONS = ("", ".gz", ".gzip", ".bz2", ".xz", ".lzma", ".zip")
 _UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4"})
 # A zip is left alone; we do not open archives, so its payload stays unknown.
+# datasets has no lzma-alone rule, by extension or by magic number, so both suffixes are
+# read as xz and a raw lzma stream counts as unreadable.
+def _open_xz(path: Path, mode: str = "rb") -> Any:
+    return lzma.open(path, mode, format = lzma.FORMAT_XZ)
+
+
 _DECOMPRESSORS = {
     ".gz": gzip.open,
     ".gzip": gzip.open,
     ".bz2": bz2.open,
-    ".xz": lzma.open,
-    ".lzma": lzma.open,
+    ".xz": _open_xz,
+    ".lzma": _open_xz,
 }
 # What a card may name as a feature dtype, as datasets 4.3 reads it: a pyarrow value alias,
 # optionally parameterised, or one of its own feature classes.
 _VALUE_DTYPES = frozenset(
     "null bool bool_ int8 int16 int32 int64 uint8 uint16 uint32 uint64 float float16 float32 "
     "float64 double date32 date64 binary large_binary string large_string utf8 large_utf8 "
-    "string_view binary_view month_day_nano_interval".split()
+    "string_view binary_view month_day_nano_interval bool8 json_ uuid".split()
 )
 # The parameterised ones, with the units pyarrow actually takes.
 _DTYPE_UNITS = {
@@ -213,6 +219,7 @@ _BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
         "sep": str,
         "delimiter": str,
         "header": (int, list, frozenset({"infer"})),
+        # Validated further by _valid_header, which the list rule cannot express.
         "names": list,
         "column_names": list,
         "index_col": (int, str, list, bool),
@@ -258,6 +265,9 @@ _BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
         "fragment_scan_options": None,
     },
 }
+# Our synthetic module names, and the packaged builder each one really is. Two configs
+# whose names differ here still go through the same builder, so neither is unreadable.
+_BASE_MODULES = {"csv+tab": "csv"}
 _EXTENSION_MODULES = {
     extension: module for module, names in _MODULE_EXTENSIONS.items() for extension in names.split()
 }
@@ -415,7 +425,8 @@ def _valid_class_label(spec: dict[str, Any]) -> bool:
     which it only can when the ids are every integer from zero up."""
     names = spec.get("names")
     if names is None:
-        return True
+        # ClassLabel(names=None) is the same to datasets as passing nothing.
+        return False
     if isinstance(names, dict):
         ids = []
         for key in names:
@@ -468,22 +479,29 @@ def _valid_feature_node(node: Any, depth: int = 0) -> bool:
     # A feature class, with the mapping under it being its keyword arguments. datasets
     # expands that value with **, so anything but a mapping raises there.
     name = role.replace("_", "").lower()
-    if name not in _FEATURE_TYPE_NAMES or not isinstance(node[role], dict):
-        return False
+    return (
+        name in _FEATURE_TYPE_NAMES
+        and isinstance(node[role], dict)
+        and _valid_feature_arguments(name, node[role])
+    )
+
+
+def _valid_feature_arguments(name: str, spec: dict[str, Any]) -> bool:
+    """The arguments a feature class is given, whether the card spelled them under the class
+    name or the json form put them beside its _type."""
     if name == "classlabel":
         # A card can only size a ClassLabel by its names; datasets drops the other two.
-        return "names" in node[role] and _valid_class_label(node[role])
-    if not all(key in node[role] for key in _REQUIRED_FEATURE_ARGS.get(name, ())):
+        return "names" in spec and _valid_class_label(spec)
+    if not all(key in spec for key in _REQUIRED_FEATURE_ARGS.get(name, ())):
         return False
     if name == "value":
-        return isinstance(node[role]["dtype"], str) and _known_value_dtype(node[role]["dtype"])
+        return isinstance(spec["dtype"], str) and _known_value_dtype(spec["dtype"])
     if name == "translation":
-        languages = node[role]["languages"]
-        return isinstance(languages, list) and all(
-            isinstance(language, str) for language in languages
+        return isinstance(spec["languages"], list) and all(
+            isinstance(language, str) for language in spec["languages"]
         )
     rank = _ARRAY_RANKS.get(name)
-    return rank is None or _valid_array(node[role], rank)
+    return rank is None or _valid_array(spec, rank)
 
 
 def _valid_features(features: Any) -> bool:
@@ -674,10 +692,12 @@ def _valid_json_feature(node: Any, depth: int = 0) -> bool:
     if not isinstance(node, dict):
         return False
     kind = node.get("_type")
-    if kind == "Value":
-        return isinstance(node.get("dtype"), str) and _known_value_dtype(node["dtype"])
-    if kind is not None and kind.replace("_", "").lower() not in _FEATURE_TYPE_NAMES:
-        return False
+    if kind is not None:
+        name = kind.replace("_", "").lower()
+        if name not in _FEATURE_TYPE_NAMES:
+            return False
+        if not _valid_feature_arguments(name, {k: v for k, v in node.items() if k != "_type"}):
+            return False
     return all(
         _valid_json_feature(child, depth + 1)
         for key, child in node.items()
@@ -1183,7 +1203,7 @@ def _empty_file(path: Path, name: str) -> bool:
     try:
         with opener(path, "rb") as stream:
             return not stream.read(1)
-    except (OSError, EOFError, ValueError):
+    except (OSError, EOFError, ValueError, lzma.LZMAError):
         # Unreadable is as dead as empty, and the builder fails on it either way.
         return True
 
@@ -1199,9 +1219,10 @@ def _offerable_split(
     for path, _file_module in entries:
         # datasets keeps every zip, and folder metadata for its own builders, whatever module
         # won, so those are read as well and have to clear the resolver too.
+        modules = {_base_module(name) for name in _file_modules(path.name)}
         retained = (
-            module in _file_modules(path.name)
-            or _INDETERMINATE_MODULE in _file_modules(path.name)
+            _base_module(module) in modules
+            or _INDETERMINATE_MODULE in modules
             # The metadata allow-list is empty for every non-folder builder, so a csv builder
             # never reads metadata.csv the way an imagefolder one does.
             or (module in _FOLDER_MODULES and path.name in _METADATA_FILENAMES)
@@ -1484,6 +1505,15 @@ def _valid_parameter(rule: Any, value: Any) -> bool:
     return bool(types) and isinstance(value, types)
 
 
+def _valid_header(value: Any) -> bool:
+    """A csv header list names row numbers, which pandas rejects if they are not that."""
+    if not isinstance(value, list):
+        return True
+    return all(
+        isinstance(row, int) and not isinstance(row, bool) and row >= 0 for row in value
+    )
+
+
 def _known_codec(value: Any) -> bool:
     """encoding_errors is not checked: datasets 4.3 loads happily with an unknown handler,
     since nothing decodes badly enough to reach it."""
@@ -1516,6 +1546,7 @@ def _misparameterised_configs(collapsed: dict[str, dict[str, Any]], module: str)
                 _valid_parameter(rules[key], value)
                 and _in_parameter_range(key, value)
                 and (key != "encoding" or _known_codec(value))
+                and (key != "header" or _valid_header(value))
             )
             for key, value in item.items()
         )
@@ -1558,8 +1589,13 @@ def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _Declared
     return dead
 
 
+def _base_module(module: str) -> str:
+    return _BASE_MODULES.get(module, module)
+
+
 def _readable_by(path: PurePosixPath, module: str) -> bool:
-    modules = _file_modules(path.name)
+    modules = {_base_module(name) for name in _file_modules(path.name)}
+    module = _base_module(module)
     # A zip is opened whatever won, and folder metadata only by the folder builders.
     return (
         module in modules
@@ -1585,7 +1621,9 @@ def _mismatched_configs(
         if not resolved:
             continue
         module = _split_module([(path, _file_module(path.name)) for path in resolved])
-        if module != required or not all(_readable_by(path, required) for path in resolved):
+        if _base_module(module) != _base_module(required) or not all(
+            _readable_by(path, required) for path in resolved
+        ):
             mismatched.add(name)
     return mismatched
 
