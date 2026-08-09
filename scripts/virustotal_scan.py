@@ -188,15 +188,13 @@ def _md_text(text: str) -> str:
     return escaped.replace("<", "&lt;").replace(">", "&gt;")
 
 
-# Matched by the workflow step that writes a placeholder when the scan
-# produced no summary, so a reader sees one heading either way.
+# Also written by the workflow's placeholder step, so a reader sees one heading
+# whether or not the scan produced a summary.
 #
-# Deliberately says neither "pre-flight" nor "post-publish". The scan runs after
-# `publish-release`, but `inputs.draft` defaults to true and the release is
-# created with `--draft` on that input, so the ordinary run has uploaded the
-# assets to a draft rather than published them. Either heading would tell a
-# release operator the opposite of what the run actually did in one of the two
-# cases; naming the assets covers both.
+# Says neither "pre-flight" nor "post-publish": the scan runs after
+# `publish-release`, but `inputs.draft` defaults to true, so the ordinary run
+# has uploaded the assets to a draft rather than published them. Naming the
+# assets is the only wording true of both dispatches.
 SUMMARY_HEADING = "### VirusTotal release asset scan"
 
 

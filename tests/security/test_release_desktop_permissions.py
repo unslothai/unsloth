@@ -30,10 +30,9 @@ def test_only_publish_job_can_write_repository_contents():
 def _poll_loop_body(script):
     """Return the body of the first `while ...; do ... done` loop in `script`.
 
-    Assertions about a wait have to land inside the loop that does the waiting,
-    so this brackets it rather than searching the step as a whole. Nested `for`
-    and `while` loops are tracked by depth; the openers here all end their line
-    with `do`, which is what the shell style in this workflow uses.
+    Assertions about a wait have to land inside the loop that waits, not
+    anywhere in the step. Nesting is tracked by depth; every opener in this
+    workflow ends its line with `do`.
     """
     lines = script.split("\n")
     starts = [index for index, line in enumerate(lines) if re.match(r"\s*while\b", line)]
@@ -104,17 +103,11 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     # Every one of those refusals has to be terminal.
     assert wait_run.count("exit 1") >= 3
 
-    # The wait is a poll of this run's job list, not a mention of an env var.
-    # Assert the mechanism, because the error strings above could survive a step
-    # that no longer loops or no longer reads a conclusion: the jobs API call,
-    # the loop that repeats it, and the two states it decides on. Without these,
-    # deleting the polling loop and the status checks while leaving GITHUB_RUN_ID
-    # and LEGS in place still reads as a wait, and the download races the matrix.
-    #
-    # All of it is asserted against the *body of the loop*, not the step as a
-    # whole. Searching the whole script would pass a one-shot `gh api` read
-    # sitting next to an unrelated or dead `while`, which is exactly the shape
-    # that lets publish-release reach the download before the legs finish.
+    # Assert the mechanism, not just the error strings: those survive a step
+    # that no longer loops or no longer reads a conclusion, and then the
+    # download races the matrix. Everything below is checked inside the loop
+    # body, because a one-shot `gh api` read beside a dead `while` would satisfy
+    # the same substrings while waiting for nothing.
     loop_body = _poll_loop_body(wait_run)
     assert "actions/runs/${GITHUB_RUN_ID}/jobs" in loop_body, wait_run
     assert ".status" in loop_body and ".conclusion" in loop_body, wait_run

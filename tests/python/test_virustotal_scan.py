@@ -864,9 +864,8 @@ class TestWorkflowOrdering:
     def _runner_temp(path):
         """Normalise the three spellings of the runner temp dir to one token.
 
-        `with:` uses the `${{ runner.temp }}` expression and `run:` uses the
-        `RUNNER_TEMP` env var, so two paths can name the same directory and
-        still compare unequal as strings.
+        `with:` uses `${{ runner.temp }}` and `run:` uses `$RUNNER_TEMP`, so two
+        paths can name one directory and still compare unequal.
         """
         normalised = " ".join(str(path).split())
         for spelling in ("${{ runner.temp }}", "${RUNNER_TEMP}", "$RUNNER_TEMP"):
@@ -891,20 +890,14 @@ class TestWorkflowOrdering:
         assert job["needs"] == ["publish-release"]
 
     def test_the_scan_job_is_not_conditioned_away(self):
-        # `needs:` alone gives ordering plus GitHub's default `success()` gating,
-        # which is what keeps the scan from running after a publication that
-        # never happened. A job-level `if:` overrides that gating: `always()`,
-        # `failure()` or `cancelled()` would upload build artifacts to a third
-        # party on the strength of a failed publish-release, and `${{ false }}`
-        # would disable the scan without deleting the job. So the job may either
-        # carry no `if:` at all, as it does today, or one that requires
-        # `success()` *conjunctively* and only narrows it further.
-        #
-        # Conjunctively is the whole point: `success() || inputs.scan_anyway`
-        # mentions success() while still running the scan after publish-release
-        # failed, so a substring check would wave it through. Requiring the
-        # condition to open with `success() &&` and to contain no `||` keeps
-        # every accepted form strictly narrower than the default gate.
+        # `needs:` alone carries GitHub's default `success()` gating, which is
+        # what stops the scan from shipping build artifacts to a third party
+        # after a publish-release that failed. A job-level `if:` replaces that
+        # gating, so the job may carry none, as it does today, or one that keeps
+        # `success()` conjunctively. Conjunctively is the point: a substring
+        # check would wave through `success() || inputs.scan_anyway`, which
+        # still runs on a failed publish. Requiring no `||` and a leading
+        # `success() &&` keeps every accepted form narrower than the default.
         job = self._scan_job()
         condition = job.get("if")
         if condition is not None:
@@ -953,11 +946,10 @@ class TestWorkflowOrdering:
         assert download["uses"].startswith("actions/download-artifact@")
         assert download["with"]["merge-multiple"] is True
 
-        # Tie the scan's input to publish-release's own artifact download rather
-        # than to a literal repeated in both places. What has to hold is that the
-        # scan covers the set that was released: if publish-release ever ships a
-        # different artifact set, a scan still pulling the old pattern would
-        # leave the shipped installers unscanned while reporting a clean sweep.
+        # Tie the scan's input to publish-release's own download rather than to
+        # a literal repeated in both places: if publish ever ships a different
+        # artifact set, a scan still pulling the old pattern leaves the shipped
+        # installers unscanned and still reports a clean sweep.
         publish_download = next(
             step
             for step in self._publish_step_list()
@@ -973,11 +965,9 @@ class TestWorkflowOrdering:
             publish_download["with"]["path"]
         ), (download["with"]["path"], publish_download["with"]["path"])
 
-        # And the scan has to be pointed at that same directory. Comparing the
-        # two download steps alone leaves the gap this test exists to close: the
-        # script takes its target as an argument, so moving both downloads under
-        # a new parent, or repointing the argument at another `$RUNNER_TEMP`
-        # path, would scan an empty directory and still report a clean sweep.
+        # And the scan has to be pointed at that same directory. The script takes
+        # its target as an argument, so comparing only the two download steps
+        # lets a repointed argument scan an empty directory and report clean.
         argv = self._scan_script_argv()
         scan_paths = list(itertools.takewhile(lambda argument: not argument.startswith("-"), argv))
         assert scan_paths, argv
@@ -1123,9 +1113,9 @@ class TestWorkflowOrdering:
         assert "virustotal-summary.md" in summary["run"]
 
     def test_the_placeholder_summary_matches_the_real_one(self):
-        # The placeholder is written when the scan produced no summary at all, so
-        # a heading that differs from the script's would render as a second,
-        # unrelated section rather than as the report the reader is looking for.
+        # The placeholder stands in when the scan produced no summary, so a
+        # heading that drifts from the script's renders as a second, unrelated
+        # section instead of the report the reader came for.
         summary = self._scan_step_map()["Publish VirusTotal summary"]
         assert vt.SUMMARY_HEADING in summary["run"], summary["run"]
 
