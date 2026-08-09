@@ -146,9 +146,10 @@ export async function* streamResearchEvents(
   after: number,
   signal?: AbortSignal,
 ): AsyncGenerator<StreamResearchEvent> {
+  // POST, not GET: proxies hold a streamed GET until it closes. The route accepts both.
   const response = await authFetch(
     `/api/chat/research-runs/${id}/events?after=${Math.max(0, after)}`,
-    { headers: { accept: "text/event-stream" }, signal },
+    { method: "POST", headers: { accept: "text/event-stream" }, signal },
   );
   if (!response.ok) {
     await json(response);

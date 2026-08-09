@@ -560,6 +560,10 @@ def test_the_workflow_runs_for_every_scanned_script():
         if collecting is not None and entry:
             collecting.append(entry.group(1))
             continue
+        # A comment or a blank line inside the list does not end it. Treating one as the end
+        # dropped every filter after it, so this guard passed while reading nothing.
+        if collecting is not None and (not line.strip() or line.strip().startswith("#")):
+            continue
         if collecting:
             blocks.append(collecting)
         collecting = [] if line.strip() == "paths:" else None

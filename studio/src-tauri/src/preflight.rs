@@ -13,9 +13,10 @@ use managed::probe_managed_install;
 use std::path::PathBuf;
 use types::{BackendProbe, ManagedProbe};
 pub use types::{DesktopPreflightDisposition, DesktopPreflightResult, ExternalBackendConflict};
+#[cfg(test)]
+pub(crate) use version::DESKTOP_MANAGEABILITY_VERSION;
 pub(crate) use version::{
-    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION,
-    DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 
 #[cfg(test)]

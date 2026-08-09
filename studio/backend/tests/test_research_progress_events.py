@@ -272,3 +272,30 @@ def test_decision_phase_bracket_carries_its_step_position(research_home, monkeyp
     started = next(e for e in _events("run-1") if e["type"] == "phase.started")
     assert started["data"]["stepPosition"] == 3
     assert started["data"]["phase"] == "decision"
+
+
+def test_event_stream_is_reachable_over_post_as_well_as_get():
+    # Proxies that stream POST /v1/chat/completions still hold a streamed GET until it closes.
+    from routes.research_runs import router
+    events = [route for route in router.routes if route.path == "/{run_id}/events"]
+    assert {method for route in events for method in route.methods} >= {"GET", "POST"}
+
+
+def test_event_stream_verbs_do_not_share_one_operation_id():
+    # A single api_route for both verbs gave them one operationId, which FastAPI warns about and
+    # OpenAPI generators resolve by dropping one of the two operations.
+    import warnings
+
+    from fastapi import FastAPI
+    from fastapi.openapi.utils import get_openapi
+
+    from routes.research_runs import router
+
+    app = FastAPI()
+    app.include_router(router, prefix = "/api/chat/research-runs")
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        spec = get_openapi(title = "t", version = "1", routes = app.routes)
+    assert not [w for w in caught if "Duplicate Operation ID" in str(w.message)]
+    operations = spec["paths"]["/api/chat/research-runs/{run_id}/events"]
+    assert list(operations) == ["post"]
