@@ -117,6 +117,7 @@ def test_real_teardown_failure_still_reports_the_unload_as_succeeded():
     o = _live_orchestrator({"m": {}})
     proc = o._proc
     try:
+
         def boom(timeout = 10.0):
             raise RuntimeError("teardown exploded")
 
