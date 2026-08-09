@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Flow-matching LoRA training for the DiT image families (FLUX.1-dev, Qwen-Image, Z-Image).
+"""Flow-matching LoRA training for the rectified-flow DiT families.
+
+Image: FLUX.1-dev, FLUX.2 (dev + Klein), Qwen-Image, Z-Image, Krea 2. Video: LTX-2 (from a
+still-image dataset; see the ``_LTX2_TARGETS`` block for what a video family adds).
 
 These are rectified-flow transformers, not the SDXL U-Net, so they share only the plumbing
 in ``diffusion_train_common`` (config, dataset discovery, events, stop, publishing). The
@@ -38,6 +41,7 @@ from typing import Any, Callable, Optional
 
 from core._torchao_stub import is_stubbed
 from core.training.diffusion_train_common import (
+    AUTO_FLOW_SHIFT_FAMILIES,
     DEFAULT_LORA_FILENAME,
     DEFAULT_LORA_TARGETS,
     DiffusionLoraConfig,
@@ -325,19 +329,26 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
     ).to(device)
 
 
-def _int8_quantize_base(transformer) -> None:
+def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
     """torchao weight-only int8 on the big frozen linears, applied after add_adapter so
     the base_layer inside each LoRA wrapper quantizes while the adapters stay high
     precision. ``make_filter_fn`` (shared with the inference quant layer) keeps only
     Linears with >= 512 features -- which also naturally skips the rank-sized LoRA
-    matrices -- and drops the M=1 modulation projections int8 kernels reject."""
+    matrices -- and drops the M=1 modulation projections int8 kernels reject.
+
+    ``family`` selects the per-family small-M exclusions on top of those. Passing it is what
+    keeps training and inference on the same list: without it LTX-2's one-token audio stream
+    (and Qwen-Image's unpadded text stream) is quantized here and the first forward raises,
+    after the whole base has been loaded."""
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme, make_filter_fn
     from torchao.quantization import Int8WeightOnlyConfig, quantize_
 
     quantize_(
         transformer,
         Int8WeightOnlyConfig(),
-        filter_fn = make_filter_fn(512, exclude_name_tokens = exclude_tokens_for_scheme("int8")),
+        filter_fn = make_filter_fn(
+            512, exclude_name_tokens = exclude_tokens_for_scheme("int8", family)
+        ),
     )
 
 
@@ -1105,6 +1116,241 @@ def _flux2_klein_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+# ── LTX-2 (video) ─────────────────────────────────────────────────────────────
+# The first VIDEO family. Milestone one trains from STILL IMAGES: a 1-frame clip is a valid
+# LTX-2 input (its VAE compresses time by 8, so (1 - 1) // 8 + 1 = 1 latent frame), and the
+# community consensus is that style / character LoRAs converge on 20-50 stills while only
+# motion LoRAs need coherent clips. So this spec reuses the shared image dataset layer
+# verbatim and never decodes a video; clip datasets are a follow-up.
+#
+# Two things make LTX-2 unlike the image DiTs:
+#
+# 1. It is AUDIOVISUAL. Every block carries a second, audio-side stream (audio_attn1 /
+#    audio_attn2 / audio_ff) plus two cross-modality attentions (audio_to_video_attn,
+#    video_to_audio_attn), and ``forward`` takes ``audio_hidden_states`` /
+#    ``audio_encoder_hidden_states`` as REQUIRED arguments. Lightricks' own trainer handles a
+#    video-only run by passing ``audio=None``, which their transformer short-circuits so the
+#    audio and cross-modality branches never execute. diffusers has no such escape hatch, so
+#    the equivalent here is: feed a minimal audio token stream, pass
+#    ``isolate_modalities=True`` (which turns off the a2v/v2a cross attention for every
+#    block, so the audio stream cannot influence the video prediction), keep audio out of the
+#    loss, and keep the audio-side modules out of the LoRA targets. The audio stream is one
+#    token for a still, so the wasted compute is negligible. This is a deliberate divergence
+#    from upstream and is the reason ``_LTX2_TARGETS`` names its modules in full.
+#
+# 2. Conditioning is a TWO-STAGE stack: a Gemma3-12B encoder whose hidden states are
+#    [batch, 1024, 3840 * num_layers] (~370 MB per caption in bf16), followed by a small
+#    ``connectors`` module that reduces them to the [batch, 1024, 3840] the transformer
+#    actually consumes. Caching the raw encoder output would be ~50x larger than caching the
+#    connector output for no benefit, so ``encode_prompts`` runs BOTH stages and caches only
+#    the connector result, then the loop frees the encoder and the connectors together.
+#
+# Targets: the video-stream attention projections ONLY. Fully qualified on purpose -- a bare
+# "to_q" would also match audio_attn1/audio_attn2/audio_to_video_attn/video_to_audio_attn.
+# This is exactly the split Lightricks document for a video-only run and ship in their
+# video_inpainting / video_outpainting LoRA configs.
+_LTX2_TARGETS = (
+    "attn1.to_q",
+    "attn1.to_k",
+    "attn1.to_v",
+    "attn1.to_out.0",
+    "attn2.to_q",
+    "attn2.to_k",
+    "attn2.to_v",
+    "attn2.to_out.0",
+)
+
+# Frame rate the still is placed at on the temporal RoPE axis. LTX-2's rotary temporal
+# coordinate is measured in SECONDS (pixel-frame index / fps), so a 1-frame clip at the
+# family's native 24 fps lands exactly where the first latent frame of a generated 24 fps
+# clip lands -- the position every rendered video contains. Lightricks' preprocessor instead
+# pins images to fps = 1.0, which places them at a temporal coordinate no 24 fps clip ever
+# visits; we take the inference-matching choice and note the divergence.
+_LTX2_TRAIN_FPS = 24.0
+
+
+def _ltx2_load_conditioners(cfg, device, weight_dtype):
+    from diffusers import LTX2Pipeline
+
+    pipe, vae = _load_pipe_without_transformer(LTX2Pipeline, cfg, device)
+    # The connectors are the second half of the conditioning stack and are NOT a text_encoder
+    # attribute, so ``_encoders_to_device`` never reaches them; place them explicitly.
+    if getattr(pipe, "connectors", None) is not None:
+        pipe.connectors.to(device)
+    return pipe, vae
+
+
+def _ltx2_load_transformer(cfg, device, weight_dtype, base_precision):
+    from diffusers import LTX2VideoTransformer3DModel
+    return _load_dit_transformer(LTX2VideoTransformer3DModel, cfg, device, base_precision)
+
+
+def _ltx2_encode_prompts(pipe, captions, device):
+    import torch
+
+    _encoders_to_device(pipe, device)
+    # The Gemma3 hidden states are per-LAYER stacked ([1, 1024, 3840 * layers]); only the
+    # connector output reaches the transformer, so that is what gets cached.
+    out = []
+    with torch.no_grad():
+        for cap in captions:
+            pe, mask, _neg, _neg_mask = pipe.encode_prompt(
+                prompt = cap,
+                do_classifier_free_guidance = False,
+                num_videos_per_prompt = 1,
+                max_sequence_length = 1024,
+                device = device,
+            )
+            # Read AFTER encode_prompt, exactly where the pipeline reads it. encode_prompt
+            # sets ``tokenizer.padding_side = "left"`` itself (Gemma wants left padding for
+            # chat-style prompts), so a tokenizer that loaded reporting "right" would have had
+            # that stale value baked in here -- and the connectors build the valid-token mask
+            # from this, so every caption shorter than the 1024 pad length would be masked on
+            # the wrong end and the cached conditioning would not match what inference builds.
+            padding_side = getattr(getattr(pipe, "tokenizer", None), "padding_side", "left")
+            video_emb, audio_emb, conn_mask = pipe.connectors(pe, mask, padding_side = padding_side)
+            out.append((video_emb.cpu(), audio_emb.cpu(), conn_mask.cpu()))
+    return out
+
+
+def _ltx2_latent_affine(vae, ref):
+    import torch
+
+    mean = vae.latents_mean.to(device = ref.device, dtype = ref.dtype).view(1, -1, 1, 1, 1)
+    std = vae.latents_std.to(device = ref.device, dtype = ref.dtype).view(1, -1, 1, 1, 1)
+    # scaling_factor is 1.0 on the shipped checkpoint but is applied for fidelity to _normalize_latents.
+    return mean, std / float(vae.config.scaling_factor or 1.0)
+
+
+def _ltx2_encode_latents(vae, pixel_values):
+    import torch
+
+    # A still is a 1-frame clip: [B,3,H,W] -> [B,3,1,H,W]. The VAE compresses 32x spatially
+    # and 8x temporally, so a 512px still becomes [B,128,1,16,16].
+    px = pixel_values.to(torch.float32).unsqueeze(2)
+    with torch.no_grad():
+        lat = vae.encode(px).latent_dist.sample()
+    mean, std = _ltx2_latent_affine(vae, lat)
+    return (lat - mean) / std
+
+
+def _ltx2_encode_latent_stats(vae, pixel_values):
+    import torch
+
+    px = pixel_values.to(torch.float32).unsqueeze(2)
+    with torch.no_grad():
+        dist = vae.encode(px).latent_dist
+    mean, std = _ltx2_latent_affine(vae, dist.mean)
+    return (dist.mean - mean) / std, dist.std / std
+
+
+def _ltx2_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
+    import torch
+
+    # encode_prompt pads to max_sequence_length, so every connector embed is [1, 1024, 3840]
+    # and a plain concat batches them; ``pad_to`` is moot.
+    video = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
+    audio = torch.cat([e[1] for e in entries]).to(device = device, dtype = weight_dtype)
+    mask = torch.cat([e[2] for e in entries]).to(device)
+    return (video, audio, mask)
+
+
+def _ltx2_audio_token_count(config, num_pixel_frames: int, fps: float) -> int:
+    """Audio latent tokens accompanying ``num_pixel_frames`` at ``fps``.
+
+    The pipeline derives this as ``round(duration_s * sampling_rate / hop_length /
+    temporal_compression)``; every term is on the transformer config, so the trainer does not
+    need the audio VAE resident (it never encodes audio -- see the spec comment). Floored at
+    one token: the transformer indexes the audio stream unconditionally, so an empty one
+    would trip its RoPE."""
+    per_second = (
+        float(config.audio_sampling_rate)
+        / float(config.audio_hop_length)
+        / float(config.audio_scale_factor)
+    )
+    return max(1, round((num_pixel_frames / float(fps)) * per_second))
+
+
+def _ltx2_pack(latents, conf):
+    """[B,C,F,H,W] -> [B, F*H*W, C] via the pipeline's own patchifier."""
+    from diffusers import LTX2Pipeline
+    return LTX2Pipeline._pack_latents(latents, conf.patch_size, conf.patch_size_t)
+
+
+def _ltx2_unpack(pred, f, h, w, conf):
+    """The inverse of ``_ltx2_pack``, back to the 5-D shape ``target = noise - latents`` has."""
+    from diffusers import LTX2Pipeline
+    return LTX2Pipeline._unpack_latents(pred, f, h, w, conf.patch_size, conf.patch_size_t)
+
+
+def _ltx2_audio_state(sigmas, bsz, audio_len, channels, device, dtype):
+    """The audio-stream input for a step at ``sigmas``.
+
+    A still-image dataset carries no audio ground truth, so the placeholder stream rides the
+    SAME flow-matching state a zero clean latent would produce: ``(1 - sigma) * 0 + sigma *
+    noise``. Zero is the mean of the normalised audio latent distribution, so this keeps the
+    stream at the right SCALE for every sigma instead of feeding unit noise at a timestep the
+    model expects nearly-clean latents at. With ``isolate_modalities = True`` it cannot reach
+    the video prediction at all; it exists only because ``forward`` requires the argument."""
+    import torch
+
+    noise = torch.randn((bsz, audio_len, channels), device = device, dtype = dtype)
+    # sigmas arrives broadcast to the 5-D video latent; the audio stream is 3-D.
+    return sigmas.reshape(bsz, 1, 1) * noise
+
+
+def _ltx2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+    video_emb, audio_emb, mask = embeds_batch
+    bsz, _c, f, h, w = noisy.shape
+    conf = transformer.config
+    packed = _ltx2_pack(noisy, conf)
+
+    # vae_scale_factors is (temporal, height, width), so [0] is the 8x temporal compression.
+    num_pixel_frames = (f - 1) * int(conf.vae_scale_factors[0]) + 1
+    audio_len = _ltx2_audio_token_count(conf, num_pixel_frames, _LTX2_TRAIN_FPS)
+    audio_noisy = _ltx2_audio_state(
+        sigmas, bsz, audio_len, conf.audio_in_channels, packed.device, packed.dtype
+    )
+
+    pred, _audio_pred = transformer(
+        hidden_states = packed,
+        audio_hidden_states = audio_noisy,
+        encoder_hidden_states = video_emb,
+        audio_encoder_hidden_states = audio_emb,
+        # LTX-2 conditions on the UNSCALED timestep (its config carries
+        # timestep_scale_multiplier = 1000 and the pipeline passes scheduler timesteps
+        # through as-is), unlike the FLUX / Qwen families' timestep / 1000.
+        timestep = timesteps,
+        sigma = timesteps,
+        encoder_attention_mask = mask,
+        audio_encoder_attention_mask = mask,
+        num_frames = f,
+        height = h,
+        width = w,
+        fps = _LTX2_TRAIN_FPS,
+        audio_num_frames = audio_len,
+        # Disable the audio-to-video / video-to-audio cross attention so the placeholder
+        # audio stream cannot perturb the video prediction the LoRA is regressing.
+        isolate_modalities = True,
+        return_dict = False,
+    )
+    return _ltx2_unpack(pred, f, h, w, conf)
+
+
+def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
+    from diffusers import LTX2Pipeline
+    LTX2Pipeline.save_lora_weights(
+        save_directory = out_dir,
+        transformer_lora_layers = transformer_lora_layers,
+        weight_name = DEFAULT_LORA_FILENAME,
+    )
+
+
 _SPECS: dict[str, _FamilySpec] = {
     "flux.1": _FamilySpec(
         family = "flux.1",
@@ -1191,6 +1437,23 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux2_collate,
         forward = _flux2_forward,
         save = _flux2_save,
+    ),
+    "ltx-2": _FamilySpec(
+        family = "ltx-2",
+        lora_targets = _LTX2_TARGETS,
+        force_bf16 = True,
+        # 19B audiovisual DiT; the transformer index reports 37.76 GB bf16. The Gemma3-12B
+        # conditioning stack (~24 GB resident) is loaded, encoded and freed BEFORE this lands
+        # on the device, via the shared phased load.
+        dense_bf16_gb = 37.8,
+        load_conditioners = _ltx2_load_conditioners,
+        load_transformer = _ltx2_load_transformer,
+        encode_prompts = _ltx2_encode_prompts,
+        encode_latents = _ltx2_encode_latents,
+        encode_latent_stats = _ltx2_encode_latent_stats,
+        collate = _ltx2_collate,
+        forward = _ltx2_forward,
+        save = _ltx2_save,
     ),
 }
 
@@ -1529,7 +1792,7 @@ def run_dit_lora_training(
     on_event: Optional[EventCb] = None,
     should_stop: Optional[StopCb] = None,
 ) -> str:
-    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2) and export it.
+    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2) and export it.
 
     Resumable: ``cfg.resume_from_checkpoint`` restores the adapter, optimizer moments, LR
     position, EMA shadow, sampler cycle and RNG streams from a ``checkpoint-<N>`` bundle,
@@ -1770,7 +2033,7 @@ def _train_dit(
 
     # int8 / fp8 / mxfp8 convert the frozen base linears AFTER the LoRA attaches, so the adapter modules are excluded and stay high precision.
     if base_precision == "int8":
-        _int8_quantize_base(transformer)
+        _int8_quantize_base(transformer, cfg.resolved_family)
     if base_precision == "fp8" and not _apply_fp8_training(transformer, on_event):
         base_precision = "bf16"
     if base_precision == "mxfp8" and not _apply_mxfp8_training(transformer, on_event):
@@ -1794,7 +2057,7 @@ def _train_dit(
     # Timestep-shift + loss-weighting setup (see _training_sigma_table). getattr defaults keep an un-normalized config on the historical behavior.
     flow_shift = getattr(cfg, "flow_shift", None)
     if flow_shift is None:
-        flow_shift = "auto" if spec.family == "qwen-image" else 1.0
+        flow_shift = "auto" if spec.family in AUTO_FLOW_SHIFT_FAMILIES else 1.0
     sigma_table = _training_sigma_table(scheduler, flow_shift)
     shift_active = sigma_table is not scheduler.sigmas
     num_train_ts = scheduler.config.num_train_timesteps
@@ -2118,8 +2381,11 @@ def _make_optimizer(params, lr):
 
 
 def _free_text_encoders(pipe) -> None:
-    """Drop every text-encoder / tokenizer the pipeline holds, so the (large) encoders do
-    not sit in VRAM during training. The embeddings are already precomputed."""
+    """Drop every conditioning module the pipeline holds once the embeddings are
+    precomputed, so they do not sit in VRAM during training. ``connectors`` is LTX-2's
+    second conditioning stage (~2.7 GB) and belongs here for the same reason as the text
+    encoders; ``audio_vae`` / ``vocoder`` are LTX-2 decode-side modules the trainer never
+    touches. Absent attributes are skipped, so this is a no-op for the image families."""
     for attr in (
         "text_encoder",
         "text_encoder_2",
@@ -2127,6 +2393,9 @@ def _free_text_encoders(pipe) -> None:
         "tokenizer",
         "tokenizer_2",
         "tokenizer_3",
+        "connectors",
+        "audio_vae",
+        "vocoder",
     ):
         if getattr(pipe, attr, None) is not None:
             try:

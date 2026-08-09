@@ -256,6 +256,15 @@ def _hub_cache_roots() -> list[str]:
     return roots
 
 
+# Pipeline subdirectories whose weights decide what the conditioning cache holds, so an in-place
+# edit of any of them must change the fingerprint. text_encoder*/tokenizer* produce the embeddings
+# and vae* the latents, for every family. "connectors" is LTX-2's: the Gemma3 hidden states are
+# per-layer stacked and only the connector output reaches the transformer, so that projection --
+# not the raw encoder state -- is what gets cached. No other supported family runs a module between
+# encode_prompt and the DiT; the rest go straight from the text encoders to the cached tensors.
+_CACHE_SOURCE_SUBDIRS = ("text_encoder", "tokenizer", "vae", "connectors")
+
+
 def source_revision(ref: Any) -> str:
     """Revision/content marker for a checkpoint reference, resolved without loading it.
 
@@ -276,10 +285,7 @@ def source_revision(ref: Any) -> str:
             roots = [name]
             with os.scandir(name) as it:
                 roots += [
-                    e.path
-                    for e in it
-                    # vae too: cached latents come from it, so an in-place VAE swap must invalidate them just like an encoder change.
-                    if e.is_dir() and e.name.startswith(("text_encoder", "tokenizer", "vae"))
+                    e.path for e in it if e.is_dir() and e.name.startswith(_CACHE_SOURCE_SUBDIRS)
                 ]
             for root in roots:
                 with os.scandir(root) as it:

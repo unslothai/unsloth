@@ -3316,7 +3316,8 @@ def test_pipeline_class_guard_is_silent_when_a_lazy_submodule_cannot_import(monk
     # unsatisfiable it raises RuntimeError ("Failed to import diffusers.pipelines..."). hasattr
     # absorbs AttributeError only, so the RuntimeError escaped this guard exactly the way a
     # missing diffusers used to: not the ValueError the routes map to 400, so a bare 500 with the
-    # message lost.
+    # message lost -- and, now that the training preflight calls this too, a refusal that arrives
+    # as a 500 instead of the actionable 400. There is no version to judge here either.
     import types
 
     from core.inference.diffusion_families import assert_pipeline_class_available
