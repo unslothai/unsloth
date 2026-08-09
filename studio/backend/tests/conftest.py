@@ -31,6 +31,12 @@ os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
 # The other half of the same guard: unsloth_zoo.__init__ refuses to import unless this is present, normally set by `import unsloth`. Without it
 # the patch backend's only route to the helpers is that ~940 MB import, which a CPU-only host cannot complete. run.py and main.py do the same.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+# The on-demand attention-backend installer defaults to "auto", so ANY test that loads a
+# pipeline with attention_backend="xformers"/"sage"/"flash" would shell out to a real pip
+# (up to 600s) and, for xformers, a real torch probe. test_diffusion_attention.py disables
+# it per-test; pin the default off for the whole suite so a new test elsewhere cannot
+# reintroduce that by accident. setdefault, so an explicit override still wins.
+os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 
 
 @pytest.fixture(scope = "session")
@@ -741,3 +747,41 @@ def _reset_optional_module_memo():
     _shim._reset_optional_module_cache()
     yield
     _shim._reset_optional_module_cache()
+
+
+@pytest.fixture
+def healthy_diffusers(monkeypatch):
+    """A diffusers that answers any pipeline class, for tests about a route rather than a cast.
+
+    The training route asserts the family's pipeline class strictly before it frees the resident
+    GPU models, so a runner whose diffusers cannot import (a transformers/huggingface-hub pin skew
+    is the common one: the lazy top level then raises RuntimeError instead of answering hasattr)
+    would turn every routing and config test into a 400 about diffusers. This is a PROXY, not a
+    replacement: everything the real module can still serve is delegated, including ``__path__`` so
+    ``from diffusers.optimization import ...`` keeps working, and only a pipeline class it cannot
+    produce is answered here. Tests that DO exercise the gate replace ``sys.modules["diffusers"]``
+    themselves, which runs after this and wins."""
+    import types
+
+    try:
+        import diffusers as _real
+    except Exception:  # noqa: BLE001 -- an absent diffusers is exactly what this stands in for
+        _real = None
+
+    class _AnyPipeline(types.ModuleType):
+        def __getattr__(self, name):
+            if _real is not None:
+                try:
+                    return getattr(_real, name)
+                except Exception:  # noqa: BLE001 -- the lazy submodule is what may be broken
+                    pass
+            if name.endswith("Pipeline"):
+                return object
+            raise AttributeError(name)
+
+    proxy = _AnyPipeline("diffusers")
+    proxy.__version__ = str(getattr(_real, "__version__", "0.39.0"))
+    for attr in ("__path__", "__file__", "__spec__", "__loader__"):
+        if _real is not None and hasattr(_real, attr):
+            setattr(proxy, attr, getattr(_real, attr))
+    monkeypatch.setitem(sys.modules, "diffusers", proxy)
