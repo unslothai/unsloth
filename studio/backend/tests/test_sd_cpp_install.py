@@ -629,7 +629,12 @@ def test_the_shipped_pin_is_mirror_only(tmp_path, monkeypatch):
 
 
 def test_a_mirror_only_pin_is_never_requested_upstream(tmp_path, monkeypatch):
-    """Upstream cannot have a -u<id> tag by construction, so asking is a guaranteed 404.
+    """Upstream cannot have a -u<id> tag by construction, so asking for it is a guaranteed 404.
+
+    The mirror-only pin is instead TRANSLATED back to the upstream release it was built from, so
+    a host the mirror does not build keeps a pinned install rather than silently degrading to
+    upstream latest. Asking upstream for the literal -u<id> string is still wrong, and that is
+    what this pins.
 
     The mirror must NOT serve here: when it does, the very first attempt succeeds and the upstream
     attempts are never reached, so the assertion would hold no matter what the ordering says."""
@@ -649,9 +654,16 @@ def test_a_mirror_only_pin_is_never_requested_upstream(tmp_path, monkeypatch):
         lambda tag = None, **kw: (asked.append((kw.get("repo"), tag)), real(tag, **kw))[1],
     )
     install(install_dir = tmp_path)
-    # It still had to reach upstream to find anything at all, just never for the mirror-only pin.
-    assert (sdmod.UPSTREAM_FALLBACK_REPO, None) in asked
+    # Never the literal -u<id> string, which upstream cannot have.
     assert (sdmod.UPSTREAM_FALLBACK_REPO, DEFAULT_TAG) not in asked
+    # It asks upstream for the release the mirror built on top of instead, so the pin survives
+    # translation rather than being dropped.
+    upstream_pin = sdmod.upstream_tag_for(DEFAULT_TAG)
+    assert upstream_pin != DEFAULT_TAG
+    assert (sdmod.UPSTREAM_FALLBACK_REPO, upstream_pin) in asked
+    # And because that pinned attempt succeeds, it never has to settle for upstream latest --
+    # which is the whole point of translating rather than skipping.
+    assert (sdmod.UPSTREAM_FALLBACK_REPO, None) not in asked
 
 
 def test_falling_back_off_a_mirror_only_pin_warns_about_h3(tmp_path, monkeypatch, capsys):
