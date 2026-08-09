@@ -20889,6 +20889,17 @@ async def openai_image_generations(
         # A RuntimeError with the model now unloaded means it was evicted mid-call (a race): 503. Every other failure is a real 500 whose raw message must not reach the client.
         if isinstance(exc, RuntimeError) and not backend.is_loaded:
             raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
+        # The activation refusal is the one message here written FOR the caller: it names the
+        # resolution, the budget and the remedies. Sanitising it into "Image generation failed."
+        # left an OpenAI client with a 500 for a request only they can fix, while the Studio
+        # route showed the reason. Typed, so no other ValueError's raw text escapes.
+        from core.inference.diffusion_memory import ImageActivationShortfallError
+
+        if isinstance(exc, ImageActivationShortfallError):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(str(exc), status = 400, param = "size"),
+            )
         logger.error("openai_images.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
