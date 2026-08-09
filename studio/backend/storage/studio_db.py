@@ -1824,22 +1824,30 @@ def delete_chat_threads(ids: list[str]) -> None:
         conn.close()
 
 
-def clear_chat_history() -> "list[str]":
-    """Delete every chat thread. Returns the ids that were actually removed.
+def clear_chat_history() -> "tuple[list[str], list[str]]":
+    """Delete every chat thread. Returns (thread ids removed, research runs cascaded).
 
-    Taken inside the same transaction: another process can add a thread between
-    a listing and this call, and its sandbox has to be cleaned up too.
+    Both taken inside the same transaction: another process can add a thread
+    between a listing and this call, its sandbox has to be cleaned up too, and
+    after the cascade nothing can tell the supervisor which runs to stop.
     """
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
         removed = [str(row[0]) for row in conn.execute("SELECT id FROM chat_threads")]
+        active_runs = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT id FROM research_runs "
+                "WHERE status NOT IN ('cancelled', 'completed', 'failed')"
+            )
+        ]
         conn.execute("DELETE FROM chat_attachment_tombstones")
         conn.execute("DELETE FROM chat_threads")
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
-        return removed
+        return removed, active_runs
     finally:
         conn.close()
 

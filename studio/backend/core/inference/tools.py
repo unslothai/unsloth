@@ -7119,6 +7119,10 @@ _active_sessions: "dict[str, int]" = {}
 # case-sensitive filesystem those are separate directories and both must go.
 _pending_removals: "dict[str, dict[str, bool]]" = {}
 _active_sessions_lock = threading.Lock()
+# Sessions whose sandbox is being removed right now. A start for one of these
+# waits on the condition rather than on the lock, so only that chat is held up.
+_removing_sessions: "set[str]" = set()
+_sessions_free = threading.Condition(_active_sessions_lock)
 
 
 def _session_key(session_id: "str | None") -> str:
@@ -7134,24 +7138,39 @@ def _session_key(session_id: "str | None") -> str:
 @contextlib.contextmanager
 def _session_in_flight(session_id: "str | None"):
     key = _session_key(session_id)
-    with _active_sessions_lock:
+    with _sessions_free:
+        # A removal for this session runs with the lock released, so a call
+        # starting in that window would be handed the directory it is about to
+        # rename away. Only this session waits; every other chat is untouched.
+        while key in _removing_sessions:
+            _sessions_free.wait()
         first = _active_sessions.get(key, 0) == 0
         _active_sessions[key] = _active_sessions.get(key, 0) + 1
     try:
         yield
     finally:
         pending: "dict[str, bool]" = {}
-        with _active_sessions_lock:
+        with _sessions_free:
             if _active_sessions.get(key, 0) <= 1:
                 _active_sessions.pop(key, None)
                 pending = _pending_removals.pop(key, {})
+                if pending:
+                    _removing_sessions.add(key)
             else:
                 _active_sessions[key] -= 1
+        if not pending:
+            return
         # Outside the lock: the removal walks the tree to decide whether it
         # holds files, and on a slow volume that is seconds during which no
-        # tool call in any other chat could start.
-        for pending_id, pending_files in pending.items():
-            _remove_session_sandbox_locked(pending_id, pending_files)
+        # tool call in any other chat could start. This session is held closed
+        # meanwhile, so nothing starts in the directory being removed.
+        try:
+            for pending_id, pending_files in pending.items():
+                _remove_session_sandbox_locked(pending_id, pending_files)
+        finally:
+            with _sessions_free:
+                _removing_sessions.discard(key)
+                _sessions_free.notify_all()
 
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
@@ -7172,6 +7191,28 @@ def _usable_session_id(session_id: str) -> bool:
     return session_id.split(".")[0].lower() not in _WINDOWS_DEVICE_NAMES
 
 
+def _orphaned_project_workdir(project_id: str) -> "str | None":
+    """A deleted project's workspace, when its files were kept.
+
+    Only the default location: a workspace the user pointed elsewhere is not
+    derivable from the id, and nothing is left to look it up in.
+    """
+    suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
+    try:
+        from utils.paths import project_workspaces_root
+        root = str(project_workspaces_root())
+        names = sorted(os.listdir(root))[:_MAX_SNAPSHOT_DIRS]
+    except Exception:
+        return None
+    for entry in names:
+        if not entry.endswith(f"-{suffix}"):
+            continue
+        candidate = os.path.join(root, entry, "sandbox")
+        if os.path.isdir(candidate) and not os.path.islink(candidate):
+            return os.path.realpath(candidate)
+    return None
+
+
 def _get_project_workdir(session_id: str) -> str | None:
     if not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
@@ -7185,7 +7226,10 @@ def _get_project_workdir(session_id: str) -> str | None:
         logger.warning("Failed to resolve project sandbox for %s", session_id, exc_info = True)
         return None
     if not project:
-        return None
+        # The project is gone but a chat forked out of it still shows cards for
+        # this sandbox, and the workspace was kept for exactly that. The folder
+        # name carries the project id, so it is found without the row.
+        return _orphaned_project_workdir(project_id)
     root_path = project.get("rootPath")
     sandbox_path = project.get("sandboxPath")
     if not root_path or not sandbox_path:
@@ -7226,16 +7270,19 @@ def _sandbox_name(session_id: str) -> str:
     return _DERIVED_PREFIX + hashlib.sha256(encoded).hexdigest()[:16]
 
 
-def _preserve_foreign_marker(workdir: str) -> None:
-    """Move aside a marker-named entry that is not one of ours.
+def _preserve_foreign_marker(workdir: str, name: "str | None" = None) -> None:
+    """Move aside a marker-named entry that this migration did not write.
 
-    This name was not reserved before this change, so a chat that wrote its own
-    .unsloth_sandbox before the upgrade would have it truncated by the marker
-    the migration writes. Renamed rather than removed: the file is the user's.
+    This name was not reserved before the change, so a chat that wrote its own
+    .unsloth_sandbox has a real file there, and a short note like "notes" reads
+    as a perfectly good session name. Only the exact marker this move is about
+    to write is left alone; everything else is renamed, not removed.
     """
     marker = os.path.join(workdir, _SANDBOX_MARKER)
-    if not os.path.lexists(marker) or _marker_owner(workdir) is not None:
+    if not os.path.lexists(marker):
         return
+    if name is not None and _marker_owner(workdir) == _sandbox_name(name):
+        return  # already ours, from a move that ran before
     for n in range(1, 100):
         kept = f"{marker}.saved" if n == 1 else f"{marker}.saved-{n}"
         if not os.path.lexists(kept):
@@ -7566,7 +7613,7 @@ def _staged_move(source: str, target: str, name: str) -> None:
     # Marked here, not after the rename: across filesystems the move has already
     # removed the legacy copy, so from this instant the staging tree is the only
     # one there is and a kill before the marker would leave it unfindable.
-    _preserve_foreign_marker(staging)
+    _preserve_foreign_marker(staging, name)
     _mark_sandbox(staging, name)
     try:
         os.rename(staging, target)

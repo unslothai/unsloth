@@ -373,12 +373,18 @@ def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
         return
     supervisor = getattr(request.app.state, "research_supervisor", None)
     for run_id in run_ids:
-        try:
-            status = research_runs_db.request_cancel(run_id)
-            if supervisor is not None and status == "cancelling":
+        # The row is usually already gone here, which makes request_cancel raise:
+        # the supervisor is what actually stops the worker, so it is told first
+        # and the status update is the best-effort half.
+        if supervisor is not None:
+            try:
                 supervisor.cancel(run_id)
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not signal research run %s", run_id, exc_info = True)
+        try:
+            research_runs_db.request_cancel(run_id)
         except Exception:  # noqa: BLE001
-            logger.warning("Could not cancel research run %s", run_id, exc_info = True)
+            pass  # no row to update, which is the ordinary case after a delete
 
 
 def _cancel_active_generations(thread_ids: list[str]) -> None:
@@ -679,11 +685,13 @@ async def delete_project(
 
         # Cancelling only asks; a tool call already in the executor is still
         # running with its cwd in there, and removing that cwd underneath it
-        # either kills the call or strands what it writes next.
-        await run_in_threadpool(wait_for_sessions_idle, member_ids)
+        # either kills the call or strands what it writes next. The shared id
+        # first: a tool call in a project runs as `project-<id>`, so waiting on
+        # the member ids alone returned at once.
+        shared = project_session_id(project_id)
+        await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
         # A chat forked out of the project still shows cards for the shared
         # workspace, and the fork is not one of the ids deleted here.
-        shared = project_session_id(project_id)
         if await run_in_threadpool(sandbox_is_referenced_elsewhere, shared, None):
             logger.info(
                 "Kept project workspace %s: a surviving chat still shows its files",
@@ -860,14 +868,15 @@ async def clear_history(
     # The clear reports what it deleted, which is what gets cleaned up: a thread
     # added between the listing above and the delete is gone too, and its
     # sandbox would otherwise be stranded.
-    cleared = clear_chat_history()
+    cleared, cleared_runs = clear_chat_history()
     # A chat started between the listing and the transaction is in `cleared`
     # but was never cancelled, and a generation still running would dispatch a
     # tool and rebuild the sandbox this call is about to remove.
     late = [thread_id for thread_id in cleared if thread_id not in set(thread_ids)]
     if late:
-        _cancel_active_research(request, late)
         _cancel_active_generations(late)
+    # By id: the rows went with the threads, so nothing can look them up now.
+    _cancel_research_runs(request, cleared_runs)
     # "Clear all chats" is the common bulk delete, so it has to clean up the
     # same folders DELETE /threads does; otherwise every sandbox is stranded.
     # delete_files matches DELETE /threads: off by default, since the files are

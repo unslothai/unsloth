@@ -412,7 +412,7 @@ def test_clearing_all_chats_cleans_up_their_sandboxes(tmp_path, monkeypatch):
     import routes.chat_history as chat_history
 
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda: [{"id": "__LOCALID_bulk111"}])
-    monkeypatch.setattr(chat_history, "clear_chat_history", lambda: [])
+    monkeypatch.setattr(chat_history, "clear_chat_history", lambda: ([], []))
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
 
     import asyncio
@@ -2387,10 +2387,10 @@ def test_clearing_every_chat_reports_what_it_deleted(tmp_path, monkeypatch):
     source = inspect.getsource(studio_db.clear_chat_history)
     assert "SELECT id FROM chat_threads" in source
     assert source.index("SELECT id FROM chat_threads") < source.index("DELETE FROM chat_threads")
-    assert "return removed" in source
+    assert "return removed, active_runs" in source
 
     route = inspect.getsource(chat_history.clear_history)
-    assert "cleared = clear_chat_history()" in route
+    assert "cleared, cleared_runs = clear_chat_history()" in route
     assert "cleared" in route.split("_remove_sandboxes(", 1)[1].split(")", 1)[0]
 
 
@@ -3105,7 +3105,7 @@ def test_a_chat_started_during_the_clear_is_cancelled_too():
 
     source = inspect.getsource(chat_history.clear_history)
     assert "late" in source
-    assert source.index("cleared = clear_chat_history()") < source.index(
+    assert source.index("cleared, cleared_runs = clear_chat_history()") < source.index(
         "_cancel_active_generations(late)"
     )
     assert source.index("_cancel_active_generations(late)") < source.index("_remove_sandboxes(")
@@ -4029,6 +4029,150 @@ def test_a_project_delete_cancels_the_research_it_removed():
     route = inspect.getsource(chat_history.delete_project)
     assert '_cancel_research_runs(request, list(project.get("activeResearchRunIds")' in route
     assert "_cancel_active_research(request, member_ids)" not in route
+
+
+def test_the_wait_covers_the_session_a_project_tool_runs_as():
+    """A tool call in a project runs as project-<id>, not as the chat, so
+    waiting on the member ids returned at once and the cwd went underneath."""
+    import inspect
+
+    from routes import chat_history
+
+    route = inspect.getsource(chat_history.delete_project)
+    assert "wait_for_sessions_idle, [shared, *member_ids]" in route
+    assert route.index("shared = project_session_id(project_id)") < route.index(
+        "run_in_threadpool(wait_for_sessions_idle"
+    )
+
+
+def test_a_new_call_cannot_start_in_a_sandbox_being_removed(tmp_path, monkeypatch):
+    """The deferred removal runs with the lock released, and a call starting in
+    that window was handed the directory the removal then renamed away."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "__LOCALID_race111"
+    tools.get_sandbox_workdir(session)
+
+    queued, proceed = threading.Event(), threading.Event()
+    removing, release, started = threading.Event(), threading.Event(), threading.Event()
+    real_remove = tools._remove_session_sandbox_locked
+
+    def slow_remove(session_id, delete_files):
+        removing.set()
+        assert release.wait(timeout = 5)
+        return real_remove(session_id, delete_files)
+
+    monkeypatch.setattr(tools, "_remove_session_sandbox_locked", slow_remove)
+
+    def first_call():
+        with tools._session_in_flight(session):
+            queued.set()
+            assert proceed.wait(timeout = 5)
+        # The queued removal runs as this call leaves.
+
+    def second_call():
+        with tools._session_in_flight(session):
+            started.set()
+
+    first = threading.Thread(target = first_call)
+    first.start()
+    try:
+        assert queued.wait(timeout = 5)
+        assert tools.remove_session_sandbox(session, delete_files = True) is False
+        proceed.set()
+        assert removing.wait(timeout = 5), "the deferred removal never ran"
+
+        second = threading.Thread(target = second_call)
+        second.start()
+        assert not started.wait(timeout = 0.5), "a call started in the folder being removed"
+        release.set()
+        second.join(timeout = 5)
+        assert started.is_set(), "and it never got to start afterwards"
+    finally:
+        release.set()
+        proceed.set()
+        first.join(timeout = 5)
+
+
+def test_a_note_named_like_the_marker_is_kept(tmp_path, monkeypatch):
+    """A short note reads as a perfectly good session name, and the migration
+    was treating anything that parses as its own metadata."""
+    fake_home = tmp_path / "userprofile"
+    session = "__LOCALID_notes11"
+    legacy = fake_home / "studio_sandbox" / session
+    legacy.mkdir(parents = True)
+    (legacy / ".unsloth_sandbox").write_text("notes", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    tools._legacy_sandbox_migrated = False
+
+    landed = Path(tools.get_sandbox_workdir(session))
+    saved = list(landed.glob(".unsloth_sandbox.saved*"))
+    assert saved, sorted(p.name for p in landed.iterdir())
+    assert saved[0].read_text(encoding = "utf-8") == "notes"
+    assert tools._marker_owner(str(landed)) == tools._sandbox_name(session)
+
+
+def test_a_kept_project_workspace_still_resolves(tmp_path, monkeypatch):
+    """It is kept because a chat forked out of the project still shows its
+    cards, and those cards resolve through the project row that is now gone."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from utils.paths import project_workspaces_root
+
+    _forget_sandbox_state(tools)
+    project_id = "proj12345"
+    suffix = project_id[:8]
+    workspace = Path(project_workspaces_root()) / f"My Notes-{suffix}" / "sandbox"
+    workspace.mkdir(parents = True)
+    (workspace / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    # No project row: the delete removed it and kept the files.
+    served = Path(tools.resolve_sandbox_workdir(tools.project_session_id(project_id)))
+    assert served == workspace.resolve(), served
+    assert (served / "report.csv").is_file()
+
+
+def test_clearing_every_chat_cancels_the_research_it_removed():
+    """The runs cascade with the threads, so afterwards there is nothing left
+    to look them up by and the worker keeps going."""
+    import inspect
+
+    from routes import chat_history
+    from storage import studio_db
+
+    storage = inspect.getsource(studio_db.clear_chat_history)
+    assert "SELECT id FROM research_runs" in storage
+    assert storage.index("SELECT id FROM research_runs") < storage.index(
+        "DELETE FROM chat_threads"
+    )
+
+    route = inspect.getsource(chat_history.clear_history)
+    assert "_cancel_research_runs(request, cleared_runs)" in route
+
+
+def test_the_supervisor_is_told_even_with_no_row_left():
+    """request_cancel raises KeyError once the row has cascaded, and that used
+    to skip the one call that actually stops the worker."""
+    import inspect
+
+    from routes import chat_history
+
+    source = inspect.getsource(chat_history._cancel_research_runs)
+    assert source.index("supervisor.cancel(run_id)") < source.index(
+        "research_runs_db.request_cancel(run_id)"
+    )
 
 
 if __name__ == "__main__":
