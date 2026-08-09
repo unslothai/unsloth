@@ -75,6 +75,17 @@ def _working_tensorflow(tmp_path):
     return site
 
 
+# Every variable Transformers reads to pick a backend, so a runner's own value
+# cannot decide a case the test meant to set up. `USE_TORCH` belongs here even
+# though Unsloth never writes it: Transformers gates `_tf_available` on
+# `USE_TORCH not in ENV_VARS_TRUE_VALUES`, so an inherited `USE_TORCH=1` forces
+# `_tf_available` False no matter what TensorFlow is on the path, and the cases
+# that assert "BEFORE True" fail for a reason that has nothing to do with them.
+# Confirmed against Transformers 4.57.6 with a working TensorFlow on the path:
+# unset -> `_tf_available` True, `USE_TORCH=1` -> False.
+_BACKEND_ENV = ("USE_TF", "USE_FLAX", "USE_TORCH", "FORCE_TF_AVAILABLE")
+
+
 def _run(
     code,
     site = None,
@@ -86,9 +97,7 @@ def _run(
         path.append(os.environ["PYTHONPATH"])
     # Importing Unsloth sets USE_TF/USE_FLAX in this process, so an inherited
     # value would decide the case before the child starts. Each test says.
-    clean = {
-        k: v for k, v in os.environ.items() if k not in ("USE_TF", "USE_FLAX", "FORCE_TF_AVAILABLE")
-    }
+    clean = {k: v for k, v in os.environ.items() if k not in _BACKEND_ENV}
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],
         capture_output = True,
@@ -252,11 +261,17 @@ def test_transformers_reads_the_variable_from_the_environment(value):
     assert out.stdout.strip() == value
 
 
-def test_the_variables_are_left_alone_once_transformers_is_loaded():
-    """They are spent by then, so the cached flags are what gets cleared instead."""
+def test_the_variables_are_written_even_once_transformers_is_loaded():
+    """Usually spent by then, and written anyway, because "usually" is not always.
+
+    A fully imported Transformers has already read them, so this write changes
+    nothing there -- the cached flags are what does the work. It is the
+    partly-imported case below that needs it, and this branch cannot tell the two
+    apart without waiting on another thread, which module scope must never do.
+    """
     environ = {}
     _exec_guard({"transformers": object()}, environ)
-    assert environ == {}
+    assert environ == {"USE_TF": "0", "USE_FLAX": "0"}
 
 
 def test_the_environment_branch_honours_an_already_imported_backend():
@@ -471,8 +486,93 @@ def test_the_v4_only_cases_skip_on_transformers_5x(monkeypatch, tmp_path, case):
     assert "5.x dropped TF/Flax" in str(caught.value)
 
 
-def test_a_transformers_without_import_utils_loaded_is_a_no_op():
-    _exec_guard({"transformers": types.ModuleType("transformers")}, {})
+def test_a_partly_imported_transformers_still_gets_the_variables():
+    """`"transformers" in sys.modules` does not mean Transformers is ready.
+
+    Python publishes a module object before executing its body, so a thread
+    part-way through `import transformers` -- or a `transformers` submodule that
+    imports Unsloth -- reaches the `else` branch while
+    `transformers.utils.import_utils` is still absent. Verified with an audit hook
+    on the real package: at the moment `import_utils` begins importing,
+    `"transformers" in sys.modules` is already True and
+    `"transformers.utils.import_utils" in sys.modules` is False.
+
+    There is nothing cached to clear in that window, so a branch that only cleared
+    flags did nothing at all and Transformers went on to set `_tf_available` True.
+    The environment is the one lever that still works, because `import_utils` has
+    not read it yet. Waiting for the other thread is not the alternative: blocking
+    on an import from module scope deadlocks.
+    """
+    environ = {}
+    _exec_guard({"transformers": types.ModuleType("transformers")}, environ)
+    assert environ == {"USE_TF": "0", "USE_FLAX": "0"}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        ({"USE_TF": "1"}, {"USE_TF": "1", "USE_FLAX": "0"}),
+        ({"FORCE_TF_AVAILABLE": "yes"}, {"FORCE_TF_AVAILABLE": "yes", "USE_FLAX": "0"}),
+        ({"USE_FLAX": "ON"}, {"USE_FLAX": "ON", "USE_TF": "0"}),
+        ({"USE_TF": "AUTO"}, {"USE_TF": "0", "USE_FLAX": "0"}),
+    ],
+)
+def test_the_partial_window_write_still_obeys_every_opt_in(case):
+    """The new write is the same decision as the other branch, not a blunter one."""
+    environ, expected = dict(case[0]), case[1]
+    _exec_guard({"transformers": types.ModuleType("transformers")}, environ)
+    assert environ == expected
+
+
+def test_the_partial_window_write_leaves_an_imported_backend_alone():
+    """A backend already in `sys.modules` is one in use, in this branch too."""
+    for modules, expected in (
+        ({"tensorflow": object()}, {"USE_FLAX": "0"}),
+        ({"jax": object()}, {"USE_TF": "0"}),
+        ({"tensorflow": object(), "flax": object()}, {}),
+    ):
+        environ = {}
+        _exec_guard(dict(modules, transformers = types.ModuleType("transformers")), environ)
+        assert environ == expected, modules
+
+
+def test_a_cached_opt_in_also_blocks_the_partial_window_write():
+    """`import_utils` present and opted in: neither the flag nor the variable moves."""
+    import_utils = types.ModuleType("transformers.utils.import_utils")
+    import_utils.USE_JAX = "1"
+    import_utils.FORCE_TF_AVAILABLE = "1"
+    environ = {}
+    _exec_guard(
+        {"transformers": object(), "transformers.utils.import_utils": import_utils},
+        environ,
+    )
+    assert environ == {}
+
+
+def test_the_subprocess_environment_drops_every_backend_variable(monkeypatch):
+    """A runner that exports one of these must not decide the cases for us.
+
+    `USE_TORCH` is the one that was missing. Transformers gates `_tf_available` on
+    `USE_TORCH not in ENV_VARS_TRUE_VALUES`, so `USE_TORCH=1` in the parent
+    environment makes every "BEFORE True" case fail even with a detectable
+    TensorFlow on the path. Spurious red rather than a hidden green, but red for a
+    reason none of those tests is about.
+    """
+    # Spelled out rather than read from `_BACKEND_ENV`, so shortening that tuple
+    # is a failure here instead of a quietly narrower assertion.
+    names = ("USE_TF", "USE_FLAX", "USE_TORCH", "FORCE_TF_AVAILABLE")
+    for name in names:
+        monkeypatch.setenv(name, "1")
+    out = _run(
+        """
+        import os
+        for name in {names!r}:
+            print("ENV", name, os.environ.get(name))
+        """.format(names = names),
+    )
+    assert out.returncode == 0, out.stderr[-3000:]
+    for name in names:
+        assert f"ENV {name} None" in out.stdout, out.stdout
 
 
 def test_the_flags_are_cleared_only_when_the_backend_is_unused():

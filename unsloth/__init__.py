@@ -49,21 +49,36 @@ if "transformers" not in sys.modules:
         os.environ[_var] = "0"
     del _TRUE, _var, _modules, _opt_ins
 else:
-    # Too late for the variables, but not for the answer they feed: Transformers
-    # decided `_tf_available` / `_flax_available` from `find_spec` alone, without
-    # importing either backend, so clearing the cached flags still keeps
-    # `image_transforms` from loading a broken one. Only when the backend is
+    # Usually too late for the variables, but not for the answer they feed:
+    # Transformers decided `_tf_available` / `_flax_available` from `find_spec`
+    # alone, without importing either backend, so clearing the cached flags still
+    # keeps `image_transforms` from loading a broken one. Only when the backend is
     # genuinely unused, and never against an explicit opt-in.
+    #
+    # "Usually", because `"transformers" in sys.modules` does not mean
+    # Transformers finished importing. Python publishes a module object before
+    # running its body, so a thread part-way through `import transformers` -- or a
+    # `transformers` submodule importing Unsloth -- lands here while
+    # `transformers.utils.import_utils` does not exist yet and has therefore not
+    # read the environment. Verified with an audit hook on the real package: at
+    # the moment `import_utils` starts importing, `"transformers" in sys.modules`
+    # is already True. Left as flag-clearing only, this branch found nothing to
+    # clear, did nothing, and Transformers then set `_tf_available = True` anyway.
+    # So write the variables here too. Once Transformers has read them the write
+    # is inert, and inside that window it is the only thing that still decides.
+    # Doing it unconditionally is deliberate: waiting on another thread's import
+    # from module scope is a deadlock, not a fix.
     _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
     _import_utils = sys.modules.get("transformers.utils.import_utils")
-    for _flag, _modules, _opt_ins, _cached in (
+    for _var, _flag, _modules, _opt_ins, _cached in (
         (
+            "USE_TF",
             "_tf_available",
             ("tensorflow",),
             ("USE_TF", "FORCE_TF_AVAILABLE"),
             ("USE_TF", "FORCE_TF_AVAILABLE"),
         ),
-        ("_flax_available", ("flax", "jax"), ("USE_FLAX",), ("USE_JAX",)),
+        ("USE_FLAX", "_flax_available", ("flax", "jax"), ("USE_FLAX",), ("USE_JAX",)),
     ):
         if any(_m in sys.modules for _m in _modules):
             continue
@@ -78,13 +93,14 @@ else:
         # variable is `USE_FLAX`, the constant it lands in is `USE_JAX`.
         if any(str(getattr(_import_utils, _v, "")).upper() in _TRUE for _v in _cached):
             continue
+        os.environ[_var] = "0"
         try:
             # Absent on 5.x, and a module proxy can refuse the write.
             if getattr(_import_utils, _flag, False):
                 setattr(_import_utils, _flag, False)
         except (AttributeError, TypeError):
             pass
-    del _TRUE, _import_utils, _flag, _modules, _opt_ins, _cached
+    del _TRUE, _import_utils, _var, _flag, _modules, _opt_ins, _cached
 
 # Relax Metal's context-store timeout before MLX modules can initialize Metal.
 # Keep an explicit user value authoritative.
