@@ -626,23 +626,19 @@ async def delete_project(
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
-    member_ids = [thread["id"] for thread in list_chat_threads(project_id = project_id)]
-    _cancel_active_research(request, member_ids)
-    _cancel_active_generations(member_ids)
     project = delete_chat_project(project_id, delete_files = delete_files)
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    # The transaction is what decides the membership: a chat moved into the
-    # project after the listing above is deleted by it, and its generation would
-    # otherwise keep running and rebuild a sandbox nothing can reach.
-    late = [i for i in (project.get("memberIds") or []) if i not in set(member_ids)]
-    if late:
-        _cancel_active_research(request, late)
-        _cancel_active_generations(late)
-        member_ids += late
+    # The transaction is the only authority on membership, and it runs first: a
+    # chat moved in just before it is deleted by it, and one moved out just
+    # before survives. Cancelling or deleting from an earlier listing would stop
+    # a chat that is still there and remove the files it wrote.
+    member_ids = list(project.get("memberIds") or [])
+    _cancel_active_research(request, member_ids)
+    _cancel_active_generations(member_ids)
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)

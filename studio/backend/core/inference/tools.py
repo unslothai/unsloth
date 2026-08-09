@@ -7382,6 +7382,13 @@ def _marked_sandbox_in(root: str, session_id: str) -> "str | None":
     user pointed us at can hold a lot of their own folders.
     """
     name = _sandbox_name(session_id)
+    # The names this chat could have taken, checked directly: they are derived
+    # from the id, so this works whatever else the root holds.
+    for candidate in _fallback_candidates(root, session_id):
+        if _marker_owner(candidate) == name:
+            return candidate
+    # Then the scan, which still finds a folder from an older build or one that
+    # a rename left under a name of its own.
     try:
         entries = sorted(os.listdir(root))[:_MAX_SNAPSHOT_DIRS]
     except OSError:
@@ -7401,19 +7408,31 @@ def _free_fallback_dir(root: str, session_id: str) -> "str | None":
     The deterministic one first, so the same chat comes back to the same folder,
     then a fresh one rather than running inside anything already there.
     """
-    name = _sandbox_name(session_id)
-    # One we already made and marked wins: its name cannot be recomputed, so a
-    # fresh one every launch would scatter this chat's files.
+    # One we already made wins, wherever it is: a fresh name every launch would
+    # scatter this chat's files.
     ours = _marked_sandbox_in(root, session_id)
     if ours:
         return ours
-    candidate = os.path.join(root, f"{name}-{_name_suffix(session_id)}")
-    if _free_for(candidate, name):
-        return candidate
-    try:
-        return tempfile.mkdtemp(prefix = f"{name}-", dir = root)
-    except OSError:
-        return None
+    for candidate in _fallback_candidates(root, session_id):
+        if _free_for(candidate, _sandbox_name(session_id)):
+            return candidate
+    return None
+
+
+# How many derived names a chat may try in a root the user pointed us at. Every
+# one is recomputable, so a later launch finds the folder again by name rather
+# than by scanning: a random name needed the scan, and a big enough root could
+# push it past the scan's bound.
+_MAX_FALLBACK_NAMES = 32
+
+
+def _fallback_candidates(root: str, session_id: str) -> "list[str]":
+    """The names this chat may take, in the order it takes them."""
+    name = _sandbox_name(session_id)
+    stem = f"{name}-{_name_suffix(session_id)}"
+    return [os.path.join(root, stem)] + [
+        os.path.join(root, f"{stem}-{n}") for n in range(2, _MAX_FALLBACK_NAMES + 1)
+    ]
 
 
 def _free_for(path: str, name: str) -> bool:
@@ -7492,8 +7511,9 @@ def _free_move_target(root: str, name: str) -> "str | None":
         return None
     if _root_is_ours():
         return None  # ours and occupied is a real collision, not a borrowed name
-    for _ in range(8):
-        candidate = os.path.join(root, f"{_sandbox_name(name)}-{uuid.uuid4().hex[:8]}")
+    # The same derived names the request path takes, so whichever runs first the
+    # other one resolves to the folder that ended up holding the files.
+    for candidate in _fallback_candidates(root, name):
         if not os.path.exists(candidate):
             return candidate
     return None
@@ -7515,14 +7535,17 @@ def _staged_move(source: str, target: str, name: str) -> None:
         # Half filled and ours, and the source is still where it was.
         shutil.rmtree(staging, ignore_errors = True)
         raise
+    # Marked here, not after the rename: across filesystems the move has already
+    # removed the legacy copy, so from this instant the staging tree is the only
+    # one there is and a kill before the marker would leave it unfindable.
+    _mark_sandbox(staging, name)
     try:
         os.rename(staging, target)
     except OSError:
         # The move already took the legacy copy, so this tree is the only one
-        # there is and deleting it would lose the user's files. Marked and left
-        # where _marked_sandbox_in finds it, and put back at the legacy root
-        # when that is possible so the next pass simply retries.
-        _mark_sandbox(staging, name)
+        # there is and deleting it would lose the user's files. It is already
+        # marked, so _marked_sandbox_in finds it; put it back at the legacy root
+        # when that is possible, so the next pass simply retries.
         try:
             os.rename(staging, source)
         except OSError:
@@ -7647,11 +7670,11 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
             # is a directory outside both roots.
             if os.path.islink(source) or not os.path.isdir(source):
                 continue
-            # Through the resolver, so a name already taken by something in a
-            # shared root lands at this session's own name instead of merging
-            # into a directory that is not ours.
-            target = _session_dir(root, name)
-            if os.path.exists(target) or not _contained_in_root(target, root):
+            # The same choice the request path makes: at a shared root both
+            # derived names can be the user's, and skipping here while still
+            # reporting the pass complete stranded that chat's files for good.
+            target = _free_move_target(root, name)
+            if target is None or not _contained_in_root(target, root):
                 continue
             try:
                 with _legacy_lock_for(name):
@@ -8065,7 +8088,10 @@ def session_sandbox_has_files(session_id: str) -> bool:
     try:
         target = os.path.realpath(resolve_sandbox_workdir(session_id))
         if not os.path.isdir(target) or not _sandbox_is_ours(target):
-            return False
+            claimed = _claimed_by_this_run(session_id, os.path.realpath(sandbox_root()))
+            if not claimed:
+                return False
+            target = os.path.realpath(claimed)
         return not _holds_no_user_files(target)
     except OSError:
         return False
@@ -8093,6 +8119,26 @@ def _holds_no_user_files(target: str) -> bool:
     return True
 
 
+def _claimed_by_this_run(session_id: str, root: str) -> "str | None":
+    """The directory this process made for this chat, marker or no marker.
+
+    Tool code runs in there and can remove the marker, and after that neither
+    name resolves to it: the delete would then leave the folder behind without
+    even reporting that it kept anything.
+    """
+    cached = _workdirs.get(session_id)
+    if not cached or cached not in _claimed_here:
+        return None
+    if os.path.islink(cached) or not os.path.isdir(cached):
+        return None
+    if not _contained_in_root(cached, root) or _marker_owner(cached) not in (
+        None,
+        _sandbox_name(session_id),
+    ):
+        return None
+    return cached
+
+
 def sandbox_removal_deferred(session_id: str) -> bool:
     """Whether this session's removal is queued behind a running tool call.
 
@@ -8108,13 +8154,14 @@ def sandbox_removal_deferred(session_id: str) -> bool:
 
 def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     root = os.path.realpath(sandbox_root())
+    claimed = _claimed_by_this_run(session_id, root)
     entry = os.path.join(root, _sandbox_name(session_id))
     if not os.path.islink(entry):
         entry = _session_dir(root, session_id)
-        # Neither computed name is ours, so this chat may be in a fallback with
-        # a name nothing can recompute.
+        # Neither computed name is ours, so this chat may be in a fallback, or
+        # in a directory whose marker a tool removed since we made it.
         if not _owned_by_session(entry, session_id):
-            entry = _marked_sandbox_in(root, session_id) or entry
+            entry = _marked_sandbox_in(root, session_id) or claimed or entry
     # The entry itself, not what it resolves to: a symlink to a sibling passes
     # the check below and would take that chat's files. Drop the link, but only
     # at our own root: in a shared one it is the user's entry, not a sandbox.
@@ -8129,14 +8176,16 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     target = os.path.realpath(entry)
     if os.path.dirname(target) != root or not os.path.isdir(target):  # contained
         return False
-    if not _sandbox_is_ours(target):
+    # Ours by the marker, or because this process is the one that made it.
+    ours_here = bool(claimed) and target == os.path.realpath(claimed)
+    if not ours_here and not _sandbox_is_ours(target):
         return False
     # Made for a different id: the same directory on a case-insensitive volume,
     # and those files are the other chat's.
     owner = _marker_owner(target)
     if owner is not None and owner != _sandbox_name(session_id):
         return False
-    if owner is None and os.path.basename(target) != _sandbox_name(session_id):
+    if owner is None and not ours_here and os.path.basename(target) != _sandbox_name(session_id):
         # Nothing says whose this is, and on a case-insensitive volume `foo`
         # and `Foo` are one directory: without the marker the name is the only
         # evidence, and it names the other chat.

@@ -22,6 +22,7 @@ import { isMlxId } from "@/features/model-picker/components/model-selector/recom
 import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
+  SANDBOX_FILE_TOOLS,
   extractCreatedFiles,
   type SandboxFile,
 } from "@/components/assistant-ui/sandbox-files";
@@ -5345,9 +5346,13 @@ export function createOpenAIStreamAdapter(
                   if (idx !== -1) {
                     const rawEvent = (toolEvent.result as string) ?? "";
                     // Pulled out first: it sits ahead of __IMAGES__ so the
-                    // image slice below is unchanged.
+                    // image slice below is unchanged. Only from the tools that
+                    // emit it, as the backend does: an MCP tool or a fetched
+                    // page ending in that line is content, not an envelope.
                     const { text: rawResult, files: createdFiles } =
-                      extractCreatedFiles(rawEvent);
+                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
+                        ? extractCreatedFiles(rawEvent)
+                        : { text: rawEvent, files: [] as SandboxFile[] };
                     const imgMarker = "\n__IMAGES__:";
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
                     const mcpImgMarker = "\n__MCP_IMAGES__:";

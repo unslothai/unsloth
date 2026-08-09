@@ -2862,7 +2862,9 @@ def test_deleting_a_project_takes_its_chats_sandboxes(tmp_path, monkeypatch):
     source = inspect.getsource(chat_history.delete_project)
     assert "_remove_sandboxes(member_ids" in source
     assert "_cancel_active_generations(member_ids)" in source
-    assert source.index("member_ids") < source.index("delete_chat_project(")
+    assert source.index("delete_chat_project(") < source.index(
+        "_cancel_active_generations(member_ids)"
+    )
 
 
 def test_a_native_download_gets_an_absolute_url():
@@ -3248,8 +3250,14 @@ def test_a_project_delete_uses_the_membership_it_really_deleted():
     assert 'project["memberIds"] = sorted(thread_ids)' in storage
 
     route = inspect.getsource(chat_history.delete_project)
-    assert 'project.get("memberIds")' in route
-    assert route.index("_cancel_active_generations(late)") < route.index("_remove_sandboxes(")
+    # Only the transaction's membership: a chat moved out just before it
+    # survives the delete, and cancelling or deleting from an earlier listing
+    # would stop it and remove the files it wrote.
+    assert 'member_ids = list(project.get("memberIds") or [])' in route
+    assert "list_chat_threads(project_id" not in route
+    assert route.index("_cancel_active_generations(member_ids)") < route.index(
+        "_remove_sandboxes("
+    )
     # And what survived is reported, or the folders are reachable from nothing.
     assert "sandboxes_kept = await _remove_sandboxes(member_ids" in route
     assert "ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)" in route
@@ -3646,6 +3654,149 @@ def test_an_interrupted_delete_is_swept_even_without_its_marker(tmp_path, monkey
 
     tools.sweep_detached_sandboxes(str(root))
     assert not tombstone.exists(), "an unreachable tree was left on disk for good"
+
+
+def test_the_startup_pass_lands_a_chat_whose_names_are_taken(tmp_path, monkeypatch):
+    """It skipped the collision and still reported itself complete, which turns
+    off both legacy reads and the per-session retry: those files are gone."""
+    fake_home = tmp_path / "userprofile"
+    session = "__LOCALID_startup1"
+    legacy = fake_home / "studio_sandbox" / session
+    legacy.mkdir(parents = True)
+    (legacy / "notes.csv").write_text("a,b\n", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    tools._legacy_sandbox_migrated = False
+    for taken in (root / session, root / f"{session}-{tools._name_suffix(session)}"):
+        taken.mkdir()
+        (taken / "theirs.txt").write_text("mine", encoding = "utf-8")
+
+    tools._migrate_legacy_sandbox(str(root))
+
+    assert tools._legacy_sandbox_migrated is True
+    landed = Path(tools.resolve_sandbox_workdir(session))
+    assert (landed / "notes.csv").is_file(), f"the chat's files were stranded: {landed}"
+
+
+def test_a_fallback_is_found_in_a_root_full_of_other_folders(tmp_path, monkeypatch):
+    """The scan is bounded and sorted, so a big enough root hid the fallback and
+    the next launch made another one beside it."""
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "zz_LOCALID_late11"
+    name = tools._sandbox_name(session)
+    for taken in (root / name, root / f"{name}-{tools._name_suffix(session)}"):
+        taken.mkdir()
+
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    # Everything the scan would reach before this chat's own folder.
+    monkeypatch.setattr(tools, "_MAX_SNAPSHOT_DIRS", 4)
+    for i in range(40):
+        (root / f"aaa{i:03d}").mkdir()
+
+    _forget_sandbox_state(tools)
+    assert Path(tools.resolve_sandbox_workdir(session)) == workdir
+    assert Path(tools.get_sandbox_workdir(session)) == workdir
+    assert tools.remove_session_sandbox(session, delete_files = True) is True
+
+
+def test_a_staged_move_is_marked_before_the_rename(tmp_path, monkeypatch):
+    """Across filesystems the move has already removed the legacy copy, so a
+    kill before the marker leaves the only copy unfindable."""
+    fake_home = tmp_path / "userprofile"
+    session = "__LOCALID_kill111"
+    legacy = fake_home / "studio_sandbox" / session
+    legacy.mkdir(parents = True)
+    (legacy / "thesis.txt").write_text("years of work", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    root = Path(tools.sandbox_root())
+    root.mkdir(parents = True, exist_ok = True)
+
+    class Killed(RuntimeError):
+        pass
+
+    real_rename = os.rename
+
+    def killed_rename(src, dst):
+        # Only the staging-to-target step: shutil.move uses rename to get there.
+        if tools._STAGING_SUFFIX in str(dst):
+            return real_rename(src, dst)
+        raise Killed("the process went away here")
+
+    monkeypatch.setattr(os, "rename", killed_rename)
+    with pytest.raises(Killed):
+        tools._staged_move(str(legacy), str(root / session), session)
+    monkeypatch.undo()
+
+    staged = [p for p in root.iterdir() if tools._STAGING_SUFFIX in p.name]
+    assert staged, "the tree vanished"
+    assert tools._marker_owner(str(staged[0])) == tools._sandbox_name(session)
+
+
+def test_a_delete_finds_the_folder_this_run_made(tmp_path, monkeypatch):
+    """A tool can remove the marker, and after that neither name resolves to the
+    directory: the delete left it behind without even saying it kept anything."""
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "__LOCALID_cache11"
+    (root / tools._sandbox_name(session)).mkdir()  # the user's, so we fall back
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    (workdir / tools._SANDBOX_MARKER).unlink()
+
+    assert tools.session_sandbox_has_files(session) is True  # this run made it
+    assert tools.remove_session_sandbox(session, delete_files = True) is True
+    assert not workdir.exists(), "the folder was left behind with nobody able to reach it"
+
+
+def test_a_chat_moved_out_of_a_project_survives_its_deletion():
+    """The transaction decides membership, and an earlier listing would have
+    stopped that chat's generation and deleted the files it wrote."""
+    import inspect
+
+    from routes import chat_history
+
+    route = inspect.getsource(chat_history.delete_project)
+    assert "list_chat_threads(project_id" not in route
+    assert 'member_ids = list(project.get("memberIds") or [])' in route
+    assert route.index("delete_chat_project(") < route.index("member_ids = list(")
+
+
+def test_the_client_reads_the_file_line_only_from_the_sandbox_tools():
+    """An MCP tool or a fetched page ending in that line is content, and the
+    card it produced pointed at a file nobody wrote."""
+    src = Path(__file__).resolve().parents[2] / "frontend/src"
+
+    files = (src / "components/assistant-ui/sandbox-files.ts").read_text(encoding = "utf-8")
+    assert "SANDBOX_FILE_TOOLS" in files
+    assert '"python", "terminal"' in files
+
+    adapter = (src / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
+    guarded = adapter[adapter.index("const rawEvent = (toolEvent.result as string)"):]
+    guarded = guarded[:guarded.index("const imgMarker")]
+    assert "SANDBOX_FILE_TOOLS.has(" in guarded
+    assert guarded.index("SANDBOX_FILE_TOOLS.has(") < guarded.index("extractCreatedFiles(")
 
 
 if __name__ == "__main__":

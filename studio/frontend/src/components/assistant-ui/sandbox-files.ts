@@ -9,6 +9,9 @@ export type SandboxFile = {
 
 const FILES_MARKER = "\n__FILES__:";
 
+/** The tools that emit the file envelope. Nothing else's output is an envelope. */
+export const SANDBOX_FILE_TOOLS = new Set(["python", "terminal"]);
+
 function isSandboxFile(entry: unknown): entry is SandboxFile {
   if (typeof entry !== "object" || entry === null) return false;
   const { name, size } = entry as { name?: unknown; size?: unknown };
