@@ -3624,7 +3624,10 @@ class ModelConfig:
                     variant_filenames = [v.filename for v in variants]
                     best = _pick_best_gguf(variant_filenames)
                     if best:
-                        variant = _extract_quant_label(best)
+                        # The SAME identity the lister advertised for that file. Converting the
+                        # winner back to a bare label handed the load a name several checkpoints
+                        # answer to, and it then resolved whichever sorted first.
+                        variant = _qualified_variant_name(best, _extract_quant_label(best))
                     else:
                         variant = "Q4_K_M"  # Fallback — llama-server's own default
 

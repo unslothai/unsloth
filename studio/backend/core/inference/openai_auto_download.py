@@ -689,10 +689,10 @@ async def _admit_and_start(
         )
 
     expected_bytes = variants[variant]
-    from hub.utils.gguf_plan import build_gguf_variant_plans
+    from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
 
-    plan = build_gguf_variant_plans(list(getattr(info, "siblings", None) or [])).get(
-        variant.lower()
+    plan = plan_for_variant(
+        build_gguf_variant_plans(list(getattr(info, "siblings", None) or [])), variant
     )
     if require_vision and not (plan and plan.mmproj_filenames):
         _release(active)

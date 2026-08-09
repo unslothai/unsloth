@@ -175,6 +175,36 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     return plans
 
 
+def plan_for_variant(
+    plans: dict[str, GgufVariantPlan], variant: str
+) -> Optional[GgufVariantPlan]:
+    """The plan for *variant*, accepting a bare quant when exactly one plan carries it.
+
+    A repo that files every variant under one shared container (``weights/model-Q4_K_M.gguf``)
+    qualifies every key, because the key is a pure function of the path and cannot know that the
+    directory disambiguates nothing. Every stored pin and every explicit ``repo:Q4_K_M`` then
+    missed the plan map and the worker exited with "No GGUF shards matching variant".
+
+    Resolved at LOOKUP rather than by aliasing the map, so the key stays a pure function of the
+    path -- the remote listing and a partial cache scan have to agree on it -- and the advertised
+    rows stay one per checkpoint. Only when the bare name is UNAMBIGUOUS: a repo that really does
+    hold several checkpoints at one quant gets no fallback, because there the bare name genuinely
+    does not name one of them.
+    """
+    wanted = (variant or "").strip().lower()
+    if not wanted:
+        return None
+    exact = plans.get(wanted)
+    if exact is not None:
+        return exact
+    matches = [
+        key
+        for key in plans
+        if "/" in key and extract_quant_label(key.rsplit("/", 1)[-1]).lower() == wanted
+    ]
+    return plans[matches[0]] if len(matches) == 1 else None
+
+
 def _one_shard_family(main_files: Sequence[ExpectedFile]) -> tuple[ExpectedFile, ...]:
     """Narrow a variant's weight files to the single shard family a load would read.
 

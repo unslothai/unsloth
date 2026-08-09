@@ -536,3 +536,63 @@ def test_an_unknown_layout_row_keeps_the_label_it_always_had(tmp_path):
 
     variants, _ = list_local_gguf_variants(str(snapshot))
     assert sorted(v.quant for v in variants) == ["MTP", "Q8_0"]
+
+
+def test_a_shared_container_directory_still_answers_its_bare_quant():
+    """A repo that files every variant under one container (``weights/model-Q4_K_M.gguf``)
+    qualifies every key, because the key is a pure function of the path and cannot know the
+    directory disambiguates nothing. Every stored pin and every explicit repo:Q4_K_M then missed
+    the plan map, and the worker exited with 'No GGUF shards matching variant'."""
+    from types import SimpleNamespace
+
+    from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
+
+    siblings = [
+        SimpleNamespace(rfilename = f"weights/model-{q}.gguf", size = 10, lfs = None)
+        for q in ("Q4_K_M", "Q6_K")
+    ]
+    plans = build_gguf_variant_plans(siblings)
+    # The rows are still one per checkpoint, keyed on the path.
+    assert set(plans) == {"weights/model-q4_k_m", "weights/model-q6_k"}
+    # ... and the bare pin still resolves, because it names exactly one of them.
+    assert plan_for_variant(plans, "Q4_K_M") is plans["weights/model-q4_k_m"]
+    assert plan_for_variant(plans, "q6_k") is plans["weights/model-q6_k"]
+    assert plan_for_variant(plans, "weights/model-q6_k") is plans["weights/model-q6_k"]
+    assert plan_for_variant(plans, "Q8_0") is None
+    assert plan_for_variant(plans, "") is None
+
+
+def test_an_ambiguous_bare_quant_gets_no_fallback():
+    """Where a repo genuinely holds several checkpoints at one quant, the bare name does not name
+    one of them, and guessing is the collapse this PR exists to undo."""
+    from types import SimpleNamespace
+
+    from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
+
+    siblings = [
+        SimpleNamespace(rfilename = path, size = 10, lfs = None)
+        for path in (
+            "distilled/ltx-2.3-22b-distilled-Q6_K.gguf",
+            "distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K.gguf",
+        )
+    ]
+    plans = build_gguf_variant_plans(siblings)
+    assert len(plans) == 2
+    assert plan_for_variant(plans, "Q6_K") is None
+    # The exact key still resolves, which is what the advertised row asks for.
+    assert plan_for_variant(plans, "distilled/ltx-2.3-22b-distilled-q6_k") is not None
+
+
+def test_a_bare_local_id_keeps_the_checkpoint_a_plain_load_takes():
+    """A plain local load resolves through non-recursive detect_gguf_model and always takes the
+    repo root; the /v1 index ranks on the key text and would hand a bare id an equally good
+    ``distilled/...`` row that sorts earlier. One id, two answers, different weights."""
+    from core.inference.openai_auto_download import preferred_quant
+
+    quants = (
+        "Q6_K",
+        "distilled/ltx-2.3-22b-distilled-Q6_K",
+        "distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K",
+    )
+    unqualified = tuple(q for q in quants if "/" not in q)
+    assert preferred_quant(unqualified) == "Q6_K"
