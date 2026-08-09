@@ -810,11 +810,16 @@ class TestRetryBackoffRespectsTheDeadline:
 class TestWorkflowOrdering:
     """The scan must not disclose bundles for a release that cannot be published."""
 
-    def _publish_step_list(self):
+    def _jobs(self):
         yaml = pytest.importorskip("yaml")
         workflow = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
-        data = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
-        return data["jobs"]["publish-release"]["steps"]
+        return yaml.safe_load(workflow.read_text(encoding = "utf-8"))["jobs"]
+
+    def _publish_step_list(self):
+        return self._jobs()["publish-release"]["steps"]
+
+    def _scan_steps(self):
+        return [step.get("name") for step in self._jobs()["virustotal-scan"]["steps"]]
 
     def _publish_steps(self):
         return [step.get("name") for step in self._publish_step_list()]
@@ -823,17 +828,18 @@ class TestWorkflowOrdering:
         return {step.get("name"): step for step in self._publish_step_list()}
 
     def test_scan_runs_after_the_release_is_validated(self):
-        names = self._publish_steps()
-        assert names.index("Validate versioned release state") < names.index(
-            "VirusTotal pre-flight scan"
-        )
+        # The scan is its own job downstream of publish-release, so everything
+        # publish-release validates is already settled before it starts.
+        assert "publish-release" in self._jobs()["virustotal-scan"]["needs"]
+        assert "Validate versioned release state" in self._publish_steps()
 
-    def test_release_creation_is_deferred_until_after_the_scan(self):
-        # `gh release create` without `--draft` publishes at once, so creating a
-        # new release before the scan would expose an empty release for its
-        # duration, and leave it empty for good if the run were cancelled.
+    def test_release_creation_is_deferred_until_the_assets_are_ready(self):
+        # `gh release create` without `--draft` publishes at once, so the release
+        # is created only once its assets are in hand, and never left empty.
         names = self._publish_steps()
-        assert names.index("VirusTotal pre-flight scan") < names.index("Create versioned release")
+        assert names.index("Download signed release assets") < names.index(
+            "Create versioned release"
+        )
         assert names.index("Create versioned release") < names.index(
             "Publish versioned release assets"
         )
@@ -868,13 +874,13 @@ class TestWorkflowOrdering:
             == "steps.versioned_release_state.outputs.create == 'true'"
         )
 
-    def test_scan_runs_before_the_assets_are_published(self):
-        names = self._publish_steps()
-        assert names.index("VirusTotal pre-flight scan") < names.index(
-            "Publish versioned release assets"
-        )
+    def test_the_scan_reads_the_assets_that_were_published(self):
+        # The scan job holds no build of its own, so it has to pull the same
+        # artifacts publish-release released rather than rebuild them.
+        names = self._scan_steps()
+        assert names.index("Download published assets") < names.index("VirusTotal scan")
 
     def test_the_scan_script_is_checked_out_first(self):
-        # publish-release otherwise has no source tree, so the script would be missing.
-        names = self._publish_steps()
-        assert names.index("Check out the scan script") < names.index("VirusTotal pre-flight scan")
+        # virustotal-scan otherwise has no source tree, so the script would be missing.
+        names = self._scan_steps()
+        assert names.index("Check out the scan script") < names.index("VirusTotal scan")

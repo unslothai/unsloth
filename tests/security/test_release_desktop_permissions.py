@@ -48,11 +48,19 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert any(
         step.get("uses", "").startswith("actions/download-artifact@") for step in publish["steps"]
     )
-    assert "build" in publish["needs"]
 
-    # The guard moved into a validation step that runs ahead of the VirusTotal
-    # scan; creating a missing release is deferred to a separate step so a
-    # non-draft release is never published empty for the length of the scan.
+    # publish-release starts alongside the build matrix rather than after it, so
+    # the hand-off is an explicit wait step that has to precede the download.
+    publish_names = [step.get("name") for step in publish["steps"]]
+    download_index = next(
+        index
+        for index, step in enumerate(publish["steps"])
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    )
+    assert publish_names.index("Wait for the build matrix") < download_index
+
+    # The guard lives in a validation step; creating a missing release is deferred
+    # to a separate step so a non-draft release is never published empty.
     release_step = next(
         step for step in publish["steps"] if step.get("name") == "Validate versioned release state"
     )
