@@ -7781,6 +7781,4 @@ def test_the_pre_cast_companion_scale_matches_the_load_level_plan(fake_runtime, 
         lambda fam, *, te_quant_mode, target: 0.5 if te_quant_mode == "fp8" else 1.0,
     )
     candidate = types.SimpleNamespace(companions_mib = 10_400, text_encoders_mib = 10_000)
-    assert (
-        DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8") == 5_400
-    )
+    assert DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8") == 5_400

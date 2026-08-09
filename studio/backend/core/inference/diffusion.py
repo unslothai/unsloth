@@ -3767,9 +3767,7 @@ class DiffusionBackend:
         try:
             from .diffusion_te_prequant import te_prequant_budget_scale
 
-            scale = te_prequant_budget_scale(
-                fam, te_quant_mode = text_encoder_quant, target = target
-            )
+            scale = te_prequant_budget_scale(fam, te_quant_mode = text_encoder_quant, target = target)
             encoders = int(getattr(candidate, "text_encoders_mib", 0) or 0)
             if scale == 1.0 or encoders <= 0:
                 return int(companions)
