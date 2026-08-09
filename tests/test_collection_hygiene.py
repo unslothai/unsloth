@@ -86,7 +86,7 @@ def test_raw_text_does_not_leave_its_datasets_mock_in_sys_modules():
         text = True,
         check = False,
     )
-    assert "DATASETS_OK" in result.stdout, (
-        f"exit {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+    assert (
+        "DATASETS_OK" in result.stdout
+    ), f"exit {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "DATASETS_OK datasets." in result.stdout, result.stdout

@@ -197,7 +197,11 @@ class _FakeApi:
     def __init__(self, error):
         self.error = error
 
-    def model_info(self, model_id, expand = None):
+    def model_info(
+        self,
+        model_id,
+        expand = None,
+    ):
         if self.error is not None:
             raise self.error
         return object()
