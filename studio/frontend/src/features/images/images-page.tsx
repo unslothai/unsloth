@@ -1313,6 +1313,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // denoise that is running RIGHT NOW, so a multi-run request (count > 1) would start its next run
   // straight after; this breaks the loop as well. Cleared when the run settles.
   const cancelRequested = useRef(false);
+  // True when the Stop POST itself failed, so the backend never heard it. The latch above still
+  // stops the remaining runs, but the run in flight keeps going, and an error it then raises is a
+  // real failure rather than the user's own Stop coming back.
+  const cancelFailed = useRef(false);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
@@ -2566,6 +2570,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setGenStep(null);
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
+    cancelFailed.current = false;
     // Poll the backend's per-step progress across the whole run so the bar tracks live denoising steps. A named poll body
     // (guarded against overlap) also serves the visibilitychange listener, so a throttled tab catches up when visible.
     let pollInFlight = false;
@@ -2675,7 +2680,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const msg = err instanceof Error ? err.message : "Image generation failed";
       // The user's own Stop comes back as the backend's cancelled sentinel (409). Not an error,
       // so do not toast it. Same treatment the video page gives its Cancel.
-      if (shouldReportGenerateError({ message: msg, stopRequested: cancelRequested.current }))
+      // Only a Stop the backend actually received explains an error away. When the cancel POST
+      // never landed, the generation was not stopped, so whatever it raised is a real failure and
+      // has to be reported rather than read as "the user stopped it".
+      if (
+        shouldReportGenerateError({
+          message: msg,
+          stopRequested: cancelRequested.current && !cancelFailed.current,
+        })
+      )
         toast.error(msg);
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
@@ -2697,9 +2710,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     cancelRequested.current = true;
     try {
       await cancelDiffusionGeneration();
+      cancelFailed.current = false;
     } catch {
-      // The generation may have already finished, or the request never landed. Either way the
-      // latch stops the remaining runs and the run's own finally settles the UI.
+      // The request never landed, so the denoise in flight keeps running. The latch still stops
+      // the remaining runs, but the click cannot be treated as handled: say so, and stop it
+      // explaining away an error the run raises later.
+      cancelFailed.current = true;
+      toast.error("Could not reach the server to stop this generation; it is still running");
     }
   }, []);
 

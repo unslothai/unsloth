@@ -1447,3 +1447,30 @@ def test_generate_reports_the_build_the_recipe_persists():
     assert out["offload_policy"] == b.status()["offload_policy"]
     assert out["transformer_quant"] is None and out["text_encoder_quant"] is None
     assert out["memory_mode"] is None
+
+
+def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(monkeypatch):
+    # /images/generate/cancel resolves through the engine router, so the native backend owes the
+    # same answer as the diffusers one: the final check and the deregistration are one critical
+    # section under the lock cancel_generate takes, and no Stop can be answered true for a run that
+    # then returns its images.
+    b = _loaded_backend()
+    seen: list[bool] = []
+    real_oneshot = b._generate_oneshot
+
+    def _oneshot(*args, **kwargs):
+        out = real_oneshot(*args, **kwargs)
+        # Still mid-generate, so a Stop here is genuine and must be honoured.
+        assert b.cancel_generate() is True
+        return out
+
+    monkeypatch.setattr(b, "_generate_oneshot", _oneshot)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+
+    # And once a run completes, the event is gone before the result is handed back.
+    b2 = _loaded_backend()
+    out = b2.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    assert out["images"]
+    seen.append(b2.cancel_generate())
+    assert seen == [False]

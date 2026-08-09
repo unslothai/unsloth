@@ -1152,8 +1152,17 @@ class SdCppDiffusionBackend:
                         lora_resolved = lora_resolved,
                         cancel = cancel,
                     )
-                if cancel.is_set():
-                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                # Check and deregister under _lock, the lock cancel_generate takes, so the two
+                # cannot interleave: a cancel that saw this event registered ran strictly before
+                # the check and the run unwinds as cancelled, and one arriving after finds nothing
+                # to set and answers false. Same critical section as DiffusionBackend.generate;
+                # /images/generate/cancel resolves through the engine router, so a native host has
+                # to give the same answer. The finally repeats the clear for every other exit.
+                with self._lock:
+                    if cancel.is_set():
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                    if self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
                 # ``seeds`` is the per-image seed (image i used seed+i) for the route to persist.
                 return {
                     "images": images,

@@ -66,3 +66,19 @@ test("a real failure is still reported", () => {
     true,
   );
 });
+
+test("a Stop the server never received does not explain away a real failure", () => {
+  // handleCancelGenerate passes stopRequested only when the cancel POST landed. If it threw, the
+  // denoise in flight was never told to stop, so an OOM it raises afterwards is a real failure
+  // the user has to see rather than the silence a genuine Stop earns.
+  const stopRequested = true;
+  const cancelFailed = true;
+  assert.equal(
+    shouldReportGenerateError({
+      message:
+        "The device ran out of memory. Try a smaller size, fewer steps, or a smaller batch.",
+      stopRequested: stopRequested && !cancelFailed,
+    }),
+    true,
+  );
+});
