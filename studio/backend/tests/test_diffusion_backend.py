@@ -5016,6 +5016,8 @@ def test_dense_transformer_cached_survives_an_unreadable_cache(fake_runtime, mon
         )
         is False
     )
+
+
 def test_status_names_the_gguf_quant_that_actually_ran(fake_runtime, tmp_path):
     # The reported bug: picking a GGUF at Q8_0 showed "BF16" in the loaded models row, because
     # dtype is the pipeline COMPUTE dtype and reads bf16 for every CUDA load. gguf_variant is
@@ -7352,6 +7354,8 @@ def test_the_cache_probe_sees_a_moved_cache_root():
 
     src = inspect.getsource(cache_holds_files)
     assert "other_root = True" in src
+
+
 # ── generate cancellation (issue #8187) ──────────────────────────────────────
 #
 # The denoise loop already honoured the per-generation cancel event, but only unload() and a
