@@ -53,6 +53,10 @@ import type { TrainingSeriesPoint } from "@/features/training";
 // eslint-disable-next-line no-restricted-imports -- matches images-page.tsx's token access
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { cn } from "@/lib/utils";
+import {
+  DEFAULT_UPLOAD_LIMIT_BYTES,
+  loadUploadLimitSettings,
+} from "@/features/settings/api/upload-limit";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 
@@ -76,7 +80,7 @@ import { DatasetLabelingGrid, LabelingGridToggle } from "./dataset-labeling-grid
 import {
   DATASET_FILE_ACCEPT,
   DATASET_IMAGE_EXTS,
-  DATASET_UPLOAD_CHUNK,
+  chunkDatasetUpload,
   filesFromDataTransfer,
   metadataKeyedOnSubfolders,
   selectDatasetFiles,
@@ -768,14 +772,19 @@ export function DiffusionTrainPanel({
       const misKeyed = await metadataKeyedOnSubfolders(files);
       setUploading(true);
       try {
-        // the endpoint accumulates into the same folder, so a tree past the multipart part cap
-        // goes up in slices rather than being refused outright.
-        let res = await uploadDiffusionDataset(name, files.slice(0, DATASET_UPLOAD_CHUNK));
+        // the endpoint accumulates into the same folder, so a tree past the multipart part or
+        // byte cap goes up in slices rather than being refused outright.
+        const limit = await loadUploadLimitSettings().catch(() => null);
+        const chunks = chunkDatasetUpload(
+          files,
+          limit?.maxUploadSizeBytes ?? DEFAULT_UPLOAD_LIMIT_BYTES,
+        );
+        let res = await uploadDiffusionDataset(name, chunks[0]);
         let sent = res.uploaded;
         let stopped: string | null = null;
-        for (let at = DATASET_UPLOAD_CHUNK; at < files.length; at += DATASET_UPLOAD_CHUNK) {
+        for (const chunk of chunks.slice(1)) {
           try {
-            res = await uploadDiffusionDataset(name, files.slice(at, at + DATASET_UPLOAD_CHUNK));
+            res = await uploadDiffusionDataset(name, chunk);
             sent += res.uploaded;
           } catch (e) {
             stopped = e instanceof Error ? e.message : "upload failed";

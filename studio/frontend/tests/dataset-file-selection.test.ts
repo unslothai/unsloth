@@ -8,10 +8,16 @@ import test from "node:test";
 import {
   DATASET_IMAGE_EXTS,
   DATASET_TEXT_EXTS,
+  chunkDatasetUpload,
   filesFromDataTransfer,
   metadataKeyedOnSubfolders,
   selectDatasetFiles,
 } from "../src/features/images/train/dataset-files.ts";
+
+/** a picked file of a given byte size, for the chunking tests. */
+function sized(name: string, bytes: number): File {
+  return new File([new Uint8Array(bytes)], name);
+}
 
 /** a picked file; `path` stands in for the webkitRelativePath a folder pick carries. */
 function picked(name: string, path?: string): File {
@@ -101,6 +107,15 @@ test("folds case on the stem rule, which training.py applies whatever the filesy
   const result = selectDatasetFiles([picked("Cat.png"), picked("cat.jpg")]);
 
   assert.deepEqual(result.collisions, [{ kind: "stem", first: "Cat.png", second: "cat.jpg" }]);
+});
+
+test("clashes an extension-case pair of one stem spelling, as _shares_sidecar does", () => {
+  // cat.png and cat.PNG share the exact stem, so both resolve to cat.txt and the backend
+  // rejects them on every filesystem. Cat.png and cat.PNG differ in stem case and are exempt.
+  assert.deepEqual(selectDatasetFiles([picked("cat.png"), picked("cat.PNG")]).collisions, [
+    { kind: "stem", first: "cat.png", second: "cat.PNG" },
+  ]);
+  assert.deepEqual(selectDatasetFiles([picked("Cat.png"), picked("cat.PNG")]).collisions, []);
 });
 
 test("keeps a dotfile named in the file dialog, where the user chose it deliberately", () => {
@@ -209,6 +224,34 @@ test("gives dropped files their folder path, so a collision names both sides", a
   ]);
 });
 
+test("keeps casefold-equal names in one request, which the backend can only compare there", () => {
+  const files = [
+    ...Array.from({ length: 499 }, (_, i) => sized(`img_${i}.png`, 1)),
+    sized("Cat.png", 1),
+    sized("cat.png", 1),
+  ];
+  const chunks = chunkDatasetUpload(files, 1024 * 1024 * 1024);
+
+  // a plain 500-file slice would put Cat.png and cat.png in separate repeat uploads, where the
+  // second silently replaces the first on a case-insensitive dataset folder.
+  const holding = chunks.filter((c) => c.some((f) => f.name.toLowerCase() === "cat.png"));
+  assert.equal(holding.length, 1);
+  assert.equal(holding[0].filter((f) => f.name.toLowerCase() === "cat.png").length, 2);
+  for (const chunk of chunks) assert.ok(chunk.length <= 500 + 1);
+});
+
+test("splits on the byte cap too, not only the part count", () => {
+  const mb = 1024 * 1024;
+  const files = Array.from({ length: 300 }, (_, i) => sized(`img_${i}.png`, 2 * mb));
+  const chunks = chunkDatasetUpload(files, 500 * mb);
+
+  assert.ok(chunks.length > 1, "600MB under the part cap must still be split");
+  for (const chunk of chunks) {
+    assert.ok(chunk.reduce((n, f) => n + f.size, 0) <= 500 * mb);
+  }
+  assert.equal(chunks.flat().length, 300);
+});
+
 test("flags metadata keyed on a subfolder, which flattening would silently unmatch", async () => {
   const meta = new File(
     ['{"file_name": "images/001.png", "text": "a cat"}\n{"file_name": "images/002.png"}\n'],
@@ -218,6 +261,10 @@ test("flags metadata keyed on a subfolder, which flattening would silently unmat
 
   const flat = new File(['{"file_name": "001.png", "text": "a cat"}\n'], "metadata.jsonl");
   assert.equal(await metadataKeyedOnSubfolders([flat]), null);
+
+  // metadata written on windows keys rows with a backslash
+  const win = new File(['{"file_name": "images\\\\001.png"}\n'], "metadata.jsonl");
+  assert.equal(await metadataKeyedOnSubfolders([win]), "metadata.jsonl");
 });
 
 test("refuses a partly read folder instead of uploading it as complete", async () => {

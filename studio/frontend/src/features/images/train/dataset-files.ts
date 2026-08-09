@@ -12,6 +12,36 @@ const ACCEPTED = new Set([...DATASET_IMAGE_EXTS, ...DATASET_TEXT_EXTS]);
 // selection is sent in slices; the endpoint accumulates repeat uploads into the same folder.
 export const DATASET_UPLOAD_CHUNK = 500;
 
+/** slice `files` so no request exceeds the part cap or `maxBytes`, keeping casefold-equal
+ *  names together: a repeat upload replaces a same-name destination, and the backend can only
+ *  compare names inside one request. */
+export function chunkDatasetUpload(files: File[], maxBytes: number): File[][] {
+  const groups = new Map<string, File[]>();
+  for (const file of files) {
+    const key = file.name.toLowerCase();
+    const group = groups.get(key);
+    if (group) group.push(file);
+    else groups.set(key, [file]);
+  }
+  const chunks: File[][] = [];
+  let current: File[] = [];
+  let bytes = 0;
+  for (const group of groups.values()) {
+    const groupBytes = group.reduce((sum, f) => sum + f.size, 0);
+    const overCount = current.length + group.length > DATASET_UPLOAD_CHUNK;
+    const overBytes = current.length > 0 && bytes + groupBytes > maxBytes;
+    if (current.length > 0 && (overCount || overBytes)) {
+      chunks.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(...group);
+    bytes += groupBytes;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
 /** the first metadata file whose captions are keyed on a subfolder path, or null.
  *
  *  a folder pick flattens the tree to basenames, so rows keyed "images/001.png" stop matching
@@ -37,7 +67,9 @@ export async function metadataKeyedOnSubfolders(files: File[]): Promise<string |
       if (!row || typeof row !== "object") continue;
       const record = row as Record<string, unknown>;
       const key = record.file_name ?? record.image ?? record.file;
-      if (typeof key === "string" && key.includes("/")) return file.name;
+      if (typeof key === "string" && (key.includes("/") || key.includes("\\"))) {
+        return file.name;
+      }
     }
   }
   return null;
@@ -87,7 +119,7 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
   const files: File[] = [];
   const collisions: DatasetCollision[] = [];
   const seen = new Map<string, string>();
-  const imageStems = new Map<string, { name: string; path: string }>();
+  const imageStems = new Map<string, { name: string; stem: string; path: string }>();
   let imageCount = 0;
   let captionCount = 0;
   let skipped = 0;
@@ -109,17 +141,20 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
     }
     const isImage = DATASET_IMAGE_EXTS.includes(ext);
     // two images sharing a stem resolve to one <stem>.txt caption, which the backend refuses;
-    // it casefolds the stem whatever the filesystem does, but exempts case-variants of one name.
-    const stem = isImage
-      ? file.name.slice(0, file.name.length - ext.length).toLowerCase()
-      : null;
+    // _shares_sidecar clashes when the stems match exactly, or when the full names differ once
+    // casefolded, so only a pure extension-case pair of one stem spelling is exempt.
+    const stem = isImage ? file.name.slice(0, file.name.length - ext.length) : null;
     if (stem !== null) {
-      const clash = imageStems.get(stem);
-      if (clash !== undefined && clash.name.toLowerCase() !== file.name.toLowerCase()) {
+      const key = stem.toLowerCase();
+      const clash = imageStems.get(key);
+      if (
+        clash !== undefined &&
+        (clash.stem === stem || clash.name.toLowerCase() !== file.name.toLowerCase())
+      ) {
         collisions.push({ kind: "stem", first: clash.path, second: path });
         continue;
       }
-      if (clash === undefined) imageStems.set(stem, { name: file.name, path });
+      if (clash === undefined) imageStems.set(key, { name: file.name, stem, path });
     }
     seen.set(file.name, path);
     files.push(file);
