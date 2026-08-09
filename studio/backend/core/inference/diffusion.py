@@ -1142,14 +1142,17 @@ class DiffusionBackend:
                     for repo in dict.fromkeys(repo for repo in (fetch_repo, base_repo) if repo)
                 ):
                     return False
-                if _auto_gguf_dense_download_reason(
-                    fam,
-                    target,
-                    mode,
-                    base_repo = base_repo,
-                    prequant_path = kwargs.get("transformer_prequant_path"),
-                    fetch_repo = fetch_repo,
-                ) is not None:
+                if (
+                    _auto_gguf_dense_download_reason(
+                        fam,
+                        target,
+                        mode,
+                        base_repo = base_repo,
+                        prequant_path = kwargs.get("transformer_prequant_path"),
+                        fetch_repo = fetch_repo,
+                    )
+                    is not None
+                ):
                     return False
             # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
             candidate = resolve_dense_quant_candidate(

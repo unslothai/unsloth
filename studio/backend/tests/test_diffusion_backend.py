@@ -6049,9 +6049,7 @@ def test_qwen_auto_does_not_restage_cached_upstream_dense_weights_under_the_mirr
         "transformer/diffusion_pytorch_model.safetensors.index.json",
         *shard_paths,
     ]
-    _fake_hub_cache(
-        monkeypatch, live, base_repo, cache_files, revision = revision, ref = revision
-    )
+    _fake_hub_cache(monkeypatch, live, base_repo, cache_files, revision = revision, ref = revision)
     index = (
         live
         / "models--Qwen--Qwen-Image-Edit-2511"
