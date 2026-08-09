@@ -35,6 +35,7 @@ import {
   isChatThreadDeleted,
   markChatThreadsDeleted,
 } from "./chat-thread-tombstones";
+import { KeyedWriteQueue } from "./keyed-write-queue";
 
 // Thread ids that belong to a temporary/incognito session. A thread is
 // tagged once, at creation (ensureThreadRecord, when the toggle is on), and
@@ -78,7 +79,7 @@ let legacyChatImportGeneration = 0;
 // Every row write and delete for a thread runs on that thread's queue. Ordering is then a property
 // of the queue rather than of whether a caller remembered to wait: a delete enqueued after a
 // create cannot overtake it, and a create enqueued later cannot slip past a delete.
-const threadWriteQueues = new Map<string, Promise<unknown>>();
+const threadWriteQueue = new KeyedWriteQueue();
 
 // Creators whose last write failed. assistant-ui caches a resolved initialize(), so it never asks
 // for the row again, and without this every later write to that thread would keep 404ing.
@@ -98,24 +99,12 @@ export function enqueueStoredChatThreadWrite<T>(
   threadId: string,
   write: () => Promise<T>,
 ): Promise<T> {
-  const tail = threadWriteQueues.get(threadId) ?? Promise.resolve();
-  const result = tail.then(write, write);
-  const queued = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  threadWriteQueues.set(threadId, queued);
-  queued.then(() => {
-    if (threadWriteQueues.get(threadId) === queued) {
-      threadWriteQueues.delete(threadId);
-    }
-  });
-  return result;
+  return threadWriteQueue.enqueue([threadId], write);
 }
 
 /** Wait, bounded, for the writes queued for this thread so far. Their outcome is the caller's. */
 export function awaitStoredChatThreadWrites(threadId: string): Promise<void> {
-  const tail = threadWriteQueues.get(threadId);
+  const tail = threadWriteQueue.get(threadId);
   return tail ? settleWithin(tail, THREAD_WRITE_WAIT_MS) : Promise.resolve();
 }
 
@@ -595,7 +584,7 @@ async function retryFailedThreadRecord(
   threadId: string,
 ): Promise<ThreadRecord | undefined> {
   const createRecord = failedThreadRecordByThreadId.get(threadId);
-  const queued = threadWriteQueues.has(threadId);
+  const queued = threadWriteQueue.has(threadId);
   if (createRecord) {
     failedThreadRecordByThreadId.delete(threadId);
     // Through the tracker, not a raw enqueue: a retry that fails again has to re-register the
@@ -877,17 +866,17 @@ export async function deleteStoredChatThreads(
   // Incognito threads were never stored, so there's nothing to delete --
   // drop them to skip the no-op backend DELETE (and the history-refresh
   // event it would fire) when the active temporary chat is closed.
-  const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
-  if (ids.length === 0) return;
-  // Queued per thread rather than raced against the writes: FIFO puts each delete after any row
-  // write already in flight, so one landing late cannot resurrect the thread.
-  const deletes = ids.map((id) =>
-    enqueueStoredChatThreadWrite(id, () => deleteChatThreads([id])),
+  const ids = Array.from(
+    new Set(idsToDelete.filter((id) => !isThreadIncognito(id))),
   );
-  // Bounded, since a wedged write ahead of a delete only delays it and the delete stays queued.
-  // Keep early failures even when a sibling is still queued at the deadline. Callers use the
-  // rejection to roll back their optimistic tombstone and surface a toast.
-  await waitForSettledBatch(deletes, THREAD_WRITE_WAIT_MS);
+  if (ids.length === 0) return;
+  // Register one operation on every thread before it runs. It waits for all prior writes, blocks
+  // later writes on every id, and preserves the backend's all-or-nothing transaction for compare
+  // chats instead of issuing one request per thread.
+  const deletion = threadWriteQueue.enqueue(ids, () => deleteChatThreads(ids));
+  // Bounded, since a wedged write ahead of the delete only delays it and the delete stays queued.
+  // A failure observed before the deadline still reaches the caller's rollback and toast.
+  await waitForSettledBatch([deletion], THREAD_WRITE_WAIT_MS);
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();
@@ -909,15 +898,32 @@ export interface ClearStoredChatsResult {
 }
 
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
-  // Retire creators captured before this clear, then queue a delete behind every write still in
-  // flight. Nothing is awaited: FIFO already guarantees each delete runs after the write it sits
-  // behind, so a row landing late cannot outlive the clear without stalling it either.
+  // Retire creators captured before this clear, then queue one atomic cleanup behind every write
+  // still in flight.
   threadRecordClearEpoch += 1;
   failedThreadRecordByThreadId.clear();
-  for (const threadId of [...threadWriteQueues.keys()]) {
-    enqueueStoredChatThreadWrite(threadId, () =>
-      deleteChatThreads([threadId]),
-    ).catch(() => undefined);
+  const pendingThreadIds = threadWriteQueue.keys();
+  if (pendingThreadIds.length > 0) {
+    const queuedCleanup = threadWriteQueue.enqueue(pendingThreadIds, () =>
+      deleteChatThreads(pendingThreadIds),
+    );
+    let queuedCleanupSettled = false;
+    const observeQueuedCleanup = queuedCleanup.then(
+      () => {
+        queuedCleanupSettled = true;
+      },
+      () => {
+        queuedCleanupSettled = true;
+      },
+    );
+    // A request can commit on the backend while its client promise remains wedged forever. Keep
+    // the ordered cleanup above, but issue one independent batch delete after the bounded wait so
+    // that lost response cannot let the row reappear after clear-all returns.
+    settleWithin(observeQueuedCleanup, THREAD_WRITE_WAIT_MS).then(() => {
+      if (!queuedCleanupSettled) {
+        return deleteChatThreads(pendingThreadIds).catch(() => undefined);
+      }
+    });
   }
   // Clear both sides independently and report each outcome so the toast
   // can distinguish full vs partial success.
@@ -933,7 +939,7 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
   );
   const legacyThreadIds = new Set(legacyThreads.map((thread) => thread.id));
   const allThreadIds = Array.from(
-    new Set([...backendThreadIds, ...legacyThreadIds]),
+    new Set([...backendThreadIds, ...legacyThreadIds, ...pendingThreadIds]),
   );
 
   const result: ClearStoredChatsResult = {

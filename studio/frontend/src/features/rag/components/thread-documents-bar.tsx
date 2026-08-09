@@ -108,15 +108,15 @@ export function ThreadDocumentsBar({
   // start two threads.
   const initPromiseRef = useRef<Promise<string | null> | null>(null);
   const ensureThreadId = useCallback((): Promise<string | null> => {
-    if (effectiveThreadId) return Promise.resolve(effectiveThreadId);
     if (initPromiseRef.current) return initPromiseRef.current;
     const clearGeneration = chatHistoryClearBoundary.capture();
-    const pending = aui
-      .threadListItem()
-      .initialize()
+    const initialized = effectiveThreadId
+      ? Promise.resolve({ remoteId: effectiveThreadId })
+      : aui.threadListItem().initialize();
+    const pending = initialized
       .then(async ({ remoteId }) => {
-        // A cached initialize() still resolves after a failed row write, so confirm the row these
-        // documents index against rather than only waiting for a write in flight.
+        // Both a cached initialize() and activeThreadId can expose the id while its row write is
+        // still pending. Confirm the row these documents index against on every upload path.
         const needsStoredRow = !isThreadIncognito(remoteId);
         if (needsStoredRow && !(await ensureStoredChatThread(remoteId))) {
           throw new Error(`Thread ${remoteId} was not persisted`);
