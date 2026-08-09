@@ -390,6 +390,10 @@ export const zhCN = {
         revokeError: "无法撤销预览链接",
       },
       remoteAccess: {
+        methodLabel: "远程访问方式",
+        methodDescription: "选择每次连接时远程地址是否变化。",
+        temporaryMethod: "临时",
+        customMethod: "自定义",
         sectionTitle:"远程访问",
         description:"通过 Cloudflare 从其他设备使用 Unsloth 及其 API。",
         unavailable:"不可用",

@@ -421,6 +421,10 @@ export const fr = {
         revokeError: "Impossible de révoquer les liens d'aperçu",
       },
       remoteAccess: {
+        methodLabel: "Méthode d’accès à distance",
+        methodDescription: "Choisissez si l’adresse distante change à chaque connexion.",
+        temporaryMethod: "Temporaire",
+        customMethod: "Personnalisé",
         sectionTitle:"Accès distant",
         description:"Utilisez Unsloth et ses API depuis d'autres appareils via Cloudflare.",
         unavailable:"Indisponible",

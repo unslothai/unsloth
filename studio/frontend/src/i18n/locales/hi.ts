@@ -409,6 +409,10 @@ export const hi = {
         revokeError: "पूर्वावलोकन लिंक रद्द नहीं किए जा सके",
       },
       remoteAccess: {
+        methodLabel: "रिमोट एक्सेस का तरीका",
+        methodDescription: "चुनें कि हर कनेक्शन पर रिमोट पता बदले या नहीं।",
+        temporaryMethod: "अस्थायी",
+        customMethod: "कस्टम",
         sectionTitle:"रिमोट ऐक्सेस",
         description:"Cloudflare के ज़रिए दूसरे डिवाइस से Unsloth और उसके API इस्तेमाल करें।",
         unavailable:"उपलब्ध नहीं",

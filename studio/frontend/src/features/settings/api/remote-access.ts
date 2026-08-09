@@ -4,7 +4,6 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
-  type RemoteAccessKind,
   type RemoteAccessStatus,
   normalizeRemoteAccessStatus,
 } from "./remote-access-state";
@@ -21,21 +20,30 @@ const post = (path: string): RemoteAccessRequest => ({
   init: { method: "POST" },
 });
 
-export const remoteAccessStartRequest = (
-  kind?: RemoteAccessKind,
-): RemoteAccessRequest => post(kind ? `/start?kind=${kind}` : "/start");
+export const remoteAccessStartRequest = (): RemoteAccessRequest =>
+  post("/start");
 
 export const remoteAccessStopRequest = (): RemoteAccessRequest => post("/stop");
 
 export const remoteAccessAutoStartRequest = (
   enabled: boolean,
-  kind?: RemoteAccessKind,
 ): RemoteAccessRequest => ({
   path: "/auto-start",
   init: {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(kind ? { enabled, kind } : { enabled }),
+    body: JSON.stringify({ enabled }),
+  },
+});
+
+export const remoteAccessMethodRequest = (
+  method: RemoteAccessStatus["method"],
+): RemoteAccessRequest => ({
+  path: "/method",
+  init: {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method }),
   },
 });
 
@@ -61,11 +69,12 @@ export function createRemoteAccessOperations<Result>(
 ) {
   return {
     load: () => dispatch(),
-    start: (kind?: RemoteAccessKind) =>
-      dispatch(remoteAccessStartRequest(kind)),
+    start: () => dispatch(remoteAccessStartRequest()),
     stop: () => dispatch(remoteAccessStopRequest()),
-    updateAutoStart: (enabled: boolean, kind?: RemoteAccessKind) =>
-      dispatch(remoteAccessAutoStartRequest(enabled, kind)),
+    updateAutoStart: (enabled: boolean) =>
+      dispatch(remoteAccessAutoStartRequest(enabled)),
+    updateMethod: (method: RemoteAccessStatus["method"]) =>
+      dispatch(remoteAccessMethodRequest(method)),
     provision: (hostname: string) =>
       dispatch(remoteAccessProvisionRequest(hostname)),
     cancel: () => dispatch(remoteAccessCancelRequest()),
@@ -96,6 +105,7 @@ export const startRemoteAccess = remoteAccessOperations.start;
 export const stopRemoteAccess = remoteAccessOperations.stop;
 export const updateRemoteAccessAutoStart =
   remoteAccessOperations.updateAutoStart;
+export const updateRemoteAccessMethod = remoteAccessOperations.updateMethod;
 export const provisionCustomRemoteAccess = remoteAccessOperations.provision;
 export const cancelCustomRemoteAccess = remoteAccessOperations.cancel;
 export const teardownCustomRemoteAccess = remoteAccessOperations.teardown;

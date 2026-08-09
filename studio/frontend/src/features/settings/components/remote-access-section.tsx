@@ -32,6 +32,7 @@ import {
   stopRemoteAccess,
   teardownCustomRemoteAccess,
   updateRemoteAccessAutoStart,
+  updateRemoteAccessMethod,
 } from "@/features/settings/api/remote-access";
 import {
   type RemoteAccessBlockMessageId,
@@ -41,12 +42,12 @@ import {
   remoteAccessAutoStartKind,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessageId,
-  remoteAccessDnsConflictHostname,
-  remoteAccessHeaderActionDisabled,
   remoteAccessCustomActionsDisabled,
   remoteAccessCustomOperationInFlight,
   remoteAccessCustomReadiness,
   remoteAccessCustomTeardownMessageId,
+  remoteAccessDnsConflictHostname,
+  remoteAccessHeaderActionDisabled,
   remoteAccessOperationRevision,
   remoteAccessPollDelay,
   remoteAccessPreferredKind,
@@ -69,6 +70,7 @@ import {
   QrCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { ChangePasswordDialog } from "./change-password-dialog";
@@ -349,6 +351,64 @@ function RemotePasswordRow({
     >
       <ChangePasswordDialog initial={status.passwordPending} onDone={onDone} />
     </SettingsRow>
+  );
+}
+
+function RemoteAccessMethodControl({
+  method,
+  disabled,
+  onChange,
+}: {
+  method: RemoteAccessStatus["method"];
+  disabled: boolean;
+  onChange: (method: RemoteAccessStatus["method"]) => void;
+}) {
+  const t = useT();
+  const reduced = useReducedMotion();
+  const options = [
+    {
+      value: "temporary" as const,
+      label: t("settings.general.remoteAccess.temporaryMethod"),
+    },
+    {
+      value: "custom" as const,
+      label: t("settings.general.remoteAccess.customMethod"),
+    },
+  ];
+  return (
+    <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
+      {options.map((option) => {
+        const active = option.value === method;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            aria-pressed={active}
+            disabled={disabled}
+            className={cn(
+              "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors disabled:opacity-50",
+              active
+                ? "text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {active ? (
+              <motion.span
+                layoutId="remote-access-method-pill"
+                className="hub-tab-toggle-pill absolute inset-0 rounded-full"
+                transition={
+                  reduced
+                    ? { duration: 0 }
+                    : { type: "spring", stiffness: 500, damping: 35, mass: 0.5 }
+                }
+              />
+            ) : null}
+            <span className="relative z-10">{option.label}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -791,7 +851,7 @@ export function RemoteAccessSection() {
 
   const start = () => {
     const kind = remoteAccessPreferredKind(status);
-    return perform(`start:${kind}`, () => startRemoteAccess(kind));
+    return perform(`start:${kind}`, startRemoteAccess);
   };
   const stop = () =>
     perform(
@@ -803,9 +863,9 @@ export function RemoteAccessSection() {
       ),
     );
   const setAutoStart = (enabled: boolean) =>
-    perform("auto", () =>
-      updateRemoteAccessAutoStart(enabled, remoteAccessAutoStartKind(status)),
-    );
+    perform("auto", () => updateRemoteAccessAutoStart(enabled));
+  const setMethod = (method: RemoteAccessStatus["method"]) =>
+    perform("method", () => updateRemoteAccessMethod(method));
   const provision = () =>
     perform("provision", () => provisionCustomRemoteAccess(hostname.trim()));
   const cancel = () => perform("cancel", cancelCustomRemoteAccess);
@@ -903,6 +963,21 @@ export function RemoteAccessSection() {
       ) : null}
 
       <div className="border-t border-border/60 px-4 py-1">
+        <SettingsRow
+          label={t("settings.general.remoteAccess.methodLabel")}
+          description={t("settings.general.remoteAccess.methodDescription")}
+        >
+          <RemoteAccessMethodControl
+            method={status?.method ?? "temporary"}
+            disabled={
+              busy !== null ||
+              remoteAccessAutoStartReadOnly(status) ||
+              remoteAccessCustomOperationInFlight(status)
+            }
+            onChange={setMethod}
+          />
+        </SettingsRow>
+
         <RemotePasswordRow status={status} onDone={refreshStatus} />
 
         <SettingsRow

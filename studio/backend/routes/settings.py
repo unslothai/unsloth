@@ -96,6 +96,7 @@ from utils.remote_access_settings import (
     provision_custom_remote_access,
     remote_access_status,
     set_remote_access_auto_start,
+    set_remote_access_method,
     start_remote_access,
     stop_remote_access,
     teardown_custom_remote_access,
@@ -1606,7 +1607,10 @@ class PreviewSharingResponse(BaseModel):
 
 class RemoteAccessAutoStartPayload(BaseModel):
     enabled: StrictBool
-    kind: Literal["temporary", "custom"] = "temporary"
+
+
+class RemoteAccessMethodPayload(BaseModel):
+    method: Literal["temporary", "custom"]
 
 
 class CustomTunnelProvisionPayload(BaseModel):
@@ -1618,6 +1622,7 @@ class RemoteAccessResponse(BaseModel):
     url: Optional[str] = None
     error: Optional[str] = None
     auto_start: bool
+    method: Literal["temporary", "custom"] = "temporary"
     default_auto_start: bool = DEFAULT_REMOTE_ACCESS_AUTO_START
     available: bool
     managed_by: Optional[Literal["launch", "settings", "colab"]] = None
@@ -1636,6 +1641,7 @@ class RemoteAccessResponse(BaseModel):
         "unconfigured"
     )
     custom_hostname: Optional[str] = None
+    custom_tunnel_name: Optional[str] = None
     custom_runnable: bool = False
     login_url: Optional[str] = None
     custom_error: Optional[str] = None
@@ -1668,10 +1674,9 @@ def start_remote_access_route(
     request: Request,
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
-    kind: Optional[Literal["temporary", "custom"]] = None,
 ) -> RemoteAccessResponse:
     try:
-        response = RemoteAccessResponse(**start_remote_access(request.app.state, kind = kind))
+        response = RemoteAccessResponse(**start_remote_access(request.app.state))
     except RuntimeError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     logger.info("settings.remote_access_start_requested subject=%s", current_subject)
@@ -1710,11 +1715,29 @@ def update_remote_access_auto_start(
 ) -> RemoteAccessResponse:
     if bool(getattr(request.app.state, "remote_access_is_colab", False)):
         raise HTTPException(status_code = 409, detail = "colab")
-    set_remote_access_auto_start(payload.enabled, payload.kind)
+    set_remote_access_auto_start(payload.enabled)
     logger.info(
         "settings.remote_access_auto_start_updated subject=%s enabled=%s",
         current_subject,
         payload.enabled,
+    )
+    return _remote_access_response(request)
+
+
+@router.put("/remote-access/method", response_model = RemoteAccessResponse)
+def update_remote_access_method(
+    request: Request,
+    payload: RemoteAccessMethodPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    if bool(getattr(request.app.state, "remote_access_is_colab", False)):
+        raise HTTPException(status_code = 409, detail = "colab")
+    set_remote_access_method(payload.method)
+    logger.info(
+        "settings.remote_access_method_updated subject=%s method=%s",
+        current_subject,
+        payload.method,
     )
     return _remote_access_response(request)
 

@@ -410,6 +410,10 @@ export const ptBR = {
         revokeError: "Não foi possível revogar os links de pré-visualização",
       },
       remoteAccess: {
+        methodLabel: "Método de acesso remoto",
+        methodDescription: "Escolha se o endereço remoto muda a cada conexão.",
+        temporaryMethod: "Temporário",
+        customMethod: "Personalizado",
         sectionTitle:"Acesso remoto",
         description:"Use o Unsloth e suas APIs em outros dispositivos por meio da Cloudflare.",
         unavailable:"Indisponível",

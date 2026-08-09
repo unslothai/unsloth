@@ -419,6 +419,10 @@ export const es = {
         revokeError: "No se pudieron revocar los enlaces de vista previa",
       },
       remoteAccess: {
+        methodLabel: "Método de acceso remoto",
+        methodDescription: "Elige si la dirección remota cambia con cada conexión.",
+        temporaryMethod: "Temporal",
+        customMethod: "Personalizado",
         sectionTitle:"Acceso remoto",
         description:"Usa Unsloth y sus API desde otros dispositivos mediante Cloudflare.",
         unavailable:"No disponible",

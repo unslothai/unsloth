@@ -402,6 +402,10 @@ export const en = {
       remoteAccess: {
         sectionTitle:"Remote access",
         description:"Use Unsloth and its APIs from other devices through Cloudflare.",
+        methodLabel:"Remote access method",
+        methodDescription:"Choose whether your remote address changes each time.",
+        temporaryMethod:"Temporary",
+        customMethod:"Custom",
         unavailable:"Unavailable",
         stateOff:"Off",
         stateStarting:"Starting",

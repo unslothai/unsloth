@@ -2,34 +2,25 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
+
+register("./helpers/settings-api-resolver.mjs", import.meta.url);
 
 // remote-access-section.tsx pulls in the router, motion and hugeicons, so it
 // cannot be imported here. These drive the pure state helpers it consumes.
 import {
   type ApiRemoteAccessStatus,
-  type RemoteAccessRequestAxis,
   normalizeRemoteAccessStatus,
   remoteAccessAutoStartKind,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
   remoteAccessBlockMessageId,
-  remoteAccessDnsConflictHostname,
   remoteAccessHeaderActionDisabled,
-  remoteAccessCustomActionsDisabled,
-  remoteAccessCustomOperationInFlight,
-  remoteAccessCustomReadiness,
-  remoteAccessCustomTeardownMessageId,
-  remoteAccessOperationRevision,
   remoteAccessPollDelay,
   remoteAccessPreferredKind,
-  remoteAccessRequestMessageId,
   remoteAccessSelfStopPoll,
-  remoteAccessShouldClearRequestError,
   remoteAccessStopDisconnectsOrigin,
-  remoteAccessTeardownNeedsLocalOrigin,
-  remoteAccessUsableUrl,
-  remoteAccessUsesStopAction,
   remoteApiOrigin,
 } from "../src/features/settings/api/remote-access-state.ts";
 
@@ -65,6 +56,7 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       error: null,
       // biome-ignore lint/style/useNamingConvention: API schema
       auto_start: true,
+      method: "custom",
       // biome-ignore lint/style/useNamingConvention: API schema
       default_auto_start: true,
       available: true,
@@ -115,6 +107,7 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     url: TUNNEL,
     error: null,
     autoStart: true,
+    method: "custom",
     defaultAutoStart: true,
     available: true,
     managedBy: "settings",
@@ -148,6 +141,7 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
 test("normalize defaults the optional fields an older backend may omit", () => {
   const s = normalizeRemoteAccessStatus(apiStatus());
   assert.equal(s.url, null);
+  assert.equal(s.method, "temporary");
   assert.equal(s.error, null);
   assert.equal(s.managedBy, null);
   assert.equal(s.blockReason, null);
@@ -208,6 +202,7 @@ test("poll delay is fast while a lifecycle or custom transition is in flight", (
   for (const customState of ["provisioning", "tearing_down"] as const) {
     assert.equal(
       remoteAccessPollDelay(
+        // biome-ignore lint/style/useNamingConvention: API schema
         normalizeRemoteAccessStatus(apiStatus({ custom_state: customState })),
       ),
       1000,
@@ -215,13 +210,49 @@ test("poll delay is fast while a lifecycle or custom transition is in flight", (
   }
 });
 
+test("the saved method is authoritative even when Custom is configured", () => {
+  const temporary = normalizeRemoteAccessStatus(
+    // biome-ignore lint/style/useNamingConvention: API schema
+    apiStatus({ method: "temporary", custom_runnable: true }),
+  );
+  const custom = normalizeRemoteAccessStatus(
+    // biome-ignore lint/style/useNamingConvention: API schema
+    apiStatus({ method: "custom", custom_runnable: false, can_start: false }),
+  );
+  assert.equal(remoteAccessPreferredKind(temporary), "temporary");
+  assert.equal(remoteAccessAutoStartKind(temporary), "temporary");
+  assert.equal(remoteAccessPreferredKind(custom), "custom");
+  assert.equal(remoteAccessAutoStartKind(custom), "custom");
+  assert.equal(remoteAccessHeaderActionDisabled(custom, false), true);
+});
 
-
-
-
-
-
-
+test("start and auto-start requests leave method selection to the saved setting", async () => {
+  const {
+    remoteAccessAutoStartRequest,
+    remoteAccessMethodRequest,
+    remoteAccessStartRequest,
+  } = await import("../src/features/settings/api/remote-access.ts");
+  assert.deepEqual(remoteAccessStartRequest(), {
+    path: "/start",
+    init: { method: "POST" },
+  });
+  assert.deepEqual(remoteAccessAutoStartRequest(true), {
+    path: "/auto-start",
+    init: {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: '{"enabled":true}',
+    },
+  });
+  assert.deepEqual(remoteAccessMethodRequest("custom"), {
+    path: "/method",
+    init: {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: '{"method":"custom"}',
+    },
+  });
+});
 
 // ── remoteApiOrigin ──
 
@@ -307,8 +338,6 @@ test("stop-disconnects does not treat a path prefix as the same origin", () => {
   );
 });
 
-
-
 test("every block reason the backend can emit has a message", () => {
   // Mirrors utils/remote_access_settings.py's block_reason chain.
   const reasons = [
@@ -364,7 +393,11 @@ test("the legacy block-message export preserves its English guidance", () => {
     ],
     ["launch_managed", false, "This tunnel is managed by the launch command."],
     ["colab_managed", false, "This tunnel is managed by the Colab runtime."],
-    ["colab", false, "Remote access settings are managed by the Colab runtime."],
+    [
+      "colab",
+      false,
+      "Remote access settings are managed by the Colab runtime.",
+    ],
   ] as const;
   for (const [reason, desktop, message] of cases) {
     assert.equal(remoteAccessBlockMessage(reason, desktop), message);
@@ -377,8 +410,6 @@ test("an unknown or absent reason yields no message", () => {
   assert.equal(remoteAccessBlockMessageId("something_new", false), null);
   assert.equal(remoteAccessBlockMessageId("", true), null);
 });
-
-
 
 // ── remoteAccessSelfStopPoll ──
 

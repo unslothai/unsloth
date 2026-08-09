@@ -20,6 +20,7 @@ export type RemoteAccessOperation =
   | "start"
   | "stop"
   | "auto"
+  | "method"
   | "provision"
   | "cancel"
   | "teardown";
@@ -50,6 +51,7 @@ export type RemoteAccessStatus = {
   url: string | null;
   error: string | null;
   autoStart: boolean;
+  method: RemoteAccessKind;
   defaultAutoStart: boolean;
   available: boolean;
   managedBy: RemoteAccessOwner;
@@ -81,6 +83,7 @@ export type ApiRemoteAccessStatus = {
   error?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   auto_start: boolean;
+  method?: RemoteAccessKind;
   // biome-ignore lint/style/useNamingConvention: API schema
   default_auto_start: boolean;
   available: boolean;
@@ -129,11 +132,13 @@ export type ApiRemoteAccessStatus = {
 export function normalizeRemoteAccessStatus(
   status: ApiRemoteAccessStatus,
 ): RemoteAccessStatus {
+  const { method = "temporary" } = status;
   return {
     state: status.state,
     url: status.url ?? null,
     error: status.error ?? null,
     autoStart: status.auto_start,
+    method,
     defaultAutoStart: status.default_auto_start,
     available: status.available,
     managedBy: status.managed_by ?? null,
@@ -182,7 +187,7 @@ export function remoteAccessCustomOperationInFlight(
 export function remoteAccessPreferredKind(
   status: RemoteAccessStatus | null,
 ): RemoteAccessKind {
-  return status?.customRunnable ? "custom" : "temporary";
+  return status?.method ?? "temporary";
 }
 
 export function remoteAccessUsableUrl(
@@ -226,6 +231,9 @@ export function remoteAccessOperationRevision(
       status.autoStartKind,
       status.autoStartBlockReason,
     ]);
+  }
+  if (operation === "method") {
+    return status.method;
   }
   if (
     operation === "provision" ||
@@ -321,7 +329,7 @@ export function remoteAccessCustomActionsDisabled(
 export function remoteAccessAutoStartKind(
   status: RemoteAccessStatus | null,
 ): RemoteAccessKind {
-  return status?.autoStartKind ?? remoteAccessPreferredKind(status);
+  return status?.method ?? "temporary";
 }
 
 export function remoteApiOrigin(

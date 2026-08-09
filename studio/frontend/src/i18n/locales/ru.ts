@@ -408,6 +408,10 @@ export const ru = {
         revokeError: "Не удалось отозвать ссылки предпросмотра",
       },
       remoteAccess: {
+        methodLabel: "Способ удалённого доступа",
+        methodDescription: "Выберите, должен ли удалённый адрес меняться при каждом подключении.",
+        temporaryMethod: "Временный",
+        customMethod: "Свой",
         sectionTitle:"Удалённый доступ",
         description:"Используйте Unsloth и его API с других устройств через Cloudflare.",
         unavailable:"Недоступно",

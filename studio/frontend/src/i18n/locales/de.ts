@@ -423,6 +423,10 @@ export const de = {
         revokeError: "Vorschaulinks konnten nicht widerrufen werden",
       },
       remoteAccess: {
+        methodLabel: "Methode für Fernzugriff",
+        methodDescription: "Wähle, ob sich die Remote-Adresse bei jeder Verbindung ändert.",
+        temporaryMethod: "Temporär",
+        customMethod: "Benutzerdefiniert",
         sectionTitle:"Remotezugriff",
         description:"Unsloth und seine APIs über Cloudflare von anderen Geräten verwenden.",
         unavailable:"Nicht verfügbar",

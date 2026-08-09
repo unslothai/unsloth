@@ -1203,7 +1203,12 @@ def start_studio_tunnel(
                 _set_failed(generation, managed_by, port, "cloudflared did not produce a URL")
                 return None
             if registered:
-                _set_failed(generation, managed_by, port, "Cloudflare URL was not reachable")
+                error = (
+                    "custom_hostname_unreachable"
+                    if kind == "custom"
+                    else "Cloudflare URL was not reachable"
+                )
+                _set_failed(generation, managed_by, port, error)
                 return None
         _set_failed(generation, managed_by, port, "cloudflared did not register a connection")
         return None
@@ -1274,6 +1279,10 @@ _NAME_RE = re.compile(r"^unsloth-[A-Z0-9]{6}$")
 # cloudflared exposes these failure classes only in command output.
 _CREATE_COLLISION = "tunnel with name already exists"
 _ROUTE_CONFLICT = "already exists"
+_ROUTE_AUTHORIZATION_FAILURES = (
+    "failed to find zone",
+    "zone could not be found",
+)
 _LOGIN_REFUSED = "which login would overwrite"
 _LOGIN_REFUSED_RE = re.compile(r"existing certificate at (.+?) which login would overwrite")
 _TUNNEL_ABSENT = "non-deleted tunnel named"
@@ -1838,8 +1847,13 @@ def _route_hostname(record: dict, binary: str, name: str, hostname: str) -> None
     if result.returncode == 0:
         return
     text = _output(result)
-    # Only a confirmed DNS conflict proves route creation changed nothing.
-    if _ROUTE_CONFLICT not in text.lower():
+    lowered = text.lower()
+    if any(marker in lowered for marker in _ROUTE_AUTHORIZATION_FAILURES):
+        record.pop("route_attempted", None)
+        _write(_RECORD, record)
+        raise ProvisioningError("hostname_not_authorized", hostname)
+    # An unclassified failure may have created the route before returning.
+    if _ROUTE_CONFLICT not in lowered:
         raise ProvisioningError("route_failed", _error_summary(text))
     record.pop("route_attempted", None)
     _write(_RECORD, record)
@@ -1921,7 +1935,10 @@ def _settle(
     if teardown:
         if record.get("hostname"):
             _set_orphan(str(record["hostname"]), stranded = True)
-        if record.get("tunnel_deleted") is not True:
+        if (
+            record.get("cloudflare_cleanup") != "manual"
+            and record.get("tunnel_deleted") is not True
+        ):
             _abandon(binary, record.get("tunnel_names") or ())
         if clear_auto_start is not None:
             clear_auto_start()
@@ -1995,14 +2012,8 @@ def provision_custom_tunnel(
     return read_identity()
 
 
-def teardown_custom_tunnel(
-    *,
-    binary: Optional[str],
-    on_login_url: Optional[Callable[[str], None]] = None,
-    cancelled: Optional[Callable[[], bool]] = None,
-    clear_auto_start: Optional[Callable[[], object]] = None,
-) -> bool:
-    """Delete the configured tunnel when authorized and clear local access."""
+def teardown_custom_tunnel(*, clear_auto_start: Optional[Callable[[], object]] = None) -> bool:
+    """Clear this install's custom-tunnel credentials for manual Cloudflare removal."""
     reservation = reserve_connector()
     if reservation is None:
         raise ProvisioningError(
@@ -2018,29 +2029,13 @@ def teardown_custom_tunnel(
             credentials = identity.get("credentials")
             record = {
                 "operation": "teardown",
+                "cloudflare_cleanup": "manual",
                 "hostname": hostname,
                 "tunnel_names": [name],
                 "credentials": credentials,
             }
             _write(_RECORD, record)
-            deleted = False
-            try:
-                if not binary:
-                    raise ProvisioningError(
-                        "cloudflared_unreachable", "cloudflared is unavailable."
-                    )
-                if origin_cert_path().exists():
-                    raise ProvisioningError("certificate_exists", str(origin_cert_path()))
-                _run_login(record, binary, on_login_url, cancelled)
-                deleted = _delete_tunnel(binary, name)
-                if not deleted:
-                    raise ProvisioningError(
-                        "tunnel_delete_failed", "Cloudflare did not confirm tunnel deletion."
-                    )
-                record["tunnel_deleted"] = True
-                _write(_RECORD, record)
-            finally:
-                _settle(None, clear_auto_start = clear_auto_start)
-            return deleted
+            _settle(None, clear_auto_start = clear_auto_start)
+            return True
     finally:
         reservation.release()

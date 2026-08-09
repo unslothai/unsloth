@@ -16,6 +16,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 REMOTE_ACCESS_AUTO_START_KEY = "remote_access_auto_start"
+REMOTE_ACCESS_METHOD_KEY = "remote_access_method"
 DEFAULT_REMOTE_ACCESS_AUTO_START = False
 REMOTE_ACCESS_KINDS = frozenset({"temporary", "custom"})
 # Longest a Stop waits for a live start worker to claim settings ownership.
@@ -145,26 +146,111 @@ def _auto_start_kind(stored: object) -> str | None:
     return mode if isinstance(mode, str) and mode in REMOTE_ACCESS_KINDS else None
 
 
+def _stored_remote_access_method(stored: dict) -> str:
+    if REMOTE_ACCESS_METHOD_KEY in stored:
+        method = stored[REMOTE_ACCESS_METHOD_KEY]
+        return method if isinstance(method, str) and method in REMOTE_ACCESS_KINDS else "temporary"
+    return _auto_start_kind(stored.get(REMOTE_ACCESS_AUTO_START_KEY)) or "temporary"
+
+
+def _stored_remote_access_preferences(rows) -> dict:
+    stored = {}
+    for row in rows:
+        key = row["key"]
+        stored[key] = None
+        try:
+            stored[key] = json.loads(row["value_json"])
+        except (TypeError, ValueError):
+            pass
+    return stored
+
+
 def get_remote_access_auto_start_kind() -> str | None:
-    """Return the configured auto-start mode, including the legacy boolean form."""
+    method, enabled = _get_remote_access_preferences()
+    return method if enabled else None
+
+
+def _get_remote_access_preferences() -> tuple[str, bool]:
+    conn = None
     try:
-        from storage.studio_db import get_app_setting
-        stored = get_app_setting(REMOTE_ACCESS_AUTO_START_KEY, None)
+        from storage.studio_db import get_connection
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT key, value_json FROM app_settings WHERE key IN (?, ?)",
+            (REMOTE_ACCESS_METHOD_KEY, REMOTE_ACCESS_AUTO_START_KEY),
+        ).fetchall()
     except Exception:
-        return None
-    return _auto_start_kind(stored)
+        return "temporary", False
+    finally:
+        if conn is not None:
+            conn.close()
+    stored = _stored_remote_access_preferences(rows)
+    method = _stored_remote_access_method(stored)
+    enabled = _auto_start_kind(stored.get(REMOTE_ACCESS_AUTO_START_KEY)) is not None
+    return method, enabled
 
 
-def set_remote_access_auto_start(enabled: bool, kind: str = "temporary") -> bool:
-    if not isinstance(enabled, bool):
-        raise ValueError("Remote access auto-start must be true or false.")
+def get_remote_access_method() -> str:
+    return _get_remote_access_preferences()[0]
+
+
+def _set_remote_access_preferences(
+    *, method: str | None = None, auto_start: bool | None = None
+) -> tuple[str, bool]:
+    from storage.studio_db import get_connection
+
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            "SELECT key, value_json FROM app_settings WHERE key IN (?, ?)",
+            (REMOTE_ACCESS_METHOD_KEY, REMOTE_ACCESS_AUTO_START_KEY),
+        ).fetchall()
+        stored = _stored_remote_access_preferences(rows)
+        current_method = _stored_remote_access_method(stored)
+        selected_method = method or current_method
+        enabled = (
+            _auto_start_kind(stored.get(REMOTE_ACCESS_AUTO_START_KEY)) is not None
+            if auto_start is None
+            else auto_start
+        )
+        values = {
+            REMOTE_ACCESS_METHOD_KEY: selected_method,
+            REMOTE_ACCESS_AUTO_START_KEY: {
+                "version": 1,
+                "mode": selected_method if enabled else "disabled",
+            },
+        }
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            [(key, json.dumps(value), now) for key, value in values.items()],
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return selected_method, enabled
+
+
+def set_remote_access_method(kind: str) -> str:
     if kind not in REMOTE_ACCESS_KINDS:
         raise ValueError("Unknown remote access tunnel kind.")
-    from storage.studio_db import upsert_app_settings
+    return _set_remote_access_preferences(method = kind)[0]
 
-    mode = kind if enabled else "disabled"
-    upsert_app_settings({REMOTE_ACCESS_AUTO_START_KEY: {"version": 1, "mode": mode}})
-    return enabled
+
+def set_remote_access_auto_start(enabled: bool) -> bool:
+    if not isinstance(enabled, bool):
+        raise ValueError("Remote access auto-start must be true or false.")
+    return _set_remote_access_preferences(auto_start = enabled)[1]
 
 
 def clear_custom_remote_access_auto_start() -> bool:
@@ -246,6 +332,7 @@ def _custom_status() -> dict:
     return {
         "custom_state": state,
         "custom_hostname": identity.get("hostname") if identity else None,
+        "custom_tunnel_name": identity.get("tunnel_name") if identity else None,
         "custom_runnable": identity_is_runnable(identity),
         "login_url": login_url if running else None,
         "custom_error": failure[0] if failure else None,
@@ -300,7 +387,8 @@ def remote_access_status(app_state) -> dict:
     elif owner in {"launch", "colab"}:
         block_reason = f"{owner}_managed"
 
-    auto_start_kind = get_remote_access_auto_start_kind()
+    method, auto_start = _get_remote_access_preferences()
+    auto_start_kind = method if auto_start else None
     auto_start_block_reason = block_reason
     if (
         auto_start_block_reason is None
@@ -310,7 +398,14 @@ def remote_access_status(app_state) -> dict:
         auto_start_block_reason = "custom_tunnel_not_configured"
 
     controllable = block_reason is None
-    can_start = controllable and not stopping and not stop_pending and state in {"off", "error"}
+    method_ready = method != "custom" or custom["custom_runnable"]
+    can_start = (
+        controllable
+        and method_ready
+        and not stopping
+        and not stop_pending
+        and state in {"off", "error"}
+    )
     can_stop = owner == "settings" and (stop_pending or state in {"starting", "online"})
     error = status["error"]
     if error not in {
@@ -318,6 +413,7 @@ def remote_access_status(app_state) -> dict:
         "cloudflared is unavailable",
         "cloudflared did not produce a URL",
         "Cloudflare URL was not reachable",
+        "custom_hostname_unreachable",
         "cloudflared did not register a connection",
         "cloudflared exited",
         "Custom Cloudflare tunnel is not configured",
@@ -334,6 +430,7 @@ def remote_access_status(app_state) -> dict:
         "url": status["url"],
         "error": error,
         "auto_start": auto_start_kind is not None,
+        "method": method,
         "auto_start_kind": auto_start_kind,
         "auto_start_block_reason": auto_start_block_reason,
         "available": ready and not is_colab and intent != "disabled",
@@ -351,7 +448,7 @@ def remote_access_status(app_state) -> dict:
     }
 
 
-def start_remote_access(app_state, *, kind: str | None = None) -> dict:
+def start_remote_access(app_state) -> dict:
     """Schedule a settings-owned start. Repeated requests are idempotent."""
     global _start_worker, _start_worker_admission, _start_worker_kind
     from cloudflare_tunnel import (
@@ -366,8 +463,7 @@ def start_remote_access(app_state, *, kind: str | None = None) -> dict:
     current = get_studio_tunnel_control_token()
     if current[0] != admission[0]:
         raise RuntimeError("server_lifecycle_changed")
-    if kind is None:
-        kind = "custom" if status.get("custom_runnable") else "temporary"
+    kind = status.get("method") or get_remote_access_method()
     if kind not in REMOTE_ACCESS_KINDS:
         raise RuntimeError("unknown_tunnel_kind")
     if status["managed_by"] == "settings" and status["state"] in {"starting", "online"}:
@@ -375,13 +471,15 @@ def start_remote_access(app_state, *, kind: str | None = None) -> dict:
             return status
         if status["state"] == "starting" and status.get("kind") in REMOTE_ACCESS_KINDS:
             raise RuntimeError("start_kind_conflict")
-    if not status["can_start"]:
-        raise RuntimeError(status["block_reason"] or "operation_in_progress")
+    if status["block_reason"] is not None:
+        raise RuntimeError(status["block_reason"])
     if kind == "custom":
         if status.get("custom_state") in {"provisioning", "tearing_down"}:
             raise RuntimeError("custom_operation_in_progress")
         if not status.get("custom_runnable"):
             raise RuntimeError("custom_tunnel_not_configured")
+    if not status["can_start"]:
+        raise RuntimeError("operation_in_progress")
 
     port = getattr(app_state, "remote_access_port", None)
     if not isinstance(port, int) or port <= 0:
@@ -499,7 +597,7 @@ def maybe_auto_start_remote_access(app_state) -> bool:
     if kind is None:
         return False
     try:
-        start_remote_access(app_state, kind = kind)
+        start_remote_access(app_state)
     except RuntimeError:
         return False
     return True
@@ -599,10 +697,9 @@ def teardown_custom_remote_access(app_state) -> dict:
     if read_identity() is None:
         return remote_access_status(app_state)
     _custom_operation_allowed(app_state)
-    cancel = threading.Event()
 
     def _teardown() -> None:
-        from cloudflare_tunnel import ensure_cloudflared, get_studio_tunnel_status
+        from cloudflare_tunnel import get_studio_tunnel_status
         from cloudflare_tunnel import ProvisioningError, teardown_custom_tunnel
         try:
             clear_custom_remote_access_auto_start()
@@ -623,9 +720,6 @@ def teardown_custom_remote_access(app_state) -> dict:
                         "connector_stop_failed", "The Cloudflare connector could not be stopped."
                     )
             teardown_custom_tunnel(
-                binary = ensure_cloudflared(),
-                on_login_url = _custom_login_callback,
-                cancelled = cancel.is_set,
                 clear_auto_start = clear_custom_remote_access_auto_start,
             )
         except ProvisioningError as exc:
@@ -652,7 +746,7 @@ def teardown_custom_remote_access(app_state) -> dict:
         _custom_operation = "tearing_down"
         _custom_login_url = None
         _custom_error = None
-        _custom_cancel = cancel
+        _custom_cancel = None
         _custom_worker = threading.Thread(target = _teardown, daemon = True)
         _custom_worker.start()
     return remote_access_status(app_state)

@@ -398,6 +398,10 @@ export const ja = {
         revokeError: "プレビューリンクを失効させることができませんでした",
       },
       remoteAccess: {
+        methodLabel: "リモートアクセス方法",
+        methodDescription: "接続するたびにリモートアドレスを変更するか選びます。",
+        temporaryMethod: "一時",
+        customMethod: "カスタム",
         sectionTitle:"リモートアクセス",
         description:"Cloudflare 経由で他のデバイスから Unsloth と API を使用します。",
         unavailable:"利用不可",

@@ -406,6 +406,10 @@ export const ar = {
         revokeError: "تعذّر إلغاء روابط المعاينة",
       },
       remoteAccess: {
+        methodLabel: "طريقة الوصول عن بُعد",
+        methodDescription: "اختر ما إذا كان عنوان الوصول يتغير مع كل اتصال.",
+        temporaryMethod: "مؤقت",
+        customMethod: "مخصص",
         sectionTitle:"الوصول عن بُعد",
         description:"استخدم Unsloth وواجهات API من أجهزة أخرى عبر Cloudflare.",
         unavailable:"غير متاح",

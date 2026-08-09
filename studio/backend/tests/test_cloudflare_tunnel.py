@@ -889,6 +889,45 @@ def test_start_studio_tunnel_drops_url_that_is_not_publicly_reachable(monkeypatc
     assert ct._active_tunnel is None
 
 
+def test_custom_start_explains_when_the_registered_hostname_is_unreachable(monkeypatch):
+    class _Reservation:
+        token = "token"
+
+        def release(self):
+            pass
+
+    class _Stub:
+        def __init__(self, _port, _binary, **kwargs):
+            self.url = kwargs["url"]
+
+        def start(self):
+            pass
+
+        def wait_for_ready(self, _timeout):
+            return self.url
+
+        def stop(self):
+            return True
+
+    identity = {
+        "hostname": "studio.example.com",
+        "tunnel_name": "unsloth-AB12CD",
+        "tunnel_id": _TUNNEL_ID,
+        "credentials": "/tmp/credentials.json",
+    }
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "read_identity", lambda: identity)
+    monkeypatch.setattr(ct, "identity_is_runnable", lambda _identity: True)
+    monkeypatch.setattr(ct, "reserve_connector", _Reservation)
+    monkeypatch.setattr(ct, "write_custom_ingress", lambda *_a, **_kw: Path("config.yml"))
+    monkeypatch.setattr(ct, "custom_tunnel_args", lambda *_a: [])
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    monkeypatch.setattr(ct, "verify_public_url", lambda *_a, **_kw: False)
+
+    assert ct.start_studio_tunnel(8080, managed_by = "settings", kind = "custom") is None
+    assert ct.get_studio_tunnel_status()["error"] == "custom_hostname_unreachable"
+
+
 def test_starting_a_tunnel_starts_watching_its_hostname(monkeypatch):
     watched = []
 
@@ -1839,19 +1878,14 @@ def test_a_successful_run_records_the_identity_and_removes_the_certificate(cf):
     assert 999_000 not in process_lifetime._tracked_pids
 
 
-def test_teardown_does_not_delete_a_certificate_replaced_after_proof(cf, monkeypatch):
-    _provision()
-    original_fstat = ct.os.fstat
-
-    def _replace(fd):
-        replacement = _cert(cf).with_suffix(".foreign")
-        replacement.write_text("user-owned", encoding = "utf-8")
-        replacement.replace(_cert(cf))
-        return original_fstat(fd)
-
-    monkeypatch.setattr(ct.os, "fstat", _replace)
-    assert ct.teardown_custom_tunnel(binary = "cloudflared") is True
-    assert _cert(cf).read_text(encoding = "utf-8") == "user-owned"
+def test_teardown_removes_only_local_credentials_for_manual_cloudflare_cleanup(cf):
+    identity = _provision()
+    calls = list(cf.calls)
+    assert ct.teardown_custom_tunnel() is True
+    assert cf.calls == calls
+    assert ct.read_identity() is None
+    assert not Path(identity["credentials"]).exists()
+    assert ct.orphaned_hostnames() == [_HOST]
 
 
 def test_a_dns_conflict_is_refused_and_leaves_nothing_to_clean_up(cf):
@@ -1865,6 +1899,22 @@ def test_a_dns_conflict_is_refused_and_leaves_nothing_to_clean_up(cf):
     assert ct._string_list(ct._ORPHANS) == []
     assert ct._read(ct._RECORD) is None
     assert not (ct.state_root() / f"{_TUNNEL_ID}.json").exists()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Failed to add route: code: 7003, reason: Failed to find zone",
+        "API request failed: zone could not be found",
+    ],
+)
+def test_route_rejects_authorization_for_a_different_domain(cf, message):
+    cf.route_outcome = (1, message)
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert (excinfo.value.code, excinfo.value.detail) == ("hostname_not_authorized", _HOST)
+    assert ct.read_identity() is None
+    assert ct.orphaned_hostnames() == []
 
 
 @pytest.mark.parametrize("cause", [_API_REFUSAL, "Cannot add route: " + "detail " * 50, "", None])

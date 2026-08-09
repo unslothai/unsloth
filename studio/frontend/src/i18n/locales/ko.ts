@@ -403,6 +403,10 @@ export const ko = {
         revokeError: "미리보기 링크를 취소하지 못했습니다",
       },
       remoteAccess: {
+        methodLabel: "원격 액세스 방식",
+        methodDescription: "연결할 때마다 원격 주소를 변경할지 선택하세요.",
+        temporaryMethod: "임시",
+        customMethod: "사용자 지정",
         sectionTitle:"원격 액세스",
         description:"Cloudflare를 통해 다른 기기에서 Unsloth와 API를 사용합니다.",
         unavailable:"사용할 수 없음",

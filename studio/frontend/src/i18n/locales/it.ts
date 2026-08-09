@@ -393,6 +393,10 @@ export const it = {
           "Come Unsloth approva le chiamate agli strumenti della chat (terminale, python, web, MCP) prima che vengano eseguite. La modalità «Full access» disattiva le approvazioni e la sandbox del codice.",
       },
       remoteAccess: {
+        methodLabel: "Metodo di accesso remoto",
+        methodDescription: "Scegli se l’indirizzo remoto cambia a ogni connessione.",
+        temporaryMethod: "Temporaneo",
+        customMethod: "Personalizzato",
         sectionTitle:"Accesso remoto",
         description:"Usa Unsloth e le sue API da altri dispositivi tramite Cloudflare.",
         unavailable:"Non disponibile",
