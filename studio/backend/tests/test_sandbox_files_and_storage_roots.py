@@ -1042,7 +1042,10 @@ def test_a_collision_is_not_a_retryable_failure(tmp_path, monkeypatch):
     tools._workdirs.clear()
     tools._legacy_sandbox_migrated = False
     root = Path(tools.sandbox_root())
-    (root / "__LOCALID_dupe123").mkdir(parents = True)
+    existing = root / "__LOCALID_dupe123"
+    existing.mkdir(parents = True)
+    # Claimed, which is what a session directory the new root made looks like.
+    (existing / tools._SANDBOX_MARKER).write_text("__LOCALID_dupe123", encoding = "utf-8")
 
     tools._migrate_legacy_sandbox(str(root))
     assert tools._legacy_sandbox_migrated is True
@@ -2072,6 +2075,62 @@ def test_a_name_the_download_url_cannot_carry_is_not_advertised():
     assert tools._servable_segment("report.csv")
     assert not tools._servable_segment("bad\udcffname.csv")
     assert not tools._servable_segment("\ud800.txt")
+
+
+def test_a_tool_writing_over_the_marker_does_not_lose_its_files(tmp_path, monkeypatch):
+    """The file sits in a directory the tool can write, so a restart must not
+    send that chat somewhere else and strand what it made."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_clob11"))
+    (workdir / "results.csv").write_text("a,b\n", encoding = "utf-8")
+    (workdir / tools._SANDBOX_MARKER).write_text("Traceback: not an id\n", encoding = "utf-8")
+
+    # What the next launch sees.
+    tools._workdirs.clear()
+    again = Path(tools.get_sandbox_workdir("__LOCALID_clob11"))
+    assert again == workdir, "the chat was sent to a new directory"
+    assert (again / "results.csv").is_file()
+    # And the claim is back, so deletion still works.
+    assert (again / tools._SANDBOX_MARKER).read_text(encoding = "utf-8") == "__LOCALID_clob11"
+    assert Path(tools.resolve_sandbox_workdir("__LOCALID_clob11")) == workdir
+
+
+def test_a_half_finished_migration_is_finished_later(tmp_path, monkeypatch):
+    """A cross-device move copies and then unlinks, so an interruption leaves
+    files on both sides and the destination is not a collision."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_part111"
+    legacy.mkdir(parents = True)
+    (legacy / "left_behind.csv").write_text("rest", encoding = "utf-8")
+    (legacy / "already_there.csv").write_text("older", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    root = Path(tools.sandbox_root())
+    partial = root / "__LOCALID_part111"
+    partial.mkdir(parents = True)
+    # What the interrupted copy got through, and no claim: it never finished.
+    (partial / "already_there.csv").write_text("newer", encoding = "utf-8")
+
+    tools._migrate_legacy_sandbox(str(root))
+
+    assert (partial / "left_behind.csv").read_text(encoding = "utf-8") == "rest"
+    assert (partial / "already_there.csv").read_text(encoding = "utf-8") == "newer"
+    # The one that could not move is still down there for the user.
+    assert (legacy / "already_there.csv").is_file()
+    assert not (legacy / "left_behind.csv").exists()
 
 
 if __name__ == "__main__":

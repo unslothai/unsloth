@@ -7205,12 +7205,18 @@ def _mark_sandbox(workdir: str, session_id: str) -> None:
 
 
 def _marker_owner(workdir: str) -> "str | None":
-    """The id this directory was created for, when it says."""
+    """The id this directory was created for, when it says.
+
+    Anything that is not an id reads as no owner rather than as somebody else's:
+    a tool writing over this file would otherwise send its own chat to a fresh
+    directory on the next launch, leaving its files behind.
+    """
     try:
         with open(os.path.join(workdir, _SANDBOX_MARKER), encoding = "utf-8") as fh:
-            return fh.read(256).strip() or None
-    except OSError:
+            owner = fh.read(256).strip()
+    except (OSError, UnicodeDecodeError):
         return None
+    return owner if owner and _usable_session_id(owner) else None
 
 
 def _session_dir(root: str, session_id: str) -> str:
@@ -7272,6 +7278,11 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
             return _sandbox_fallback(root, "_invalid")
         os.makedirs(workdir, exist_ok = True)
         if _claim_sandbox(workdir, session_id):
+            return workdir
+        # A marker that names nobody is one a tool wrote over. At our own root
+        # nothing else put this directory here, so take it back.
+        if _root_is_ours() and _marker_owner(workdir) is None:
+            _mark_sandbox(workdir, session_id)
             return workdir
         # Someone else got there first, so take a name of our own.
         workdir = _disambiguated_session_dir(root, session_id)
@@ -7341,6 +7352,37 @@ def _migrate_legacy_sandbox(root: str) -> None:
             _legacy_sandbox_migrated = True
 
 
+def _finish_partial_move(source: str, target: str) -> bool:
+    """Move what is left of *source* into *target*. True when nothing remains.
+
+    A cross-device move copies and then unlinks, so an interruption leaves both
+    sides. Anything already at the target wins and its copy stays below, the
+    same rule whole directories follow.
+    """
+    done = True
+    try:
+        names = os.listdir(source)
+    except OSError:
+        return False
+    for name in names:
+        below = os.path.join(source, name)
+        above = os.path.join(target, name)
+        if os.path.exists(above):
+            done = False
+            continue
+        try:
+            shutil.move(below, above)
+        except OSError as error:
+            done = False
+            logger.warning("Could not move sandbox file %s: %s", name, error)
+    if done:
+        try:
+            os.rmdir(source)
+        except OSError:
+            done = False
+    return done
+
+
 def _mark_migrated(workdir: str, session_id: str) -> None:
     """Claim a sandbox moved up from the legacy root.
 
@@ -7368,6 +7410,17 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
             source = os.path.join(legacy, name)
             target = os.path.join(root, name)
             if os.path.exists(target):
+                # Claimed means the move finished, or the new root made this
+                # session itself: a real collision, left for the user to find.
+                # Unclaimed means a move that stopped part way, and the rest of
+                # those files are still down here.
+                if _marker_owner(target) is not None or not os.path.isdir(source):
+                    continue
+                if _finish_partial_move(source, target):
+                    _mark_migrated(target, name)
+                    moved += 1
+                else:
+                    complete = False
                 continue
             try:
                 shutil.move(source, target)
