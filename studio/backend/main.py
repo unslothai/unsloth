@@ -618,7 +618,6 @@ async def lifespan(app: FastAPI):
     # copy can be minutes when the studio home is on another filesystem.
     try:
         from core.inference.tools import migrate_legacy_sandbox_in_background
-
         migrate_legacy_sandbox_in_background()
     except Exception:  # noqa: BLE001
         pass

@@ -7437,6 +7437,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
         logger.warning("Sandbox migration skipped: %s", error)
         return False
 
+
 def _sandbox_fallback(
     root: str,
     name: str,
