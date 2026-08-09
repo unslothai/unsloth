@@ -250,9 +250,15 @@ def test_service_stop_save_flag():
     assert svc.stop(save = False) is True
     assert q.items[-1] == {"save": False}
 
-    # The default (save) path keeps the bare-True wire format.
-    assert svc.stop() is True
-    assert q.items[-1] is True
+    # The default (save) path keeps the bare-True wire format. A SECOND stop on the same job no
+    # longer reaches the child (see test_a_second_stop_does_not_change_what_the_child_was_told),
+    # so this is a fresh one.
+    other = DiffusionTrainingService()
+    other._proc = _AliveProc()
+    other_q = _StopQueue()
+    other._stop_queue = other_q
+    assert other.stop() is True
+    assert other_q.items[-1] is True
 
 
 # ── preparing / warning events + stopped completion messages ──────────────────
@@ -740,3 +746,106 @@ def test_a_checkpoint_makes_the_run_recoverable_before_it_ends(tmp_path, monkeyp
         assert svc_mod._restate_live_job(dict(record))["status"] == "running"
     finally:
         svc_mod._service = None
+
+
+def test_a_failed_checkpoint_write_is_recorded_too(tmp_path, monkeypatch):
+    """The failure is sticky in memory, but only a successful write asked for a record. Studio
+    exiting after one left the last persisted record advertising the OLDER checkpoint as
+    resumable -- the one the service has just decided is stale -- and resuming it rolls the run
+    back past everything after it."""
+    import json as _json
+
+    from core.training import diffusion_training_service as svc_mod
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    monkeypatch.setattr(svc_mod, "_runs_dir", lambda: runs)
+
+    svc = svc_mod.DiffusionTrainingService()
+    svc._state.update(job_id = "b" * 32, output_dir = str(tmp_path / "out"), status = "running")
+    svc._apply_event(
+        {"type": "checkpoint_saved", "checkpoint_path": str(tmp_path / "checkpoint-40"),
+         "step": 40}
+    )
+    svc._persist_interim = False
+
+    svc._apply_event({"type": "checkpoint_failed", "message": "disk full"})
+    assert svc._persist_interim is True
+
+    svc._persist_run_record(interim = True)
+    record = _json.loads((runs / f"{'b' * 32}.json").read_text(encoding = "utf-8"))
+    assert record["checkpoint_write_error"] == "disk full"
+    assert record["can_resume"] is False
+
+
+def test_the_live_job_is_not_offered_as_resumable(tmp_path, monkeypatch):
+    """The interim record is written with an error status, so the resume fields are derived as
+    though the run were over. _UNRESUMABLE_STATUS rejects a running job for a reason: its output
+    directory is being written right now, and a Resume offered there can only race it."""
+    from core.training import diffusion_training_service as svc_mod
+
+    svc = svc_mod.DiffusionTrainingService()
+    svc._state.update(job_id = "c" * 32, status = "running", message = "Training...")
+
+    record = {
+        "job_id": "c" * 32,
+        "status": "error",
+        "can_resume": True,
+        "checkpoint_path": str(tmp_path / "checkpoint-40"),
+    }
+    svc_mod._service = svc
+    try:
+        restated = svc_mod._restate_live_job(dict(record))
+    finally:
+        svc_mod._service = None
+
+    assert restated["status"] == "running"
+    assert restated["can_resume"] is False
+    assert restated["checkpoint_path"] is None
+
+
+def test_one_bad_record_does_not_take_the_history_with_it(tmp_path, monkeypatch):
+    """Every other kind of corruption here is skipped per record. A valid-JSON record with the
+    required job_id and status but a nonnumeric counter reached the refresh and raised out of
+    the listing, so one hand-edited or older file blanked the whole Previous runs panel."""
+    import json as _json
+
+    from core.training import diffusion_training_service as svc_mod
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    monkeypatch.setattr(svc_mod, "_runs_dir", lambda: runs)
+
+    (runs / f"{'d' * 32}.json").write_text(
+        _json.dumps({"job_id": "d" * 32, "status": "completed", "total_steps": "many"}),
+        encoding = "utf-8",
+    )
+    (runs / f"{'e' * 32}.json").write_text(
+        _json.dumps({"job_id": "e" * 32, "status": "completed", "total_steps": 500}),
+        encoding = "utf-8",
+    )
+
+    listed = svc_mod.list_diffusion_runs()
+    assert [r["job_id"] for r in listed] == ["e" * 32]
+    # ...and the detail endpoint answers with the stored record rather than a 500.
+    assert svc_mod.get_diffusion_run("d" * 32)["job_id"] == "d" * 32
+
+
+def test_a_second_stop_does_not_change_what_the_child_was_told(tmp_path):
+    """The child consumes the FIRST signal and acts on it. A later stop-without-saving cannot
+    un-export an adapter it has already written, so honouring it set a parent discard the child
+    never carried out: the run was marked discarded and its checkpoints deleted while the
+    adapter and catalog entry it published stayed on disk."""
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    svc = DiffusionTrainingService()
+    svc._proc = _AliveProc()
+    queue = _StopQueue()
+    svc._stop_queue = queue
+
+    assert svc.stop(save = True) is True
+    assert svc._discard_requested is False
+    # Still "a stop is in flight", but the disposition is whichever one the child actually got.
+    assert svc.stop(save = False) is True
+    assert svc._discard_requested is False
+    assert len(queue.items) == 1

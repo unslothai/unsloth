@@ -208,8 +208,14 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
         if not (isinstance(rec.get("job_id"), str) and isinstance(rec.get("status"), str)):
             continue
         # Resume state comes from the checkpoints on disk NOW, before the config is dropped.
-        _refresh_resume_state(rec)
-        _restate_live_job(rec)
+        # Per record, because the refresh reads counters straight out of the file: one
+        # hand-edited or older record with a nonnumeric total_steps took the whole endpoint
+        # down, where every other kind of corruption here is skipped.
+        try:
+            _refresh_resume_state(rec)
+            _restate_live_job(rec)
+        except Exception:  # noqa: BLE001 -- a record we cannot refresh is still a record
+            continue
         rec.pop("metric_history", None)
         rec.pop("config", None)
         out.append(rec)
@@ -228,8 +234,11 @@ def get_diffusion_run(job_id: str) -> Optional[dict]:
         return None
     if not isinstance(rec, dict):
         return rec
-    _refresh_resume_state(rec)
-    _restate_live_job(rec)
+    try:
+        _refresh_resume_state(rec)
+        _restate_live_job(rec)
+    except Exception:  # noqa: BLE001 -- the stored record beats a 500
+        return rec
     return rec
 
 
@@ -253,6 +262,12 @@ def _restate_live_job(rec: dict) -> dict:
     if rec.get("job_id") == live.get("job_id") and live.get("status") == "running":
         rec["status"] = "running"
         rec["message"] = live.get("message") or ""
+        # And nothing resumable, which is what the interim record's error status made
+        # _refresh_resume_state derive a moment ago. _UNRESUMABLE_STATUS rejects a running job
+        # for a reason: its output directory is being written right now, so the only thing a
+        # Resume action there can do is race the live run and 409.
+        rec["can_resume"] = False
+        rec["checkpoint_path"] = None
     return rec
 
 
@@ -396,6 +411,9 @@ class DiffusionTrainingService:
         self._child_cleared_own = False
         # Set by a checkpoint_saved event, cleared once the pump has written the record.
         self._persist_interim = False
+        # Whether this job has already had a stop signalled. Only the first one reaches the
+        # child, so only the first one may set the parent's disposition.
+        self._stop_signalled = False
         # GPU load admissions in flight (a load between its training guard and its arbiter registration). Same two-sided rule as the dataset mutations.
         self._gpu_admissions = 0
         self._proc: Any = None
@@ -534,6 +552,7 @@ class DiffusionTrainingService:
             self._discard_requested = False
             self._own_checkpoints = []
             self._child_cleared_own = False
+            self._stop_signalled = False
             event_queue = self._ctx.Queue()
             self._stop_queue = self._ctx.Queue()
             self._proc = self._ctx.Process(
@@ -586,11 +605,20 @@ class DiffusionTrainingService:
         with self._lock:
             if self._proc is None or not self._proc.is_alive() or self._stop_queue is None:
                 return False
+            if self._stop_signalled:
+                # The child consumes the FIRST signal and acts on it. A second one cannot
+                # un-save an adapter it has already exported, so honouring a later
+                # stop-without-saving set a parent discard the child never carried out: the
+                # run was marked discarded and its checkpoints deleted while the adapter and
+                # the catalog entry it published stayed on disk. The disposition is whichever
+                # one the child actually got.
+                return True
             try:
                 # Bare True = older wire format; the dict form carries the no-save cancel flag.
                 self._stop_queue.put(True if save else {"save": False})
             except Exception:  # noqa: BLE001
                 return False
+            self._stop_signalled = True
             if not save:
                 # Remembered here so a child that dies before its discarded completion still
                 # blocks the resume the user threw away.
@@ -867,6 +895,12 @@ class DiffusionTrainingService:
                 # Sticky: whatever older bundle is on disk predates the work this run did, so
                 # resuming from it would silently lose steps. Mirrors the MLX resume_blocked flag.
                 s["resume_blocked_reason"] = str(ev.get("message", "checkpoint write failed"))
+                # Persisted for the same reason a successful write is. In memory only, a Studio
+                # exit after this left the last record advertising the OLDER checkpoint as
+                # resumable -- the one this service has just decided is stale -- and resuming it
+                # rolls the run back past everything after it. A later checkpoint_saved clears
+                # the reason and replaces the record.
+                self._persist_interim = True
             elif etype == "progress":
                 # Null any non-finite float so the JSON stays strict-parseable; a missing key keeps the last value.
                 loss = _finite_or_none(ev["loss"]) if "loss" in ev else s["loss"]

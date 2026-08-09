@@ -2905,3 +2905,28 @@ def test_the_resolved_base_precision_is_part_of_the_identity(run_dir):
 
     unknown = dataclasses.replace(fell_back.identity, base_precision_effective = None)
     assert dc.preflight_resume(path, identity = unknown, target_steps = 500)[1] == 4
+
+
+def test_the_ema_decay_is_part_of_the_identity(run_dir):
+    """restore_resume_state loads the old shadow tensors and update count while the trainer
+    builds LoRAEMA from the INCOMING decay, so resuming with a different nonzero decay applies
+    a new coefficient to an average produced under the old one. The exported EMA adapter is a
+    hybrid, and the resume reports success."""
+    import dataclasses
+
+    slow = _Run(run_dir)
+    slow.cfg = dataclasses.replace(slow.cfg, ema_decay = 0.999)
+    slow.identity = dc.identity_for_config(slow.cfg)
+    assert slow.identity.ema_decay == "0.999"
+    path, error = slow.save(4)
+    assert error is None and path is not None
+
+    fast = dc.identity_for_config(dataclasses.replace(slow.cfg, ema_decay = 0.9))
+    with pytest.raises(dc.ResumeError, match = "EMA decay"):
+        dc.preflight_resume(path, identity = fast, target_steps = 500)
+    # Off is a value too, not the same as the request being absent.
+    off = dc.identity_for_config(dataclasses.replace(slow.cfg, ema_decay = 0.0))
+    assert off.ema_decay == "0.0"
+    with pytest.raises(dc.ResumeError, match = "EMA decay"):
+        dc.preflight_resume(path, identity = off, target_steps = 500)
+    assert dc.preflight_resume(path, identity = slow.identity, target_steps = 500)[1] == 4

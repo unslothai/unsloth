@@ -136,6 +136,11 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     # moments were produced against bf16 linears. Resuming that on a host where the conversion
     # succeeds continues those moments against an fp8 base and reports a clean resume.
     ("base_precision_effective", "resolved base precision"),
+    # The EMA coefficient. restore_resume_state loads the old shadow tensors and update count
+    # while the trainer builds LoRAEMA from the INCOMING decay, so every later update applies a
+    # new coefficient to an average produced under the old one and the exported EMA adapter is a
+    # hybrid -- reported as a faithful continuation.
+    ("ema_decay", "EMA decay"),
 )
 # Fields whose value can legitimately be unknown on one side (an uncached Hub repo has no
 # resolvable revision; the start route knows the dataset only after its own discovery pass).
@@ -148,6 +153,7 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "cfg_dropout",
         # Absent only in a manifest written before these were recorded, which reads as
         # "cannot tell" rather than as a mismatch.
+        "ema_decay",
         "flow_shift",
         "weighting_scheme",
         "snr_gamma",
@@ -241,6 +247,9 @@ class CheckpointIdentity:
     gradient_accumulation_steps: Optional[int] = None
     # Text, so 0.0 (clipping disabled) is a value and None stays "not recorded".
     max_grad_norm: Optional[str] = None
+    # Text for the same reason: 0.0 means EMA is off, which is a real setting, and None has to
+    # stay reserved for a manifest that predates the field.
+    ema_decay: Optional[str] = None
     # Post-conversion, set by the DiT trainer once it knows whether fp8/mxfp8 took. None
     # everywhere else, which the optional rule reads as "cannot tell".
     base_precision_effective: Optional[str] = None
@@ -276,6 +285,7 @@ class CheckpointIdentity:
             "train_batch_size": self.train_batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "max_grad_norm": self.max_grad_norm,
+            "ema_decay": self.ema_decay,
             "base_precision_effective": self.base_precision_effective,
             "precision": self.precision,
             "base_precision": self.base_precision,
@@ -319,6 +329,7 @@ class CheckpointIdentity:
                 train_batch_size = _optional_int(data.get("train_batch_size")),
                 gradient_accumulation_steps = _optional_int(data.get("gradient_accumulation_steps")),
                 max_grad_norm = _optional_str(data.get("max_grad_norm")),
+                ema_decay = _optional_str(data.get("ema_decay")),
                 base_precision_effective = _optional_str(data.get("base_precision_effective")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
@@ -582,6 +593,7 @@ def identity_for_config(
         train_batch_size = int(getattr(cfg, "train_batch_size", 0) or 0),
         gradient_accumulation_steps = int(getattr(cfg, "gradient_accumulation_steps", 0) or 0),
         max_grad_norm = f"{round(float(getattr(cfg, 'max_grad_norm', 0.0) or 0.0), 6)}",
+        ema_decay = f"{round(float(getattr(cfg, 'ema_decay', 0.0) or 0.0), 6)}",
         # The EFFECTIVE precision, not the request: a pre-Ampere card resolves bf16 to fp16, and
         # recording the request let an fp16 bundle resume in bf16 on a newer card -- restored
         # moments continuing under different frozen-base numerics, reported as a clean resume.
