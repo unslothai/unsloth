@@ -527,7 +527,6 @@ def _probe_target(request_shape: dict[str, Any]) -> Any:
     if recorded:
         try:
             import torch
-
             candidate = getattr(torch, str(recorded).replace("torch.", ""), None)
             if isinstance(candidate, torch.dtype):
                 dtype = candidate

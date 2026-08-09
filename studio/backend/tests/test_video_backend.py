@@ -2661,7 +2661,9 @@ def test_out_of_memory_is_recognised_by_text_not_only_by_class(exc, expected):
     assert video_mod._is_out_of_memory(exc) is expected
 
 
-def test_the_oom_diagnosis_is_skipped_when_an_external_backend_ran(fake_runtime, tmp_path, monkeypatch):
+def test_the_oom_diagnosis_is_skipped_when_an_external_backend_ran(
+    fake_runtime, tmp_path, monkeypatch
+):
     """AITER / xFormers replace torch's own dispatch, so probing native SDPA answers about code the
     generation never executed. On a ROCm card with AITER engaged that turned every OOM into a
     confident false statement that attention ran on the quadratic math backend."""
@@ -2710,9 +2712,7 @@ def test_the_oom_probe_uses_the_dtype_the_run_actually_used(fake_runtime, tmp_pa
         _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
     )
     seen: list = []
-    monkeypatch.setattr(
-        video_mod, "sdpa_math_only", lambda target: seen.append(target) or True
-    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: seen.append(target) or True)
     records = _capture_generate_failures(monkeypatch)
 
     with pytest.raises(RuntimeError):
