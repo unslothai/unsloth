@@ -7354,6 +7354,8 @@ def test_the_cache_probe_sees_a_moved_cache_root():
 
     src = inspect.getsource(cache_holds_files)
     assert "other_root = True" in src
+
+
 # ── the variant hint feeding the runtime-headroom estimate ────────────────────
 
 

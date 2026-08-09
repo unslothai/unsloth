@@ -992,6 +992,8 @@ def _dense_candidate_is_prequant(
         )
     except Exception:  # noqa: BLE001 — a probe that cannot answer keeps the decline
         return False
+
+
 def _activation_guard_batch(chunks: Sequence[Sequence[Any]]) -> int:
     """The batch size the generate-time activation guard budgets for.
 
