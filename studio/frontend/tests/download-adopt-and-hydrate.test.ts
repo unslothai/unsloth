@@ -60,8 +60,13 @@ test("a variant whose own files are gone does not survive on a sibling's cache d
   // sends the field, both leave the repo-level rule in charge.
   assert.equal(idleProbeVerdict(0, "/hub/models--unsloth--x", null), "active");
   assert.equal(idleProbeVerdict(0, "/hub/models--unsloth--x", undefined), "active");
-  // And bytes still outrank everything: something is on disk for this target.
-  assert.equal(idleProbeVerdict(4096, "/hub/models--unsloth--x", false), "active");
+  // And an EXPLICIT absence outranks the byte count, which the two can genuinely disagree
+  // about: on the unknown-hash path the byte reading falls back to a retained manifest and
+  // counts a shared mmproj or MTP companion that outlived the main shard, while the by-name
+  // scan correctly reports the quant itself gone. Believing the bytes re-adopts the phantom.
+  assert.equal(idleProbeVerdict(4096, "/hub/models--unsloth--x", false), "gone");
+  // Bytes still decide when presence is unknown.
+  assert.equal(idleProbeVerdict(4096, "/hub/models--unsloth--x", null), "active");
   assert.equal(idleProbeVerdict(0, null, true), "gone", "no cache at all is still gone");
 });
 

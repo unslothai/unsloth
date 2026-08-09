@@ -183,6 +183,31 @@ def _variant_main_shard_present(
     return None if unreadable else False
 
 
+def _variant_present_in_any_snapshot(
+    entry: Path,
+    variant_file_matcher: Optional["VariantFileMatcher"],
+) -> Optional[bool]:
+    """``_variant_main_shard_present`` over every snapshot the repo dir retains.
+
+    True as soon as one holds the variant's own file; False only when every snapshot was read
+    and none did; None when there was nothing to read or a read failed, which is unknown.
+    """
+    try:
+        snapshots = [child for child in (entry / "snapshots").iterdir() if child.is_dir()]
+    except OSError:
+        return None
+    if not snapshots:
+        return None
+    verdicts = [
+        _variant_main_shard_present(snapshot, variant_file_matcher) for snapshot in snapshots
+    ]
+    if any(verdict is True for verdict in verdicts):
+        return True
+    if any(verdict is None for verdict in verdicts):
+        return None
+    return False
+
+
 def _materialized_bytes(snapshot_dir: Path, variant_file_matcher: "VariantFileMatcher") -> int:
     """Bytes the variant's files present in the snapshot dir.
 
@@ -406,7 +431,11 @@ def compute_snapshot_progress(
                         elif not count_unscoped:
                             continue
                         completed_bytes += f.stat().st_size
-                except OSError:
+                except OSError as exc:
+                    # A blob we could not inspect is not a blob that is not there. Swallowing it
+                    # produced a MEASURED absence, which hydration reads as "gone" and retires a
+                    # persisted download whose target may be intact behind the error.
+                    scan_errors.append(exc)
                     continue
         snapshot_dir: "_Lazy[Optional[Path]]" = _Lazy(
             lambda entry = entry: latest_snapshot_dir(entry)
@@ -453,7 +482,11 @@ def compute_snapshot_progress(
             # cache_path names a directory", which hydration adopts as a resumable phantom and
             # which then blocks a fresh download of the deleted quant until the idle grace runs
             # out -- the same trap as above, on the metadata-unavailable path.
-            scanned = _variant_main_shard_present(snapshot_dir.get(), variant_file_matcher)
+            # ...across EVERY snapshot the entry retains, not only the newest by mtime. A cache
+            # can hold several revisions, and the requested quant living in an older one while
+            # the newest holds a sibling read as absent -- and hydration retires a job whose
+            # target is still usable.
+            scanned = _variant_present_in_any_snapshot(entry, variant_file_matcher)
             if scanned is not None:
                 target_present = scanned
         readings.append(
@@ -479,7 +512,10 @@ def compute_snapshot_progress(
 
     selected = max(
         readings,
-        key = lambda item: (item[0] + item[1], item[0]),
+        # complete_on_disk last-but-one: two remembered caches can clamp to the SAME byte total
+        # while only one has a manifest that verifies against disk, and root order then carried
+        # the unverified reading -- the response stayed capped at 99% and kept offering Retry.
+        key = lambda item: (item[0] + item[1], bool(item[3]), item[0]),
         default = None,
     )
     if selected is None:

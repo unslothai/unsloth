@@ -6513,3 +6513,126 @@ def test_a_file_that_cannot_be_stated_keeps_presence_unknown(monkeypatch, tmp_pa
     )
 
     assert result["target_present"] is None, result
+
+
+def test_a_blob_that_cannot_be_stated_keeps_presence_unknown(monkeypatch, tmp_path):
+    """The hashes resolved, so the blob loop is what measures the variant -- and a blob it could
+    not inspect is not a blob that is not there. Swallowing the error produced a MEASURED
+    absence, which hydration reads as gone and retires a persisted download."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    (entry / "snapshots" / "rev0").mkdir(parents = True)
+    blobs = entry / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / "mainhash").write_bytes(b"x" * 100)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_blob_hashes",
+        lambda *_a, **_kw: frozenset({"mainhash"}),
+    )
+    monkeypatch.setattr(
+        snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry]
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+    real_stat = Path.stat
+
+    def _deny(self, *a, **kw):
+        if self.name == "mainhash":
+            raise PermissionError("denied")
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "stat", _deny)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is None, result
+
+
+def test_an_older_snapshot_still_proves_the_variant_is_here(monkeypatch, tmp_path):
+    """A cache can retain several revisions. The requested quant living in an older snapshot
+    while the newest holds only a sibling read as absent, and hydration retired a job whose
+    target is still perfectly usable."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    old_snap = entry / "snapshots" / "rev0"
+    new_snap = entry / "snapshots" / "rev1"
+    old_snap.mkdir(parents = True)
+    new_snap.mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (old_snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (new_snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    import os
+    import time
+
+    # Make rev1 unambiguously the newest, which is the one latest_snapshot_dir picks.
+    os.utime(old_snap, (time.time() - 600, time.time() - 600))
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is True, result
+
+
+def test_a_verified_completion_wins_a_byte_tie_between_caches(monkeypatch, tmp_path):
+    """Two remembered caches can clamp to the same byte total while only one has a manifest that
+    verifies against disk. The byte-ordered pick then carried whichever came first by root
+    order, so the response stayed capped below 100% and kept offering Retry for a variant that
+    is demonstrably complete in the other cache."""
+    unverified = tmp_path / "a" / "models--Org--Model-GGUF"
+    (unverified / "snapshots" / "rev0").mkdir(parents = True)
+    (unverified / "blobs").mkdir(parents = True)
+    (unverified / "snapshots" / "rev0" / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    verified = tmp_path / "b" / "models--Org--Model-GGUF"
+    (verified / "snapshots" / "rev0").mkdir(parents = True)
+    (verified / "blobs").mkdir(parents = True)
+    (verified / "snapshots" / "rev0" / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
+        "http",
+        hub_cache = verified.parent,
+    )
+    _unresolvable_variant_metadata(monkeypatch, unverified, state = "idle")
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        # The unverified cache first, so root order alone would carry it.
+        lambda *_a, **_kw: [unverified, verified],
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["complete_on_disk"] is True, result

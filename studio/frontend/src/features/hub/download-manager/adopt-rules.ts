@@ -55,9 +55,15 @@ export function idleProbeVerdict(
   targetPresent?: boolean | null,
   cacheMeasured?: boolean,
 ): "active" | "gone" {
-  if (downloadedBytes > 0) return "active";
+  // Unknown first: a scan that could not be completed says nothing either way.
   if (cacheMeasured === false) return "active";
+  // Then the EXPLICIT verdict, ahead of the byte count. The two can disagree: on the
+  // unknown-hash path the byte reading falls back to a retained manifest and counts a shared
+  // mmproj or MTP companion that outlived the main shard, while the by-name scan correctly
+  // reports the quant itself gone. Believing the bytes there re-adopts the phantom and blocks
+  // a fresh download of the deleted variant.
   if (targetPresent === false) return "gone";
+  if (downloadedBytes > 0) return "active";
   // A MEASURED scan with no cache path is an absence, however it was serialized. The GGUF
   // progress route sets response_model_exclude_none, so its measured-empty answer drops
   // cache_path entirely rather than sending null -- which read as "older backend, unknown"
