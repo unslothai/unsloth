@@ -237,7 +237,11 @@ def test_a_non_modular_video_family_is_unaffected():
     except RuntimeError:
         # Reaching the diffusers probe already proves the modular refusal did not fire.
         return
-    assert fam.name == "ltx-2.3"
+    # "ltx-2.3" is an ALIAS of the ltx-2 family, not a family of its own, so that is the name a
+    # 2.3 checkpoint resolves to. What this test is actually about is the line below it: the
+    # family it landed on declares no modular workflow, which is what scopes the new refusal.
+    assert fam.name == "ltx-2"
+    assert fam.modular_workflow is None
 
 
 # ── keeping the pre-quantized denoiser out of the offload rotation ───────────────

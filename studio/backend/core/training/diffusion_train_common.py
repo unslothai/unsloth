@@ -79,7 +79,14 @@ TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset({"ltx-2", "minimax-h3"})
 # at inference. Qwen-Image pins base_shift = max_shift = log 3 and LTX-2 evaluates its shift at
 # ``max_image_seq_len`` (so mu = max_shift = 2.05 at every resolution): in both cases the
 # inference mu is a constant the "auto" branch can reproduce exactly.
-AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset({"qwen-image", "ltx-2"})
+#
+# MiniMax-H3 is here for the same reason, reached differently: its schedules carry an explicit
+# exponential shift (12.0 video, 3.0 audio, from the released scheduler configs) rather than a
+# dynamic one, and ``run_h3_lora_training`` applies those two whenever ``flow_shift`` is not a
+# number. Without this entry an omitted flow_shift normalized to the identity 1.0, which IS a
+# number, so the trainer took it and every default H3 run trained against an unshifted
+# distribution the sampler never visits.
+AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset({"qwen-image", "ltx-2", "minimax-h3"})
 
 # Video latents are allocated on the family's spatial compression grid, so a training
 # resolution off that grid silently changes the latent geometry (or trips a reshape).

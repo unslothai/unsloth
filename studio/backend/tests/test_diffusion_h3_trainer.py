@@ -250,6 +250,41 @@ def test_the_two_shifts_come_from_the_released_scheduler_configs():
     assert _H3_AUDIO_SHIFT == 3.0
 
 
+def test_an_omitted_flow_shift_reaches_the_trainer_as_the_released_video_shift():
+    """The gap this closes: ``normalized()`` resolved an omitted flow_shift to the identity 1.0
+    for every family outside AUTO_FLOW_SHIFT_FAMILIES, and the H3 loop only falls back to
+    _H3_VIDEO_SHIFT when the value is NOT a number. 1.0 is a number, so it won over the 12.0 the
+    released scheduler uses and every default run trained against an unshifted video-noise
+    distribution the sampler never visits -- silently, at full cost."""
+    from core.training.diffusion_train_common import AUTO_FLOW_SHIFT_FAMILIES, DiffusionLoraConfig
+
+    assert "minimax-h3" in AUTO_FLOW_SHIFT_FAMILIES
+    cfg = DiffusionLoraConfig(
+        base_model = "MiniMaxAI/MiniMax-H3",
+        data_dir = "/tmp/d",
+        output_dir = "/tmp/o",
+        instance_prompt = "p",
+    ).normalized()
+    assert cfg.resolved_family == "minimax-h3"
+    # Not a number, which is exactly what routes the trainer to its own pair of shifts.
+    assert cfg.flow_shift == "auto"
+    assert not isinstance(cfg.flow_shift, (int, float))
+
+
+def test_an_explicit_flow_shift_still_overrides_the_video_default():
+    """The escape hatch stays: a caller who names a shift gets it, not 12.0."""
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    cfg = DiffusionLoraConfig(
+        base_model = "MiniMaxAI/MiniMax-H3",
+        data_dir = "/tmp/d",
+        output_dir = "/tmp/o",
+        instance_prompt = "p",
+        flow_shift = 7.0,
+    ).normalized()
+    assert cfg.flow_shift == 7.0
+
+
 def test_shifted_sigma_matches_the_schedulers_exponential_shift():
     from core.training.diffusion_h3_trainer import _shifted_sigma
 

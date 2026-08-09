@@ -4517,12 +4517,20 @@ def test_plan_keeps_the_bf16_budget_without_a_hosted_pre_cast_encoder(fake_runti
 def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime, monkeypatch):
     # The whole change is inert on a default load: every family keeps its bf16-table budget, so no
     # existing decision on any device moves.
+    from core.inference.diffusion_families import family_pipeline_available
     from core.inference.video_families import _FAMILIES
 
     _allow_te_prequant(monkeypatch)
     calls = _capture_plan(monkeypatch)
     for fam in _FAMILIES:
         if fam.bf16_components_gb is None or fam.name == "wan2.2-t2v-a14b":
+            continue
+        # A family whose pipeline class this diffusers does not carry cannot be loaded at all, so
+        # there is no plan to judge: MiniMax-H3 is a ModularPipeline family and the packaging
+        # deliberately keeps an older diffusers installable. Skipping it here is the same rule the
+        # listing routes apply, and it keeps this test about the BUDGET rather than about which
+        # diffusers the runner happens to have.
+        if not family_pipeline_available(fam):
             continue
         calls.clear()
         VideoBackend().load_pipeline(fam.base_repo, model_kind = "pipeline")
