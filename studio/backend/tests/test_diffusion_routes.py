@@ -1836,11 +1836,14 @@ def test_gallery_image_accepts_a_record_written_before_the_build_fields():
     assert record.baked_loras == []
 
 
-@pytest.mark.parametrize("memory", [
-    {"memory_mode": "balanced"},
-    {"memory_mode": "low_vram"},
-    {"cpu_offload": True},
-])
+@pytest.mark.parametrize(
+    "memory",
+    [
+        {"memory_mode": "balanced"},
+        {"memory_mode": "low_vram"},
+        {"cpu_offload": True},
+    ],
+)
 def test_an_offloading_memory_request_refuses_an_explicit_precision(monkeypatch, memory):
     """balanced and low_vram name their offload policy outright, and the legacy cpu_offload flag
     forces whole-module offload. Offload hooks move modules with Module.to(), which torchao
