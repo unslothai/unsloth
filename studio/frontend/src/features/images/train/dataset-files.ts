@@ -91,11 +91,20 @@ export async function metadataKeyedOnSubfolders(files: File[]): Promise<string |
   return null;
 }
 
+// str.strip() is not trim(): Python keeps U+FEFF and strips U+001C-001F and U+0085. trim() read
+// a name ending in U+FEFF as an accepted "cat.png", but the multipart part carries the name
+// whole, so the endpoint saw a suffix with the U+FEFF still on it and refused the slice.
+// This class is exactly str.isspace() over the BMP; NUL is stripped separately, as it is there.
+const PY_SPACE_CLASS =
+  "\\t\\n\\v\\f\\r\\u001c-\\u001f\\u0020\\u0085\\u00a0\\u1680" +
+  "\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+const PY_STRIP = new RegExp(`^[${PY_SPACE_CLASS}]+|[${PY_SPACE_CLASS}]+$`, "g");
+
 /** the name the upload stores this file under, matching the normalisation in training.py. */
 export function destinationName(file: File): string {
   const base = file.name.replace(/\\/g, "/").split("/").pop() ?? "";
   // biome-ignore lint/suspicious/noControlCharactersInRegex: the backend strips nulls here too
-  return base.trim().replace(/\0/g, "");
+  return base.replace(PY_STRIP, "").replace(/\0/g, "");
 }
 
 // mirrors Path(name).suffix.lower(): a leading dot starts the stem, so ".png" has no suffix.

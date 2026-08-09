@@ -305,6 +305,25 @@ test("splits on the byte cap too, not only the part count", () => {
   assert.equal(chunks.flat().length, 300);
 });
 
+test("strips what Python strips, so a name the endpoint refuses is not read as accepted", () => {
+  // trim() also removes U+FEFF, which str.strip() keeps: the part carries "cat.png﻿" and
+  // the endpoint reads its suffix as ".png﻿", so the client must not see a plain image.
+  const bom = selectDatasetFiles([picked("cat.png\ufeff")]);
+  assert.deepEqual(bom.files, []);
+  assert.equal(bom.skipped, 1);
+
+  // ...and the other direction: str.strip() removes these, trim() does not, so the endpoint
+  // stores a plain "cat.png" and the client must not drop the file as unsupported.
+  for (const ch of ["\u001c", "\u001d", "\u001e", "\u001f", "\u0085"]) {
+    const sel = selectDatasetFiles([picked(`cat.png${ch}`)]);
+    assert.equal(sel.imageCount, 1, `U+${ch.codePointAt(0)?.toString(16)} must be stripped`);
+    assert.equal(sel.skipped, 0);
+  }
+
+  // ordinary whitespace both agree on, still folded onto one destination
+  assert.equal(selectDatasetFiles([picked(" cat.png\t")]).imageCount, 1);
+});
+
 test("sends case-variant groups first, so their refusal lands before anything commits", () => {
   const mb = 1024 * 1024;
   const files = [

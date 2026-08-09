@@ -788,7 +788,9 @@ export function DiffusionTrainPanel({
         // too strict or useless. A limit that cannot be read stops the upload.
         let maxBytes: number;
         try {
-          maxBytes = (await loadUploadLimitSettings()).maxUploadSizeBytes;
+          // forced: the cached value is from whenever this tab first asked, and the setting can
+          // be changed elsewhere, which would put the slices out of step with the server.
+          maxBytes = (await loadUploadLimitSettings({ force: true })).maxUploadSizeBytes;
         } catch (e) {
           toast.error(
             "Could not read the upload size limit, so nothing was uploaded: " +
@@ -821,15 +823,21 @@ export function DiffusionTrainPanel({
             );
             return;
           }
-          if (known.datasets.some((d) => d.name === name)) {
+          // a case-insensitive dataset root resolves "photos" onto an existing "Photos", so an
+          // exact match would call that folder new and skip the check. Fall back to a folded
+          // match and list the folder under the name the backend reports.
+          const folder =
+            known.datasets.find((d) => d.name === name) ??
+            known.datasets.find((d) => d.name.toLowerCase() === name.toLowerCase());
+          if (folder) {
             // no listing, no guarantee: skipping the check would upload the slices it exists to
             // hold back, so a failure here stops the upload rather than proceeding blind.
             let held: Awaited<ReturnType<typeof listDiffusionDatasetImages>>;
             try {
-              held = await listDiffusionDatasetImages(name);
+              held = await listDiffusionDatasetImages(folder.name);
             } catch (e) {
               toast.error(
-                `Could not read what "${name}" already holds, so nothing was uploaded: ` +
+                `Could not read what "${folder.name}" already holds, so nothing was uploaded: ` +
                   `${e instanceof Error ? e.message : "the dataset could not be listed"}. Try again.`,
               );
               return;
@@ -837,7 +845,7 @@ export function DiffusionTrainPanel({
             const clash = existingStemClash(files, held.images.map((i) => i.filename));
             if (clash) {
               toast.error(
-                `"${clash.second}" and "${clash.first}", already in "${name}", differ only by ` +
+                `"${clash.second}" and "${clash.first}", already in "${folder.name}", differ only by ` +
                   "extension, so they would share one caption file. Nothing was uploaded; " +
                   "rename it and try again.",
               );
