@@ -1365,6 +1365,183 @@ def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypat
     assert client._fake.started_with is None
 
 
+# ── the pipeline-class gate in the training preflight ─────────────────────────
+# The image families' pipeline classes arrived in different diffusers releases, and the packaging
+# deliberately leaves an older diffusers installable: diffusers dropped Python 3.9 in 0.37 and this
+# project still supports 3.9, so the pin is ``diffusers>=0.39.0 ; python_version >= '3.10'`` plus an
+# unconstrained ``diffusers`` below that. The newest release a 3.9 host can resolve is 0.36.0, and
+# an already-present older one satisfies the unconstrained pin outright. Upstream first exports:
+#   ZImagePipeline 0.36.0, Flux2Pipeline 0.36.0, Flux2KleinPipeline 0.37.0, Krea2Pipeline 0.39.0.
+_PIPELINE_TOO_NEW_FOR_0_36 = (
+    ("krea/Krea-2-Raw", "Krea2Pipeline"),
+    ("black-forest-labs/FLUX.2-klein-4B", "Flux2KleinPipeline"),
+)
+_PIPELINE_TOO_NEW_FOR_0_35 = _PIPELINE_TOO_NEW_FOR_0_36 + (
+    ("Tongyi-MAI/Z-Image-Turbo", "ZImagePipeline"),
+    ("black-forest-labs/FLUX.2-dev", "Flux2Pipeline"),
+)
+
+
+def _fake_diffusers(version, *classes):
+    """A stand-in ``diffusers`` carrying exactly ``classes``, so the guard sees the attribute
+    surface of that release rather than whatever is installed on the runner."""
+    import types
+
+    mod = types.ModuleType("diffusers")
+    mod.__version__ = version
+    for c in classes:
+        setattr(mod, c, object)
+    return mod
+
+
+@pytest.mark.parametrize("base_model,pipeline_class", _PIPELINE_TOO_NEW_FOR_0_35)
+def test_route_start_refuses_a_family_the_install_has_no_pipeline_for(
+    client, monkeypatch, base_model, pipeline_class
+):
+    # The hole this closes: the family resolved as trainable, /diffusion/start reserved the
+    # training slot and freed the resident GPU workloads, and only the spawned child failed, on its
+    # own ``from diffusers import <Pipeline>``. Losing a loaded model and THEN failing is the worst
+    # ordering available, so this asserts the ORDERING, not merely that an error was raised:
+    # nothing freed, and the slot never even reserved.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    # 0.35.2: the last release before any of these four classes existed.
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.35.2"))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": base_model})
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert pipeline_class in detail  # names the class that is missing
+    assert "0.35.2" in detail  # and what is actually installed
+    assert freed == []  # nothing was torn down
+    assert client._fake.calls == []  # the slot was never even reserved
+    assert client._fake.started_with is None
+
+
+@pytest.mark.parametrize("base_model,pipeline_class", _PIPELINE_TOO_NEW_FOR_0_36)
+def test_route_start_refuses_a_too_new_pipeline_on_the_newest_py39_diffusers(
+    client, monkeypatch, base_model, pipeline_class
+):
+    # The realistic case rather than the worst one: 0.36.0 is the newest diffusers a supported
+    # Python 3.9 host can resolve, and it already carries ZImagePipeline and Flux2Pipeline. Krea 2
+    # and FLUX.2-klein still cannot run there, and no `pip install -U diffusers` fixes it without
+    # also upgrading Python.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        _fake_diffusers("0.36.0", "ZImagePipeline", "Flux2Pipeline", "StableDiffusionXLPipeline"),
+    )
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": base_model})
+    assert r.status_code == 400, r.text
+    assert pipeline_class in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []
+    assert client._fake.started_with is None
+
+
+def test_route_start_refuses_a_missing_pipeline_named_by_model_family_too(client, monkeypatch):
+    # resolve_trainable_family has two branches that produce a family, and the explicit
+    # model_family override is the one a name-based test cannot reach: it skips detection entirely.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.36.0"))
+
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "my-org/some-private-mirror", "model_family": "krea-2"},
+    )
+    assert r.status_code == 400, r.text
+    assert "Krea2Pipeline" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []
+    assert client._fake.started_with is None
+
+
+def test_route_start_still_runs_when_the_install_does_have_the_pipeline(
+    client, monkeypatch, dit_train_host
+):
+    # The gate must not refuse a family the environment can actually run, or it would break every
+    # up-to-date install. Same request as above, one attribute different.
+    import sys
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.39.0", "Krea2Pipeline"))
+
+    r = client.post(
+        "/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"}
+    )
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["base_model"] == "krea/Krea-2-Raw"
+
+
+def test_route_start_survives_a_diffusers_whose_lazy_submodule_cannot_import(
+    client, monkeypatch, dit_train_host
+):
+    # diffusers' top level is lazy, so the guard's attribute probe is what actually imports the
+    # pipeline's submodule, and a partially usable install raises RuntimeError("Failed to import
+    # diffusers.pipelines...") there. That is not the ValueError this route maps to 400, so before
+    # the guard absorbed it the new preflight would have turned a startable run into a bare 500.
+    import sys
+    import types
+    import urllib.request
+
+    class _LazyModule(types.ModuleType):
+        __version__ = "0.39.0"
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"Failed to import diffusers.pipelines.{name.lower()}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
+    monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
+
+    r = client.post(
+        "/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"}
+    )
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["base_model"] == "krea/Krea-2-Raw"
+
+
+def test_route_start_is_unaffected_when_diffusers_is_absent(client, monkeypatch, dit_train_host):
+    # The guard answers "is the installed diffusers new enough", and with nothing importable there
+    # is no version to judge, so it must stay silent rather than refuse every training start on a
+    # host that installs diffusers only in the trainer child.
+    import builtins
+    import sys
+    import urllib.request
+
+    real_import = builtins.__import__
+
+    def _no_diffusers(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError("No module named 'diffusers'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(builtins, "__import__", _no_diffusers)
+
+    r = client.post(
+        "/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"}
+    )
+    assert r.status_code == 200, r.text
+
+
 def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatch):
     # A DiT precision the host cannot run must 400 BEFORE the GPU residents are freed. The route imports the helper locally, so patch its home module.
     import routes.training as tr

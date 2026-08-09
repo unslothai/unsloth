@@ -87,6 +87,30 @@ def _trainable_hint() -> str:
     )
 
 
+def _assert_family_pipeline_available(fam: Any) -> None:
+    """Refuse a family whose pipeline class the installed diffusers does not carry.
+
+    ``pyproject`` deliberately leaves the diffusers floor conditional -- diffusers dropped Python
+    3.9 in 0.37 and this project still supports 3.9 (``requires-python >= 3.9``), so the pin reads
+    ``diffusers>=0.39.0 ; python_version >= '3.10'`` and an unconstrained ``diffusers`` below that.
+    A supported install can therefore legitimately predate a family's pipeline class:
+    ``Krea2Pipeline`` arrived in 0.39.0 and ``Flux2KleinPipeline`` in 0.37.0, while the newest
+    diffusers a 3.9 host can resolve is 0.36.0, and an already-present older one satisfies the
+    unconstrained pin outright (``ZImagePipeline`` and ``Flux2Pipeline`` only arrived in 0.36.0).
+
+    The inference paths already assert this before a load (``diffusion.py`` and ``video.py``); the
+    training preflight did not, so the family resolved as trainable, ``/diffusion/start`` reserved
+    the training slot and freed the resident GPU workloads, and only the spawned child discovered
+    the pipeline was missing when it ran its own ``from diffusers import <Pipeline>``. Losing a
+    loaded model and THEN failing is the worst ordering available, so assert here, while
+    ``resolve_trainable_family`` still runs ahead of every teardown.
+
+    Family-agnostic on purpose: it reads ``fam.pipeline_class`` off whatever spec it is handed, so
+    the image registry and the separate video registry share one gate rather than one each."""
+    from core.inference.diffusion_families import assert_pipeline_class_available
+    assert_pipeline_class_available(fam.pipeline_class, fam.name)
+
+
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
     """Resolve the trainer family for a base model, or raise ValueError with a clear reason.
 
@@ -98,8 +122,13 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
       family (e.g. a DiT family before its trainer ships) is rejected;
     - a name that resolves to no registry family but matches a known non-trainable
       architecture (SD3 / PixArt / ...) is rejected;
+    - a resolved family whose pipeline class the installed diffusers lacks is rejected
+      (``_assert_family_pipeline_available``), so an environment too old for the pick fails
+      here rather than in the child, after the GPU residents are gone;
     - an unclassifiable custom name/path falls through to the SDXL trainer (backwards
       compatible: a genuinely wrong pick still fails cleanly later in from_pretrained).
+      No pipeline assert on that path: there is no family spec to read a class off, and the
+      family it lands on is SDXL, whose pipeline predates every diffusers in play.
     """
     name = str(base_model or "").strip().lower()
     # GGUF weights (a ``.gguf`` file or ``*-GGUF`` repo) are inference-only: training needs the full diffusers pipeline.
@@ -119,6 +148,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
             raise ValueError(f"Unknown model_family {model_family!r}. Known families: {known}.")
         if not fam.trainable:
             raise ValueError(f"'{fam.name}' models can't be trained yet. {_trainable_hint()}")
+        _assert_family_pipeline_available(fam)
         return fam.name
 
     fam = detect_family_for_pick(base_model)
@@ -128,6 +158,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
                 f"'{base_model}' looks like a {fam.name} model, which isn't trainable yet. "
                 f"{_trainable_hint()}"
             )
+        _assert_family_pipeline_available(fam)
         return fam.name
 
     condensed = re.sub(r"[^a-z0-9]+", "-", name)
