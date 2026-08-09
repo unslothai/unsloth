@@ -296,7 +296,10 @@ def _setup_cache_env() -> None:
         "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
     }
     for key, value in defaults.items():
-        if key not in os.environ:
+        # Blank counts as unset: an inherited KEY= would otherwise pin the
+        # cache to "", which puts an empty entry on sys.path and sends the
+        # compiler to the system temp directory instead.
+        if not (os.environ.get(key) or "").strip():
             os.environ[key] = value
             # Best-effort: a non-writable custom HF_HOME must not crash startup;
             # HF surfaces a clear error at download time instead.

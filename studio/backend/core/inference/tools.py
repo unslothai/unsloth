@@ -7286,10 +7286,19 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
             return workdir
         # Someone else got there first, so take a name of our own.
         workdir = _disambiguated_session_dir(root, session_id)
-        if not _contained_in_root(workdir, root):
+        if _contained_in_root(workdir, root):
+            os.makedirs(workdir, exist_ok = True)
+            if _claim_sandbox(workdir, session_id):
+                return workdir
+        # Both names are spoken for. A fresh one is the only thing left that is
+        # certainly ours; running in a directory we could not claim would put
+        # this chat inside someone else's files.
+        try:
+            workdir = tempfile.mkdtemp(prefix = f"{session_id}-", dir = root)
+        except OSError:
             return _sandbox_fallback(root, "_invalid")
-        os.makedirs(workdir, exist_ok = True)
         _claim_sandbox(workdir, session_id)
+        logger.warning("Sandbox names for %s were taken; using %s", session_id, workdir)
         return workdir
 
 
@@ -7352,6 +7361,22 @@ def _migrate_legacy_sandbox(root: str) -> None:
             _legacy_sandbox_migrated = True
 
 
+def _looks_like_partial_move(source: str, target: str) -> bool:
+    """Whether *target* looks like this move stopped half way through it.
+
+    A cross-device move copies and then unlinks, so an interrupted one leaves a
+    destination holding only what is still at the source. Anything else in
+    there means the directory is somebody's own.
+    """
+    if _marker_owner(target) is not None or not os.path.isdir(target):
+        return False
+    try:
+        below, above = set(os.listdir(source)), set(os.listdir(target))
+    except OSError:
+        return False
+    return bool(above) and above <= below
+
+
 def _finish_partial_move(source: str, target: str) -> bool:
     """Move what is left of *source* into *target*. True when nothing remains.
 
@@ -7408,7 +7433,15 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
         complete = True
         for name in os.listdir(legacy):
             source = os.path.join(legacy, name)
-            target = os.path.join(root, name)
+            # Through the resolver, so a name already taken by something in a
+            # shared root lands at this session's own name instead of merging
+            # into a directory that is not ours.
+            plain = os.path.join(root, name)
+            target = _session_dir(root, name) if _usable_session_id(name) else plain
+            # Unless that name holds nothing but a copy of what is still down
+            # here, which is this same move interrupted rather than a stranger.
+            if target != plain and _looks_like_partial_move(source, plain):
+                target = plain
             if os.path.exists(target):
                 # Claimed means the move finished, or the new root made this
                 # session itself: a real collision, left for the user to find.
@@ -7416,8 +7449,10 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 # those files are still down here.
                 if _marker_owner(target) is not None or not os.path.isdir(source):
                     continue
+                # Claimed first: a file that cannot move must not leave the
+                # destination looking like somebody else's directory.
+                _mark_migrated(target, name)
                 if _finish_partial_move(source, target):
-                    _mark_migrated(target, name)
                     moved += 1
                 else:
                     complete = False

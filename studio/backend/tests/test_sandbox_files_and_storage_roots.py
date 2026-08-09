@@ -2133,5 +2133,100 @@ def test_a_half_finished_migration_is_finished_later(tmp_path, monkeypatch):
     assert not (legacy / "left_behind.csv").exists()
 
 
+def test_a_partial_move_is_claimed_even_with_a_duplicate_left_below(tmp_path, monkeypatch):
+    """A file that cannot move must not leave the destination reading as
+    somebody else's, or the chat is sent to an empty directory instead."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_dup222"
+    legacy.mkdir(parents = True)
+    (legacy / "kept.csv").write_text("older", encoding = "utf-8")
+    (legacy / "moved.csv").write_text("rest", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    partial = root / "__LOCALID_dup222"
+    partial.mkdir()
+    (partial / "kept.csv").write_text("newer", encoding = "utf-8")
+
+    tools._migrate_legacy_sandbox(str(root))
+    assert (partial / tools._SANDBOX_MARKER).is_file(), "the destination was left unclaimed"
+    assert (partial / "moved.csv").read_text(encoding = "utf-8") == "rest"
+    assert (legacy / "kept.csv").is_file(), "the conflict was not left for the user"
+    # And the chat lands on the migrated files rather than a fresh directory.
+    assert Path(tools.get_sandbox_workdir("__LOCALID_dup222")) == partial
+
+
+def test_a_legacy_name_taken_in_a_shared_root_moves_beside_it(tmp_path, monkeypatch):
+    """The name is somebody's own folder, so the session moves to the name it
+    will resolve to instead of merging into theirs."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox" / "notes"
+    legacy.mkdir(parents = True)
+    (legacy / "mine.csv").write_text("mine", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    root = tmp_path / "shared"
+    root.mkdir()
+    theirs = root / "notes"
+    theirs.mkdir()
+    (theirs / "theirs.txt").write_text("theirs", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    tools._migrate_legacy_sandbox(str(root))
+
+    assert (theirs / "theirs.txt").is_file()
+    assert not (theirs / "mine.csv").exists(), "merged into a folder we do not own"
+    moved = Path(tools.get_sandbox_workdir("notes"))
+    assert moved != theirs
+    assert (moved / "mine.csv").read_text(encoding = "utf-8") == "mine"
+
+
+def test_a_sandbox_we_cannot_claim_is_never_used(tmp_path, monkeypatch):
+    """Running there would put this chat inside someone else's files."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_taken1"
+    for path in (root / session, Path(tools._disambiguated_session_dir(str(root), session))):
+        path.mkdir()
+        (path / tools._SANDBOX_MARKER).write_text("__LOCALID_other9", encoding = "utf-8")
+        (path / "not_ours.txt").write_text("theirs", encoding = "utf-8")
+
+    workdir = Path(tools._ensure_session_dir(str(root), session))
+    assert not (workdir / "not_ours.txt").exists(), workdir
+    assert (workdir / tools._SANDBOX_MARKER).read_text(encoding = "utf-8") == session
+
+
+def test_an_empty_compile_location_is_not_an_override(tmp_path, monkeypatch):
+    """An inherited KEY= would pin the cache to "", which puts an empty entry on
+    sys.path and sends the compiler to the system temp directory."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", "")
+
+    from utils.paths import storage_roots
+
+    storage_roots.setup_cache_env()
+    pinned = os.environ["UNSLOTH_COMPILE_LOCATION"]
+    assert pinned.strip(), "the cache was left unpinned"
+    assert Path(pinned).is_dir()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
