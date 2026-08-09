@@ -755,7 +755,7 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     container qualifies all of them even though the directory disambiguates nothing, and the bare
     spelling every stored id uses then matches no key at all.
     """
-    from hub.utils.gguf import extract_quant_label
+    from hub.utils.gguf import bare_quant_alias
 
     target = (wanted or "").strip().lower()
     if not target:
@@ -763,7 +763,7 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     matches = [
         name
         for key, name in lowered.items()
-        if "/" in key and extract_quant_label(key.rsplit("/", 1)[-1]).lower() == target
+        if "/" in key and bare_quant_alias(key).lower() == target
     ]
     return matches[0] if len(matches) == 1 else None
 

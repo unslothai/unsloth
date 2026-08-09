@@ -8,6 +8,7 @@ from typing import Optional, Sequence
 
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import (
+    bare_quant_alias,
     extract_quant_label,
     gguf_variant_family,
     gguf_variant_key,
@@ -201,11 +202,7 @@ def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optiona
     exact = plans.get(wanted)
     if exact is not None:
         return exact
-    matches = [
-        key
-        for key in plans
-        if "/" in key and extract_quant_label(key.rsplit("/", 1)[-1]).lower() == wanted
-    ]
+    matches = [key for key in plans if "/" in key and bare_quant_alias(key).lower() == wanted]
     return plans[matches[0]] if len(matches) == 1 else None
 
 

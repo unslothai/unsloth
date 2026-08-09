@@ -852,3 +852,59 @@ def test_a_bare_auto_download_stays_on_the_root_checkpoint():
     assert _match_variant("distilled/model-Q6_K", both) == "distilled/model-Q6_K"
     # A repo with nothing at the root falls back to the whole set rather than refusing.
     assert _match_variant(None, {"distilled/model-Q6_K": 1}) == "distilled/model-Q6_K"
+
+
+def test_the_bare_alias_keeps_the_bpw_and_survives_a_dotted_stem():
+    """The three compatibility fallbacks that accept a bare name for a path-qualified key -- the
+    plan lookup, auto-download admission and deletion -- share this. Two traps: the bpw modifier
+    is part of the identity now, and a key is already extension-stripped, so re-stemming it cuts
+    at the dot in "3.53bpw" (and at the one in "ltx-2.3")."""
+    from hub.utils.gguf import bare_quant_alias
+
+    assert bare_quant_alias("weights/model-IQ4_XS-3.53bpw") == "IQ4_XS-3.53bpw"
+    assert bare_quant_alias("weights/model-Q4_K_M") == "Q4_K_M"
+    assert bare_quant_alias("distilled/ltx-2.3-22b-distilled-Q6_K") == "Q6_K"
+
+
+def test_a_bpw_container_build_resolves_by_its_bare_spelling(tmp_path):
+    """A shared container qualifies the key, so the persisted bare spelling has to keep resolving
+    -- and that spelling carries the bpw suffix."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+    from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
+
+    plans = build_gguf_variant_plans([_Sibling("weights/model-IQ4_XS-3.53bpw.gguf", 64)])
+    assert set(plans) == {"weights/model-iq4_xs-3.53bpw"}
+    assert plan_for_variant(plans, "IQ4_XS-3.53bpw") is not None
+    # The token alone is NOT that build's name; it must not resolve one bpw build for another.
+    assert plan_for_variant(plans, "IQ4_XS") is None
+
+    repo, snap = _cache_repo(tmp_path, "org/Model-GGUF", ["weights/model-IQ4_XS-3.53bpw.gguf"])
+    _delete_gguf_variant_from_repos(
+        "org/Model-GGUF", "IQ4_XS-3.53bpw", [repo], None, root = tmp_path
+    )
+    assert not (snap / "weights" / "model-IQ4_XS-3.53bpw.gguf").is_symlink()
+
+
+def test_the_inference_lister_sizes_one_shard_family_not_both_copies():
+    """A repo shipping the same quant twice (QwQ-32B's BF16 as QwQ-32B-BF16-* beside
+    QwQ-32B.BF16-*) has one row; charging both copies to it doubles the weight figure that
+    routes/inference.py bills to the VRAM guard, which then refuses a load that fits. The hub
+    lister already keeps one family; this is the mirror that feeds the guard."""
+    from utils.models.model_config import _group_gguf_variant_files
+
+    entries = [
+        ("QwQ-32B-BF16-00001-of-00002.gguf", "BF16", 10),
+        ("QwQ-32B-BF16-00002-of-00002.gguf", "BF16", 10),
+        ("QwQ-32B.BF16-00001-of-00002.gguf", "BF16", 10),
+        ("QwQ-32B.BF16-00002-of-00002.gguf", "BF16", 10),
+    ]
+    grouped = _group_gguf_variant_files(entries)
+    assert grouped == {"BF16": ("QwQ-32B-BF16-00001-of-00002.gguf", 20)}
+    # Byte-for-byte what the hub lister answers, so the two cannot drift.
+    assert grouped == group_gguf_variant_files([(n, s) for n, _q, s in entries])
+    # A genuinely split GGUF is ONE family, so every shard still counts.
+    split = [("m-00001-of-00003.gguf", "Q4_K_M", 5)] * 1 + [
+        ("m-00002-of-00003.gguf", "Q4_K_M", 5),
+        ("m-00003-of-00003.gguf", "Q4_K_M", 5),
+    ]
+    assert _group_gguf_variant_files(split)["Q4_K_M"][1] == 15

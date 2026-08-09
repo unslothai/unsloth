@@ -2566,8 +2566,8 @@ def list_gguf_variants(
     variants: list[GgufVariantInfo] = []
     has_vision = False
 
-    quant_totals: dict[str, int] = {}  # quant -> total bytes
-    quant_first_file: dict[str, str] = {}  # quant -> first filename (display)
+    # (name, quant, size); grouped per shard FAMILY below, not summed across copies.
+    main_files: list[tuple[str, str, int]] = []
 
     for sibling in info.siblings:
         fname = sibling.rfilename
@@ -2586,15 +2586,12 @@ def list_gguf_variants(
         label = _extract_quant_label(fname)
         if _is_big_endian_gguf_path(fname, label):
             continue
-        quant = _qualified_variant_name(fname, label)
-        quant_totals[quant] = quant_totals.get(quant, 0) + size
-        if quant not in quant_first_file:
-            quant_first_file[quant] = fname
+        main_files.append((fname, _qualified_variant_name(fname, label), size))
 
-    for quant, total_size in quant_totals.items():
+    for quant, (first_file, total_size) in _group_gguf_variant_files(main_files).items():
         variants.append(
             GgufVariantInfo(
-                filename = quant_first_file[quant],
+                filename = first_file,
                 quant = quant,
                 size_bytes = total_size,
             )
@@ -2604,6 +2601,31 @@ def list_gguf_variants(
     variants.sort(key = lambda v: -v.size_bytes)
 
     return variants, has_vision
+
+
+def _group_gguf_variant_files(
+    entries: list[tuple[str, str, int]],
+) -> dict[str, tuple[str, int]]:
+    """``quant -> (first filename, size of that quant's shard family)``.
+
+    MIRROR of ``hub.utils.gguf.group_gguf_variant_files`` over ``(name, quant, size)`` triples.
+    Sizes are summed across the shards of ONE family, never across families: a repo shipping the
+    same quant twice (QwQ-32B's BF16 as ``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``) would
+    otherwise charge both copies to a row the loader only ever opens one of, and
+    ``routes/inference.py`` bills this ``size_bytes`` to the VRAM guard, which then refuses a load
+    that fits. The family kept is the one holding the lexicographically first file, which is the
+    shard this lister advertises and the loader opens.
+    """
+    families: dict[str, dict[str, list[tuple[str, int]]]] = {}
+    for name, quant, size in entries:
+        families.setdefault(quant, {}).setdefault(_gguf_variant_family(name), []).append(
+            (name, int(size or 0))
+        )
+    grouped: dict[str, tuple[str, int]] = {}
+    for quant, by_family in families.items():
+        chosen = min(by_family.values(), key = lambda members: min(n for n, _ in members))
+        grouped[quant] = (min(n for n, _ in chosen), sum(s for _, s in chosen))
+    return grouped
 
 
 def _resolve_gguf_dir(p: Path) -> Optional[Path]:
@@ -2647,8 +2669,7 @@ def list_local_gguf_variants(
         else _registered_custom_model_root(directory)
     )
 
-    quant_totals: dict[str, int] = {}
-    quant_first_file: dict[str, str] = {}
+    main_files: list[tuple[str, str, int]] = []
     has_vision = False
 
     # Recurse so variant-specific subdirs (``BF16/...gguf``) are picked up. Result filenames
@@ -2668,18 +2689,15 @@ def list_local_gguf_variants(
         label = _extract_quant_label(rel)
         if _is_big_endian_gguf_path(rel, label):
             continue
-        quant = _qualified_variant_name(rel, label)
-        quant_totals[quant] = quant_totals.get(quant, 0) + size
-        if quant not in quant_first_file:
-            quant_first_file[quant] = rel
+        main_files.append((rel, _qualified_variant_name(rel, label), size))
 
     variants = [
         GgufVariantInfo(
-            filename = quant_first_file[q],
-            quant = q,
-            size_bytes = s,
+            filename = first_file,
+            quant = quant,
+            size_bytes = total_size,
         )
-        for q, s in quant_totals.items()
+        for quant, (first_file, total_size) in _group_gguf_variant_files(main_files).items()
     ]
     variants.sort(key = lambda v: -v.size_bytes)
     return variants, has_vision

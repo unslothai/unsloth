@@ -17,6 +17,7 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
+    bare_quant_alias,
     extract_quant_label,
     extract_quant_token,
     gguf_variant_key,
@@ -225,11 +226,7 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     }
     if wanted in keys:
         return {wanted}
-    aliased = {
-        key
-        for key in keys
-        if "/" in key and extract_quant_label(key.rsplit("/", 1)[-1]).lower() == wanted
-    }
+    aliased = {key for key in keys if "/" in key and bare_quant_alias(key).lower() == wanted}
     return aliased if len(aliased) == 1 else {wanted}
 
 

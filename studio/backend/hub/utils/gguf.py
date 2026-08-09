@@ -315,6 +315,20 @@ def extract_quant_label(filename: str) -> str:
     return extract_quant_token(filename) or _unknown_gguf_variant_key(filename)
 
 
+def bare_quant_alias(key: str) -> str:
+    """The bare quant spelling a path-qualified *key* also answers to.
+
+    ``weights/model-IQ4_XS-3.53bpw`` -> ``IQ4_XS-3.53bpw``. The bpw modifier is part of the
+    identity now, so the three compatibility fallbacks that accept a bare name for a qualified
+    key (the plan lookup, auto-download admission, deletion) have to keep it -- comparing on the
+    token alone means a persisted ``IQ4_XS-3.53bpw`` resolves nothing.
+    """
+    # A key is already shard- and extension-stripped, so re-stemming it would cut at the dot in
+    # "3.53bpw" (and at the one in "ltx-2.3"). Hand the extractors a name they expect instead.
+    probe = f'{(key or "").replace(chr(92), "/").rsplit("/", 1)[-1]}.gguf'
+    return f"{extract_quant_label(probe)}{_gguf_bpw_suffix(probe)}"
+
+
 def _is_quant_directory(segment: str) -> bool:
     """Whether a path segment names a quant (``Q6_K/``, ``Llama-3.3-70B-Instruct-Q6_K/``).
 
