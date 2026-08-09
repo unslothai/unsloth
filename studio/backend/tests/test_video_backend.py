@@ -5367,3 +5367,78 @@ def test_the_h3_modular_refusal_prices_a_seeded_prequant_denoiser(fake_runtime, 
             runtime_headroom_mib = headroom,
         )
         assert (unified_memory_shortfall_message(plan, family = fam.name) is not None) is refused, gb
+
+
+def test_the_h3_modular_refusal_reruns_when_the_prequant_checkpoint_does_not_land(
+    fake_runtime, monkeypatch
+):
+    """The hosted-denoiser load is best-effort by contract: a missing, corrupt, stale or
+    base-mismatched checkpoint drops to the released bfloat16 components. Sizing the load as
+    quantized and then building dense with no second check is the OS kill this guard exists to
+    prevent -- on a host whose budget fits the ~20.3 GB checkpoint but not the 66.3 GB dense one."""
+    import core.inference.video as video_mod
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+
+    torch = sys.modules["torch"]
+    diffusers = sys.modules["diffusers"]
+    diffusers.ComponentsManager = _FakeComponentsManager
+    diffusers.ModularPipeline = _FakeModularPipeline
+    diffusers.MiniMaxH3Transformer3DModel = _FakeTransformer
+    _FakeModularPipeline.instance = None
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = True,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda: target)
+    # 160 GiB: the prequant pick fits, the dense component set does not.
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(160))
+
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    sized: list = []
+    real = VideoBackend._raise_on_modular_unified_shortfall
+
+    def _spy(family, **kwargs):
+        sized.append(kwargs["scheme"])
+        return real(family, **kwargs)
+
+    monkeypatch.setattr(
+        VideoBackend, "_raise_on_modular_unified_shortfall", staticmethod(_spy)
+    )
+    # The checkpoint resolves but does not load: exactly the best-effort None contract.
+    import core.inference.diffusion_prequant as prequant_mod
+
+    monkeypatch.setattr(
+        prequant_mod,
+        "resolve_prequant_source",
+        lambda fam, scheme, base_repo = None: types.SimpleNamespace(location = "unsloth/H3-FP8"),
+    )
+    monkeypatch.setattr(
+        prequant_mod, "load_prequantized_transformer", lambda *a, **k: None
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        VideoBackend()._load_h3_modular_pipeline(
+            diffusers = diffusers,
+            torch = torch,
+            fam = fam,
+            repo_id = "MiniMaxAI/MiniMax-H3",
+            base = fam.base_repo,
+            kind = "pipeline",
+            dtype = torch.bfloat16,
+            device = "mps",
+            hf_token = None,
+            memory_mode = None,
+            transformer_quant = "fp8",
+            target = target,
+        )
+    assert "minimax-h3" in str(excinfo.value) and "unified memory" in str(excinfo.value)
+    # Sized twice: once for the pick that was requested, once for what actually landed.
+    assert sized == ["fp8", None]
+    # ... and nothing was built.
+    assert _FakeModularPipeline.instance.load_kwargs is None

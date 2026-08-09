@@ -2679,9 +2679,10 @@ class VideoBackend:
         # component set is an OS kill with no torch OOM to catch. Placed after `scheme` settles and
         # before ANY weight is opened -- the hosted pre-quantized denoiser below is materialised on
         # the CPU, which is the same memory.
+        umem_target = target if target is not None else resolve_diffusion_device_target()
         self._raise_on_modular_unified_shortfall(
             fam,
-            target = target if target is not None else resolve_diffusion_device_target(),
+            target = umem_target,
             dtype = dtype,
             device = device,
             memory_mode = memory_mode,
@@ -2757,6 +2758,20 @@ class VideoBackend:
         # keyframe/reference paths). workflow= only narrows the name list load_components already
         # built, and that list skips every component whose attribute is set, so the seeding above
         # still keeps the dense 66.3 GB transformer from being fetched.
+        if scheme is not None and transformer_quant_engaged is None:
+            # The seeding above is best-effort by contract: a missing, corrupt, stale or
+            # base-mismatched checkpoint drops to the released bfloat16 denoiser, and that is the
+            # 66.3 GB the check before it did not size. load_components would then build it with
+            # no refusal left to stop it, which on unified memory is the OS kill this whole guard
+            # exists to prevent. Re-run it on the dense set, still before any weight is opened.
+            self._raise_on_modular_unified_shortfall(
+                fam,
+                target = umem_target,
+                dtype = dtype,
+                device = device,
+                memory_mode = memory_mode,
+                scheme = None,
+            )
         pipe.load_components(
             workflow = workflow,
             dtype = dtype,
