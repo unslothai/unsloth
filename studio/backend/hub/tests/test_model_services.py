@@ -5655,3 +5655,81 @@ def test_custom_promotion_keeps_the_classifier_verdict(tmp_path, config, expecte
         promoted = local_inventory._promote_to_custom_source(row)
         assert promoted.source == "custom"
         assert promoted.capabilities.can_chat is expected
+
+
+# ── local diffusers pipelines reach the Images / Video pickers ───────────────
+
+
+def _write_pipeline(root: Path, *, components = ("transformer", "vae", "text_encoder")) -> Path:
+    """A diffusers PIPELINE directory: a root model_index.json, no root config.json, and the
+    weights inside component subdirs. Every image and video model downloaded as a pipeline
+    (MiniMax-H3, HunyuanVideo, Qwen-Image, HiDream) has exactly this shape."""
+    root.mkdir(parents = True, exist_ok = True)
+    (root / "model_index.json").write_text(
+        json.dumps({"_class_name": "MiniMaxH3Pipeline", "_diffusers_version": "0.39.0"}),
+        encoding = "utf-8",
+    )
+    for name in components:
+        part = root / name
+        part.mkdir(parents = True, exist_ok = True)
+        (part / "config.json").write_text(json.dumps({"model_type": name}), encoding = "utf-8")
+        (part / "diffusion_pytorch_model.safetensors").write_bytes(b"x" * 1024)
+    return root
+
+
+def test_models_dir_scan_surfaces_a_local_diffusers_pipeline(tmp_path):
+    """A pipeline the user already has on disk must be listed. It carries no root config.json
+    and no loose weight file, which is the only shape the scan used to accept, so the Video and
+    Images pickers showed nothing for a model that was sitting right there."""
+    models = tmp_path / "models"
+    _write_pipeline(models / "MiniMax-H3-local")
+
+    rows = local_inventory._scan_models_dir(models)
+
+    assert {Path(row.path).name for row in rows} == {"MiniMax-H3-local"}
+
+
+def test_a_scan_folder_pointed_straight_at_a_pipeline_is_that_model(tmp_path):
+    pipeline = _write_pipeline(tmp_path / "MiniMax-H3-local")
+
+    rows = local_inventory._scan_models_dir(pipeline, entry_limit = 64)
+
+    assert [Path(row.path) for row in rows] == [pipeline]
+
+
+def test_the_lmstudio_walk_does_not_descend_into_a_pipeline(tmp_path):
+    """LM Studio stores models as publisher/model, so an unrecognised directory is walked one
+    level down. A pipeline root looked like a publisher, and its components (vae, transformer,
+    text_encoder) were published as separate models -- none of which any loader can start."""
+    root = tmp_path / "scan"
+    _write_pipeline(root / "MiniMax-H3-local")
+
+    names = {Path(row.path).name for row in local_inventory._scan_lmstudio_dir(root)}
+
+    assert names == {"MiniMax-H3-local"}
+    assert not names & {"vae", "transformer", "text_encoder"}
+
+
+def test_a_custom_folder_offers_the_pipeline_and_not_its_components(tmp_path):
+    """End to end over the path the Custom Folders control uses. The format filter keeps only
+    gguf / safetensors / adapter rows, and a pipeline root has no loose weight to classify, so
+    it reports "unknown" by construction -- judged on its shape instead."""
+    root = tmp_path / "scan"
+    _write_pipeline(root / "MiniMax-H3-local")
+
+    rows = local_inventory._scan_custom_folder(root)
+    names = {Path(row.path).name for row in rows}
+
+    assert names == {"MiniMax-H3-local"}
+
+
+def test_a_directory_that_is_not_a_pipeline_is_still_rejected(tmp_path):
+    """The new signal is a ROOT model_index.json. A folder that only holds one in a subdir is
+    not loadable from its root, and a bare folder is not a model at all."""
+    root = tmp_path / "scan"
+    (root / "not-a-model").mkdir(parents = True)
+    (root / "not-a-model" / "notes.txt").write_text("hello", encoding = "utf-8")
+    (root / "nested" / "inner").mkdir(parents = True)
+    (root / "nested" / "inner" / "model_index.json").write_text("{}", encoding = "utf-8")
+
+    assert local_inventory._scan_models_dir(root) == []
