@@ -2915,6 +2915,23 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
 
+    # TRL >= 1.7.0 defaults SFT to loss_type="chunked_nll" (trl#5846), which patches
+    # the lm_head and calls the backbone directly. Two problems:
+    #   1. It bypasses the model forward, so unsloth_fused_ce_loss never runs. Ours
+    #      chunks too and peaks 1.7-3.7GB lower on gemma-3-4b at 141-8192 tokens.
+    #   2. It divides by num_items_in_batch ignoring model_accepts_loss_kwargs, so
+    #      on models setting that flag False (gemma3, qwen-vl, paligemma, glm4v)
+    #      training_step divides by grad-accum again: loss and grads scaled 1/GA.
+    # Explicit loss_type= still wins. Keep scoped to sft_trainer: loss_type is an
+    # unrelated field in DPO/KTO/GRPO and the global dict above is applied to all.
+    if trainer_file == "sft_trainer":
+        replacements = {"loss_type": "nll"}
+        for k, v in replacements.items():
+            x = f"{k}( = [^,\n]{{1,}})?,\n"
+            y = f"'{v}'" if type(v) is str else f"{v}"
+            y = f"{k} = {y},\n"
+            arguments = re.sub(x, y, arguments)
+
     # Warn on too large or too small learning rate
     if "learning_rate" in call_args:
         learning_rate_check = (
