@@ -4418,6 +4418,27 @@ def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_ex
     assert len(_dense_calls(calls, backend)) == 1
 
 
+def test_dense_transformer_completeness_ignores_an_auxiliary_weight_index(tmp_path):
+    import json
+
+    transformer = tmp_path / "transformer"
+    transformer.mkdir()
+    (transformer / "config.json").write_text("{}", encoding = "utf-8")
+    shard_names = ["auxiliary-00001-of-00002.bin", "auxiliary-00002-of-00002.bin"]
+    for name in shard_names:
+        (transformer / name).write_bytes(b"weights")
+    weight_map = json.dumps({"weight_map": {"a": shard_names[0], "b": shard_names[1]}})
+    (transformer / "auxiliary.bin.index.json").write_text(weight_map, encoding = "utf-8")
+
+    # Diffusers does not discover arbitrary indexes when loading the transformer subfolder.
+    assert DiffusionBackend._dense_transformer_tree_complete(tmp_path) is False
+
+    (transformer / "diffusion_pytorch_model.bin.index.json").write_text(
+        weight_map, encoding = "utf-8"
+    )
+    assert DiffusionBackend._dense_transformer_tree_complete(tmp_path) is True
+
+
 @pytest.mark.parametrize("loras", [[("adapter", 0.0)], [("a", 0.0), ("b", 0.0)]])
 def test_all_zero_weight_loras_do_not_look_like_a_bake(loras, fake_runtime, tmp_path, monkeypatch):
     # Weight 0 is disabled everywhere else, so plain truthiness on the list would call this a bake,

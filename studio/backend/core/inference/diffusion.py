@@ -2087,11 +2087,15 @@ class DiffusionBackend:
         if not (transformer / "config.json").is_file():
             return False
 
-        try:
-            indexes = list(transformer.glob("*.index.json"))
-        except OSError:
-            return False
+        # Match the filenames Diffusers' from_pretrained lookup recognizes. An auxiliary index
+        # can have a perfectly complete weight_map without making this transformer loadable.
+        indexes = (
+            transformer / "diffusion_pytorch_model.safetensors.index.json",
+            transformer / "diffusion_pytorch_model.bin.index.json",
+        )
         for index in indexes:
+            if not index.is_file():
+                continue
             try:
                 weight_map = json.loads(index.read_text(encoding = "utf-8")).get("weight_map")
             except (OSError, ValueError, AttributeError):
