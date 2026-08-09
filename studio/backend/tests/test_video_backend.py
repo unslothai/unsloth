@@ -2345,14 +2345,18 @@ def _capture_plan(monkeypatch):
     return calls
 
 
-def _allow_te_prequant(monkeypatch):
-    """Make the pre-cast encoder resolvable (device-gated on CUDA in real life) without any IO."""
+def _allow_te_prequant(monkeypatch, *, injects = True):
+    """Make the pre-cast encoder resolvable (device-gated on CUDA in real life) without any IO.
+
+    Injection itself needs the Hub and a real transformers class, so it is stubbed either way;
+    ``injects=False`` models the fallback (unreachable / corrupt / base-mismatched checkpoint),
+    where the load ends up with the dense encoder and the budget must return to bf16."""
     import core.inference.diffusion_precision as precision
     import core.inference.diffusion_te_prequant as tpq
 
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
-    # Injection itself needs the Hub and a real transformers class; the budget is what is under test.
-    monkeypatch.setattr(tpq, "te_prequant_pipe_kwargs", lambda *a, **k: {})
+    injected = {"text_encoder": object()} if injects else {}
+    monkeypatch.setattr(tpq, "te_prequant_pipe_kwargs", lambda *a, **k: dict(injected))
     return tpq.TE_PREQUANT_BUDGET_SCALE
 
 
@@ -2420,6 +2424,24 @@ def test_pipeline_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(fake_run
     )
     # The pipeline kind budgets one total, so companion_dense_mib stays None as before.
     assert calls[0]["companion_dense_mib"] is None
+
+
+def test_plan_returns_to_bf16_when_the_pre_cast_encoder_does_not_inject(fake_runtime, monkeypatch):
+    # The source resolves (so the budget shrinks) but the checkpoint cannot be loaded -- an
+    # unreachable Hub, a corrupt artifact, a base-model mismatch. Assembly falls back to the dense
+    # encoder, so the plan must be rebuilt at bf16 before placement is applied; leaving the fp8
+    # budget in place under-states ltx-2's resident requirement by ~8.5 GB and can pick resident.
+    from core.inference.video_families import detect_video_family
+
+    components = detect_video_family("Lightricks/LTX-2").bf16_components_gb
+    _allow_te_prequant(monkeypatch, injects = False)
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline(
+        "Lightricks/LTX-2", model_kind = "pipeline", text_encoder_quant = "fp8"
+    )
+    assert calls[0]["model_dense_mib"] < int(sum(components) * _MIB_PER_GB)
+    assert calls[-1]["model_dense_mib"] == int(sum(components) * _MIB_PER_GB)
 
 
 def test_plan_keeps_the_bf16_budget_without_a_hosted_pre_cast_encoder(fake_runtime, monkeypatch):
