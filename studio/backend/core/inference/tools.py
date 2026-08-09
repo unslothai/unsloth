@@ -7201,14 +7201,25 @@ def _orphan_records_dir() -> str:
     return os.path.join(os.path.dirname(os.path.realpath(sandbox_root())), "orphaned-projects")
 
 
-def record_orphaned_project(project_id: str, workspace: str) -> None:
-    """Remember where a deleted project's kept workspace lives."""
+def record_orphaned_project(
+    project_id: str, workspace: str, pending_delete: bool = False
+) -> None:
+    """Remember where a deleted project's kept workspace lives.
+
+    Written whether or not files were to be deleted: the row that knew the path
+    has gone either way, and a chat forked out of the project still shows cards
+    for it. ``pending_delete`` is what separates "keep this, just make it
+    reachable" from "the user asked for it, finish when nothing is using it".
+    """
     if not project_id or not _usable_session_id(project_id) or not workspace:
         return
+    import json as _json
+
+    record = {"path": os.path.realpath(workspace), "pendingDelete": bool(pending_delete)}
     try:
         os.makedirs(_orphan_records_dir(), exist_ok = True)
         with open(os.path.join(_orphan_records_dir(), project_id), "w", encoding = "utf-8") as fh:
-            fh.write(os.path.realpath(workspace))
+            fh.write(_json.dumps(record))
     except OSError:
         logger.warning("Could not record kept workspace for project %s", project_id)
 
@@ -7223,8 +7234,10 @@ def forget_orphaned_project(project_id: str) -> None:
         pass
 
 
-def list_orphaned_projects() -> "list[tuple[str, str]]":
-    """Every recorded (project id, workspace) still on disk."""
+def list_orphaned_projects() -> "list[tuple[str, str, bool]]":
+    """Every recorded (project id, workspace, pending delete) still on disk."""
+    import json as _json
+
     records = []
     try:
         names = sorted(os.listdir(_orphan_records_dir()))[:_MAX_SNAPSHOT_DIRS]
@@ -7235,19 +7248,66 @@ def list_orphaned_projects() -> "list[tuple[str, str]]":
             continue
         try:
             with open(os.path.join(_orphan_records_dir(), name), encoding = "utf-8") as fh:
-                path = fh.read(4096).strip()
+                raw = fh.read(4096).strip()
         except OSError:
             continue
+        try:
+            record = _json.loads(raw)
+            path, pending = record["path"], bool(record.get("pendingDelete"))
+        except (ValueError, TypeError, KeyError):
+            continue
         if path and os.path.isdir(path) and not os.path.islink(path):
-            records.append((name, path))
+            records.append((name, path, pending))
         else:
             forget_orphaned_project(name)
     return records
 
 
+def collect_orphaned_project_workspaces() -> None:
+    """Finish the workspace deletes the user asked for.
+
+    Only records marked pending: one kept merely so a fork's cards resolve is
+    not something anybody asked to remove. Skipped while a tool call is still
+    running in there, or while a chat still shows its files.
+    """
+    from storage.studio_db import sandbox_is_referenced_elsewhere
+
+    for project_id, workspace, pending in list_orphaned_projects():
+        if not pending:
+            continue
+        try:
+            session = project_session_id(project_id)
+            if not wait_for_sessions_idle([session], timeout = 0.0):
+                continue
+            if sandbox_is_referenced_elsewhere(session):
+                continue
+            shutil.rmtree(workspace, ignore_errors = True)
+            forget_orphaned_project(project_id)
+        except Exception:  # noqa: BLE001 - a stuck record must not break a delete
+            logger.warning("Could not collect workspace for %s", project_id, exc_info = True)
+
+
+def finish_workspace_delete_when_idle(project_id: str, timeout: float = 600.0) -> "threading.Thread":
+    """Wait out the tool call still using a workspace, then delete it.
+
+    The delete dialog promised those files would go, and nothing else would
+    come back to them: the collection otherwise runs only on the next delete.
+    """
+    def _wait_and_collect() -> None:
+        session = project_session_id(project_id)
+        wait_for_sessions_idle([session], timeout = timeout)
+        collect_orphaned_project_workspaces()
+
+    thread = threading.Thread(
+        target = _wait_and_collect, name = "workspace-delete", daemon = True,
+    )
+    thread.start()
+    return thread
+
+
 def _recorded_project_workdir(project_id: str) -> "str | None":
     """The kept workspace of a deleted project, wherever the user put it."""
-    for name, path in list_orphaned_projects():
+    for name, path, _pending in list_orphaned_projects():
         if name == project_id:
             return path
     return None
@@ -8183,11 +8243,13 @@ def _start_detached_sweep() -> "threading.Thread | None":
         if _swept_detached:
             return None
         _swept_detached = True
-    thread = threading.Thread(
-        target = sweep_detached_sandboxes,
-        name = "sandbox-sweep",
-        daemon = True,
-    )
+    def _sweep() -> None:
+        sweep_detached_sandboxes()
+        # A workspace the user asked to delete, left pending because a tool was
+        # still running in it when the app went away.
+        collect_orphaned_project_workspaces()
+
+    thread = threading.Thread(target = _sweep, name = "sandbox-sweep", daemon = True)
     thread.start()
     return thread
 

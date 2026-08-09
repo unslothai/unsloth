@@ -4181,11 +4181,13 @@ def test_a_workspace_is_kept_when_the_wait_ran_out():
     from routes import chat_history
 
     route = inspect.getsource(chat_history.delete_project)
-    assert "idle = await run_in_threadpool(wait_for_sessions_idle" in route
-    assert "if idle and not referenced:" in route
-    assert route.index("if idle and not referenced:") < route.index(
+    assert "run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])" in route
+    assert "if delete_files and idle and not referenced:" in route
+    assert route.index("if delete_files and idle and not referenced:") < route.index(
         "run_in_threadpool(delete_project_workspace, project)"
     )
+    # And a wait that ran out queues the finish rather than dropping it.
+    assert "finish_workspace_delete_when_idle(project_id)" in route
 
 
 def test_a_kept_workspace_the_user_moved_still_resolves(tmp_path, monkeypatch):
@@ -4228,7 +4230,7 @@ def test_the_last_fork_going_takes_the_kept_workspace(tmp_path, monkeypatch):
     workspace = tmp_path / "kept-workspace"
     workspace.mkdir()
     (workspace / "report.csv").write_text("a,b\n", encoding = "utf-8")
-    tools.record_orphaned_project(project_id, str(workspace))
+    tools.record_orphaned_project(project_id, str(workspace), True)
 
     # While a fork still shows it, the collection leaves it alone.
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: True)
@@ -4301,6 +4303,74 @@ def test_a_cache_directory_needs_a_generated_file_not_a_name(tmp_path, monkeypat
 
     (candidate / "unsloth_compiled_module_real.py").write_text("x = 1", encoding = "utf-8")
     assert cache_cleanup._holds_generated_modules(candidate) is True
+
+
+def test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted():
+    """The row that held a custom path is gone either way, and a fork's cards
+    still name that session."""
+    import inspect
+
+    from routes import chat_history
+
+    route = inspect.getsource(chat_history.delete_project)
+    assert 'if project.get("sandboxPath"):' in route
+    assert "if not delete_files:" in route
+    body = route[route.index("if not delete_files:"):]
+    assert "record_orphaned_project, project_id" in body[:400]
+    assert "False," in body[:400], "a keep must not be recorded as pending deletion"
+
+
+def test_only_a_pending_record_is_ever_collected(tmp_path, monkeypatch):
+    """One written down so a fork's cards resolve is not something anybody
+    asked to delete."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+
+    keep, go = tmp_path / "keep-me", tmp_path / "delete-me"
+    keep.mkdir()
+    go.mkdir()
+    tools.record_orphaned_project("projkeep1", str(keep), False)
+    tools.record_orphaned_project("projgone1", str(go), True)
+
+    tools.collect_orphaned_project_workspaces()
+
+    assert keep.is_dir(), "deleted a workspace the user kept"
+    assert not go.exists(), "left one the user asked to delete"
+
+
+def test_a_workspace_delete_finishes_once_the_tool_call_ends(tmp_path, monkeypatch):
+    """Past the wait the delete dialog's promise is still outstanding, and
+    nothing else would come back to it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+
+    project_id = "projbusy1"
+    workspace = tmp_path / "busy-workspace"
+    workspace.mkdir()
+    (workspace / "out.csv").write_text("a,b\n", encoding = "utf-8")
+    tools.record_orphaned_project(project_id, str(workspace), True)
+
+    with tools._session_in_flight(tools.project_session_id(project_id)):
+        # Still running: the collection must leave it alone ...
+        tools.collect_orphaned_project_workspaces()
+        assert workspace.is_dir()
+        finisher = tools.finish_workspace_delete_when_idle(project_id, timeout = 5.0)
+        time.sleep(0.2)
+        assert workspace.is_dir(), "removed a workspace a tool call was using"
+
+    finisher.join(timeout = 5)
+    assert not workspace.exists(), "the promise was never finished"
+    assert tools.list_orphaned_projects() == []
 
 
 if __name__ == "__main__":
