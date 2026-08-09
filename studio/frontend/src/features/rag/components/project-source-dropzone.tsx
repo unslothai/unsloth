@@ -3,7 +3,6 @@
 
 import {
   consumeNativePathToken,
-  type NativeIntent,
   registerNativeAttachmentPath,
   useNativeDropTarget,
 } from "@/features/native-intents";
@@ -12,52 +11,24 @@ import { cn } from "@/lib/utils";
 import { File02Icon, FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   invalidateProjectSources,
   uploadProjectDocument,
 } from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
+import {
+  addStagedSources,
+  EXPIRY_GRACE_MS,
+  isExpired,
+  nativeExpiryMs,
+  type StagedSource,
+  stagedFromFile,
+  stagedFromIntent,
+} from "./staged-source";
 import { resolveVisionOverrides } from "./vision-overrides";
 
-/** A source picked before the project exists, held until create commits. A
- * desktop drop has no File, only a path token the backend redeems at upload. */
-export interface StagedSource {
-  id: string;
-  name: string;
-  size: number;
-  modifiedMs: number;
-  upload: File | { nativeToken: string };
-}
-
-// Client-side dedup key; backend dedups authoritatively by content hash.
-function sourceSignature(entry: StagedSource): string {
-  return `${entry.name}|${entry.size}|${entry.modifiedMs}`;
-}
-
-function stagedId(): string {
-  return `staged_${Math.random().toString(36).slice(2)}`;
-}
-
-function stagedFromFile(file: File): StagedSource {
-  return {
-    id: stagedId(),
-    name: file.name,
-    size: file.size,
-    modifiedMs: file.lastModified,
-    upload: file,
-  };
-}
-
-function stagedFromIntent(intent: NativeIntent): StagedSource {
-  return {
-    id: stagedId(),
-    name: intent.path.displayLabel,
-    size: intent.path.sizeBytes ?? 0,
-    modifiedMs: intent.path.modifiedMs ?? 0,
-    upload: { nativeToken: intent.path.token },
-  };
-}
+export type { StagedSource };
 
 function nativeFileName(path: string): string {
   const segments = path.split(/[\\/]/);
@@ -93,27 +64,6 @@ function isSupported(name: string): boolean {
   return ACCEPTED_EXTS.has(name.slice(dot).toLowerCase());
 }
 
-/** Merge a selection into the staged list, reporting what it would not take so
- * the caller can say so once instead of dropping it silently. */
-function addStagedSources(
-  staged: StagedSource[],
-  incoming: StagedSource[],
-): { next: StagedSource[]; duplicates: string[] } {
-  const seen = new Set(staged.map(sourceSignature));
-  const next = [...staged];
-  const duplicates: string[] = [];
-  for (const entry of incoming) {
-    const signature = sourceSignature(entry);
-    if (seen.has(signature)) {
-      duplicates.push(entry.name);
-      continue;
-    }
-    seen.add(signature);
-    next.push(entry);
-  }
-  return { next, duplicates };
-}
-
 // Projects created with staged files, so the landing can open on Sources.
 const projectsWithPendingSources = new Set<string>();
 
@@ -146,6 +96,9 @@ export async function uploadStagedSources(
   const merged: string[] = [];
   for (const entry of staged) {
     try {
+      if (isExpired(entry, Date.now())) {
+        throw new Error("The drop expired. Add it again from the project.");
+      }
       // Leases are short-lived, so mint one per file as its turn comes up.
       const source =
         entry.upload instanceof File
@@ -191,11 +144,55 @@ export function ProjectSourceDropzone({
   // Count enter/leave pairs: children fire dragleave on the parent.
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
+  // Registering a native drop is async, so the props captured when it started
+  // are stale by the time it resolves. Merge against these instead.
+  const stagedRef = useRef(staged);
+  stagedRef.current = staged;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  // The dialog stays mounted across close and resets `staged` to empty, so an
+  // unmount flag cannot see a cancel. Count clears and discard drops older
+  // than the last one rather than resurrecting files the user dismissed.
+  // Only the transition counts: StrictMode replays setup, and a second bump
+  // would discard a drop that is still legitimately in flight.
+  const generation = useRef(0);
+  const lastCount = useRef(staged.length);
+  useEffect(() => {
+    if (staged.length === 0 && lastCount.current !== 0) generation.current += 1;
+    lastCount.current = staged.length;
+  }, [staged.length]);
+
+  // Prune desktop drops whose token TTL has lapsed, so Create never commits a
+  // project against sources the native layer has already pruned.
+  useEffect(() => {
+    const expiries = staged
+      .map(nativeExpiryMs)
+      .filter((value): value is number => value !== null);
+    if (expiries.length === 0) return;
+    const timer = setTimeout(
+      () => {
+        const current = stagedRef.current;
+        const kept = current.filter((entry) => !isExpired(entry, Date.now()));
+        if (kept.length === current.length) return;
+        onChangeRef.current(kept);
+        const dropped = current.length - kept.length;
+        toast.info(
+          dropped === 1
+            ? "A dropped file expired"
+            : `${dropped} dropped files expired`,
+          { description: "Drag them in again to add them." },
+        );
+      },
+      Math.max(0, Math.min(...expiries) - EXPIRY_GRACE_MS - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [staged]);
 
   const addSources = useCallback(
     (incoming: StagedSource[], unsupported: string[]) => {
-      const { next, duplicates } = addStagedSources(staged, incoming);
-      if (next.length !== staged.length) onChange(next);
+      const current = stagedRef.current;
+      const { next, duplicates } = addStagedSources(current, incoming);
+      if (next.length !== current.length) onChangeRef.current(next);
       if (unsupported.length > 0) {
         toast.info(
           unsupported.length === 1
@@ -214,7 +211,7 @@ export function ProjectSourceDropzone({
         );
       }
     },
-    [staged, onChange],
+    [],
   );
 
   const addFiles = useCallback(
@@ -230,6 +227,7 @@ export function ProjectSourceDropzone({
 
   const addNativePaths = useCallback(
     async (paths: string[]) => {
+      const claimed = generation.current;
       const supported = paths.filter((path) => isSupported(nativeFileName(path)));
       const unsupported = paths
         .filter((path) => !isSupported(nativeFileName(path)))
@@ -238,6 +236,9 @@ export function ProjectSourceDropzone({
       const settled = await Promise.allSettled(
         supported.map(registerNativeAttachmentPath),
       );
+      // The panel was cleared while this was registering: the user is done with
+      // this drop, so let the tokens lapse instead of refilling the panel.
+      if (claimed !== generation.current) return;
       const staged = settled.flatMap((result) =>
         result.status === "fulfilled" ? [stagedFromIntent(result.value)] : [],
       );
@@ -252,10 +253,15 @@ export function ProjectSourceDropzone({
     [addSources],
   );
 
+  // Stay claimed while disabled. Unregistering hands the drop back to the
+  // chat-wide handler, which would attach it to the chat behind the dialog;
+  // holding the claim and ignoring the drop is what "disabled" should mean.
   const nativeDropRef = useNativeDropTarget({
-    enabled: !disabled,
-    onDrop: (paths) => void addNativePaths(paths),
-    onDragOver: setDragging,
+    onDrop: (paths) => {
+      if (disabled) return;
+      void addNativePaths(paths);
+    },
+    onDragOver: (over) => setDragging(over && !disabled),
   });
 
   const endDrag = useCallback(() => {

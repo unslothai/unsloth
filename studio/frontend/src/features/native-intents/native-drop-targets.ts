@@ -47,14 +47,10 @@ function listen(): void {
   void import("@tauri-apps/api/window")
     .then(async ({ getCurrentWindow }) => {
       const currentWindow = getCurrentWindow();
-      let scaleReported = false;
-      await currentWindow.onScaleChanged(({ payload }) => {
-        scaleReported = true;
-        scaleFactor = payload.scaleFactor;
-      });
-      const initialScale = await currentWindow.scaleFactor();
-      if (!scaleReported) scaleFactor = initialScale;
-
+      // Before the scale setup: until this resolves a registered target is
+      // claimed with nothing behind it, and the chat-wide handler has already
+      // stepped aside, so a drop in that window is lost outright. The
+      // devicePixelRatio seed keeps the hit test usable until scale reports.
       await currentWindow.onDragDropEvent(({ payload }) => {
         if (payload.type === "leave") {
           setHovered(null);
@@ -68,11 +64,23 @@ function listen(): void {
         setHovered(null);
         if (target) targets.get(target)?.onDrop(payload.paths);
       });
+
+      let scaleReported = false;
+      await currentWindow.onScaleChanged(({ payload }) => {
+        scaleReported = true;
+        scaleFactor = payload.scaleFactor;
+      });
+      const initialScale = await currentWindow.scaleFactor();
+      if (!scaleReported) scaleFactor = initialScale;
     })
     .catch(() => {
       listening = false;
     });
 }
+
+// Start the install now rather than on first registration, so the async window
+// above is spent during app start instead of under the user's first drop.
+listen();
 
 export function registerNativeDropTarget(
   element: HTMLElement,
