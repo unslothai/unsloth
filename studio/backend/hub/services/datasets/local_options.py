@@ -536,9 +536,7 @@ def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     module = _one_module(grouped) if grouped is not None else None
     if grouped is None or module is None:
         return set()
-    offerable = {
-        split: _offerable(entries, snapshot, module) for split, entries in grouped.items()
-    }
+    offerable = {split: _offerable(entries, snapshot, module) for split, entries in grouped.items()}
     if any(state is None for state in offerable.values()):
         return set()
     return {

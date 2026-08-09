@@ -485,7 +485,9 @@ def test_snapshot_options_count_the_full_folder_extension_set(tmp_path):
     assert local_options._snapshot_options(snapshot) == set()
 
 
-@pytest.mark.parametrize("front", ["---\n---\n", "---\nnull\n---\n", "---\n# only a comment\n---\n"])
+@pytest.mark.parametrize(
+    "front", ["---\n---\n", "---\nnull\n---\n", "---\n# only a comment\n---\n"]
+)
 def test_snapshot_options_read_empty_front_matter_as_an_empty_card(tmp_path, front):
     snapshot = _snapshot(tmp_path)
     (snapshot / "README.md").write_text(front + "Prose.\n", encoding = "utf-8")
