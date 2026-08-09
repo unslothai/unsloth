@@ -2789,7 +2789,6 @@ class VideoBackend:
             )
         elif te_scheme is not None:
             from .video_minimax_h3_te import load_h3_quantized_text_encoder
-
             text_encoder = load_h3_quantized_text_encoder(
                 base,
                 te_scheme,
@@ -3321,9 +3320,7 @@ class VideoBackend:
                                 state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
                             ),
                             transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
-                            transformer_pinned = bool(
-                                getattr(state, "h3_denoiser_pinned", False)
-                            ),
+                            transformer_pinned = bool(getattr(state, "h3_denoiser_pinned", False)),
                         )
                         if available_vram_gb + 0.25 < required_vram_gb:
                             raise RuntimeError(

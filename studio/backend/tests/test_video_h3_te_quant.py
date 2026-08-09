@@ -72,7 +72,6 @@ def test_the_hosted_filename_is_the_comfy_component_repo():
 def test_every_hosted_scheme_is_a_valid_text_encoder_quant_request():
     # A scheme this module offers but normalize_te_quant refuses could never be requested.
     from core.inference.diffusion_precision import normalize_te_quant
-
     for scheme in H3_TE_QUANT_FILES:
         assert normalize_te_quant(scheme) == scheme
 
@@ -84,7 +83,9 @@ def test_remap_puts_comfy_names_into_the_transformers_tree():
         h3_te_remap_key("model.layers.0.self_attn.q_proj.weight")
         == "model.language_model.layers.0.self_attn.q_proj.weight"
     )
-    assert h3_te_remap_key("model.embed_tokens.weight") == "model.language_model.embed_tokens.weight"
+    assert (
+        h3_te_remap_key("model.embed_tokens.weight") == "model.language_model.embed_tokens.weight"
+    )
     assert h3_te_remap_key("visual.blocks.3.attn.qkv.bias") == "model.visual.blocks.3.attn.qkv.bias"
     # NOT idempotent, on purpose: re-mapping an already-transformers name produces a key no module
     # owns, so an artifact re-uploaded in transformers naming fails the strict load loudly instead
@@ -316,7 +317,9 @@ def test_the_dense_encoder_is_dropped_from_the_base_pull_but_its_config_is_kept(
     assert not is_prequant_covered_weight("text_encoder/tokenizer.json", covered)
     # Other components are untouched.
     assert not is_prequant_covered_weight("vae/diffusion_pytorch_model.safetensors", covered)
-    assert not is_prequant_covered_weight("transformer/diffusion_pytorch_model.safetensors", covered)
+    assert not is_prequant_covered_weight(
+        "transformer/diffusion_pytorch_model.safetensors", covered
+    )
 
 
 # ── the resolved record ──────────────────────────────────────────────────────────

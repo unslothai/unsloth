@@ -134,7 +134,11 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
 _HADAMARD_CACHE: dict[tuple[int, str, Any], Any] = {}
 
 
-def build_convrot_hadamard(size: int, device: Any = "cpu", dtype: Any = None) -> Any:
+def build_convrot_hadamard(
+    size: int,
+    device: Any = "cpu",
+    dtype: Any = None,
+) -> Any:
     """The normalized regular Hadamard matrix ConvRot rotates by. Cached per (size, device, dtype)."""
     import math
 
@@ -198,7 +202,9 @@ def _int8_convrot_linear_class() -> Any:
         once per generation so the dequantize is not on any hot path.
         """
 
-        def __init__(self, in_features: int, out_features: int, bias: bool, group_size: int) -> None:
+        def __init__(
+            self, in_features: int, out_features: int, bias: bool, group_size: int
+        ) -> None:
             super().__init__()
             self.in_features = in_features
             self.out_features = out_features
@@ -450,7 +456,6 @@ def load_h3_quantized_text_encoder(
 def _meta_tensor_names(module: Any) -> list[str]:
     """Names of every parameter and buffer still on the meta device."""
     from itertools import chain
-
     return [
         name
         for name, tensor in chain(module.named_parameters(), module.named_buffers())
