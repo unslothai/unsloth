@@ -251,13 +251,12 @@ def _hostile_env(
     home.mkdir(parents = True, exist_ok = True)
     drive, tail = os.path.splitdrive(str(home))
     env.update({"HOME": str(home), "USERPROFILE": str(home), "HOMEDRIVE": drive, "HOMEPATH": tail})
-    # HOME on its own does not move $PROFILE on Unix. PowerShell reads $XDG_CONFIG_HOME first and
+    # HOME on its own does not move $PROFILE on Unix: PowerShell reads $XDG_CONFIG_HOME first and
     # only falls back to $HOME/.config when it is unset, and GitHub's ubuntu image writes
-    # XDG_CONFIG_HOME into /etc/environment, so an inherited value went on naming the real account
-    # while the fixture planted its profile under tmp_path -- the whole file's isolation leaked on
-    # a hosted runner and nowhere else. Pointed at the same directory HOME already implies, so the
-    # two rules agree whichever one the host applies. Windows ignores it: $PROFILE comes from the
-    # known-folder API there.
+    # XDG_CONFIG_HOME into /etc/environment, so an inherited value kept naming the real account
+    # and this file's isolation leaked on a hosted runner and nowhere else. Pointed at the
+    # directory HOME already implies, so the two rules agree whichever the host applies. Windows
+    # ignores it: $PROFILE comes from the known-folder API there.
     env["XDG_CONFIG_HOME"] = str(home / ".config")
     if path_override is not None:
         path_override.mkdir(parents = True, exist_ok = True)
@@ -316,9 +315,9 @@ def _run_with_profile(
     That is the scope relationship a profile has to the installer: the profile runs at global
     scope, then "irm ... | iex" defines and calls Install-UnslothStudio in that same scope.
     Dot-sourcing reproduces it on every OS, which planting a profile file does not -- Windows
-    resolves the Documents folder through the shell's known-folder API, so no environment
-    variable can redirect $PROFILE at a fixture. test_a_real_profile_reproduces_the_same_state
-    anchors this against a genuinely loaded profile wherever that is possible.
+    resolves the Documents folder through the known-folder API, so no environment variable can
+    redirect $PROFILE at a fixture. test_a_real_profile_reproduces_the_same_state anchors this
+    against a genuinely loaded profile where that is possible.
     """
     profile_path = tmp_path / "hostile_profile.ps1"
     profile_path.write_text(_HOSTILE_PROFILE if profile is None else profile, encoding = "utf-8")
@@ -365,10 +364,10 @@ def test_a_real_profile_reproduces_the_same_state(tmp_path):
     """
     env = _hostile_env(tmp_path)
     paths = _profile_paths(env)
-    # The two machine-wide profiles load into the real leg only, and no environment variable can
-    # move them, so one that touches any probed setting would read as a divergence that says
-    # nothing about the simulation. Neither file ships with PowerShell; this skip is for a host
-    # that has been administered, and it names the file so the reason is checkable.
+    # The two machine-wide profiles load into the real leg only and no environment variable can
+    # move them, so one touching a probed setting would read as a divergence that says nothing
+    # about the simulation. Neither ships with PowerShell, so this skip is for an administered
+    # host, and it names the file so the reason is checkable.
     for scope in ("AllUsersAllHosts", "AllUsersCurrentHost"):
         if paths[scope].is_file():
             pytest.skip(f"a machine-wide profile at {paths[scope]} loads into the real leg only")
@@ -691,10 +690,10 @@ def _proxy_prelude() -> str:
 
 def test_the_setup_launch_reapplies_the_proxy_it_told_the_child_to_forget():
     """-NoProfile on the setup handoff drops the whole $PSDefaultParameterValues table, proxy
-    entries included -- and setup.ps1 does its own downloading (the VC++ runtime, the uv
-    installer). On a host where a profile proxy entry is the only egress, keeping the proxy in
-    install.ps1 and losing it one process later is the same broken install one step further on.
-    A PowerShell variable cannot cross a process boundary, so it has to travel as environment."""
+    entries included, and setup.ps1 downloads on its own (the VC++ runtime, the uv installer).
+    Where a profile proxy entry is the only egress, keeping it in install.ps1 and losing it one
+    process later is the same broken install. A PowerShell variable cannot cross a process
+    boundary, so it travels as environment."""
     assert "_UNSLOTH_PS_PROXY_DEFAULTS" in _install_ps1(), "install.ps1 must publish the handoff"
     prelude = _proxy_prelude()
     assert "_UNSLOTH_PS_PROXY_DEFAULTS" in prelude, "the child must read it back"
@@ -736,9 +735,8 @@ def test_only_serializable_proxy_keys_reach_the_child(tmp_path):
         check = False,
     ).stdout
 
-    # Parsed, not substring-matched: the handoff IS JSON, so comparing the value exactly is
-    # both the stronger assertion and free of the "URL may sit anywhere in the string" reading
-    # a bare `in` invites.
+    # Parsed, not substring-matched: the handoff IS JSON, so an exact value comparison is both
+    # stronger and free of the "URL may sit anywhere in the string" reading a bare `in` invites.
     carried = json.loads(handoff.strip().splitlines()[-1])
     assert carried["Invoke-WebRequest:Proxy"] == "http://proxy.corp:8080"
     assert "ProxyUseDefaultCredentials" in handoff
@@ -776,9 +774,9 @@ def test_the_child_restores_the_proxy_and_nothing_else(tmp_path):
     )
     assert restored.returncode == 0
     assert "IWR=http://proxy.corp:8080" in restored.stdout
-    # install.ps1 never publishes a non-proxy key, but the child trusting the table wholesale is
-    # what would make a future leak silent, so pin that the round trip carries what it was given
-    # and the FILTER is the single place that decides.
+    # install.ps1 never publishes a non-proxy key, but the child trusts the table wholesale, so
+    # pin that the round trip carries what it was given and the FILTER is the one place that
+    # decides.
     assert "OTHER=Hidden" in restored.stdout
 
     for absent in (None, "{not json", ""):
@@ -917,11 +915,10 @@ def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_pa
 
 
 def test_a_profile_that_prints_a_banner_does_not_cost_the_proxy(monkeypatch):
-    """The profile has already run by the time the record is printed, and it is free to say
+    """The profile has already run by the time the record is printed and is free to say
     anything: a MOTD, a "loading modules" line, a corporate banner. With the record bare, that
-    output arrived first, the whole parse threw, and the answer was dropped -- so the very
-    locked-down host that needed the proxy handed the -NoProfile child nothing and every
-    download failed."""
+    output arrived first, the parse threw, and the answer was dropped -- so the locked-down host
+    that needed the proxy handed the -NoProfile child nothing."""
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
@@ -1539,12 +1536,12 @@ def test_the_profile_probe_shares_one_timeout_across_hosts(monkeypatch):
 
 
 def test_the_probe_child_runs_with_no_profile(monkeypatch):
-    """Without -NoProfile the probe host loads its OWN ConsoleHost profile before the script
-    runs: an unrelated profile that prints, rewrites $PSDefaultParameterValues or calls exit
-    got in the way, and it is still not the profile a VS Code caller keeps its defaults in.
-    With -NoProfile nothing has run, and the two profiles the caller's session would have
-    loaded ($PROFILE.CurrentUserAllHosts plus its host profile) are dot-sourced by name --
-    $PROFILE is fully populated under -NoProfile because the paths are computed, not loaded."""
+    """Without -NoProfile the probe host loads its OWN ConsoleHost profile first: an unrelated
+    profile that prints, rewrites $PSDefaultParameterValues or calls exit got in the way, and it
+    is still not the profile a VS Code caller keeps its defaults in. With -NoProfile nothing has
+    run, and the profiles the caller's session would have loaded ($PROFILE.CurrentUserAllHosts
+    plus its host profile) are dot-sourced by name -- $PROFILE is fully populated under
+    -NoProfile because the paths are computed, not loaded."""
     from unsloth_cli.commands import studio as studio_cmd
 
     seen: list[list[str]] = []
