@@ -2638,8 +2638,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the settings column below. Load progress shows in a toast. */}
-      <div className="pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-        <div className="pointer-events-auto flex items-center gap-2">
+      {/* grid, not a centred overlay: the absolute mode switch painted over the model selector and the Video link below ~645px. */}
+      <div className="@container pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-2 pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+        <div className="pointer-events-auto flex min-w-0 items-center gap-2">
           {pageMode === "train" ? (
             <TrainBaseSelector
               families={trainFamilies}
@@ -2669,35 +2670,34 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           )}
         </div>
         {/* Create | Train page-mode switch, centered on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
-        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center">
-          <PillTabs
-            ariaLabel="Page mode"
-            value={pageMode}
-            onValueChange={(v) => setPageMode(v as "create" | "train")}
-            fit={true}
-            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-11"
-            tabs={[
-              {
-                value: "create",
-                label: "Create",
-                icon: (
-                  <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
-                ),
-              },
-              {
-                value: "train",
-                label: "Train",
-                icon: (
-                  <HugeiconsIcon
-                    icon={TestTubeOutlineIcon}
-                    className="size-3.5"
-                  />
-                ),
-              },
-            ]}
-          />
-        </div>
-        <div className="pointer-events-auto flex items-center gap-2">
+        {/* px-11 makes the pair 277px, so it widens on the header's own width: the viewport also carries the resizable sidebar. */}
+        <PillTabs
+          ariaLabel="Page mode"
+          value={pageMode}
+          onValueChange={(v) => setPageMode(v as "create" | "train")}
+          fit={true}
+          className="pointer-events-auto h-[34px] justify-self-center [&>button]:h-[34px] [&>button]:px-3 @min-[560px]:[&>button]:px-11"
+          tabs={[
+            {
+              value: "create",
+              label: "Create",
+              icon: (
+                <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
+              ),
+            },
+            {
+              value: "train",
+              label: "Train",
+              icon: (
+                <HugeiconsIcon
+                  icon={TestTubeOutlineIcon}
+                  className="size-3.5"
+                />
+              ),
+            },
+          ]}
+        />
+        <div className="pointer-events-auto flex min-w-0 items-center justify-end gap-2">
           {/* Video is a separate page, so it sits out here rather than in the mode strip. */}
           <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
         </div>

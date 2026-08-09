@@ -734,14 +734,19 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         source = page.read_text(encoding = "utf-8")
-        before, marker, band = source.partition("h-[48px] shrink-0 items-start justify-between")
+        # matched on the band's size alone: Images lays its header out as a grid and Video as a
+        # flex row, so the stacking contract below is what this pins, not one layout's utilities.
+        before, marker, band = source.partition("h-[48px] shrink-0")
         assert marker, page.name
         opening = before.rsplit('<div className="', 1)[1]
         for token in ("pointer-events-none", "relative", "z-40"):
             assert token in opening, (page.name, token)
 
         band = band.split("MediaPageLink", 1)[0]
-        groups = re.findall(r'<div className="([^"]*flex items-center gap-[^"]*)"', band)
+        # utilities may sit between these, so match them in order but not adjacently.
+        groups = re.findall(
+            r'<div className="([^"]*\bflex\b[^"]*\bitems-center\b[^"]*\bgap-[^"]*)"', band
+        )
         assert len(groups) >= 2, (page.name, groups)
         for group in groups:
             assert "pointer-events-auto" in group, (page.name, group)

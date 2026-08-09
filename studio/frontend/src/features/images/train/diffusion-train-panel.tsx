@@ -1425,7 +1425,8 @@ export function DiffusionTrainPanel({
       {/* Right: the run area. Before a run: training settings + previous-runs history; during/after: the live view. Selecting a previous run re-plots its logs read-only. */}
       {/* Sections carry no card of their own: spacing and a rule separate them. p-1.5 keeps the chart cards' outer ring from being clipped. */}
       {/* 40px off the rule, the gutter the settings column has off the page edge. */}
-      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 p-1.5 pb-7 pl-8 md:overflow-y-auto md:pl-10">
+      {/* @container: this pane is whatever is left beside the 416px rail, so sm: put four stat cells in ~266px against the 396px they need. */}
+      <div className="@container hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 p-1.5 pb-7 pl-8 md:overflow-y-auto md:pl-10">
         {viewRun && !hasRun ? (
           <>
             <div className="flex flex-col gap-3">
@@ -1442,7 +1443,7 @@ export function DiffusionTrainPanel({
                   Back
                 </Button>
               </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat label="Status" value={viewRun.status} />
                 <Stat label="Steps" value={`${viewRun.step}/${viewRun.total_steps}`} />
                 <Stat
@@ -1575,7 +1576,7 @@ export function DiffusionTrainPanel({
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat
                   label="Loss"
                   value={status?.loss != null ? status.loss.toFixed(4) : "-"}
