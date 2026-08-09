@@ -622,17 +622,6 @@ export function LocalOnDeviceCard({
               <PathInfoButton path={path} />
             </div>
           </div>
-          {/* Split view has the width for the full picture, so the card charts
-              the quant it resolved rather than only naming its size. */}
-          {repoId && selectedQuant ? (
-            <ModelMemoryBarFor
-              repoId={repoId}
-              quant={selectedQuant}
-              sizeBytes={selectedVariant?.size_bytes}
-              gpuGb={gpuGb}
-              className="mt-2"
-            />
-          ) : null}
           {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
             <div
               aria-hidden="true"
@@ -713,6 +702,18 @@ export function LocalOnDeviceCard({
             </button>
           </div>
         </div>
+        {/* Below the action row, not inside it: the row is a horizontal flex
+            container, so a full-width bar there becomes another flex item and
+            squeezes the Run/Train buttons. */}
+        {repoId && selectedQuant ? (
+          <ModelMemoryBarFor
+            repoId={repoId}
+            quant={selectedQuant}
+            sizeBytes={selectedVariant?.size_bytes}
+            gpuGb={gpuGb}
+            className="px-3 pb-2"
+          />
+        ) : null}
       </div>
       {baseModel && (
         <BaseModelReference

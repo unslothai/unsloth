@@ -534,14 +534,16 @@ function writeMap(map: StoredMap): boolean {
   }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new Event(PER_MODEL_CONFIG_UPDATED_EVENT));
-    }
-    return true;
   } catch (err) {
     console.warn("Failed to persist per-model config:", err);
     return false;
   }
+  // Best-effort: the write already landed, so a host that cannot dispatch
+  // events must not make a saved config report back as unsaved.
+  if (typeof window?.dispatchEvent === "function") {
+    window.dispatchEvent(new Event(PER_MODEL_CONFIG_UPDATED_EVENT));
+  }
+  return true;
 }
 
 function warnDroppedFields(

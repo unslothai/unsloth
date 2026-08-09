@@ -15,7 +15,7 @@ import time
 import uuid
 import weakref
 from pathlib import Path
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 from typing import List, Optional
 import structlog
@@ -3140,15 +3140,19 @@ async def get_kv_cache_estimate(
         None,
         description = "KV cache dtype (e.g. q8_0, q4_0, q5_0, iq4_nl, f32)",
     ),
-    n_parallel: int = Query(
-        1,
+    n_parallel: Optional[int] = Query(
+        None,
         ge = 1,
-        description = "--parallel slots; scales the per-slot KV stream padding",
+        description = (
+            "--parallel slots; scales the per-slot KV stream padding. Omit to use "
+            "the server's own slot count, which is what a default load gets."
+        ),
     ),
     speculative_type: Optional[str] = Query(
         None,
         description = "Speculative decoding mode (mtp, ngram, mtp+ngram, auto)",
     ),
+    request: Request = None,  # type: ignore[assignment]
     current_subject: str = Depends(get_current_subject),
 ):
     """KV cache, weight and speculative-decoding bytes for a downloaded GGUF.
@@ -3206,6 +3210,13 @@ async def get_kv_cache_estimate(
         # With no pinned context a GGUF loads at its own native length, which
         # only the metadata we just read knows. Defaulting here saves the caller
         # a round trip spent discovering the number it then asks about.
+        # Mirror _resolve_parallel_slots: an omitted count means the server's
+        # standing slot count, not one slot. The KV estimator scales per-slot
+        # padding, so assuming 1 understates a default load.
+        if n_parallel is None:
+            state = getattr(getattr(request, "app", None), "state", None)
+            n_parallel = getattr(state, "llama_parallel_slots", 1) or 1
+
         n_ctx = n_ctx or be._context_length
         if not n_ctx or n_ctx < 1:
             return null
@@ -3229,8 +3240,22 @@ async def get_kv_cache_estimate(
                 # per-token cost regresses; a separate drafter is exempt. Pricing
                 # a reserve the load will not take would overstate the bar and
                 # could warn OOM on a model that fits.
-                if _auto_mode_drops_mtp(
-                    (speculative_type or "").lower(),
+                from core.inference.llama_cpp import _mla_mtp_auto_enabled
+
+                _mode = (speculative_type or "").lower()
+                # Auto also declines an MLA embedded head (GLM/DeepSeek/Kimi):
+                # that path keeps a duplicated full target-KV context and runs
+                # slower than no speculation, so it is off unless opted into.
+                # A separate drafter is unaffected, as is a non-MLA head.
+                _auto_drops_mla = (
+                    _mode == "auto"
+                    and be._kv_lora_rank is not None
+                    and bool(be._nextn_predict_layers)
+                    and not drafter_path
+                    and not _mla_mtp_auto_enabled()
+                )
+                if _auto_drops_mla or _auto_mode_drops_mtp(
+                    _mode,
                     _extract_model_size_b(repo_id),
                     has_separate_drafter = bool(drafter_path),
                 ):

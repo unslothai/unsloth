@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  ModelMemoryBar,
-  ModelMemoryBarFor,
-} from "@/components/model-memory-bar";
+import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -695,10 +692,10 @@ function ModelRow({
       }
     : null;
 
-  // A memory bar turns the row into two stacked lines, so the button becomes a
-  // column and the original single-line content moves into a wrapper. Rows
-  // without a bar keep the pill shape; a taller row reads wrong as a full round.
-  const memorySegments = useModelMemory(memory, gpuGb);
+  // Only the selected row charts itself. A meter under every row turns a list
+  // you scan into a wall of charts, and a model that comfortably fits is not
+  // news; the one you are actually considering is. At most one bar is on screen.
+  const memorySegments = useModelMemory(selected ? memory : undefined, gpuGb);
   const showMemoryBar = memorySegments.status !== "unknown";
 
   const content = (
@@ -851,7 +848,9 @@ function ModelRow({
           ) : null}
         </span>
       </span>
-      {showMemoryBar ? <ModelMemoryBar segments={memorySegments} /> : null}
+      {showMemoryBar ? (
+        <ModelMemoryBar segments={memorySegments} compact={true} />
+      ) : null}
     </button>
   );
 
@@ -1437,66 +1436,53 @@ function GgufVariantExpander({
                 )
               }
               className={cn(
-                "flex min-w-0 flex-1 flex-col items-stretch py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
-                // A downloaded quant carries a memory bar underneath, so the
-                // row is two lines and the full pill radius reads wrong.
-                v.downloaded ? "rounded-2xl" : "rounded-full",
+                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
                 unusableLocal &&
                   "cursor-default opacity-50 hover:bg-transparent dark:hover:bg-transparent",
               )}
             >
-              <span className="flex w-full min-w-0 items-center justify-between gap-2">
-                <span className="min-w-0 flex-1 truncate font-mono text-xs">
-                  <span
-                    className={cn(oom && "!text-gray-500 dark:!text-gray-400")}
-                  >
-                    {v.quant}
-                  </span>
-                  {unusableLocal ? (
-                    <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
-                      incomplete
-                    </span>
-                  ) : v.downloaded ? (
-                    <>
-                      <span className="ml-1.5 text-ui-9 font-sans font-medium text-green-600/90 dark:text-green-400/80">
-                        downloaded
-                      </span>
-                      {v.update_available ? (
-                        <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
-                          update available
-                        </span>
-                      ) : null}
-                    </>
-                  ) : v.quant === effectiveRecommended ? (
-                    <span className="ml-1.5 text-ui-9 font-sans font-medium text-primary/70">
-                      recommended
-                    </span>
-                  ) : null}
+              <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                <span
+                  className={cn(oom && "!text-gray-500 dark:!text-gray-400")}
+                >
+                  {v.quant}
                 </span>
-                <span className="flex items-center gap-1.5 shrink-0">
-                  {oom && (
-                    <span className="text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
-                      OOM
-                    </span>
-                  )}
-                  {tight && (
-                    <span className="text-ui-9 font-medium !text-amber-400">
-                      TIGHT
-                    </span>
-                  )}
-                  <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
-                    <SizeText value={formatBytes(v.size_bytes)} />
+                {unusableLocal ? (
+                  <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
+                    incomplete
                   </span>
+                ) : v.downloaded ? (
+                  <>
+                    <span className="ml-1.5 text-ui-9 font-sans font-medium text-green-600/90 dark:text-green-400/80">
+                      downloaded
+                    </span>
+                    {v.update_available ? (
+                      <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
+                        update available
+                      </span>
+                    ) : null}
+                  </>
+                ) : v.quant === effectiveRecommended ? (
+                  <span className="ml-1.5 text-ui-9 font-sans font-medium text-primary/70">
+                    recommended
+                  </span>
+                ) : null}
+              </span>
+              <span className="flex items-center gap-1.5 shrink-0">
+                {oom && (
+                  <span className="text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
+                    OOM
+                  </span>
+                )}
+                {tight && (
+                  <span className="text-ui-9 font-medium !text-amber-400">
+                    TIGHT
+                  </span>
+                )}
+                <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
+                  <SizeText value={formatBytes(v.size_bytes)} />
                 </span>
               </span>
-              {v.downloaded && !unusableLocal ? (
-                <ModelMemoryBarFor
-                  repoId={repoId}
-                  quant={v.quant}
-                  sizeBytes={v.size_bytes}
-                  gpuGb={gpuGb}
-                />
-              ) : null}
             </button>
             {v.downloaded && onConfigure && (
               <ModelLoadSettingsAction

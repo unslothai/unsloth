@@ -32,11 +32,13 @@ import { cn } from "@/lib/utils";
 export function ModelMemoryBarFor({
   gpuGb,
   showReadout,
+  compact,
   className,
   ...source
 }: ModelMemorySource & {
   gpuGb?: number | null;
   showReadout?: boolean;
+  compact?: boolean;
   className?: string;
 }) {
   const segments = useModelMemory(source, gpuGb);
@@ -45,6 +47,7 @@ export function ModelMemoryBarFor({
     <ModelMemoryBar
       segments={segments}
       showReadout={showReadout}
+      compact={compact}
       className={className}
     />
   );
@@ -93,12 +96,16 @@ const SEGMENT_COLORS: Record<
 export function ModelMemoryBar({
   segments,
   showReadout = false,
+  compact = false,
   className,
 }: {
   segments: ModelMemorySegments;
   /** Print the GB breakdown beside the bar. For roomy surfaces (the hub card),
    *  where a two-pixel segment alone cannot convey the numbers. */
   showReadout?: boolean;
+  /** Dense-list styling: thinner, and held back until the numbers matter. A row
+   *  in a scannable list should read as a row, not as a chart. */
+  compact?: boolean;
   className?: string;
 }) {
   const t = useT();
@@ -160,7 +167,12 @@ export function ModelMemoryBar({
           name. The numbers stay reachable through `showReadout`. */}
       <div
         aria-hidden="true"
-        className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted"
+        className={cn(
+          "flex w-full overflow-hidden rounded-full bg-muted",
+          compact ? "h-[3px]" : "h-1.5",
+          // Comfortable fits recede; the bar gains presence as it fills.
+          compact && pressure === "normal" && "opacity-55",
+        )}
       >
         <div
           data-testid="model-memory-weights"
